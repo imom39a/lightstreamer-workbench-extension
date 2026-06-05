@@ -1,0 +1,33 @@
+{
+  "name": "lightstreamer-event-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && node scripts/build-content-scripts.mjs && node scripts/verify-extension-build.mjs",
+    "test": "vitest run",
+    "release:package": "node scripts/package-extension.mjs",
+    "release:zip": "node scripts/package-extension.mjs --format zip",
+    "release:crx": "node scripts/package-extension.mjs --format crx",
+    "release:package:all": "node scripts/package-extension.mjs --format both",
+    "release:upload": "node scripts/chrome-web-store.mjs upload",
+    "release:publish": "node scripts/chrome-web-store.mjs publish",
+    "release:status": "node scripts/chrome-web-store.mjs status",
+    "release:rollout": "node scripts/chrome-web-store.mjs rollout",
+    "release:cancel": "node scripts/chrome-web-store.mjs cancel",
+    "fixture:build": "scripts/lightstreamer/build-adapter",
+    "fixture:start": "scripts/lightstreamer/start",
+    "fixture:wait": "scripts/lightstreamer/wait",
+    "fixture:stop": "scripts/lightstreamer/stop",
+    "fixture:test": "scripts/lightstreamer/test"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.316",
+    "@types/node": "^25.0.0",
+    "esbuild": "^0.27.0",
+    "jsdom": "^27.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "vitest": "^4.0.14"
+  }
+}

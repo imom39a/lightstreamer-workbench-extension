@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Lightstreamer Event Workbench",
+  "version": "0.1.0",
+  "description": "Chrome DevTools panel for inspecting Lightstreamer Web Client activity.",
+  "devtools_page": "devtools.html",
+  "background": {
+    "service_worker": "extension/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["injected/lightstreamer-instrumentation.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content-script.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

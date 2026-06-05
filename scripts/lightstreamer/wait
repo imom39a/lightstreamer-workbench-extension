@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LIGHTSTREAMER_PORT="${LIGHTSTREAMER_PORT:-8080}"
+FIXTURE_URL="${LSEW_FIXTURE_URL:-http://localhost:${LIGHTSTREAMER_PORT}/}"
+DEADLINE_SECONDS="${LSEW_FIXTURE_WAIT_SECONDS:-45}"
+DEADLINE=$((SECONDS + DEADLINE_SECONDS))
+
+until curl -fsS "$FIXTURE_URL" >/dev/null; do
+  if [ "$SECONDS" -ge "$DEADLINE" ]; then
+    echo "Timed out waiting for Lightstreamer fixture at $FIXTURE_URL" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+echo "Lightstreamer fixture ready at $FIXTURE_URL"
