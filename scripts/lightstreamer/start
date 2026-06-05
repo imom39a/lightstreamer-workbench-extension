@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CONTAINER_NAME="${LSEW_LIGHTSTREAMER_CONTAINER:-lsew-lightstreamer-fixture}"
+LIGHTSTREAMER_IMAGE="${LIGHTSTREAMER_IMAGE:-lightstreamer:7.4.7-jdk21-temurin}"
+LIGHTSTREAMER_PORT="${LIGHTSTREAMER_PORT:-8080}"
+
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+docker run \
+  --detach \
+  --name "$CONTAINER_NAME" \
+  --publish "$LIGHTSTREAMER_PORT:8080" \
+  --volume "$ROOT_DIR/fixtures/lightstreamer/adapters:/lightstreamer/adapters:ro" \
+  --volume "$ROOT_DIR/fixtures/lightstreamer/pages:/lightstreamer/pages:ro" \
+  "$LIGHTSTREAMER_IMAGE" >/dev/null
+
+echo "Lightstreamer fixture started at http://localhost:${LIGHTSTREAMER_PORT}/"

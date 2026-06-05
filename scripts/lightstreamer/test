@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+cleanup() {
+  "$ROOT_DIR/scripts/lightstreamer/stop" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+npm run build
+"$ROOT_DIR/scripts/lightstreamer/build-adapter"
+"$ROOT_DIR/scripts/lightstreamer/start"
+"$ROOT_DIR/scripts/lightstreamer/wait"
+node --experimental-strip-types "$ROOT_DIR/tests/lightstreamer-fixture-capture.spec.ts"

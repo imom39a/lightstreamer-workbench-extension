@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ADAPTER_DIR="$ROOT_DIR/fixtures/lightstreamer/adapter"
+DEPLOY_LIB_DIR="$ROOT_DIR/fixtures/lightstreamer/adapters/LSEW_FIXTURE/lib"
+
+mvn -q -f "$ADAPTER_DIR/pom.xml" package
+mkdir -p "$DEPLOY_LIB_DIR"
+cp "$ADAPTER_DIR/target/lsew-fixture-adapter-0.1.0.jar" "$DEPLOY_LIB_DIR/lsew-fixture-adapter.jar"

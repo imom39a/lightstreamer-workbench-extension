@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+.env.release
+private/
+*.crx
+*.pem
+.DS_Store
+.planning/
+.codex/
+fixtures/lightstreamer/adapter/target/
+fixtures/lightstreamer/adapters/*/lib/

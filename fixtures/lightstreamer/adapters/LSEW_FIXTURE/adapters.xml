@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<adapters_conf id="LSEW_FIXTURE">
+  <metadata_provider>
+    <adapter_class>dev.lightstreamer.workbench.FixtureMetadataAdapter</adapter_class>
+  </metadata_provider>
+  <data_provider name="DEFAULT">
+    <adapter_class>dev.lightstreamer.workbench.FixtureDataAdapter</adapter_class>
+  </data_provider>
+</adapters_conf>
