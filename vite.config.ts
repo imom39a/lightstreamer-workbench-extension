@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 const projectRoot = __dirname;
 const sourceRoot = resolve(projectRoot, "src");

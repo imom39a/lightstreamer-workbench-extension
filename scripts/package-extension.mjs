@@ -35,6 +35,10 @@ const distDir = resolve(projectRoot, args.dist ?? "dist");
 const releaseDir = resolve(projectRoot, args.outDir ?? "release");
 const artifactBaseName = `${packageJson.name}-v${packageJson.version}`;
 
+if (!args.skipTypecheck) {
+  run("npm", ["run", "typecheck"]);
+}
+
 if (!args.skipTests) {
   run("npm", ["test"]);
 }
@@ -78,7 +82,7 @@ function parseArgs(rawArgs) {
     const [rawKey, inlineValue] = arg.slice(2).split("=", 2);
     const key = toCamelCase(rawKey);
 
-    if (["help", "skipBuild", "skipTests"].includes(key)) {
+    if (["help", "skipBuild", "skipTests", "skipTypecheck"].includes(key)) {
       parsed[key] = true;
       continue;
     }
@@ -443,6 +447,7 @@ Options:
   --format zip|crx|both     Artifact format to create. Defaults to zip.
   --out-dir <path>          Output directory. Defaults to release.
   --dist <path>             Built extension directory. Defaults to dist.
+  --skip-typecheck          Do not run npm run typecheck before packaging.
   --skip-tests              Do not run npm test before packaging.
   --skip-build              Package the existing dist directory.
   --chrome-path <path>      Chrome executable for CRX packing. Env: CHROME_PATH.
@@ -451,6 +456,7 @@ Options:
 
 Examples:
   npm run release:package
+  npm run release:package -- --skip-typecheck
   npm run release:package -- --skip-tests
   npm run release:package:all -- --crx-key private/lightstreamer-event-workbench.pem
 `);

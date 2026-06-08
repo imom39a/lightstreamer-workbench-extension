@@ -4,6 +4,7 @@ import {
   CAPTURE_NAMESPACE,
   CAPTURE_VERSION,
   PANEL_REINJECT_REQUEST,
+  type ReinjectionDraftPayload,
   createCaptureMessage,
   isCaptureMessage,
   isPanelReinjectRequestMessage
@@ -103,7 +104,7 @@ describe("stable id allocator", () => {
   });
 });
 
-function createValidReinjectionDraftPayload() {
+function createValidReinjectionDraftPayload(): ReinjectionDraftPayload {
   return {
     sourceEventId: "event-1",
     target: {

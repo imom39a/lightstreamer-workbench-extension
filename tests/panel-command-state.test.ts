@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 import { createEventStore, type EventStore } from "../src/core/event-store";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
@@ -86,8 +86,12 @@ function event(
     raw?: LightstreamerEventEnvelope["raw"];
   } = {}
 ): LightstreamerEventEnvelope {
-  const command = Object.prototype.hasOwnProperty.call(overrides, "command") ? overrides.command : "ADD";
-  const key = Object.prototype.hasOwnProperty.call(overrides, "key") ? overrides.key : "alpha";
+  const command: string | null = Object.prototype.hasOwnProperty.call(overrides, "command")
+    ? overrides.command ?? null
+    : "ADD";
+  const key: string | null = Object.prototype.hasOwnProperty.call(overrides, "key")
+    ? overrides.key ?? null
+    : "alpha";
   return {
     id,
     timestamp: 1_700_000_000_000 + Number(id.replace(/\D/g, "") || 0),
@@ -184,7 +188,7 @@ function seedCommandEvents(store: EventStore): void {
 
 describe("COMMAND State panel workbench", () => {
   let store: EventStore;
-  let reinjectDraft: ReturnType<typeof vi.fn<[ReinjectionDraft], Promise<ReinjectionResult>>>;
+  let reinjectDraft: Mock<(draft: ReinjectionDraft) => Promise<ReinjectionResult>>;
 
   beforeEach(() => {
     document.body.innerHTML = '<main id="app"></main>';
@@ -198,7 +202,7 @@ describe("COMMAND State panel workbench", () => {
     seedCommandEvents(store);
   });
 
-  it("keeps Timeline available and renders COMMAND subscription/item/current-row grouping", () => {
+  it("keeps Timeline available and renders COMMAND subscription/item/active-key grouping", () => {
     expect(text(".view-selector")).toContain("Timeline");
     expect(text(".view-selector")).toContain("COMMAND State");
     expect(document.querySelector(".event-feed")).not.toBeNull();
@@ -210,7 +214,10 @@ describe("COMMAND State panel workbench", () => {
     expect(text(".command-group-pane")).toContain("item-a");
     expect(text(".command-group-pane")).toContain("1 active");
     expect(text(".command-group-pane")).toContain("1 deleted");
+    expect(text(".command-group-pane")).toContain("Choose a subscription and item.");
     expect(text(".command-group-pane")).not.toContain("sub-merge");
+    expect(text(".command-current-table")).toContain("Active keys");
+    expect(text(".command-current-table")).toContain("Current COMMAND state for the selected item.");
     expect(text(".command-current-table")).toContain("Key");
     expect(text(".command-current-table")).toContain("Origin");
     expect(text(".command-current-table")).toContain("Latest");
@@ -223,6 +230,13 @@ describe("COMMAND State panel workbench", () => {
     expect(text(".command-current-rows")).toContain("snapshot server");
     expect(text(".command-current-rows")).toContain("synthetic UPDATE");
     expect(text(".command-current-rows")).not.toContain("beta");
+    expect(text(".command-lifecycle-results")).toContain("Matching keys, deleted keys, and diagnostics");
+    expect(text(".command-lifecycle-results")).toContain(
+      "matches across active keys, deleted keys, and diagnostics for this item."
+    );
+    expect(
+      document.querySelector<HTMLButtonElement>('.command-help-icon[aria-label^="Origin:"]')?.title
+    ).toBe("The event that created this active COMMAND key.");
   });
 
   it("selects a current row and shows current fields before per-key lifecycle provenance", () => {
@@ -232,8 +246,9 @@ describe("COMMAND State panel workbench", () => {
     const detailText = text(".command-detail-pane");
     expect(detailText).toContain("Key alpha - active");
     expect(detailText).toContain("Current fields");
-    expect(detailText).toContain("Lifecycle");
-    expect(detailText.indexOf("Current fields")).toBeLessThan(detailText.indexOf("Lifecycle"));
+    expect(detailText).toContain("Selected key lifecycle");
+    expect(detailText).toContain("Events for this key only.");
+    expect(detailText.indexOf("Current fields")).toBeLessThan(detailText.indexOf("Selected key lifecycle"));
     expect(detailText).toContain('"qty": "3"');
     expect(detailText).toContain("<strong>synthetic-value</strong>");
     expect(detailText).toContain("Origin snapshot server");
@@ -260,6 +275,7 @@ describe("COMMAND State panel workbench", () => {
     input(".command-search", "event-4");
 
     expect(text(".command-current-rows")).not.toContain("beta");
+    expect(text(".command-lifecycle-results")).toContain("Matching keys, deleted keys, and diagnostics");
     expect(text(".command-lifecycle-results")).toContain("beta");
     expect(text(".command-lifecycle-results")).toContain("deleted");
 
@@ -355,6 +371,67 @@ describe("COMMAND State panel workbench", () => {
     expect((document.querySelector<HTMLInputElement>(".command-draft-snapshot")?.checked)).toBe(true);
     expect((document.querySelector<HTMLInputElement>('.command-draft-field-input[data-field-name="qty"]')?.value)).toBe("9");
     expect(button(".inject-command-button").disabled).toBe(false);
+  });
+
+  it("clears a New COMMAND draft when the selected item context changes", () => {
+    store.append(
+      event("event-8", {
+        itemName: "item-b",
+        itemPosition: 2,
+        key: "gamma",
+        fields: {
+          command: "ADD",
+          key: "gamma",
+          name: "Gamma",
+          qty: "7",
+          html: "",
+          status: "open"
+        }
+      })
+    );
+    clickCommandState();
+    button(".new-command-button").click();
+    input(".command-draft-command", "ADD");
+    input(".command-draft-key", "delta");
+
+    expect(text(".command-draft-context")).toContain("item-a");
+    expect(control(".command-draft-key").value).toBe("delta");
+
+    clickRowByText(".command-item-button", "item-b");
+
+    expect(document.querySelector(".command-draft-controls")).toBeNull();
+    expect(document.querySelector(".command-draft-key")).toBeNull();
+    expect(text(".new-command-editor")).toContain(
+      "Select a captured COMMAND subscription and item, then create a synthetic update from that context."
+    );
+    expect(button(".new-command-button").disabled).toBe(false);
+
+    button(".new-command-button").click();
+
+    expect(text(".command-draft-context")).toContain("item-b");
+    expect(control(".command-draft-key").value).toBe("");
+  });
+
+  it("keeps the new COMMAND draft editor in view while typing", () => {
+    clickCommandState();
+    button(".new-command-button").click();
+
+    const detailPane = document.querySelector<HTMLElement>(".command-detail-pane");
+    if (!detailPane) {
+      throw new Error("missing command detail pane");
+    }
+    detailPane.scrollTop = 240;
+
+    const keyInput = control(".command-draft-key") as HTMLInputElement;
+    keyInput.focus();
+    keyInput.value = "g";
+    keyInput.setSelectionRange(1, 1);
+    keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    const nextKeyInput = control(".command-draft-key") as HTMLInputElement;
+    expect(detailPane.scrollTop).toBe(240);
+    expect(document.activeElement).toBe(nextKeyInput);
+    expect(nextKeyInput.value).toBe("g");
   });
 
   it("appends a synthetic COMMAND row only after listener-path success", async () => {

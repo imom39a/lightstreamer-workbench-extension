@@ -66,16 +66,16 @@ describe("panel bridge client", () => {
     });
     const statuses: string[] = [];
 
-    (globalThis as unknown as { chrome: Partial<typeof chrome> }).chrome = {
+    (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: {
         inspectedWindow: {
           tabId: 42
         }
-      } as chrome.devtools.InspectedWindow,
+      },
       runtime: {
         connect
-      } as Partial<typeof chrome.runtime> as typeof chrome.runtime
-    };
+      }
+    } as unknown as typeof chrome;
 
     const bridge = connectPanelBridge({
       onStatusChange(status) {
@@ -106,16 +106,16 @@ describe("panel bridge client", () => {
     const port = createFakePort();
     const connect = vi.fn(() => port);
 
-    (globalThis as unknown as { chrome: Partial<typeof chrome> }).chrome = {
+    (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: {
         inspectedWindow: {
           tabId: 42
         }
-      } as chrome.devtools.InspectedWindow,
+      },
       runtime: {
         connect
-      } as Partial<typeof chrome.runtime> as typeof chrome.runtime
-    };
+      }
+    } as unknown as typeof chrome;
 
     const bridge = connectPanelBridge({
       onStatusChange: vi.fn(),
