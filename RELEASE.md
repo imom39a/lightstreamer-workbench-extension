@@ -28,6 +28,20 @@ npm run release:package -- --skip-build
 
 The package step fails if `package.json` and `public/manifest.json` do not use the same version. Before every store update, bump both versions and rebuild.
 
+## Store Listing Assets
+
+Source-controlled listing copy, screenshots, icon assets, promo tiles, privacy notes, reviewer instructions, and the dashboard checklist live in:
+
+```text
+store-listing/
+```
+
+Regenerate the screenshots after UI changes:
+
+```bash
+npm run store:assets
+```
+
 ## Optional CRX
 
 ZIP is the Web Store package. Use CRX only when you need a locally packed extension artifact:

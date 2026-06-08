@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="280" viewBox="0 0 440 280" role="img" aria-label="Lightstreamer Event Workbench small promo tile">
+  <rect width="440" height="280" fill="#0f172a"/>
+  <rect x="28" y="32" width="176" height="160" rx="14" fill="#f8fafc"/>
+  <rect x="28" y="32" width="176" height="34" rx="14" fill="#2563eb"/>
+  <rect x="28" y="49" width="176" height="17" fill="#2563eb"/>
+  <rect x="56" y="87" width="62" height="10" rx="5" fill="#94a3b8"/>
+  <rect x="56" y="117" width="54" height="10" rx="5" fill="#94a3b8"/>
+  <rect x="56" y="147" width="70" height="10" rx="5" fill="#94a3b8"/>
+  <text x="130" y="128" fill="#0f766e" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="700">&gt;&gt;</text>
+  <text x="226" y="76" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Lightstreamer</text>
+  <text x="226" y="108" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Workbench</text>
+  <text x="226" y="150" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="16">Inspect COMMAND</text>
+  <text x="226" y="175" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="16">updates locally</text>
+  <rect x="226" y="210" width="148" height="32" rx="16" fill="#0f766e"/>
+  <text x="246" y="232" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="700">DevTools panel</text>
+</svg>
