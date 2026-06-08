@@ -1,0 +1,106 @@
+name: Bug report
+description: Report a reproducible problem with capture, COMMAND state, reinjection, UI, or packaging.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please redact production data, tokens, cookies, account IDs, customer data, and private URLs.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: The COMMAND State view shows...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      multiple: true
+      options:
+        - Capture or instrumentation
+        - Timeline
+        - COMMAND State
+        - Synthetic reinjection
+        - WebSocket/TLCP fallback
+        - DevTools panel UI
+        - Build, package, or release scripts
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: extension-version
+    attributes:
+      label: Extension version or commit
+      placeholder: 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: chrome-version
+    attributes:
+      label: Chrome or Chromium version
+      placeholder: Chrome 126.0.0.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.5, Windows 11, Ubuntu 24.04
+  - type: input
+    id: ls-version
+    attributes:
+      label: Lightstreamer Web Client version
+      placeholder: 9.0.0, unknown, or app-provided bundle
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Include whether DevTools was open before the page created Lightstreamer clients.
+      placeholder: |
+        1. Load...
+        2. Open DevTools...
+        3. Select...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: I expected...
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: Instead...
+    validations:
+      required: true
+  - type: textarea
+    id: lightstreamer-context
+    attributes:
+      label: Lightstreamer context
+      description: Subscription mode, item/field schema, COMMAND key/command fields, snapshot/live phase, and sanitized payload examples if relevant.
+      placeholder: |
+        Mode: COMMAND
+        Items: [redacted]
+        Fields: command,key,...
+        Snapshot phase: yes/no
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Paste sanitized console errors, event-envelope snippets, screenshots, or fixture changes.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I have redacted secrets, credentials, production-only payloads, customer data, and private URLs.
+          required: true
