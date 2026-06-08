@@ -325,7 +325,7 @@ describe("panel shell", () => {
   });
 
   it("reinjects a valid draft and appends a synthetic live row", async () => {
-    let receivedDraft: ReinjectionDraft | null = null;
+    const receivedDrafts: ReinjectionDraft[] = [];
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     if (!root) {
@@ -334,7 +334,7 @@ describe("panel shell", () => {
     panel = renderPanel(root, undefined, {
       bridge: {
         reinjectDraft(draft) {
-          receivedDraft = draft;
+          receivedDrafts.push(draft);
           return Promise.resolve(createSuccessResult("request-1"));
         }
       }
@@ -355,6 +355,8 @@ describe("panel shell", () => {
     expect(text(".reinject-button")).toBe("Reinjecting...");
     await flushPromises();
 
+    const receivedDraft = receivedDrafts[0];
+    expect(receivedDraft).toBeDefined();
     expect(receivedDraft?.sourceEventId).toBe("event-1");
     expect(receivedDraft?.fields.qty).toBe("12");
     expect(receivedDraft?.changedFields.qty).toBe("12");

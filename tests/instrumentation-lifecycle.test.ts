@@ -245,7 +245,9 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     expect(client.disconnect()).toBe("disconnect-result");
     expect(client.subscribe(subscription)).toBe(subscription);
     expect(subscription.addListener(listener)).toBe("subscription-listener-added");
-    expect(listener.onEndOfSnapshot()).toBe("snapshot-result");
+    expect(
+      (subscription.listeners[0] as { onEndOfSnapshot(): string }).onEndOfSnapshot()
+    ).toBe("snapshot-result");
 
     expect(client.connectCalls).toBe(1);
     expect(client.disconnectCalls).toBe(1);
@@ -262,7 +264,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     client.connect();
     client.subscribe(subscription);
     subscription.addListener(listener);
-    listener.onEndOfSnapshot();
+    (subscription.listeners[0] as { onEndOfSnapshot(): void }).onEndOfSnapshot();
 
     const clientIds = messages
       .map((message) => message.payload.client)
@@ -295,27 +297,9 @@ describe("Lightstreamer lifecycle instrumentation", () => {
 
     client.subscribe(subscription);
     subscription.addListener(listener);
-    listener.onItemUpdate({
-      forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void) {
-        iterator("command", 1, "ADD");
-        iterator("key", 2, "alpha");
-        iterator("qty", 3, "10");
-      },
-      forEachChangedField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void) {
-        iterator("command", 1, "ADD");
-        iterator("key", 2, "alpha");
-        iterator("qty", 3, "10");
-      },
-      getItemName() {
-        return "scenario";
-      },
-      getItemPos() {
-        return 1;
-      },
-      isSnapshot() {
-        return true;
-      }
-    });
+    (subscription.listeners[0] as { onItemUpdate(update: unknown): void }).onItemUpdate(
+      createFakeItemUpdate("scenario", "alpha", "10")
+    );
 
     const update = messages.find((message) => message.kind === "item-update");
     expect(update?.payload).toMatchObject({
@@ -331,6 +315,47 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         key: "alpha"
       }
     });
+  });
+
+  it("keeps subscription context when the same listener object is reused", () => {
+    const { target, messages } = createInstrumentedTarget();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const firstSubscription = new target.Subscription("COMMAND", ["scenario.alpha"], ["command", "key", "qty"]);
+    const secondSubscription = new target.Subscription("COMMAND", ["scenario.beta"], ["command", "key", "qty"]);
+    const listener = {
+      receivedCount: 0,
+      onItemUpdate() {
+        this.receivedCount += 1;
+      }
+    };
+
+    client.subscribe(firstSubscription);
+    client.subscribe(secondSubscription);
+    firstSubscription.addListener(listener);
+    secondSubscription.addListener(listener);
+
+    const firstAttachedListener = firstSubscription.listeners[0] as {
+      onItemUpdate(update: unknown): void;
+    };
+    const secondAttachedListener = secondSubscription.listeners[0] as {
+      onItemUpdate(update: unknown): void;
+    };
+
+    firstAttachedListener.onItemUpdate(createFakeItemUpdate("scenario.alpha", "alpha", "10"));
+    secondAttachedListener.onItemUpdate(createFakeItemUpdate("scenario.beta", "beta", "20"));
+
+    const updates = messages.filter((message) => message.kind === "item-update");
+    expect(listener.receivedCount).toBe(2);
+    expect(
+      updates.map((message) => ({
+        subscriptionId: (message.payload.subscription as { id: string }).id,
+        itemName: (message.payload.item as { name: string }).name,
+        key: (message.payload.update as { key: string }).key
+      }))
+    ).toEqual([
+      { subscriptionId: "subscription-1", itemName: "scenario.alpha", key: "alpha" },
+      { subscriptionId: "subscription-2", itemName: "scenario.beta", key: "beta" }
+    ]);
   });
 
   it("captures Lightstreamer TLCP traffic through the WebSocket fallback", () => {
@@ -433,9 +458,12 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     socket.emitMessage("SUBCMD,1,1,2,2,1\nU,1,1,ADD|alpha");
 
     expect(messages.map((message) => message.kind)).toEqual(["client-created"]);
-    expect(messages.some((message) => message.payload.raw?.captureSource === "websocket-tlcp")).toBe(
-      false
-    );
+    expect(
+      messages.some((message) => {
+        const raw = message.payload.raw;
+        return typeof raw === "object" && raw !== null && !Array.isArray(raw) && raw.captureSource === "websocket-tlcp";
+      })
+    ).toBe(false);
   });
 
   it("reinjects a synthetic update into the exact captured subscription listener", () => {
@@ -487,7 +515,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         requestId: "request-1",
         draft: createValidPageDraft()
       }
-    } as MessageEvent);
+    } as unknown as MessageEvent);
 
     expect(listener.receivedCount).toBe(1);
     expect(listener.receivedItem).toEqual({ name: "portfolio", position: 2, snapshot: false });
@@ -527,7 +555,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         requestId: "request-2",
         draft: createValidPageDraft()
       }
-    } as MessageEvent);
+    } as unknown as MessageEvent);
 
     expect(
       messages.some(
@@ -560,7 +588,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
           requestId: "request-3",
           draft: createValidPageDraft()
         }
-      } as MessageEvent);
+      } as unknown as MessageEvent);
     }).not.toThrow();
 
     expect(
@@ -601,6 +629,30 @@ function createValidPageDraft() {
       source: "clone",
       sourceEventKind: "item-update",
       sourceSynthetic: false
+    }
+  };
+}
+
+function createFakeItemUpdate(itemName: string, key: string, qty: string) {
+  return {
+    forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void) {
+      iterator("command", 1, "ADD");
+      iterator("key", 2, key);
+      iterator("qty", 3, qty);
+    },
+    forEachChangedField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void) {
+      iterator("command", 1, "ADD");
+      iterator("key", 2, key);
+      iterator("qty", 3, qty);
+    },
+    getItemName() {
+      return itemName;
+    },
+    getItemPos() {
+      return 1;
+    },
+    isSnapshot() {
+      return true;
     }
   };
 }

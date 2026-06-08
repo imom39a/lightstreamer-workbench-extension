@@ -22,8 +22,12 @@ function commandEvent(
     mode?: string | null;
   } = {}
 ): LightstreamerEventEnvelope {
-  const command = Object.prototype.hasOwnProperty.call(overrides, "command") ? overrides.command : "ADD";
-  const key = Object.prototype.hasOwnProperty.call(overrides, "key") ? overrides.key : "alpha";
+  const command: string | null = Object.prototype.hasOwnProperty.call(overrides, "command")
+    ? overrides.command ?? null
+    : "ADD";
+  const key: string | null = Object.prototype.hasOwnProperty.call(overrides, "key")
+    ? overrides.key ?? null
+    : "alpha";
   const mode = Object.prototype.hasOwnProperty.call(overrides, "mode") ? overrides.mode : "COMMAND";
   return {
     id,

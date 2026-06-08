@@ -254,6 +254,51 @@ button {
   line-height: 1.35;
 }
 
+.command-heading-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-pane-heading,
+.command-results-heading,
+.command-detail-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.command-help-icon {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  place-items: center;
+  border: 1px solid #d8dee8;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #6b7280;
+  cursor: help;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0;
+}
+
+.command-help-icon:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.command-pane-help {
+  margin: -2px 0 10px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .command-empty-body {
   margin: 8px 0;
   color: #6b7280;
@@ -372,6 +417,19 @@ button {
   white-space: nowrap;
 }
 
+.command-current-cell-with-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.command-current-cell-with-help .command-help-icon {
+  width: 14px;
+  height: 14px;
+  flex-basis: 14px;
+  font-size: 10px;
+}
+
 .command-key-cell,
 .command-origin-cell,
 .command-latest-cell,
@@ -392,7 +450,8 @@ button {
 
 .command-lifecycle-results {
   border-top: 1px solid #d8dee8;
-  padding: 12px;
+  margin-top: 8px;
+  padding: 14px 12px 12px;
 }
 
 .command-results-heading,

@@ -11,7 +11,7 @@ npm ci
 npm run release:package
 ```
 
-`release:package` runs `npm test`, runs the extension build, validates the built manifest, and writes:
+`release:package` runs `npm run typecheck`, runs `npm test`, runs the extension build, validates the built manifest, and writes:
 
 ```text
 release/lightstreamer-event-workbench-v<version>.zip
@@ -21,6 +21,7 @@ Useful variants:
 
 ```bash
 npm run release:zip
+npm run release:package -- --skip-typecheck
 npm run release:package -- --skip-tests
 npm run release:package -- --skip-build
 ```

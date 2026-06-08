@@ -1,4 +1,4 @@
-export type Constructor<T> = new (...args: unknown[]) => T;
+export type Constructor<T> = new (...args: never[]) => T;
 
 export type LightstreamerClientLike = {
   connect?: (...args: unknown[]) => unknown;

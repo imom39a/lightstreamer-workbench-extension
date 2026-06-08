@@ -21,7 +21,8 @@ type InstrumentationState = {
   listenerIds: StableIdAllocator;
   wrappedClients: WeakSet<object>;
   wrappedSubscriptions: WeakSet<object>;
-  wrappedListeners: WeakSet<object>;
+  wrappedClientListeners: WeakSet<object>;
+  subscriptionListenerProxies: WeakMap<object, WeakMap<object, LightstreamerListenerLike>>;
   subscriptionClients: WeakMap<object, object>;
   listenerTargets: Map<string, ReinjectionListenerTarget>;
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
@@ -104,7 +105,8 @@ export function installLightstreamerInstrumentation(
     listenerIds: createStableIdAllocator("listener"),
     wrappedClients: new WeakSet<object>(),
     wrappedSubscriptions: new WeakSet<object>(),
-    wrappedListeners: new WeakSet<object>(),
+    wrappedClientListeners: new WeakSet<object>(),
+    subscriptionListenerProxies: new WeakMap<object, WeakMap<object, LightstreamerListenerLike>>(),
     subscriptionClients: new WeakMap<object, object>(),
     listenerTargets: new Map<string, ReinjectionListenerTarget>(),
     originalItemUpdateCallbacks: new WeakMap<object, (update: SyntheticItemUpdate) => unknown>(),
@@ -132,12 +134,12 @@ export function installLightstreamerInstrumentation(
       host.__LSEW_PRIMARY_ACTIVE__ = true;
       wrapClient(instance, state);
       state.emit("client-created", {
-        client: {
+        client: compactJsonObject({
           id: clientId,
           serverAddress: toJsonValue(args[0]),
           adapterSet: toJsonValue(args[1]),
           status: readGetter(instance, "getStatus")
-        }
+        })
       });
 
       return instance;
@@ -145,7 +147,7 @@ export function installLightstreamerInstrumentation(
 
     InstrumentedLightstreamerClient.prototype = OriginalClient.prototype;
     Object.setPrototypeOf(InstrumentedLightstreamerClient, OriginalClient);
-    return InstrumentedLightstreamerClient as typeof OriginalClient;
+    return InstrumentedLightstreamerClient as unknown as typeof OriginalClient;
   };
 
   installed =
@@ -179,7 +181,7 @@ export function installLightstreamerInstrumentation(
 
     InstrumentedSubscription.prototype = OriginalSubscription.prototype;
     Object.setPrototypeOf(InstrumentedSubscription, OriginalSubscription);
-    return InstrumentedSubscription as typeof OriginalSubscription;
+    return InstrumentedSubscription as unknown as typeof OriginalSubscription;
   };
 
   installed = installConstructorHook(host, "Subscription", wrapSubscriptionConstructor) || installed;
@@ -288,7 +290,7 @@ function installWebSocketFallback(host: LightstreamerHost, state: Instrumentatio
 
   InstrumentedWebSocket.prototype = OriginalWebSocket.prototype;
   Object.setPrototypeOf(InstrumentedWebSocket, OriginalWebSocket);
-  host.WebSocket = InstrumentedWebSocket as typeof WebSocket;
+  host.WebSocket = InstrumentedWebSocket as unknown as typeof WebSocket;
   host.__LSEW_WS_FALLBACK__ = true;
   return true;
 }
@@ -1071,29 +1073,7 @@ function wrapSubscription(
   }
   state.wrappedSubscriptions.add(subscription);
 
-  wrapMethod(subscription, "addListener", function afterAddListener(target, args) {
-    const listener = args[0];
-    if (!isObject(listener)) {
-      return;
-    }
-    wrapSubscriptionListener(target, listener as LightstreamerListenerLike, state);
-    registerReinjectionTarget(target, listener as LightstreamerListenerLike, state);
-    state.emit("listener-added", {
-      subscription: { id: state.subscriptionIds.getId(target) },
-      listener: { id: state.listenerIds.getId(listener) }
-    });
-  });
-
-  wrapMethod(subscription, "removeListener", function afterRemoveListener(target, args) {
-    const listener = args[0];
-    if (isObject(listener)) {
-      unregisterReinjectionTarget(target, listener, state);
-    }
-    state.emit("listener-removed", {
-      subscription: { id: state.subscriptionIds.getId(target) },
-      listener: isObject(listener) ? { id: state.listenerIds.getId(listener) } : { id: "unknown" }
-    });
-  });
+  wrapSubscriptionListenerMethods(subscription, state);
 }
 
 function wrapClientListener(
@@ -1101,10 +1081,10 @@ function wrapClientListener(
   listener: LightstreamerListenerLike,
   state: InstrumentationState
 ): void {
-  if (state.wrappedListeners.has(listener)) {
+  if (state.wrappedClientListeners.has(listener)) {
     return;
   }
-  state.wrappedListeners.add(listener);
+  state.wrappedClientListeners.add(listener);
 
   wrapCallback(listener, "onStatusChange", function beforeStatusChange(args) {
     state.emit("client-status", {
@@ -1117,15 +1097,78 @@ function wrapClientListener(
   });
 }
 
-function wrapSubscriptionListener(
+function wrapSubscriptionListenerMethods(
+  subscription: LightstreamerSubscriptionLike,
+  state: InstrumentationState
+): void {
+  const originalAddListener = subscription.addListener;
+  if (typeof originalAddListener === "function") {
+    subscription.addListener = function wrappedSubscriptionAddListener(this: object, ...args: unknown[]) {
+      const listener = args[0];
+      if (!isObject(listener)) {
+        return originalAddListener.apply(this, args);
+      }
+
+      const actualSubscription = isObject(this) ? this : subscription;
+      const proxy = getOrCreateSubscriptionListenerProxy(
+        actualSubscription,
+        listener as LightstreamerListenerLike,
+        state
+      );
+      const result = originalAddListener.apply(this, [proxy, ...args.slice(1)]);
+
+      registerReinjectionTarget(actualSubscription, listener as LightstreamerListenerLike, state);
+      state.emit("listener-added", {
+        subscription: { id: state.subscriptionIds.getId(actualSubscription) },
+        listener: { id: state.listenerIds.getId(listener) }
+      });
+
+      return result;
+    };
+  }
+
+  const originalRemoveListener = subscription.removeListener;
+  if (typeof originalRemoveListener === "function") {
+    subscription.removeListener = function wrappedSubscriptionRemoveListener(this: object, ...args: unknown[]) {
+      const listener = args[0];
+      const actualSubscription = isObject(this) ? this : subscription;
+      const proxy = isObject(listener)
+        ? getSubscriptionListenerProxy(actualSubscription, listener as LightstreamerListenerLike, state)
+        : null;
+      const result = originalRemoveListener.apply(this, [
+        proxy ?? listener,
+        ...args.slice(1)
+      ]);
+
+      if (isObject(listener)) {
+        unregisterReinjectionTarget(actualSubscription, listener, state);
+        deleteSubscriptionListenerProxy(actualSubscription, listener, state);
+      }
+      state.emit("listener-removed", {
+        subscription: { id: state.subscriptionIds.getId(actualSubscription) },
+        listener: isObject(listener) ? { id: state.listenerIds.getId(listener) } : { id: "unknown" }
+      });
+
+      return result;
+    };
+  }
+}
+
+function getOrCreateSubscriptionListenerProxy(
   subscription: object,
   listener: LightstreamerListenerLike,
   state: InstrumentationState
-): void {
-  if (state.wrappedListeners.has(listener)) {
-    return;
+): LightstreamerListenerLike {
+  let proxies = state.subscriptionListenerProxies.get(subscription);
+  if (!proxies) {
+    proxies = new WeakMap<object, LightstreamerListenerLike>();
+    state.subscriptionListenerProxies.set(subscription, proxies);
   }
-  state.wrappedListeners.add(listener);
+
+  const existing = proxies.get(listener);
+  if (existing) {
+    return existing;
+  }
 
   const originalItemUpdate = listener.onItemUpdate;
   if (typeof originalItemUpdate === "function") {
@@ -1135,31 +1178,86 @@ function wrapSubscriptionListener(
     );
   }
 
-  for (const callback of CALLBACKS_TO_CAPTURE) {
-    wrapCallback(listener, callback, function beforeLifecycleCallback(args) {
-      const kind = callbackToKind(callback);
-      if (!kind) {
-        return;
-      }
-      const itemPayload = kind === "item-update" ? readItemUpdatePayload(args[0]) : {};
-      const itemRaw = isObject(itemPayload.raw) ? itemPayload.raw : {};
-
-      state.emit(kind, {
-        client: readSubscriptionClient(subscription, state),
-        subscription: {
-          id: state.subscriptionIds.getId(subscription),
-          ...readSubscriptionMetadata(subscription as LightstreamerSubscriptionLike)
-        },
-        listener: { id: state.listenerIds.getId(listener) },
-        ...itemPayload,
-        raw: {
-          ...itemRaw,
-          callback,
-          args: kind === "item-update" ? ["[ItemUpdate]"] : args.map((entry) => toJsonValue(entry))
+  const capturedCallbacks = new Map<PropertyKey, (...args: unknown[]) => unknown>();
+  const proxy = new Proxy(listener, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && isCapturedSubscriptionCallback(property)) {
+        const callback = target[property];
+        if (typeof callback !== "function") {
+          return Reflect.get(target, property, receiver);
         }
-      });
-    });
+
+        const existingCallback = capturedCallbacks.get(property);
+        if (existingCallback) {
+          return existingCallback;
+        }
+
+        const wrappedCallback = (...args: unknown[]) => {
+          emitSubscriptionListenerCallback(subscription, listener, property, args, state);
+          return callback.apply(listener, args);
+        };
+        capturedCallbacks.set(property, wrappedCallback);
+        return wrappedCallback;
+      }
+
+      return Reflect.get(target, property, receiver);
+    }
+  });
+
+  proxies.set(listener, proxy);
+  return proxy;
+}
+
+function getSubscriptionListenerProxy(
+  subscription: object,
+  listener: LightstreamerListenerLike,
+  state: InstrumentationState
+): LightstreamerListenerLike | null {
+  return state.subscriptionListenerProxies.get(subscription)?.get(listener) ?? null;
+}
+
+function deleteSubscriptionListenerProxy(
+  subscription: object,
+  listener: object,
+  state: InstrumentationState
+): void {
+  state.subscriptionListenerProxies.get(subscription)?.delete(listener);
+}
+
+function emitSubscriptionListenerCallback(
+  subscription: object,
+  listener: LightstreamerListenerLike,
+  callback: (typeof CALLBACKS_TO_CAPTURE)[number],
+  args: readonly unknown[],
+  state: InstrumentationState
+): void {
+  const kind = callbackToKind(callback);
+  if (!kind) {
+    return;
   }
+  const itemPayload = kind === "item-update" ? readItemUpdatePayload(args[0]) : {};
+  const itemRaw = isObject(itemPayload.raw) ? itemPayload.raw : {};
+
+  state.emit(kind, compactJsonObject({
+    client: readSubscriptionClient(subscription, state),
+    subscription: {
+      id: state.subscriptionIds.getId(subscription),
+      ...readSubscriptionMetadata(subscription as LightstreamerSubscriptionLike)
+    },
+    listener: { id: state.listenerIds.getId(listener) },
+    ...itemPayload,
+    raw: {
+      ...itemRaw,
+      callback,
+      args: kind === "item-update" ? ["[ItemUpdate]"] : args.map((entry) => toJsonValue(entry))
+    }
+  }));
+}
+
+function isCapturedSubscriptionCallback(
+  callback: string
+): callback is (typeof CALLBACKS_TO_CAPTURE)[number] {
+  return (CALLBACKS_TO_CAPTURE as readonly string[]).includes(callback);
 }
 
 function registerReinjectionTarget(
@@ -1251,7 +1349,7 @@ function reinjectDraft(
 }
 
 function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticItemUpdate {
-  const fields = {
+  const fields: Record<string, string | number | boolean | null> = {
     ...draft.fields,
     command: draft.command,
     key: draft.key
@@ -1306,7 +1404,7 @@ function wrapMethod<T extends MethodOwner>(
     return;
   }
 
-  target[name] = function wrappedMethod(this: T, ...args: unknown[]) {
+  (target as MethodOwner)[name] = function wrappedMethod(this: T, ...args: unknown[]) {
     const result = original.apply(this, args);
     after(this, args, result);
     return result;
@@ -1350,7 +1448,7 @@ function callbackToKind(callback: string): CaptureKind | null {
   }
 }
 
-function readSubscriptionClient(subscription: object, state: InstrumentationState) {
+function readSubscriptionClient(subscription: object, state: InstrumentationState): CapturePayload | undefined {
   const client = state.subscriptionClients.get(subscription);
   return client ? { id: state.clientIds.getId(client) } : undefined;
 }
