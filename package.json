@@ -16,6 +16,7 @@
     "release:status": "node scripts/chrome-web-store.mjs status",
     "release:rollout": "node scripts/chrome-web-store.mjs rollout",
     "release:cancel": "node scripts/chrome-web-store.mjs cancel",
+    "store:assets": "node scripts/generate-store-listing-assets.mjs",
     "fixture:build": "scripts/lightstreamer/build-adapter",
     "fixture:start": "scripts/lightstreamer/start",
     "fixture:wait": "scripts/lightstreamer/wait",

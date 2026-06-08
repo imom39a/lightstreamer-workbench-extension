@@ -3,6 +3,11 @@
   "name": "Lightstreamer Event Workbench",
   "version": "0.1.0",
   "description": "Chrome DevTools panel for inspecting Lightstreamer Web Client activity.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "devtools_page": "devtools.html",
   "background": {
     "service_worker": "extension/background.js",
