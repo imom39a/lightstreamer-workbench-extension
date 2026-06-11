@@ -1,0 +1,67 @@
+name: Feature request
+description: Suggest an improvement to the extension, docs, fixture, or release process.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the debugging workflow you want to improve. Features are easier to evaluate when they are tied to Lightstreamer primitives and user-visible outcomes.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What Lightstreamer debugging task is difficult today?
+      placeholder: When debugging COMMAND subscriptions, I need to...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should the extension do?
+    validations:
+      required: true
+  - type: dropdown
+    id: user
+    attributes:
+      label: Primary user
+      options:
+        - Developer debugging an app
+        - QA engineer
+        - Extension contributor
+        - Release maintainer
+        - Other
+  - type: dropdown
+    id: primitives
+    attributes:
+      label: Lightstreamer primitives involved
+      multiple: true
+      options:
+        - Client/session
+        - Subscription
+        - Item
+        - Field schema
+        - COMMAND key
+        - COMMAND ADD/UPDATE/DELETE
+        - Snapshot
+        - Synthetic replay
+        - WebSocket/TLCP fallback
+        - Other
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or other tools have you tried?
+  - type: textarea
+    id: verification
+    attributes:
+      label: How would we verify it?
+      description: Describe expected tests, fixture coverage, screenshots, or manual verification.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am interested in contributing this change.
+          required: false
