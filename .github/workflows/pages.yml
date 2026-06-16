@@ -1,0 +1,114 @@
+name: Deploy GitHub Pages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  detect-pages-changes:
+    name: Detect Pages changes
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.detect.outputs.should_deploy }}
+      comparison: ${{ steps.detect.outputs.comparison }}
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Detect docs changes
+        id: detect
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags
+
+          current_ref="${RELEASE_TAG:-$GITHUB_REF_NAME}"
+          current_sha="$(git rev-parse HEAD)"
+          previous_tag="$(git describe --tags --abbrev=0 "${current_sha}^" 2>/dev/null || true)"
+          should_deploy=false
+          comparison=""
+          changed_files=""
+
+          if [ ! -d docs ]; then
+            comparison="missing-docs:${current_ref}"
+          elif [ -z "$previous_tag" ]; then
+            comparison="initial:${current_ref}"
+            changed_files="$(git ls-files docs)"
+            if [ -n "$changed_files" ]; then
+              should_deploy=true
+            fi
+          else
+            comparison="${previous_tag}..${current_ref}"
+            changed_files="$(git diff --name-only "$previous_tag" "$current_sha" -- docs)"
+            if [ -n "$changed_files" ]; then
+              should_deploy=true
+            fi
+          fi
+
+          {
+            echo "should_deploy=$should_deploy"
+            echo "comparison=$comparison"
+            echo "changed_files<<EOF"
+            printf '%s\n' "$changed_files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### GitHub Pages deployment"
+            echo ""
+            echo "- Comparison: \`$comparison\`"
+            echo "- Deploy: \`$should_deploy\`"
+            echo ""
+            if [ -n "$changed_files" ]; then
+              echo "Changed Pages files:"
+              echo '```text'
+              printf '%s\n' "$changed_files"
+              echo '```'
+            else
+              echo "No \`docs/**\` changes detected."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy Pages
+    needs: detect-pages-changes
+    if: needs.detect-pages-changes.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

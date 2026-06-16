@@ -1,16 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="440" height="280" viewBox="0 0 440 280" role="img" aria-label="Lightstreamer Event Workbench small promo tile">
-  <rect width="440" height="280" fill="#0f172a"/>
-  <rect x="28" y="32" width="176" height="160" rx="14" fill="#f8fafc"/>
-  <rect x="28" y="32" width="176" height="34" rx="14" fill="#2563eb"/>
-  <rect x="28" y="49" width="176" height="17" fill="#2563eb"/>
-  <rect x="56" y="87" width="62" height="10" rx="5" fill="#94a3b8"/>
-  <rect x="56" y="117" width="54" height="10" rx="5" fill="#94a3b8"/>
-  <rect x="56" y="147" width="70" height="10" rx="5" fill="#94a3b8"/>
-  <text x="130" y="128" fill="#0f766e" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="700">&gt;&gt;</text>
-  <text x="226" y="76" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Lightstreamer</text>
-  <text x="226" y="108" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700">Workbench</text>
-  <text x="226" y="150" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="16">Inspect COMMAND</text>
-  <text x="226" y="175" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="16">updates locally</text>
-  <rect x="226" y="210" width="148" height="32" rx="16" fill="#0f766e"/>
-  <text x="246" y="232" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="700">DevTools panel</text>
+  <defs>
+    <linearGradient id="small-overlay" x1="0" y1="0" x2="440" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#09111f" stop-opacity="0.98"/>
+      <stop offset="0.58" stop-color="#09111f" stop-opacity="0.86"/>
+      <stop offset="1" stop-color="#09111f" stop-opacity="0.15"/>
+    </linearGradient>
+    <filter id="small-logo-shadow" x="14" y="14" width="108" height="108" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#020617" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+  <image href="../../docs/assets/brand-hero-ai.png" x="0" y="0" width="440" height="280" preserveAspectRatio="xMidYMid slice"/>
+  <rect width="440" height="280" fill="url(#small-overlay)"/>
+  <image href="../icons/icon-128.png" x="26" y="32" width="64" height="64" filter="url(#small-logo-shadow)"/>
+  <text x="26" y="132" fill="#f8fafc" font-family="Inter, Arial, Helvetica, sans-serif" font-size="27" font-weight="800">Lightstreamer</text>
+  <text x="26" y="166" fill="#f8fafc" font-family="Inter, Arial, Helvetica, sans-serif" font-size="27" font-weight="800">Workbench</text>
+  <text x="28" y="204" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="16">Inspect COMMAND streams</text>
+  <text x="28" y="229" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="16">inside Chrome DevTools.</text>
+  <rect x="276" y="214" width="64" height="25" rx="7" fill="#2563eb"/>
+  <text x="290" y="232" fill="#eff6ff" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="700">ADD</text>
+  <rect x="350" y="214" width="74" height="25" rx="7" fill="#0f766e"/>
+  <text x="361" y="232" fill="#ecfeff" font-family="Inter, Arial, Helvetica, sans-serif" font-size="13" font-weight="700">REPLAY</text>
 </svg>

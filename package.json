@@ -2,6 +2,7 @@
   "name": "lightstreamer-event-workbench",
   "version": "0.1.1",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "build": "vite build && node scripts/build-content-scripts.mjs && node scripts/verify-extension-build.mjs",

@@ -1,34 +1,26 @@
 # Lightstreamer Event Workbench
 
-Lightstreamer Event Workbench is a Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures Lightstreamer clients, subscriptions, item updates, snapshots, COMMAND-mode key lifecycles, and synthetic local replays so developers can understand and reproduce streaming behavior without backend access.
+Lightstreamer Event Workbench is an open-source Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures clients, subscriptions, item updates, snapshots, COMMAND-mode key lifecycles, and synthetic local replays so developers can inspect and reproduce streaming behavior without backend access.
 
-This repository is the public homepage and support location for the extension.
+[Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) | [Contributing](CONTRIBUTING.md) | [Privacy](PRIVACY.md) | [Security](SECURITY.md) | [Release notes and publishing](RELEASE.md)
+
+<p align="center">
+  <img src="docs/assets/mascot.png" alt="Lightstreamer Event Workbench mascot" width="180">
+</p>
 
 ![COMMAND State view showing active keys and selected key lifecycle](store-listing/screenshots/01-command-state-active-keys.png)
 
-## Status
+## Project Status
 
-Version `0.1.1` is the current bug-fix package for Chrome Web Store review. The Chrome Web Store install link will be added here after approval. Until then, contributors and reviewers can install the extension from source by loading the built `dist/` directory as an unpacked extension.
+Version `0.1.1` is the current bug-fix package for Chrome Web Store review. The Chrome Web Store install link will be added after approval. Until then, contributors and reviewers can build from source and load the generated `dist/` directory as an unpacked extension.
 
 The first release focuses on in-memory debugging for the current inspected tab. The UI and internal event envelope may evolve as more Lightstreamer workflows are validated.
 
-## Who This Is For
-
-Use Lightstreamer Event Workbench if you are:
-
-- Debugging a web application that uses the official Lightstreamer Web Client.
-- Investigating COMMAND subscriptions, keyed rows, ADD/UPDATE/DELETE behavior, snapshots, or deleted-key lifecycles.
-- Reproducing a streaming sequence locally when the backend event order is hard to trigger on demand.
-- Comparing captured Lightstreamer primitives without relying on application-specific domain objects.
-- QA testing a Lightstreamer integration from inside Chrome DevTools.
-
-This extension is not a generic WebSocket inspector and is not a replacement for a Lightstreamer server, Data Adapter, or backend test harness.
-
-## What It Does
+## What The Extension Does
 
 - Adds a `Lightstreamer Event Workbench` panel to Chrome DevTools.
-- Instruments the inspected page at `document_start` so official Lightstreamer Web Client constructors and listeners can be observed.
-- Captures client, subscription, subscription listener, item update, snapshot, and COMMAND lifecycle events into an in-memory event store.
+- Instruments the inspected page at `document_start` to observe official Lightstreamer Web Client constructors and listeners.
+- Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into an in-memory event store.
 - Shows a searchable Timeline with normalized event envelopes and raw diagnostic payloads.
 - Reconstructs COMMAND state by subscription, item, key, command, snapshot state, provenance, and diagnostics.
 - Lets developers clone compatible captured updates, edit fields, and locally reinject synthetic updates through captured listener paths.
@@ -41,51 +33,44 @@ This extension is not a generic WebSocket inspector and is not a replacement for
 - It does not persist captured events after the current DevTools/tab session in v1.
 - It does not inject data into the real Lightstreamer server stream.
 - It does not provide app-specific interpretation rules in the core product.
-- It does not support arbitrary WebSocket protocols as first-class domain models.
+- It does not treat arbitrary WebSocket protocols as first-class Lightstreamer domain models.
 
-## Installation
+## Who This Helps
 
-### Chrome Web Store
+Use this extension when you are:
 
-The extension is currently under Chrome Web Store review. After approval, install from the Chrome Web Store link that will be added here.
+- Debugging a page that uses the official Lightstreamer Web Client.
+- Investigating COMMAND subscriptions, keyed rows, ADD/UPDATE/DELETE behavior, snapshots, or deleted-key lifecycles.
+- Reproducing a streaming sequence locally when the backend event order is hard to trigger on demand.
+- Comparing captured Lightstreamer primitives without relying on application-specific domain objects.
+- QA testing a Lightstreamer integration from inside Chrome DevTools.
 
-### From Source
+This is not a generic WebSocket inspector and is not a replacement for a Lightstreamer server, Data Adapter, or backend test harness.
 
-Requirements:
+## Open Source And Contributions
 
-- Node.js compatible with the package lock in this repository.
-- npm.
-- Chrome or Chromium.
+Contributions are welcome through GitHub issues and pull requests. The project is licensed under [Apache-2.0](LICENSE), and contributions intentionally submitted to this repository are provided under Apache-2.0 unless explicitly marked otherwise.
 
-Build and load the extension:
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
-```bash
-npm ci
-npm run release:package
-```
+- Issue reporting expectations and useful bug report details.
+- Local development setup and source installation.
+- Test, build, package, and fixture commands.
+- Project architecture and repository layout.
+- Pull request process and review expectations.
+- Contribution license rules.
 
-Then:
+Please keep the core model Lightstreamer-native. App-specific business objects should stay out of capture, normalization, COMMAND state, and synthetic replay core modules unless they are introduced as optional adapters.
 
-1. Open `chrome://extensions`.
-2. Enable `Developer mode`.
-3. Select `Load unpacked`.
-4. Choose the generated `dist/` directory from this repository.
-5. Open a page that uses the official Lightstreamer Web Client.
-6. Open Chrome DevTools and select the `Lightstreamer Event Workbench` panel.
+## Documentation
 
-If the target page created Lightstreamer clients before the extension was loaded, refresh the page with DevTools open so instrumentation can attach early.
-
-## Basic Usage
-
-1. Navigate to a page that uses the official Lightstreamer Web Client.
-2. Open Chrome DevTools.
-3. Select the `Lightstreamer Event Workbench` panel.
-4. Refresh the inspected page if capture does not begin.
-5. Use `Timeline` to inspect captured event envelopes and raw diagnostics.
-6. Use `COMMAND State` to inspect active keys, deleted keys, diagnostics, and selected-key lifecycle.
-7. Clone a compatible captured update or create a new COMMAND update draft when you need to test local listener-path reinjection.
-
-Local reinjection is developer controlled and affects the inspected page through captured listener callbacks. It is useful for replaying UI behavior, not for changing backend state.
+- [Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) - public GitHub Pages site and product overview.
+- [CONTRIBUTING.md](CONTRIBUTING.md) - contributor workflow, local setup, architecture, tests, and pull request process.
+- [RELEASE.md](RELEASE.md) - release packaging, Chrome Web Store publishing, GitHub Pages deployment, and maintainer-only release flow.
+- [MAINTAINERS.md](MAINTAINERS.md) - maintainer roles, official distribution boundaries, and release authority.
+- [PRIVACY.md](PRIVACY.md) - extension privacy behavior and Chrome Web Store privacy language.
+- [SECURITY.md](SECURITY.md) - security reporting path and sensitive-data guidance.
+- [store-listing/](store-listing/) - Chrome Web Store listing copy, screenshots, icons, promo assets, and reviewer notes.
 
 ## Privacy And Safety
 
@@ -95,68 +80,11 @@ The extension requests broad page access because it must instrument the inspecte
 
 Synthetic events are marked in the UI and event envelope. v1 local reinjection uses captured listener paths and does not create a real inbound Lightstreamer server event.
 
-## Development
+## Official Distribution
 
-Install dependencies:
+The Apache-2.0 license applies to source code and documentation in this repository unless a file states otherwise. It does not grant rights to publish updates to the official Chrome Web Store item or to reuse maintainer-controlled store listing identity, extension ID, logos, screenshots, support channels, or release credentials for unrelated distributions.
 
-```bash
-npm ci
-```
-
-Run the main checks:
-
-```bash
-npm run typecheck
-npm test
-npm run build
-```
-
-Package the extension:
-
-```bash
-npm run release:package
-```
-
-Run the deterministic Lightstreamer fixture smoke test:
-
-```bash
-npm run fixture:test
-```
-
-The fixture path uses Docker to run a local Lightstreamer server container and builds the Java test adapter before exercising capture behavior.
-
-## Repository Layout
-
-```text
-public/                  Manifest, DevTools entry page, and extension icons
-src/injected/            MAIN-world Lightstreamer instrumentation
-src/content/             Content-script bridge between page and extension runtime
-src/extension/           Background service worker, DevTools page, and panel UI
-src/core/                Event envelope, normalization, filtering, COMMAND state, and synthetic drafts
-src/bridge/              Message contracts between extension contexts
-tests/                   Unit, panel, bridge, instrumentation, and fixture tests
-fixtures/lightstreamer/  Local Lightstreamer smoke-test fixture
-scripts/                 Build, package, fixture, store listing, and release helpers
-store-listing/           Chrome Web Store copy, screenshots, icons, and promo assets
-```
-
-The project intentionally models Lightstreamer primitives first: client, session, subscription, mode, item, field, key, command, update, snapshot, and synthetic replay. Keep app-specific concepts out of core modules unless they are added as optional adapters.
-
-## Contributing
-
-Contributions are welcome through GitHub issues and pull requests.
-
-- Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
-- Use the issue templates for bug reports, feature requests, and usage questions.
-- Search existing issues first so related reports can be grouped.
-- Include Chrome version, extension version, Lightstreamer Web Client version when known, repro steps, screenshots, and sanitized event payload examples for bugs.
-- Keep PRs focused. A change that touches instrumentation, event normalization, COMMAND state, and UI should explain the cross-context behavior and include tests.
-
-Maintainer release notes and Chrome Web Store publishing details are in [RELEASE.md](RELEASE.md).
-
-## Security Reports
-
-Please do not publish exploit details, sensitive production event payloads, tokens, or customer data in public issues. See [SECURITY.md](SECURITY.md) for the security reporting path and examples of security-sensitive findings.
+Maintainer release rules are documented in [RELEASE.md](RELEASE.md) and [MAINTAINERS.md](MAINTAINERS.md).
 
 ## External References
 
@@ -167,4 +95,4 @@ Please do not publish exploit details, sensitive production event payloads, toke
 
 ## License
 
-This repository does not currently declare an open-source license. Until a license file is added, source availability on GitHub should not be treated as permission to redistribute or reuse the project outside normal GitHub contribution workflows.
+Lightstreamer Event Workbench is licensed under the [Apache License 2.0](LICENSE).
