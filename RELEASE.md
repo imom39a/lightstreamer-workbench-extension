@@ -47,7 +47,7 @@ Source-controlled listing copy, screenshots, icon assets, promo tiles, privacy n
 store-listing/
 ```
 
-Regenerate the screenshots after UI changes:
+Regenerate the screenshots after UI changes and before each Chrome Web Store release. This also refreshes derived GitHub Pages real-app preview images under `docs/assets/`, while keeping the stable brand artwork in place:
 
 ```bash
 npm run store:assets

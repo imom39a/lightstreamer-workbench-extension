@@ -11,6 +11,7 @@ import { build } from "esbuild";
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const outputDir = resolve(projectRoot, "store-listing/screenshots");
 const chromePath = findChrome();
+const magickPath = findExecutable(["magick", "convert"]);
 
 const screenshots = [
   {
@@ -31,10 +32,15 @@ if (!chromePath) {
   fail("Chrome executable not found. Set CHROME_PATH or install Google Chrome.");
 }
 
+if (!magickPath) {
+  fail("ImageMagick executable not found. Install ImageMagick or ensure magick/convert is on PATH.");
+}
+
 const tempDir = await mkdtemp(join(tmpdir(), "lsew-store-assets-"));
 const server = createStaticServer(tempDir);
 
 try {
+  await generateRasterBrandAssets();
   await mkdir(outputDir, { recursive: true });
   await writeFile(join(tempDir, "entry.ts"), screenshotHarnessSource());
   await writeFile(join(tempDir, "index.html"), htmlSource());
@@ -59,6 +65,8 @@ try {
     await runChromeScreenshot(url, outputPath);
     console.log(`Wrote ${outputPath}`);
   }
+
+  await generateRealAppPreviewAssets();
 } finally {
   await new Promise((resolveServer) => server.close(resolveServer));
   await rm(tempDir, { recursive: true, force: true });
@@ -363,6 +371,188 @@ function contentType(path) {
   }
 }
 
+async function generateRasterBrandAssets() {
+  const iconSource = resolve(projectRoot, "store-listing/source/icon.svg");
+  const iconOutputs = [
+    ["16x16", resolve(projectRoot, "public/icons/icon-16.png")],
+    ["48x48", resolve(projectRoot, "public/icons/icon-48.png")],
+    ["128x128", resolve(projectRoot, "public/icons/icon-128.png")],
+    ["128x128", resolve(projectRoot, "store-listing/icons/icon-128.png")]
+  ];
+
+  await mkdir(resolve(projectRoot, "public/icons"), { recursive: true });
+  await mkdir(resolve(projectRoot, "store-listing/icons"), { recursive: true });
+  await mkdir(resolve(projectRoot, "store-listing/promo"), { recursive: true });
+
+  for (const [size, outputPath] of iconOutputs) {
+    await runImageMagick(["-background", "none", iconSource, "-resize", size, "-depth", "8", outputPath]);
+    console.log(`Wrote ${outputPath}`);
+  }
+
+  await generatePromoTile({
+    width: 440,
+    height: 280,
+    outputPath: resolve(projectRoot, "store-listing/promo/small-promo-tile.png"),
+    iconSize: "64x64",
+    iconGeometry: "+26+32",
+    gradient: "rgba(9,17,31,0.98)-rgba(9,17,31,0.16)",
+    overlaySvg: smallPromoOverlaySvg()
+  });
+  await generatePromoTile({
+    width: 1400,
+    height: 560,
+    outputPath: resolve(projectRoot, "store-listing/promo/marquee-promo-tile.png"),
+    iconSize: "104x104",
+    iconGeometry: "+82+82",
+    gradient: "rgba(9,17,31,0.98)-rgba(9,17,31,0.02)",
+    overlaySvg: marqueePromoOverlaySvg()
+  });
+}
+
+async function generatePromoTile(options) {
+  const heroPath = resolve(projectRoot, "docs/assets/brand-hero-ai.png");
+  const iconPath = resolve(projectRoot, "store-listing/icons/icon-128.png");
+  const basePath = join(tempDir, `promo-base-${options.width}x${options.height}.png`);
+  const iconOutputPath = join(tempDir, `promo-icon-${options.width}x${options.height}.png`);
+  const gradientPath = join(tempDir, `promo-gradient-${options.width}x${options.height}.png`);
+  const overlayPath = join(tempDir, `promo-overlay-${options.width}x${options.height}.svg`);
+  const overlayPngPath = join(tempDir, `promo-overlay-${options.width}x${options.height}.png`);
+  const withGradientPath = join(tempDir, `promo-with-gradient-${options.width}x${options.height}.png`);
+  const withIconPath = join(tempDir, `promo-icon-composite-${options.width}x${options.height}.png`);
+
+  await writeFile(overlayPath, options.overlaySvg);
+  await runImageMagick([heroPath, "-resize", `${options.width}x${options.height}^`, "-gravity", "center", "-extent", `${options.width}x${options.height}`, basePath]);
+  await runImageMagick([iconPath, "-resize", options.iconSize, iconOutputPath]);
+  await runImageMagick(["-size", `${options.height}x${options.width}`, `gradient:${options.gradient}`, "-rotate", "90", gradientPath]);
+  await runImageMagick(["-background", "none", overlayPath, overlayPngPath]);
+  await runImageMagick([basePath, gradientPath, "-compose", "over", "-composite", withGradientPath]);
+  await runImageMagick([withGradientPath, iconOutputPath, "-geometry", options.iconGeometry, "-compose", "over", "-composite", withIconPath]);
+  await runImageMagick([withIconPath, overlayPngPath, "-compose", "over", "-composite", "-depth", "8", options.outputPath]);
+  console.log(`Wrote ${options.outputPath}`);
+}
+
+async function generateRealAppPreviewAssets() {
+  const docsAssetsDir = resolve(projectRoot, "docs/assets");
+  const sourceScreenshots = [
+    {
+      source: resolve(projectRoot, "store-listing/screenshots/01-command-state-active-keys.png"),
+      output: resolve(docsAssetsDir, "app-command-state.png")
+    },
+    {
+      source: resolve(projectRoot, "store-listing/screenshots/02-timeline-event-detail.png"),
+      output: resolve(docsAssetsDir, "app-timeline-detail.png")
+    },
+    {
+      source: resolve(projectRoot, "store-listing/screenshots/03-new-command-update-editor.png"),
+      output: resolve(docsAssetsDir, "app-replay-editor.png")
+    }
+  ];
+
+  await mkdir(docsAssetsDir, { recursive: true });
+
+  for (const screenshot of sourceScreenshots) {
+    await runImageMagick([screenshot.source, "-resize", "960x600", "-strip", "-depth", "8", screenshot.output]);
+    console.log(`Wrote ${screenshot.output}`);
+  }
+
+  await generateRealAppGallery({
+    screenshots: sourceScreenshots.map((screenshot) => screenshot.output),
+    outputPath: resolve(docsAssetsDir, "real-app-gallery.png")
+  });
+}
+
+async function generateRealAppGallery(options) {
+  const canvasPath = join(tempDir, "real-app-gallery-canvas.png");
+  const screenshotFramePath = join(tempDir, "real-app-gallery-command-state.png");
+  const overlaySvgPath = join(tempDir, "real-app-gallery-overlay.svg");
+  const overlayPngPath = join(tempDir, "real-app-gallery-overlay.png");
+  const withScreenshotPath = join(tempDir, "real-app-gallery-with-screenshot.png");
+
+  await writeFile(overlaySvgPath, realAppGalleryOverlaySvg());
+  await runImageMagick(["-size", "1400x920", "gradient:#09111f-#102134", canvasPath]);
+  await runImageMagick([options.screenshots[0], "-resize", "844x528^", "-gravity", "center", "-extent", "844x528", "-bordercolor", "#334155", "-border", "2", screenshotFramePath]);
+  await runImageMagick(["-background", "none", overlaySvgPath, overlayPngPath]);
+  await runImageMagick([canvasPath, screenshotFramePath, "-geometry", "+72+286", "-compose", "over", "-composite", withScreenshotPath]);
+  await runImageMagick([withScreenshotPath, overlayPngPath, "-compose", "over", "-composite", "-depth", "8", options.outputPath]);
+  console.log(`Wrote ${options.outputPath}`);
+}
+
+function smallPromoOverlaySvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="440" height="280" viewBox="0 0 440 280">
+  <text x="26" y="132" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="800">Lightstreamer</text>
+  <text x="26" y="166" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="800">Workbench</text>
+  <text x="28" y="204" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="16">Inspect COMMAND streams</text>
+  <text x="28" y="229" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="16">inside Chrome DevTools.</text>
+  <rect x="276" y="214" width="64" height="25" rx="7" fill="#2563eb"/>
+  <text x="290" y="232" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">ADD</text>
+  <rect x="350" y="214" width="74" height="25" rx="7" fill="#0f766e"/>
+  <text x="361" y="232" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">REPLAY</text>
+</svg>`;
+}
+
+function marqueePromoOverlaySvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560">
+  <text x="82" y="258" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Lightstreamer</text>
+  <text x="82" y="330" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Event Workbench</text>
+  <text x="86" y="394" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">Inspect COMMAND streams, changed fields,</text>
+  <text x="86" y="436" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">snapshots, and local synthetic replay.</text>
+  <rect x="86" y="482" width="158" height="42" rx="8" fill="#2563eb"/>
+  <text x="121" y="510" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">ADD keys</text>
+  <rect x="266" y="482" width="196" height="42" rx="8" fill="#0f766e"/>
+  <text x="301" y="510" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">UPDATE state</text>
+  <rect x="484" y="482" width="194" height="42" rx="8" fill="#334155"/>
+  <text x="520" y="510" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Replay locally</text>
+</svg>`;
+}
+
+function realAppGalleryOverlaySvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="920" viewBox="0 0 1400 920">
+  <text x="72" y="112" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">COMMAND state walkthrough</text>
+  <text x="74" y="166" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="26">One release-current panel capture, annotated around the developer workflow.</text>
+  <rect x="72" y="210" width="208" height="42" rx="8" fill="#2563eb"/>
+  <text x="104" y="238" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Active keys</text>
+  <rect x="302" y="210" width="222" height="42" rx="8" fill="#0f766e"/>
+  <text x="334" y="238" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Changed fields</text>
+  <rect x="546" y="210" width="188" height="42" rx="8" fill="#334155"/>
+  <text x="579" y="238" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Replay path</text>
+  <text x="72" y="854" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="22">Generated from the current extension screenshot harness before each release.</text>
+  <rect x="966" y="286" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
+  <text x="996" y="334" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">1. Select a key</text>
+  <text x="996" y="374" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">See the active COMMAND keys</text>
+  <text x="996" y="402" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">for the selected subscription.</text>
+  <rect x="966" y="446" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
+  <text x="996" y="494" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">2. Inspect fields</text>
+  <text x="996" y="534" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Compare current values and</text>
+  <text x="996" y="562" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">recent changes at a glance.</text>
+  <rect x="966" y="606" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
+  <text x="996" y="654" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">3. Clone for replay</text>
+  <text x="996" y="694" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Start a synthetic local update</text>
+  <text x="996" y="722" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">from the captured event.</text>
+</svg>`;
+}
+
+async function runImageMagick(args, options = {}) {
+  await new Promise((resolveRun, rejectRun) => {
+    const child = spawn(magickPath, args, {
+      cwd: options.cwd,
+      stdio: "pipe"
+    });
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", rejectRun);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolveRun();
+      } else {
+        rejectRun(new Error(`ImageMagick failed with exit ${code}:\n${stderr}`));
+      }
+    });
+  });
+}
+
 async function runChromeScreenshot(url, outputPath) {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-chrome-profile-"));
   try {
@@ -426,6 +616,20 @@ function findChrome() {
   ];
 
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function findExecutable(names) {
+  const pathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
+  for (const name of names) {
+    for (const pathDir of pathDirs) {
+      const candidate = join(pathDir, name);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
 }
 
 function fail(message) {
