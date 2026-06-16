@@ -459,6 +459,10 @@ async function generateRealAppPreviewAssets() {
     screenshots: sourceScreenshots.map((screenshot) => screenshot.output),
     outputPath: resolve(docsAssetsDir, "real-app-gallery.png")
   });
+  await generateGitHubSocialPreviewAsset({
+    screenshot: sourceScreenshots[0].output,
+    outputPath: resolve(docsAssetsDir, "github-social-preview.png")
+  });
 }
 
 async function generateRealAppGallery(options) {
@@ -474,6 +478,32 @@ async function generateRealAppGallery(options) {
   await runImageMagick(["-background", "none", overlaySvgPath, overlayPngPath]);
   await runImageMagick([canvasPath, screenshotFramePath, "-geometry", "+72+286", "-compose", "over", "-composite", withScreenshotPath]);
   await runImageMagick([withScreenshotPath, overlayPngPath, "-compose", "over", "-composite", "-depth", "8", options.outputPath]);
+  console.log(`Wrote ${options.outputPath}`);
+}
+
+async function generateGitHubSocialPreviewAsset(options) {
+  const heroPath = resolve(projectRoot, "docs/assets/brand-hero-ai.png");
+  const logoPath = resolve(projectRoot, "docs/assets/logo.svg");
+  const basePath = join(tempDir, "github-social-preview-base.png");
+  const gradientPath = join(tempDir, "github-social-preview-gradient.png");
+  const withGradientPath = join(tempDir, "github-social-preview-with-gradient.png");
+  const screenshotFramePath = join(tempDir, "github-social-preview-screenshot.png");
+  const withScreenshotPath = join(tempDir, "github-social-preview-with-screenshot.png");
+  const logoRasterPath = join(tempDir, "github-social-preview-logo.png");
+  const withLogoPath = join(tempDir, "github-social-preview-with-logo.png");
+  const overlaySvgPath = join(tempDir, "github-social-preview-overlay.svg");
+  const overlayPngPath = join(tempDir, "github-social-preview-overlay.png");
+
+  await writeFile(overlaySvgPath, githubSocialPreviewOverlaySvg());
+  await runImageMagick([heroPath, "-resize", "1280x640^", "-gravity", "center", "-extent", "1280x640", basePath]);
+  await runImageMagick(["-size", "640x1280", "gradient:rgba(9,17,31,0.98)-rgba(9,17,31,0.28)", "-rotate", "90", gradientPath]);
+  await runImageMagick([options.screenshot, "-resize", "474x296^", "-gravity", "center", "-extent", "474x296", "-bordercolor", "#334155", "-border", "2", screenshotFramePath]);
+  await runImageMagick(["-background", "none", logoPath, "-resize", "92x92", logoRasterPath]);
+  await runImageMagick(["-background", "none", overlaySvgPath, overlayPngPath]);
+  await runImageMagick([basePath, gradientPath, "-compose", "over", "-composite", withGradientPath]);
+  await runImageMagick([withGradientPath, screenshotFramePath, "-geometry", "+706+182", "-compose", "over", "-composite", withScreenshotPath]);
+  await runImageMagick([withScreenshotPath, logoRasterPath, "-geometry", "+96+108", "-compose", "over", "-composite", withLogoPath]);
+  await runImageMagick([withLogoPath, overlayPngPath, "-compose", "over", "-composite", "-depth", "8", options.outputPath]);
   console.log(`Wrote ${options.outputPath}`);
 }
 
@@ -528,6 +558,25 @@ function realAppGalleryOverlaySvg() {
   <text x="996" y="654" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">3. Clone for replay</text>
   <text x="996" y="694" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Start a synthetic local update</text>
   <text x="996" y="722" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">from the captured event.</text>
+</svg>`;
+}
+
+function githubSocialPreviewOverlaySvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <text x="210" y="148" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800">Lightstreamer Event Workbench</text>
+  <text x="212" y="186" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="22">Chrome DevTools extension</text>
+  <text x="96" y="298" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">Inspect COMMAND</text>
+  <text x="96" y="365" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">streams in DevTools</text>
+  <text x="100" y="420" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">Track keys, changed fields, snapshots,</text>
+  <text x="100" y="456" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">and local synthetic replay.</text>
+  <rect x="100" y="502" width="120" height="38" rx="8" fill="#2563eb"/>
+  <text x="127" y="527" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">ADD</text>
+  <rect x="238" y="502" width="150" height="38" rx="8" fill="#0f766e"/>
+  <text x="266" y="527" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">UPDATE</text>
+  <rect x="406" y="502" width="138" height="38" rx="8" fill="#334155"/>
+  <text x="434" y="527" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">REPLAY</text>
+  <rect x="706" y="502" width="474" height="38" rx="8" fill="rgba(15,23,42,0.74)" stroke="#334155" stroke-width="1"/>
+  <text x="728" y="527" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">Backend-free Lightstreamer debugging in the browser</text>
 </svg>`;
 }
 
