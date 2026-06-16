@@ -37,6 +37,12 @@ Commands run:
 - [ ] New permissions or host-access changes are explained.
 - [ ] Synthetic events remain clearly marked and local to the inspected page workflow.
 - [ ] Persistent storage behavior is unchanged or explicitly documented.
+- [ ] Chrome Web Store listing, privacy policy, or release notes are updated if user-facing behavior, permissions, or data handling changed.
+
+## Contribution License
+
+- [ ] I have the right to submit these changes under Apache-2.0.
+- [ ] Third-party code, generated assets, screenshots, copied documentation, or sample data are identified with source and license details where applicable.
 
 ## Related Issues
 

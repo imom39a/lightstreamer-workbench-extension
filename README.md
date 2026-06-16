@@ -147,16 +147,21 @@ The project intentionally models Lightstreamer primitives first: client, session
 Contributions are welcome through GitHub issues and pull requests.
 
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+- Contributions intentionally submitted to this repository are licensed under [Apache-2.0](LICENSE) unless explicitly marked otherwise.
 - Use the issue templates for bug reports, feature requests, and usage questions.
 - Search existing issues first so related reports can be grouped.
 - Include Chrome version, extension version, Lightstreamer Web Client version when known, repro steps, screenshots, and sanitized event payload examples for bugs.
 - Keep PRs focused. A change that touches instrumentation, event normalization, COMMAND state, and UI should explain the cross-context behavior and include tests.
 
-Maintainer release notes and Chrome Web Store publishing details are in [RELEASE.md](RELEASE.md).
+Maintainer release notes and Chrome Web Store publishing details are in [RELEASE.md](RELEASE.md). Maintainer roles and official distribution rules are in [MAINTAINERS.md](MAINTAINERS.md).
 
 ## Security Reports
 
 Please do not publish exploit details, sensitive production event payloads, tokens, or customer data in public issues. See [SECURITY.md](SECURITY.md) for the security reporting path and examples of security-sensitive findings.
+
+## Privacy
+
+The privacy policy for the extension and Chrome Web Store listing is in [PRIVACY.md](PRIVACY.md).
 
 ## External References
 
@@ -167,4 +172,6 @@ Please do not publish exploit details, sensitive production event payloads, toke
 
 ## License
 
-This repository does not currently declare an open-source license. Until a license file is added, source availability on GitHub should not be treated as permission to redistribute or reuse the project outside normal GitHub contribution workflows.
+Lightstreamer Event Workbench is licensed under the [Apache License 2.0](LICENSE).
+
+The Apache-2.0 license applies to source code and documentation in this repository unless a file states otherwise. It does not grant rights to publish updates to the official Chrome Web Store item or to reuse maintainer-controlled store listing identity, extension ID, logos, screenshots, support channels, or release credentials for unrelated distributions.

@@ -2,6 +2,17 @@
 
 This is the local prerelease pipeline for packaging and uploading Lightstreamer Event Workbench. The Chrome Web Store upload artifact is a ZIP file with `manifest.json` at the archive root. CRX output is optional and intended for local/internal distribution, not normal Web Store submission.
 
+## Release Authority
+
+The GitHub repository is open source under Apache-2.0. The official Chrome Web Store item is controlled by the project maintainers.
+
+- Only release managers or publisher admins listed in [MAINTAINERS.md](MAINTAINERS.md) may upload, submit, stage, publish, cancel, or roll out official Chrome Web Store packages.
+- Merging a pull request does not authorize a contributor to publish to the official store item.
+- Forks must publish under their own publisher account, extension ID, support channel, screenshots, and listing identity unless the maintainers explicitly approve otherwise.
+- Release credentials, service account access, publisher membership, CRX private keys, and Chrome Web Store API tokens must never be committed.
+
+Permission, privacy, host-access, remote-communication, or data-retention changes require release-note coverage and maintainer sign-off before publication.
+
 ## Local Package
 
 Run the full local gate and create the Web Store ZIP:
@@ -70,6 +81,8 @@ For the first item creation or a manual update:
 4. Complete listing, privacy, distribution, and test-instructions fields before submission.
 
 The Chrome Web Store docs call for selecting a ZIP package from the dashboard, and their package size limit is 2 GB.
+
+Before submission, verify that [PRIVACY.md](PRIVACY.md), the Chrome Web Store privacy fields, permission justifications, and store listing copy all describe the same behavior.
 
 ## API Setup
 

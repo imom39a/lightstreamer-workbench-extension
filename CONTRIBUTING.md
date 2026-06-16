@@ -7,8 +7,17 @@ Thank you for helping improve Lightstreamer Event Workbench. This project is a C
 - Keep the core model Lightstreamer-native. Do not add app-specific business objects to core capture, normalization, or COMMAND state modules.
 - Preserve the local-only privacy posture. Do not add analytics, remote logging, account sign-in, or off-device event upload without an explicit design discussion.
 - Treat synthetic reinjection as local listener-path replay. Do not imply that the extension can inject inbound data into the real Lightstreamer server stream.
+- Respect the official distribution boundary. Source forks are allowed under the project license, but the official Chrome Web Store item is published by maintainers only.
 - Prefer focused pull requests with clear user impact and test coverage.
 - Redact proprietary event payloads, tokens, cookies, customer data, account IDs, and internal URLs before posting issues or PR artifacts.
+
+## Contribution License
+
+This project is licensed under [Apache-2.0](LICENSE).
+
+Unless you explicitly mark a submission as "Not a Contribution", any issue comment, pull request, patch, code review suggestion, documentation update, fixture, test, or other contribution intentionally submitted to this repository is provided under Apache-2.0.
+
+Do not submit code or assets that you are not allowed to license under Apache-2.0. If a contribution includes third-party code, generated assets, screenshots, sample data, or copied documentation, identify the source and license in the pull request.
 
 ## Reporting Issues
 
@@ -97,10 +106,11 @@ Use the fixture for instrumentation, capture, normalization, and reinjection cha
 
 1. Create a topic branch.
 2. Keep the branch focused on one behavior or documentation goal.
-3. Add or update tests for user-visible behavior and cross-context message changes.
-4. Run the relevant checks before opening the PR.
-5. Fill out the pull request template.
-6. Link related issues with `Fixes #123` or `Refs #123` when applicable.
+3. Confirm that your contribution can be licensed under Apache-2.0.
+4. Add or update tests for user-visible behavior and cross-context message changes.
+5. Run the relevant checks before opening the PR.
+6. Fill out the pull request template.
+7. Link related issues with `Fixes #123` or `Refs #123` when applicable.
 
 For documentation-only changes, run at least a local review of links, commands, and claims. For source changes, run `npm run typecheck`, `npm test`, and `npm run build` unless the PR explains why a check is not applicable.
 
@@ -116,6 +126,8 @@ Reviewers should look for:
 
 ## Release Changes
 
-Chrome Web Store publishing is maintainer-only. Release packaging and upload details live in [RELEASE.md](RELEASE.md). Store listing copy and generated assets live in `store-listing/`.
+Chrome Web Store publishing is maintainer-only. Release packaging and upload details live in [RELEASE.md](RELEASE.md), and maintainer role rules live in [MAINTAINERS.md](MAINTAINERS.md). Store listing copy and generated assets live in `store-listing/`.
 
 Do not commit private release credentials, `.env.release`, CRX private keys, service account keys, or generated private artifacts.
+
+Pull requests that change permissions, host access, data handling, privacy copy, release credentials, extension identity, or store listing metadata require maintainer review before merge.
