@@ -78,7 +78,16 @@ Package for local Chrome loading:
 npm run release:package
 ```
 
-Then load `dist/` in `chrome://extensions` with Developer mode enabled.
+Then load the extension:
+
+1. Open `chrome://extensions`.
+2. Enable `Developer mode`.
+3. Select `Load unpacked`.
+4. Choose the generated `dist/` directory from this repository.
+5. Open a page that uses the official Lightstreamer Web Client.
+6. Open Chrome DevTools and select the `Lightstreamer Event Workbench` panel.
+
+If the target page created Lightstreamer clients before the extension was loaded, refresh the page with DevTools open so instrumentation can attach early.
 
 ## Lightstreamer Fixture
 

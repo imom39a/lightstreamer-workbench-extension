@@ -53,6 +53,12 @@ Regenerate the screenshots after UI changes and before each Chrome Web Store rel
 npm run store:assets
 ```
 
+## GitHub Pages
+
+The public GitHub Pages site lives in `docs/`. Publishing a GitHub release runs `.github/workflows/pages.yml`, compares the release tag with the previous reachable tag, and deploys through GitHub Pages only when `docs/**` changed.
+
+Repository Settings > Pages must use `GitHub Actions` as the build and deployment source. Manual workflow dispatch uses the same `docs/**` change detection gate.
+
 ## Optional CRX
 
 ZIP is the Web Store package. Use CRX only when you need a locally packed extension artifact:
