@@ -52,9 +52,29 @@ function appendCommandUpdate(
         isSnapshot: true,
         fields: { command: "ADD", key, name: key, ...fields },
         changedFields: { command: "ADD", key }
-      }
+      },
+      raw: { callback: "onItemUpdate", note: `raw ${key}` }
     })
   );
+}
+
+function clickFirstEventRow(): void {
+  const row = document.querySelector<HTMLButtonElement>(".event-row");
+  if (!row) {
+    throw new Error("missing event row");
+  }
+  row.click();
+}
+
+function detailSection(heading: string): HTMLDetailsElement {
+  const section = Array.from(document.querySelectorAll<HTMLDetailsElement>(".detail-section")).find(
+    (candidate) =>
+      candidate.querySelector<HTMLElement>(".detail-section-heading")?.textContent === heading
+  );
+  if (!section) {
+    throw new Error(`missing detail section ${heading}`);
+  }
+  return section;
 }
 
 describe("panel shell", () => {
@@ -80,10 +100,10 @@ describe("panel shell", () => {
     expect(text(".clear-button")).toBe("Clear events");
   });
 
-  it("renders the empty feed and detail placeholder", () => {
+  it("renders the empty feed and keeps the detail pane collapsed", () => {
     expect(text(".empty-heading")).toBe("Waiting for Lightstreamer activity");
     expect(text(".empty-body")).toContain("Captured clients, subscriptions, and item updates will appear here");
-    expect(text(".detail-placeholder")).toBe("Select an event to inspect its envelope.");
+    expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
   });
 
   it("allows clearing an empty feed without changing the zero count", () => {
@@ -110,14 +130,52 @@ describe("panel shell", () => {
     );
 
     expect(text(".event-count")).toBe("1");
+    expect(text(".event-header")).toContain("Time");
+    expect(text(".event-header")).toContain("Command / Key");
     expect(text(".event-marker")).toBe("server snapshot");
     expect(text(".event-command")).toBe("ADD/alpha");
+    expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
+
+    clickFirstEventRow();
+
     expect(text(".detail-pane")).toContain('"synthetic": false');
     expect(text(".detail-pane")).toContain('"key": "alpha"');
     expect(text(".detail-pane")).toContain("Listener");
+    expect(document.querySelector<HTMLDetailsElement>(".detail-section")?.open).toBe(false);
+    expect(
+      Array.from(document.querySelectorAll<HTMLDetailsElement>(".detail-section")).find((section) =>
+        section.textContent?.includes("Update")
+      )?.open
+    ).toBe(true);
+    expect(text(".detail-pane").indexOf("Raw Diagnostics")).toBeLessThan(
+      text(".detail-pane").indexOf("Update")
+    );
+    expect(text(".detail-pane")).not.toContain("Changed Fields");
     expect(text(".editor-placeholder")).toBe(
       "Clone a captured item update to edit and reinject it locally."
     );
+
+    document.querySelector<HTMLButtonElement>(".detail-collapse-button")?.click();
+    expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
+  });
+
+  it("lets Timeline event detail width be adjusted like split panes", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+
+    const workspace = document.querySelector<HTMLElement>(".workspace");
+    const resizeHandle = document.querySelector<HTMLElement>(".timeline-resize-handle");
+
+    expect(workspace?.dataset.detailOpen).toBe("true");
+    expect(workspace?.style.getPropertyValue("--timeline-detail-width")).toBe("520px");
+    expect(resizeHandle?.getAttribute("role")).toBe("separator");
+    expect(resizeHandle?.getAttribute("aria-label")).toBe("Resize Event detail pane");
+    expect(resizeHandle?.getAttribute("aria-valuenow")).toBe("520");
+
+    resizeHandle?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+
+    expect(workspace?.style.getPropertyValue("--timeline-detail-width")).toBe("544px");
+    expect(resizeHandle?.getAttribute("aria-valuenow")).toBe("544");
   });
 
   it("filters rows by free-text COMMAND key search", () => {
@@ -144,6 +202,54 @@ describe("panel shell", () => {
     expect(text(".filtered-count")).toBe("0 shown");
   });
 
+  it("surfaces high-volume retention options without pruning Timeline history", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore({ warningThreshold: 500 });
+    if (!root) {
+      throw new Error("missing test root");
+    }
+
+    for (let index = 1; index <= 502; index += 1) {
+      store.append({
+        id: `event-${index}`,
+        timestamp: index,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "item-update",
+        subscription: { id: "subscription-1", mode: "COMMAND" },
+        item: { name: `item-${index}`, position: index },
+        update: {
+          isSnapshot: false,
+          fields: { command: "ADD", key: `key-${index}` },
+          changedFields: { command: "ADD", key: `key-${index}` },
+          command: "ADD",
+          key: `key-${index}`
+        }
+      });
+    }
+    renderPanel(root, undefined, { store });
+
+    expect(store.list().map((entry) => entry.id)).toContain("event-1");
+    expect(text(".event-count")).toBe("502");
+    expect(text(".retention-notice")).toContain("High volume: 502 events retained");
+    expect(text(".retention-notice")).toContain("Keep events");
+    expect(text(".retention-notice")).toContain("Clear events");
+    expect(text(".event-render-limit")).toBe(
+      "All matching events are retained; showing latest 500 of 502. Use search to inspect earlier events."
+    );
+    expect(document.querySelectorAll(".event-row")).toHaveLength(500);
+
+    const keepButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".event-volume-action")).find(
+      (button) => button.textContent === "Keep events"
+    );
+    keepButton?.click();
+
+    expect(document.querySelector<HTMLElement>(".retention-notice")?.hidden).toBe(true);
+    expect(store.count()).toBe(502);
+  });
+
   it("realigns detail with newest visible event when filters hide the selected row", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     appendCommandUpdate(panel, "beta", { qty: 2 });
@@ -152,7 +258,7 @@ describe("panel shell", () => {
     firstRow.click();
     expect(text(".detail-pane")).toContain('"key": "alpha"');
 
-    input(".filter-key", "beta");
+    input(".search-input", "beta");
 
     expect(document.querySelectorAll(".event-row")).toHaveLength(1);
     expect(text(".event-command")).toBe("ADD/beta");
@@ -191,12 +297,14 @@ describe("panel shell", () => {
 
     expect(text(".event-marker")).toBe("synthetic live");
     expect(document.querySelector(".event-row")?.getAttribute("data-synthetic")).toBe("true");
+    clickFirstEventRow();
     expect(text(".detail-pane")).toContain("Synthetic Provenance");
     expect(text(".detail-pane")).toContain('"sourceEventId": "event-1"');
   });
 
   it("renders captured HTML-like field values as inert text", () => {
     appendCommandUpdate(panel, "alpha", { html: "<img src=x onerror=alert(1)>" });
+    clickFirstEventRow();
 
     expect(document.querySelector("img")).toBeNull();
     expect(text(".detail-pane")).toContain("<img src=x onerror=alert(1)>");
@@ -208,6 +316,7 @@ describe("panel shell", () => {
         client: { id: "client-1", status: "CONNECTED:WS-STREAMING" }
       })
     );
+    clickFirstEventRow();
 
     expect(text(".clone-button")).toBe("Clone event");
     expect(document.querySelector<HTMLButtonElement>(".clone-button")?.disabled).toBe(true);
@@ -231,6 +340,7 @@ describe("panel shell", () => {
     );
 
     expect(text(".event-marker")).toBe("wire snapshot");
+    clickFirstEventRow();
     expect(document.querySelector<HTMLButtonElement>(".clone-button")?.disabled).toBe(false);
 
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
@@ -264,6 +374,7 @@ describe("panel shell", () => {
 
   it("derives changed fields from draft JSON edits without remounting the editor", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     const detail = document.querySelector<HTMLElement>(".detail-pane");
     const textarea = document.querySelector<HTMLTextAreaElement>(".draft-json");
@@ -282,6 +393,45 @@ describe("panel shell", () => {
     expect(textarea.isConnected).toBe(true);
     expect(text(".draft-changed-fields-preview")).toContain('"qty": "2"');
     expect(detail.scrollTop).toBe(300);
+  });
+
+  it("keeps the Timeline detail editor open and focused when new events arrive", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+
+    const detail = document.querySelector<HTMLElement>(".detail-pane");
+    const textarea = document.querySelector<HTMLTextAreaElement>(".draft-json");
+    if (!detail || !textarea) {
+      throw new Error("missing detail editor");
+    }
+
+    detail.scrollTop = 280;
+    textarea.focus();
+    textarea.setSelectionRange(18, 18);
+
+    appendCommandUpdate(panel, "beta", { qty: 2 });
+
+    const nextTextarea = document.querySelector<HTMLTextAreaElement>(".draft-json");
+    expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(false);
+    expect(text(".detail-pane")).toContain('"id": "event-1"');
+    expect(document.activeElement).toBe(nextTextarea);
+    expect(nextTextarea?.selectionStart).toBe(18);
+    expect(detail.scrollTop).toBe(280);
+  });
+
+  it("keeps Timeline event detail sections expanded or collapsed when new events arrive", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+
+    detailSection("Envelope").open = true;
+    detailSection("Update").open = false;
+
+    appendCommandUpdate(panel, "beta", { qty: 2 });
+
+    expect(text(".detail-pane")).toContain('"id": "event-1"');
+    expect(detailSection("Envelope").open).toBe(true);
+    expect(detailSection("Update").open).toBe(false);
   });
 
   it("clears the cloned draft when selecting a different captured event", () => {
@@ -312,6 +462,7 @@ describe("panel shell", () => {
 
   it("shows validation and disables reinjection when the draft key is cleared", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
 
     editDraftJson((draft) => {
@@ -341,6 +492,7 @@ describe("panel shell", () => {
     });
 
     appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     editDraftJson((draft) => {
       draft.isSnapshot = false;
@@ -392,6 +544,7 @@ describe("panel shell", () => {
     });
 
     appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     document.querySelector<HTMLButtonElement>(".reinject-button")?.click();
     await flushPromises();
@@ -426,6 +579,7 @@ describe("panel shell", () => {
     });
 
     appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     document.querySelector<HTMLButtonElement>(".reinject-button")?.click();
     await flushPromises();

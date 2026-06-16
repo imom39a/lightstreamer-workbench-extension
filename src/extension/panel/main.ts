@@ -1,13 +1,12 @@
 import "./panel.css";
 
 import {
-  type CaptureKind,
   type CaptureMessage,
   type CaptureStatus,
   type ReinjectionResult
 } from "../../bridge/messages";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
-import { createEventStore, type EventStore } from "../../core/event-store";
+import { createEventStore, type EventStore, type EventStoreStats } from "../../core/event-store";
 import { type LightstreamerEventEnvelope } from "../../core/event-envelope";
 import {
   filterEvents,
@@ -54,6 +53,7 @@ export type PanelController = {
   appendCaptureMessage(message: CaptureMessage): void;
   clearEvents(): void;
   setBridge(bridge: PanelReinjectBridge): void;
+  dispose(): void;
 };
 
 export type RenderPanelOptions = {
@@ -103,10 +103,49 @@ type CommandDetailTarget =
   | { kind: "active"; row: CommandRow; item: CommandItemGroup }
   | { kind: "deleted"; row: DeletedCommandKey; item: CommandItemGroup }
   | { kind: "diagnostic"; diagnostic: CommandDiagnostic; item: CommandItemGroup };
+type CommandKeyRow = CommandRow | DeletedCommandKey;
+type CommandKeyDetailTarget = Extract<CommandDetailTarget, { kind: "active" | "deleted" }>;
+type RenderOptions = {
+  preserveDetailState?: boolean;
+};
+type PaneState = {
+  scrollTop: number;
+  focusSelector: string | null;
+  selection: { start: number | null; end: number | null } | null;
+  detailSections: Record<string, boolean>;
+};
+type CommandResizablePane = "subscriptions" | "keys" | "updates";
+type CommandPaneWidths = Record<CommandResizablePane, number>;
 
 const initialState: PanelState = {
   status: "idle"
 };
+
+const MAX_TIMELINE_ROWS = 500;
+const COMMAND_DEFAULT_PANE_WIDTHS: CommandPaneWidths = {
+  subscriptions: 250,
+  keys: 360,
+  updates: 420
+};
+const COMMAND_MIN_PANE_WIDTHS: CommandPaneWidths = {
+  subscriptions: 180,
+  keys: 220,
+  updates: 240
+};
+const COMMAND_MAX_PANE_WIDTHS: CommandPaneWidths = {
+  subscriptions: 520,
+  keys: 780,
+  updates: 860
+};
+const COMMAND_RESIZE_STEP = 24;
+const COMMAND_RESIZE_LARGE_STEP = 80;
+const TIMELINE_DEFAULT_DETAIL_WIDTH = 520;
+const TIMELINE_MIN_DETAIL_WIDTH = 280;
+const TIMELINE_MAX_DETAIL_WIDTH = 860;
+const TIMELINE_RESIZE_STEP = 24;
+const TIMELINE_RESIZE_LARGE_STEP = 80;
+const activeTooltipDisposers = new WeakMap<HTMLElement, () => void>();
+let helpTooltipIdCounter = 0;
 
 function createTextElement<K extends keyof HTMLElementTagNameMap>(
   tagName: K,
@@ -124,8 +163,9 @@ function createHelpIcon(label: string, help: string): HTMLButtonElement {
   button.className = "command-help-icon";
   button.type = "button";
   button.setAttribute("aria-label", `${label}: ${help}`);
+  button.dataset.tooltip = help;
   button.title = help;
-  button.textContent = "i";
+  button.textContent = "?";
   return button;
 }
 
@@ -147,10 +187,7 @@ function createPaneHelp(text: string): HTMLParagraphElement {
 
 function createCommandHeaderCell(heading: string): HTMLSpanElement {
   const helpByHeading: Record<string, string> = {
-    Origin: "The event that created this active COMMAND key.",
-    Latest: "The newest event that affected this key.",
-    Updates: "How many captured or synthetic events are in this key lifecycle.",
-    Diagnostics: "Reducer warnings or blocking issues found in this key lifecycle."
+    Updates: "How many captured or synthetic updates are in this key lifecycle."
   };
   const cell = createTextElement("span", "command-current-cell", heading);
   const help = helpByHeading[heading];
@@ -159,6 +196,173 @@ function createCommandHeaderCell(heading: string): HTMLSpanElement {
     cell.append(createHelpIcon(heading, help));
   }
   return cell;
+}
+
+function installHelpTooltipOverlay(root: HTMLElement): () => void {
+  const tooltip = document.createElement("div");
+  tooltip.className = "command-tooltip";
+  tooltip.id = `command-help-tooltip-${++helpTooltipIdCounter}`;
+  tooltip.role = "tooltip";
+  tooltip.hidden = true;
+
+  const tooltipText = document.createElement("span");
+  tooltipText.className = "command-tooltip-text";
+  const tooltipArrow = document.createElement("span");
+  tooltipArrow.className = "command-tooltip-arrow";
+  tooltip.append(tooltipText, tooltipArrow);
+  root.append(tooltip);
+
+  let activeTrigger: HTMLButtonElement | null = null;
+  let activeTitle: string | null = null;
+
+  const showTooltip = (trigger: HTMLButtonElement): void => {
+    const tooltipValue = trigger.dataset.tooltip ?? trigger.getAttribute("title") ?? "";
+    if (!tooltipValue) {
+      return;
+    }
+
+    if (activeTrigger !== trigger) {
+      restoreActiveTriggerTitle();
+      activeTrigger = trigger;
+      activeTitle = trigger.getAttribute("title");
+      if (activeTitle !== null) {
+        trigger.removeAttribute("title");
+      }
+    }
+
+    tooltipText.textContent = tooltipValue;
+    tooltip.hidden = false;
+    trigger.setAttribute("aria-describedby", tooltip.id);
+    positionTooltip();
+  };
+
+  const hideTooltip = (trigger?: HTMLButtonElement | null): void => {
+    if (trigger && trigger !== activeTrigger) {
+      return;
+    }
+    restoreActiveTriggerTitle();
+    activeTrigger = null;
+    activeTitle = null;
+    tooltip.hidden = true;
+  };
+
+  const onPointerOver = (event: Event): void => {
+    const trigger = findHelpTooltipTrigger(event.target);
+    if (trigger) {
+      showTooltip(trigger);
+    }
+  };
+
+  const onPointerOut = (event: Event): void => {
+    if (!activeTrigger) {
+      return;
+    }
+    const pointerEvent = event as MouseEvent;
+    if (pointerEvent.relatedTarget instanceof Node && activeTrigger.contains(pointerEvent.relatedTarget)) {
+      return;
+    }
+    hideTooltip(findHelpTooltipTrigger(event.target));
+  };
+
+  const onFocusIn = (event: Event): void => {
+    const trigger = findHelpTooltipTrigger(event.target);
+    if (trigger) {
+      showTooltip(trigger);
+    }
+  };
+
+  const onFocusOut = (event: Event): void => {
+    hideTooltip(findHelpTooltipTrigger(event.target));
+  };
+
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape") {
+      hideTooltip();
+    }
+  };
+
+  function restoreActiveTriggerTitle(): void {
+    if (!activeTrigger) {
+      return;
+    }
+    if (activeTitle !== null) {
+      activeTrigger.setAttribute("title", activeTitle);
+    }
+    activeTrigger.removeAttribute("aria-describedby");
+  }
+
+  function positionTooltip(): void {
+    if (!activeTrigger || tooltip.hidden) {
+      return;
+    }
+    if (!activeTrigger.isConnected || activeTrigger.closest("[hidden]")) {
+      hideTooltip();
+      return;
+    }
+
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || root.clientWidth || 320;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || root.clientHeight || 320;
+    const margin = 8;
+    const gap = 8;
+    const availableWidth = Math.max(160, viewportWidth - margin * 2);
+    tooltip.style.maxWidth = `${Math.min(280, availableWidth)}px`;
+    tooltip.style.left = "0px";
+    tooltip.style.top = "0px";
+
+    const triggerRect = activeTrigger.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const tooltipWidth = Math.min(tooltipRect.width || 280, availableWidth);
+    const tooltipHeight = tooltipRect.height || 40;
+    const triggerCenter = triggerRect.left + triggerRect.width / 2;
+    const spaceAbove = triggerRect.top - margin;
+    const spaceBelow = viewportHeight - triggerRect.bottom - margin;
+    const placement = spaceAbove >= tooltipHeight + gap || spaceAbove >= spaceBelow ? "top" : "bottom";
+    const unclampedTop = placement === "top" ? triggerRect.top - tooltipHeight - gap : triggerRect.bottom + gap;
+    const left = clampNumber(triggerCenter - tooltipWidth / 2, margin, viewportWidth - margin - tooltipWidth);
+    const top = clampNumber(unclampedTop, margin, viewportHeight - margin - tooltipHeight);
+    const arrowLeft = clampNumber(triggerCenter - left, 12, tooltipWidth - 12);
+
+    tooltip.dataset.placement = placement;
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+    tooltip.style.setProperty("--tooltip-arrow-left", `${Math.round(arrowLeft)}px`);
+  }
+
+  root.addEventListener("pointerover", onPointerOver);
+  root.addEventListener("pointerout", onPointerOut);
+  root.addEventListener("focusin", onFocusIn);
+  root.addEventListener("focusout", onFocusOut);
+  root.addEventListener("keydown", onKeyDown);
+  root.addEventListener("scroll", positionTooltip, true);
+  window.addEventListener("resize", positionTooltip);
+
+  const dispose = (): void => {
+    hideTooltip();
+    root.removeEventListener("pointerover", onPointerOver);
+    root.removeEventListener("pointerout", onPointerOut);
+    root.removeEventListener("focusin", onFocusIn);
+    root.removeEventListener("focusout", onFocusOut);
+    root.removeEventListener("keydown", onKeyDown);
+    root.removeEventListener("scroll", positionTooltip, true);
+    window.removeEventListener("resize", positionTooltip);
+    tooltip.remove();
+  };
+  activeTooltipDisposers.set(root, dispose);
+  return dispose;
+}
+
+function findHelpTooltipTrigger(target: EventTarget | null): HTMLButtonElement | null {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+  return target.closest<HTMLButtonElement>(".command-help-icon");
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (max < min) {
+    return min;
+  }
+  return Math.min(Math.max(value, min), max);
 }
 
 export function renderPanel(
@@ -177,11 +381,22 @@ export function renderPanel(
   let reinjectionPending = false;
   let reinjectionMessage: ReinjectionMessage | null = null;
   let activeView: ActiveView = "timeline";
+  let timelineDetailOpen = false;
+  let timelineDetailWidth = TIMELINE_DEFAULT_DETAIL_WIDTH;
+  let commandDetailOpen = true;
+  const commandContextEvents: LightstreamerEventEnvelope[] = [];
+  const commandContextEventIds = new Set<string>();
+  const commandContextSubscriptionIds = new Set<string>();
+  let highVolumeNoticeDismissed = false;
   let selectedCommandItem: { subscriptionId: string; itemId: string } | null = null;
   let selectedCommandKey: CommandSelection = null;
+  let selectedCommandUpdateEventId: string | null = null;
+  const commandPaneWidths: CommandPaneWidths = { ...COMMAND_DEFAULT_PANE_WIDTHS };
   const filterState: EventFilterState = {};
   const commandFilterState: CommandFilterState = {};
 
+  activeTooltipDisposers.get(root)?.();
+  activeTooltipDisposers.delete(root);
   root.replaceChildren();
   root.className = "workbench-shell";
 
@@ -202,6 +417,29 @@ export function renderPanel(
   const filteredCount = createTextElement("span", "filtered-count", "");
   filteredCount.hidden = true;
 
+  const retentionNotice = document.createElement("span");
+  retentionNotice.className = "retention-notice";
+  retentionNotice.hidden = true;
+  const eventVolumeText = createTextElement("span", "event-volume-text", "");
+  const keepEventsButton = document.createElement("button");
+  keepEventsButton.className = "event-volume-action";
+  keepEventsButton.type = "button";
+  keepEventsButton.textContent = "Keep events";
+  keepEventsButton.title = "Keep all captured events in memory for this DevTools session.";
+  keepEventsButton.addEventListener("click", () => {
+    highVolumeNoticeDismissed = true;
+    renderEventVolumeNotice(store.stats());
+  });
+  const clearFromNoticeButton = document.createElement("button");
+  clearFromNoticeButton.className = "event-volume-action event-volume-clear";
+  clearFromNoticeButton.type = "button";
+  clearFromNoticeButton.textContent = "Clear events";
+  clearFromNoticeButton.title = "Clear visible captured events from this DevTools session.";
+  clearFromNoticeButton.addEventListener("click", () => {
+    controller.clearEvents();
+  });
+  retentionNotice.append(eventVolumeText, keepEventsButton, clearFromNoticeButton);
+
   const clearButton = document.createElement("button");
   clearButton.className = "clear-button";
   clearButton.type = "button";
@@ -211,7 +449,7 @@ export function renderPanel(
     controller.clearEvents();
   });
 
-  toolbarMeta.append(status, eventCount, filteredCount, clearButton);
+  toolbarMeta.append(status, eventCount, filteredCount, retentionNotice, clearButton);
   toolbar.append(title, toolbarMeta);
 
   const viewSelector = document.createElement("nav");
@@ -236,51 +474,7 @@ export function renderPanel(
     setFilter("query", searchInput.value);
   });
 
-  const modeInput = createFilterInput("Mode", "filter-mode", "Mode");
-  modeInput.addEventListener("input", () => setFilter("mode", modeInput.value));
-
-  const itemInput = createFilterInput("Item", "filter-item", "Item");
-  itemInput.addEventListener("input", () => setFilter("item", itemInput.value));
-
-  const keyInput = createFilterInput("Key", "filter-key", "Key");
-  keyInput.addEventListener("input", () => setFilter("key", keyInput.value));
-
-  const commandInput = createFilterInput("Command", "filter-command", "Command");
-  commandInput.addEventListener("input", () => setFilter("command", commandInput.value));
-
-  const snapshotSelect = createFilterSelect("Snapshot", "filter-snapshot", [
-    ["", "Snapshot"],
-    ["true", "Snapshot"],
-    ["false", "Live"]
-  ]);
-  snapshotSelect.addEventListener("change", () => {
-    setFilter("snapshot", parseBooleanFilter(snapshotSelect.value));
-  });
-
-  const syntheticSelect = createFilterSelect("Synthetic", "filter-synthetic", [
-    ["", "Synthetic"],
-    ["false", "Server"],
-    ["true", "Synthetic"]
-  ]);
-  syntheticSelect.addEventListener("change", () => {
-    setFilter("synthetic", parseBooleanFilter(syntheticSelect.value));
-  });
-
-  const kindInput = createFilterInput("Kind", "filter-kind", "Kind");
-  kindInput.addEventListener("input", () => {
-    setFilter("kind", kindInput.value as CaptureKind | "");
-  });
-
-  filterStrip.append(
-    searchInput,
-    modeInput,
-    itemInput,
-    keyInput,
-    commandInput,
-    snapshotSelect,
-    syntheticSelect,
-    kindInput
-  );
+  filterStrip.append(searchInput);
 
   const commandFilterStrip = document.createElement("section");
   commandFilterStrip.className = "command-filter-strip";
@@ -296,76 +490,11 @@ export function renderPanel(
     setCommandFilter("query", commandSearchInput.value);
   });
 
-  const commandSubscriptionInput = createFilterInput(
-    "Subscription",
-    "command-filter-subscription",
-    "Subscription"
-  );
-  commandSubscriptionInput.addEventListener("input", () => {
-    setCommandFilter("subscription", commandSubscriptionInput.value);
-  });
-
-  const commandItemInput = createFilterInput("Item", "command-filter-item", "Item");
-  commandItemInput.addEventListener("input", () => {
-    setCommandFilter("item", commandItemInput.value);
-  });
-
-  const commandKeyInput = createFilterInput("Key", "command-filter-key", "Key");
-  commandKeyInput.addEventListener("input", () => {
-    setCommandFilter("key", commandKeyInput.value);
-  });
-
-  const commandCommandInput = createFilterInput("Command", "command-filter-command", "Command");
-  commandCommandInput.addEventListener("input", () => {
-    setCommandFilter("command", commandCommandInput.value);
-  });
-
-  const commandSourceInput = createFilterInput("Source", "command-filter-source", "Source");
-  commandSourceInput.addEventListener("input", () => {
-    setCommandFilter("source", commandSourceInput.value);
-  });
-
-  const commandSnapshotSelect = createFilterSelect("Snapshot", "command-filter-snapshot", [
-    ["", "Snapshot"],
-    ["snapshot", "Snapshot"],
-    ["live", "Live"]
-  ]);
-  commandSnapshotSelect.addEventListener("change", () => {
-    setCommandFilter("snapshot", commandSnapshotSelect.value);
-  });
-
-  const commandSyntheticSelect = createFilterSelect("Synthetic", "command-filter-synthetic", [
-    ["", "Synthetic"],
-    ["server", "Server"],
-    ["synthetic", "Synthetic"]
-  ]);
-  commandSyntheticSelect.addEventListener("change", () => {
-    setCommandFilter("synthetic", commandSyntheticSelect.value);
-  });
-
-  const commandDiagnosticsInput = createFilterInput(
-    "Diagnostics",
-    "command-filter-diagnostics",
-    "Diagnostics"
-  );
-  commandDiagnosticsInput.addEventListener("input", () => {
-    setCommandFilter("diagnostics", commandDiagnosticsInput.value);
-  });
-
-  commandFilterStrip.append(
-    commandSearchInput,
-    commandSubscriptionInput,
-    commandItemInput,
-    commandKeyInput,
-    commandCommandInput,
-    commandSourceInput,
-    commandSnapshotSelect,
-    commandSyntheticSelect,
-    commandDiagnosticsInput
-  );
+  commandFilterStrip.append(commandSearchInput);
 
   const workspace = document.createElement("section");
   workspace.className = "workspace";
+  workspace.dataset.detailOpen = "false";
 
   const feed = document.createElement("section");
   feed.className = "event-feed";
@@ -374,27 +503,52 @@ export function renderPanel(
   const detail = document.createElement("aside");
   detail.className = "detail-pane";
   detail.setAttribute("aria-label", "Selected event detail");
+  detail.hidden = true;
 
-  workspace.append(feed, detail);
+  const timelineDetailResizeHandle = createTimelineDetailResizeHandle();
+
+  workspace.append(feed, timelineDetailResizeHandle, detail);
+  applyTimelineDetailWidth();
 
   const commandWorkspace = document.createElement("section");
   commandWorkspace.className = "command-workspace";
   commandWorkspace.setAttribute("aria-label", "COMMAND state workbench");
+  commandWorkspace.dataset.detailOpen = "true";
 
   const commandGroupPane = document.createElement("section");
   commandGroupPane.className = "command-group-pane";
   commandGroupPane.setAttribute("aria-label", "COMMAND subscription and item groups");
 
+  const groupResizeHandle = createCommandResizeHandle("Subscriptions pane", "subscriptions");
+
   const commandCurrentTable = document.createElement("section");
   commandCurrentTable.className = "command-current-table";
   commandCurrentTable.setAttribute("aria-label", "COMMAND active current rows");
+
+  const keysResizeHandle = createCommandResizeHandle("Keys pane", "keys");
+
+  const commandUpdatePane = document.createElement("section");
+  commandUpdatePane.className = "command-update-pane";
+  commandUpdatePane.setAttribute("aria-label", "COMMAND updates for selected key");
+
+  const updatesResizeHandle = createCommandResizeHandle("Updates pane", "updates");
 
   const commandDetailPane = document.createElement("aside");
   commandDetailPane.className = "command-detail-pane";
   commandDetailPane.setAttribute("aria-label", "COMMAND selected key detail");
 
-  commandWorkspace.append(commandGroupPane, commandCurrentTable, commandDetailPane);
+  commandWorkspace.append(
+    commandGroupPane,
+    groupResizeHandle,
+    commandCurrentTable,
+    keysResizeHandle,
+    commandUpdatePane,
+    updatesResizeHandle,
+    commandDetailPane
+  );
+  applyCommandPaneWidths();
   root.append(toolbar, viewSelector, filterStrip, commandFilterStrip, workspace, commandWorkspace);
+  const disposeHelpTooltips = installHelpTooltipOverlay(root);
   updateActiveViewChrome();
 
   function setFilter<K extends keyof EventFilterState>(
@@ -444,12 +598,12 @@ export function renderPanel(
     commandWorkspace.hidden = activeView !== "command";
   }
 
-  function renderActiveView(): void {
+  function renderActiveView(options: RenderOptions = {}): void {
     if (activeView === "command") {
-      renderCommandState(allEvents);
+      renderCommandState(allEvents, options);
       return;
     }
-    renderFeed(allEvents);
+    renderFeed(allEvents, options);
   }
 
   function renderEmptyState(): void {
@@ -480,9 +634,16 @@ export function renderPanel(
     feed.replaceChildren(emptyState);
   }
 
-  function renderFeed(events: readonly LightstreamerEventEnvelope[]): void {
+  function renderFeed(
+    events: readonly LightstreamerEventEnvelope[],
+    options: RenderOptions = {}
+  ): void {
     const filtersActive = hasActiveFilters(filterState);
     const visibleEvents = filterEvents(events, filterState);
+    const renderedEvents =
+      visibleEvents.length > MAX_TIMELINE_ROWS
+        ? visibleEvents.slice(-MAX_TIMELINE_ROWS)
+        : visibleEvents;
 
     filteredCount.hidden = !filtersActive;
     filteredCount.textContent = filtersActive ? `${visibleEvents.length} shown` : "";
@@ -493,7 +654,7 @@ export function renderPanel(
       selectedPinned = false;
       clearDraftForSelection(null);
       renderEmptyState();
-      renderDetail(null);
+      renderDetail(null, options);
       return;
     }
 
@@ -501,13 +662,16 @@ export function renderPanel(
       selectedEventId = null;
       clearDraftForSelection(null);
       renderFilteredEmptyState();
-      renderDetail(null);
+      renderDetail(null, options);
       return;
     }
 
     const selectedStillVisible = visibleEvents.some((event) => event.id === selectedEventId);
-    if (!selectedPinned || !selectedStillVisible) {
-      selectedEventId = visibleEvents[visibleEvents.length - 1]?.id ?? null;
+    if (!selectedPinned) {
+      selectedEventId = timelineDetailOpen ? renderedEvents[renderedEvents.length - 1]?.id ?? null : null;
+    } else if (!selectedStillVisible) {
+      selectedEventId = renderedEvents[renderedEvents.length - 1]?.id ?? null;
+      timelineDetailOpen = Boolean(selectedEventId);
     }
     clearDraftForSelection(selectedEventId);
 
@@ -515,7 +679,12 @@ export function renderPanel(
     list.className = "event-list";
     list.setAttribute("role", "list");
 
-    for (const event of visibleEvents) {
+    if (visibleEvents.length > renderedEvents.length) {
+      list.append(createTimelineRenderLimitNotice(visibleEvents.length, renderedEvents.length));
+    }
+    list.append(createTimelineHeader());
+
+    for (const event of renderedEvents) {
       const row = document.createElement("button");
       row.className = "event-row";
       row.type = "button";
@@ -524,6 +693,7 @@ export function renderPanel(
       row.addEventListener("click", () => {
         selectedEventId = event.id;
         selectedPinned = true;
+        timelineDetailOpen = true;
         clearDraftForSelection(event.id);
         renderFeed(allEvents);
         renderDetail(event);
@@ -544,19 +714,30 @@ export function renderPanel(
     }
 
     feed.replaceChildren(list);
-    renderDetail(visibleEvents.find((event) => event.id === selectedEventId) ?? null);
+    renderDetail(visibleEvents.find((event) => event.id === selectedEventId) ?? null, options);
   }
 
-  function renderDetail(event: LightstreamerEventEnvelope | null): void {
+  function renderDetail(
+    event: LightstreamerEventEnvelope | null,
+    options: RenderOptions = {}
+  ): void {
+    const paneState = options.preserveDetailState ? capturePaneState(detail) : null;
     detail.replaceChildren();
-    detail.append(createTextElement("h2", "detail-heading", "Envelope"));
 
-    if (!event) {
-      detail.append(
-        createTextElement("p", "detail-placeholder", "Select an event to inspect its envelope.")
-      );
+    if (!event || !timelineDetailOpen) {
+      detail.hidden = true;
+      workspace.dataset.detailOpen = "false";
       return;
     }
+
+    detail.hidden = false;
+    workspace.dataset.detailOpen = "true";
+    detail.append(
+      createDetailPaneHeader("Event detail", () => {
+        timelineDetailOpen = false;
+        renderFeed(allEvents);
+      })
+    );
 
     appendDetailSection(detail, "Envelope", {
       id: event.id,
@@ -566,20 +747,116 @@ export function renderPanel(
       captureSource: event.captureSource ?? "listener",
       synthetic: event.synthetic,
       kind: event.kind
+    }, { summary: event.id });
+    appendDetailSection(detail, "Subscription", event.subscription, {
+      summary: event.subscription?.id ?? "no subscription"
     });
-    appendDetailSection(detail, "Subscription", event.subscription);
-    appendDetailSection(detail, "Listener", event.listener);
-    appendDetailSection(detail, "Item", event.item);
-    appendDetailSection(detail, "Update", event.update);
-    appendDetailSection(detail, "Fields", event.update?.fields);
-    appendDetailSection(detail, "Changed Fields", event.update?.changedFields);
-    appendDetailSection(detail, "Synthetic Provenance", createSyntheticProvenance(event));
-    appendDetailSection(detail, "Raw Diagnostics", event.raw);
+    appendDetailSection(detail, "Listener", event.listener, {
+      summary: event.listener?.id ?? "no listener"
+    });
+    appendDetailSection(detail, "Item", event.item, {
+      summary: detailItemSummary(event.item)
+    });
+    appendDetailSection(detail, "Raw Diagnostics", event.raw, {
+      summary: detailRawSummary(event.raw)
+    });
+    appendDetailSection(detail, "Update", event.update, {
+      open: true,
+      summary: detailUpdateSummary(event)
+    });
+    appendDetailSection(detail, "Synthetic Provenance", createSyntheticProvenance(event), {
+      summary: String(event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? "synthetic")
+    });
     appendDraftSection(detail, event, draft?.sourceEventId === event.id ? draft : null);
+    restorePaneState(detail, paneState);
   }
 
-  function renderCommandState(events: readonly LightstreamerEventEnvelope[]): void {
-    const commandState = reduceCommandState(events);
+  function createTimelineDetailResizeHandle(): HTMLDivElement {
+    const handle = document.createElement("div");
+    handle.className = "timeline-resize-handle";
+    handle.dataset.resizeTarget = "detail";
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-label", "Resize Event detail pane");
+    handle.setAttribute("aria-orientation", "vertical");
+    handle.setAttribute("aria-valuemin", String(TIMELINE_MIN_DETAIL_WIDTH));
+    handle.setAttribute("aria-valuemax", String(TIMELINE_MAX_DETAIL_WIDTH));
+    handle.setAttribute("aria-valuenow", String(timelineDetailWidth));
+    handle.title = "Drag to resize Event detail pane. Use Left and Right arrow keys for keyboard resizing.";
+    handle.tabIndex = 0;
+    handle.addEventListener("pointerdown", (event) => {
+      startTimelineDetailResize(handle, event);
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      event.preventDefault();
+      const direction = event.key === "ArrowLeft" ? 1 : -1;
+      adjustTimelineDetailWidth(
+        direction * (event.shiftKey ? TIMELINE_RESIZE_LARGE_STEP : TIMELINE_RESIZE_STEP)
+      );
+    });
+    return handle;
+  }
+
+  function startTimelineDetailResize(handle: HTMLElement, event: PointerEvent): void {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = timelineDetailWidth;
+    workspace.dataset.resizing = "true";
+    handle.dataset.resizing = "true";
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can be unavailable in tests or older embedded contexts.
+    }
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      setTimelineDetailWidth(startWidth + startX - moveEvent.clientX);
+    };
+    const stopResize = () => {
+      delete workspace.dataset.resizing;
+      delete handle.dataset.resizing;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+      try {
+        handle.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore release failures when capture was not established.
+      }
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  }
+
+  function adjustTimelineDetailWidth(delta: number): void {
+    setTimelineDetailWidth(timelineDetailWidth + delta);
+  }
+
+  function setTimelineDetailWidth(width: number): void {
+    timelineDetailWidth = Math.round(
+      clampNumber(width, TIMELINE_MIN_DETAIL_WIDTH, TIMELINE_MAX_DETAIL_WIDTH)
+    );
+    applyTimelineDetailWidth();
+  }
+
+  function applyTimelineDetailWidth(): void {
+    workspace.style.setProperty("--timeline-detail-width", `${timelineDetailWidth}px`);
+    timelineDetailResizeHandle.setAttribute("aria-valuenow", String(timelineDetailWidth));
+  }
+
+  function renderCommandState(
+    _events: readonly LightstreamerEventEnvelope[],
+    options: RenderOptions = {}
+  ): void {
+    const commandState = reduceCommandState(commandContextEvents);
     const items = flattenCommandItems(commandState);
 
     if (items.length === 0) {
@@ -597,10 +874,12 @@ export function renderPanel(
     const selected = findSelectedCommandItem(items, selectedCommandItem) ?? items[0];
     renderCommandGroups(items, selected);
     renderCommandRowsAndResults(selected.item);
-    renderCommandDetail(selected.subscription, selected.item, commandState);
+    renderCommandDetail(selected.subscription, selected.item, commandState, options);
   }
 
   function renderCommandEmptyState(): void {
+    commandDetailPane.hidden = true;
+    commandWorkspace.dataset.detailOpen = "false";
     commandGroupPane.replaceChildren(
       createTextElement("h2", "command-pane-heading", "No COMMAND state yet"),
       createTextElement(
@@ -610,13 +889,16 @@ export function renderPanel(
       )
     );
     commandCurrentTable.replaceChildren(
-      createTextElement("p", "command-empty-body", "Select a COMMAND subscription and item to inspect active keys.")
+      createTextElement("p", "command-empty-body", "Select a COMMAND subscription item to inspect keys.")
+    );
+    commandUpdatePane.replaceChildren(
+      createTextElement("p", "command-empty-body", "Select a COMMAND key to inspect its updates.")
     );
     commandDetailPane.replaceChildren(
       createTextElement(
         "p",
         "command-empty-body",
-        "Select an active key or matching result to inspect the events for that key only."
+        "Select a key or update to inspect its COMMAND details."
       )
     );
   }
@@ -629,10 +911,10 @@ export function renderPanel(
       createHelpHeading(
         "h2",
         "command-pane-heading",
-        "COMMAND groups",
-        "Choose the COMMAND subscription and item that define the active-key table."
+        "Subscriptions",
+        "Choose the COMMAND subscription item whose keys you want to inspect."
       ),
-      createPaneHelp("Choose a subscription and item. The middle pane then shows active keys for that item.")
+      createPaneHelp("Choose an item. The middle pane shows that item's keys and update history.")
     );
 
     let currentSubscriptionId = "";
@@ -642,7 +924,7 @@ export function renderPanel(
         const subscriptionSummary = createTextElement(
           "div",
           "command-subscription-summary",
-          `${entry.subscription.subscriptionId} ${entry.subscription.mode ?? "-"} ${entry.subscription.items.length} items ${countActiveRows(entry.subscription)} active ${countDeletedKeys(entry.subscription)} deleted`
+          `${entry.subscription.subscriptionId} ${entry.subscription.mode ?? "-"}`
         );
         commandGroupPane.append(subscriptionSummary);
       }
@@ -660,16 +942,10 @@ export function renderPanel(
           itemId: entry.item.itemId
         };
         selectedCommandKey = null;
+        selectedCommandUpdateEventId = null;
         renderCommandState(allEvents);
       });
-      itemButton.append(
-        createTextElement("span", "command-item-title", commandItemLabel(entry.item)),
-        createTextElement(
-          "span",
-          "command-item-meta",
-          `${entry.item.activeRows.length} active ${entry.item.deletedKeys.length} deleted ${latestItemSource(entry.item)}`
-        )
-      );
+      itemButton.append(createTextElement("span", "command-item-title", commandItemLabel(entry.item)));
       commandGroupPane.append(itemButton);
     }
   }
@@ -681,101 +957,107 @@ export function renderPanel(
     const matchingDeleted = item.deletedKeys.filter((row) =>
       matchesDeletedCommandKey(row, item, commandFilterState)
     );
-    const matchingDiagnostics = item.diagnostics.filter((diagnostic) =>
-      matchesCommandDiagnostic(diagnostic, item, commandFilterState)
-    );
+    const matchingKeys: CommandKeyRow[] = [...matchingRows, ...matchingDeleted];
 
+    const previousSelection = selectedCommandKey;
     selectedCommandKey = reconcileCommandSelection(
       item,
       selectedCommandKey,
       matchingRows,
-      matchingDeleted,
-      matchingDiagnostics
+      matchingDeleted
     );
+    if (!commandSelectionsEqual(previousSelection, selectedCommandKey)) {
+      selectedCommandUpdateEventId = null;
+    }
 
     const header = document.createElement("div");
     header.className = "command-current-header";
-    for (const heading of ["Key", "Origin", "Latest", "Command", "Fields", "Updates", "Last seen", "Diagnostics"]) {
+    for (const heading of ["Key", "Updates", "Last seen"]) {
       header.append(createCommandHeaderCell(heading));
     }
 
     const rows = document.createElement("div");
     rows.className = "command-current-rows";
-    for (const row of matchingRows) {
+    for (const row of matchingKeys) {
       const button = document.createElement("button");
       button.className = "command-current-row";
       button.type = "button";
-      button.dataset.selected = String(commandSelectionMatchesRow(selectedCommandKey, row));
+      button.dataset.status = row.status;
+      button.dataset.selected = String(commandSelectionMatchesKey(selectedCommandKey, row));
+      button.setAttribute(
+        "aria-label",
+        `${row.key}, ${row.status}, ${row.lifecycle.length} updates, last seen ${formatTime(latestKeyProvenance(row).timestamp)}`
+      );
       button.addEventListener("click", () => {
-        selectedCommandKey = commandSelectionForRow(row);
+        const nextSelection = commandSelectionForKey(row);
+        selectedCommandUpdateEventId = null;
+        selectedCommandKey = nextSelection;
+        commandDetailOpen = true;
         renderCommandState(allEvents);
       });
       button.append(
         createTextElement("span", "command-current-cell command-key-cell", row.key),
-        createTextElement("span", "command-current-cell command-origin-cell", provenanceLabel(row.origin)),
-        createTextElement("span", "command-current-cell command-latest-cell", latestRowLabel(row)),
-        createTextElement("span", "command-current-cell", latestLifecycleCommand(row.lifecycle)),
-        createTextElement("span", "command-current-cell", fieldSummary(row.fields, latestLifecycle(row)?.changedFields)),
         createTextElement("span", "command-current-cell", String(row.lifecycle.length)),
-        createTextElement("span", "command-current-cell", formatTime(row.latest.timestamp)),
-        createTextElement("span", "command-current-cell", rowDiagnosticsLabel(row.lifecycle))
+        createTextElement("span", "command-current-cell", formatTime(latestKeyProvenance(row).timestamp))
       );
       rows.append(button);
     }
 
-    const results = document.createElement("section");
-    results.className = "command-lifecycle-results";
-    const matchCount = matchingRows.length + matchingDeleted.length + matchingDiagnostics.length;
-    results.append(
+    const selectedTarget = selectedCommandKey ? findCommandDetailTarget(item, selectedCommandKey) : null;
+    const selectedLifecycle =
+      selectedTarget?.kind === "active" || selectedTarget?.kind === "deleted"
+        ? selectedTarget.row.lifecycle
+        : [];
+    if (
+      selectedCommandUpdateEventId &&
+      !selectedLifecycle.some((entry) => entry.eventId === selectedCommandUpdateEventId)
+    ) {
+      selectedCommandUpdateEventId = null;
+    }
+
+    const updates = document.createElement("section");
+    updates.className = "command-update-list";
+    updates.append(
       createHelpHeading(
         "h3",
         "command-results-heading",
-        "Matching keys, deleted keys, and diagnostics",
-        "Search and filter hits across active keys, deleted keys, and diagnostic events."
+        "Updates for selected key",
+        "Each row is one COMMAND update for the selected key."
       ),
-      createPaneHelp(`${matchCount} matches across active keys, deleted keys, and diagnostics for this item.`)
+      createPaneHelp(
+        selectedCommandKey
+          ? `${selectedLifecycle.length} updates for ${selectedCommandKey.key ?? "selected key"}.`
+          : "Select a key to inspect its updates."
+      )
     );
 
-    for (const row of matchingRows) {
-      const result = createCommandResultButton(`${row.key} active ${lifecycleSearchSummary(row.lifecycle)}`);
-      result.dataset.selected = String(commandSelectionMatchesRow(selectedCommandKey, row));
-      result.addEventListener("click", () => {
-        selectedCommandKey = commandSelectionForRow(row);
-        renderCommandState(allEvents);
-      });
-      results.append(result);
-    }
-
-    for (const row of matchingDeleted) {
-      const result = createCommandResultButton(`${row.key} deleted ${lifecycleSearchSummary(row.lifecycle)}`);
-      result.dataset.selected = String(commandSelectionMatchesDeleted(selectedCommandKey, row));
-      result.addEventListener("click", () => {
-        selectedCommandKey = commandSelectionForDeleted(row);
-        renderCommandState(allEvents);
-      });
-      results.append(result);
-    }
-
-    for (const diagnostic of matchingDiagnostics) {
-      const result = createCommandResultButton(
-        `${diagnostic.key ?? "unknown"} diagnostic ${diagnostic.code} ${diagnostic.eventId ?? ""} ${diagnostic.explanation}`
-      );
-      result.dataset.selected = String(
-        commandSelectionMatchesDiagnostic(selectedCommandKey, item, diagnostic)
-      );
-      result.addEventListener("click", () => {
-        selectedCommandKey = commandSelectionForDiagnostic(item, diagnostic);
-        renderCommandState(allEvents);
-      });
-      results.append(result);
+    if (selectedLifecycle.length > 0) {
+      updates.append(createCommandUpdateHeader());
+      for (const entry of selectedLifecycle) {
+        const updateRow = document.createElement("button");
+        updateRow.className = "command-update-row";
+        updateRow.type = "button";
+        updateRow.dataset.selected = String(selectedCommandUpdateEventId === entry.eventId);
+        updateRow.addEventListener("click", () => {
+          selectedCommandUpdateEventId = entry.eventId;
+          commandDetailOpen = true;
+          renderCommandState(allEvents);
+        });
+        updateRow.append(
+          createTextElement("span", "command-update-cell command-update-time", formatTime(entry.timestamp)),
+          createTextElement("span", "command-update-cell command-update-event", entry.eventId),
+          createTextElement("span", "command-update-cell", entry.originalCommand ?? "-")
+        );
+        updates.append(updateRow);
+      }
     }
 
     const emptyRows =
-      matchingRows.length === 0
+      matchingKeys.length === 0
         ? createTextElement(
             "p",
             "command-empty-body",
-            "No active keys for this item. Deleted keys remain available in lifecycle search."
+            "No keys match this item and search query."
           )
         : null;
 
@@ -783,56 +1065,87 @@ export function renderPanel(
       createHelpHeading(
         "h2",
         "command-pane-heading",
-        "Active keys",
-        "One row per currently active COMMAND key. Deleted keys are excluded from this table."
+        "Keys",
+        "One row per COMMAND key for the selected item, including deleted keys."
       ),
-      createPaneHelp("Current COMMAND state for the selected item. Deleted keys stay available below in matching results."),
+      createPaneHelp("Select a key to inspect its updates."),
       header,
       rows
     );
     if (emptyRows) {
       commandCurrentTable.append(emptyRows);
     }
-    commandCurrentTable.append(results);
+    commandUpdatePane.replaceChildren(updates);
   }
 
   function renderCommandDetail(
     subscription: CommandSubscriptionGroup,
     item: CommandItemGroup,
-    commandState: CommandState
+    commandState: CommandState,
+    options: RenderOptions = {}
   ): void {
+    const paneState = options.preserveDetailState ? capturePaneState(commandDetailPane) : null;
     commandDetailPane.replaceChildren();
-    const context = createCommandItemContext(subscription, item, allEvents);
+    if (!commandDetailOpen) {
+      commandDetailPane.hidden = true;
+      commandWorkspace.dataset.detailOpen = "false";
+      return;
+    }
+
+    commandDetailPane.hidden = false;
+    commandWorkspace.dataset.detailOpen = "true";
+    const collapseCommandDetail = () => {
+      commandDetailOpen = false;
+      renderCommandState(allEvents);
+    };
+    const context = createCommandItemContext(subscription, item, commandContextEvents);
 
     if (!selectedCommandKey) {
       commandDetailPane.append(
+        createDetailPaneHeader("COMMAND detail", collapseCommandDetail),
         createTextElement(
           "p",
           "command-empty-body",
-          "Select an active key or matching result to inspect the events for that key only."
+          "Select a key or update to inspect its COMMAND details."
         )
       );
       appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
+      restorePaneState(commandDetailPane, paneState);
       return;
     }
 
     const target = findCommandDetailTarget(item, selectedCommandKey);
     if (!target) {
-      commandDetailPane.append(createTextElement("p", "command-empty-body", "Selected COMMAND key is no longer available."));
+      commandDetailPane.append(
+        createDetailPaneHeader("COMMAND detail", collapseCommandDetail),
+        createTextElement("p", "command-empty-body", "Selected COMMAND key is no longer available.")
+      );
       appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
+      restorePaneState(commandDetailPane, paneState);
       return;
     }
 
     if (target.kind === "diagnostic") {
-      renderCommandDiagnosticDetail(target.diagnostic);
+      renderCommandDiagnosticDetail(target.diagnostic, collapseCommandDetail);
       appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
+      restorePaneState(commandDetailPane, paneState);
       return;
+    }
+
+    if (selectedCommandUpdateEventId) {
+      const update = target.row.lifecycle.find((entry) => entry.eventId === selectedCommandUpdateEventId);
+      if (update) {
+        renderCommandUpdateDetail(target, update, collapseCommandDetail);
+        appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
+        restorePaneState(commandDetailPane, paneState);
+        return;
+      }
     }
 
     if (target.kind === "active") {
       const row = target.row;
       commandDetailPane.append(
-        createTextElement("h2", "command-detail-heading", `Key ${row.key} - ${row.status}`)
+        createDetailPaneHeader(`Key ${row.key} - ${row.status}`, collapseCommandDetail)
       );
 
       const summary = document.createElement("section");
@@ -864,14 +1177,14 @@ export function renderPanel(
       commandDetailPane.append(fields);
 
       appendCommandLifecycle(row.lifecycle);
-      appendCommandDiagnostics(row.lifecycle, item.diagnostics);
       appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
+      restorePaneState(commandDetailPane, paneState);
       return;
     }
 
     const row = target.row;
     commandDetailPane.append(
-      createTextElement("h2", "command-detail-heading", `Key ${row.key} - ${row.status}`)
+      createDetailPaneHeader(`Key ${row.key} - ${row.status}`, collapseCommandDetail)
     );
 
     const summary = document.createElement("section");
@@ -887,16 +1200,165 @@ export function renderPanel(
     commandDetailPane.append(summary);
 
     appendCommandLifecycle(row.lifecycle);
-    appendCommandDiagnostics(row.lifecycle, item.diagnostics);
     appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
+    restorePaneState(commandDetailPane, paneState);
   }
 
-  function renderCommandDiagnosticDetail(diagnostic: CommandDiagnostic): void {
-    commandDetailPane.append(createTextElement("h2", "command-detail-heading", "COMMAND diagnostic"));
+  function createCommandResizeHandle(
+    label: string,
+    pane: CommandResizablePane
+  ): HTMLDivElement {
+    const handle = document.createElement("div");
+    handle.className = "command-resize-handle";
+    handle.dataset.resizeTarget = pane;
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-label", `Resize ${label}`);
+    handle.setAttribute("aria-orientation", "vertical");
+    handle.setAttribute("aria-valuemin", String(COMMAND_MIN_PANE_WIDTHS[pane]));
+    handle.setAttribute("aria-valuemax", String(COMMAND_MAX_PANE_WIDTHS[pane]));
+    handle.setAttribute("aria-valuenow", String(commandPaneWidths[pane]));
+    handle.title = `Drag to resize ${label}. Use Left and Right arrow keys for keyboard resizing.`;
+    handle.tabIndex = 0;
+    handle.addEventListener("pointerdown", (event) => {
+      startCommandPaneResize(handle, pane, event);
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      event.preventDefault();
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      adjustCommandPaneWidth(
+        pane,
+        direction * (event.shiftKey ? COMMAND_RESIZE_LARGE_STEP : COMMAND_RESIZE_STEP)
+      );
+    });
+    return handle;
+  }
+
+  function startCommandPaneResize(
+    handle: HTMLElement,
+    pane: CommandResizablePane,
+    event: PointerEvent
+  ): void {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = commandPaneWidths[pane];
+    commandWorkspace.dataset.resizing = "true";
+    handle.dataset.resizing = "true";
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can be unavailable in tests or older embedded contexts.
+    }
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      setCommandPaneWidth(pane, startWidth + moveEvent.clientX - startX);
+    };
+    const stopResize = () => {
+      delete commandWorkspace.dataset.resizing;
+      delete handle.dataset.resizing;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+      try {
+        handle.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore release failures when capture was not established.
+      }
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  }
+
+  function adjustCommandPaneWidth(pane: CommandResizablePane, delta: number): void {
+    setCommandPaneWidth(pane, commandPaneWidths[pane] + delta);
+  }
+
+  function setCommandPaneWidth(pane: CommandResizablePane, width: number): void {
+    commandPaneWidths[pane] = Math.round(
+      Math.min(COMMAND_MAX_PANE_WIDTHS[pane], Math.max(COMMAND_MIN_PANE_WIDTHS[pane], width))
+    );
+    applyCommandPaneWidths();
+  }
+
+  function applyCommandPaneWidths(): void {
+    commandWorkspace.style.setProperty(
+      "--command-subscriptions-width",
+      `${commandPaneWidths.subscriptions}px`
+    );
+    commandWorkspace.style.setProperty("--command-keys-width", `${commandPaneWidths.keys}px`);
+    commandWorkspace.style.setProperty("--command-updates-width", `${commandPaneWidths.updates}px`);
+    for (const handle of commandWorkspace.querySelectorAll<HTMLElement>(".command-resize-handle")) {
+      const pane = handle.dataset.resizeTarget as CommandResizablePane | undefined;
+      if (pane && pane in commandPaneWidths) {
+        handle.setAttribute("aria-valuenow", String(commandPaneWidths[pane]));
+      }
+    }
+  }
+
+  function renderCommandDiagnosticDetail(
+    diagnostic: CommandDiagnostic,
+    onCollapse: () => void
+  ): void {
+    commandDetailPane.append(createDetailPaneHeader("COMMAND diagnostic", onCollapse));
     const pre = document.createElement("pre");
     pre.className = "command-json";
     pre.textContent = JSON.stringify(diagnostic, null, 2);
     commandDetailPane.append(pre);
+  }
+
+  function renderCommandUpdateDetail(
+    target: CommandKeyDetailTarget,
+    entry: CommandLifecycleEntry,
+    onCollapse: () => void
+  ): void {
+    commandDetailPane.append(createDetailPaneHeader(`Update ${entry.eventId}`, onCollapse));
+    const summary = document.createElement("section");
+    summary.className = "command-detail-summary";
+    summary.append(
+      createCommandSummaryRow("Subscription", target.row.subscriptionId),
+      createCommandSummaryRow("Item", commandItemLabel(target.item)),
+      createCommandSummaryRow("Key", entry.key),
+      createCommandSummaryRow("Command", entry.originalCommand ?? "-"),
+      createCommandSummaryRow("Source", provenanceLabel(entry.provenance)),
+      createCommandSummaryRow("Time", formatTime(entry.timestamp))
+    );
+    commandDetailPane.append(summary);
+
+    const fields = document.createElement("section");
+    fields.className = "command-current-fields";
+    fields.append(
+      createHelpHeading(
+        "h3",
+        "command-detail-section-heading",
+        "Update payload",
+        "The fields and changed fields captured for this COMMAND update."
+      )
+    );
+    const fieldsJson = document.createElement("pre");
+    fieldsJson.className = "command-json";
+    fieldsJson.textContent = JSON.stringify(
+      {
+        eventId: entry.eventId,
+        command: entry.originalCommand,
+        effectiveCommand: entry.effectiveCommand,
+        source: provenanceLabel(entry.provenance),
+        fields: entry.fields,
+        changedFields: entry.changedFields,
+        diagnostics: entry.diagnosticCodes
+      },
+      null,
+      2
+    );
+    fields.append(fieldsJson);
+    commandDetailPane.append(fields);
   }
 
   function appendCommandLifecycle(lifecycle: readonly CommandLifecycleEntry[]): void {
@@ -924,7 +1386,7 @@ export function renderPanel(
         createTextElement(
           "div",
           "command-lifecycle-line",
-          `changed ${Object.keys(entry.changedFields).join(", ") || "none"} diagnostics ${entry.diagnosticCodes.join(", ") || "none"}`
+          `changed ${Object.keys(entry.changedFields).join(", ") || "none"}`
         )
       );
       const json = document.createElement("pre");
@@ -1177,7 +1639,7 @@ export function renderPanel(
     item: CommandItemGroup
   ): Promise<void> {
     const activeBridge = bridge;
-    const validation = validateNewCommandDraft(currentDraft, reduceCommandState(allEvents), context);
+    const validation = validateNewCommandDraft(currentDraft, reduceCommandState(commandContextEvents), context);
     if (!activeBridge || !validation.valid) {
       return;
     }
@@ -1211,6 +1673,7 @@ export function renderPanel(
           key: currentDraft.key,
           status: currentDraft.command === "DELETE" ? "deleted" : "active"
         };
+        selectedCommandUpdateEventId = null;
       }
       store.append(createSyntheticEventFromDraft(currentDraft, result));
       return;
@@ -1247,6 +1710,43 @@ export function renderPanel(
     }
   }
 
+  function rememberCommandContextEvents(events: readonly LightstreamerEventEnvelope[]): void {
+    for (const event of events) {
+      const subscriptionId = event.subscription?.id ?? null;
+      const mode = event.subscription?.mode ?? null;
+      if (subscriptionId && mode === "COMMAND") {
+        commandContextSubscriptionIds.add(subscriptionId);
+      }
+      const preservesCommandContext =
+        mode === "COMMAND" ||
+        Boolean(subscriptionId && mode === null && commandContextSubscriptionIds.has(subscriptionId));
+      if (!preservesCommandContext || commandContextEventIds.has(event.id)) {
+        continue;
+      }
+      commandContextEventIds.add(event.id);
+      commandContextEvents.push(event);
+    }
+  }
+
+  function renderEventVolumeNotice(stats: EventStoreStats): void {
+    if (!stats.warningActive) {
+      highVolumeNoticeDismissed = false;
+      retentionNotice.hidden = true;
+      eventVolumeText.textContent = "";
+      retentionNotice.title = "";
+      return;
+    }
+
+    if (highVolumeNoticeDismissed) {
+      retentionNotice.hidden = true;
+      return;
+    }
+
+    retentionNotice.hidden = false;
+    eventVolumeText.textContent = `High volume: ${stats.retained.toLocaleString()} events retained`;
+    retentionNotice.title = `All captured events are retained in memory. Threshold ${stats.warningThreshold.toLocaleString()} exceeded; clear only when you no longer need this session history.`;
+  }
+
   const controller: PanelController = {
     setStatus(nextStatus) {
       panelState.status = nextStatus;
@@ -1261,7 +1761,11 @@ export function renderPanel(
 
     clearEvents() {
       selectedPinned = false;
-      draft = null;
+      selectedEventId = null;
+      timelineDetailOpen = false;
+      if (draft?.provenance.source !== "new-command") {
+        draft = null;
+      }
       reinjectionMessage = null;
       store.clear();
     },
@@ -1269,14 +1773,21 @@ export function renderPanel(
     setBridge(nextBridge) {
       bridge = nextBridge;
       renderDetail(allEvents.find((event) => event.id === selectedEventId) ?? null);
+    },
+
+    dispose() {
+      disposeHelpTooltips();
+      activeTooltipDisposers.delete(root);
     }
   };
 
-  store.subscribe((events) => {
+  store.subscribe((events, stats) => {
+    rememberCommandContextEvents(events);
     allEvents = events;
-    eventCount.textContent = String(events.length);
-    eventCount.setAttribute("aria-label", `${events.length} captured events`);
-    renderActiveView();
+    eventCount.textContent = String(stats.retained);
+    eventCount.setAttribute("aria-label", `${stats.retained} captured events`);
+    renderEventVolumeNotice(stats);
+    renderActiveView({ preserveDetailState: true });
   });
 
   return controller;
@@ -1485,6 +1996,107 @@ function isTextSelectionInput(input: HTMLInputElement): boolean {
   return ["", "email", "number", "password", "search", "tel", "text", "url"].includes(input.type);
 }
 
+function isTextSelectionControl(
+  element: Element
+): element is HTMLInputElement | HTMLTextAreaElement {
+  if (element instanceof HTMLTextAreaElement) {
+    return true;
+  }
+  return element instanceof HTMLInputElement && isTextSelectionInput(element);
+}
+
+function capturePaneState(pane: HTMLElement): PaneState {
+  const activeElement = document.activeElement;
+  const activeInPane = activeElement instanceof HTMLElement && pane.contains(activeElement);
+  return {
+    scrollTop: pane.scrollTop,
+    focusSelector: activeInPane ? focusSelectorForElement(activeElement) : null,
+    selection:
+      activeInPane && isTextSelectionControl(activeElement)
+        ? {
+            start: activeElement.selectionStart,
+            end: activeElement.selectionEnd
+          }
+        : null,
+    detailSections: captureDetailSectionState(pane)
+  };
+}
+
+function restorePaneState(pane: HTMLElement, state: PaneState | null): void {
+  if (!state) {
+    return;
+  }
+
+  restoreDetailSectionState(pane, state.detailSections);
+
+  if (state.focusSelector) {
+    const nextFocus = pane.querySelector<HTMLElement>(state.focusSelector);
+    nextFocus?.focus();
+    if (
+      nextFocus &&
+      state.selection &&
+      isTextSelectionControl(nextFocus) &&
+      typeof state.selection.start === "number" &&
+      typeof state.selection.end === "number"
+    ) {
+      nextFocus.setSelectionRange(state.selection.start, state.selection.end);
+    }
+  }
+
+  pane.scrollTop = state.scrollTop;
+}
+
+function captureDetailSectionState(pane: HTMLElement): Record<string, boolean> {
+  const sections: Record<string, boolean> = {};
+  for (const section of pane.querySelectorAll<HTMLDetailsElement>("details.detail-section[data-detail-section]")) {
+    const key = section.dataset.detailSection;
+    if (key) {
+      sections[key] = section.open;
+    }
+  }
+  return sections;
+}
+
+function restoreDetailSectionState(
+  pane: HTMLElement,
+  sectionState: Record<string, boolean>
+): void {
+  for (const section of pane.querySelectorAll<HTMLDetailsElement>("details.detail-section[data-detail-section]")) {
+    const key = section.dataset.detailSection;
+    if (key && Object.prototype.hasOwnProperty.call(sectionState, key)) {
+      section.open = sectionState[key];
+    }
+  }
+}
+
+function focusSelectorForElement(element: HTMLElement): string | null {
+  if (
+    element instanceof HTMLInputElement &&
+    element.classList.contains("command-draft-field-input") &&
+    element.dataset.fieldName
+  ) {
+    return `.command-draft-field-input[data-field-name="${cssAttributeValue(element.dataset.fieldName)}"]`;
+  }
+
+  for (const className of [
+    "draft-json",
+    "command-draft-command",
+    "command-draft-key",
+    "command-draft-snapshot",
+    "reinject-button",
+    "inject-command-button",
+    "new-command-button",
+    "clone-button",
+    "detail-collapse-button"
+  ]) {
+    if (element.classList.contains(className)) {
+      return `.${className}`;
+    }
+  }
+
+  return null;
+}
+
 function findSelectedCommandItem(
   items: Array<{ subscription: CommandSubscriptionGroup; item: CommandItemGroup }>,
   selected: { subscriptionId: string; itemId: string } | null
@@ -1501,14 +2113,6 @@ function findSelectedCommandItem(
   );
 }
 
-function countActiveRows(subscription: CommandSubscriptionGroup): number {
-  return subscription.items.reduce((total, item) => total + item.activeRows.length, 0);
-}
-
-function countDeletedKeys(subscription: CommandSubscriptionGroup): number {
-  return subscription.items.reduce((total, item) => total + item.deletedKeys.length, 0);
-}
-
 function commandItemLabel(item: CommandItemGroup): string {
   if (item.itemName) {
     return item.itemName;
@@ -1517,11 +2121,6 @@ function commandItemLabel(item: CommandItemGroup): string {
     return `position ${item.itemPosition}`;
   }
   return "unknown item";
-}
-
-function latestItemSource(item: CommandItemGroup): string {
-  const latest = item.lifecycle[item.lifecycle.length - 1];
-  return latest ? provenanceLabel(latest.provenance) : "no updates";
 }
 
 function provenanceLabel(provenance: CommandProvenance): string {
@@ -1537,12 +2136,12 @@ function latestRowLabel(row: CommandRow): string {
   return `${source} ${latest?.originalCommand ?? "-"}`;
 }
 
-function latestLifecycle(row: CommandRow): CommandLifecycleEntry | null {
-  return row.lifecycle[row.lifecycle.length - 1] ?? null;
+function latestKeyProvenance(row: CommandKeyRow): CommandProvenance {
+  return row.status === "active" ? row.latest : row.deletedAt;
 }
 
-function latestLifecycleCommand(lifecycle: readonly CommandLifecycleEntry[]): string {
-  return lifecycle[lifecycle.length - 1]?.originalCommand ?? "-";
+function latestLifecycle(row: CommandRow): CommandLifecycleEntry | null {
+  return row.lifecycle[row.lifecycle.length - 1] ?? null;
 }
 
 function fieldSummary(
@@ -1573,12 +2172,13 @@ function lifecycleSearchSummary(lifecycle: readonly CommandLifecycleEntry[]): st
     .join(" ");
 }
 
-function createCommandResultButton(text: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.className = "command-lifecycle-result";
-  button.type = "button";
-  button.textContent = text;
-  return button;
+function createCommandUpdateHeader(): HTMLElement {
+  const header = document.createElement("div");
+  header.className = "command-update-header";
+  for (const heading of ["Time", "Event", "Command"]) {
+    header.append(createTextElement("span", "command-update-cell command-update-header-cell", heading));
+  }
+  return header;
 }
 
 function createCommandSummaryRow(label: string, value: string): HTMLElement {
@@ -1589,6 +2189,47 @@ function createCommandSummaryRow(label: string, value: string): HTMLElement {
     createTextElement("span", "command-summary-value", value)
   );
   return row;
+}
+
+function createTimelineHeader(): HTMLElement {
+  const header = document.createElement("div");
+  header.className = "event-header";
+  header.setAttribute("role", "row");
+  for (const heading of [
+    "Time",
+    "Event",
+    "Client",
+    "Subscription",
+    "Mode",
+    "Item",
+    "Command / Key",
+    "Source"
+  ]) {
+    header.append(createTextElement("span", "event-cell event-header-cell", heading));
+  }
+  return header;
+}
+
+function createTimelineRenderLimitNotice(total: number, rendered: number): HTMLElement {
+  return createTextElement(
+    "div",
+    "event-render-limit",
+    `All matching events are retained; showing latest ${rendered} of ${total}. Use search to inspect earlier events.`
+  );
+}
+
+function createDetailPaneHeader(title: string, onCollapse: () => void): HTMLElement {
+  const header = document.createElement("div");
+  header.className = "detail-pane-header";
+  const heading = createTextElement("h2", "detail-heading", title);
+  const collapseButton = document.createElement("button");
+  collapseButton.className = "detail-collapse-button";
+  collapseButton.type = "button";
+  collapseButton.textContent = "Collapse";
+  collapseButton.setAttribute("aria-label", `Collapse ${title}`);
+  collapseButton.addEventListener("click", onCollapse);
+  header.append(heading, collapseButton);
+  return header;
 }
 
 function createCommandItemContext(
@@ -1656,12 +2297,11 @@ function reconcileCommandSelection(
   item: CommandItemGroup,
   selection: CommandSelection,
   matchingRows: readonly CommandRow[],
-  matchingDeleted: readonly DeletedCommandKey[],
-  matchingDiagnostics: readonly CommandDiagnostic[]
+  matchingDeleted: readonly DeletedCommandKey[]
 ): CommandSelection {
   if (
     selection &&
-    findVisibleCommandDetailTarget(item, selection, matchingRows, matchingDeleted, matchingDiagnostics)
+    findVisibleCommandDetailTarget(item, selection, matchingRows, matchingDeleted)
   ) {
     return selection;
   }
@@ -1674,10 +2314,6 @@ function reconcileCommandSelection(
     return commandSelectionForDeleted(matchingDeleted[0]);
   }
 
-  if (matchingDiagnostics[0]) {
-    return commandSelectionForDiagnostic(item, matchingDiagnostics[0]);
-  }
-
   return null;
 }
 
@@ -1685,8 +2321,7 @@ function findVisibleCommandDetailTarget(
   item: CommandItemGroup,
   selection: NonNullable<CommandSelection>,
   matchingRows: readonly CommandRow[],
-  matchingDeleted: readonly DeletedCommandKey[],
-  matchingDiagnostics: readonly CommandDiagnostic[]
+  matchingDeleted: readonly DeletedCommandKey[]
 ): CommandDetailTarget | null {
   const target = findCommandDetailTarget(item, selection);
   if (!target) {
@@ -1701,11 +2336,7 @@ function findVisibleCommandDetailTarget(
     return matchingDeleted.some((row) => commandSelectionMatchesDeleted(selection, row)) ? target : null;
   }
 
-  return matchingDiagnostics.some((diagnostic) =>
-    commandSelectionMatchesDiagnostic(selection, item, diagnostic)
-  )
-    ? target
-    : null;
+  return null;
 }
 
 function commandSelectionForRow(row: CommandRow): CommandRowSelection {
@@ -1724,6 +2355,10 @@ function commandSelectionForDeleted(row: DeletedCommandKey): CommandRowSelection
     key: row.key,
     status: "deleted"
   };
+}
+
+function commandSelectionForKey(row: CommandKeyRow): CommandRowSelection {
+  return row.status === "active" ? commandSelectionForRow(row) : commandSelectionForDeleted(row);
 }
 
 function commandSelectionForDiagnostic(
@@ -1747,6 +2382,32 @@ function commandSelectionMatchesRow(selection: CommandSelection, row: CommandRow
     selection.itemId === row.itemId &&
     selection.key === row.key
   );
+}
+
+function commandSelectionMatchesKey(selection: CommandSelection, row: CommandKeyRow): boolean {
+  return row.status === "active"
+    ? commandSelectionMatchesRow(selection, row)
+    : commandSelectionMatchesDeleted(selection, row);
+}
+
+function commandSelectionsEqual(left: CommandSelection, right: CommandSelection): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.status !== right.status) {
+    return false;
+  }
+  if (
+    left.subscriptionId !== right.subscriptionId ||
+    left.itemId !== right.itemId ||
+    left.key !== right.key
+  ) {
+    return false;
+  }
+  if (left.status === "diagnostic" && right.status === "diagnostic") {
+    return left.diagnosticCode === right.diagnosticCode && left.eventId === right.eventId;
+  }
+  return true;
 }
 
 function commandSelectionMatchesDeleted(
@@ -2105,49 +2766,64 @@ function createFilterInput(label: string, className: string, placeholder: string
   return input;
 }
 
-function createFilterSelect(
-  label: string,
-  className: string,
-  options: Array<[string, string]>
-): HTMLSelectElement {
-  const select = document.createElement("select");
-  select.className = `filter-control ${className}`;
-  select.setAttribute("aria-label", label);
+type DetailSectionOptions = {
+  open?: boolean;
+  summary?: string | number | null;
+};
 
-  for (const [value, text] of options) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = text;
-    select.append(option);
-  }
-
-  return select;
-}
-
-function parseBooleanFilter(value: string): boolean | "" {
-  if (value === "true") {
-    return true;
-  }
-  if (value === "false") {
-    return false;
-  }
-  return "";
-}
-
-function appendDetailSection(parent: HTMLElement, heading: string, value: unknown): void {
+function appendDetailSection(
+  parent: HTMLElement,
+  heading: string,
+  value: unknown,
+  options: DetailSectionOptions = {}
+): void {
   if (value === undefined || value === null) {
     return;
   }
 
-  const section = document.createElement("section");
+  const section = document.createElement("details");
   section.className = "detail-section";
-  section.append(createTextElement("h3", "detail-section-heading", heading));
+  section.dataset.detailSection = heading;
+  section.open = Boolean(options.open);
+
+  const summary = document.createElement("summary");
+  summary.className = "detail-section-summary";
+  summary.append(createTextElement("span", "detail-section-heading", heading));
+  if (options.summary !== undefined && options.summary !== null && options.summary !== "") {
+    summary.append(createTextElement("span", "detail-section-marker", String(options.summary)));
+  }
+  section.append(summary);
 
   const pre = document.createElement("pre");
   pre.className = "detail-json";
   pre.textContent = JSON.stringify(value, null, 2);
   section.append(pre);
   parent.append(section);
+}
+
+function detailItemSummary(item: LightstreamerEventEnvelope["item"]): string {
+  if (item?.name) {
+    return item.name;
+  }
+  if (item?.position !== undefined && item.position !== null) {
+    return `position ${item.position}`;
+  }
+  return "no item";
+}
+
+function detailRawSummary(raw: LightstreamerEventEnvelope["raw"]): string {
+  if (!raw) {
+    return "no diagnostics";
+  }
+  const keys = Object.keys(raw);
+  return keys.length > 0 ? keys.slice(0, 3).join(", ") : "diagnostics";
+}
+
+function detailUpdateSummary(event: LightstreamerEventEnvelope): string {
+  const commandKey = formatCommandKey(event);
+  const snapshot = event.update?.isSnapshot ? "snapshot" : "live";
+  const changed = Object.keys(event.update?.changedFields ?? {}).length;
+  return `${commandKey} ${snapshot} ${changed} changed`;
 }
 
 function canCloneEvent(event: LightstreamerEventEnvelope): boolean {

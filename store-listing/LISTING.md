@@ -60,7 +60,7 @@ This extension is intended for developers and QA engineers who need to understan
 Store icon:
 
 ```text
-public/icons/icon-128.png
+store-listing/icons/icon-128.png
 ```
 
 Small promo tile:

@@ -43,13 +43,35 @@ describe("event store", () => {
     expect(store.count()).toBe(0);
   });
 
-  it("bounds retained events when maxEvents is configured", () => {
-    const store = createEventStore({ maxEvents: 2 });
+  it("keeps all retained events when the warning threshold is exceeded", () => {
+    const store = createEventStore({ warningThreshold: 2 });
 
     store.append(event("event-1"));
     store.append(event("event-2"));
     store.append(event("event-3"));
 
-    expect(store.list().map((entry) => entry.id)).toEqual(["event-2", "event-3"]);
+    expect(store.list().map((entry) => entry.id)).toEqual(["event-1", "event-2", "event-3"]);
+    expect(store.stats()).toMatchObject({
+      retained: 3,
+      totalAppended: 3,
+      warningThreshold: 2,
+      warningActive: true
+    });
+  });
+
+  it("resets warning stats when cleared", () => {
+    const store = createEventStore({ warningThreshold: 1 });
+
+    store.append(event("event-1"));
+    store.append(event("event-2"));
+    store.clear();
+
+    expect(store.list()).toEqual([]);
+    expect(store.stats()).toMatchObject({
+      retained: 0,
+      totalAppended: 0,
+      warningThreshold: 1,
+      warningActive: false
+    });
   });
 });
