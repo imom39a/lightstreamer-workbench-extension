@@ -2,7 +2,7 @@
 
 Lightstreamer Event Workbench is an open-source Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures clients, subscriptions, item updates, snapshots, COMMAND-mode key lifecycles, and synthetic local replays so developers can inspect and reproduce streaming behavior without backend access.
 
-[Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) | [Contributing](CONTRIBUTING.md) | [Privacy](PRIVACY.md) | [Security](SECURITY.md) | [Release notes and publishing](RELEASE.md)
+[Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) | [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf) | [Source](https://github.com/imom39a/lightstreamer-workbench-extension/) | [Contributing](CONTRIBUTING.md) | [Privacy](PRIVACY.md) | [Security](SECURITY.md) | [Release notes and publishing](RELEASE.md)
 
 <p align="center">
   <img src="docs/assets/mascot.png" alt="Lightstreamer Event Workbench mascot" width="180">
@@ -12,7 +12,7 @@ Lightstreamer Event Workbench is an open-source Chrome DevTools extension for de
 
 ## Project Status
 
-Version `0.1.1` is the current bug-fix package for Chrome Web Store review. The Chrome Web Store install link will be added after approval. Until then, contributors and reviewers can build from source and load the generated `dist/` directory as an unpacked extension.
+Version `0.1.1` is the current bug-fix package. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf), or build from source and load the generated `dist/` directory as an unpacked extension.
 
 The first release focuses on in-memory debugging for the current inspected tab. The UI and internal event envelope may evolve as more Lightstreamer workflows are validated.
 
@@ -65,6 +65,8 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 ## Documentation
 
 - [Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) - public GitHub Pages site and product overview.
+- [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf) - official extension listing.
+- [Source repository](https://github.com/imom39a/lightstreamer-workbench-extension/) - source code, issues, and pull requests.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - contributor workflow, local setup, architecture, tests, and pull request process.
 - [RELEASE.md](RELEASE.md) - release packaging, Chrome Web Store publishing, GitHub Pages deployment, and maintainer-only release flow.
 - [MAINTAINERS.md](MAINTAINERS.md) - maintainer roles, official distribution boundaries, and release authority.
