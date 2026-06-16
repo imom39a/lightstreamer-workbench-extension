@@ -16,6 +16,26 @@ function texts(selector: string): string[] {
   return Array.from(document.querySelectorAll(selector)).map((element) => element.textContent ?? "");
 }
 
+function selectedTexts(selector: string): string[] {
+  return Array.from(document.querySelectorAll(`${selector}[data-selected="true"]`)).map(
+    (element) => element.textContent ?? ""
+  );
+}
+
+function rect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({})
+  } as DOMRect;
+}
+
 function control(selector: string): HTMLInputElement | HTMLSelectElement {
   const element = document.querySelector<HTMLInputElement | HTMLSelectElement>(selector);
   if (!element) {
@@ -202,7 +222,7 @@ describe("COMMAND State panel workbench", () => {
     seedCommandEvents(store);
   });
 
-  it("keeps Timeline available and renders COMMAND subscription/item/active-key grouping", () => {
+  it("keeps Timeline available and renders COMMAND subscription/item/key/update drilldown", () => {
     expect(text(".view-selector")).toContain("Timeline");
     expect(text(".view-selector")).toContain("COMMAND State");
     expect(document.querySelector(".event-feed")).not.toBeNull();
@@ -211,32 +231,123 @@ describe("COMMAND State panel workbench", () => {
 
     expect(document.querySelector('[aria-label="COMMAND state workbench"]')).not.toBeNull();
     expect(text(".command-group-pane")).toContain("sub-command");
+    expect(text(".command-group-pane")).toContain("COMMAND");
     expect(text(".command-group-pane")).toContain("item-a");
-    expect(text(".command-group-pane")).toContain("1 active");
-    expect(text(".command-group-pane")).toContain("1 deleted");
-    expect(text(".command-group-pane")).toContain("Choose a subscription and item.");
+    expect(text(".command-group-pane")).toContain("Choose an item.");
     expect(text(".command-group-pane")).not.toContain("sub-merge");
-    expect(text(".command-current-table")).toContain("Active keys");
-    expect(text(".command-current-table")).toContain("Current COMMAND state for the selected item.");
-    expect(text(".command-current-table")).toContain("Key");
-    expect(text(".command-current-table")).toContain("Origin");
-    expect(text(".command-current-table")).toContain("Latest");
-    expect(text(".command-current-table")).toContain("Command");
-    expect(text(".command-current-table")).toContain("Fields");
-    expect(text(".command-current-table")).toContain("Updates");
-    expect(text(".command-current-table")).toContain("Last seen");
-    expect(text(".command-current-table")).toContain("Diagnostics");
+    expect(text(".command-group-pane")).not.toContain("1 active");
+    expect(text(".command-group-pane")).not.toContain("1 deleted");
+    expect(text(".command-group-pane")).not.toContain("live server");
+    expect(document.querySelector(".command-item-meta")).toBeNull();
+    expect(text(".command-current-table")).toContain("Keys");
+    expect(text(".command-current-table")).toContain("Select a key to inspect its updates.");
+    expect(text(".command-current-header")).toContain("Key");
+    expect(text(".command-current-header")).toContain("Updates");
+    expect(text(".command-current-header")).toContain("Last seen");
+    expect(text(".command-current-header")).not.toContain("State");
+    expect(text(".command-current-header")).not.toContain("Latest");
+    expect(document.querySelectorAll(".command-current-header .command-current-cell")).toHaveLength(3);
     expect(text(".command-current-rows")).toContain("alpha");
-    expect(text(".command-current-rows")).toContain("snapshot server");
-    expect(text(".command-current-rows")).toContain("synthetic UPDATE");
-    expect(text(".command-current-rows")).not.toContain("beta");
-    expect(text(".command-lifecycle-results")).toContain("Matching keys, deleted keys, and diagnostics");
-    expect(text(".command-lifecycle-results")).toContain(
-      "matches across active keys, deleted keys, and diagnostics for this item."
+    expect(text(".command-current-rows")).toContain("beta");
+    expect(document.querySelector('.command-current-row[data-status="deleted"]')?.textContent).toContain("beta");
+    expect(document.querySelector('.command-current-row[data-status="deleted"]')?.textContent).not.toContain(
+      "deleted"
     );
-    expect(
-      document.querySelector<HTMLButtonElement>('.command-help-icon[aria-label^="Origin:"]')?.title
-    ).toBe("The event that created this active COMMAND key.");
+    expect(text(".command-update-list")).toContain("Updates for selected key");
+    expect(text(".command-update-list")).toContain("3 updates for alpha.");
+    expect(text(".command-update-list")).toContain("event-1");
+    expect(text(".command-update-list")).toContain("event-2");
+    expect(text(".command-update-list")).toContain("event-5");
+    expect(document.querySelector(".command-update-pane")?.parentElement).toBe(
+      document.querySelector(".command-workspace")
+    );
+    expect(document.querySelector(".command-current-table .command-update-list")).toBeNull();
+    expect(text(".command-update-header")).not.toContain("Changed");
+    expect(text(".command-update-header")).not.toContain("Source");
+    expect(document.querySelectorAll(".command-update-header .command-update-cell")).toHaveLength(3);
+    expect(document.querySelector(".command-update-row")?.querySelectorAll(".command-update-cell")).toHaveLength(
+      3
+    );
+    const commandWorkspace = document.querySelector<HTMLElement>(".command-workspace");
+    const resizeHandles = document.querySelectorAll(".command-resize-handle");
+    const keysResizeHandle = document.querySelector<HTMLElement>(
+      '.command-resize-handle[data-resize-target="keys"]'
+    );
+    expect(commandWorkspace?.style.getPropertyValue("--command-keys-width")).toBe("360px");
+    expect(resizeHandles).toHaveLength(3);
+    expect(keysResizeHandle?.getAttribute("role")).toBe("separator");
+    keysResizeHandle?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(commandWorkspace?.style.getPropertyValue("--command-keys-width")).toBe("384px");
+    expect(keysResizeHandle?.getAttribute("aria-valuenow")).toBe("384");
+    expect(document.querySelector(".command-filter-key")).toBeNull();
+  });
+
+  it("renders help tooltips in a clamped overlay for hover and focus", () => {
+    clickCommandState();
+
+    const helpText = "How many captured or synthetic updates are in this key lifecycle.";
+    const helpIcon = document.querySelector<HTMLButtonElement>('.command-help-icon[aria-label^="Updates:"]');
+    const tooltip = document.querySelector<HTMLElement>(".command-tooltip");
+    if (!helpIcon || !tooltip) {
+      throw new Error("missing tooltip test elements");
+    }
+
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    const helpIconRect = vi.spyOn(helpIcon, "getBoundingClientRect").mockReturnValue(rect(12, 2, 16, 16));
+    const tooltipRect = vi.spyOn(tooltip, "getBoundingClientRect").mockReturnValue(rect(0, 0, 220, 48));
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 160 });
+
+    try {
+      helpIcon.dispatchEvent(new Event("pointerover", { bubbles: true }));
+
+      expect(tooltip.hidden).toBe(false);
+      expect(tooltip.getAttribute("role")).toBe("tooltip");
+      expect(tooltip.textContent).toContain(helpText);
+      expect(tooltip.dataset.placement).toBe("bottom");
+      expect(Number.parseInt(tooltip.style.left, 10)).toBeGreaterThanOrEqual(8);
+      expect(Number.parseInt(tooltip.style.top, 10)).toBeGreaterThanOrEqual(26);
+      expect(helpIcon.getAttribute("aria-describedby")).toBe(tooltip.id);
+      expect(helpIcon.hasAttribute("title")).toBe(false);
+
+      helpIcon.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }));
+
+      expect(tooltip.hidden).toBe(true);
+      expect(helpIcon.title).toBe(helpText);
+
+      helpIcon.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+
+      expect(tooltip.hidden).toBe(false);
+      expect(helpIcon.getAttribute("aria-describedby")).toBe(tooltip.id);
+
+      helpIcon.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }));
+
+      expect(tooltip.hidden).toBe(true);
+      expect(helpIcon.title).toBe(helpText);
+    } finally {
+      helpIconRect.mockRestore();
+      tooltipRect.mockRestore();
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it("hides the COMMAND detail shell until COMMAND rows exist", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const mergeOnlyStore = createEventStore();
+    renderPanel(root, undefined, { store: mergeOnlyStore, bridge: { reinjectDraft } });
+    mergeOnlyStore.append(event("event-merge", { mode: "MERGE", key: "merge-key" }));
+
+    clickCommandState();
+
+    expect(text(".command-group-pane")).toContain("No COMMAND state yet");
+    expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>(".command-workspace")?.dataset.detailOpen).toBe("false");
   });
 
   it("selects a current row and shows current fields before per-key lifecycle provenance", () => {
@@ -267,25 +378,53 @@ describe("COMMAND State panel workbench", () => {
     expect(detailText).toContain("synthetic live");
     expect(document.querySelector("img")).toBeNull();
     expect(document.querySelector("strong")).toBeNull();
+
+    button(".detail-collapse-button").click();
+    expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(true);
+
+    clickRowByText(".command-current-row", "alpha");
+    expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(false);
+    expect(text(".command-detail-pane")).toContain("Key alpha - active");
   });
 
-  it("finds deleted keys through lifecycle search without putting them back in active rows", () => {
+  it("finds deleted keys as key rows and shows their updates", () => {
     clickCommandState();
 
     input(".command-search", "event-4");
 
-    expect(text(".command-current-rows")).not.toContain("beta");
-    expect(text(".command-lifecycle-results")).toContain("Matching keys, deleted keys, and diagnostics");
-    expect(text(".command-lifecycle-results")).toContain("beta");
-    expect(text(".command-lifecycle-results")).toContain("deleted");
-
-    clickRowByText(".command-lifecycle-result", "beta");
-
-    expect(text(".command-current-rows")).not.toContain("beta");
+    expect(text(".command-current-rows")).toContain("beta");
+    expect(document.querySelector('.command-current-row[data-status="deleted"]')?.textContent).toContain("beta");
+    expect(text(".command-update-list")).toContain("Updates for selected key");
+    expect(text(".command-update-list")).toContain("event-3");
+    expect(text(".command-update-list")).toContain("event-4");
     expect(text(".command-detail-pane")).toContain("Key beta - deleted");
     expect(text(".command-detail-pane")).toContain("event-3");
     expect(text(".command-detail-pane")).toContain("event-4");
     expect(text(".command-detail-pane")).toContain("DELETE");
+  });
+
+  it("shows selected key context and selected update detail separately", () => {
+    clickCommandState();
+
+    expect(selectedTexts(".command-current-row")).toHaveLength(1);
+    expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
+    expect(selectedTexts(".command-update-row")).toHaveLength(0);
+
+    clickRowByText(".command-update-row", "event-2");
+
+    expect(text(".command-detail-pane")).toContain("Update event-2");
+    expect(text(".command-detail-pane")).toContain("Update payload");
+    expect(selectedTexts(".command-current-row")).toHaveLength(1);
+    expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
+    expect(selectedTexts(".command-update-row")).toHaveLength(1);
+    expect(selectedTexts(".command-update-row")[0]).toContain("event-2");
+
+    clickRowByText(".command-current-row", "alpha");
+
+    expect(text(".command-detail-pane")).toContain("Key alpha - active");
+    expect(selectedTexts(".command-current-row")).toHaveLength(1);
+    expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
+    expect(selectedTexts(".command-update-row")).toHaveLength(0);
   });
 
   it("reconciles selected COMMAND detail against the current visible results", () => {
@@ -294,54 +433,34 @@ describe("COMMAND State panel workbench", () => {
 
     expect(text(".command-detail-pane")).toContain("Key alpha - active");
 
-    input(".command-filter-key", "beta");
+    input(".command-search", "beta");
 
     expect(text(".command-current-rows")).not.toContain("alpha");
-    expect(text(".command-lifecycle-results")).toContain("beta");
+    expect(text(".command-current-rows")).toContain("beta");
+    expect(text(".command-update-list")).toContain("event-4");
     expect(text(".command-detail-pane")).toContain("Key beta - deleted");
     expect(text(".command-detail-pane")).not.toContain("Key alpha - active");
   });
 
-  it("applies COMMAND search and compact filters with AND semantics across all required fields", () => {
+  it("applies COMMAND search with AND semantics across all required fields", () => {
     clickCommandState();
 
     input(".command-search", "sub-command item-a alpha UPDATE synthetic-value event-5");
     expect(text(".command-current-table")).toContain("alpha");
-    expect(text(".command-lifecycle-results")).toContain("alpha");
+    expect(text(".command-update-list")).toContain("event-5");
     expect(text(".command-detail-pane")).toContain("Key alpha - active");
 
-    input(".command-search", "");
-    input(".command-filter-subscription", "sub-command");
-    input(".command-filter-item", "item-a");
-    input(".command-filter-key", "alpha");
-    input(".command-filter-command", "UPDATE");
-    input(".command-filter-source", "synthetic");
-    input(".command-filter-snapshot", "live");
-    input(".command-filter-synthetic", "synthetic");
-    input(".command-filter-diagnostics", "none");
+    input(".command-search", "sub-command item-a alpha UPDATE synthetic live none");
 
     expect(text(".command-current-rows")).toContain("alpha");
     expect(text(".command-current-rows")).not.toContain("beta");
 
-    input(".command-filter-key", "");
-    input(".command-filter-command", "");
-    input(".command-filter-source", "");
-    input(".command-filter-snapshot", "");
-    input(".command-filter-synthetic", "");
-    input(".command-filter-diagnostics", "unknown-key-delete");
+    input(".command-search", "unknown-key-delete ghost");
 
     expect(text(".command-current-rows")).not.toContain("alpha");
-    expect(text(".command-lifecycle-results")).toContain("ghost");
-    expect(text(".command-lifecycle-results")).toContain("diagnostic");
-    expect(text(".command-detail-pane")).toContain("COMMAND diagnostic");
-    expect(text(".command-detail-pane")).toContain("unknown-key-delete");
-
-    clickRowByText(".command-lifecycle-result", "ghost");
-
-    expect(text(".command-detail-pane")).toContain("event-6");
-    expect(document.querySelector('.command-lifecycle-result[data-selected="true"]')?.textContent).toContain(
-      "ghost"
-    );
+    expect(text(".command-current-rows")).not.toContain("ghost");
+    expect(text(".command-update-list")).toContain("Select a key to inspect its updates.");
+    expect(text(".command-detail-pane")).toContain("Select a key or update");
   });
 
   it("creates a schema-derived COMMAND draft with validation diagnostics and no auto-correction", () => {
@@ -371,6 +490,50 @@ describe("COMMAND State panel workbench", () => {
     expect((document.querySelector<HTMLInputElement>(".command-draft-snapshot")?.checked)).toBe(true);
     expect((document.querySelector<HTMLInputElement>('.command-draft-field-input[data-field-name="qty"]')?.value)).toBe("9");
     expect(button(".inject-command-button").disabled).toBe(false);
+  });
+
+  it("preserves COMMAND reinjection context after clearing visible events", async () => {
+    reinjectDraft.mockResolvedValue({
+      requestId: "request-after-clear",
+      ok: true,
+      status: "success",
+      timestamp: 1_700_000_002_222
+    });
+    clickCommandState();
+
+    button(".clear-button").click();
+
+    expect(text(".event-count")).toBe("0");
+    expect(store.count()).toBe(0);
+    expect(text(".command-current-rows")).toContain("alpha");
+    expect(text(".command-detail-pane")).toContain("New COMMAND update");
+
+    button(".new-command-button").click();
+    input(".command-draft-command", "UPDATE");
+    input(".command-draft-key", "alpha");
+    input('.command-draft-field-input[data-field-name="qty"]', "10");
+
+    expect(button(".inject-command-button").disabled).toBe(false);
+
+    await button(".inject-command-button").click();
+    await Promise.resolve();
+
+    expect(reinjectDraft).toHaveBeenCalledTimes(1);
+    expect(reinjectDraft.mock.calls[0]?.[0]).toMatchObject({
+      target: {
+        subscriptionId: "sub-command",
+        listenerId: "listener-1"
+      },
+      command: "UPDATE",
+      key: "alpha"
+    });
+    expect(store.list()).toHaveLength(1);
+    expect(store.list()[0]?.synthetic).toBe(true);
+    expect(text(".reinjection-message")).toContain(
+      "Synthetic COMMAND update injected through the captured listener."
+    );
+    expect(text(".command-update-list")).toContain("UPDATE");
+    expect(text(".command-detail-pane")).toContain("Latest synthetic UPDATE");
   });
 
   it("clears a New COMMAND draft when the selected item context changes", () => {
@@ -434,6 +597,31 @@ describe("COMMAND State panel workbench", () => {
     expect(nextKeyInput.value).toBe("g");
   });
 
+  it("keeps COMMAND detail editors open and focused when new events arrive", () => {
+    clickCommandState();
+    button(".new-command-button").click();
+    input(".command-draft-key", "g");
+
+    const detailPane = document.querySelector<HTMLElement>(".command-detail-pane");
+    if (!detailPane) {
+      throw new Error("missing command detail pane");
+    }
+    detailPane.scrollTop = 240;
+
+    const keyInput = control(".command-draft-key") as HTMLInputElement;
+    keyInput.focus();
+    keyInput.setSelectionRange(1, 1);
+
+    store.append(event("event-8", { mode: "MERGE", key: "merge-key" }));
+
+    const nextKeyInput = control(".command-draft-key") as HTMLInputElement;
+    expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(false);
+    expect(document.activeElement).toBe(nextKeyInput);
+    expect(nextKeyInput.value).toBe("g");
+    expect(nextKeyInput.selectionStart).toBe(1);
+    expect(detailPane.scrollTop).toBe(240);
+  });
+
   it("appends a synthetic COMMAND row only after listener-path success", async () => {
     reinjectDraft.mockResolvedValue({
       requestId: "request-1",
@@ -457,7 +645,6 @@ describe("COMMAND State panel workbench", () => {
       "Synthetic COMMAND update injected through the captured listener."
     );
     expect(text(".command-current-rows")).toContain("bravo");
-    expect(text(".command-current-rows")).toContain("synthetic ADD");
     clickRowByText(".command-current-row", "bravo");
     expect(text(".command-detail-pane")).toContain("synthetic-request-1");
     expect(store.list().at(-1)?.raw).toMatchObject({

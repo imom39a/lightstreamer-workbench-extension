@@ -31,13 +31,15 @@ English (United States)
 ```text
 Lightstreamer Event Workbench adds a Chrome DevTools panel for developers debugging web applications that use the official Lightstreamer Web Client.
 
-It captures client, subscription, listener, item update, snapshot, and COMMAND-mode key lifecycle activity from the inspected page, then shows it in a searchable in-memory workbench. Developers can inspect normalized Lightstreamer event envelopes, reconstruct current COMMAND state, review key lifecycles, and locally reinject edited synthetic updates through captured listener paths without backend access.
+It captures client, subscription, listener, item update, snapshot, and COMMAND-mode key lifecycle activity from the inspected page, then shows it in a searchable in-memory workbench with explicit retention status. Developers can inspect normalized Lightstreamer event envelopes, reconstruct current COMMAND state, review key lifecycles, and locally reinject edited synthetic updates through captured listener paths without backend access.
 
 Key features:
 
-- Timeline view for captured Lightstreamer clients, subscriptions, item updates, snapshots, and synthetic replays.
-- COMMAND State view that groups active and deleted keys by subscription and item.
-- Lifecycle detail for ADD, UPDATE, DELETE, snapshot, live, and synthetic COMMAND events.
+- Timeline view for captured Lightstreamer clients, subscriptions, item updates, snapshots, and synthetic replays, with bounded rendering for high-volume sessions.
+- COMMAND State view that groups active and deleted keys by subscription and item, with a selected-key update history.
+- Single free-text search in Timeline and COMMAND State for event IDs, Lightstreamer fields, commands, keys, diagnostics, source, and JSON payloads.
+- Collapsible detail panes, table headers, and clearer selected-row highlighting for faster scanning.
+- Lifecycle detail for ADD, UPDATE, DELETE, snapshot, live, and synthetic COMMAND events, with diagnostics and update payloads surfaced first.
 - Draft editor for cloning captured updates and locally reinjecting safe synthetic events.
 - New COMMAND update editor with schema-based fields, validation diagnostics, and listener-target checks.
 - WebSocket/TLCP fallback diagnostics when primary Web Client instrumentation is unavailable.
@@ -49,18 +51,18 @@ This extension is intended for developers and QA engineers who need to understan
 ## Screenshot Upload Order
 
 1. `screenshots/01-command-state-active-keys.png`
-   - Caption: COMMAND State groups active keys by subscription and item, with lifecycle results and selected-key detail.
+   - Caption: COMMAND State groups active and deleted keys by subscription and item, with selected-key update history and lifecycle detail.
 2. `screenshots/02-timeline-event-detail.png`
-   - Caption: Timeline view lists captured Lightstreamer updates and shows the normalized event envelope.
+   - Caption: Timeline view lists captured Lightstreamer updates with headers, single search, and normalized event detail.
 3. `screenshots/03-new-command-update-editor.png`
-   - Caption: New COMMAND update editor validates schema fields before local listener-path injection.
+   - Caption: New COMMAND update editor validates schema fields and listener-target diagnostics before local injection.
 
 ## Graphic Assets
 
 Store icon:
 
 ```text
-public/icons/icon-128.png
+store-listing/icons/icon-128.png
 ```
 
 Small promo tile:
@@ -73,6 +75,27 @@ Marquee promo tile, optional:
 
 ```text
 store-listing/promo/marquee-promo-tile.png
+```
+
+## Release Notes Draft
+
+Version:
+
+```text
+0.1.1
+```
+
+What's new:
+
+```text
+Bug-fix release focused on high-volume debugging and DevTools panel readability.
+
+- Shows retained, total, and pruned event counts so event-store limits are explicit during long sessions.
+- Keeps Timeline rendering responsive by bounding visible high-volume event lists and prompting users to narrow search results.
+- Replaces dense Timeline and COMMAND State filter rows with one free-text search per view.
+- Adds visible table headers, collapsible detail panes, and clearer full-row selection highlighting.
+- Fixes help popups so tooltip text is visible on hover/focus and avoids viewport clipping.
+- Reorganizes event detail sections so raw diagnostics and useful update payloads are easier to inspect.
 ```
 
 ## Privacy Practices Draft
@@ -108,7 +131,7 @@ For deterministic local verification from the repository:
 
 - [ ] Confirm `public/manifest.json` version matches `package.json`.
 - [ ] Run `npm run release:package`.
-- [ ] Upload `release/lightstreamer-event-workbench-v0.1.0.zip`.
+- [ ] Upload `release/lightstreamer-event-workbench-v0.1.1.zip`.
 - [ ] Upload `public/icons/icon-128.png` as the store icon.
 - [ ] Upload all three screenshots in the order listed above.
 - [ ] Upload `store-listing/promo/small-promo-tile.png`.

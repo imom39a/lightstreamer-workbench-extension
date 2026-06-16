@@ -97,14 +97,19 @@ if (scene === "command-state") {
   clickButton(".clone-button");
 } else if (scene === "new-command") {
   clickView("COMMAND State");
+  clickRow(".command-current-row", "alpha");
   clickButton(".new-command-button");
+  if (!document.querySelector(".command-draft-controls")) {
+    throw new Error("New COMMAND editor did not open for the store listing screenshot.");
+  }
   setValue(".command-draft-command", "UPDATE");
   setValue(".command-draft-key", "alpha");
   setValue('.command-draft-field-input[data-field-name="qty"]', "42");
   setValue('.command-draft-field-input[data-field-name="status"]', "review");
   const detail = document.querySelector(".command-detail-pane");
-  if (detail) {
-    detail.scrollTop = detail.scrollHeight;
+  const editor = document.querySelector(".new-command-editor");
+  if (detail && editor instanceof HTMLElement) {
+    detail.scrollTop = Math.max(0, editor.offsetTop - 72);
   }
 }
 

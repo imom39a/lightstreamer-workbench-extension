@@ -10,3 +10,4 @@ private/
 .codex/
 fixtures/lightstreamer/adapter/target/
 fixtures/lightstreamer/adapters/*/lib/
+issues
