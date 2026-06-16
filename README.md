@@ -8,7 +8,7 @@ This repository is the public homepage and support location for the extension.
 
 ## Status
 
-Version `0.1.0` has been submitted for Chrome Web Store review. The Chrome Web Store install link will be added here after approval. Until then, contributors and reviewers can install the extension from source by loading the built `dist/` directory as an unpacked extension.
+Version `0.1.1` is the current bug-fix package for Chrome Web Store review. The Chrome Web Store install link will be added here after approval. Until then, contributors and reviewers can install the extension from source by loading the built `dist/` directory as an unpacked extension.
 
 The first release focuses on in-memory debugging for the current inspected tab. The UI and internal event envelope may evolve as more Lightstreamer workflows are validated.
 

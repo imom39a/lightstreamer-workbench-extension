@@ -365,7 +365,7 @@ Publish options:
   --allow-warnings         Do not fail the publish request on validation warnings.
 
 Examples:
-  npm run release:upload -- --zip release/lightstreamer-event-workbench-v0.1.0.zip
+  npm run release:upload -- --zip release/lightstreamer-event-workbench-v<version>.zip
   npm run release:publish -- --deploy-percent 5
   npm run release:publish -- --default-publish
   npm run release:status
