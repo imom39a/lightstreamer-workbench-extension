@@ -202,7 +202,7 @@ describe("panel shell", () => {
     expect(text(".filtered-count")).toBe("0 shown");
   });
 
-  it("surfaces high-volume retention options without pruning Timeline history", () => {
+  it("surfaces high-volume retention options and loads more Timeline rows while scrolling", () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     const store = createEventStore({ warningThreshold: 500 });
@@ -210,7 +210,7 @@ describe("panel shell", () => {
       throw new Error("missing test root");
     }
 
-    for (let index = 1; index <= 502; index += 1) {
+    for (let index = 1; index <= 1002; index += 1) {
       store.append({
         id: `event-${index}`,
         timestamp: index,
@@ -232,14 +232,35 @@ describe("panel shell", () => {
     renderPanel(root, undefined, { store });
 
     expect(store.list().map((entry) => entry.id)).toContain("event-1");
-    expect(text(".event-count")).toBe("502");
-    expect(text(".retention-notice")).toContain("High volume: 502 events retained");
+    expect(text(".event-count")).toBe("1002");
+    expect(text(".retention-notice")).toContain("High volume: 1,002 events retained");
     expect(text(".retention-notice")).toContain("Keep events");
     expect(text(".retention-notice")).toContain("Clear events");
     expect(text(".event-render-limit")).toBe(
-      "All matching events are retained; showing latest 500 of 502. Use search to inspect earlier events."
+      "All matching events are retained; showing latest 500 of 1002. Scroll to load more retained events."
     );
     expect(document.querySelectorAll(".event-row")).toHaveLength(500);
+
+    const feed = document.querySelector<HTMLElement>(".event-feed");
+    if (!feed) {
+      throw new Error("missing event feed");
+    }
+    Object.defineProperties(feed, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1000 }
+    });
+    feed.scrollTop = 800;
+    feed.dispatchEvent(new Event("scroll"));
+
+    expect(document.querySelectorAll(".event-row")).toHaveLength(1000);
+    expect(text(".event-render-limit")).toBe(
+      "All matching events are retained; showing latest 1000 of 1002. Scroll to load more retained events."
+    );
+
+    feed.dispatchEvent(new Event("scroll"));
+
+    expect(document.querySelectorAll(".event-row")).toHaveLength(1002);
+    expect(document.querySelector(".event-render-limit")).toBeNull();
 
     const keepButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".event-volume-action")).find(
       (button) => button.textContent === "Keep events"
@@ -247,7 +268,7 @@ describe("panel shell", () => {
     keepButton?.click();
 
     expect(document.querySelector<HTMLElement>(".retention-notice")?.hidden).toBe(true);
-    expect(store.count()).toBe(502);
+    expect(store.count()).toBe(1002);
   });
 
   it("realigns detail with newest visible event when filters hide the selected row", () => {

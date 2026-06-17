@@ -20,6 +20,8 @@ function commandEvent(
     synthetic?: boolean;
     kind?: LightstreamerEventEnvelope["kind"];
     mode?: string | null;
+    subscriptionItems?: string[];
+    subscriptionItemGroup?: string | null;
   } = {}
 ): LightstreamerEventEnvelope {
   const command: string | null = Object.prototype.hasOwnProperty.call(overrides, "command")
@@ -29,6 +31,12 @@ function commandEvent(
     ? overrides.key ?? null
     : "alpha";
   const mode = Object.prototype.hasOwnProperty.call(overrides, "mode") ? overrides.mode : "COMMAND";
+  const itemName: string | null = Object.prototype.hasOwnProperty.call(overrides, "itemName")
+    ? overrides.itemName ?? null
+    : "scenario.command";
+  const itemPosition: number | null = Object.prototype.hasOwnProperty.call(overrides, "itemPosition")
+    ? overrides.itemPosition ?? null
+    : 1;
   return {
     id,
     timestamp: 1_700_000_000_000 + Number(id.replace(/\D/g, "") || 0),
@@ -39,12 +47,14 @@ function commandEvent(
     subscription: {
       id: overrides.subscriptionId ?? "subscription-1",
       mode,
+      items: overrides.subscriptionItems,
+      itemGroup: overrides.subscriptionItemGroup,
       fields: ["command", "key", "name", "qty", "status"]
     },
     listener: { id: "listener-1" },
     item: {
-      name: overrides.itemName ?? "scenario.command",
-      position: overrides.itemPosition ?? 1
+      name: itemName,
+      position: itemPosition
     },
     update: {
       isSnapshot: overrides.snapshot ?? false,
@@ -151,6 +161,99 @@ describe("COMMAND state reducer", () => {
       latest: { eventId: "event-3", source: "server", synthetic: false, isSnapshot: false }
     });
     expect(alpha.lifecycle.map((entry) => entry.eventId)).toEqual(["event-2", "event-3"]);
+  });
+
+  it("resolves unnamed item updates through subscription item metadata before grouping", () => {
+    const state = reduceCommandState([
+      commandEvent("event-1", {
+        subscriptionId: "subscription-2",
+        itemName: null,
+        itemPosition: 1,
+        subscriptionItems: ["orderDetails.STORE_NYC_001", "healthCheck.SYS_MONITOR"],
+        key: "order-1"
+      }),
+      commandEvent("event-2", {
+        subscriptionId: "subscription-2",
+        itemName: null,
+        itemPosition: 2,
+        subscriptionItems: ["orderDetails.STORE_NYC_001", "healthCheck.SYS_MONITOR"],
+        key: "health-1"
+      }),
+      commandEvent("event-3", {
+        subscriptionId: "subscription-3",
+        itemName: null,
+        itemPosition: 1,
+        subscriptionItems: ["inventorySearch.STORE_NYC_001"],
+        key: "inventory-1"
+      })
+    ]);
+
+    expect(state.subscriptions.map((group) => group.subscriptionId)).toEqual([
+      "subscription-2",
+      "subscription-3"
+    ]);
+    expect(state.subscriptions[0].items.map((group) => group.itemName)).toEqual([
+      "orderDetails.STORE_NYC_001",
+      "healthCheck.SYS_MONITOR"
+    ]);
+    expect(state.subscriptions[0].items.map((group) => group.itemId)).toEqual([
+      "name:orderDetails.STORE_NYC_001",
+      "name:healthCheck.SYS_MONITOR"
+    ]);
+    expect(state.subscriptions[1].items[0]).toMatchObject({
+      itemId: "name:inventorySearch.STORE_NYC_001",
+      itemName: "inventorySearch.STORE_NYC_001",
+      itemPosition: 1
+    });
+  });
+
+  it("tracks each position independently when a Lightstreamer item group has no item list names", () => {
+    const state = reduceCommandState([
+      commandEvent("event-1", {
+        subscriptionId: "subscription-6",
+        itemName: null,
+        itemPosition: 1,
+        subscriptionItemGroup: "salesActivity.STORE_NYC_001",
+        key: "invoice-1",
+        fields: {
+          command: "ADD",
+          key: "invoice-1",
+          name: "Invoice",
+          qty: "1",
+          status: "open"
+        }
+      }),
+      commandEvent("event-2", {
+        subscriptionId: "subscription-6",
+        itemName: null,
+        itemPosition: 2,
+        subscriptionItemGroup: "salesActivity.STORE_NYC_001",
+        key: "expense-1",
+        fields: {
+          command: "ADD",
+          key: "expense-1",
+          name: "Expense",
+          qty: "1",
+          status: "open"
+        }
+      })
+    ]);
+
+    expect(state.subscriptions).toHaveLength(1);
+    expect(state.subscriptions[0].items).toHaveLength(2);
+    expect(state.subscriptions[0].items.map((group) => group.itemId)).toEqual([
+      "group:salesActivity.STORE_NYC_001:position:1",
+      "group:salesActivity.STORE_NYC_001:position:2"
+    ]);
+    expect(state.subscriptions[0].items.map((group) => group.itemName)).toEqual([
+      "salesActivity.STORE_NYC_001",
+      "salesActivity.STORE_NYC_001"
+    ]);
+    expect(state.subscriptions[0].items.map((group) => group.itemPosition)).toEqual([1, 2]);
+    expect(state.subscriptions[0].items.map((group) => group.activeRows.map((row) => row.key))).toEqual([
+      ["invoice-1"],
+      ["expense-1"]
+    ]);
   });
 
   it("covers CMD-02, D-01, D-06, D-07, and D-11 for ADD, UPDATE, DELETE, snapshot ADD, and lifecycle tombstones", () => {

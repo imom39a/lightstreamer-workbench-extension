@@ -22,6 +22,10 @@ function selectedTexts(selector: string): string[] {
   );
 }
 
+async function flushInteractionRender(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function rect(left: number, top: number, width: number, height: number): DOMRect {
   return {
     x: left,
@@ -104,6 +108,8 @@ function event(
     source?: LightstreamerEventEnvelope["source"];
     synthetic?: boolean;
     raw?: LightstreamerEventEnvelope["raw"];
+    subscriptionItems?: string[];
+    subscriptionItemGroup?: string | null;
   } = {}
 ): LightstreamerEventEnvelope {
   const command: string | null = Object.prototype.hasOwnProperty.call(overrides, "command")
@@ -112,6 +118,12 @@ function event(
   const key: string | null = Object.prototype.hasOwnProperty.call(overrides, "key")
     ? overrides.key ?? null
     : "alpha";
+  const itemName: string | null = Object.prototype.hasOwnProperty.call(overrides, "itemName")
+    ? overrides.itemName ?? null
+    : "item-a";
+  const itemPosition: number | null = Object.prototype.hasOwnProperty.call(overrides, "itemPosition")
+    ? overrides.itemPosition ?? null
+    : 1;
   return {
     id,
     timestamp: 1_700_000_000_000 + Number(id.replace(/\D/g, "") || 0),
@@ -123,12 +135,14 @@ function event(
     subscription: {
       id: overrides.subscriptionId ?? "sub-command",
       mode: overrides.mode ?? "COMMAND",
+      items: overrides.subscriptionItems,
+      itemGroup: overrides.subscriptionItemGroup,
       fields: ["command", "key", "name", "qty", "html", "status"]
     },
     listener: { id: "listener-1" },
     item: {
-      name: overrides.itemName ?? "item-a",
-      position: overrides.itemPosition ?? 1
+      name: itemName,
+      position: itemPosition
     },
     update: {
       isSnapshot: overrides.snapshot ?? false,
@@ -206,6 +220,77 @@ function seedCommandEvents(store: EventStore): void {
   store.append(event("event-7", { subscriptionId: "sub-merge", mode: "MERGE", key: "merge-key" }));
 }
 
+function seedIssue16CommandGroups(store: EventStore): number {
+  const groups: Array<{
+    subscriptionId: string;
+    items: Array<[string, number]>;
+    itemGroup?: string;
+  }> = [
+    { subscriptionId: "subscription-1", items: [["session.metadata", 2]] },
+    {
+      subscriptionId: "subscription-2",
+      items: [
+        ["orderDetails.STORE_NYC_001", 850],
+        ["healthCheck.SYS_MONITOR", 6]
+      ]
+    },
+    { subscriptionId: "subscription-3", items: [["inventorySearch.STORE_NYC_001", 1]] },
+    { subscriptionId: "subscription-4", items: [["inventorySearch.STORE_LA_002", 1]] },
+    { subscriptionId: "subscription-5", items: [["productCatalog.STORE_NYC_001", 3]] },
+    {
+      subscriptionId: "subscription-6",
+      itemGroup: "salesActivity.STORE_NYC_001",
+      items: [
+        ["STORE_NYC_001.INVOICE", 30],
+        ["STORE_NYC_001.EXPENSE", 20]
+      ]
+    },
+    { subscriptionId: "subscription-7", items: [["returnRequests.STORE_NYC_001", 9]] },
+    { subscriptionId: "subscription-8", items: [["staffSchedule.STORE_NYC_001", 15]] },
+    { subscriptionId: "subscription-9", items: [["customerQueue.STORE_NYC_001", 4]] },
+    { subscriptionId: "subscription-10", items: [["promotions.STORE_NYC_001", 2]] },
+    { subscriptionId: "subscription-11", items: [["shippingStatus.STORE_NYC_001", 30]] },
+    { subscriptionId: "subscription-12", items: [["orderDetails.STORE_LA_002", 700]] },
+    { subscriptionId: "subscription-13", items: [["paymentActivity.STORE_NYC_001", 4]] },
+    { subscriptionId: "subscription-14", items: [["loyaltyPoints.STORE_NYC_001", 12]] },
+    { subscriptionId: "subscription-15", items: [["storeAlerts.STORE_NYC_001", 3]] }
+  ];
+  let eventIndex = 1;
+
+  for (const group of groups) {
+    const subscriptionItems = group.itemGroup ? undefined : group.items.map(([itemName]) => itemName);
+    for (const [itemName, count] of group.items) {
+      const itemPosition = group.items.findIndex(([candidate]) => candidate === itemName) + 1;
+      const keyPrefix = itemName.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
+      for (let updateIndex = 1; updateIndex <= count; updateIndex += 1) {
+        const key = `${keyPrefix}-${updateIndex}`;
+        store.append(
+          event(`issue-16-${eventIndex}`, {
+            subscriptionId: group.subscriptionId,
+            itemName: null,
+            itemPosition,
+            subscriptionItems,
+            subscriptionItemGroup: group.itemGroup,
+            key,
+            fields: {
+              command: "ADD",
+              key,
+              name: itemName,
+              qty: String(updateIndex),
+              html: "",
+              status: "open"
+            },
+            changedFields: { command: "ADD", key }
+          })
+        );
+        eventIndex += 1;
+      }
+    }
+  }
+
+  return eventIndex - 1;
+}
+
 describe("COMMAND State panel workbench", () => {
   let store: EventStore;
   let reinjectDraft: Mock<(draft: ReinjectionDraft) => Promise<ReinjectionResult>>;
@@ -280,6 +365,109 @@ describe("COMMAND State panel workbench", () => {
     expect(commandWorkspace?.style.getPropertyValue("--command-keys-width")).toBe("384px");
     expect(keysResizeHandle?.getAttribute("aria-valuenow")).toBe("384");
     expect(document.querySelector(".command-filter-key")).toBeNull();
+  });
+
+  it("renders all high-volume COMMAND subscription groups without collapsing repeated subscription ids", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const issueStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const totalEvents = seedIssue16CommandGroups(issueStore);
+    renderPanel(root, undefined, { store: issueStore, bridge: { reinjectDraft } });
+
+    clickCommandState();
+
+    const sidebarText = text(".command-group-pane");
+    expect(text(".event-count")).toBe(String(totalEvents));
+    expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(15);
+    expect(document.querySelectorAll(".command-item-button")).toHaveLength(17);
+    expect(sidebarText).toContain("subscription-15 COMMAND");
+    expect(sidebarText).toContain("storeAlerts.STORE_NYC_001");
+    expect(sidebarText).toContain("orderDetails.STORE_NYC_001");
+    expect(sidebarText).toContain("healthCheck.SYS_MONITOR");
+    expect(sidebarText).toContain("salesActivity.STORE_NYC_001 position 1");
+    expect(sidebarText).toContain("salesActivity.STORE_NYC_001 position 2");
+
+    clickRowByText(".command-item-button", "orderDetails.STORE_NYC_001");
+    expect(text(".command-current-table")).toContain("orderdetails-store-nyc-001-850");
+    expect(button(".new-command-button").disabled).toBe(false);
+    button(".new-command-button").click();
+    expect(text(".command-draft-context")).toContain("orderDetails.STORE_NYC_001");
+    expect(text(".command-draft-context")).toContain("listener-1");
+
+    clickRowByText(".command-item-button", "salesActivity.STORE_NYC_001 position 1");
+    expect(text(".command-current-table")).toContain("store-nyc-001-invoice-30");
+    expect(text(".command-current-table")).not.toContain("store-nyc-001-expense-20");
+
+    clickRowByText(".command-item-button", "salesActivity.STORE_NYC_001 position 2");
+    expect(text(".command-current-table")).toContain("store-nyc-001-expense-20");
+    expect(text(".command-current-table")).not.toContain("store-nyc-001-invoice-30");
+  });
+
+  it("keeps timeline rows selectable when live inflow arrives during pointer selection", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const liveStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    liveStore.append(event("timeline-1", { key: "alpha" }));
+    liveStore.append(event("timeline-2", { key: "beta" }));
+    renderPanel(root, undefined, { store: liveStore, bridge: { reinjectDraft } });
+
+    const alphaRow = Array.from(document.querySelectorAll<HTMLButtonElement>(".event-row")).find(
+      (candidate) => (candidate.textContent ?? "").includes("alpha")
+    );
+    if (!alphaRow) {
+      throw new Error("missing alpha timeline row");
+    }
+
+    alphaRow.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    liveStore.append(event("timeline-3", { key: "gamma" }));
+
+    expect(text(".event-count")).toBe("3");
+    expect(alphaRow.isConnected).toBe(true);
+
+    alphaRow.click();
+    expect(text(".detail-pane")).toContain("timeline-1");
+    expect(text(".detail-pane")).toContain("alpha");
+
+    await flushInteractionRender();
+  });
+
+  it("keeps COMMAND item buttons selectable when live inflow arrives during pointer selection", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const liveStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    liveStore.append(event("command-1", { itemName: "item-a", itemPosition: 1, key: "alpha" }));
+    liveStore.append(event("command-2", { itemName: "item-b", itemPosition: 2, key: "bravo" }));
+    renderPanel(root, undefined, { store: liveStore, bridge: { reinjectDraft } });
+    clickCommandState();
+
+    const itemButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".command-item-button")).find(
+      (candidate) => (candidate.textContent ?? "").includes("item-b")
+    );
+    if (!itemButton) {
+      throw new Error("missing item-b button");
+    }
+
+    itemButton.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    liveStore.append(event("command-3", { itemName: "item-a", itemPosition: 1, key: "charlie" }));
+
+    expect(text(".event-count")).toBe("3");
+    expect(itemButton.isConnected).toBe(true);
+
+    itemButton.click();
+    expect(selectedTexts(".command-item-button")).toContain("item-b");
+    expect(text(".command-current-table")).toContain("bravo");
+    expect(text(".command-current-table")).not.toContain("charlie");
+
+    await flushInteractionRender();
   });
 
   it("renders help tooltips in a clamped overlay for hover and focus", () => {
