@@ -564,8 +564,8 @@ describe("COMMAND State panel workbench", () => {
     expect(detailText).toContain("snapshot server");
     expect(detailText).toContain("live server");
     expect(detailText).toContain("synthetic live");
-    expect(document.querySelector("img")).toBeNull();
-    expect(document.querySelector("strong")).toBeNull();
+    expect(document.querySelector(".command-detail-pane img")).toBeNull();
+    expect(document.querySelector(".command-detail-pane strong")).toBeNull();
 
     button(".detail-collapse-button").click();
     expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(true);

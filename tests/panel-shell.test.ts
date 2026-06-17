@@ -91,6 +91,10 @@ describe("panel shell", () => {
 
   it("renders the toolbar status and zero event count", () => {
     expect(text(".product-label")).toBe("Lightstreamer Event Workbench");
+    expect(document.querySelector<HTMLImageElement>(".product-icon")?.getAttribute("src")).toBe(
+      "/icons/icon-48.png"
+    );
+    expect(document.querySelector<HTMLImageElement>(".product-icon")?.alt).toBe("");
     expect(text(".status-badge")).toBe("idle");
     expect(text(".event-count")).toBe("0");
     expect(document.querySelector(".event-count")?.getAttribute("aria-label")).toBe("0 captured events");
@@ -327,7 +331,7 @@ describe("panel shell", () => {
     appendCommandUpdate(panel, "alpha", { html: "<img src=x onerror=alert(1)>" });
     clickFirstEventRow();
 
-    expect(document.querySelector("img")).toBeNull();
+    expect(document.querySelector(".detail-pane img")).toBeNull();
     expect(text(".detail-pane")).toContain("<img src=x onerror=alert(1)>");
   });
 

@@ -160,6 +160,28 @@ function createTextElement<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
+function createProductLabel(): HTMLHeadingElement {
+  const title = document.createElement("h1");
+  title.className = "product-label";
+  const icon = document.createElement("img");
+  icon.className = "product-icon";
+  icon.src = extensionAssetUrl("icons/icon-48.png");
+  icon.alt = "";
+  icon.setAttribute("aria-hidden", "true");
+  icon.decoding = "async";
+  const text = createTextElement("span", "product-label-text", "Lightstreamer Event Workbench");
+  title.append(icon, text);
+  return title;
+}
+
+function extensionAssetUrl(path: string): string {
+  const runtime = globalThis.chrome?.runtime;
+  if (runtime && typeof runtime.getURL === "function") {
+    return runtime.getURL(path);
+  }
+  return `/${path}`;
+}
+
 function createHelpIcon(label: string, help: string): HTMLButtonElement {
   const button = document.createElement("button");
   button.className = "command-help-icon";
@@ -411,7 +433,7 @@ export function renderPanel(
   const toolbar = document.createElement("header");
   toolbar.className = "toolbar";
 
-  const title = createTextElement("h1", "product-label", "Lightstreamer Event Workbench");
+  const title = createProductLabel();
 
   const toolbarMeta = document.createElement("div");
   toolbarMeta.className = "toolbar-meta";
