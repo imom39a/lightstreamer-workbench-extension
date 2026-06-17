@@ -165,7 +165,7 @@ function createProductLabel(): HTMLHeadingElement {
   title.className = "product-label";
   const icon = document.createElement("img");
   icon.className = "product-icon";
-  icon.src = extensionAssetUrl("icons/icon-48.png");
+  icon.src = extensionAssetUrl("icons/title-icon.svg");
   icon.alt = "";
   icon.setAttribute("aria-hidden", "true");
   icon.decoding = "async";

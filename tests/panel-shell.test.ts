@@ -92,7 +92,7 @@ describe("panel shell", () => {
   it("renders the toolbar status and zero event count", () => {
     expect(text(".product-label")).toBe("Lightstreamer Event Workbench");
     expect(document.querySelector<HTMLImageElement>(".product-icon")?.getAttribute("src")).toBe(
-      "/icons/icon-48.png"
+      "/icons/title-icon.svg"
     );
     expect(document.querySelector<HTMLImageElement>(".product-icon")?.alt).toBe("");
     expect(text(".status-badge")).toBe("idle");
