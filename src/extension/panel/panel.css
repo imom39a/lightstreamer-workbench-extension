@@ -53,13 +53,27 @@ button {
 }
 
 .product-label {
+  display: inline-flex;
   min-width: 0;
+  align-items: center;
+  gap: 8px;
   margin: 0;
-  overflow: hidden;
   color: #1f2937;
   font-size: 15px;
   font-weight: 600;
   line-height: 1.35;
+}
+
+.product-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  object-fit: contain;
+}
+
+.product-label-text {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

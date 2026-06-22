@@ -15,6 +15,7 @@ import {
 } from "../../core/event-filter";
 import {
   reduceCommandState,
+  resolveCommandItemIdentity,
   type CommandDiagnostic,
   type CommandItemGroup,
   type CommandLifecycleEntry,
@@ -121,7 +122,8 @@ const initialState: PanelState = {
   status: "idle"
 };
 
-const MAX_TIMELINE_ROWS = 500;
+const TIMELINE_RENDER_CHUNK_SIZE = 500;
+const TIMELINE_LOAD_MORE_THRESHOLD = 32;
 const COMMAND_DEFAULT_PANE_WIDTHS: CommandPaneWidths = {
   subscriptions: 250,
   keys: 360,
@@ -156,6 +158,28 @@ function createTextElement<K extends keyof HTMLElementTagNameMap>(
   element.className = className;
   element.textContent = text;
   return element;
+}
+
+function createProductLabel(): HTMLHeadingElement {
+  const title = document.createElement("h1");
+  title.className = "product-label";
+  const icon = document.createElement("img");
+  icon.className = "product-icon";
+  icon.src = extensionAssetUrl("icons/title-icon.svg");
+  icon.alt = "";
+  icon.setAttribute("aria-hidden", "true");
+  icon.decoding = "async";
+  const text = createTextElement("span", "product-label-text", "Lightstreamer Event Workbench");
+  title.append(icon, text);
+  return title;
+}
+
+function extensionAssetUrl(path: string): string {
+  const runtime = globalThis.chrome?.runtime;
+  if (runtime && typeof runtime.getURL === "function") {
+    return runtime.getURL(path);
+  }
+  return `/${path}`;
 }
 
 function createHelpIcon(label: string, help: string): HTMLButtonElement {
@@ -383,6 +407,7 @@ export function renderPanel(
   let activeView: ActiveView = "timeline";
   let timelineDetailOpen = false;
   let timelineDetailWidth = TIMELINE_DEFAULT_DETAIL_WIDTH;
+  let timelineRenderLimit = TIMELINE_RENDER_CHUNK_SIZE;
   let commandDetailOpen = true;
   const commandContextEvents: LightstreamerEventEnvelope[] = [];
   const commandContextEventIds = new Set<string>();
@@ -394,6 +419,11 @@ export function renderPanel(
   const commandPaneWidths: CommandPaneWidths = { ...COMMAND_DEFAULT_PANE_WIDTHS };
   const filterState: EventFilterState = {};
   const commandFilterState: CommandFilterState = {};
+  let pointerInteractionActive = false;
+  let keyboardInteractionActive = false;
+  let deferredInteractionRender: RenderOptions | null = null;
+  let interactionFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let forceNextStoreRender = false;
 
   activeTooltipDisposers.get(root)?.();
   activeTooltipDisposers.delete(root);
@@ -403,7 +433,7 @@ export function renderPanel(
   const toolbar = document.createElement("header");
   toolbar.className = "toolbar";
 
-  const title = createTextElement("h1", "product-label", "Lightstreamer Event Workbench");
+  const title = createProductLabel();
 
   const toolbarMeta = document.createElement("div");
   toolbarMeta.className = "toolbar-meta";
@@ -549,6 +579,13 @@ export function renderPanel(
   applyCommandPaneWidths();
   root.append(toolbar, viewSelector, filterStrip, commandFilterStrip, workspace, commandWorkspace);
   const disposeHelpTooltips = installHelpTooltipOverlay(root);
+  feed.addEventListener("scroll", maybeLoadMoreTimelineRows);
+  root.addEventListener("pointerdown", beginPointerInteraction, true);
+  root.addEventListener("pointerup", endPointerInteraction, true);
+  root.addEventListener("pointercancel", endPointerInteraction, true);
+  root.addEventListener("click", endPointerInteraction, true);
+  root.addEventListener("keydown", beginKeyboardInteraction, true);
+  root.addEventListener("keyup", endKeyboardInteraction, true);
   updateActiveViewChrome();
 
   function setFilter<K extends keyof EventFilterState>(
@@ -560,6 +597,7 @@ export function renderPanel(
     } else {
       filterState[key] = value as EventFilterState[K];
     }
+    resetTimelineRenderLimit();
     renderFeed(allEvents);
   }
 
@@ -606,6 +644,128 @@ export function renderPanel(
     renderFeed(allEvents, options);
   }
 
+  function renderActiveViewFromStoreUpdate(options: RenderOptions = {}): void {
+    if (forceNextStoreRender) {
+      forceNextStoreRender = false;
+      deferredInteractionRender = null;
+      renderActiveView(options);
+      return;
+    }
+
+    if (isUserInteractionActive()) {
+      deferredInteractionRender = mergeRenderOptions(deferredInteractionRender, options);
+      return;
+    }
+
+    renderActiveView(options);
+  }
+
+  function beginPointerInteraction(): void {
+    pointerInteractionActive = true;
+    clearInteractionFlushTimer();
+  }
+
+  function endPointerInteraction(): void {
+    if (!pointerInteractionActive) {
+      return;
+    }
+    pointerInteractionActive = false;
+    scheduleInteractionRenderFlush();
+  }
+
+  function beginKeyboardInteraction(event: KeyboardEvent): void {
+    if (!isActivationKey(event)) {
+      return;
+    }
+    keyboardInteractionActive = true;
+    clearInteractionFlushTimer();
+  }
+
+  function endKeyboardInteraction(event: KeyboardEvent): void {
+    if (!keyboardInteractionActive || !isActivationKey(event)) {
+      return;
+    }
+    keyboardInteractionActive = false;
+    scheduleInteractionRenderFlush();
+  }
+
+  function isActivationKey(event: KeyboardEvent): boolean {
+    return event.key === "Enter" || event.key === " ";
+  }
+
+  function isUserInteractionActive(): boolean {
+    return pointerInteractionActive || keyboardInteractionActive;
+  }
+
+  function mergeRenderOptions(left: RenderOptions | null, right: RenderOptions): RenderOptions {
+    return {
+      preserveDetailState: Boolean(left?.preserveDetailState || right.preserveDetailState)
+    };
+  }
+
+  function scheduleInteractionRenderFlush(): void {
+    clearInteractionFlushTimer();
+    interactionFlushTimer = setTimeout(() => {
+      interactionFlushTimer = null;
+      flushDeferredInteractionRender();
+    }, 0);
+  }
+
+  function flushDeferredInteractionRender(): void {
+    if (isUserInteractionActive() || !deferredInteractionRender) {
+      return;
+    }
+    const options = deferredInteractionRender;
+    deferredInteractionRender = null;
+    renderActiveView(options);
+  }
+
+  function clearInteractionFlushTimer(): void {
+    if (interactionFlushTimer) {
+      clearTimeout(interactionFlushTimer);
+      interactionFlushTimer = null;
+    }
+  }
+
+  function resetTimelineRenderLimit(): void {
+    timelineRenderLimit = TIMELINE_RENDER_CHUNK_SIZE;
+  }
+
+  function maybeLoadMoreTimelineRows(): void {
+    if (activeView !== "timeline" || !isTimelineLoadBoundaryReached()) {
+      return;
+    }
+
+    const visibleEvents = filterEvents(allEvents, filterState);
+    if (timelineRenderLimit >= visibleEvents.length) {
+      return;
+    }
+
+    const previousScrollHeight = feed.scrollHeight;
+    const previousScrollTop = feed.scrollTop;
+    const previousClientHeight = feed.clientHeight;
+    const wasNearTop = feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
+    timelineRenderLimit = Math.min(
+      timelineRenderLimit + TIMELINE_RENDER_CHUNK_SIZE,
+      visibleEvents.length
+    );
+    renderFeed(allEvents, { preserveDetailState: true });
+
+    if (wasNearTop) {
+      feed.scrollTop = previousScrollTop + Math.max(0, feed.scrollHeight - previousScrollHeight);
+    } else {
+      feed.scrollTop = Math.max(0, feed.scrollHeight - previousClientHeight);
+    }
+  }
+
+  function isTimelineLoadBoundaryReached(): boolean {
+    const distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+    return (
+      feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD ||
+      distanceFromBottom <= TIMELINE_LOAD_MORE_THRESHOLD
+    );
+  }
+
   function renderEmptyState(): void {
     const emptyState = document.createElement("div");
     emptyState.className = "empty-state";
@@ -640,9 +800,10 @@ export function renderPanel(
   ): void {
     const filtersActive = hasActiveFilters(filterState);
     const visibleEvents = filterEvents(events, filterState);
+    const renderLimit = Math.min(timelineRenderLimit, visibleEvents.length);
     const renderedEvents =
-      visibleEvents.length > MAX_TIMELINE_ROWS
-        ? visibleEvents.slice(-MAX_TIMELINE_ROWS)
+      visibleEvents.length > renderLimit
+        ? visibleEvents.slice(-renderLimit)
         : visibleEvents;
 
     filteredCount.hidden = !filtersActive;
@@ -652,6 +813,7 @@ export function renderPanel(
     if (events.length === 0) {
       selectedEventId = null;
       selectedPinned = false;
+      resetTimelineRenderLimit();
       clearDraftForSelection(null);
       renderEmptyState();
       renderDetail(null, options);
@@ -660,6 +822,7 @@ export function renderPanel(
 
     if (visibleEvents.length === 0) {
       selectedEventId = null;
+      resetTimelineRenderLimit();
       clearDraftForSelection(null);
       renderFilteredEmptyState();
       renderDetail(null, options);
@@ -1767,6 +1930,8 @@ export function renderPanel(
         draft = null;
       }
       reinjectionMessage = null;
+      resetTimelineRenderLimit();
+      forceNextStoreRender = true;
       store.clear();
     },
 
@@ -1776,6 +1941,14 @@ export function renderPanel(
     },
 
     dispose() {
+      feed.removeEventListener("scroll", maybeLoadMoreTimelineRows);
+      root.removeEventListener("pointerdown", beginPointerInteraction, true);
+      root.removeEventListener("pointerup", endPointerInteraction, true);
+      root.removeEventListener("pointercancel", endPointerInteraction, true);
+      root.removeEventListener("click", endPointerInteraction, true);
+      root.removeEventListener("keydown", beginKeyboardInteraction, true);
+      root.removeEventListener("keyup", endKeyboardInteraction, true);
+      clearInteractionFlushTimer();
       disposeHelpTooltips();
       activeTooltipDisposers.delete(root);
     }
@@ -1787,7 +1960,7 @@ export function renderPanel(
     eventCount.textContent = String(stats.retained);
     eventCount.setAttribute("aria-label", `${stats.retained} captured events`);
     renderEventVolumeNotice(stats);
-    renderActiveView({ preserveDetailState: true });
+    renderActiveViewFromStoreUpdate({ preserveDetailState: true });
   });
 
   return controller;
@@ -2114,6 +2287,9 @@ function findSelectedCommandItem(
 }
 
 function commandItemLabel(item: CommandItemGroup): string {
+  if (item.itemName && item.itemId.startsWith("group:") && item.itemPosition !== null) {
+    return `${item.itemName} position ${item.itemPosition}`;
+  }
   if (item.itemName) {
     return item.itemName;
   }
@@ -2214,7 +2390,7 @@ function createTimelineRenderLimitNotice(total: number, rendered: number): HTMLE
   return createTextElement(
     "div",
     "event-render-limit",
-    `All matching events are retained; showing latest ${rendered} of ${total}. Use search to inspect earlier events.`
+    `All matching events are retained; showing latest ${rendered} of ${total}. Scroll to load more retained events.`
   );
 }
 
@@ -2244,7 +2420,7 @@ function createCommandItemContext(
         event.kind === "item-update" &&
         event.subscription?.id === subscription.subscriptionId &&
         event.subscription?.mode === "COMMAND" &&
-        itemIdentityForEnvelope(event.item) === item.itemId &&
+        resolveCommandItemIdentity(event.subscription, event.item).itemId === item.itemId &&
         event.listener?.id
     );
 
@@ -2281,16 +2457,6 @@ function commandDraftMatchesContext(draft: ReinjectionDraft, context: CommandIte
     (draft.item.name ?? null) === (context.itemName ?? null) &&
     (draft.item.position ?? null) === (context.itemPosition ?? null)
   );
-}
-
-function itemIdentityForEnvelope(item: LightstreamerEventEnvelope["item"]): string {
-  if (item?.name) {
-    return `name:${item.name}`;
-  }
-  if (item?.position !== undefined && item.position !== null) {
-    return `position:${item.position}`;
-  }
-  return "unknown-item";
 }
 
 function reconcileCommandSelection(

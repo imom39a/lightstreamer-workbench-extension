@@ -100,6 +100,12 @@ export type CommandState = {
   diagnostics: CommandDiagnostic[];
 };
 
+export type CommandItemIdentity = {
+  itemId: string;
+  itemName: string | null;
+  itemPosition: number | null;
+};
+
 export type CommandDraftLike = {
   command?: string | null;
   key?: string | null;
@@ -162,7 +168,10 @@ export function reduceCommandState(events: readonly LightstreamerEventEnvelope[]
 
     const commandEvent = { ...event, subscription };
     const subscriptionAccumulator = getSubscriptionAccumulator(subscriptions, commandEvent);
-    const item = getItemAccumulator(subscriptionAccumulator, commandEvent.item);
+    const item = getItemAccumulator(
+      subscriptionAccumulator,
+      resolveCommandItemIdentity(commandEvent.subscription, commandEvent.item)
+    );
     const command = normalizeCommand(commandValue(commandEvent));
     const key = stringOrNull(commandEvent.update?.key ?? commandEvent.update?.fields?.key);
     const isSnapshot = Boolean(commandEvent.update?.isSnapshot);
@@ -313,6 +322,27 @@ export function validateCommandDraftAgainstState(
   };
 }
 
+export function resolveCommandItemIdentity(
+  subscription: EventSubscription | undefined,
+  item: EventItem | undefined
+): CommandItemIdentity {
+  const itemPosition = item?.position ?? null;
+  const explicitItemName = stringOrNull(item?.name);
+  const listedItemName = itemNameFromSubscriptionItems(subscription, itemPosition);
+  const itemGroup = stringOrNull(subscription?.itemGroup);
+  const itemName = explicitItemName ?? listedItemName ?? itemGroup;
+  const itemId =
+    explicitItemName || listedItemName
+      ? itemIdentity(itemName, itemPosition)
+      : itemGroupIdentity(itemGroup, itemPosition);
+
+  return {
+    itemId,
+    itemName,
+    itemPosition
+  };
+}
+
 function subscriptionForEvent(
   event: LightstreamerEventEnvelope,
   knownSubscriptions: Map<string, EventSubscription>
@@ -376,10 +406,11 @@ function getSubscriptionAccumulator(
   return created;
 }
 
-function getItemAccumulator(subscription: SubscriptionAccumulator, item: EventItem | undefined): ItemAccumulator {
-  const itemName = item?.name ?? null;
-  const itemPosition = item?.position ?? null;
-  const itemId = itemIdentity(itemName, itemPosition);
+function getItemAccumulator(
+  subscription: SubscriptionAccumulator,
+  identity: CommandItemIdentity
+): ItemAccumulator {
+  const { itemId, itemName, itemPosition } = identity;
   const existing = subscription.items.get(itemId);
   if (existing) {
     return existing;
@@ -475,6 +506,16 @@ function stringOrNull(value: unknown): string | null {
   return normalized || null;
 }
 
+function itemNameFromSubscriptionItems(
+  subscription: EventSubscription | undefined,
+  itemPosition: number | null
+): string | null {
+  if (itemPosition === null) {
+    return null;
+  }
+  return stringOrNull(subscription?.items?.[itemPosition - 1]);
+}
+
 function isSupportedCommand(command: string): command is CommandLifecycleCommand {
   return SUPPORTED_COMMANDS.has(command as CommandLifecycleCommand);
 }
@@ -500,6 +541,13 @@ function itemIdentity(itemName: string | null, itemPosition: number | null): str
     return `position:${itemPosition}`;
   }
   return "unknown-item";
+}
+
+function itemGroupIdentity(itemGroup: string | null, itemPosition: number | null): string {
+  if (itemGroup && itemPosition !== null) {
+    return `group:${itemGroup}:position:${itemPosition}`;
+  }
+  return itemIdentity(itemGroup, itemPosition);
 }
 
 function createProvenance(event: LightstreamerEventEnvelope): CommandProvenance {
