@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lightstreamer Event Workbench",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Chrome DevTools panel for inspecting Lightstreamer Web Client activity.",
   "icons": {
     "16": "icons/icon-16.png",
