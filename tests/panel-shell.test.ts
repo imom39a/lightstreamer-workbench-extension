@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCaptureMessage } from "../src/bridge/messages";
 import { type ReinjectionResult } from "../src/bridge/messages";
@@ -273,6 +273,56 @@ describe("panel shell", () => {
 
     expect(document.querySelector<HTMLElement>(".retention-notice")?.hidden).toBe(true);
     expect(store.count()).toBe(1002);
+  });
+
+  it("coalesces high-volume append rendering into bounded Timeline queries", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const originalCancelAnimationFrame = window.cancelAnimationFrame;
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 16)) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id: number) => {
+      window.clearTimeout(id);
+    }) as typeof window.cancelAnimationFrame;
+
+    let controller: PanelController | null = null;
+    try {
+      document.body.innerHTML = '<main id="app"></main>';
+      const root = document.querySelector<HTMLElement>("#app");
+      const store = createEventStore({ warningThreshold: 500 });
+      if (!root) {
+        throw new Error("missing test root");
+      }
+
+      const queryEvents = store.queryEvents.bind(store);
+      let queryCount = 0;
+      store.queryEvents = (query) => {
+        queryCount += 1;
+        return queryEvents(query);
+      };
+
+      controller = renderPanel(root, undefined, { store });
+      const initialQueryCount = queryCount;
+
+      for (let index = 1; index <= 1000; index += 1) {
+        appendCommandUpdate(controller, `burst-${index}`, { qty: index });
+      }
+
+      expect(text(".event-count")).toBe("1000");
+      expect(queryCount - initialQueryCount).toBeLessThan(50);
+      expect(document.querySelectorAll(".event-row").length).toBeLessThan(1000);
+
+      await vi.runOnlyPendingTimersAsync();
+      await flushPromises();
+
+      expect(queryCount - initialQueryCount).toBeLessThan(50);
+      expect(document.querySelectorAll(".event-row")).toHaveLength(500);
+    } finally {
+      controller?.dispose();
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+      vi.useRealTimers();
+    }
   });
 
   it("realigns detail with newest visible event when filters hide the selected row", () => {

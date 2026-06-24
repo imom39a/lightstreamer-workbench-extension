@@ -6,15 +6,20 @@ import {
   type ReinjectionResult
 } from "../../bridge/messages";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
-import { createEventStore, type EventStore, type EventStoreStats } from "../../core/event-store";
+import {
+  type EventStore,
+  type EventStoreStats,
+  type MaybePromise,
+  createEventStore,
+  createIndexedDbEventStore
+} from "../../core/event-store";
 import { type LightstreamerEventEnvelope } from "../../core/event-envelope";
 import {
-  filterEvents,
   hasActiveFilters,
   type EventFilterState
 } from "../../core/event-filter";
 import {
-  reduceCommandState,
+  createCommandStateIndex,
   resolveCommandItemIdentity,
   type CommandDiagnostic,
   type CommandItemGroup,
@@ -109,6 +114,10 @@ type CommandKeyDetailTarget = Extract<CommandDetailTarget, { kind: "active" | "d
 type RenderOptions = {
   preserveDetailState?: boolean;
 };
+type ScheduledRender = {
+  id: number;
+  animationFrame: boolean;
+};
 type PaneState = {
   scrollTop: number;
   focusSelector: string | null;
@@ -124,6 +133,7 @@ const initialState: PanelState = {
 
 const TIMELINE_RENDER_CHUNK_SIZE = 500;
 const TIMELINE_LOAD_MORE_THRESHOLD = 32;
+const IMMEDIATE_APPEND_RENDER_BUDGET = 8;
 const COMMAND_DEFAULT_PANE_WIDTHS: CommandPaneWidths = {
   subscriptions: 250,
   keys: 360,
@@ -389,6 +399,20 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function resolveMaybe<T>(
+  value: MaybePromise<T>,
+  onValue: (value: T) => void,
+  onError: (error: unknown) => void = (error) => {
+    console.error("Lightstreamer Event Workbench async operation failed", error);
+  }
+): void {
+  if (value instanceof Promise) {
+    void value.then(onValue, onError);
+    return;
+  }
+  onValue(value);
+}
+
 export function renderPanel(
   root: HTMLElement,
   state: PanelState = initialState,
@@ -399,7 +423,10 @@ export function renderPanel(
   const normalizer = options.normalizer ?? createEventNormalizer();
   let selectedEventId: string | null = null;
   let selectedPinned = false;
-  let allEvents: readonly LightstreamerEventEnvelope[] = [];
+  let timelineEvents: readonly LightstreamerEventEnvelope[] = [];
+  let timelineVisibleTotal = 0;
+  let timelineQueryVersion = 0;
+  let currentStoreStats: EventStoreStats = storeStatsSnapshot();
   let draft: ReinjectionDraft | null = null;
   let bridge = options.bridge ?? null;
   let reinjectionPending = false;
@@ -412,6 +439,7 @@ export function renderPanel(
   const commandContextEvents: LightstreamerEventEnvelope[] = [];
   const commandContextEventIds = new Set<string>();
   const commandContextSubscriptionIds = new Set<string>();
+  const commandStateIndex = createCommandStateIndex();
   let highVolumeNoticeDismissed = false;
   let selectedCommandItem: { subscriptionId: string; itemId: string } | null = null;
   let selectedCommandKey: CommandSelection = null;
@@ -424,6 +452,19 @@ export function renderPanel(
   let deferredInteractionRender: RenderOptions | null = null;
   let interactionFlushTimer: ReturnType<typeof setTimeout> | null = null;
   let forceNextStoreRender = false;
+  let pendingStoreRenderOptions: RenderOptions | null = null;
+  let scheduledStoreRender: ScheduledRender | null = null;
+  let immediateAppendRenderCount = 0;
+  let appendRenderBudgetReset: ScheduledRender | null = null;
+
+  function storeStatsSnapshot(): EventStoreStats {
+    return {
+      retained: 0,
+      totalAppended: 0,
+      warningThreshold: 10_000,
+      warningActive: false
+    };
+  }
 
   activeTooltipDisposers.get(root)?.();
   activeTooltipDisposers.delete(root);
@@ -458,13 +499,13 @@ export function renderPanel(
   keepEventsButton.title = "Keep all captured events in memory for this DevTools session.";
   keepEventsButton.addEventListener("click", () => {
     highVolumeNoticeDismissed = true;
-    renderEventVolumeNotice(store.stats());
+    resolveMaybe(store.stats(), renderEventVolumeNotice);
   });
   const clearFromNoticeButton = document.createElement("button");
   clearFromNoticeButton.className = "event-volume-action event-volume-clear";
   clearFromNoticeButton.type = "button";
   clearFromNoticeButton.textContent = "Clear events";
-  clearFromNoticeButton.title = "Clear visible captured events from this DevTools session.";
+  clearFromNoticeButton.title = "Clear captured events and COMMAND state from this DevTools session.";
   clearFromNoticeButton.addEventListener("click", () => {
     controller.clearEvents();
   });
@@ -474,7 +515,7 @@ export function renderPanel(
   clearButton.className = "clear-button";
   clearButton.type = "button";
   clearButton.textContent = "Clear events";
-  clearButton.title = "Clear events: remove captured events from this DevTools session only.";
+  clearButton.title = "Clear events: remove captured events and COMMAND state from this DevTools session.";
   clearButton.addEventListener("click", () => {
     controller.clearEvents();
   });
@@ -598,7 +639,7 @@ export function renderPanel(
       filterState[key] = value as EventFilterState[K];
     }
     resetTimelineRenderLimit();
-    renderFeed(allEvents);
+    renderFeed();
   }
 
   function setCommandFilter<K extends keyof CommandFilterState>(
@@ -610,7 +651,7 @@ export function renderPanel(
     } else {
       commandFilterState[key] = value;
     }
-    renderCommandState(allEvents);
+    renderCommandState();
   }
 
   function createViewButton(label: string, view: ActiveView): HTMLButtonElement {
@@ -638,10 +679,10 @@ export function renderPanel(
 
   function renderActiveView(options: RenderOptions = {}): void {
     if (activeView === "command") {
-      renderCommandState(allEvents, options);
+      renderCommandState(options);
       return;
     }
-    renderFeed(allEvents, options);
+    renderFeed(options);
   }
 
   function renderActiveViewFromStoreUpdate(options: RenderOptions = {}): void {
@@ -658,6 +699,97 @@ export function renderPanel(
     }
 
     renderActiveView(options);
+  }
+
+  function renderActiveViewFromAppend(options: RenderOptions = {}): void {
+    if (forceNextStoreRender) {
+      cancelScheduledStoreRender();
+      immediateAppendRenderCount = 0;
+      renderActiveViewFromStoreUpdate(options);
+      return;
+    }
+
+    if (scheduledStoreRender) {
+      pendingStoreRenderOptions = mergeRenderOptions(pendingStoreRenderOptions, options);
+      return;
+    }
+
+    if (immediateAppendRenderCount < IMMEDIATE_APPEND_RENDER_BUDGET) {
+      immediateAppendRenderCount += 1;
+      scheduleAppendRenderBudgetReset();
+      renderActiveViewFromStoreUpdate(options);
+      return;
+    }
+
+    scheduleStoreRender(options);
+  }
+
+  function scheduleStoreRender(options: RenderOptions = {}): void {
+    pendingStoreRenderOptions = mergeRenderOptions(pendingStoreRenderOptions, options);
+    if (scheduledStoreRender) {
+      return;
+    }
+
+    scheduledStoreRender = schedulePanelFrame(() => {
+      scheduledStoreRender = null;
+      immediateAppendRenderCount = 0;
+      const nextOptions = pendingStoreRenderOptions ?? {};
+      pendingStoreRenderOptions = null;
+      renderActiveViewFromStoreUpdate(nextOptions);
+    });
+  }
+
+  function cancelScheduledStoreRender(): void {
+    if (!scheduledStoreRender) {
+      return;
+    }
+
+    cancelPanelFrame(scheduledStoreRender);
+    scheduledStoreRender = null;
+    pendingStoreRenderOptions = null;
+  }
+
+  function scheduleAppendRenderBudgetReset(): void {
+    if (appendRenderBudgetReset) {
+      return;
+    }
+
+    appendRenderBudgetReset = schedulePanelFrame(() => {
+      appendRenderBudgetReset = null;
+      immediateAppendRenderCount = 0;
+    });
+  }
+
+  function cancelAppendRenderBudgetReset(): void {
+    if (!appendRenderBudgetReset) {
+      return;
+    }
+
+    cancelPanelFrame(appendRenderBudgetReset);
+    appendRenderBudgetReset = null;
+  }
+
+  function schedulePanelFrame(callback: () => void): ScheduledRender {
+    if (typeof window.requestAnimationFrame === "function") {
+      return {
+        id: window.requestAnimationFrame(() => callback()),
+        animationFrame: true
+      };
+    }
+
+    return {
+      id: window.setTimeout(callback, 16),
+      animationFrame: false
+    };
+  }
+
+  function cancelPanelFrame(render: ScheduledRender): void {
+    if (render.animationFrame && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(render.id);
+      return;
+    }
+
+    window.clearTimeout(render.id);
   }
 
   function beginPointerInteraction(): void {
@@ -736,8 +868,7 @@ export function renderPanel(
       return;
     }
 
-    const visibleEvents = filterEvents(allEvents, filterState);
-    if (timelineRenderLimit >= visibleEvents.length) {
+    if (timelineRenderLimit >= timelineVisibleTotal) {
       return;
     }
 
@@ -747,9 +878,9 @@ export function renderPanel(
     const wasNearTop = feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
     timelineRenderLimit = Math.min(
       timelineRenderLimit + TIMELINE_RENDER_CHUNK_SIZE,
-      visibleEvents.length
+      timelineVisibleTotal
     );
-    renderFeed(allEvents, { preserveDetailState: true });
+    renderFeed({ preserveDetailState: true });
 
     if (wasNearTop) {
       feed.scrollTop = previousScrollTop + Math.max(0, feed.scrollHeight - previousScrollHeight);
@@ -794,23 +925,37 @@ export function renderPanel(
     feed.replaceChildren(emptyState);
   }
 
-  function renderFeed(
-    events: readonly LightstreamerEventEnvelope[],
+  function renderFeed(options: RenderOptions = {}): void {
+    const queryVersion = ++timelineQueryVersion;
+    resolveMaybe(
+      store.queryEvents({
+        filters: filterState,
+        order: "asc",
+        limit: timelineRenderLimit
+      }),
+      (result) => {
+        if (queryVersion !== timelineQueryVersion) {
+          return;
+        }
+        renderFeedResult(result.events, result.total, options);
+      }
+    );
+  }
+
+  function renderFeedResult(
+    renderedEvents: readonly LightstreamerEventEnvelope[],
+    totalVisible: number,
     options: RenderOptions = {}
   ): void {
     const filtersActive = hasActiveFilters(filterState);
-    const visibleEvents = filterEvents(events, filterState);
-    const renderLimit = Math.min(timelineRenderLimit, visibleEvents.length);
-    const renderedEvents =
-      visibleEvents.length > renderLimit
-        ? visibleEvents.slice(-renderLimit)
-        : visibleEvents;
+    timelineEvents = renderedEvents;
+    timelineVisibleTotal = totalVisible;
 
     filteredCount.hidden = !filtersActive;
-    filteredCount.textContent = filtersActive ? `${visibleEvents.length} shown` : "";
-    filteredCount.setAttribute("aria-label", `${visibleEvents.length} events shown`);
+    filteredCount.textContent = filtersActive ? `${totalVisible} shown` : "";
+    filteredCount.setAttribute("aria-label", `${totalVisible} events shown`);
 
-    if (events.length === 0) {
+    if (currentStoreStats.retained === 0) {
       selectedEventId = null;
       selectedPinned = false;
       resetTimelineRenderLimit();
@@ -820,7 +965,7 @@ export function renderPanel(
       return;
     }
 
-    if (visibleEvents.length === 0) {
+    if (totalVisible === 0) {
       selectedEventId = null;
       resetTimelineRenderLimit();
       clearDraftForSelection(null);
@@ -829,7 +974,7 @@ export function renderPanel(
       return;
     }
 
-    const selectedStillVisible = visibleEvents.some((event) => event.id === selectedEventId);
+    const selectedStillVisible = renderedEvents.some((event) => event.id === selectedEventId);
     if (!selectedPinned) {
       selectedEventId = timelineDetailOpen ? renderedEvents[renderedEvents.length - 1]?.id ?? null : null;
     } else if (!selectedStillVisible) {
@@ -842,8 +987,8 @@ export function renderPanel(
     list.className = "event-list";
     list.setAttribute("role", "list");
 
-    if (visibleEvents.length > renderedEvents.length) {
-      list.append(createTimelineRenderLimitNotice(visibleEvents.length, renderedEvents.length));
+    if (totalVisible > renderedEvents.length) {
+      list.append(createTimelineRenderLimitNotice(totalVisible, renderedEvents.length));
     }
     list.append(createTimelineHeader());
 
@@ -858,7 +1003,7 @@ export function renderPanel(
         selectedPinned = true;
         timelineDetailOpen = true;
         clearDraftForSelection(event.id);
-        renderFeed(allEvents);
+        renderFeed();
         renderDetail(event);
       });
 
@@ -877,7 +1022,24 @@ export function renderPanel(
     }
 
     feed.replaceChildren(list);
-    renderDetail(visibleEvents.find((event) => event.id === selectedEventId) ?? null, options);
+    renderSelectedTimelineDetail(options);
+  }
+
+  function renderSelectedTimelineDetail(options: RenderOptions = {}): void {
+    if (!selectedEventId) {
+      renderDetail(null, options);
+      return;
+    }
+
+    const cached = timelineEvents.find((event) => event.id === selectedEventId);
+    if (cached) {
+      renderDetail(cached, options);
+      return;
+    }
+
+    resolveMaybe(store.getEventById(selectedEventId), (event) => {
+      renderDetail(event, options);
+    });
   }
 
   function renderDetail(
@@ -898,7 +1060,7 @@ export function renderPanel(
     detail.append(
       createDetailPaneHeader("Event detail", () => {
         timelineDetailOpen = false;
-        renderFeed(allEvents);
+        renderFeed();
       })
     );
 
@@ -1015,11 +1177,8 @@ export function renderPanel(
     timelineDetailResizeHandle.setAttribute("aria-valuenow", String(timelineDetailWidth));
   }
 
-  function renderCommandState(
-    _events: readonly LightstreamerEventEnvelope[],
-    options: RenderOptions = {}
-  ): void {
-    const commandState = reduceCommandState(commandContextEvents);
+  function renderCommandState(options: RenderOptions = {}): void {
+    const commandState = commandStateIndex.snapshot();
     const items = flattenCommandItems(commandState);
 
     if (items.length === 0) {
@@ -1106,7 +1265,7 @@ export function renderPanel(
         };
         selectedCommandKey = null;
         selectedCommandUpdateEventId = null;
-        renderCommandState(allEvents);
+        renderCommandState();
       });
       itemButton.append(createTextElement("span", "command-item-title", commandItemLabel(entry.item)));
       commandGroupPane.append(itemButton);
@@ -1156,7 +1315,7 @@ export function renderPanel(
         selectedCommandUpdateEventId = null;
         selectedCommandKey = nextSelection;
         commandDetailOpen = true;
-        renderCommandState(allEvents);
+        renderCommandState();
       });
       button.append(
         createTextElement("span", "command-current-cell command-key-cell", row.key),
@@ -1204,7 +1363,7 @@ export function renderPanel(
         updateRow.addEventListener("click", () => {
           selectedCommandUpdateEventId = entry.eventId;
           commandDetailOpen = true;
-          renderCommandState(allEvents);
+          renderCommandState();
         });
         updateRow.append(
           createTextElement("span", "command-update-cell command-update-time", formatTime(entry.timestamp)),
@@ -1259,7 +1418,7 @@ export function renderPanel(
     commandWorkspace.dataset.detailOpen = "true";
     const collapseCommandDetail = () => {
       commandDetailOpen = false;
-      renderCommandState(allEvents);
+      renderCommandState();
     };
     const context = createCommandItemContext(subscription, item, commandContextEvents);
 
@@ -1617,7 +1776,7 @@ export function renderPanel(
       }
       draft = nextDraft;
       reinjectionMessage = null;
-      renderCommandState(allEvents);
+      renderCommandState();
     });
 
     section.append(heading, createButton);
@@ -1802,7 +1961,7 @@ export function renderPanel(
     item: CommandItemGroup
   ): Promise<void> {
     const activeBridge = bridge;
-    const validation = validateNewCommandDraft(currentDraft, reduceCommandState(commandContextEvents), context);
+    const validation = validateNewCommandDraft(currentDraft, commandStateIndex.snapshot(), context);
     if (!activeBridge || !validation.valid) {
       return;
     }
@@ -1813,13 +1972,13 @@ export function renderPanel(
         kind: "error",
         text: "Draft context changed. Create a new COMMAND update for the selected item before injecting."
       };
-      renderCommandState(allEvents);
+      renderCommandState();
       return;
     }
 
     reinjectionPending = true;
     reinjectionMessage = null;
-    renderCommandState(allEvents);
+    renderCommandState();
 
     const result = await activeBridge.reinjectDraft(currentDraft);
     reinjectionPending = false;
@@ -1838,12 +1997,12 @@ export function renderPanel(
         };
         selectedCommandUpdateEventId = null;
       }
-      store.append(createSyntheticEventFromDraft(currentDraft, result));
+      resolveMaybe(store.append(createSyntheticEventFromDraft(currentDraft, result)), () => undefined);
       return;
     }
 
     reinjectionMessage = createCommandFailureMessage(result);
-    renderCommandState(allEvents);
+    renderCommandState();
   }
 
   function renderCommandStatePreservingDraftEditorState(focusSelector: string): void {
@@ -1857,7 +2016,7 @@ export function renderPanel(
           }
         : null;
 
-    renderCommandState(allEvents);
+    renderCommandState();
     commandDetailPane.scrollTop = scrollTop;
 
     const nextFocus = commandDetailPane.querySelector<HTMLElement>(focusSelector);
@@ -1873,22 +2032,28 @@ export function renderPanel(
     }
   }
 
-  function rememberCommandContextEvents(events: readonly LightstreamerEventEnvelope[]): void {
-    for (const event of events) {
-      const subscriptionId = event.subscription?.id ?? null;
-      const mode = event.subscription?.mode ?? null;
-      if (subscriptionId && mode === "COMMAND") {
-        commandContextSubscriptionIds.add(subscriptionId);
-      }
-      const preservesCommandContext =
-        mode === "COMMAND" ||
-        Boolean(subscriptionId && mode === null && commandContextSubscriptionIds.has(subscriptionId));
-      if (!preservesCommandContext || commandContextEventIds.has(event.id)) {
-        continue;
-      }
-      commandContextEventIds.add(event.id);
-      commandContextEvents.push(event);
+  function rememberCommandContextEvent(event: LightstreamerEventEnvelope): void {
+    const subscriptionId = event.subscription?.id ?? null;
+    const mode = event.subscription?.mode ?? null;
+    if (subscriptionId && mode === "COMMAND") {
+      commandContextSubscriptionIds.add(subscriptionId);
     }
+    const preservesCommandContext =
+      mode === "COMMAND" ||
+      Boolean(subscriptionId && mode === null && commandContextSubscriptionIds.has(subscriptionId));
+    if (!preservesCommandContext || commandContextEventIds.has(event.id)) {
+      return;
+    }
+    commandContextEventIds.add(event.id);
+    commandContextEvents.push(event);
+    commandStateIndex.apply(event);
+  }
+
+  function clearCommandContext(): void {
+    commandContextEvents.length = 0;
+    commandContextEventIds.clear();
+    commandContextSubscriptionIds.clear();
+    commandStateIndex.clear();
   }
 
   function renderEventVolumeNotice(stats: EventStoreStats): void {
@@ -1918,7 +2083,7 @@ export function renderPanel(
     },
 
     appendCaptureMessage(message) {
-      store.append(normalizer.normalize(message));
+      resolveMaybe(store.append(normalizer.normalize(message)), () => undefined);
       controller.setStatus("capturing");
     },
 
@@ -1932,15 +2097,17 @@ export function renderPanel(
       reinjectionMessage = null;
       resetTimelineRenderLimit();
       forceNextStoreRender = true;
-      store.clear();
+      resolveMaybe(store.clear(), () => undefined);
     },
 
     setBridge(nextBridge) {
       bridge = nextBridge;
-      renderDetail(allEvents.find((event) => event.id === selectedEventId) ?? null);
+      renderSelectedTimelineDetail();
     },
 
     dispose() {
+      cancelScheduledStoreRender();
+      cancelAppendRenderBudgetReset();
       feed.removeEventListener("scroll", maybeLoadMoreTimelineRows);
       root.removeEventListener("pointerdown", beginPointerInteraction, true);
       root.removeEventListener("pointerup", endPointerInteraction, true);
@@ -1954,12 +2121,34 @@ export function renderPanel(
     }
   };
 
-  store.subscribe((events, stats) => {
-    rememberCommandContextEvents(events);
-    allEvents = events;
+  store.subscribe((change, stats) => {
+    currentStoreStats = stats;
     eventCount.textContent = String(stats.retained);
     eventCount.setAttribute("aria-label", `${stats.retained} captured events`);
     renderEventVolumeNotice(stats);
+
+    if (change.type === "init") {
+      resolveMaybe(store.queryEvents(), (result) => {
+        clearCommandContext();
+        for (const event of result.events) {
+          rememberCommandContextEvent(event);
+        }
+        renderActiveViewFromStoreUpdate({ preserveDetailState: true });
+      });
+      return;
+    }
+
+    if (change.type === "append") {
+      rememberCommandContextEvent(change.event);
+      renderActiveViewFromAppend({ preserveDetailState: true });
+      return;
+    } else if (change.type === "clear") {
+      cancelScheduledStoreRender();
+      immediateAppendRenderCount = 0;
+      timelineEvents = [];
+      timelineVisibleTotal = 0;
+      clearCommandContext();
+    }
     renderActiveViewFromStoreUpdate({ preserveDetailState: true });
   });
 
@@ -2101,7 +2290,7 @@ export function renderPanel(
 
     reinjectionPending = true;
     reinjectionMessage = null;
-    renderDetail(selectedEventForDraft(currentDraft));
+    renderEventForDraft(currentDraft);
 
     const result = await activeBridge.reinjectDraft(currentDraft);
     reinjectionPending = false;
@@ -2111,20 +2300,32 @@ export function renderPanel(
         kind: "success",
         text: "Synthetic update reinjected through the original listener."
       };
-      store.append(createSyntheticEventFromDraft(currentDraft, result));
+      resolveMaybe(store.append(createSyntheticEventFromDraft(currentDraft, result)), () => undefined);
       return;
     }
 
     reinjectionMessage = createFailureMessage(result);
-    renderDetail(selectedEventForDraft(currentDraft));
+    renderEventForDraft(currentDraft);
   }
 
-  function selectedEventForDraft(currentDraft: ReinjectionDraft): LightstreamerEventEnvelope {
-    return (
-      allEvents.find((event) => event.id === currentDraft.sourceEventId) ??
-      allEvents.find((event) => event.id === selectedEventId) ??
-      allEvents[allEvents.length - 1]
-    );
+  function renderEventForDraft(currentDraft: ReinjectionDraft): void {
+    resolveMaybe(selectedEventForDraft(currentDraft), (event) => {
+      renderDetail(event);
+    });
+  }
+
+  function selectedEventForDraft(
+    currentDraft: ReinjectionDraft
+  ): MaybePromise<LightstreamerEventEnvelope | null> {
+    const cached =
+      timelineEvents.find((event) => event.id === currentDraft.sourceEventId) ??
+      timelineEvents.find((event) => event.id === selectedEventId) ??
+      timelineEvents[timelineEvents.length - 1] ??
+      null;
+    if (cached || !currentDraft.sourceEventId) {
+      return cached;
+    }
+    return store.getEventById(currentDraft.sourceEventId);
   }
 
   function clearDraftForSelection(nextEventId: string | null): void {
@@ -3077,10 +3278,12 @@ function createSyntheticProvenance(event: LightstreamerEventEnvelope): Record<st
   };
 }
 
-function bootPanel(): void {
+async function bootPanel(): Promise<void> {
   const root = document.querySelector<HTMLElement>("#app");
   if (root) {
-    const panel = renderPanel(root);
+    root.textContent = "Initializing event storage...";
+    const store = await createPanelEventStore();
+    const panel = renderPanel(root, undefined, { store });
     const bridge = connectPanelBridge({
       onStatusChange: panel.setStatus,
       onCaptureMessage: panel.appendCaptureMessage
@@ -3089,8 +3292,20 @@ function bootPanel(): void {
   }
 }
 
+async function createPanelEventStore(): Promise<EventStore> {
+  try {
+    return await createIndexedDbEventStore({
+      sessionId: chrome.devtools?.inspectedWindow?.tabId ?? Date.now(),
+      reset: true
+    });
+  } catch (error) {
+    console.error("Falling back to in-memory event storage.", error);
+    return createEventStore();
+  }
+}
+
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", bootPanel, { once: true });
+  document.addEventListener("DOMContentLoaded", () => void bootPanel(), { once: true });
 } else {
-  bootPanel();
+  void bootPanel();
 }
