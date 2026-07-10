@@ -124,10 +124,16 @@ class IndexedDbEventRepository implements EventRepository {
 
   async queryEvents(query: EventQuery = {}): Promise<EventQueryResult> {
     const filters = query.filters ?? {};
+    if (!hasActiveFilters(filters) && query.limit !== undefined) {
+      return this.queryUnfilteredPage(query);
+    }
+
     const metas = await this.queryEventMeta(filters);
-    const matched = metas
-      .filter((meta) => metaMatchesResidualFilters(meta, filters))
-      .sort((left, right) => left.seq - right.seq);
+    if (hasSearchQuery(filters)) {
+      return this.queryEventsWithFullTextFilter(metas, query);
+    }
+
+    const matched = metas.filter((meta) => metaMatchesResidualFilters(meta, filters)).sort(bySeq);
     const total = matched.length;
     const paged = pageEventMeta(matched, query);
     const events = await Promise.all(paged.map((meta) => this.getEventBySeq(meta.seq)));
@@ -170,53 +176,61 @@ class IndexedDbEventRepository implements EventRepository {
   }
 
   private async queryEventMeta(filters: EventFilterState): Promise<EventMetaRecord[]> {
-    const tokenSeqs = await this.querySearchTokenSeqs(filters.query);
     const transaction = this.database.db.transaction(EVENT_STORE_NAMES.eventMeta, "readonly");
     const eventMeta = transaction.objectStore(EVENT_STORE_NAMES.eventMeta);
     const indexedFilter = selectIndexedFilter(filters);
-    let records: EventMetaRecord[];
 
     if (indexedFilter) {
-      records = await requestToPromise<EventMetaRecord[]>(
+      return requestToPromise<EventMetaRecord[]>(
         eventMeta.index(String(indexedFilter.index)).getAll(indexedFilter.value)
       );
-    } else if (tokenSeqs) {
-      records = await Promise.all(
-        Array.from(tokenSeqs, (seq) => requestToPromise<EventMetaRecord | undefined>(eventMeta.get(seq)))
-      ).then((metas) => metas.filter((meta): meta is EventMetaRecord => Boolean(meta)));
-    } else {
-      records = await requestToPromise<EventMetaRecord[]>(eventMeta.getAll());
     }
 
-    if (!tokenSeqs) {
-      return records;
-    }
-    return records.filter((record) => tokenSeqs.has(record.seq));
+    return requestToPromise<EventMetaRecord[]>(eventMeta.getAll());
   }
 
-  private async querySearchTokenSeqs(
-    query: string | undefined
-  ): Promise<Set<number> | null> {
-    const tokens = searchTokensFromQuery(query);
-    if (tokens.length === 0) {
-      return null;
-    }
-
-    let intersection: Set<number> | null = null;
-    for (const token of tokens) {
-      const transaction = this.database.db.transaction(EVENT_STORE_NAMES.eventSearchTokens, "readonly");
-      const searchTokens = transaction.objectStore(EVENT_STORE_NAMES.eventSearchTokens);
-      const records = await requestToPromise<EventSearchTokenRecord[]>(
-        searchTokens.index("token").getAll(token)
-      );
-      const current = new Set(records.map((record) => record.seq));
-      if (!intersection) {
-        intersection = current;
-        continue;
+  private async queryEventsWithFullTextFilter(
+    metas: EventMetaRecord[],
+    query: EventQuery
+  ): Promise<EventQueryResult> {
+    const sorted = metas.sort(bySeq);
+    const candidates = await Promise.all(
+      sorted.map(async (meta) => ({
+        meta,
+        event: await this.getEventBySeq(meta.seq)
+      }))
+    );
+    const matched = candidates.filter(
+      (entry): entry is { meta: EventMetaRecord; event: LightstreamerEventEnvelope } => {
+        if (!entry.event) {
+          return false;
+        }
+        return matchesEventFilters(entry.event, query.filters);
       }
-      intersection = new Set(Array.from(intersection, (seq) => seq).filter((seq) => current.has(seq)));
-    }
-    return intersection ?? new Set<number>();
+    );
+    const total = matched.length;
+    const eventBySeq = new Map(matched.map((entry) => [entry.meta.seq, entry.event]));
+    return {
+      events: pageEventMeta(
+        matched.map((entry) => entry.meta),
+        query
+      )
+        .map((meta) => eventBySeq.get(meta.seq))
+        .filter((event): event is LightstreamerEventEnvelope => Boolean(event)),
+      total
+    };
+  }
+
+  private async queryUnfilteredPage(query: EventQuery): Promise<EventQueryResult> {
+    const total = await this.countEvents();
+    const transaction = this.database.db.transaction(EVENT_STORE_NAMES.eventMeta, "readonly");
+    const eventMeta = transaction.objectStore(EVENT_STORE_NAMES.eventMeta);
+    const metas = await readCursorPage(eventMeta, query);
+    const events = await Promise.all(metas.map((meta) => this.getEventBySeq(meta.seq)));
+    return {
+      events: events.filter((event): event is LightstreamerEventEnvelope => Boolean(event)),
+      total
+    };
   }
 
   private async getEventBySeq(seq: number): Promise<LightstreamerEventEnvelope | null> {
@@ -280,6 +294,14 @@ function selectIndexedFilter(
   return null;
 }
 
+function hasSearchQuery(filters: EventFilterState): boolean {
+  return Boolean(filters.query?.trim());
+}
+
+function hasActiveFilters(filters: EventFilterState): boolean {
+  return Object.values(filters).some((value) => value !== undefined && value !== "");
+}
+
 function booleanKey(value: boolean | undefined): number | undefined {
   return value === undefined ? undefined : value ? 1 : 0;
 }
@@ -331,6 +353,43 @@ function pageEventMeta(records: EventMetaRecord[], query: EventQuery): EventMeta
   const end = Math.max(0, records.length - offset);
   const start = Math.max(0, end - limit);
   return records.slice(start, end);
+}
+
+function bySeq(left: EventMetaRecord, right: EventMetaRecord): number {
+  return left.seq - right.seq;
+}
+
+function readCursorPage(store: IDBObjectStore, query: EventQuery): Promise<EventMetaRecord[]> {
+  const offset = Math.max(0, Math.floor(query.offset ?? 0));
+  const limit = Math.max(0, Math.floor(query.limit ?? 0));
+
+  return new Promise((resolve, reject) => {
+    if (limit === 0) {
+      resolve([]);
+      return;
+    }
+
+    const records: EventMetaRecord[] = [];
+    let skipped = 0;
+    const request = store.openCursor(null, "prev");
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB cursor failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || records.length >= limit) {
+        resolve(query.order === "desc" ? records : records.reverse());
+        return;
+      }
+
+      if (skipped < offset) {
+        skipped += 1;
+        cursor.continue();
+        return;
+      }
+
+      records.push(cursor.value as EventMetaRecord);
+      cursor.continue();
+    };
+  });
 }
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {

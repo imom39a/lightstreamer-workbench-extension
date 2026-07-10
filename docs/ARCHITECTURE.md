@@ -465,11 +465,12 @@ There are two concrete storage paths:
 ```ts
 createIndexedDbEventStore({
   sessionId: chrome.devtools?.inspectedWindow?.tabId ?? Date.now(),
-  reset: true
+  reset: true,
+  clearOnClose: true
 })
 ```
 
-If IndexedDB open/reset fails, the panel logs the error and falls back to `createEventStore()`.
+If IndexedDB open/reset fails, the panel logs the error and falls back to `createEventStore()`. The panel also closes the event store on `dispose`, `pagehide`, and `beforeunload`; IndexedDB-backed stores created with `clearOnClose` clear their current session before closing. Startup reset remains the backstop if Chrome or DevTools exits before teardown completes.
 
 ### IndexedDB Schema
 
@@ -481,16 +482,15 @@ Object stores:
 | --- | --- | --- |
 | `events` | auto-increment `seq` | Stores `{ id, envelope }`; has unique `id` index. |
 | `eventMeta` | `seq` | Stores denormalized filter fields such as kind, subscription ID, mode, item, command key, command value, snapshot, and synthetic marker. |
-| `eventSearchTokens` | `[token, seq]` | Stores tokenized text search index; has `token` and `seq` indexes. |
+| `eventSearchTokens` | `[token, seq]` | Stores tokenized text search metadata for future query acceleration; has `token` and `seq` indexes. |
 
 `src/core/event-repository.ts` handles IndexedDB queries by:
 
-1. Tokenizing query text from `createEventSearchText()`.
+1. Fast-pathing unfiltered limited queries through a cursor so the timeline does not read every metadata row for the common latest-events view.
 2. Selecting one indexed structured filter when possible.
-3. Intersecting text token matches when a search query is present.
-4. Applying residual filters through `matchesEventFilters()`.
+3. Applying residual structured filters through metadata.
+4. Loading full envelopes and using `matchesEventFilters()` when free-text search is active so IndexedDB-backed search keeps the same substring semantics as the in-memory store.
 5. Sorting by sequence and paging.
-6. Loading full envelopes from the `events` store.
 
 ### Event Store Stats
 
@@ -833,7 +833,7 @@ Coverage is organized by architectural boundary:
 | `tests/instrumentation-lifecycle.test.ts` | Constructor hooks, namespace hooks, lifecycle wrappers, stable IDs, listener proxies, WebSocket fallback, and page-side reinjection result behavior. |
 | `tests/event-normalizer.test.ts` | Capture-to-envelope normalization, COMMAND key/command preservation, current vs changed fields, snapshot status, and wire source mapping. |
 | `tests/event-filter.test.ts` | Event search text and structured filters. |
-| `tests/event-store.test.ts` | In-memory store behavior, high-volume stats, IndexedDB-backed queries, token search, reset, and open-connection reset behavior. |
+| `tests/event-store.test.ts` | In-memory store behavior, high-volume stats, IndexedDB-backed queries, substring search parity, cursor paging, reset, and close cleanup behavior. |
 | `tests/command-state.test.ts` | Full and incremental COMMAND reduction, grouping, metadata carry-forward, item identity, lifecycle, provenance, diagnostics, and draft validation against state. |
 | `tests/reinjection-draft.test.ts` | Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
 | `tests/command-draft.test.ts` | Context-bound new COMMAND drafts, schema validation, and synthetic event conversion. |
@@ -895,7 +895,7 @@ The panel is DOM-first. Follow the existing pattern:
 - The injected script must remain self-contained after esbuild bundling because it runs as a manifest content script in the page `MAIN` world.
 - The content bridge validates both capture messages and reinjection result messages before forwarding.
 - The service worker routes panel ports by inspected tab ID; capture messages without a sender tab ID are ignored.
-- The panel may use IndexedDB, but it resets the inspected-tab session on startup and still has a memory fallback.
+- The panel may use temporary IndexedDB storage, but it resets the inspected-tab session on startup, clears on normal panel teardown, and still has a memory fallback.
 - Wire fallback events can be inspected and searched, but cloned wire events without an original listener target cannot be reinjected through listener-path replay.
 - Synthetic events are local panel events. They are appended only after page-side listener reinjection reports success.
 - `dist/` is generated output. Architecture changes should be made in `src/`, `public/`, or `scripts/`, then rebuilt.

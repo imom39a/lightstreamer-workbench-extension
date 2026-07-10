@@ -14,13 +14,13 @@ Lightstreamer Event Workbench is an open-source Chrome DevTools extension for de
 
 Version `0.1.1` is the current bug-fix package. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf), or build from source and load the generated `dist/` directory as an unpacked extension.
 
-The first release focuses on in-memory debugging for the current inspected tab. The UI and internal event envelope may evolve as more Lightstreamer workflows are validated.
+The first release focuses on local, current-session debugging for the inspected tab. The UI and internal event envelope may evolve as more Lightstreamer workflows are validated.
 
 ## What The Extension Does
 
 - Adds a `Lightstreamer Event Workbench` panel to Chrome DevTools.
 - Instruments the inspected page at `document_start` to observe official Lightstreamer Web Client constructors and listeners.
-- Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into an in-memory event store.
+- Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into a temporary local event store for the current DevTools session.
 - Shows a searchable Timeline with normalized event envelopes and raw diagnostic payloads.
 - Reconstructs COMMAND state by subscription, item, key, command, snapshot state, provenance, and diagnostics.
 - Lets developers clone compatible captured updates, edit fields, and locally reinject synthetic updates through captured listener paths.
@@ -30,7 +30,7 @@ The first release focuses on in-memory debugging for the current inspected tab. 
 ## What It Does Not Do
 
 - It does not send captured data to this project, the maintainers, analytics services, or any external backend.
-- It does not persist captured events after the current DevTools/tab session in v1.
+- It does not intentionally retain captured events after the current DevTools/tab session; temporary local storage is reset on panel startup and cleared on normal panel teardown.
 - It does not inject data into the real Lightstreamer server stream.
 - It does not provide app-specific interpretation rules in the core product.
 - It does not treat arbitrary WebSocket protocols as first-class Lightstreamer domain models.
@@ -76,7 +76,7 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 
 ## Privacy And Safety
 
-Lightstreamer Event Workbench runs locally in the browser extension context. Captured event data is kept in memory for the current tab/session and is not transmitted off-device by the extension.
+Lightstreamer Event Workbench runs locally in the browser extension context. Captured event data is kept in temporary local storage for the current DevTools/tab session and is not transmitted off-device by the extension.
 
 The extension requests broad page access because it must instrument the inspected page's Lightstreamer Web Client runtime before application code creates clients or subscriptions. Use it only on pages you are authorized to debug, and avoid sharing screenshots or issue logs that contain production secrets, customer data, tokens, or proprietary event payloads.
 

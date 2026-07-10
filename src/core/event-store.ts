@@ -42,7 +42,7 @@ export type EventStore = {
   stats(): MaybePromise<EventStoreStats>;
   clear(): MaybePromise<void>;
   subscribe(listener: EventStoreListener): () => void;
-  close?(): void;
+  close?(): MaybePromise<void>;
 };
 
 export type InMemoryEventStore = Omit<
@@ -65,6 +65,11 @@ export type EventStoreOptions = {
 export type IndexedDbEventStoreOptions = EventStoreOptions & {
   sessionId?: string | number | null;
   reset?: boolean;
+  clearOnClose?: boolean;
+};
+
+type RepositoryEventStoreOptions = EventStoreOptions & {
+  clearOnClose?: boolean;
 };
 
 export const DEFAULT_EVENT_WARNING_THRESHOLD = 10_000;
@@ -157,12 +162,13 @@ export async function createIndexedDbEventStore(
 
 export function createRepositoryEventStore(
   repository: EventRepository,
-  options: EventStoreOptions = {}
+  options: RepositoryEventStoreOptions = {}
 ): EventStore {
   const warningThreshold = normalizeWarningThreshold(options.warningThreshold);
   const listeners = new Set<EventStoreListener>();
   let totalAppended = 0;
   let retained = 0;
+  let closed = false;
 
   async function currentStats(): Promise<EventStoreStats> {
     retained = await repository.countEvents();
@@ -225,8 +231,19 @@ export function createRepositoryEventStore(
       };
     },
 
-    close() {
-      repository.close();
+    async close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      try {
+        if (options.clearOnClose) {
+          await repository.clear();
+        }
+      } finally {
+        listeners.clear();
+        repository.close();
+      }
     }
   };
 }

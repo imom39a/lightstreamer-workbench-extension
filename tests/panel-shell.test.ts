@@ -102,6 +102,27 @@ describe("panel shell", () => {
       "Search events, fields, ids, command, key, or JSON"
     );
     expect(text(".clear-button")).toBe("Clear events");
+    expect(document.querySelector<HTMLButtonElement>(".event-volume-action")?.title).toBe(
+      "Dismiss this warning and keep captured events for this DevTools session."
+    );
+  });
+
+  it("closes the event store when the panel is disposed", () => {
+    panel.dispose();
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore();
+    const close = vi.fn();
+    store.close = close;
+    if (!root) {
+      throw new Error("missing test root");
+    }
+
+    const controller = renderPanel(root, undefined, { store });
+    controller.dispose();
+    controller.dispose();
+
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("renders the empty feed and keeps the detail pane collapsed", () => {

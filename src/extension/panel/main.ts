@@ -456,6 +456,7 @@ export function renderPanel(
   let scheduledStoreRender: ScheduledRender | null = null;
   let immediateAppendRenderCount = 0;
   let appendRenderBudgetReset: ScheduledRender | null = null;
+  let storeCloseStarted = false;
 
   function storeStatsSnapshot(): EventStoreStats {
     return {
@@ -496,7 +497,7 @@ export function renderPanel(
   keepEventsButton.className = "event-volume-action";
   keepEventsButton.type = "button";
   keepEventsButton.textContent = "Keep events";
-  keepEventsButton.title = "Keep all captured events in memory for this DevTools session.";
+  keepEventsButton.title = "Dismiss this warning and keep captured events for this DevTools session.";
   keepEventsButton.addEventListener("click", () => {
     highVolumeNoticeDismissed = true;
     resolveMaybe(store.stats(), renderEventVolumeNotice);
@@ -627,6 +628,8 @@ export function renderPanel(
   root.addEventListener("click", endPointerInteraction, true);
   root.addEventListener("keydown", beginKeyboardInteraction, true);
   root.addEventListener("keyup", endKeyboardInteraction, true);
+  window.addEventListener("pagehide", closeStore);
+  window.addEventListener("beforeunload", closeStore);
   updateActiveViewChrome();
 
   function setFilter<K extends keyof EventFilterState>(
@@ -2056,6 +2059,17 @@ export function renderPanel(
     commandStateIndex.clear();
   }
 
+  function closeStore(): void {
+    if (storeCloseStarted) {
+      return;
+    }
+    if (!store.close) {
+      return;
+    }
+    storeCloseStarted = true;
+    resolveMaybe(store.close(), () => undefined);
+  }
+
   function renderEventVolumeNotice(stats: EventStoreStats): void {
     if (!stats.warningActive) {
       highVolumeNoticeDismissed = false;
@@ -2072,7 +2086,7 @@ export function renderPanel(
 
     retentionNotice.hidden = false;
     eventVolumeText.textContent = `High volume: ${stats.retained.toLocaleString()} events retained`;
-    retentionNotice.title = `All captured events are retained in memory. Threshold ${stats.warningThreshold.toLocaleString()} exceeded; clear only when you no longer need this session history.`;
+    retentionNotice.title = `All captured events are retained for this DevTools session. Threshold ${stats.warningThreshold.toLocaleString()} exceeded; clear only when you no longer need this session history.`;
   }
 
   const controller: PanelController = {
@@ -2115,9 +2129,12 @@ export function renderPanel(
       root.removeEventListener("click", endPointerInteraction, true);
       root.removeEventListener("keydown", beginKeyboardInteraction, true);
       root.removeEventListener("keyup", endKeyboardInteraction, true);
+      window.removeEventListener("pagehide", closeStore);
+      window.removeEventListener("beforeunload", closeStore);
       clearInteractionFlushTimer();
       disposeHelpTooltips();
       activeTooltipDisposers.delete(root);
+      closeStore();
     }
   };
 
@@ -3296,7 +3313,8 @@ async function createPanelEventStore(): Promise<EventStore> {
   try {
     return await createIndexedDbEventStore({
       sessionId: chrome.devtools?.inspectedWindow?.tabId ?? Date.now(),
-      reset: true
+      reset: true,
+      clearOnClose: true
     });
   } catch (error) {
     console.error("Falling back to in-memory event storage.", error);

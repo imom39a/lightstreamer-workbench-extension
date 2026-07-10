@@ -1,5 +1,5 @@
-import { IDBFactory } from "fake-indexeddb";
-import { beforeEach, describe, expect, it } from "vitest";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { createEventStore, createIndexedDbEventStore } from "../src/core/event-store";
@@ -157,6 +157,12 @@ describe("event store", () => {
     expect(commandEvents.total).toBe(1);
     expect(commandEvents.events.map((entry) => entry.id)).toEqual(["event-2"]);
 
+    const partialSearchEvents = await store.queryEvents({
+      filters: { query: "alp" }
+    });
+    expect(partialSearchEvents.total).toBe(1);
+    expect(partialSearchEvents.events.map((entry) => entry.id)).toEqual(["event-1"]);
+
     const latestTwo = await store.queryEvents({ limit: 2 });
     expect(latestTwo.total).toBe(3);
     expect(latestTwo.events.map((entry) => entry.id)).toEqual(["event-2", "event-3"]);
@@ -181,6 +187,46 @@ describe("event store", () => {
 
     resetStore.close?.();
     await deleteEventDatabase(eventDatabaseName(sessionId));
+  });
+
+  it("clears an IndexedDB-backed session when close cleanup is enabled", async () => {
+    const sessionId = "event-store-close-cleanup-test";
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const store = await createIndexedDbEventStore({ sessionId, clearOnClose: true });
+
+    await store.append(event("event-1"));
+    await expect(store.count()).resolves.toBe(1);
+
+    await store.close?.();
+
+    const reopenedStore = await createIndexedDbEventStore({ sessionId });
+    await expect(reopenedStore.count()).resolves.toBe(0);
+
+    reopenedStore.close?.();
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+  });
+
+  it("pages unfiltered IndexedDB queries without reading every metadata row", async () => {
+    const sessionId = "event-store-cursor-page-test";
+    const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll");
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const store = await createIndexedDbEventStore({ sessionId });
+
+    try {
+      await store.append(event("event-1"));
+      await store.append(event("event-2"));
+      await store.append(event("event-3"));
+
+      const latestTwo = await store.queryEvents({ limit: 2 });
+
+      expect(latestTwo.total).toBe(3);
+      expect(latestTwo.events.map((entry) => entry.id)).toEqual(["event-2", "event-3"]);
+      expect(getAllSpy).not.toHaveBeenCalled();
+    } finally {
+      getAllSpy.mockRestore();
+      store.close?.();
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+    }
   });
 
   it("resets an IndexedDB-backed session while another connection is still open", async () => {
