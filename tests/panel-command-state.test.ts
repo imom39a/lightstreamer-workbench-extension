@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
-import { createEventStore, type EventStore } from "../src/core/event-store";
+import { createEventStore, type InMemoryEventStore } from "../src/core/event-store";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { type PanelController, renderPanel } from "../src/extension/panel/main";
 import { type ReinjectionDraft } from "../src/core/reinjection-draft";
@@ -165,7 +165,7 @@ function event(
   };
 }
 
-function seedCommandEvents(store: EventStore): void {
+function seedCommandEvents(store: InMemoryEventStore): void {
   store.append(
     event("event-1", {
       command: "ADD",
@@ -220,7 +220,7 @@ function seedCommandEvents(store: EventStore): void {
   store.append(event("event-7", { subscriptionId: "sub-merge", mode: "MERGE", key: "merge-key" }));
 }
 
-function seedIssue16CommandGroups(store: EventStore): number {
+function seedIssue16CommandGroups(store: InMemoryEventStore): number {
   const groups: Array<{
     subscriptionId: string;
     items: Array<[string, number]>;
@@ -292,7 +292,7 @@ function seedIssue16CommandGroups(store: EventStore): number {
 }
 
 describe("COMMAND State panel workbench", () => {
-  let store: EventStore;
+  let store: InMemoryEventStore;
   let reinjectDraft: Mock<(draft: ReinjectionDraft) => Promise<ReinjectionResult>>;
 
   beforeEach(() => {
@@ -680,48 +680,20 @@ describe("COMMAND State panel workbench", () => {
     expect(button(".inject-command-button").disabled).toBe(false);
   });
 
-  it("preserves COMMAND reinjection context after clearing visible events", async () => {
-    reinjectDraft.mockResolvedValue({
-      requestId: "request-after-clear",
-      ok: true,
-      status: "success",
-      timestamp: 1_700_000_002_222
-    });
+  it("clears COMMAND state and reinjection context when events are cleared", () => {
     clickCommandState();
 
     button(".clear-button").click();
 
     expect(text(".event-count")).toBe("0");
     expect(store.count()).toBe(0);
-    expect(text(".command-current-rows")).toContain("alpha");
-    expect(text(".command-detail-pane")).toContain("New COMMAND update");
-
-    button(".new-command-button").click();
-    input(".command-draft-command", "UPDATE");
-    input(".command-draft-key", "alpha");
-    input('.command-draft-field-input[data-field-name="qty"]', "10");
-
-    expect(button(".inject-command-button").disabled).toBe(false);
-
-    await button(".inject-command-button").click();
-    await Promise.resolve();
-
-    expect(reinjectDraft).toHaveBeenCalledTimes(1);
-    expect(reinjectDraft.mock.calls[0]?.[0]).toMatchObject({
-      target: {
-        subscriptionId: "sub-command",
-        listenerId: "listener-1"
-      },
-      command: "UPDATE",
-      key: "alpha"
-    });
-    expect(store.list()).toHaveLength(1);
-    expect(store.list()[0]?.synthetic).toBe(true);
-    expect(text(".reinjection-message")).toContain(
-      "Synthetic COMMAND update injected through the captured listener."
-    );
-    expect(text(".command-update-list")).toContain("UPDATE");
-    expect(text(".command-detail-pane")).toContain("Latest synthetic UPDATE");
+    expect(text(".command-current-rows")).not.toContain("alpha");
+    expect(text(".command-group-pane")).toContain("No COMMAND state yet");
+    expect(text(".command-current-table")).toContain("Select a COMMAND subscription item");
+    expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(true);
+    expect(document.querySelector(".new-command-editor")).toBeNull();
+    expect(document.querySelector(".new-command-button")).toBeNull();
+    expect(reinjectDraft).not.toHaveBeenCalled();
   });
 
   it("clears a New COMMAND draft when the selected item context changes", () => {

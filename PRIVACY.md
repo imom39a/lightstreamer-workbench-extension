@@ -10,7 +10,7 @@ Captured Lightstreamer clients, subscriptions, item updates, field values, COMMA
 
 ## Storage
 
-Version 1 stores captured event data in memory only. Captured events are not persisted by the extension after the current DevTools/tab session.
+Version 1 stores captured event data locally for the current DevTools/tab session. The panel may use temporary IndexedDB-backed storage so high-volume sessions can be queried without keeping every row in the DOM, but it resets that session storage on panel startup and clears it during normal panel teardown. If Chrome or DevTools exits abruptly before teardown completes, leftover temporary data is cleared the next time the panel starts for that inspected tab.
 
 The extension may use normal Chrome extension runtime state required to connect the DevTools panel, background service worker, content script, and inspected page. This runtime state is local to the browser.
 

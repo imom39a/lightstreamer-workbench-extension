@@ -153,131 +153,178 @@ type SubscriptionAccumulator = {
   diagnostics: CommandDiagnostic[];
 };
 
+type CommandStateAccumulator = {
+  subscriptions: Map<string, SubscriptionAccumulator>;
+  knownSubscriptions: Map<string, EventSubscription>;
+  diagnostics: CommandDiagnostic[];
+};
+
+export type CommandStateIndex = {
+  apply(event: LightstreamerEventEnvelope): void;
+  clear(): void;
+  snapshot(): CommandState;
+};
+
 const SUPPORTED_COMMANDS = new Set<CommandLifecycleCommand>(["ADD", "UPDATE", "DELETE"]);
 
 export function reduceCommandState(events: readonly LightstreamerEventEnvelope[]): CommandState {
-  const subscriptions = new Map<string, SubscriptionAccumulator>();
-  const knownSubscriptions = new Map<string, EventSubscription>();
-  const diagnostics: CommandDiagnostic[] = [];
-
+  const accumulator = createCommandStateAccumulator();
   for (const event of events) {
-    const subscription = subscriptionForEvent(event, knownSubscriptions);
-    if (event.kind !== "item-update" || subscription?.mode !== "COMMAND") {
-      continue;
+    applyCommandEvent(accumulator, event);
+  }
+  return commandStateFromAccumulator(accumulator);
+}
+
+export function createCommandStateIndex(): CommandStateIndex {
+  let accumulator = createCommandStateAccumulator();
+  return {
+    apply(event) {
+      applyCommandEvent(accumulator, event);
+    },
+
+    clear() {
+      accumulator = createCommandStateAccumulator();
+    },
+
+    snapshot() {
+      return commandStateFromAccumulator(accumulator);
     }
+  };
+}
 
-    const commandEvent = { ...event, subscription };
-    const subscriptionAccumulator = getSubscriptionAccumulator(subscriptions, commandEvent);
-    const item = getItemAccumulator(
-      subscriptionAccumulator,
-      resolveCommandItemIdentity(commandEvent.subscription, commandEvent.item)
-    );
-    const command = normalizeCommand(commandValue(commandEvent));
-    const key = stringOrNull(commandEvent.update?.key ?? commandEvent.update?.fields?.key);
-    const isSnapshot = Boolean(commandEvent.update?.isSnapshot);
-    const eventDiagnostics: CommandDiagnostic[] = [];
+function createCommandStateAccumulator(): CommandStateAccumulator {
+  return {
+    subscriptions: new Map(),
+    knownSubscriptions: new Map(),
+    diagnostics: []
+  };
+}
 
-    if (!command) {
-      eventDiagnostics.push(createMissingCommandDiagnostic(commandEvent, key));
-    } else if (!isSupportedCommand(command)) {
-      eventDiagnostics.push(createUnsupportedCommandDiagnostic(commandEvent, command, key));
-    }
+function commandStateFromAccumulator(accumulator: CommandStateAccumulator): CommandState {
+  return {
+    subscriptions: Array.from(accumulator.subscriptions.values()).map(toSubscriptionGroup),
+    diagnostics: [...accumulator.diagnostics]
+  };
+}
 
-    if (!key) {
-      eventDiagnostics.push(createMissingKeyDiagnostic(commandEvent, command));
-    }
-
-    if (command === "UPDATE" && isSnapshot) {
-      eventDiagnostics.push(createSnapshotUpdateDiagnostic(commandEvent, key));
-    }
-
-    if (command === "DELETE" && isSnapshot) {
-      eventDiagnostics.push(createSnapshotDeleteDiagnostic(commandEvent, key));
-    }
-
-    if (hasBlockingDiagnostic(eventDiagnostics) || !key || !command || !isSupportedCommand(command)) {
-      recordDiagnostics(diagnostics, subscriptionAccumulator, item, eventDiagnostics);
-      continue;
-    }
-
-    if (command === "UPDATE" && isSnapshot) {
-      recordDiagnostics(diagnostics, subscriptionAccumulator, item, eventDiagnostics);
-      continue;
-    }
-
-    const existing = item.activeRows.get(key);
-    let effectiveCommand: CommandLifecycleCommand = command;
-
-    if (command === "DELETE" && isSnapshot && !existing) {
-      recordDiagnostics(diagnostics, subscriptionAccumulator, item, eventDiagnostics);
-      continue;
-    }
-
-    if (command === "UPDATE" && !existing) {
-      const diagnostic = createUnknownKeyUpdateDiagnostic(commandEvent, key);
-      eventDiagnostics.push(diagnostic);
-      effectiveCommand = "ADD";
-    }
-
-    if (command === "DELETE" && !existing) {
-      const diagnostic = createUnknownKeyDeleteDiagnostic(commandEvent, key);
-      eventDiagnostics.push(diagnostic);
-      recordDiagnostics(diagnostics, subscriptionAccumulator, item, eventDiagnostics);
-      continue;
-    }
-
-    const provenance = createProvenance(commandEvent);
-    const lifecycleEntry: CommandLifecycleEntry = {
-      eventId: commandEvent.id,
-      timestamp: commandEvent.timestamp,
-      key,
-      originalCommand: command,
-      effectiveCommand,
-      isSnapshot,
-      provenance,
-      fields: cloneFields(commandEvent.update?.fields),
-      changedFields: cloneFields(commandEvent.update?.changedFields),
-      diagnosticCodes: eventDiagnostics.map((diagnostic) => diagnostic.code)
-    };
-
-    appendLifecycle(item, key, lifecycleEntry);
-
-    if (effectiveCommand === "DELETE") {
-      item.activeRows.delete(key);
-      item.deletedKeys.set(key, {
-        subscriptionId: subscriptionAccumulator.subscriptionId,
-        itemId: item.itemId,
-        itemName: item.itemName,
-        itemPosition: item.itemPosition,
-        key,
-        status: "deleted",
-        deletedAt: provenance,
-        lifecycle: [...(item.lifecycleByKey.get(key) ?? [])]
-      });
-    } else {
-      const origin = existing?.origin ?? provenance;
-      item.activeRows.set(key, {
-        subscriptionId: subscriptionAccumulator.subscriptionId,
-        itemId: item.itemId,
-        itemName: item.itemName,
-        itemPosition: item.itemPosition,
-        key,
-        status: "active",
-        fields: cloneFields(commandEvent.update?.fields),
-        origin,
-        latest: provenance,
-        lifecycle: [...(item.lifecycleByKey.get(key) ?? [])]
-      });
-      item.deletedKeys.delete(key);
-    }
-
-    recordDiagnostics(diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+function applyCommandEvent(
+  accumulator: CommandStateAccumulator,
+  event: LightstreamerEventEnvelope
+): void {
+  const subscription = subscriptionForEvent(event, accumulator.knownSubscriptions);
+  if (event.kind !== "item-update" || subscription?.mode !== "COMMAND") {
+    return;
   }
 
-  return {
-    subscriptions: Array.from(subscriptions.values()).map(toSubscriptionGroup),
-    diagnostics
+  const commandEvent = { ...event, subscription };
+  const subscriptionAccumulator = getSubscriptionAccumulator(
+    accumulator.subscriptions,
+    commandEvent
+  );
+  const item = getItemAccumulator(
+    subscriptionAccumulator,
+    resolveCommandItemIdentity(commandEvent.subscription, commandEvent.item)
+  );
+  const command = normalizeCommand(commandValue(commandEvent));
+  const key = stringOrNull(commandEvent.update?.key ?? commandEvent.update?.fields?.key);
+  const isSnapshot = Boolean(commandEvent.update?.isSnapshot);
+  const eventDiagnostics: CommandDiagnostic[] = [];
+
+  if (!command) {
+    eventDiagnostics.push(createMissingCommandDiagnostic(commandEvent, key));
+  } else if (!isSupportedCommand(command)) {
+    eventDiagnostics.push(createUnsupportedCommandDiagnostic(commandEvent, command, key));
+  }
+
+  if (!key) {
+    eventDiagnostics.push(createMissingKeyDiagnostic(commandEvent, command));
+  }
+
+  if (command === "UPDATE" && isSnapshot) {
+    eventDiagnostics.push(createSnapshotUpdateDiagnostic(commandEvent, key));
+  }
+
+  if (command === "DELETE" && isSnapshot) {
+    eventDiagnostics.push(createSnapshotDeleteDiagnostic(commandEvent, key));
+  }
+
+  if (hasBlockingDiagnostic(eventDiagnostics) || !key || !command || !isSupportedCommand(command)) {
+    recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+    return;
+  }
+
+  if (command === "UPDATE" && isSnapshot) {
+    recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+    return;
+  }
+
+  const existing = item.activeRows.get(key);
+  let effectiveCommand: CommandLifecycleCommand = command;
+
+  if (command === "DELETE" && isSnapshot && !existing) {
+    recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+    return;
+  }
+
+  if (command === "UPDATE" && !existing) {
+    const diagnostic = createUnknownKeyUpdateDiagnostic(commandEvent, key);
+    eventDiagnostics.push(diagnostic);
+    effectiveCommand = "ADD";
+  }
+
+  if (command === "DELETE" && !existing) {
+    const diagnostic = createUnknownKeyDeleteDiagnostic(commandEvent, key);
+    eventDiagnostics.push(diagnostic);
+    recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+    return;
+  }
+
+  const provenance = createProvenance(commandEvent);
+  const lifecycleEntry: CommandLifecycleEntry = {
+    eventId: commandEvent.id,
+    timestamp: commandEvent.timestamp,
+    key,
+    originalCommand: command,
+    effectiveCommand,
+    isSnapshot,
+    provenance,
+    fields: cloneFields(commandEvent.update?.fields),
+    changedFields: cloneFields(commandEvent.update?.changedFields),
+    diagnosticCodes: eventDiagnostics.map((diagnostic) => diagnostic.code)
   };
+
+  appendLifecycle(item, key, lifecycleEntry);
+
+  if (effectiveCommand === "DELETE") {
+    item.activeRows.delete(key);
+    item.deletedKeys.set(key, {
+      subscriptionId: subscriptionAccumulator.subscriptionId,
+      itemId: item.itemId,
+      itemName: item.itemName,
+      itemPosition: item.itemPosition,
+      key,
+      status: "deleted",
+      deletedAt: provenance,
+      lifecycle: [...(item.lifecycleByKey.get(key) ?? [])]
+    });
+  } else {
+    const origin = existing?.origin ?? provenance;
+    item.activeRows.set(key, {
+      subscriptionId: subscriptionAccumulator.subscriptionId,
+      itemId: item.itemId,
+      itemName: item.itemName,
+      itemPosition: item.itemPosition,
+      key,
+      status: "active",
+      fields: cloneFields(commandEvent.update?.fields),
+      origin,
+      latest: provenance,
+      lifecycle: [...(item.lifecycleByKey.get(key) ?? [])]
+    });
+    item.deletedKeys.delete(key);
+  }
+
+  recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
 }
 
 export function validateCommandDraftAgainstState(

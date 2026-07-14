@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { reduceCommandState, validateCommandDraftAgainstState } from "../src/core/command-state";
+import {
+  createCommandStateIndex,
+  reduceCommandState,
+  validateCommandDraftAgainstState
+} from "../src/core/command-state";
 
 type Fields = NonNullable<LightstreamerEventEnvelope["update"]>["fields"];
 
@@ -77,6 +81,28 @@ function firstItem(state: ReturnType<typeof reduceCommandState>) {
 }
 
 describe("COMMAND state reducer", () => {
+  it("matches incremental COMMAND indexing with full reduction", () => {
+    const events = [
+      commandEvent("event-1", { key: "alpha", snapshot: true }),
+      commandEvent("event-2", {
+        command: "UPDATE",
+        key: "alpha",
+        fields: { command: "UPDATE", key: "alpha", name: "Alpha", qty: "5", status: "open" },
+        changedFields: { qty: "5" }
+      }),
+      commandEvent("event-3", { command: "DELETE", key: "alpha", changedFields: { status: "closed" } }),
+      commandEvent("event-4", { command: "UPDATE", key: "missing" }),
+      commandEvent("event-5", { command: null, key: "missing-command" })
+    ];
+
+    const index = createCommandStateIndex();
+    for (const event of events) {
+      index.apply(event);
+    }
+
+    expect(index.snapshot()).toEqual(reduceCommandState(events));
+  });
+
   it("covers CMD-01 and D-08 by grouping current COMMAND rows by subscription, item, and key", () => {
     const state = reduceCommandState([
       commandEvent("event-1", { subscriptionId: "subscription-1", itemName: "scenario.a", key: "alpha" }),
