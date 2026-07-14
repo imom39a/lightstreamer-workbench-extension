@@ -19,6 +19,7 @@ jobs:
     outputs:
       should_deploy: ${{ steps.detect.outputs.should_deploy }}
       comparison: ${{ steps.detect.outputs.comparison }}
+      skip_reason: ${{ steps.detect.outputs.skip_reason }}
     steps:
       - name: Checkout release ref
         uses: actions/checkout@v6
@@ -42,8 +43,12 @@ jobs:
           should_deploy=false
           comparison=""
           changed_files=""
+          skip_reason=""
 
-          if [ ! -d docs ]; then
+          if [[ "$current_ref" == v* ]]; then
+            comparison="blocked-v-ref:${current_ref}"
+            skip_reason="GitHub Pages deployments are skipped for v* refs."
+          elif [ ! -d docs ]; then
             comparison="missing-docs:${current_ref}"
           elif [ -z "$previous_tag" ]; then
             comparison="initial:${current_ref}"
@@ -62,6 +67,7 @@ jobs:
           {
             echo "should_deploy=$should_deploy"
             echo "comparison=$comparison"
+            echo "skip_reason=$skip_reason"
             echo "changed_files<<EOF"
             printf '%s\n' "$changed_files"
             echo "EOF"
@@ -73,7 +79,9 @@ jobs:
             echo "- Comparison: \`$comparison\`"
             echo "- Deploy: \`$should_deploy\`"
             echo ""
-            if [ -n "$changed_files" ]; then
+            if [ -n "$skip_reason" ]; then
+              echo "Skipped: $skip_reason"
+            elif [ -n "$changed_files" ]; then
               echo "Changed Pages files:"
               echo '```text'
               printf '%s\n' "$changed_files"
@@ -86,7 +94,7 @@ jobs:
   deploy:
     name: Deploy Pages
     needs: detect-pages-changes
-    if: needs.detect-pages-changes.outputs.should_deploy == 'true'
+    if: needs.detect-pages-changes.outputs.should_deploy == 'true' && startsWith(github.ref_name, 'v') == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
