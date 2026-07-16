@@ -3,10 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   CAPTURE_NAMESPACE,
   CAPTURE_VERSION,
+  CONTENT_CAPTURE_SYNC_REQUEST,
+  PAGE_CAPTURE_SYNC_REQUEST,
   PANEL_REINJECT_REQUEST,
   type ReinjectionDraftPayload,
   createCaptureMessage,
   isCaptureMessage,
+  isContentCaptureSyncRequestMessage,
+  isPageCaptureSyncRequestMessage,
   isPanelReinjectRequestMessage
 } from "../src/bridge/messages";
 import { createStableIdAllocator } from "../src/core/ids";
@@ -52,6 +56,15 @@ describe("bridge capture message validation", () => {
         payload: { client: { id: "client-1" }, callback: () => null }
       })
     ).toBe(false);
+  });
+});
+
+describe("bridge capture synchronization message validation", () => {
+  it("accepts only the content and page active-subscription sync request types", () => {
+    expect(isContentCaptureSyncRequestMessage({ type: CONTENT_CAPTURE_SYNC_REQUEST })).toBe(true);
+    expect(isPageCaptureSyncRequestMessage({ type: PAGE_CAPTURE_SYNC_REQUEST })).toBe(true);
+    expect(isContentCaptureSyncRequestMessage({ type: PAGE_CAPTURE_SYNC_REQUEST })).toBe(false);
+    expect(isPageCaptureSyncRequestMessage({ type: CONTENT_CAPTURE_SYNC_REQUEST })).toBe(false);
   });
 });
 

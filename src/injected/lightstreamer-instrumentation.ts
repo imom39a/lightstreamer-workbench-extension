@@ -5,6 +5,7 @@ import {
   type ReinjectionDraftPayload,
   type ReinjectionResult,
   createCaptureMessage,
+  isPageCaptureSyncRequestMessage,
   isPageReinjectRequestMessage
 } from "../bridge/messages";
 import { createStableIdAllocator, type StableIdAllocator } from "../core/ids";
@@ -24,6 +25,7 @@ type InstrumentationState = {
   wrappedClientListeners: WeakSet<object>;
   subscriptionListenerProxies: WeakMap<object, WeakMap<object, LightstreamerListenerLike>>;
   subscriptionClients: WeakMap<object, object>;
+  activeSubscriptions: Map<string, CapturePayload>;
   listenerTargets: Map<string, ReinjectionListenerTarget>;
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
@@ -99,6 +101,7 @@ export function installLightstreamerInstrumentation(
     return false;
   }
 
+  const activeSubscriptions = new Map<string, CapturePayload>();
   const state: InstrumentationState = {
     clientIds: createStableIdAllocator("client"),
     subscriptionIds: createStableIdAllocator("subscription"),
@@ -108,13 +111,16 @@ export function installLightstreamerInstrumentation(
     wrappedClientListeners: new WeakSet<object>(),
     subscriptionListenerProxies: new WeakMap<object, WeakMap<object, LightstreamerListenerLike>>(),
     subscriptionClients: new WeakMap<object, object>(),
+    activeSubscriptions,
     listenerTargets: new Map<string, ReinjectionListenerTarget>(),
     originalItemUpdateCallbacks: new WeakMap<object, (update: SyntheticItemUpdate) => unknown>(),
     emit(kind, payload) {
+      trackActiveSubscription(activeSubscriptions, kind, payload);
       postMessage(createCaptureMessage(kind, payload));
     }
   };
   installReinjectionHandler(host, postMessage, state);
+  installCaptureSyncHandler(host, state);
   installWebSocketFallback(host, state);
 
   let installed = false;
@@ -1289,6 +1295,76 @@ function unregisterReinjectionTarget(
   );
 }
 
+function trackActiveSubscription(
+  activeSubscriptions: Map<string, CapturePayload>,
+  kind: CaptureKind,
+  payload: CapturePayload
+): void {
+  const subscription = captureObject(payload.subscription);
+  const subscriptionId =
+    typeof subscription?.id === "string" && subscription.id.trim() !== ""
+      ? subscription.id
+      : null;
+  if (!subscriptionId) {
+    return;
+  }
+
+  if (kind === "subscription-ended" || kind === "subscription-error") {
+    activeSubscriptions.delete(subscriptionId);
+    return;
+  }
+
+  if (kind !== "subscription-started" && kind !== "item-update") {
+    return;
+  }
+
+  const previous = activeSubscriptions.get(subscriptionId);
+  const previousSubscription = captureObject(previous?.subscription);
+  const client = captureObject(payload.client) ?? captureObject(previous?.client);
+  const raw = captureObject(payload.raw);
+  const previousRaw = captureObject(previous?.raw);
+  const captureDiagnostics = compactJsonObject({
+    captureSource: raw?.captureSource ?? previousRaw?.captureSource,
+    transport: raw?.transport ?? previousRaw?.transport,
+    rawSubId: raw?.rawSubId ?? previousRaw?.rawSubId
+  });
+
+  activeSubscriptions.set(
+    subscriptionId,
+    compactJsonObject({
+      client,
+      subscription: compactJsonObject({
+        ...previousSubscription,
+        ...subscription
+      }),
+      raw: Object.keys(captureDiagnostics).length > 0 ? captureDiagnostics : undefined
+    })
+  );
+}
+
+function installCaptureSyncHandler(host: LightstreamerHost, state: InstrumentationState): void {
+  if (typeof host.addEventListener !== "function") {
+    return;
+  }
+
+  host.addEventListener("message", (event) => {
+    if (event.source !== host || !isPageCaptureSyncRequestMessage(event.data)) {
+      return;
+    }
+
+    for (const payload of state.activeSubscriptions.values()) {
+      const raw = captureObject(payload.raw);
+      state.emit("subscription-snapshot", {
+        ...payload,
+        raw: compactJsonObject({
+          ...raw,
+          captureSync: true
+        })
+      });
+    }
+  });
+}
+
 function installReinjectionHandler(
   host: LightstreamerHost,
   postMessage: (message: unknown) => void,
@@ -1626,6 +1702,10 @@ function toJsonValue(value: unknown): CapturePayload[string] {
   }
 
   return String(value);
+}
+
+function captureObject(value: CapturePayload[string] | undefined): CapturePayload | null {
+  return isObject(value) && !Array.isArray(value) ? (value as CapturePayload) : null;
 }
 
 function compactJsonObject(source: Record<string, unknown>): CapturePayload {

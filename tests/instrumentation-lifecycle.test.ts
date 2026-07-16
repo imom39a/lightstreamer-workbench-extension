@@ -531,6 +531,48 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     ).toEqual(["subscription-1", "subscription-2"]);
   });
 
+  it("replays every active subscription when the panel bridge connects late", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const activeSubscription = new target.Subscription(
+      "COMMAND",
+      ["quiet.orders"],
+      ["command", "key"]
+    );
+    const endedSubscription = new target.Subscription(
+      "COMMAND",
+      ["ended.orders"],
+      ["command", "key"]
+    );
+
+    client.subscribe(activeSubscription);
+    client.subscribe(endedSubscription);
+    client.unsubscribe(endedSubscription);
+    messages.length = 0;
+
+    for (const listener of messageListeners) {
+      listener({
+        source: target,
+        data: { type: "lsew:page-capture-sync-request" }
+      } as unknown as MessageEvent);
+    }
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        kind: "subscription-snapshot",
+        payload: expect.objectContaining({
+          client: { id: "client-1" },
+          subscription: expect.objectContaining({
+            id: "subscription-1",
+            mode: "COMMAND",
+            items: ["quiet.orders"]
+          }),
+          raw: expect.objectContaining({ captureSync: true })
+        })
+      })
+    ]);
+  });
+
   it("does not emit WebSocket fallback rows after primary instrumentation is active", () => {
     FakeWebSocket.instances = [];
     const messages: CaptureMessage[] = [];

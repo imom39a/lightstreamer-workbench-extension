@@ -406,6 +406,35 @@ describe("COMMAND State panel workbench", () => {
     expect(text(".command-current-table")).not.toContain("store-nyc-001-invoice-30");
   });
 
+  it("shows a synchronized active COMMAND subscription in both views before its first update", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const quietStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const started = event("quiet-subscription", {
+      subscriptionId: "subscription-19",
+      itemName: null,
+      itemPosition: null,
+      subscriptionItems: ["quiet.orders"]
+    });
+    started.kind = "subscription-snapshot";
+    started.item = undefined;
+    started.update = undefined;
+    quietStore.append(started);
+    renderPanel(root, undefined, { store: quietStore, bridge: { reinjectDraft } });
+
+    expect(text(".event-feed")).toContain("subscription-snapshot");
+    expect(text(".event-feed")).toContain("subscription-19");
+
+    clickCommandState();
+
+    expect(text(".command-group-pane")).toContain("subscription-19 COMMAND");
+    expect(text(".command-group-pane")).toContain("quiet.orders");
+    expect(text(".command-current-rows")).not.toContain("alpha");
+  });
+
   it("keeps timeline rows selectable when live inflow arrives during pointer selection", async () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
