@@ -22,6 +22,15 @@ function selectedTexts(selector: string): string[] {
   );
 }
 
+function resetScrollWhenChildrenAreReplaced(pane: HTMLElement): void {
+  const replaceChildren = pane.replaceChildren.bind(pane);
+  vi.spyOn(pane, "replaceChildren").mockImplementation((...nodes: (Node | string)[]) => {
+    pane.scrollTop = 0;
+    pane.scrollLeft = 0;
+    replaceChildren(...nodes);
+  });
+}
+
 async function flushInteractionRender(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -499,6 +508,84 @@ describe("COMMAND State panel workbench", () => {
     await flushInteractionRender();
   });
 
+  it("preserves every COMMAND list viewport and focused control during live updates", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const liveStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    liveStore.append(event("command-1", { itemName: "item-a", itemPosition: 1, key: "alpha" }));
+    liveStore.append(event("command-2", { itemName: "item-b", itemPosition: 2, key: "bravo" }));
+    renderPanel(root, undefined, { store: liveStore, bridge: { reinjectDraft } });
+    clickCommandState();
+
+    const groups = document.querySelector<HTMLElement>(".command-group-pane");
+    const keys = document.querySelector<HTMLElement>(".command-current-table");
+    const updates = document.querySelector<HTMLElement>(".command-update-pane");
+    if (!groups || !keys || !updates) {
+      throw new Error("missing COMMAND list panes");
+    }
+    resetScrollWhenChildrenAreReplaced(groups);
+    resetScrollWhenChildrenAreReplaced(keys);
+    resetScrollWhenChildrenAreReplaced(updates);
+
+    groups.scrollTop = 140;
+    groups.scrollLeft = 11;
+    keys.scrollTop = 90;
+    keys.scrollLeft = 13;
+    updates.scrollTop = 60;
+    updates.scrollLeft = 17;
+    const originalItemButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".command-item-button")
+    ).find((candidate) => (candidate.textContent ?? "").includes("item-a"));
+    originalItemButton?.focus();
+
+    liveStore.append(event("command-3", { itemName: "item-a", itemPosition: 1, key: "charlie" }));
+
+    expect(groups.scrollTop).toBe(140);
+    expect(groups.scrollLeft).toBe(11);
+    expect(keys.scrollTop).toBe(90);
+    expect(keys.scrollLeft).toBe(13);
+    expect(updates.scrollTop).toBe(60);
+    expect(updates.scrollLeft).toBe(17);
+    expect(document.activeElement).not.toBe(originalItemButton);
+    expect(document.activeElement?.classList.contains("command-item-button")).toBe(true);
+    expect(document.activeElement?.textContent).toContain("item-a");
+
+    keys.scrollTop = 115;
+    updates.scrollTop = 75;
+    const originalKeyRow = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".command-current-row")
+    ).find((candidate) => (candidate.textContent ?? "").includes("alpha"));
+    originalKeyRow?.focus();
+
+    liveStore.append(event("command-4", { itemName: "item-a", itemPosition: 1, key: "delta" }));
+
+    expect(keys.scrollTop).toBe(115);
+    expect(updates.scrollTop).toBe(75);
+    expect(document.activeElement).not.toBe(originalKeyRow);
+    expect(document.activeElement?.classList.contains("command-current-row")).toBe(true);
+    expect(document.activeElement?.textContent).toContain("alpha");
+
+    const originalUpdateRow = document.querySelector<HTMLButtonElement>(".command-update-row");
+    originalUpdateRow?.focus();
+    updates.scrollTop = 88;
+    liveStore.append(
+      event("command-5", {
+        itemName: "item-a",
+        itemPosition: 1,
+        command: "UPDATE",
+        key: "alpha"
+      })
+    );
+
+    expect(updates.scrollTop).toBe(88);
+    expect(document.activeElement).not.toBe(originalUpdateRow);
+    expect(document.activeElement?.classList.contains("command-update-row")).toBe(true);
+    expect(document.activeElement?.textContent).toContain("command-1");
+  });
+
   it("renders help tooltips in a clamped overlay for hover and focus", () => {
     clickCommandState();
 
@@ -548,6 +635,27 @@ describe("COMMAND State panel workbench", () => {
       Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
       Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
     }
+  });
+
+  it("dismisses a help tooltip when a live render removes its trigger", async () => {
+    clickCommandState();
+
+    const helpIcon = document.querySelector<HTMLButtonElement>(
+      '.command-help-icon[aria-label^="Updates:"]'
+    );
+    const tooltip = document.querySelector<HTMLElement>(".command-tooltip");
+    if (!helpIcon || !tooltip) {
+      throw new Error("missing tooltip test elements");
+    }
+
+    helpIcon.dispatchEvent(new Event("pointerover", { bubbles: true }));
+    expect(tooltip.hidden).toBe(false);
+
+    store.append(event("tooltip-live", { key: "live-key" }));
+    await flushInteractionRender();
+
+    expect(helpIcon.isConnected).toBe(false);
+    expect(tooltip.hidden).toBe(true);
   });
 
   it("hides the COMMAND detail shell until COMMAND rows exist", () => {

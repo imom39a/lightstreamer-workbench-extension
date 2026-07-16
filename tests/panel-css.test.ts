@@ -19,4 +19,12 @@ describe("panel CSS", () => {
     expect(panelCss).toContain(".workspace");
     expect(panelCss).toContain(".command-workspace");
   });
+
+  it("disables native scroll anchoring in live-remounted panes", () => {
+    expect(panelCss).toMatch(
+      /\.command-group-pane,[\s\S]*?\.command-detail-pane\s*{[\s\S]*?overflow-anchor:\s*none;/
+    );
+    expect(panelCss).toMatch(/\.event-feed\s*{[\s\S]*?overflow-anchor:\s*none;/);
+    expect(panelCss).toMatch(/\.detail-pane\s*{[\s\S]*?overflow-anchor:\s*none;/);
+  });
 });

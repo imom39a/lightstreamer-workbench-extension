@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCaptureMessage } from "../src/bridge/messages";
 import { type ReinjectionResult } from "../src/bridge/messages";
-import { createEventStore } from "../src/core/event-store";
+import { createEventStore, type EventStore } from "../src/core/event-store";
 import { type ReinjectionDraft } from "../src/core/reinjection-draft";
 import { type PanelController } from "../src/extension/panel/main";
 import { renderPanel } from "../src/extension/panel/main";
@@ -25,6 +25,15 @@ function input(selector: string, value: string): void {
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function resetScrollWhenChildrenAreReplaced(pane: HTMLElement): void {
+  const replaceChildren = pane.replaceChildren.bind(pane);
+  vi.spyOn(pane, "replaceChildren").mockImplementation((...nodes: (Node | string)[]) => {
+    pane.scrollTop = 0;
+    pane.scrollLeft = 0;
+    replaceChildren(...nodes);
+  });
 }
 
 function editDraftJson(mutator: (draft: Record<string, unknown>) => void): void {
@@ -296,6 +305,63 @@ describe("panel shell", () => {
     expect(store.count()).toBe(1002);
   });
 
+  it("preserves the visible Timeline rows when async paging prepends older events", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const memoryStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+
+    for (let index = 1; index <= 501; index += 1) {
+      memoryStore.append({
+        id: `async-event-${index}`,
+        timestamp: index,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "item-update",
+        subscription: { id: "subscription-1", mode: "COMMAND" },
+        item: { name: "async-item", position: 1 },
+        update: {
+          isSnapshot: false,
+          fields: { command: "ADD", key: `key-${index}` },
+          changedFields: { command: "ADD", key: `key-${index}` },
+          command: "ADD",
+          key: `key-${index}`
+        }
+      });
+    }
+    const asyncStore: EventStore = {
+      ...memoryStore,
+      queryEvents(query) {
+        return Promise.resolve(memoryStore.queryEvents(query));
+      }
+    };
+    renderPanel(root, undefined, { store: asyncStore });
+    await flushPromises();
+
+    const feed = document.querySelector<HTMLElement>(".event-feed");
+    if (!feed) {
+      throw new Error("missing Timeline feed");
+    }
+    Object.defineProperties(feed, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: {
+        configurable: true,
+        get: () => document.querySelectorAll(".event-row").length
+      }
+    });
+    expect(document.querySelectorAll(".event-row")).toHaveLength(500);
+    feed.scrollTop = 0;
+
+    feed.dispatchEvent(new Event("scroll"));
+    await flushPromises();
+
+    expect(document.querySelectorAll(".event-row")).toHaveLength(501);
+    expect(feed.scrollTop).toBe(1);
+  });
+
   it("coalesces high-volume append rendering into bounded Timeline queries", async () => {
     vi.useFakeTimers();
     const originalRequestAnimationFrame = window.requestAnimationFrame;
@@ -514,6 +580,29 @@ describe("panel shell", () => {
     expect(document.activeElement).toBe(nextTextarea);
     expect(nextTextarea?.selectionStart).toBe(18);
     expect(detail.scrollTop).toBe(280);
+  });
+
+  it("preserves the Timeline viewport and focused event during live updates", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    appendCommandUpdate(panel, "beta", { qty: 2 });
+
+    const feed = document.querySelector<HTMLElement>(".event-feed");
+    const originalRow = document.querySelector<HTMLButtonElement>(".event-row");
+    if (!feed || !originalRow) {
+      throw new Error("missing Timeline feed");
+    }
+    resetScrollWhenChildrenAreReplaced(feed);
+    feed.scrollTop = 180;
+    feed.scrollLeft = 23;
+    originalRow.focus();
+
+    appendCommandUpdate(panel, "gamma", { qty: 3 });
+
+    expect(feed.scrollTop).toBe(180);
+    expect(feed.scrollLeft).toBe(23);
+    expect(document.activeElement).not.toBe(originalRow);
+    expect(document.activeElement?.classList.contains("event-row")).toBe(true);
+    expect(document.activeElement?.textContent).toContain("alpha");
   });
 
   it("keeps Timeline event detail sections expanded or collapsed when new events arrive", () => {

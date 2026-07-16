@@ -291,6 +291,7 @@ button {
 .command-detail-pane {
   min-width: 0;
   overflow: auto;
+  overflow-anchor: none;
   background: #ffffff;
 }
 
@@ -694,6 +695,7 @@ button {
   position: relative;
   min-width: 0;
   overflow: auto;
+  overflow-anchor: none;
   border-right: 1px solid #d8dee8;
 }
 
@@ -830,6 +832,7 @@ button {
 .detail-pane {
   min-width: 0;
   overflow: auto;
+  overflow-anchor: none;
   background: #ffffff;
   padding: 16px;
 }
