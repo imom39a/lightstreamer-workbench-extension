@@ -137,7 +137,7 @@ export function installLightstreamerInstrumentation(
       ) as LightstreamerClientLike;
       const clientId = state.clientIds.getId(instance);
 
-      host.__LSEW_PRIMARY_ACTIVE__ = true;
+      activatePrimaryInstrumentation(host, state);
       wrapClient(instance, state);
       state.emit("client-created", {
         client: compactJsonObject({
@@ -173,14 +173,25 @@ export function installLightstreamerInstrumentation(
       ) as LightstreamerSubscriptionLike;
       const subscriptionId = state.subscriptionIds.getId(instance);
 
-      host.__LSEW_PRIMARY_ACTIVE__ = true;
+      activatePrimaryInstrumentation(host, state);
+      const subscriptionMetadataErrors: string[] = [];
+      const subscriptionMetadata = readSubscriptionMetadata(
+        instance,
+        args,
+        subscriptionMetadataErrors
+      );
+
       wrapSubscription(instance, state);
-      state.emit("subscription-created", {
+      state.emit("subscription-created", compactJsonObject({
         subscription: {
           id: subscriptionId,
-          ...readSubscriptionMetadata(instance, args)
-        }
-      });
+          ...subscriptionMetadata
+        },
+        raw:
+          subscriptionMetadataErrors.length > 0
+            ? { subscriptionMetadataErrors }
+            : undefined
+      }));
 
       return instance;
     }
@@ -197,6 +208,32 @@ export function installLightstreamerInstrumentation(
 
   host.__LSEW_INSTRUMENTED__ = installed;
   return installed;
+}
+
+function activatePrimaryInstrumentation(
+  host: LightstreamerHost,
+  state: InstrumentationState
+): void {
+  if (host.__LSEW_PRIMARY_ACTIVE__) {
+    return;
+  }
+
+  host.__LSEW_PRIMARY_ACTIVE__ = true;
+  for (const payload of [...state.activeSubscriptions.values()]) {
+    const raw = captureObject(payload.raw);
+    if (raw?.captureSource !== "websocket-tlcp") {
+      continue;
+    }
+
+    state.emit("subscription-ended", compactJsonObject({
+      client: payload.client,
+      subscription: payload.subscription,
+      raw: compactJsonObject({
+        ...raw,
+        captureHandoff: "primary-api"
+      })
+    }));
+  }
 }
 
 function installNamespaceHook(
@@ -1028,15 +1065,25 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
     if (!isObject(subscription)) {
       return;
     }
+    const subscriptionMetadataErrors: string[] = [];
+    const subscriptionMetadata = readSubscriptionMetadata(
+      subscription as LightstreamerSubscriptionLike,
+      [],
+      subscriptionMetadataErrors
+    );
     wrapSubscription(subscription as LightstreamerSubscriptionLike, state);
     state.subscriptionClients.set(subscription, target);
-    state.emit("subscription-started", {
+    state.emit("subscription-started", compactJsonObject({
       client: { id: state.clientIds.getId(target) },
       subscription: {
         id: state.subscriptionIds.getId(subscription),
-        ...readSubscriptionMetadata(subscription as LightstreamerSubscriptionLike)
-      }
-    });
+        ...subscriptionMetadata
+      },
+      raw:
+        subscriptionMetadataErrors.length > 0
+          ? { subscriptionMetadataErrors }
+          : undefined
+    }));
   });
 
   wrapMethod(client, "unsubscribe", function afterUnsubscribe(target, args) {
@@ -1243,19 +1290,26 @@ function emitSubscriptionListenerCallback(
   }
   const itemPayload = kind === "item-update" ? readItemUpdatePayload(args[0]) : {};
   const itemRaw = isObject(itemPayload.raw) ? itemPayload.raw : {};
+  const subscriptionMetadataErrors: string[] = [];
+  const subscriptionMetadata = readSubscriptionMetadata(
+    subscription as LightstreamerSubscriptionLike,
+    [],
+    subscriptionMetadataErrors
+  );
 
   state.emit(kind, compactJsonObject({
     client: readSubscriptionClient(subscription, state),
     subscription: {
       id: state.subscriptionIds.getId(subscription),
-      ...readSubscriptionMetadata(subscription as LightstreamerSubscriptionLike)
+      ...subscriptionMetadata
     },
     listener: { id: state.listenerIds.getId(listener) },
     ...itemPayload,
     raw: {
       ...itemRaw,
       callback,
-      args: kind === "item-update" ? ["[ItemUpdate]"] : args.map((entry) => toJsonValue(entry))
+      args: kind === "item-update" ? ["[ItemUpdate]"] : args.map((entry) => toJsonValue(entry)),
+      ...(subscriptionMetadataErrors.length > 0 ? { subscriptionMetadataErrors } : {})
     }
   }));
 }
@@ -1651,22 +1705,23 @@ function asNullableString(value: unknown): string | null {
 
 function readSubscriptionMetadata(
   subscription: LightstreamerSubscriptionLike,
-  constructorArgs: unknown[] = []
+  constructorArgs: unknown[] = [],
+  metadataErrors?: string[]
 ): CapturePayload {
   return compactJsonObject({
-    mode: readGetter(subscription, "getMode") ?? toJsonValue(constructorArgs[0]),
-    items: readGetter(subscription, "getItems") ?? toJsonValue(constructorArgs[1]),
-    itemGroup: readGetter(subscription, "getItemGroup"),
-    fields: readGetter(subscription, "getFields") ?? toJsonValue(constructorArgs[2]),
-    fieldSchema: readGetter(subscription, "getFieldSchema"),
-    dataAdapter: readGetter(subscription, "getDataAdapter"),
-    requestedSnapshot: readGetter(subscription, "getRequestedSnapshot"),
-    keyPosition: readGetter(subscription, "getKeyPosition"),
-    commandPosition: readGetter(subscription, "getCommandPosition")
+    mode: readGetter(subscription, "getMode", metadataErrors) ?? toJsonValue(constructorArgs[0]),
+    items: readGetter(subscription, "getItems", metadataErrors) ?? toJsonValue(constructorArgs[1]),
+    itemGroup: readGetter(subscription, "getItemGroup", metadataErrors),
+    fields: readGetter(subscription, "getFields", metadataErrors) ?? toJsonValue(constructorArgs[2]),
+    fieldSchema: readGetter(subscription, "getFieldSchema", metadataErrors),
+    dataAdapter: readGetter(subscription, "getDataAdapter", metadataErrors),
+    requestedSnapshot: readGetter(subscription, "getRequestedSnapshot", metadataErrors),
+    keyPosition: readGetter(subscription, "getKeyPosition", metadataErrors),
+    commandPosition: readGetter(subscription, "getCommandPosition", metadataErrors)
   });
 }
 
-function readGetter(target: object, name: string) {
+function readGetter(target: object, name: string, extractionErrors?: string[]) {
   const getter = (target as Record<string, unknown>)[name];
   if (typeof getter !== "function") {
     return undefined;
@@ -1675,7 +1730,8 @@ function readGetter(target: object, name: string) {
   try {
     return toJsonValue(getter.call(target));
   } catch (error) {
-    return `getter-error:${error instanceof Error ? error.message : "unknown"}`;
+    extractionErrors?.push(`${name}:${error instanceof Error ? error.message : "unknown"}`);
+    return undefined;
   }
 }
 

@@ -90,6 +90,16 @@ class FakeSubscription {
   }
 }
 
+class FakeSubscriptionWithPendingCommandPositions extends FakeSubscription {
+  getKeyPosition(): number {
+    throw new Error("The position of the key field is currently unknown");
+  }
+
+  getCommandPosition(): number {
+    throw new Error("The position of the command field is currently unknown");
+  }
+}
+
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
 
@@ -487,15 +497,22 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     ]);
   });
 
-  it("does not reuse a fallback subscription identity when primary instrumentation activates later", () => {
+  it("retires the active fallback identity when primary instrumentation takes over", () => {
     FakeWebSocket.instances = [];
     const messages: CaptureMessage[] = [];
+    const messageListeners: Array<(event: MessageEvent) => void> = [];
     const target: {
       LightstreamerClient?: typeof FakeLightstreamerClient;
       Subscription?: typeof FakeSubscription;
       WebSocket: typeof WebSocket;
+      addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
     } = {
-      WebSocket: FakeWebSocket as unknown as typeof WebSocket
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+      addEventListener(type, listener) {
+        if (type === "message") {
+          messageListeners.push(listener);
+        }
+      }
     };
 
     installLightstreamerInstrumentation(target, (message) => {
@@ -506,29 +523,93 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       "wss://push.example.test/lightstreamer"
     ) as unknown as FakeWebSocket;
     socket.send(
-      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=metadata%3Asession&LS_schema=command+key&LS_mode=COMMAND&LS_snapshot=true"
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=customerDetail.DL_173420260716ATL__YYZ__01&LS_schema=command+key+modelId+modelValues&LS_mode=COMMAND&LS_snapshot=true"
     );
-    socket.emitMessage("SUBCMD,1,1,2,2,1\nU,1,1,ADD|session-key");
+    socket.emitMessage("SUBCMD,1,1,2,2,1\nU,1,1,ADD|customer-1|model-1|active");
 
     target.LightstreamerClient = FakeLightstreamerClient;
     target.Subscription = FakeSubscription;
     const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
     const subscription = new target.Subscription(
       "COMMAND",
-      ["orderDetail.STORE_NYC_20260716"],
-      ["command", "key", "qty"]
+      ["customerDetail.DL_173420260716ATL__YYZ__01"],
+      ["command", "key", "modelId", "modelValues"]
     );
     const listener = { onItemUpdate: () => undefined };
     client.subscribe(subscription);
     subscription.addListener(listener);
     (subscription.listeners[0] as { onItemUpdate(update: unknown): void }).onItemUpdate(
-      createFakeItemUpdate("orderDetail.STORE_NYC_20260716", "order-key", "1")
+      createFakeItemUpdate("customerDetail.DL_173420260716ATL__YYZ__01", "customer-1", "1")
     );
 
     const itemUpdates = messages.filter((message) => message.kind === "item-update");
     expect(
       itemUpdates.map((message) => (message.payload.subscription as { id: string }).id)
     ).toEqual(["subscription-1", "subscription-2"]);
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        kind: "subscription-ended",
+        payload: expect.objectContaining({
+          subscription: expect.objectContaining({ id: "subscription-1" }),
+          raw: expect.objectContaining({ captureHandoff: "primary-api" })
+        })
+      })
+    );
+
+    const normalizer = createEventNormalizer();
+    const commandState = reduceCommandState(
+      messages.map((message) => normalizer.normalize(message))
+    );
+    expect(commandState.subscriptions.map((entry) => entry.subscriptionId)).toEqual([
+      "subscription-2"
+    ]);
+
+    messages.length = 0;
+    for (const pageListener of messageListeners) {
+      pageListener({
+        source: target,
+        data: { type: "lsew:page-capture-sync-request" }
+      } as unknown as MessageEvent);
+    }
+    expect(
+      messages
+        .filter((message) => message.kind === "subscription-snapshot")
+        .map((message) => (message.payload.subscription as { id: string }).id)
+    ).toEqual(["subscription-2"]);
+  });
+
+  it("keeps unavailable COMMAND positions out of semantic subscription metadata", () => {
+    const messages: CaptureMessage[] = [];
+    const target = {
+      LightstreamerClient: FakeLightstreamerClient,
+      Subscription: FakeSubscriptionWithPendingCommandPositions
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    new target.Subscription(
+      "COMMAND",
+      ["customerDetail.DL_173420260716ATL__YYZ__01"],
+      ["command", "key", "modelId", "modelValues"]
+    );
+
+    const created = messages.find((message) => message.kind === "subscription-created");
+    expect(created?.payload.subscription).toMatchObject({
+      id: "subscription-1",
+      mode: "COMMAND",
+      items: ["customerDetail.DL_173420260716ATL__YYZ__01"]
+    });
+    expect(created?.payload.subscription).not.toHaveProperty("keyPosition");
+    expect(created?.payload.subscription).not.toHaveProperty("commandPosition");
+    expect(created?.payload.raw).toMatchObject({
+      subscriptionMetadataErrors: [
+        "getKeyPosition:The position of the key field is currently unknown",
+        "getCommandPosition:The position of the command field is currently unknown"
+      ]
+    });
   });
 
   it("replays every active subscription when the panel bridge connects late", () => {
