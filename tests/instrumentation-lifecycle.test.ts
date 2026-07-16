@@ -5,6 +5,8 @@ import {
   type CaptureMessage,
   isRuntimeReinjectResultMessage
 } from "../src/bridge/messages";
+import { reduceCommandState } from "../src/core/command-state";
+import { createEventNormalizer } from "../src/core/event-normalizer";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
 class FakeLightstreamerClient {
@@ -429,6 +431,104 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         changedFields: { qty: "12", status: "closed" }
       }
     });
+  });
+
+  it("keeps fallback subscription identities unique across Lightstreamer connections", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const target: { WebSocket: typeof WebSocket } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const metadataSocket = new target.WebSocket(
+      "wss://metadata.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    const orderSocket = new target.WebSocket(
+      "wss://orders.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+
+    metadataSocket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=metadata%3Asession&LS_schema=command+key&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    orderSocket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=orderDetail.STORE_NYC_20260716&LS_schema=command+key&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    metadataSocket.emitMessage("SUBCMD,1,1,2,2,1\nU,1,1,ADD|session-key");
+    orderSocket.emitMessage("SUBCMD,1,1,2,2,1\nU,1,1,ADD|order-key");
+
+    const normalizer = createEventNormalizer();
+    const state = reduceCommandState(messages.map((message) => normalizer.normalize(message)));
+
+    expect(state.subscriptions.map((subscription) => subscription.subscriptionId)).toEqual([
+      "subscription-1",
+      "subscription-2"
+    ]);
+    expect(
+      state.subscriptions.map((subscription) => ({
+        subscriptionId: subscription.subscriptionId,
+        itemNames: subscription.items.map((item) => item.itemName),
+        keys: subscription.items.flatMap((item) => item.activeRows.map((row) => row.key))
+      }))
+    ).toEqual([
+      {
+        subscriptionId: "subscription-1",
+        itemNames: ["metadata:session"],
+        keys: ["session-key"]
+      },
+      {
+        subscriptionId: "subscription-2",
+        itemNames: ["orderDetail.STORE_NYC_20260716"],
+        keys: ["order-key"]
+      }
+    ]);
+  });
+
+  it("does not reuse a fallback subscription identity when primary instrumentation activates later", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const target: {
+      LightstreamerClient?: typeof FakeLightstreamerClient;
+      Subscription?: typeof FakeSubscription;
+      WebSocket: typeof WebSocket;
+    } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const socket = new target.WebSocket(
+      "wss://push.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    socket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=metadata%3Asession&LS_schema=command+key&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage("SUBCMD,1,1,2,2,1\nU,1,1,ADD|session-key");
+
+    target.LightstreamerClient = FakeLightstreamerClient;
+    target.Subscription = FakeSubscription;
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["orderDetail.STORE_NYC_20260716"],
+      ["command", "key", "qty"]
+    );
+    const listener = { onItemUpdate: () => undefined };
+    client.subscribe(subscription);
+    subscription.addListener(listener);
+    (subscription.listeners[0] as { onItemUpdate(update: unknown): void }).onItemUpdate(
+      createFakeItemUpdate("orderDetail.STORE_NYC_20260716", "order-key", "1")
+    );
+
+    const itemUpdates = messages.filter((message) => message.kind === "item-update");
+    expect(
+      itemUpdates.map((message) => (message.payload.subscription as { id: string }).id)
+    ).toEqual(["subscription-1", "subscription-2"]);
   });
 
   it("does not emit WebSocket fallback rows after primary instrumentation is active", () => {

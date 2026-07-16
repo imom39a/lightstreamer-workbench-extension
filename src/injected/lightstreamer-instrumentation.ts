@@ -390,7 +390,7 @@ function handleWireSubscriptionAdd(
     return;
   }
 
-  const subscription = createWireSubscription(rawSubId, params);
+  const subscription = createWireSubscription(rawSubId, params, state);
   wire.subscriptions.set(rawSubId, subscription);
   state.emit("subscription-created", {
     client: { id: wire.clientId },
@@ -413,7 +413,7 @@ function handleWireSubscriptionDelete(
     return;
   }
 
-  const subscription = ensureWireSubscription(wire, rawSubId);
+  const subscription = ensureWireSubscription(wire, rawSubId, state);
   state.emit("subscription-ended", {
     client: { id: wire.clientId },
     subscription: { id: subscription.id },
@@ -485,7 +485,7 @@ function handleWireSubscriptionOk(
     return;
   }
 
-  const subscription = ensureWireSubscription(wire, rawSubId);
+  const subscription = ensureWireSubscription(wire, rawSubId, state);
   const fieldCount = toPositiveInteger(parts[3]);
   if (fieldCount !== null) {
     ensureWireFieldCount(subscription, fieldCount);
@@ -519,7 +519,7 @@ function handleWireUnsub(
     return;
   }
 
-  const subscription = ensureWireSubscription(wire, rawSubId);
+  const subscription = ensureWireSubscription(wire, rawSubId, state);
   state.emit("subscription-ended", {
     client: { id: wire.clientId },
     subscription: { id: subscription.id },
@@ -544,7 +544,7 @@ function handleWireEndOfSnapshot(
     return;
   }
 
-  const subscription = ensureWireSubscription(wire, rawSubId);
+  const subscription = ensureWireSubscription(wire, rawSubId, state);
   const itemKey = String(itemPosition);
   subscription.snapshotEndedItems.add(itemKey);
   state.emit("end-of-snapshot", {
@@ -572,7 +572,7 @@ function handleWireClearSnapshot(
     return;
   }
 
-  const subscription = ensureWireSubscription(wire, rawSubId);
+  const subscription = ensureWireSubscription(wire, rawSubId, state);
   subscription.itemStates.delete(String(itemPosition));
   state.emit("clear-snapshot", {
     client: { id: wire.clientId },
@@ -600,7 +600,7 @@ function handleWireOverflow(
     return;
   }
 
-  const subscription = ensureWireSubscription(wire, rawSubId);
+  const subscription = ensureWireSubscription(wire, rawSubId, state);
   state.emit("lost-updates", {
     client: { id: wire.clientId },
     subscription: { id: subscription.id },
@@ -625,7 +625,7 @@ function handleWireUpdate(
     return;
   }
 
-  const subscription = ensureWireSubscription(wire, parsed.rawSubId);
+  const subscription = ensureWireSubscription(wire, parsed.rawSubId, state);
   const itemKey = String(parsed.itemPosition);
   const itemState = getWireItemState(subscription, itemKey);
   const decoded = decodeWireFields(subscription, parsed.fieldData, itemState.fields);
@@ -660,11 +660,12 @@ function handleWireUpdate(
 
 function createWireSubscription(
   rawSubId: string,
-  params: URLSearchParams
+  params: URLSearchParams,
+  state: InstrumentationState
 ): WireSubscriptionState {
   const fieldNames = splitWireList(params.get("LS_schema")) ?? [];
   const subscription: WireSubscriptionState = {
-    id: wireSubscriptionId(rawSubId),
+    id: "",
     rawSubId,
     mode: params.get("LS_mode"),
     itemNames: splitWireList(params.get("LS_group")),
@@ -677,13 +678,15 @@ function createWireSubscription(
     snapshotEndedItems: new Set<string>(),
     firstUpdateItems: new Set<string>()
   };
+  subscription.id = state.subscriptionIds.getId(subscription);
 
   return subscription;
 }
 
 function ensureWireSubscription(
   wire: WireConnectionState,
-  rawSubId: string
+  rawSubId: string,
+  state: InstrumentationState
 ): WireSubscriptionState {
   const existing = wire.subscriptions.get(rawSubId);
   if (existing) {
@@ -691,7 +694,7 @@ function ensureWireSubscription(
   }
 
   const subscription: WireSubscriptionState = {
-    id: wireSubscriptionId(rawSubId),
+    id: "",
     rawSubId,
     mode: null,
     itemNames: null,
@@ -704,6 +707,7 @@ function ensureWireSubscription(
     snapshotEndedItems: new Set<string>(),
     firstUpdateItems: new Set<string>()
   };
+  subscription.id = state.subscriptionIds.getId(subscription);
   wire.subscriptions.set(rawSubId, subscription);
   return subscription;
 }
@@ -979,10 +983,6 @@ function isLightstreamerWebSocketUrl(url: string): boolean {
 
 function textWirePayload(value: unknown): string | null {
   return typeof value === "string" ? value : null;
-}
-
-function wireSubscriptionId(rawSubId: string): string {
-  return `subscription-${rawSubId}`;
 }
 
 function toPositiveInteger(value: string | undefined): number | null {
