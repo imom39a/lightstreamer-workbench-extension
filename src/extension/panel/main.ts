@@ -441,6 +441,7 @@ export function renderPanel(
   let timelineDetailOpen = false;
   let timelineDetailWidth = TIMELINE_DEFAULT_DETAIL_WIDTH;
   let timelineRenderLimit = TIMELINE_RENDER_CHUNK_SIZE;
+  let timelineFollowLatest = true;
   let commandDetailOpen = true;
   const commandContextEvents: LightstreamerEventEnvelope[] = [];
   const commandContextEventIds = new Set<string>();
@@ -627,7 +628,7 @@ export function renderPanel(
   applyCommandPaneWidths();
   root.append(toolbar, viewSelector, filterStrip, commandFilterStrip, workspace, commandWorkspace);
   const helpTooltips = installHelpTooltipOverlay(root);
-  feed.addEventListener("scroll", maybeLoadMoreTimelineRows);
+  feed.addEventListener("scroll", handleTimelineScroll);
   root.addEventListener("pointerdown", beginPointerInteraction, true);
   root.addEventListener("pointerup", endPointerInteraction, true);
   root.addEventListener("pointercancel", endPointerInteraction, true);
@@ -870,6 +871,12 @@ export function renderPanel(
 
   function resetTimelineRenderLimit(): void {
     timelineRenderLimit = TIMELINE_RENDER_CHUNK_SIZE;
+    timelineFollowLatest = true;
+  }
+
+  function handleTimelineScroll(): void {
+    timelineFollowLatest = isTimelineNearBottom();
+    maybeLoadMoreTimelineRows();
   }
 
   function maybeLoadMoreTimelineRows(): void {
@@ -883,34 +890,30 @@ export function renderPanel(
 
     const previousScrollHeight = feed.scrollHeight;
     const previousScrollTop = feed.scrollTop;
-    const previousClientHeight = feed.clientHeight;
-    const previousDistanceFromBottom = Math.max(
-      0,
-      previousScrollHeight - previousScrollTop - previousClientHeight
-    );
-    const wasNearTop = feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
     timelineRenderLimit = Math.min(
       timelineRenderLimit + TIMELINE_RENDER_CHUNK_SIZE,
       timelineVisibleTotal
     );
     renderFeed({ preservePaneState: true }, () => {
-      if (wasNearTop) {
-        feed.scrollTop = previousScrollTop + Math.max(0, feed.scrollHeight - previousScrollHeight);
-      } else {
-        feed.scrollTop = Math.max(
-          0,
-          feed.scrollHeight - previousClientHeight - previousDistanceFromBottom
-        );
+      if (timelineFollowLatest) {
+        scrollTimelineToLatest();
+        return;
       }
+      feed.scrollTop = previousScrollTop + Math.max(0, feed.scrollHeight - previousScrollHeight);
     });
   }
 
   function isTimelineLoadBoundaryReached(): boolean {
-    const distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
-    return (
-      feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD ||
-      distanceFromBottom <= TIMELINE_LOAD_MORE_THRESHOLD
-    );
+    return feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
+  }
+
+  function isTimelineNearBottom(): boolean {
+    const maximumScrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight);
+    return maximumScrollTop - feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
+  }
+
+  function scrollTimelineToLatest(): void {
+    feed.scrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight);
   }
 
   function renderEmptyState(): void {
@@ -992,7 +995,9 @@ export function renderPanel(
       return;
     }
 
-    const feedState = options.preservePaneState ? capturePaneState(feed) : null;
+    const shouldFollowLatest = timelineFollowLatest;
+    const feedState =
+      options.preservePaneState || !shouldFollowLatest ? capturePaneState(feed) : null;
 
     const selectedStillVisible = renderedEvents.some((event) => event.id === selectedEventId);
     if (!selectedPinned) {
@@ -1044,6 +1049,9 @@ export function renderPanel(
 
     feed.replaceChildren(list);
     restorePaneState(feed, feedState);
+    if (shouldFollowLatest) {
+      scrollTimelineToLatest();
+    }
     renderSelectedTimelineDetail(options);
   }
 
@@ -2158,7 +2166,7 @@ export function renderPanel(
     dispose() {
       cancelScheduledStoreRender();
       cancelAppendRenderBudgetReset();
-      feed.removeEventListener("scroll", maybeLoadMoreTimelineRows);
+      feed.removeEventListener("scroll", handleTimelineScroll);
       root.removeEventListener("pointerdown", beginPointerInteraction, true);
       root.removeEventListener("pointerup", endPointerInteraction, true);
       root.removeEventListener("pointercancel", endPointerInteraction, true);

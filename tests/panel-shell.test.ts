@@ -286,6 +286,11 @@ describe("panel shell", () => {
     feed.scrollTop = 800;
     feed.dispatchEvent(new Event("scroll"));
 
+    expect(document.querySelectorAll(".event-row")).toHaveLength(500);
+
+    feed.scrollTop = 0;
+    feed.dispatchEvent(new Event("scroll"));
+
     expect(document.querySelectorAll(".event-row")).toHaveLength(1000);
     expect(text(".event-render-limit")).toBe(
       "All matching events are retained; showing latest 1000 of 1002. Scroll to load more retained events."
@@ -592,8 +597,13 @@ describe("panel shell", () => {
       throw new Error("missing Timeline feed");
     }
     resetScrollWhenChildrenAreReplaced(feed);
+    Object.defineProperties(feed, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 1000 }
+    });
     feed.scrollTop = 180;
     feed.scrollLeft = 23;
+    feed.dispatchEvent(new Event("scroll"));
     originalRow.focus();
 
     appendCommandUpdate(panel, "gamma", { qty: 3 });
@@ -603,6 +613,42 @@ describe("panel shell", () => {
     expect(document.activeElement).not.toBe(originalRow);
     expect(document.activeElement?.classList.contains("event-row")).toBe(true);
     expect(document.activeElement?.textContent).toContain("alpha");
+  });
+
+  it("follows events captured while COMMAND State is active until the user scrolls into history", () => {
+    const feed = document.querySelector<HTMLElement>(".event-feed");
+    if (!feed) {
+      throw new Error("missing Timeline feed");
+    }
+    resetScrollWhenChildrenAreReplaced(feed);
+    Object.defineProperties(feed, {
+      clientHeight: { configurable: true, value: 80 },
+      scrollHeight: {
+        configurable: true,
+        get: () => document.querySelectorAll(".event-row").length * 40
+      }
+    });
+
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    appendCommandUpdate(panel, "bravo", { qty: 2 });
+    document.querySelectorAll<HTMLButtonElement>(".view-selector button")[1]?.click();
+
+    appendCommandUpdate(panel, "charlie", { qty: 3 });
+    appendCommandUpdate(panel, "delta", { qty: 4 });
+    document.querySelectorAll<HTMLButtonElement>(".view-selector button")[0]?.click();
+
+    expect(document.querySelectorAll(".event-row")).toHaveLength(4);
+    expect(feed.scrollTop).toBe(80);
+    expect(document.querySelectorAll<HTMLElement>(".event-command")[3]?.textContent).toBe(
+      "ADD/delta"
+    );
+
+    feed.scrollTop = 0;
+    feed.dispatchEvent(new Event("scroll"));
+    appendCommandUpdate(panel, "echo", { qty: 5 });
+
+    expect(document.querySelectorAll(".event-row")).toHaveLength(5);
+    expect(feed.scrollTop).toBe(0);
   });
 
   it("keeps Timeline event detail sections expanded or collapsed when new events arrive", () => {
