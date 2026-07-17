@@ -1,8 +1,14 @@
+import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCaptureMessage } from "../src/bridge/messages";
 import { type ReinjectionResult } from "../src/bridge/messages";
-import { createEventStore, type EventStore } from "../src/core/event-store";
+import {
+  createEventStore,
+  createIndexedDbEventStore,
+  type EventStore
+} from "../src/core/event-store";
+import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
 import { type ReinjectionDraft } from "../src/core/reinjection-draft";
 import { type PanelController } from "../src/extension/panel/main";
 import { renderPanel } from "../src/extension/panel/main";
@@ -25,6 +31,16 @@ function input(selector: string, value: string): void {
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+async function waitForCondition(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for panel state.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function resetScrollWhenChildrenAreReplaced(pane: HTMLElement): void {
@@ -414,6 +430,98 @@ describe("panel shell", () => {
       window.requestAnimationFrame = originalRequestAnimationFrame;
       window.cancelAnimationFrame = originalCancelAnimationFrame;
       vi.useRealTimers();
+    }
+  });
+
+  it("flushes coalesced Timeline updates when animation frames are paused", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const originalCancelAnimationFrame = window.cancelAnimationFrame;
+    window.requestAnimationFrame = vi.fn(() => 1);
+    window.cancelAnimationFrame = vi.fn();
+    let controller: PanelController | null = null;
+
+    try {
+      document.body.innerHTML = '<main id="app"></main>';
+      const root = document.querySelector<HTMLElement>("#app");
+      if (!root) {
+        throw new Error("missing test root");
+      }
+
+      controller = renderPanel(root);
+      for (let index = 1; index <= 100; index += 1) {
+        appendCommandUpdate(controller, `paused-frame-${index}`, { qty: index });
+      }
+
+      expect(text(".event-count")).toBe("100");
+      expect(document.querySelectorAll(".event-row").length).toBeLessThan(100);
+
+      await vi.advanceTimersByTimeAsync(40);
+
+      expect(document.querySelectorAll(".event-row")).toHaveLength(100);
+      expect(Array.from(document.querySelectorAll(".event-command")).at(-1)?.textContent).toBe(
+        "ADD/paused-frame-100"
+      );
+    } finally {
+      controller?.dispose();
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the Timeline page current during concurrent IndexedDB capture", async () => {
+    const previousIndexedDb = globalThis.indexedDB;
+    const sessionId = "panel-concurrent-capture-test";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const store = await createIndexedDbEventStore({ sessionId, reset: true });
+    let controller: PanelController | null = null;
+
+    try {
+      document.body.innerHTML = '<main id="app"></main>';
+      const root = document.querySelector<HTMLElement>("#app");
+      if (!root) {
+        throw new Error("missing test root");
+      }
+
+      controller = renderPanel(root, undefined, { store });
+      for (let index = 1; index <= 600; index += 1) {
+        appendCommandUpdate(controller, `indexed-${index}`, { qty: index });
+      }
+
+      await waitForCondition(() => text(".event-count") === "600");
+      await waitForCondition(() => document.querySelectorAll(".event-row").length === 500);
+
+      expect(text(".event-render-limit")).toBe(
+        "All matching events are retained; showing latest 500 of 600. Scroll to load more retained events."
+      );
+      expect(Array.from(document.querySelectorAll(".event-command")).at(-1)?.textContent).toBe(
+        "ADD/indexed-600"
+      );
+
+      const feed = document.querySelector<HTMLElement>(".event-feed");
+      if (!feed) {
+        throw new Error("missing Timeline feed");
+      }
+      Object.defineProperties(feed, {
+        clientHeight: { configurable: true, value: 200 },
+        scrollHeight: {
+          configurable: true,
+          get: () => document.querySelectorAll(".event-row").length
+        }
+      });
+      feed.scrollTop = 0;
+      feed.dispatchEvent(new Event("scroll"));
+      await waitForCondition(() => document.querySelectorAll(".event-row").length === 600);
+
+      expect(document.querySelector(".event-render-limit")).toBeNull();
+      expect(document.querySelector(".event-command")?.textContent).toBe("ADD/indexed-1");
+    } finally {
+      controller?.dispose();
+      await store.close?.();
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+      Reflect.set(globalThis, "indexedDB", previousIndexedDb);
     }
   });
 

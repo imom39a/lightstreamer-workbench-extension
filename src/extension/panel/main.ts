@@ -119,8 +119,7 @@ type RenderOptions = {
   preservePaneState?: boolean;
 };
 type ScheduledRender = {
-  id: number;
-  animationFrame: boolean;
+  cancel(): void;
 };
 type PaneState = {
   scrollTop: number;
@@ -139,6 +138,7 @@ const initialState: PanelState = {
 const TIMELINE_RENDER_CHUNK_SIZE = 500;
 const TIMELINE_LOAD_MORE_THRESHOLD = 32;
 const IMMEDIATE_APPEND_RENDER_BUDGET = 8;
+const PANEL_RENDER_FALLBACK_MS = 32;
 const COMMAND_DEFAULT_PANE_WIDTHS: CommandPaneWidths = {
   subscriptions: 250,
   keys: 360,
@@ -784,26 +784,42 @@ export function renderPanel(
   }
 
   function schedulePanelFrame(callback: () => void): ScheduledRender {
+    let completed = false;
+    let animationFrameId: number | null = null;
+    const timeoutId = window.setTimeout(run, PANEL_RENDER_FALLBACK_MS);
+
     if (typeof window.requestAnimationFrame === "function") {
-      return {
-        id: window.requestAnimationFrame(() => callback()),
-        animationFrame: true
-      };
+      animationFrameId = window.requestAnimationFrame(run);
     }
 
-    return {
-      id: window.setTimeout(callback, 16),
-      animationFrame: false
-    };
+    return { cancel };
+
+    function run(): void {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      window.clearTimeout(timeoutId);
+      if (animationFrameId !== null && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+      callback();
+    }
+
+    function cancel(): void {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      window.clearTimeout(timeoutId);
+      if (animationFrameId !== null && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+    }
   }
 
   function cancelPanelFrame(render: ScheduledRender): void {
-    if (render.animationFrame && typeof window.cancelAnimationFrame === "function") {
-      window.cancelAnimationFrame(render.id);
-      return;
-    }
-
-    window.clearTimeout(render.id);
+    render.cancel();
   }
 
   function beginPointerInteraction(): void {
