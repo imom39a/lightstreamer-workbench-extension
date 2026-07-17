@@ -217,6 +217,25 @@ describe("COMMAND state reducer", () => {
     ]);
   });
 
+  it("does not materialize a COMMAND subscription before it starts", () => {
+    const created = commandEvent("event-1", {
+      kind: "subscription-created",
+      subscriptionId: "subscription-19",
+      subscriptionItems: ["quiet.orders"]
+    });
+    created.item = undefined;
+    created.update = undefined;
+
+    expect(reduceCommandState([created]).subscriptions).toEqual([]);
+
+    const started = {
+      ...created,
+      id: "event-2",
+      kind: "subscription-started" as const
+    };
+    expect(reduceCommandState([created, started]).subscriptions).toHaveLength(1);
+  });
+
   it.each(["subscription-ended", "subscription-error"] as const)(
     "removes a COMMAND subscription after %s",
     (terminalKind) => {

@@ -144,6 +144,7 @@ class FakeWebSocket {
 
   sent: unknown[] = [];
   private messageListeners: Array<(event: MessageEvent) => void> = [];
+  private closeListeners: Array<(event: CloseEvent) => void> = [];
 
   constructor(readonly url: string | URL) {
     FakeWebSocket.instances.push(this);
@@ -153,15 +154,26 @@ class FakeWebSocket {
     this.sent.push(data);
   }
 
-  addEventListener(type: string, listener: (event: MessageEvent) => void) {
+  addEventListener(
+    type: string,
+    listener: ((event: MessageEvent) => void) | ((event: CloseEvent) => void)
+  ) {
     if (type === "message") {
-      this.messageListeners.push(listener);
+      this.messageListeners.push(listener as (event: MessageEvent) => void);
+    } else if (type === "close") {
+      this.closeListeners.push(listener as (event: CloseEvent) => void);
     }
   }
 
   emitMessage(data: string) {
     for (const listener of this.messageListeners) {
       listener({ data } as MessageEvent);
+    }
+  }
+
+  emitClose(code = 1006, reason = "connection lost", wasClean = false) {
+    for (const listener of this.closeListeners) {
+      listener({ code, reason, wasClean } as CloseEvent);
     }
   }
 }
@@ -534,6 +546,131 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         keys: ["order-key"]
       }
     ]);
+  });
+
+  it("retires fallback subscriptions on socket close before sync or API handoff", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const messageListeners: Array<(event: MessageEvent) => void> = [];
+    const target: {
+      LightstreamerClient?: typeof FakeLightstreamerClient;
+      Subscription?: typeof FakeSubscription;
+      WebSocket: typeof WebSocket;
+      addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+    } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+      addEventListener(type, listener) {
+        if (type === "message") {
+          messageListeners.push(listener);
+        }
+      }
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const staleSocket = new target.WebSocket(
+      "ws://localhost:8080/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    staleSocket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=shared.orders&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    staleSocket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|stale-key|1");
+    staleSocket.emitClose();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        kind: "subscription-ended",
+        payload: expect.objectContaining({
+          subscription: expect.objectContaining({ id: "subscription-1" }),
+          raw: expect.objectContaining({
+            captureSource: "websocket-tlcp",
+            frameDirection: "close",
+            code: 1006
+          })
+        })
+      })
+    );
+
+    messages.length = 0;
+    for (const listener of messageListeners) {
+      listener({
+        source: target,
+        data: { type: "lsew:page-capture-sync-request" }
+      } as unknown as MessageEvent);
+    }
+    expect(messages).toEqual([]);
+
+    const currentSocket = new target.WebSocket(
+      "ws://localhost:8080/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    currentSocket.send(
+      "LS_reqId=2&LS_op=add&LS_subId=1&LS_group=shared.orders&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    currentSocket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|current-key|2");
+
+    target.LightstreamerClient = FakeLightstreamerClient;
+    target.Subscription = FakeSubscription;
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    client.subscribe(
+      new target.Subscription("COMMAND", ["shared.orders"], ["command", "key", "qty"])
+    );
+
+    expect(
+      messages.filter(
+        (message) =>
+          message.kind === "subscription-ended" &&
+          (message.payload.raw as { captureHandoff?: string } | undefined)?.captureHandoff ===
+            "primary-api"
+      )
+    ).toHaveLength(1);
+  });
+
+  it("ignores queued wire frames after delete without allocating a phantom identity", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const target: { WebSocket: typeof WebSocket } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const socket = new target.WebSocket(
+      "wss://push.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    socket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=scenario.alpha&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|alpha|1");
+    const originalSubscriptionId = (
+      messages.find((message) => message.kind === "subscription-started")?.payload
+        .subscription as { id: string }
+    ).id;
+
+    socket.send("LS_reqId=2&LS_op=delete&LS_subId=1");
+    messages.length = 0;
+    socket.emitMessage("U,1,1,||2\nUNSUB,1");
+
+    expect(messages).toEqual([]);
+
+    socket.send(
+      "LS_reqId=3&LS_op=add&LS_subId=1&LS_group=scenario.alpha&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|bravo|3");
+    const replacementSubscriptionId = (
+      messages.find((message) => message.kind === "subscription-started")?.payload
+        .subscription as { id: string }
+    ).id;
+
+    expect(replacementSubscriptionId).not.toBe(originalSubscriptionId);
+    expect(
+      messages
+        .filter((message) => message.kind === "item-update")
+        .map((message) => (message.payload.update as { key: string }).key)
+    ).toEqual(["bravo"]);
   });
 
   it("retires only the matching fallback identity when primary instrumentation takes over", () => {

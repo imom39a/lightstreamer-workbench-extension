@@ -63,6 +63,7 @@ type WireConnectionState = {
 type WireSubscriptionState = {
   id: string;
   rawSubId: string;
+  ended: boolean;
   mode: string | null;
   itemNames: string[] | null;
   fieldNames: string[];
@@ -514,6 +515,34 @@ function installWireCaptureForSocket(
     }
     handleWireInboundFrame(text, wire, state);
   });
+  socket.addEventListener("close", (event) => {
+    handleWireClose(event, wire, state);
+  });
+}
+
+function handleWireClose(
+  event: CloseEvent,
+  wire: WireConnectionState,
+  state: InstrumentationState
+): void {
+  for (const subscription of wire.subscriptions.values()) {
+    if (subscription.ended) {
+      continue;
+    }
+    subscription.ended = true;
+    state.emit("subscription-ended", {
+      client: wireClientPayload(wire),
+      subscription: wireSubscriptionPayload(subscription),
+      raw: wireRaw({
+        frameDirection: "close",
+        rawSubId: subscription.rawSubId,
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean
+      })
+    });
+  }
+  wire.subscriptions.clear();
 }
 
 function wrapWireSend(
@@ -589,6 +618,10 @@ function handleWireSubscriptionDelete(
   }
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
+  if (subscription.ended) {
+    return;
+  }
+  subscription.ended = true;
   state.emit("subscription-ended", {
     client: wireClientPayload(wire),
     subscription: { id: subscription.id },
@@ -598,7 +631,6 @@ function handleWireSubscriptionDelete(
       request: paramsToJson(params)
     })
   });
-  wire.subscriptions.delete(rawSubId);
 }
 
 function handleWireInboundFrame(
@@ -661,6 +693,9 @@ function handleWireSubscriptionOk(
   }
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
+  if (subscription.ended) {
+    return;
+  }
   const fieldCount = toPositiveInteger(parts[3]);
   if (fieldCount !== null) {
     ensureWireFieldCount(subscription, fieldCount);
@@ -695,6 +730,10 @@ function handleWireUnsub(
   }
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
+  if (subscription.ended) {
+    return;
+  }
+  subscription.ended = true;
   state.emit("subscription-ended", {
     client: wireClientPayload(wire),
     subscription: { id: subscription.id },
@@ -704,7 +743,6 @@ function handleWireUnsub(
       rawSubId
     })
   });
-  wire.subscriptions.delete(rawSubId);
 }
 
 function handleWireEndOfSnapshot(
@@ -720,6 +758,9 @@ function handleWireEndOfSnapshot(
   }
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
+  if (subscription.ended) {
+    return;
+  }
   const itemKey = String(itemPosition);
   subscription.snapshotEndedItems.add(itemKey);
   state.emit("end-of-snapshot", {
@@ -748,6 +789,9 @@ function handleWireClearSnapshot(
   }
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
+  if (subscription.ended) {
+    return;
+  }
   subscription.itemStates.delete(String(itemPosition));
   state.emit("clear-snapshot", {
     client: wireClientPayload(wire),
@@ -776,6 +820,9 @@ function handleWireOverflow(
   }
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
+  if (subscription.ended) {
+    return;
+  }
   state.emit("lost-updates", {
     client: wireClientPayload(wire),
     subscription: { id: subscription.id },
@@ -801,6 +848,9 @@ function handleWireUpdate(
   }
 
   const subscription = ensureWireSubscription(wire, parsed.rawSubId, state);
+  if (subscription.ended) {
+    return;
+  }
   const itemKey = String(parsed.itemPosition);
   const itemState = getWireItemState(subscription, itemKey);
   const decoded = decodeWireFields(subscription, parsed.fieldData, itemState.fields);
@@ -842,6 +892,7 @@ function createWireSubscription(
   const subscription: WireSubscriptionState = {
     id: "",
     rawSubId,
+    ended: false,
     mode: params.get("LS_mode"),
     itemNames: splitWireList(params.get("LS_group")),
     fieldNames,
@@ -871,6 +922,7 @@ function ensureWireSubscription(
   const subscription: WireSubscriptionState = {
     id: "",
     rawSubId,
+    ended: false,
     mode: null,
     itemNames: null,
     fieldNames: [],

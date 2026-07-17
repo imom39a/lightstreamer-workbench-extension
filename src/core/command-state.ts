@@ -226,6 +226,14 @@ function applyCommandEvent(
     return;
   }
 
+  if (
+    event.kind !== "subscription-started" &&
+    event.kind !== "subscription-snapshot" &&
+    event.kind !== "item-update"
+  ) {
+    return;
+  }
+
   const commandEvent = { ...event, subscription };
   const subscriptionAccumulator = getSubscriptionAccumulator(
     accumulator.subscriptions,
