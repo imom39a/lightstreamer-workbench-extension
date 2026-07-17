@@ -25,7 +25,10 @@ type InstrumentationState = {
   wrappedClientListeners: WeakSet<object>;
   subscriptionListenerProxies: WeakMap<object, WeakMap<object, LightstreamerListenerLike>>;
   subscriptionClients: WeakMap<object, object>;
+  clientMetadata: WeakMap<object, CapturePayload>;
   activeSubscriptions: Map<string, CapturePayload>;
+  commandReplayRows: Map<string, Map<string, CapturePayload>>;
+  retiredFallbackSubscriptionIds: Set<string>;
   listenerTargets: Map<string, ReinjectionListenerTarget>;
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
@@ -102,6 +105,8 @@ export function installLightstreamerInstrumentation(
   }
 
   const activeSubscriptions = new Map<string, CapturePayload>();
+  const commandReplayRows = new Map<string, Map<string, CapturePayload>>();
+  const retiredFallbackSubscriptionIds = new Set<string>();
   const state: InstrumentationState = {
     clientIds: createStableIdAllocator("client"),
     subscriptionIds: createStableIdAllocator("subscription"),
@@ -111,11 +116,18 @@ export function installLightstreamerInstrumentation(
     wrappedClientListeners: new WeakSet<object>(),
     subscriptionListenerProxies: new WeakMap<object, WeakMap<object, LightstreamerListenerLike>>(),
     subscriptionClients: new WeakMap<object, object>(),
+    clientMetadata: new WeakMap<object, CapturePayload>(),
     activeSubscriptions,
+    commandReplayRows,
+    retiredFallbackSubscriptionIds,
     listenerTargets: new Map<string, ReinjectionListenerTarget>(),
     originalItemUpdateCallbacks: new WeakMap<object, (update: SyntheticItemUpdate) => unknown>(),
     emit(kind, payload) {
+      if (isRetiredFallbackCapture(retiredFallbackSubscriptionIds, payload)) {
+        return;
+      }
       trackActiveSubscription(activeSubscriptions, kind, payload);
+      trackCommandReplayRows(commandReplayRows, kind, payload);
       postMessage(createCaptureMessage(kind, payload));
     }
   };
@@ -136,16 +148,18 @@ export function installLightstreamerInstrumentation(
         new.target ?? InstrumentedLightstreamerClient
       ) as LightstreamerClientLike;
       const clientId = state.clientIds.getId(instance);
+      const clientMetadata = compactJsonObject({
+        id: clientId,
+        serverAddress: toJsonValue(args[0]),
+        adapterSet: toJsonValue(args[1]),
+        status: readGetter(instance, "getStatus")
+      });
 
-      activatePrimaryInstrumentation(host, state);
+      activatePrimaryInstrumentation(host);
       wrapClient(instance, state);
+      state.clientMetadata.set(instance, clientMetadata);
       state.emit("client-created", {
-        client: compactJsonObject({
-          id: clientId,
-          serverAddress: toJsonValue(args[0]),
-          adapterSet: toJsonValue(args[1]),
-          status: readGetter(instance, "getStatus")
-        })
+        client: clientMetadata
       });
 
       return instance;
@@ -173,7 +187,7 @@ export function installLightstreamerInstrumentation(
       ) as LightstreamerSubscriptionLike;
       const subscriptionId = state.subscriptionIds.getId(instance);
 
-      activatePrimaryInstrumentation(host, state);
+      activatePrimaryInstrumentation(host);
       const subscriptionMetadataErrors: string[] = [];
       const subscriptionMetadata = readSubscriptionMetadata(
         instance,
@@ -210,30 +224,154 @@ export function installLightstreamerInstrumentation(
   return installed;
 }
 
-function activatePrimaryInstrumentation(
-  host: LightstreamerHost,
-  state: InstrumentationState
-): void {
+function activatePrimaryInstrumentation(host: LightstreamerHost): void {
   if (host.__LSEW_PRIMARY_ACTIVE__) {
     return;
   }
 
   host.__LSEW_PRIMARY_ACTIVE__ = true;
-  for (const payload of [...state.activeSubscriptions.values()]) {
-    const raw = captureObject(payload.raw);
-    if (raw?.captureSource !== "websocket-tlcp") {
-      continue;
-    }
+}
 
-    state.emit("subscription-ended", compactJsonObject({
-      client: payload.client,
-      subscription: payload.subscription,
-      raw: compactJsonObject({
-        ...raw,
-        captureHandoff: "primary-api"
-      })
-    }));
+function reconcileFallbackSubscription(
+  state: InstrumentationState,
+  primaryClient: CapturePayload,
+  primarySubscription: CapturePayload
+): CapturePayload[] {
+  const candidates = Array.from(state.activeSubscriptions.values()).filter((payload) => {
+    const raw = captureObject(payload.raw);
+    return (
+      raw?.captureSource === "websocket-tlcp" &&
+      clientsDescribeSameEndpoint(captureObject(payload.client), primaryClient) &&
+      subscriptionsDescribeSameTarget(
+        captureObject(payload.subscription),
+        primarySubscription
+      )
+    );
+  });
+  if (candidates.length !== 1) {
+    return [];
   }
+
+  const payload = candidates[0];
+  const raw = captureObject(payload.raw);
+  const subscription = captureObject(payload.subscription);
+  const subscriptionId = nonEmptyString(subscription?.id);
+  if (!subscriptionId) {
+    return [];
+  }
+  const replayRows = Array.from(state.commandReplayRows.get(subscriptionId)?.values() ?? []);
+
+  state.emit("subscription-ended", compactJsonObject({
+    client: payload.client,
+    subscription: payload.subscription,
+    raw: compactJsonObject({
+      ...raw,
+      captureHandoff: "primary-api"
+    })
+  }));
+  state.retiredFallbackSubscriptionIds.add(subscriptionId);
+  return replayRows;
+}
+
+function subscriptionsDescribeSameTarget(
+  fallback: CapturePayload | null,
+  primary: CapturePayload
+): boolean {
+  const fallbackMode = normalizedString(fallback?.mode);
+  const primaryMode = normalizedString(primary.mode);
+  if (!fallbackMode || fallbackMode !== primaryMode) {
+    return false;
+  }
+
+  const fallbackItems = normalizedListOrGroup(fallback?.items, fallback?.itemGroup);
+  const primaryItems = normalizedListOrGroup(primary.items, primary.itemGroup);
+  const fallbackFields = normalizedListOrGroup(fallback?.fields, fallback?.fieldSchema);
+  const primaryFields = normalizedListOrGroup(primary.fields, primary.fieldSchema);
+  if (
+    !fallbackItems ||
+    fallbackItems !== primaryItems ||
+    !fallbackFields ||
+    fallbackFields !== primaryFields
+  ) {
+    return false;
+  }
+
+  const fallbackAdapter = nonEmptyString(fallback?.dataAdapter);
+  const primaryAdapter = nonEmptyString(primary.dataAdapter);
+  if (fallbackAdapter !== primaryAdapter) {
+    return false;
+  }
+
+  const fallbackSnapshot = normalizedSnapshotRequest(fallback?.requestedSnapshot);
+  const primarySnapshot = normalizedSnapshotRequest(primary.requestedSnapshot);
+  return (
+    fallbackSnapshot === null ||
+    primarySnapshot === null ||
+    fallbackSnapshot === primarySnapshot
+  );
+}
+
+function clientsDescribeSameEndpoint(
+  fallback: CapturePayload | null,
+  primary: CapturePayload
+): boolean {
+  const fallbackEndpoint = normalizedServerEndpoint(fallback?.serverAddress);
+  const primaryEndpoint = normalizedServerEndpoint(primary.serverAddress);
+  if (!fallbackEndpoint || fallbackEndpoint !== primaryEndpoint) {
+    return false;
+  }
+
+  const fallbackAdapterSet = nonEmptyString(fallback?.adapterSet);
+  const primaryAdapterSet = nonEmptyString(primary.adapterSet);
+  return (
+    !fallbackAdapterSet ||
+    !primaryAdapterSet ||
+    fallbackAdapterSet === primaryAdapterSet
+  );
+}
+
+function normalizedListOrGroup(list: unknown, group: unknown): string | null {
+  if (Array.isArray(list) && list.every((entry) => typeof entry === "string")) {
+    const normalized = list.map((entry) => entry.trim()).filter(Boolean).join(" ");
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return nonEmptyString(group);
+}
+
+function normalizedString(value: unknown): string | null {
+  return nonEmptyString(value)?.toUpperCase() ?? null;
+}
+
+function normalizedServerEndpoint(value: unknown): string | null {
+  const address = nonEmptyString(value);
+  if (!address) {
+    return null;
+  }
+  try {
+    const parsed = new URL(address);
+    const path = parsed.pathname
+      .replace(/\/lightstreamer\/?$/i, "")
+      .replace(/\/+$/, "");
+    return `${parsed.host.toLowerCase()}${path || "/"}`;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function normalizedSnapshotRequest(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = normalizedString(value);
+  if (normalized === "TRUE" || normalized === "YES") {
+    return true;
+  }
+  if (normalized === "FALSE" || normalized === "NO") {
+    return false;
+  }
+  return null;
 }
 
 function installNamespaceHook(
@@ -363,16 +501,13 @@ function installWireCaptureForSocket(
     })
   });
 
-  wrapWireSend(host, socket, wire, state);
+  wrapWireSend(socket, wire, state);
 
   if (typeof socket.addEventListener !== "function") {
     return;
   }
 
   socket.addEventListener("message", (event) => {
-    if (host.__LSEW_PRIMARY_ACTIVE__) {
-      return;
-    }
     const text = textWirePayload(event.data);
     if (text === null) {
       return;
@@ -382,7 +517,6 @@ function installWireCaptureForSocket(
 }
 
 function wrapWireSend(
-  host: LightstreamerHost,
   socket: WebSocket,
   wire: WireConnectionState,
   state: InstrumentationState
@@ -394,11 +528,9 @@ function wrapWireSend(
 
   try {
     socket.send = function wrappedWireSend(this: WebSocket, ...args: Parameters<WebSocket["send"]>) {
-      if (!host.__LSEW_PRIMARY_ACTIVE__) {
-        const text = textWirePayload(args[0]);
-        if (text !== null) {
-          handleWireOutboundFrame(text, wire, state);
-        }
+      const text = textWirePayload(args[0]);
+      if (text !== null) {
+        handleWireOutboundFrame(text, wire, state);
       }
       return originalSend.apply(this, args);
     };
@@ -436,7 +568,7 @@ function handleWireSubscriptionAdd(
   const subscription = createWireSubscription(rawSubId, params, state);
   wire.subscriptions.set(rawSubId, subscription);
   state.emit("subscription-created", {
-    client: { id: wire.clientId },
+    client: wireClientPayload(wire),
     subscription: wireSubscriptionPayload(subscription),
     raw: wireRaw({
       frameDirection: "outbound",
@@ -458,7 +590,7 @@ function handleWireSubscriptionDelete(
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
   state.emit("subscription-ended", {
-    client: { id: wire.clientId },
+    client: wireClientPayload(wire),
     subscription: { id: subscription.id },
     raw: wireRaw({
       frameDirection: "outbound",
@@ -542,7 +674,7 @@ function handleWireSubscriptionOk(
   }
 
   state.emit("subscription-started", {
-    client: { id: wire.clientId },
+    client: wireClientPayload(wire),
     subscription: wireSubscriptionPayload(subscription),
     raw: wireRaw({
       frameDirection: "inbound",
@@ -564,7 +696,7 @@ function handleWireUnsub(
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
   state.emit("subscription-ended", {
-    client: { id: wire.clientId },
+    client: wireClientPayload(wire),
     subscription: { id: subscription.id },
     raw: wireRaw({
       frameDirection: "inbound",
@@ -591,7 +723,7 @@ function handleWireEndOfSnapshot(
   const itemKey = String(itemPosition);
   subscription.snapshotEndedItems.add(itemKey);
   state.emit("end-of-snapshot", {
-    client: { id: wire.clientId },
+    client: wireClientPayload(wire),
     subscription: { id: subscription.id },
     item: wireItemPayload(subscription, itemPosition),
     raw: wireRaw({
@@ -618,7 +750,7 @@ function handleWireClearSnapshot(
   const subscription = ensureWireSubscription(wire, rawSubId, state);
   subscription.itemStates.delete(String(itemPosition));
   state.emit("clear-snapshot", {
-    client: { id: wire.clientId },
+    client: wireClientPayload(wire),
     subscription: { id: subscription.id },
     item: wireItemPayload(subscription, itemPosition),
     raw: wireRaw({
@@ -645,7 +777,7 @@ function handleWireOverflow(
 
   const subscription = ensureWireSubscription(wire, rawSubId, state);
   state.emit("lost-updates", {
-    client: { id: wire.clientId },
+    client: wireClientPayload(wire),
     subscription: { id: subscription.id },
     item: wireItemPayload(subscription, itemPosition),
     update: compactJsonObject({ lostUpdates }),
@@ -680,7 +812,7 @@ function handleWireUpdate(
   subscription.firstUpdateItems.add(itemKey);
 
   state.emit("item-update", {
-    client: { id: wire.clientId },
+    client: wireClientPayload(wire),
     subscription: wireSubscriptionPayload(subscription),
     item: wireItemPayload(subscription, parsed.itemPosition),
     update: compactJsonObject({
@@ -866,6 +998,14 @@ function wireSubscriptionPayload(subscription: WireSubscriptionState): CapturePa
     requestedSnapshot: subscription.requestedSnapshot,
     keyPosition: subscription.keyPosition,
     commandPosition: subscription.commandPosition
+  });
+}
+
+function wireClientPayload(wire: WireConnectionState): CapturePayload {
+  return compactJsonObject({
+    id: wire.clientId,
+    serverAddress: wire.url,
+    adapterSet: wire.adapterSet
   });
 }
 
@@ -1071,19 +1211,36 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
       [],
       subscriptionMetadataErrors
     );
+    const clientMetadata = clientPayload(target, state);
+    const primarySubscription = {
+      id: state.subscriptionIds.getId(subscription),
+      ...subscriptionMetadata
+    };
+    const handoffRows = reconcileFallbackSubscription(
+      state,
+      clientMetadata,
+      primarySubscription
+    );
     wrapSubscription(subscription as LightstreamerSubscriptionLike, state);
     state.subscriptionClients.set(subscription, target);
     state.emit("subscription-started", compactJsonObject({
-      client: { id: state.clientIds.getId(target) },
-      subscription: {
-        id: state.subscriptionIds.getId(subscription),
-        ...subscriptionMetadata
-      },
+      client: clientMetadata,
+      subscription: primarySubscription,
       raw:
         subscriptionMetadataErrors.length > 0
           ? { subscriptionMetadataErrors }
           : undefined
     }));
+    for (const row of handoffRows) {
+      state.emit(
+        "item-update",
+        commandReplayPayload(
+          row,
+          { client: clientMetadata, subscription: primarySubscription },
+          "handoff"
+        )
+      );
+    }
   });
 
   wrapMethod(client, "unsubscribe", function afterUnsubscribe(target, args) {
@@ -1349,6 +1506,144 @@ function unregisterReinjectionTarget(
   );
 }
 
+function isRetiredFallbackCapture(
+  retiredSubscriptionIds: Set<string>,
+  payload: CapturePayload
+): boolean {
+  const raw = captureObject(payload.raw);
+  if (raw?.captureSource !== "websocket-tlcp") {
+    return false;
+  }
+  const subscription = captureObject(payload.subscription);
+  const subscriptionId = nonEmptyString(subscription?.id);
+  return Boolean(subscriptionId && retiredSubscriptionIds.has(subscriptionId));
+}
+
+function trackCommandReplayRows(
+  replayRows: Map<string, Map<string, CapturePayload>>,
+  kind: CaptureKind,
+  payload: CapturePayload
+): void {
+  const subscription = captureObject(payload.subscription);
+  const subscriptionId = nonEmptyString(subscription?.id);
+  if (!subscriptionId) {
+    return;
+  }
+
+  if (kind === "subscription-ended" || kind === "subscription-error") {
+    replayRows.delete(subscriptionId);
+    return;
+  }
+  if (kind !== "item-update") {
+    return;
+  }
+
+  const rows = replayRows.get(subscriptionId);
+  if (normalizedString(subscription?.mode) !== "COMMAND" && !rows) {
+    return;
+  }
+
+  const update = captureObject(payload.update);
+  const fields = captureObject(update?.fields);
+  const command = normalizedString(update?.command ?? fields?.command);
+  const key = nonEmptyString(update?.key ?? fields?.key);
+  const item = captureObject(payload.item);
+  if (!command || !key || !item || !["ADD", "UPDATE", "DELETE"].includes(command)) {
+    return;
+  }
+  if (command === "UPDATE" && update?.isSnapshot === true) {
+    return;
+  }
+
+  const rowId = JSON.stringify([item.position ?? null, item.name ?? null, key]);
+  if (command === "DELETE") {
+    rows?.delete(rowId);
+    return;
+  }
+
+  const nextRows = rows ?? new Map<string, CapturePayload>();
+  const previous = nextRows.get(rowId);
+  const previousSubscription = captureObject(previous?.subscription);
+  const previousItem = captureObject(previous?.item);
+  const previousUpdate = captureObject(previous?.update);
+  const previousFields = captureObject(previousUpdate?.fields);
+  const mergedFields = compactJsonObject({
+    ...previousFields,
+    ...fields,
+    command,
+    key
+  });
+
+  nextRows.set(
+    rowId,
+    compactJsonObject({
+      client: payload.client ?? previous?.client,
+      subscription: compactJsonObject({
+        ...previousSubscription,
+        ...subscription
+      }),
+      listener: payload.listener ?? previous?.listener,
+      item: compactJsonObject({
+        ...previousItem,
+        ...item
+      }),
+      update: compactJsonObject({
+        ...previousUpdate,
+        ...update,
+        fields: mergedFields,
+        command,
+        key
+      }),
+      raw: payload.raw ?? previous?.raw
+    })
+  );
+  replayRows.set(subscriptionId, nextRows);
+}
+
+function commandReplayPayload(
+  row: CapturePayload,
+  activeSubscription: CapturePayload,
+  reason: "sync" | "handoff" = "sync"
+): CapturePayload {
+  const activeClient = captureObject(activeSubscription.client);
+  const activeMetadata = captureObject(activeSubscription.subscription);
+  const rowSubscription = captureObject(row.subscription);
+  const update = captureObject(row.update);
+  const fields = captureObject(update?.fields);
+  const key = nonEmptyString(update?.key ?? fields?.key);
+  const replayFields = compactJsonObject({
+    ...fields,
+    command: "ADD",
+    key
+  });
+  const raw = captureObject(row.raw);
+
+  return compactJsonObject({
+    ...row,
+    client: activeClient ?? row.client,
+    subscription: compactJsonObject({
+      ...rowSubscription,
+      ...activeMetadata
+    }),
+    update: compactJsonObject({
+      ...update,
+      isSnapshot: true,
+      fields: replayFields,
+      changedFields: replayFields,
+      command: "ADD",
+      key
+    }),
+    raw: compactJsonObject({
+      ...raw,
+      captureSource: reason === "handoff" ? undefined : raw?.captureSource,
+      captureSync: reason === "sync" ? true : undefined,
+      commandStateSync: reason === "sync" ? true : undefined,
+      captureHandoff: reason === "handoff" ? "primary-api" : raw?.captureHandoff,
+      commandStateHandoff: reason === "handoff" ? true : undefined
+    })
+  });
+}
+
 function trackActiveSubscription(
   activeSubscriptions: Map<string, CapturePayload>,
   kind: CaptureKind,
@@ -1415,6 +1710,16 @@ function installCaptureSyncHandler(host: LightstreamerHost, state: Instrumentati
           captureSync: true
         })
       });
+    }
+
+    for (const [subscriptionId, rows] of state.commandReplayRows.entries()) {
+      const activeSubscription = state.activeSubscriptions.get(subscriptionId);
+      if (!activeSubscription) {
+        continue;
+      }
+      for (const row of Array.from(rows.values())) {
+        state.emit("item-update", commandReplayPayload(row, activeSubscription));
+      }
     }
   });
 }
@@ -1580,7 +1885,11 @@ function callbackToKind(callback: string): CaptureKind | null {
 
 function readSubscriptionClient(subscription: object, state: InstrumentationState): CapturePayload | undefined {
   const client = state.subscriptionClients.get(subscription);
-  return client ? { id: state.clientIds.getId(client) } : undefined;
+  return client ? clientPayload(client, state) : undefined;
+}
+
+function clientPayload(client: object, state: InstrumentationState): CapturePayload {
+  return state.clientMetadata.get(client) ?? { id: state.clientIds.getId(client) };
 }
 
 function readItemUpdatePayload(update: unknown): CapturePayload {
@@ -1703,17 +2012,35 @@ function asNullableString(value: unknown): string | null {
   return String(value);
 }
 
+function nonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized || null;
+}
+
 function readSubscriptionMetadata(
   subscription: LightstreamerSubscriptionLike,
   constructorArgs: unknown[] = [],
   metadataErrors?: string[]
 ): CapturePayload {
+  const itemDescriptor = constructorArgs[1];
+  const fieldDescriptor = constructorArgs[2];
   return compactJsonObject({
     mode: readGetter(subscription, "getMode", metadataErrors) ?? toJsonValue(constructorArgs[0]),
-    items: readGetter(subscription, "getItems", metadataErrors) ?? toJsonValue(constructorArgs[1]),
-    itemGroup: readGetter(subscription, "getItemGroup", metadataErrors),
-    fields: readGetter(subscription, "getFields", metadataErrors) ?? toJsonValue(constructorArgs[2]),
-    fieldSchema: readGetter(subscription, "getFieldSchema", metadataErrors),
+    items:
+      readGetter(subscription, "getItems", metadataErrors) ??
+      (Array.isArray(itemDescriptor) ? toJsonValue(itemDescriptor) : undefined),
+    itemGroup:
+      readGetter(subscription, "getItemGroup", metadataErrors) ??
+      (typeof itemDescriptor === "string" ? itemDescriptor : undefined),
+    fields:
+      readGetter(subscription, "getFields", metadataErrors) ??
+      (Array.isArray(fieldDescriptor) ? toJsonValue(fieldDescriptor) : undefined),
+    fieldSchema:
+      readGetter(subscription, "getFieldSchema", metadataErrors) ??
+      (typeof fieldDescriptor === "string" ? fieldDescriptor : undefined),
     dataAdapter: readGetter(subscription, "getDataAdapter", metadataErrors),
     requestedSnapshot: readGetter(subscription, "getRequestedSnapshot", metadataErrors),
     keyPosition: readGetter(subscription, "getKeyPosition", metadataErrors),
