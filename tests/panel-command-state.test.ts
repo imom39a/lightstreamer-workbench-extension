@@ -415,6 +415,96 @@ describe("COMMAND State panel workbench", () => {
     expect(text(".command-current-table")).not.toContain("store-nyc-001-invoice-30");
   });
 
+  it("filters high-volume COMMAND navigation to the item containing a deep field match", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const issueStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    seedIssue16CommandGroups(issueStore);
+    issueStore.append(
+      event("target-filter-event", {
+        subscriptionId: "subscription-15",
+        itemName: null,
+        itemPosition: 1,
+        subscriptionItems: ["storeAlerts.STORE_NYC_001"],
+        key: "target-filter-key",
+        fields: {
+          command: "ADD",
+          key: "target-filter-key",
+          name: "Target alert",
+          qty: "1",
+          html: "",
+          status: "deep-field-needle"
+        },
+        changedFields: { status: "deep-field-needle" }
+      })
+    );
+    renderPanel(root, undefined, { store: issueStore, bridge: { reinjectDraft } });
+
+    clickCommandState();
+    input(".command-search", "deep-field-needle");
+
+    expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(1);
+    expect(document.querySelectorAll(".command-item-button")).toHaveLength(1);
+    expect(text(".command-group-pane")).toContain("subscription-15 COMMAND");
+    expect(text(".command-group-pane")).toContain("storeAlerts.STORE_NYC_001");
+    expect(text(".command-group-pane")).not.toContain("subscription-1 COMMAND");
+    expect(text(".command-group-pane")).toContain("1 of 17 items match.");
+    expect(selectedTexts(".command-item-button")).toEqual([
+      expect.stringContaining("storeAlerts.STORE_NYC_001")
+    ]);
+    expect(texts(".command-current-row")).toEqual([
+      expect.stringContaining("target-filter-key")
+    ]);
+    expect(text(".command-update-list")).toContain("target-filter-event");
+    expect(text(".command-detail-pane")).toContain("Key target-filter-key - active");
+    expect(text(".command-detail-pane")).toContain("deep-field-needle");
+
+    input(".command-search", "");
+
+    expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(15);
+    expect(document.querySelectorAll(".command-item-button")).toHaveLength(17);
+    expect(selectedTexts(".command-item-button")).toEqual([
+      expect.stringContaining("storeAlerts.STORE_NYC_001")
+    ]);
+
+    input(".command-search", "subscription-6");
+
+    expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(1);
+    expect(document.querySelectorAll(".command-item-button")).toHaveLength(2);
+    expect(text(".command-group-pane")).toContain("2 of 17 items match.");
+    expect(text(".command-group-pane")).toContain("salesActivity.STORE_NYC_001 position 1");
+    expect(text(".command-group-pane")).toContain("salesActivity.STORE_NYC_001 position 2");
+    expect(texts(".command-current-row")).toHaveLength(30);
+    expect(text(".command-current-rows")).toContain("store-nyc-001-invoice-30");
+    expect(text(".command-current-rows")).not.toContain("store-nyc-001-expense-20");
+  });
+
+  it("shows a coherent COMMAND empty state when search matches no items and recovers when cleared", () => {
+    clickCommandState();
+
+    input(".command-search", "missing-deep-field-value");
+
+    expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(0);
+    expect(document.querySelectorAll(".command-item-button")).toHaveLength(0);
+    expect(text(".command-group-pane")).toContain("No matching COMMAND items");
+    expect(text(".command-group-pane")).toContain("Clear the search or try a broader query.");
+    expect(text(".command-current-table")).toContain("No keys to show because no COMMAND items match.");
+    expect(text(".command-update-pane")).toContain("No updates to show because no COMMAND items match.");
+    expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>(".command-workspace")?.dataset.detailOpen).toBe("false");
+
+    input(".command-search", "");
+
+    expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(1);
+    expect(document.querySelectorAll(".command-item-button")).toHaveLength(1);
+    expect(text(".command-current-rows")).toContain("alpha");
+    expect(text(".command-detail-pane")).toContain("Key alpha - active");
+    expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(false);
+  });
+
   it("shows a synchronized active COMMAND subscription in both views before its first update", () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
@@ -442,6 +532,12 @@ describe("COMMAND State panel workbench", () => {
     expect(text(".command-group-pane")).toContain("subscription-19 COMMAND");
     expect(text(".command-group-pane")).toContain("quiet.orders");
     expect(text(".command-current-rows")).not.toContain("alpha");
+
+    input(".command-search", "subscription-19 quiet.orders");
+
+    expect(document.querySelectorAll(".command-item-button")).toHaveLength(1);
+    expect(text(".command-group-pane")).toContain("quiet.orders");
+    expect(text(".command-current-table")).toContain("No keys match this item and search query.");
   });
 
   it("keeps timeline rows selectable when live inflow arrives during pointer selection", async () => {
@@ -784,8 +880,17 @@ describe("COMMAND State panel workbench", () => {
 
     expect(text(".command-current-rows")).not.toContain("alpha");
     expect(text(".command-current-rows")).not.toContain("ghost");
-    expect(text(".command-update-list")).toContain("Select a key to inspect its updates.");
-    expect(text(".command-detail-pane")).toContain("Select a key or update");
+    expect(document.querySelectorAll(".command-diagnostic-result")).toHaveLength(1);
+    expect(text(".command-diagnostic-key")).toBe("ghost");
+    expect(text(".command-diagnostic-code")).toBe("unknown-key-delete");
+    expect(text(".command-diagnostic-event")).toBe("event-6");
+    expect(selectedTexts(".command-diagnostic-result")).toHaveLength(1);
+    expect(text(".command-update-list")).toContain(
+      "The selected diagnostic has no key update lifecycle."
+    );
+    expect(text(".command-detail-pane")).toContain("COMMAND diagnostic");
+    expect(text(".command-detail-pane")).toContain('"code": "unknown-key-delete"');
+    expect(text(".command-detail-pane")).toContain('"key": "ghost"');
   });
 
   it("creates a schema-derived COMMAND draft with validation diagnostics and no auto-correction", () => {

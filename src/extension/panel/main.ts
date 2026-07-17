@@ -105,6 +105,10 @@ type CommandFilterState = {
   synthetic?: string;
   diagnostics?: string;
 };
+type CommandItemEntry = {
+  subscription: CommandSubscriptionGroup;
+  item: CommandItemGroup;
+};
 type CommandDetailTarget =
   | { kind: "active"; row: CommandRow; item: CommandItemGroup }
   | { kind: "deleted"; row: DeletedCommandKey; item: CommandItemGroup }
@@ -115,8 +119,7 @@ type RenderOptions = {
   preservePaneState?: boolean;
 };
 type ScheduledRender = {
-  id: number;
-  animationFrame: boolean;
+  cancel(): void;
 };
 type PaneState = {
   scrollTop: number;
@@ -135,6 +138,7 @@ const initialState: PanelState = {
 const TIMELINE_RENDER_CHUNK_SIZE = 500;
 const TIMELINE_LOAD_MORE_THRESHOLD = 32;
 const IMMEDIATE_APPEND_RENDER_BUDGET = 8;
+const PANEL_RENDER_FALLBACK_MS = 32;
 const COMMAND_DEFAULT_PANE_WIDTHS: CommandPaneWidths = {
   subscriptions: 250,
   keys: 360,
@@ -780,26 +784,42 @@ export function renderPanel(
   }
 
   function schedulePanelFrame(callback: () => void): ScheduledRender {
+    let completed = false;
+    let animationFrameId: number | null = null;
+    const timeoutId = window.setTimeout(run, PANEL_RENDER_FALLBACK_MS);
+
     if (typeof window.requestAnimationFrame === "function") {
-      return {
-        id: window.requestAnimationFrame(() => callback()),
-        animationFrame: true
-      };
+      animationFrameId = window.requestAnimationFrame(run);
     }
 
-    return {
-      id: window.setTimeout(callback, 16),
-      animationFrame: false
-    };
+    return { cancel };
+
+    function run(): void {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      window.clearTimeout(timeoutId);
+      if (animationFrameId !== null && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+      callback();
+    }
+
+    function cancel(): void {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      window.clearTimeout(timeoutId);
+      if (animationFrameId !== null && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+    }
   }
 
   function cancelPanelFrame(render: ScheduledRender): void {
-    if (render.animationFrame && typeof window.cancelAnimationFrame === "function") {
-      window.cancelAnimationFrame(render.id);
-      return;
-    }
-
-    window.clearTimeout(render.id);
+    render.cancel();
   }
 
   function beginPointerInteraction(): void {
@@ -1215,12 +1235,20 @@ export function renderPanel(
       : null;
     const updatePaneState = options.preservePaneState ? capturePaneState(commandUpdatePane) : null;
     const commandState = commandStateIndex.snapshot();
-    const items = flattenCommandItems(commandState);
+    const allItems = flattenCommandItems(commandState);
 
-    if (items.length === 0) {
+    if (allItems.length === 0) {
       selectedCommandItem = null;
       selectedCommandKey = null;
       renderCommandEmptyState();
+      return;
+    }
+
+    const items = filterCommandItems(allItems, commandFilterState);
+    if (items.length === 0) {
+      selectedCommandKey = null;
+      selectedCommandUpdateEventId = null;
+      renderCommandNoMatchesState();
       return;
     }
 
@@ -1230,8 +1258,8 @@ export function renderPanel(
     };
 
     const selected = findSelectedCommandItem(items, selectedCommandItem) ?? items[0];
-    renderCommandGroups(items, selected);
-    renderCommandRowsAndResults(selected.item);
+    renderCommandGroups(items, selected, allItems.length);
+    renderCommandRowsAndResults(selected.subscription, selected.item);
     renderCommandDetail(selected.subscription, selected.item, commandState, options);
     restorePaneState(commandGroupPane, groupPaneState);
     restorePaneState(commandCurrentTable, currentPaneState);
@@ -1264,9 +1292,38 @@ export function renderPanel(
     );
   }
 
+  function renderCommandNoMatchesState(): void {
+    commandDetailPane.hidden = true;
+    commandWorkspace.dataset.detailOpen = "false";
+    commandGroupPane.replaceChildren(
+      createTextElement("h2", "command-pane-heading", "No matching COMMAND items"),
+      createTextElement(
+        "p",
+        "command-empty-body",
+        "No subscriptions or items match the current search. Clear the search or try a broader query."
+      )
+    );
+    commandCurrentTable.replaceChildren(
+      createTextElement(
+        "p",
+        "command-empty-body",
+        "No keys to show because no COMMAND items match."
+      )
+    );
+    commandUpdatePane.replaceChildren(
+      createTextElement(
+        "p",
+        "command-empty-body",
+        "No updates to show because no COMMAND items match."
+      )
+    );
+    commandDetailPane.replaceChildren();
+  }
+
   function renderCommandGroups(
-    items: Array<{ subscription: CommandSubscriptionGroup; item: CommandItemGroup }>,
-    selected: { subscription: CommandSubscriptionGroup; item: CommandItemGroup }
+    items: CommandItemEntry[],
+    selected: CommandItemEntry,
+    totalItems: number
   ): void {
     commandGroupPane.replaceChildren(
       createHelpHeading(
@@ -1275,7 +1332,11 @@ export function renderPanel(
         "Subscriptions",
         "Choose the COMMAND subscription item whose keys you want to inspect."
       ),
-      createPaneHelp("Choose an item. The middle pane shows that item's keys and update history.")
+      createPaneHelp(
+        items.length === totalItems
+          ? "Choose an item. The middle pane shows that item's keys and update history."
+          : `${items.length} of ${totalItems} items match. Choose an item to inspect its keys and update history.`
+      )
     );
 
     let currentSubscriptionId = "";
@@ -1313,13 +1374,21 @@ export function renderPanel(
     }
   }
 
-  function renderCommandRowsAndResults(item: CommandItemGroup): void {
+  function renderCommandRowsAndResults(
+    subscription: CommandSubscriptionGroup,
+    item: CommandItemGroup
+  ): void {
     const matchingRows = item.activeRows.filter((row) =>
-      matchesCommandRow(row, item, commandFilterState)
+      matchesCommandRow(row, item, subscription, commandFilterState)
     );
     const matchingDeleted = item.deletedKeys.filter((row) =>
-      matchesDeletedCommandKey(row, item, commandFilterState)
+      matchesDeletedCommandKey(row, item, subscription, commandFilterState)
     );
+    const matchingDiagnostics = hasActiveCommandFilters(commandFilterState)
+      ? item.diagnostics.filter((diagnostic) =>
+          matchesCommandDiagnostic(diagnostic, item, commandFilterState)
+        )
+      : [];
     const matchingKeys: CommandKeyRow[] = [...matchingRows, ...matchingDeleted];
 
     const previousSelection = selectedCommandKey;
@@ -1327,7 +1396,8 @@ export function renderPanel(
       item,
       selectedCommandKey,
       matchingRows,
-      matchingDeleted
+      matchingDeleted,
+      matchingDiagnostics
     );
     if (!commandSelectionsEqual(previousSelection, selectedCommandKey)) {
       selectedCommandUpdateEventId = null;
@@ -1387,13 +1457,19 @@ export function renderPanel(
       createHelpHeading(
         "h3",
         "command-results-heading",
-        "Updates for selected key",
-        "Each row is one COMMAND update for the selected key."
+        selectedTarget?.kind === "diagnostic"
+          ? "Selected diagnostic"
+          : "Updates for selected key",
+        selectedTarget?.kind === "diagnostic"
+          ? "The matching diagnostic is shown in the detail pane."
+          : "Each row is one COMMAND update for the selected key."
       ),
       createPaneHelp(
-        selectedCommandKey
-          ? `${selectedLifecycle.length} updates for ${selectedCommandKey.key ?? "selected key"}.`
-          : "Select a key to inspect its updates."
+        selectedTarget?.kind === "diagnostic"
+          ? "The selected diagnostic has no key update lifecycle."
+          : selectedCommandKey
+            ? `${selectedLifecycle.length} updates for ${selectedCommandKey.key ?? "selected key"}.`
+            : "Select a key to inspect its updates."
       )
     );
 
@@ -1424,9 +1500,51 @@ export function renderPanel(
         ? createTextElement(
             "p",
             "command-empty-body",
-            "No keys match this item and search query."
+            matchingDiagnostics.length > 0
+              ? "No keys match this search. Matching diagnostics are listed below."
+              : "No keys match this item and search query."
           )
         : null;
+
+    const diagnosticResults = document.createElement("section");
+    diagnosticResults.className = "command-diagnostic-results";
+    if (matchingDiagnostics.length > 0) {
+      diagnosticResults.append(
+        createHelpHeading(
+          "h3",
+          "command-results-heading",
+          "Matching diagnostics",
+          "Diagnostic events that match the current COMMAND search."
+        ),
+        createPaneHelp(
+          `${matchingDiagnostics.length} matching diagnostic${matchingDiagnostics.length === 1 ? "" : "s"}. Select one to inspect its details.`
+        )
+      );
+      for (const diagnostic of matchingDiagnostics) {
+        const result = document.createElement("button");
+        result.className = "command-diagnostic-result";
+        result.type = "button";
+        result.dataset.selected = String(
+          commandSelectionMatchesDiagnostic(selectedCommandKey, item, diagnostic)
+        );
+        result.setAttribute(
+          "aria-label",
+          `${diagnostic.key ?? "unknown key"}, diagnostic ${diagnostic.code}, event ${diagnostic.eventId ?? "unknown"}`
+        );
+        result.addEventListener("click", () => {
+          selectedCommandUpdateEventId = null;
+          selectedCommandKey = commandSelectionForDiagnostic(item, diagnostic);
+          commandDetailOpen = true;
+          renderCommandState();
+        });
+        result.append(
+          createTextElement("span", "command-diagnostic-key", diagnostic.key ?? "unknown key"),
+          createTextElement("span", "command-diagnostic-code", diagnostic.code),
+          createTextElement("span", "command-diagnostic-event", diagnostic.eventId ?? "-")
+        );
+        diagnosticResults.append(result);
+      }
+    }
 
     commandCurrentTable.replaceChildren(
       createHelpHeading(
@@ -1441,6 +1559,9 @@ export function renderPanel(
     );
     if (emptyRows) {
       commandCurrentTable.append(emptyRows);
+    }
+    if (matchingDiagnostics.length > 0) {
+      commandCurrentTable.append(diagnosticResults);
     }
     commandUpdatePane.replaceChildren(updates);
   }
@@ -2400,14 +2521,75 @@ export function renderPanel(
 
 function flattenCommandItems(
   state: CommandState
-): Array<{ subscription: CommandSubscriptionGroup; item: CommandItemGroup }> {
+): CommandItemEntry[] {
   return state.subscriptions.flatMap((subscription) =>
     subscription.items.map((item) => ({ subscription, item }))
   );
 }
 
+function filterCommandItems(
+  items: readonly CommandItemEntry[],
+  filters: CommandFilterState
+): CommandItemEntry[] {
+  if (!hasActiveCommandFilters(filters)) {
+    return [...items];
+  }
+
+  return items.filter((entry) => {
+    const { item, subscription } = entry;
+    if (
+      item.activeRows.some((row) => matchesCommandRow(row, item, subscription, filters)) ||
+      item.deletedKeys.some((row) =>
+        matchesDeletedCommandKey(row, item, subscription, filters)
+      ) ||
+      item.diagnostics.some((diagnostic) =>
+        matchesCommandDiagnostic(diagnostic, item, filters)
+      )
+    ) {
+      return true;
+    }
+
+    const hasKeyHistory = item.activeRows.length > 0 || item.deletedKeys.length > 0;
+    return !hasKeyHistory && matchesCommandItemMetadata(entry, filters);
+  });
+}
+
+function hasActiveCommandFilters(filters: CommandFilterState): boolean {
+  return Object.values(filters).some((value) => Boolean(value?.trim()));
+}
+
+function matchesCommandItemMetadata(
+  entry: CommandItemEntry,
+  filters: CommandFilterState
+): boolean {
+  if (
+    filters.key?.trim() ||
+    filters.command?.trim() ||
+    filters.source?.trim() ||
+    filters.snapshot?.trim() ||
+    filters.synthetic?.trim() ||
+    filters.diagnostics?.trim()
+  ) {
+    return false;
+  }
+
+  const searchText = normalizeSearchText([
+    entry.subscription.subscriptionId,
+    entry.subscription.mode,
+    commandItemLabel(entry.item),
+    entry.item.itemId,
+    entry.item.itemName,
+    entry.item.itemPosition
+  ]);
+  return (
+    matchesTokens(searchText, filters.query) &&
+    matchesText(entry.subscription.subscriptionId, filters.subscription) &&
+    matchesText(commandItemLabel(entry.item), filters.item)
+  );
+}
+
 function validCommandItemSelection(
-  items: Array<{ subscription: CommandSubscriptionGroup; item: CommandItemGroup }>,
+  items: readonly CommandItemEntry[],
   selected: { subscriptionId: string; itemId: string } | null
 ): { subscriptionId: string; itemId: string } | null {
   if (
@@ -2574,9 +2756,9 @@ function focusSelectorForElement(element: HTMLElement): string | null {
 }
 
 function findSelectedCommandItem(
-  items: Array<{ subscription: CommandSubscriptionGroup; item: CommandItemGroup }>,
+  items: readonly CommandItemEntry[],
   selected: { subscriptionId: string; itemId: string } | null
-): { subscription: CommandSubscriptionGroup; item: CommandItemGroup } | null {
+): CommandItemEntry | null {
   if (!selected) {
     return null;
   }
@@ -2766,11 +2948,18 @@ function reconcileCommandSelection(
   item: CommandItemGroup,
   selection: CommandSelection,
   matchingRows: readonly CommandRow[],
-  matchingDeleted: readonly DeletedCommandKey[]
+  matchingDeleted: readonly DeletedCommandKey[],
+  matchingDiagnostics: readonly CommandDiagnostic[]
 ): CommandSelection {
   if (
     selection &&
-    findVisibleCommandDetailTarget(item, selection, matchingRows, matchingDeleted)
+    findVisibleCommandDetailTarget(
+      item,
+      selection,
+      matchingRows,
+      matchingDeleted,
+      matchingDiagnostics
+    )
   ) {
     return selection;
   }
@@ -2783,6 +2972,10 @@ function reconcileCommandSelection(
     return commandSelectionForDeleted(matchingDeleted[0]);
   }
 
+  if (matchingDiagnostics[0]) {
+    return commandSelectionForDiagnostic(item, matchingDiagnostics[0]);
+  }
+
   return null;
 }
 
@@ -2790,7 +2983,8 @@ function findVisibleCommandDetailTarget(
   item: CommandItemGroup,
   selection: NonNullable<CommandSelection>,
   matchingRows: readonly CommandRow[],
-  matchingDeleted: readonly DeletedCommandKey[]
+  matchingDeleted: readonly DeletedCommandKey[],
+  matchingDiagnostics: readonly CommandDiagnostic[]
 ): CommandDetailTarget | null {
   const target = findCommandDetailTarget(item, selection);
   if (!target) {
@@ -2805,7 +2999,11 @@ function findVisibleCommandDetailTarget(
     return matchingDeleted.some((row) => commandSelectionMatchesDeleted(selection, row)) ? target : null;
   }
 
-  return null;
+  return matchingDiagnostics.some((diagnostic) =>
+    commandSelectionMatchesDiagnostic(selection, item, diagnostic)
+  )
+    ? target
+    : null;
 }
 
 function commandSelectionForRow(row: CommandRow): CommandRowSelection {
@@ -2932,9 +3130,10 @@ function findCommandDetailTarget(
 function matchesCommandRow(
   row: CommandRow,
   item: CommandItemGroup,
+  subscription: CommandSubscriptionGroup,
   filters: CommandFilterState
 ): boolean {
-  const searchText = commandRowSearchText(row, item);
+  const searchText = commandRowSearchText(row, item, subscription);
   return (
     matchesTokens(searchText, filters.query) &&
     matchesText(row.subscriptionId, filters.subscription) &&
@@ -2951,9 +3150,10 @@ function matchesCommandRow(
 function matchesDeletedCommandKey(
   row: DeletedCommandKey,
   item: CommandItemGroup,
+  subscription: CommandSubscriptionGroup,
   filters: CommandFilterState
 ): boolean {
-  const searchText = deletedRowSearchText(row, item);
+  const searchText = deletedRowSearchText(row, item, subscription);
   return (
     matchesTokens(searchText, filters.query) &&
     matchesText(row.subscriptionId, filters.subscription) &&
@@ -2996,9 +3196,14 @@ function matchesCommandDiagnostic(
   );
 }
 
-function commandRowSearchText(row: CommandRow, item: CommandItemGroup): string {
+function commandRowSearchText(
+  row: CommandRow,
+  item: CommandItemGroup,
+  subscription: CommandSubscriptionGroup
+): string {
   return normalizeSearchText([
     row.subscriptionId,
+    subscription.mode,
     commandItemLabel(item),
     row.itemId,
     row.key,
@@ -3011,9 +3216,14 @@ function commandRowSearchText(row: CommandRow, item: CommandItemGroup): string {
   ]);
 }
 
-function deletedRowSearchText(row: DeletedCommandKey, item: CommandItemGroup): string {
+function deletedRowSearchText(
+  row: DeletedCommandKey,
+  item: CommandItemGroup,
+  subscription: CommandSubscriptionGroup
+): string {
   return normalizeSearchText([
     row.subscriptionId,
+    subscription.mode,
     commandItemLabel(item),
     row.itemId,
     row.key,

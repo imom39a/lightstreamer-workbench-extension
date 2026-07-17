@@ -488,6 +488,7 @@ button {
 
 .command-item-button:focus-visible,
 .command-current-row:focus-visible,
+.command-diagnostic-result:focus-visible,
 .command-update-row:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: -2px;
@@ -549,6 +550,53 @@ button {
 
 .command-current-row[data-status="deleted"] .command-key-cell {
   color: #991b1b;
+}
+
+.command-diagnostic-results {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid #d8dee8;
+  margin-top: 8px;
+  padding: 12px;
+}
+
+.command-diagnostic-result {
+  display: grid;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  grid-template-columns: minmax(88px, 0.6fr) minmax(140px, 1fr) minmax(72px, 0.55fr);
+  gap: 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #1f2937;
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.command-diagnostic-result[data-selected="true"] {
+  border-color: #bfdbfe;
+  background: #dbeafe;
+  box-shadow: inset 4px 0 0 #2563eb;
+}
+
+.command-diagnostic-key,
+.command-diagnostic-code,
+.command-diagnostic-event {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-diagnostic-code {
+  color: #991b1b;
+  font-weight: 600;
 }
 
 .command-update-row[data-selected="true"] {
