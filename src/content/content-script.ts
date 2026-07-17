@@ -1,9 +1,11 @@
 import {
+  PAGE_CAPTURE_SYNC_REQUEST,
   PAGE_REINJECT_REQUEST,
   RUNTIME_CAPTURE_MESSAGE,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
   isCaptureMessage,
+  isContentCaptureSyncRequestMessage,
   isContentReinjectRequestMessage,
   isRuntimeReinjectResultMessage
 } from "../bridge/messages";
@@ -27,6 +29,11 @@ window.addEventListener("message", (event) => {
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (isContentCaptureSyncRequestMessage(message)) {
+      window.postMessage({ type: PAGE_CAPTURE_SYNC_REQUEST }, "*");
+      return false;
+    }
+
     if (!isContentReinjectRequestMessage(message)) {
       return false;
     }

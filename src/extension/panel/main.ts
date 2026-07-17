@@ -112,7 +112,7 @@ type CommandDetailTarget =
 type CommandKeyRow = CommandRow | DeletedCommandKey;
 type CommandKeyDetailTarget = Extract<CommandDetailTarget, { kind: "active" | "deleted" }>;
 type RenderOptions = {
-  preserveDetailState?: boolean;
+  preservePaneState?: boolean;
 };
 type ScheduledRender = {
   id: number;
@@ -120,6 +120,7 @@ type ScheduledRender = {
 };
 type PaneState = {
   scrollTop: number;
+  scrollLeft: number;
   focusSelector: string | null;
   selection: { start: number | null; end: number | null } | null;
   detailSections: Record<string, boolean>;
@@ -232,7 +233,7 @@ function createCommandHeaderCell(heading: string): HTMLSpanElement {
   return cell;
 }
 
-function installHelpTooltipOverlay(root: HTMLElement): () => void {
+function installHelpTooltipOverlay(root: HTMLElement): { dispose(): void; hide(): void } {
   const tooltip = document.createElement("div");
   tooltip.className = "command-tooltip";
   tooltip.id = `command-help-tooltip-${++helpTooltipIdCounter}`;
@@ -382,7 +383,12 @@ function installHelpTooltipOverlay(root: HTMLElement): () => void {
     tooltip.remove();
   };
   activeTooltipDisposers.set(root, dispose);
-  return dispose;
+  return {
+    dispose,
+    hide() {
+      hideTooltip();
+    }
+  };
 }
 
 function findHelpTooltipTrigger(target: EventTarget | null): HTMLButtonElement | null {
@@ -435,6 +441,7 @@ export function renderPanel(
   let timelineDetailOpen = false;
   let timelineDetailWidth = TIMELINE_DEFAULT_DETAIL_WIDTH;
   let timelineRenderLimit = TIMELINE_RENDER_CHUNK_SIZE;
+  let timelineFollowLatest = true;
   let commandDetailOpen = true;
   const commandContextEvents: LightstreamerEventEnvelope[] = [];
   const commandContextEventIds = new Set<string>();
@@ -620,8 +627,8 @@ export function renderPanel(
   );
   applyCommandPaneWidths();
   root.append(toolbar, viewSelector, filterStrip, commandFilterStrip, workspace, commandWorkspace);
-  const disposeHelpTooltips = installHelpTooltipOverlay(root);
-  feed.addEventListener("scroll", maybeLoadMoreTimelineRows);
+  const helpTooltips = installHelpTooltipOverlay(root);
+  feed.addEventListener("scroll", handleTimelineScroll);
   root.addEventListener("pointerdown", beginPointerInteraction, true);
   root.addEventListener("pointerup", endPointerInteraction, true);
   root.addEventListener("pointercancel", endPointerInteraction, true);
@@ -834,7 +841,7 @@ export function renderPanel(
 
   function mergeRenderOptions(left: RenderOptions | null, right: RenderOptions): RenderOptions {
     return {
-      preserveDetailState: Boolean(left?.preserveDetailState || right.preserveDetailState)
+      preservePaneState: Boolean(left?.preservePaneState || right.preservePaneState)
     };
   }
 
@@ -864,6 +871,12 @@ export function renderPanel(
 
   function resetTimelineRenderLimit(): void {
     timelineRenderLimit = TIMELINE_RENDER_CHUNK_SIZE;
+    timelineFollowLatest = true;
+  }
+
+  function handleTimelineScroll(): void {
+    timelineFollowLatest = isTimelineNearBottom();
+    maybeLoadMoreTimelineRows();
   }
 
   function maybeLoadMoreTimelineRows(): void {
@@ -877,27 +890,30 @@ export function renderPanel(
 
     const previousScrollHeight = feed.scrollHeight;
     const previousScrollTop = feed.scrollTop;
-    const previousClientHeight = feed.clientHeight;
-    const wasNearTop = feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
     timelineRenderLimit = Math.min(
       timelineRenderLimit + TIMELINE_RENDER_CHUNK_SIZE,
       timelineVisibleTotal
     );
-    renderFeed({ preserveDetailState: true });
-
-    if (wasNearTop) {
+    renderFeed({ preservePaneState: true }, () => {
+      if (timelineFollowLatest) {
+        scrollTimelineToLatest();
+        return;
+      }
       feed.scrollTop = previousScrollTop + Math.max(0, feed.scrollHeight - previousScrollHeight);
-    } else {
-      feed.scrollTop = Math.max(0, feed.scrollHeight - previousClientHeight);
-    }
+    });
   }
 
   function isTimelineLoadBoundaryReached(): boolean {
-    const distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
-    return (
-      feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD ||
-      distanceFromBottom <= TIMELINE_LOAD_MORE_THRESHOLD
-    );
+    return feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
+  }
+
+  function isTimelineNearBottom(): boolean {
+    const maximumScrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight);
+    return maximumScrollTop - feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
+  }
+
+  function scrollTimelineToLatest(): void {
+    feed.scrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight);
   }
 
   function renderEmptyState(): void {
@@ -928,7 +944,8 @@ export function renderPanel(
     feed.replaceChildren(emptyState);
   }
 
-  function renderFeed(options: RenderOptions = {}): void {
+  function renderFeed(options: RenderOptions = {}, onRendered?: () => void): void {
+    helpTooltips.hide();
     const queryVersion = ++timelineQueryVersion;
     resolveMaybe(
       store.queryEvents({
@@ -941,6 +958,7 @@ export function renderPanel(
           return;
         }
         renderFeedResult(result.events, result.total, options);
+        onRendered?.();
       }
     );
   }
@@ -977,6 +995,10 @@ export function renderPanel(
       return;
     }
 
+    const shouldFollowLatest = timelineFollowLatest;
+    const feedState =
+      options.preservePaneState || !shouldFollowLatest ? capturePaneState(feed) : null;
+
     const selectedStillVisible = renderedEvents.some((event) => event.id === selectedEventId);
     if (!selectedPinned) {
       selectedEventId = timelineDetailOpen ? renderedEvents[renderedEvents.length - 1]?.id ?? null : null;
@@ -999,6 +1021,7 @@ export function renderPanel(
       const row = document.createElement("button");
       row.className = "event-row";
       row.type = "button";
+      row.dataset.eventId = event.id;
       row.dataset.selected = String(event.id === selectedEventId);
       row.dataset.synthetic = String(event.synthetic || event.source === "synthetic");
       row.addEventListener("click", () => {
@@ -1025,6 +1048,10 @@ export function renderPanel(
     }
 
     feed.replaceChildren(list);
+    restorePaneState(feed, feedState);
+    if (shouldFollowLatest) {
+      scrollTimelineToLatest();
+    }
     renderSelectedTimelineDetail(options);
   }
 
@@ -1049,7 +1076,7 @@ export function renderPanel(
     event: LightstreamerEventEnvelope | null,
     options: RenderOptions = {}
   ): void {
-    const paneState = options.preserveDetailState ? capturePaneState(detail) : null;
+    const paneState = options.preservePaneState ? capturePaneState(detail) : null;
     detail.replaceChildren();
 
     if (!event || !timelineDetailOpen) {
@@ -1181,6 +1208,12 @@ export function renderPanel(
   }
 
   function renderCommandState(options: RenderOptions = {}): void {
+    helpTooltips.hide();
+    const groupPaneState = options.preservePaneState ? capturePaneState(commandGroupPane) : null;
+    const currentPaneState = options.preservePaneState
+      ? capturePaneState(commandCurrentTable)
+      : null;
+    const updatePaneState = options.preservePaneState ? capturePaneState(commandUpdatePane) : null;
     const commandState = commandStateIndex.snapshot();
     const items = flattenCommandItems(commandState);
 
@@ -1200,6 +1233,9 @@ export function renderPanel(
     renderCommandGroups(items, selected);
     renderCommandRowsAndResults(selected.item);
     renderCommandDetail(selected.subscription, selected.item, commandState, options);
+    restorePaneState(commandGroupPane, groupPaneState);
+    restorePaneState(commandCurrentTable, currentPaneState);
+    restorePaneState(commandUpdatePane, updatePaneState);
   }
 
   function renderCommandEmptyState(): void {
@@ -1257,6 +1293,8 @@ export function renderPanel(
       const itemButton = document.createElement("button");
       itemButton.className = "command-item-button";
       itemButton.type = "button";
+      itemButton.dataset.subscriptionId = entry.subscription.subscriptionId;
+      itemButton.dataset.itemId = entry.item.itemId;
       itemButton.dataset.selected = String(
         selected.subscription.subscriptionId === entry.subscription.subscriptionId &&
           selected.item.itemId === entry.item.itemId
@@ -1307,6 +1345,9 @@ export function renderPanel(
       const button = document.createElement("button");
       button.className = "command-current-row";
       button.type = "button";
+      button.dataset.subscriptionId = row.subscriptionId;
+      button.dataset.itemId = row.itemId;
+      button.dataset.key = row.key;
       button.dataset.status = row.status;
       button.dataset.selected = String(commandSelectionMatchesKey(selectedCommandKey, row));
       button.setAttribute(
@@ -1362,6 +1403,7 @@ export function renderPanel(
         const updateRow = document.createElement("button");
         updateRow.className = "command-update-row";
         updateRow.type = "button";
+        updateRow.dataset.eventId = entry.eventId;
         updateRow.dataset.selected = String(selectedCommandUpdateEventId === entry.eventId);
         updateRow.addEventListener("click", () => {
           selectedCommandUpdateEventId = entry.eventId;
@@ -1409,7 +1451,7 @@ export function renderPanel(
     commandState: CommandState,
     options: RenderOptions = {}
   ): void {
-    const paneState = options.preserveDetailState ? capturePaneState(commandDetailPane) : null;
+    const paneState = options.preservePaneState ? capturePaneState(commandDetailPane) : null;
     commandDetailPane.replaceChildren();
     if (!commandDetailOpen) {
       commandDetailPane.hidden = true;
@@ -2010,6 +2052,7 @@ export function renderPanel(
 
   function renderCommandStatePreservingDraftEditorState(focusSelector: string): void {
     const scrollTop = commandDetailPane.scrollTop;
+    const scrollLeft = commandDetailPane.scrollLeft;
     const activeElement = document.activeElement;
     const selection =
       activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
@@ -2020,10 +2063,9 @@ export function renderPanel(
         : null;
 
     renderCommandState();
-    commandDetailPane.scrollTop = scrollTop;
 
     const nextFocus = commandDetailPane.querySelector<HTMLElement>(focusSelector);
-    nextFocus?.focus();
+    nextFocus?.focus({ preventScroll: true });
     if (
       selection &&
       nextFocus instanceof HTMLInputElement &&
@@ -2033,6 +2075,8 @@ export function renderPanel(
     ) {
       nextFocus.setSelectionRange(selection.start, selection.end);
     }
+    commandDetailPane.scrollTop = scrollTop;
+    commandDetailPane.scrollLeft = scrollLeft;
   }
 
   function rememberCommandContextEvent(event: LightstreamerEventEnvelope): void {
@@ -2122,7 +2166,7 @@ export function renderPanel(
     dispose() {
       cancelScheduledStoreRender();
       cancelAppendRenderBudgetReset();
-      feed.removeEventListener("scroll", maybeLoadMoreTimelineRows);
+      feed.removeEventListener("scroll", handleTimelineScroll);
       root.removeEventListener("pointerdown", beginPointerInteraction, true);
       root.removeEventListener("pointerup", endPointerInteraction, true);
       root.removeEventListener("pointercancel", endPointerInteraction, true);
@@ -2132,7 +2176,7 @@ export function renderPanel(
       window.removeEventListener("pagehide", closeStore);
       window.removeEventListener("beforeunload", closeStore);
       clearInteractionFlushTimer();
-      disposeHelpTooltips();
+      helpTooltips.dispose();
       activeTooltipDisposers.delete(root);
       closeStore();
     }
@@ -2150,14 +2194,14 @@ export function renderPanel(
         for (const event of result.events) {
           rememberCommandContextEvent(event);
         }
-        renderActiveViewFromStoreUpdate({ preserveDetailState: true });
+        renderActiveViewFromStoreUpdate({ preservePaneState: true });
       });
       return;
     }
 
     if (change.type === "append") {
       rememberCommandContextEvent(change.event);
-      renderActiveViewFromAppend({ preserveDetailState: true });
+      renderActiveViewFromAppend({ preservePaneState: true });
       return;
     } else if (change.type === "clear") {
       cancelScheduledStoreRender();
@@ -2166,7 +2210,7 @@ export function renderPanel(
       timelineVisibleTotal = 0;
       clearCommandContext();
     }
-    renderActiveViewFromStoreUpdate({ preserveDetailState: true });
+    renderActiveViewFromStoreUpdate({ preservePaneState: true });
   });
 
   return controller;
@@ -2401,6 +2445,7 @@ function capturePaneState(pane: HTMLElement): PaneState {
   const activeInPane = activeElement instanceof HTMLElement && pane.contains(activeElement);
   return {
     scrollTop: pane.scrollTop,
+    scrollLeft: pane.scrollLeft,
     focusSelector: activeInPane ? focusSelectorForElement(activeElement) : null,
     selection:
       activeInPane && isTextSelectionControl(activeElement)
@@ -2422,7 +2467,7 @@ function restorePaneState(pane: HTMLElement, state: PaneState | null): void {
 
   if (state.focusSelector) {
     const nextFocus = pane.querySelector<HTMLElement>(state.focusSelector);
-    nextFocus?.focus();
+    nextFocus?.focus({ preventScroll: true });
     if (
       nextFocus &&
       state.selection &&
@@ -2435,6 +2480,7 @@ function restorePaneState(pane: HTMLElement, state: PaneState | null): void {
   }
 
   pane.scrollTop = state.scrollTop;
+  pane.scrollLeft = state.scrollLeft;
 }
 
 function captureDetailSectionState(pane: HTMLElement): Record<string, boolean> {
@@ -2461,6 +2507,45 @@ function restoreDetailSectionState(
 }
 
 function focusSelectorForElement(element: HTMLElement): string | null {
+  if (element.classList.contains("event-row") && element.dataset.eventId) {
+    return `.event-row[data-event-id="${cssAttributeValue(element.dataset.eventId)}"]`;
+  }
+
+  if (
+    element.classList.contains("command-item-button") &&
+    element.dataset.subscriptionId &&
+    element.dataset.itemId
+  ) {
+    return `.command-item-button[data-subscription-id="${cssAttributeValue(
+      element.dataset.subscriptionId
+    )}"][data-item-id="${cssAttributeValue(element.dataset.itemId)}"]`;
+  }
+
+  if (
+    element.classList.contains("command-current-row") &&
+    element.dataset.subscriptionId &&
+    element.dataset.itemId &&
+    element.dataset.key &&
+    element.dataset.status
+  ) {
+    return `.command-current-row[data-subscription-id="${cssAttributeValue(
+      element.dataset.subscriptionId
+    )}"][data-item-id="${cssAttributeValue(element.dataset.itemId)}"][data-key="${cssAttributeValue(
+      element.dataset.key
+    )}"][data-status="${cssAttributeValue(element.dataset.status)}"]`;
+  }
+
+  if (element.classList.contains("command-update-row") && element.dataset.eventId) {
+    return `.command-update-row[data-event-id="${cssAttributeValue(element.dataset.eventId)}"]`;
+  }
+
+  if (element.classList.contains("command-help-icon")) {
+    const label = element.getAttribute("aria-label");
+    if (label) {
+      return `.command-help-icon[aria-label="${cssAttributeValue(label)}"]`;
+    }
+  }
+
   if (
     element instanceof HTMLInputElement &&
     element.classList.contains("command-draft-field-input") &&

@@ -5,6 +5,8 @@ import {
   type CaptureMessage,
   isRuntimeReinjectResultMessage
 } from "../src/bridge/messages";
+import { reduceCommandState } from "../src/core/command-state";
+import { createEventNormalizer } from "../src/core/event-normalizer";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
 class FakeLightstreamerClient {
@@ -88,11 +90,61 @@ class FakeSubscription {
   }
 }
 
+class FakeSubscriptionWithPendingCommandPositions extends FakeSubscription {
+  getKeyPosition(): number {
+    throw new Error("The position of the key field is currently unknown");
+  }
+
+  getCommandPosition(): number {
+    throw new Error("The position of the command field is currently unknown");
+  }
+}
+
+class FakeItemGroupSubscription {
+  listeners: unknown[] = [];
+
+  constructor(
+    readonly mode: string,
+    readonly itemGroup: string,
+    readonly fieldSchema: string
+  ) {}
+
+  addListener(listener: unknown) {
+    this.listeners.push(listener);
+    return "subscription-listener-added";
+  }
+
+  getMode() {
+    return this.mode;
+  }
+
+  getItems(): never {
+    throw new Error("This Subscription was initiated using an item group");
+  }
+
+  getItemGroup() {
+    return this.itemGroup;
+  }
+
+  getFields(): never {
+    throw new Error("This Subscription was initiated using a field schema");
+  }
+
+  getFieldSchema() {
+    return this.fieldSchema;
+  }
+
+  getRequestedSnapshot() {
+    return "yes";
+  }
+}
+
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
 
   sent: unknown[] = [];
   private messageListeners: Array<(event: MessageEvent) => void> = [];
+  private closeListeners: Array<(event: CloseEvent) => void> = [];
 
   constructor(readonly url: string | URL) {
     FakeWebSocket.instances.push(this);
@@ -102,15 +154,26 @@ class FakeWebSocket {
     this.sent.push(data);
   }
 
-  addEventListener(type: string, listener: (event: MessageEvent) => void) {
+  addEventListener(
+    type: string,
+    listener: ((event: MessageEvent) => void) | ((event: CloseEvent) => void)
+  ) {
     if (type === "message") {
-      this.messageListeners.push(listener);
+      this.messageListeners.push(listener as (event: MessageEvent) => void);
+    } else if (type === "close") {
+      this.closeListeners.push(listener as (event: CloseEvent) => void);
     }
   }
 
   emitMessage(data: string) {
     for (const listener of this.messageListeners) {
       listener({ data } as MessageEvent);
+    }
+  }
+
+  emitClose(code = 1006, reason = "connection lost", wasClean = false) {
+    for (const listener of this.closeListeners) {
+      listener({ code, reason, wasClean } as CloseEvent);
     }
   }
 }
@@ -431,6 +494,528 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     });
   });
 
+  it("keeps fallback subscription identities unique across Lightstreamer connections", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const target: { WebSocket: typeof WebSocket } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const metadataSocket = new target.WebSocket(
+      "wss://metadata.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    const orderSocket = new target.WebSocket(
+      "wss://orders.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+
+    metadataSocket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=metadata%3Asession&LS_schema=command+key&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    orderSocket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=orderDetail.STORE_NYC_20260716&LS_schema=command+key&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    metadataSocket.emitMessage("SUBCMD,1,1,2,2,1\nU,1,1,ADD|session-key");
+    orderSocket.emitMessage("SUBCMD,1,1,2,2,1\nU,1,1,ADD|order-key");
+
+    const normalizer = createEventNormalizer();
+    const state = reduceCommandState(messages.map((message) => normalizer.normalize(message)));
+
+    expect(state.subscriptions.map((subscription) => subscription.subscriptionId)).toEqual([
+      "subscription-1",
+      "subscription-2"
+    ]);
+    expect(
+      state.subscriptions.map((subscription) => ({
+        subscriptionId: subscription.subscriptionId,
+        itemNames: subscription.items.map((item) => item.itemName),
+        keys: subscription.items.flatMap((item) => item.activeRows.map((row) => row.key))
+      }))
+    ).toEqual([
+      {
+        subscriptionId: "subscription-1",
+        itemNames: ["metadata:session"],
+        keys: ["session-key"]
+      },
+      {
+        subscriptionId: "subscription-2",
+        itemNames: ["orderDetail.STORE_NYC_20260716"],
+        keys: ["order-key"]
+      }
+    ]);
+  });
+
+  it("retires fallback subscriptions on socket close before sync or API handoff", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const messageListeners: Array<(event: MessageEvent) => void> = [];
+    const target: {
+      LightstreamerClient?: typeof FakeLightstreamerClient;
+      Subscription?: typeof FakeSubscription;
+      WebSocket: typeof WebSocket;
+      addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+    } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+      addEventListener(type, listener) {
+        if (type === "message") {
+          messageListeners.push(listener);
+        }
+      }
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const staleSocket = new target.WebSocket(
+      "ws://localhost:8080/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    staleSocket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=shared.orders&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    staleSocket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|stale-key|1");
+    staleSocket.emitClose();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        kind: "subscription-ended",
+        payload: expect.objectContaining({
+          subscription: expect.objectContaining({ id: "subscription-1" }),
+          raw: expect.objectContaining({
+            captureSource: "websocket-tlcp",
+            frameDirection: "close",
+            code: 1006
+          })
+        })
+      })
+    );
+
+    messages.length = 0;
+    for (const listener of messageListeners) {
+      listener({
+        source: target,
+        data: { type: "lsew:page-capture-sync-request" }
+      } as unknown as MessageEvent);
+    }
+    expect(messages).toEqual([]);
+
+    const currentSocket = new target.WebSocket(
+      "ws://localhost:8080/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    currentSocket.send(
+      "LS_reqId=2&LS_op=add&LS_subId=1&LS_group=shared.orders&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    currentSocket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|current-key|2");
+
+    target.LightstreamerClient = FakeLightstreamerClient;
+    target.Subscription = FakeSubscription;
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    client.subscribe(
+      new target.Subscription("COMMAND", ["shared.orders"], ["command", "key", "qty"])
+    );
+
+    expect(
+      messages.filter(
+        (message) =>
+          message.kind === "subscription-ended" &&
+          (message.payload.raw as { captureHandoff?: string } | undefined)?.captureHandoff ===
+            "primary-api"
+      )
+    ).toHaveLength(1);
+  });
+
+  it("ignores queued wire frames after delete without allocating a phantom identity", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const target: { WebSocket: typeof WebSocket } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const socket = new target.WebSocket(
+      "wss://push.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    socket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=scenario.alpha&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|alpha|1");
+    const originalSubscriptionId = (
+      messages.find((message) => message.kind === "subscription-started")?.payload
+        .subscription as { id: string }
+    ).id;
+
+    socket.send("LS_reqId=2&LS_op=delete&LS_subId=1");
+    messages.length = 0;
+    socket.emitMessage("U,1,1,||2\nUNSUB,1");
+
+    expect(messages).toEqual([]);
+
+    socket.send(
+      "LS_reqId=3&LS_op=add&LS_subId=1&LS_group=scenario.alpha&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|bravo|3");
+    const replacementSubscriptionId = (
+      messages.find((message) => message.kind === "subscription-started")?.payload
+        .subscription as { id: string }
+    ).id;
+
+    expect(replacementSubscriptionId).not.toBe(originalSubscriptionId);
+    expect(
+      messages
+        .filter((message) => message.kind === "item-update")
+        .map((message) => (message.payload.update as { key: string }).key)
+    ).toEqual(["bravo"]);
+  });
+
+  it("retires only the matching fallback identity when primary instrumentation takes over", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const messageListeners: Array<(event: MessageEvent) => void> = [];
+    const target: {
+      LightstreamerClient?: typeof FakeLightstreamerClient;
+      Subscription?: typeof FakeSubscription;
+      WebSocket: typeof WebSocket;
+      addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+    } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+      addEventListener(type, listener) {
+        if (type === "message") {
+          messageListeners.push(listener);
+        }
+      }
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const socket = new target.WebSocket(
+      "ws://localhost:8080/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    socket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=customerDetail.DL_173420260716ATL__YYZ__01&LS_schema=command+key+modelId+modelValues&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.send(
+      "LS_reqId=2&LS_op=add&LS_subId=2&LS_group=orderDetail.DL_173420260716ATL__YYZ__01&LS_schema=command+key+modelId+modelValues&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage(
+      "SUBCMD,1,1,4,2,1\nU,1,1,ADD|customer-1|model-1|active\nSUBCMD,2,1,4,2,1\nU,2,1,ADD|order-1|model-2|active"
+    );
+
+    target.LightstreamerClient = FakeLightstreamerClient;
+    target.Subscription = FakeSubscription;
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["customerDetail.DL_173420260716ATL__YYZ__01"],
+      ["command", "key", "modelId", "modelValues"]
+    );
+    const listener = { onItemUpdate: () => undefined };
+    client.subscribe(subscription);
+    subscription.addListener(listener);
+    (subscription.listeners[0] as { onItemUpdate(update: unknown): void }).onItemUpdate(
+      createFakeItemUpdate("customerDetail.DL_173420260716ATL__YYZ__01", "customer-1", "1")
+    );
+    socket.emitMessage(
+      "U,1,1,||model-1|retired-update\nU,2,1,||model-2|current-update"
+    );
+
+    expect(
+      messages.some(
+        (message) =>
+          message.kind === "subscription-ended" &&
+          (message.payload.raw as { captureHandoff?: string } | undefined)?.captureHandoff ===
+            "primary-api"
+      )
+    ).toBe(true);
+    const itemUpdates = messages.filter((message) => message.kind === "item-update");
+    expect(
+      itemUpdates.map((message) => (message.payload.subscription as { id: string }).id)
+    ).toEqual([
+      "subscription-1",
+      "subscription-2",
+      "subscription-3",
+      "subscription-3",
+      "subscription-2"
+    ]);
+    expect(itemUpdates[2].payload.raw).toMatchObject({
+      captureHandoff: "primary-api",
+      commandStateHandoff: true
+    });
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        kind: "subscription-ended",
+        payload: expect.objectContaining({
+          subscription: expect.objectContaining({ id: "subscription-1" }),
+          raw: expect.objectContaining({ captureHandoff: "primary-api" })
+        })
+      })
+    );
+
+    const normalizer = createEventNormalizer();
+    const commandState = reduceCommandState(
+      messages.map((message) => normalizer.normalize(message))
+    );
+    expect(commandState.subscriptions.map((entry) => entry.subscriptionId)).toEqual([
+      "subscription-2",
+      "subscription-3"
+    ]);
+
+    messages.length = 0;
+    for (const pageListener of messageListeners) {
+      pageListener({
+        source: target,
+        data: { type: "lsew:page-capture-sync-request" }
+      } as unknown as MessageEvent);
+    }
+    expect(
+      messages
+        .filter((message) => message.kind === "subscription-snapshot")
+        .map((message) => (message.payload.subscription as { id: string }).id)
+    ).toEqual(["subscription-2", "subscription-3"]);
+  });
+
+  it("does not retire an ambiguous fallback identity shared by multiple connections", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const target: {
+      LightstreamerClient?: typeof FakeLightstreamerClient;
+      Subscription?: typeof FakeSubscription;
+      WebSocket: typeof WebSocket;
+    } = { WebSocket: FakeWebSocket as unknown as typeof WebSocket };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    for (const socketUrl of [
+      "ws://localhost:8080/lightstreamer",
+      "ws://localhost:8080/lightstreamer"
+    ]) {
+      const socket = new target.WebSocket(socketUrl) as unknown as FakeWebSocket;
+      socket.send(
+        "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=shared.orders&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+      );
+      socket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|shared-key|1");
+    }
+
+    target.LightstreamerClient = FakeLightstreamerClient;
+    target.Subscription = FakeSubscription;
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    client.subscribe(
+      new target.Subscription("COMMAND", ["shared.orders"], ["command", "key", "qty"])
+    );
+
+    expect(
+      messages.filter(
+        (message) =>
+          message.kind === "subscription-ended" &&
+          (message.payload.raw as { captureHandoff?: string } | undefined)?.captureHandoff ===
+            "primary-api"
+      )
+    ).toEqual([]);
+    const normalizer = createEventNormalizer();
+    expect(
+      reduceCommandState(messages.map((message) => normalizer.normalize(message))).subscriptions
+    ).toHaveLength(3);
+  });
+
+  it("reconciles wire list metadata with API group and schema metadata", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const target: {
+      LightstreamerClient?: typeof FakeLightstreamerClient;
+      Subscription?: typeof FakeItemGroupSubscription;
+      WebSocket: typeof WebSocket;
+    } = { WebSocket: FakeWebSocket as unknown as typeof WebSocket };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const socket = new target.WebSocket(
+      "ws://localhost:8080/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    socket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=group.orders&LS_schema=command+key+qty&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage("SUBCMD,1,1,3,2,1\nU,1,1,ADD|group-key|1");
+
+    target.LightstreamerClient = FakeLightstreamerClient;
+    target.Subscription = FakeItemGroupSubscription;
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    client.subscribe(
+      new target.Subscription("COMMAND", "group.orders", "command key qty")
+    );
+
+    const primaryCreated = messages.find(
+      (message) =>
+        message.kind === "subscription-created" &&
+        (message.payload.subscription as { id?: string } | undefined)?.id === "subscription-2"
+    );
+    expect(primaryCreated?.payload.subscription).toMatchObject({
+      id: "subscription-2",
+      mode: "COMMAND",
+      itemGroup: "group.orders",
+      fieldSchema: "command key qty"
+    });
+    expect(primaryCreated?.payload.subscription).not.toHaveProperty("items");
+    expect(primaryCreated?.payload.subscription).not.toHaveProperty("fields");
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        kind: "subscription-ended",
+        payload: expect.objectContaining({
+          subscription: expect.objectContaining({ id: "subscription-1" }),
+          raw: expect.objectContaining({ captureHandoff: "primary-api" })
+        })
+      })
+    );
+  });
+
+  it("keeps unavailable COMMAND positions out of semantic subscription metadata", () => {
+    const messages: CaptureMessage[] = [];
+    const target = {
+      LightstreamerClient: FakeLightstreamerClient,
+      Subscription: FakeSubscriptionWithPendingCommandPositions
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    new target.Subscription(
+      "COMMAND",
+      ["customerDetail.DL_173420260716ATL__YYZ__01"],
+      ["command", "key", "modelId", "modelValues"]
+    );
+
+    const created = messages.find((message) => message.kind === "subscription-created");
+    expect(created?.payload.subscription).toMatchObject({
+      id: "subscription-1",
+      mode: "COMMAND",
+      items: ["customerDetail.DL_173420260716ATL__YYZ__01"]
+    });
+    expect(created?.payload.subscription).not.toHaveProperty("keyPosition");
+    expect(created?.payload.subscription).not.toHaveProperty("commandPosition");
+    expect(created?.payload.raw).toMatchObject({
+      subscriptionMetadataErrors: [
+        "getKeyPosition:The position of the key field is currently unknown",
+        "getCommandPosition:The position of the command field is currently unknown"
+      ]
+    });
+  });
+
+  it("replays every active subscription when the panel bridge connects late", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const activeSubscription = new target.Subscription(
+      "COMMAND",
+      ["quiet.orders"],
+      ["command", "key"]
+    );
+    const endedSubscription = new target.Subscription(
+      "COMMAND",
+      ["ended.orders"],
+      ["command", "key"]
+    );
+
+    client.subscribe(activeSubscription);
+    client.subscribe(endedSubscription);
+    client.unsubscribe(endedSubscription);
+    messages.length = 0;
+
+    for (const listener of messageListeners) {
+      listener({
+        source: target,
+        data: { type: "lsew:page-capture-sync-request" }
+      } as unknown as MessageEvent);
+    }
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        kind: "subscription-snapshot",
+        payload: expect.objectContaining({
+          client: expect.objectContaining({ id: "client-1" }),
+          subscription: expect.objectContaining({
+            id: "subscription-1",
+            mode: "COMMAND",
+            items: ["quiet.orders"]
+          }),
+          raw: expect.objectContaining({ captureSync: true })
+        })
+      })
+    ]);
+  });
+
+  it("replays current COMMAND rows when the panel bridge connects late", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["quiet.orders"],
+      ["command", "key", "qty"]
+    );
+    const listener = { onItemUpdate: () => undefined };
+
+    client.subscribe(subscription);
+    subscription.addListener(listener);
+    const attachedListener = subscription.listeners[0] as {
+      onItemUpdate(update: unknown): void;
+    };
+    attachedListener.onItemUpdate(createFakeItemUpdate("quiet.orders", "quiet-key", "17"));
+    attachedListener.onItemUpdate(
+      createFakeCommandItemUpdate("ADD", "quiet.orders", "removed-key", "8", false)
+    );
+    attachedListener.onItemUpdate(
+      createFakeCommandItemUpdate("DELETE", "quiet.orders", "removed-key", "8", false)
+    );
+    messages.length = 0;
+
+    for (const pageListener of messageListeners) {
+      pageListener({
+        source: target,
+        data: { type: "lsew:page-capture-sync-request" }
+      } as unknown as MessageEvent);
+    }
+
+    const captureMessages = messages as CaptureMessage[];
+    const replays = captureMessages.filter(
+      (message) =>
+        message.kind === "item-update" &&
+        (message.payload.raw as { commandStateSync?: boolean } | undefined)?.commandStateSync
+    );
+    expect(replays).toHaveLength(1);
+    const replay = replays[0];
+    expect(replay?.payload).toMatchObject({
+      subscription: { id: "subscription-1", mode: "COMMAND" },
+      listener: { id: "listener-1" },
+      item: { name: "quiet.orders", position: 1 },
+      update: {
+        command: "ADD",
+        key: "quiet-key",
+        isSnapshot: true,
+        fields: { command: "ADD", key: "quiet-key", qty: "17" }
+      },
+      raw: { captureSync: true, commandStateSync: true }
+    });
+
+    const normalizer = createEventNormalizer();
+    const commandState = reduceCommandState(
+      captureMessages.map((message) => normalizer.normalize(message))
+    );
+    expect(commandState.subscriptions[0].items[0].activeRows[0]).toMatchObject({
+      key: "quiet-key",
+      fields: { command: "ADD", key: "quiet-key", qty: "17" }
+    });
+  });
+
   it("does not emit WebSocket fallback rows after primary instrumentation is active", () => {
     FakeWebSocket.instances = [];
     const messages: CaptureMessage[] = [];
@@ -634,14 +1219,24 @@ function createValidPageDraft() {
 }
 
 function createFakeItemUpdate(itemName: string, key: string, qty: string) {
+  return createFakeCommandItemUpdate("ADD", itemName, key, qty, true);
+}
+
+function createFakeCommandItemUpdate(
+  command: "ADD" | "UPDATE" | "DELETE",
+  itemName: string,
+  key: string,
+  qty: string,
+  snapshot: boolean
+) {
   return {
     forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void) {
-      iterator("command", 1, "ADD");
+      iterator("command", 1, command);
       iterator("key", 2, key);
       iterator("qty", 3, qty);
     },
     forEachChangedField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void) {
-      iterator("command", 1, "ADD");
+      iterator("command", 1, command);
       iterator("key", 2, key);
       iterator("qty", 3, qty);
     },
@@ -652,7 +1247,7 @@ function createFakeItemUpdate(itemName: string, key: string, qty: string) {
       return 1;
     },
     isSnapshot() {
-      return true;
+      return snapshot;
     }
   };
 }

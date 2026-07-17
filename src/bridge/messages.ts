@@ -9,6 +9,8 @@ export const PANEL_CAPTURE_MESSAGE = "lsew:panel-capture" as const;
 export const PANEL_REINJECT_REQUEST = "lsew:panel-reinject-request" as const;
 export const CONTENT_REINJECT_REQUEST = "lsew:content-reinject-request" as const;
 export const PAGE_REINJECT_REQUEST = "lsew:page-reinject-request" as const;
+export const CONTENT_CAPTURE_SYNC_REQUEST = "lsew:content-capture-sync-request" as const;
+export const PAGE_CAPTURE_SYNC_REQUEST = "lsew:page-capture-sync-request" as const;
 export const RUNTIME_REINJECT_RESULT = "lsew:runtime-reinject-result" as const;
 export const PANEL_REINJECT_RESULT = "lsew:panel-reinject-result" as const;
 
@@ -17,6 +19,7 @@ export const CAPTURE_KINDS = [
   "client-status",
   "subscription-created",
   "subscription-started",
+  "subscription-snapshot",
   "subscription-ended",
   "subscription-error",
   "listener-added",
@@ -78,6 +81,14 @@ export type PageReinjectRequestMessage = {
   type: typeof PAGE_REINJECT_REQUEST;
   requestId: string;
   draft: ReinjectionDraftPayload;
+};
+
+export type ContentCaptureSyncRequestMessage = {
+  type: typeof CONTENT_CAPTURE_SYNC_REQUEST;
+};
+
+export type PageCaptureSyncRequestMessage = {
+  type: typeof PAGE_CAPTURE_SYNC_REQUEST;
 };
 
 export type ReinjectionResultStatus =
@@ -251,6 +262,18 @@ export function isPageReinjectRequestMessage(value: unknown): value is PageReinj
     isNonEmptyString(value.requestId) &&
     isReinjectionDraftPayload(value.draft)
   );
+}
+
+export function isContentCaptureSyncRequestMessage(
+  value: unknown
+): value is ContentCaptureSyncRequestMessage {
+  return isRecord(value) && value.type === CONTENT_CAPTURE_SYNC_REQUEST;
+}
+
+export function isPageCaptureSyncRequestMessage(
+  value: unknown
+): value is PageCaptureSyncRequestMessage {
+  return isRecord(value) && value.type === PAGE_CAPTURE_SYNC_REQUEST;
 }
 
 export function isRuntimeReinjectResultMessage(

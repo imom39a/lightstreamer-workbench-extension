@@ -189,6 +189,74 @@ describe("COMMAND state reducer", () => {
     expect(alpha.lifecycle.map((entry) => entry.eventId)).toEqual(["event-2", "event-3"]);
   });
 
+  it("materializes active COMMAND subscription items before their first update", () => {
+    const started = commandEvent("event-1", {
+      kind: "subscription-started",
+      subscriptionId: "subscription-19",
+      subscriptionItems: ["quiet.orders", "quiet.inventory"]
+    });
+    started.item = undefined;
+    started.update = undefined;
+
+    const state = reduceCommandState([started]);
+
+    expect(state.subscriptions).toHaveLength(1);
+    expect(state.subscriptions[0]).toMatchObject({
+      subscriptionId: "subscription-19",
+      mode: "COMMAND"
+    });
+    expect(
+      state.subscriptions[0].items.map((item) => ({
+        itemName: item.itemName,
+        itemPosition: item.itemPosition,
+        activeRows: item.activeRows
+      }))
+    ).toEqual([
+      { itemName: "quiet.orders", itemPosition: 1, activeRows: [] },
+      { itemName: "quiet.inventory", itemPosition: 2, activeRows: [] }
+    ]);
+  });
+
+  it("does not materialize a COMMAND subscription before it starts", () => {
+    const created = commandEvent("event-1", {
+      kind: "subscription-created",
+      subscriptionId: "subscription-19",
+      subscriptionItems: ["quiet.orders"]
+    });
+    created.item = undefined;
+    created.update = undefined;
+
+    expect(reduceCommandState([created]).subscriptions).toEqual([]);
+
+    const started = {
+      ...created,
+      id: "event-2",
+      kind: "subscription-started" as const
+    };
+    expect(reduceCommandState([created, started]).subscriptions).toHaveLength(1);
+  });
+
+  it.each(["subscription-ended", "subscription-error"] as const)(
+    "removes a COMMAND subscription after %s",
+    (terminalKind) => {
+      const started = commandEvent("event-1", {
+        kind: "subscription-started",
+        subscriptionId: "subscription-19",
+        subscriptionItems: ["quiet.orders"]
+      });
+      const terminal = commandEvent("event-2", {
+        kind: terminalKind,
+        subscriptionId: "subscription-19"
+      });
+      started.item = undefined;
+      started.update = undefined;
+      terminal.item = undefined;
+      terminal.update = undefined;
+
+      expect(reduceCommandState([started, terminal]).subscriptions).toEqual([]);
+    }
+  );
+
   it("resolves unnamed item updates through subscription item metadata before grouping", () => {
     const state = reduceCommandState([
       commandEvent("event-1", {

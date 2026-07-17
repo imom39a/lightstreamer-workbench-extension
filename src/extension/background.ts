@@ -1,4 +1,5 @@
 import {
+  CONTENT_CAPTURE_SYNC_REQUEST,
   CONTENT_REINJECT_REQUEST,
   PANEL_CAPTURE_MESSAGE,
   PANEL_PORT_NAME,
@@ -26,6 +27,7 @@ chrome.runtime.onConnect.addListener((port) => {
         type: PANEL_STATUS_MESSAGE,
         status: "bridge connected"
       });
+      requestActiveSubscriptionSync(message.tabId);
       return;
     }
 
@@ -99,4 +101,10 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
     timestamp: Date.now(),
     error
   };
+}
+
+function requestActiveSubscriptionSync(tabId: number): void {
+  chrome.tabs.sendMessage(tabId, { type: CONTENT_CAPTURE_SYNC_REQUEST }, () => {
+    void chrome.runtime.lastError;
+  });
 }

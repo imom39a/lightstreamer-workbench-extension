@@ -212,7 +212,25 @@ function applyCommandEvent(
   event: LightstreamerEventEnvelope
 ): void {
   const subscription = subscriptionForEvent(event, accumulator.knownSubscriptions);
-  if (event.kind !== "item-update" || subscription?.mode !== "COMMAND") {
+  const subscriptionId = event.subscription?.id;
+  if (
+    (event.kind === "subscription-ended" || event.kind === "subscription-error") &&
+    subscriptionId
+  ) {
+    accumulator.subscriptions.delete(subscriptionId);
+    accumulator.knownSubscriptions.delete(subscriptionId);
+    return;
+  }
+
+  if (!subscription || subscription.mode !== "COMMAND") {
+    return;
+  }
+
+  if (
+    event.kind !== "subscription-started" &&
+    event.kind !== "subscription-snapshot" &&
+    event.kind !== "item-update"
+  ) {
     return;
   }
 
@@ -221,6 +239,16 @@ function applyCommandEvent(
     accumulator.subscriptions,
     commandEvent
   );
+  seedDeclaredSubscriptionItems(subscriptionAccumulator);
+
+  if (event.kind === "subscription-started" || event.kind === "subscription-snapshot") {
+    return;
+  }
+
+  if (event.kind !== "item-update") {
+    return;
+  }
+
   const item = getItemAccumulator(
     subscriptionAccumulator,
     resolveCommandItemIdentity(commandEvent.subscription, commandEvent.item)
@@ -458,6 +486,10 @@ function getItemAccumulator(
   identity: CommandItemIdentity
 ): ItemAccumulator {
   const { itemId, itemName, itemPosition } = identity;
+  const itemGroup = stringOrNull(subscription.subscription.itemGroup);
+  if (itemGroup && itemPosition !== null && itemId.startsWith(`group:${itemGroup}:position:`)) {
+    subscription.items.delete(`group:${itemGroup}:pending`);
+  }
   const existing = subscription.items.get(itemId);
   if (existing) {
     return existing;
@@ -476,6 +508,26 @@ function getItemAccumulator(
   };
   subscription.items.set(itemId, created);
   return created;
+}
+
+function seedDeclaredSubscriptionItems(subscription: SubscriptionAccumulator): void {
+  const declaredItems = subscription.subscription.items ?? [];
+  for (const [index, itemName] of declaredItems.entries()) {
+    getItemAccumulator(subscription, {
+      itemId: itemIdentity(itemName, index + 1),
+      itemName,
+      itemPosition: index + 1
+    });
+  }
+
+  const itemGroup = stringOrNull(subscription.subscription.itemGroup);
+  if (declaredItems.length === 0 && itemGroup) {
+    getItemAccumulator(subscription, {
+      itemId: `group:${itemGroup}:pending`,
+      itemName: itemGroup,
+      itemPosition: null
+    });
+  }
 }
 
 function toSubscriptionGroup(subscription: SubscriptionAccumulator): CommandSubscriptionGroup {
