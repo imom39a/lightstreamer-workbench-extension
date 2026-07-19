@@ -128,19 +128,7 @@ class IndexedDbEventRepository implements EventRepository {
       return this.queryUnfilteredPage(query);
     }
 
-    const metas = await this.queryEventMeta(filters);
-    if (hasSearchQuery(filters)) {
-      return this.queryEventsWithFullTextFilter(metas, query);
-    }
-
-    const matched = metas.filter((meta) => metaMatchesResidualFilters(meta, filters)).sort(bySeq);
-    const total = matched.length;
-    const paged = pageEventMeta(matched, query);
-    const events = await Promise.all(paged.map((meta) => this.getEventBySeq(meta.seq)));
-    return {
-      events: events.filter((event): event is LightstreamerEventEnvelope => Boolean(event)),
-      total
-    };
+    return this.queryFilteredEvents(filters, query);
   }
 
   async getEventById(id: string): Promise<LightstreamerEventEnvelope | null> {
@@ -175,9 +163,44 @@ class IndexedDbEventRepository implements EventRepository {
     this.database.db.close();
   }
 
-  private async queryEventMeta(filters: EventFilterState): Promise<EventMetaRecord[]> {
-    const transaction = this.database.db.transaction(EVENT_STORE_NAMES.eventMeta, "readonly");
+  private async queryFilteredEvents(
+    filters: EventFilterState,
+    query: EventQuery
+  ): Promise<EventQueryResult> {
+    const transaction = this.database.db.transaction(
+      [EVENT_STORE_NAMES.events, EVENT_STORE_NAMES.eventMeta],
+      "readonly"
+    );
+    const completed = transactionDone(transaction);
+    const eventsStore = transaction.objectStore(EVENT_STORE_NAMES.events);
     const eventMeta = transaction.objectStore(EVENT_STORE_NAMES.eventMeta);
+    const metas = await this.queryEventMeta(filters, eventMeta);
+
+    let result: EventQueryResult;
+    if (hasSearchQuery(filters)) {
+      result = await this.queryEventsWithFullTextFilter(metas, query, eventsStore);
+    } else {
+      const matched = metas.filter((meta) => metaMatchesResidualFilters(meta, filters)).sort(bySeq);
+      const total = matched.length;
+      const paged = pageEventMeta(matched, query);
+      const events = await this.getEventsBySeq(
+        paged.map((meta) => meta.seq),
+        eventsStore
+      );
+      result = {
+        events: events.filter((event): event is LightstreamerEventEnvelope => Boolean(event)),
+        total
+      };
+    }
+
+    await completed;
+    return result;
+  }
+
+  private async queryEventMeta(
+    filters: EventFilterState,
+    eventMeta: IDBObjectStore
+  ): Promise<EventMetaRecord[]> {
     const indexedFilter = selectIndexedFilter(filters);
 
     if (indexedFilter) {
@@ -191,15 +214,18 @@ class IndexedDbEventRepository implements EventRepository {
 
   private async queryEventsWithFullTextFilter(
     metas: EventMetaRecord[],
-    query: EventQuery
+    query: EventQuery,
+    eventsStore: IDBObjectStore
   ): Promise<EventQueryResult> {
     const sorted = metas.sort(bySeq);
-    const candidates = await Promise.all(
-      sorted.map(async (meta) => ({
-        meta,
-        event: await this.getEventBySeq(meta.seq)
-      }))
+    const hydrated = await this.getEventsBySeq(
+      sorted.map((meta) => meta.seq),
+      eventsStore
     );
+    const candidates = sorted.map((meta, index) => ({
+      meta,
+      event: hydrated[index] ?? null
+    }));
     const matched = candidates.filter(
       (entry): entry is { meta: EventMetaRecord; event: LightstreamerEventEnvelope } => {
         if (!entry.event) {
@@ -222,23 +248,45 @@ class IndexedDbEventRepository implements EventRepository {
   }
 
   private async queryUnfilteredPage(query: EventQuery): Promise<EventQueryResult> {
-    const total = await this.countEvents();
-    const transaction = this.database.db.transaction(EVENT_STORE_NAMES.eventMeta, "readonly");
+    const transaction = this.database.db.transaction(
+      [EVENT_STORE_NAMES.events, EVENT_STORE_NAMES.eventMeta],
+      "readonly"
+    );
+    const completed = transactionDone(transaction);
+    const eventsStore = transaction.objectStore(EVENT_STORE_NAMES.events);
     const eventMeta = transaction.objectStore(EVENT_STORE_NAMES.eventMeta);
+    const totalPromise = requestToPromise<number>(eventsStore.count());
     const metas = await readCursorPage(eventMeta, query);
-    const events = await Promise.all(metas.map((meta) => this.getEventBySeq(meta.seq)));
+    const events = await this.getEventsBySeq(
+      metas.map((meta) => meta.seq),
+      eventsStore
+    );
+    const total = await totalPromise;
+    await completed;
     return {
       events: events.filter((event): event is LightstreamerEventEnvelope => Boolean(event)),
       total
     };
   }
 
-  private async getEventBySeq(seq: number): Promise<LightstreamerEventEnvelope | null> {
-    const transaction = this.database.db.transaction(EVENT_STORE_NAMES.events, "readonly");
-    const record = await requestToPromise<EventRecord | undefined>(
-      transaction.objectStore(EVENT_STORE_NAMES.events).get(seq)
+  private async getEventsBySeq(
+    sequences: readonly number[],
+    existingStore?: IDBObjectStore
+  ): Promise<Array<LightstreamerEventEnvelope | null>> {
+    if (sequences.length === 0) {
+      return [];
+    }
+    const transaction = existingStore
+      ? null
+      : this.database.db.transaction(EVENT_STORE_NAMES.events, "readonly");
+    const events = existingStore ?? transaction?.objectStore(EVENT_STORE_NAMES.events);
+    if (!events) {
+      return sequences.map(() => null);
+    }
+    const records = await Promise.all(
+      sequences.map((seq) => requestToPromise<EventRecord | undefined>(events.get(seq)))
     );
-    return record?.envelope ?? null;
+    return records.map((record) => record?.envelope ?? null);
   }
 }
 

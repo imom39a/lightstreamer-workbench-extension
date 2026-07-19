@@ -32,7 +32,7 @@ function resetScrollWhenChildrenAreReplaced(pane: HTMLElement): void {
 }
 
 async function flushInteractionRender(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 40));
 }
 
 function rect(left: number, top: number, width: number, height: number): DOMRect {
@@ -325,16 +325,15 @@ describe("COMMAND State panel workbench", () => {
 
     expect(document.querySelector('[aria-label="COMMAND state workbench"]')).not.toBeNull();
     expect(text(".command-group-pane")).toContain("sub-command");
-    expect(text(".command-group-pane")).toContain("COMMAND");
     expect(text(".command-group-pane")).toContain("item-a");
-    expect(text(".command-group-pane")).toContain("Choose an item.");
+    expect(text(".command-group-pane")).not.toContain("COMMAND");
     expect(text(".command-group-pane")).not.toContain("sub-merge");
     expect(text(".command-group-pane")).not.toContain("1 active");
     expect(text(".command-group-pane")).not.toContain("1 deleted");
     expect(text(".command-group-pane")).not.toContain("live server");
     expect(document.querySelector(".command-item-meta")).toBeNull();
-    expect(text(".command-current-table")).toContain("Keys");
-    expect(text(".command-current-table")).toContain("Select a key to inspect its updates.");
+    expect(document.querySelector(".command-pane-help")).toBeNull();
+    expect(document.querySelector(".command-current-table > .command-pane-heading")).toBeNull();
     expect(text(".command-current-header")).toContain("Key");
     expect(text(".command-current-header")).toContain("Updates");
     expect(text(".command-current-header")).toContain("Last seen");
@@ -347,8 +346,7 @@ describe("COMMAND State panel workbench", () => {
     expect(document.querySelector('.command-current-row[data-status="deleted"]')?.textContent).not.toContain(
       "deleted"
     );
-    expect(text(".command-update-list")).toContain("Updates for selected key");
-    expect(text(".command-update-list")).toContain("3 updates for alpha.");
+    expect(text(".command-update-list")).toContain("Updates · alpha · 3");
     expect(text(".command-update-list")).toContain("event-1");
     expect(text(".command-update-list")).toContain("event-2");
     expect(text(".command-update-list")).toContain("event-5");
@@ -362,6 +360,13 @@ describe("COMMAND State panel workbench", () => {
     expect(document.querySelector(".command-update-row")?.querySelectorAll(".command-update-cell")).toHaveLength(
       3
     );
+    expect(document.querySelector(".command-current-header .command-help-icon")).toBeNull();
+    expect(document.querySelector(".command-tooltip")).toBeNull();
+    const subscriptionSummary = document.querySelector<HTMLElement>(".command-subscription-summary");
+    expect(subscriptionSummary?.textContent).toBe("sub-command");
+    expect(subscriptionSummary?.getAttribute("aria-label")).toBe("COMMAND subscription sub-command");
+    expect(getComputedStyle(subscriptionSummary as HTMLElement).borderTopStyle).toBe("");
+    expect(getComputedStyle(document.querySelector<HTMLElement>(".command-item-button") as HTMLElement).borderBottomStyle).toBe("");
     const commandWorkspace = document.querySelector<HTMLElement>(".command-workspace");
     const resizeHandles = document.querySelectorAll(".command-resize-handle");
     const keysResizeHandle = document.querySelector<HTMLElement>(
@@ -374,6 +379,418 @@ describe("COMMAND State panel workbench", () => {
     expect(commandWorkspace?.style.getPropertyValue("--command-keys-width")).toBe("384px");
     expect(keysResizeHandle?.getAttribute("aria-valuenow")).toBe("384");
     expect(document.querySelector(".command-filter-key")).toBeNull();
+  });
+
+  it("shares compact exact times with Timeline without duplicating selected update time", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const timeStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const timestamps = [
+      new Date(2026, 0, 1, 23, 59, 59, 1).getTime(),
+      new Date(2026, 0, 1, 23, 59, 59, 2).getTime(),
+      new Date(2026, 0, 2, 0, 0, 0, 3).getTime()
+    ];
+    for (const [index, timestamp] of timestamps.entries()) {
+      timeStore.append({
+        ...event(`time-${index + 1}`, {
+          command: index === 0 ? "ADD" : "UPDATE",
+          key: "clock-key"
+        }),
+        timestamp
+      });
+    }
+    const controller = renderPanel(root, undefined, {
+      store: timeStore,
+      bridge: { reinjectDraft }
+    });
+
+    clickCommandState();
+    const updateTimes = Array.from(
+      document.querySelectorAll<HTMLTimeElement>(".command-update-time")
+    );
+    expect(updateTimes.map((time) => time.dateTime)).toEqual(
+      timestamps.map((timestamp) => new Date(timestamp).toISOString())
+    );
+    expect(updateTimes.map((time) => time.textContent)).toEqual([
+      "23:59:59.001",
+      "23:59:59.002",
+      "00:00:00.003"
+    ]);
+    const lastSeen = document.querySelector<HTMLTimeElement>(
+      ".command-current-row .command-current-time"
+    );
+    expect(lastSeen?.dateTime).toBe(new Date(timestamps[2]).toISOString());
+    expect(lastSeen?.title).toBeTruthy();
+    expect(lastSeen?.getAttribute("aria-label")).toContain("2026-");
+
+    document.querySelector<HTMLButtonElement>('.command-update-row[data-event-id="time-3"]')?.click();
+    expect(text(".command-detail-pane")).toContain("Update time-3");
+    expect(texts(".command-summary-label")).not.toContain("Time ");
+    clickRowByText(".command-current-row", "clock-key");
+    button(".command-lifecycle-toggle").click();
+    expect(texts(".command-lifecycle-line").some((line) => /\d{1,2}:\d{2}:\d{2}/.test(line))).toBe(
+      false
+    );
+    controller.dispose();
+  });
+
+  it("shows one precise COMMAND detail time only when its selected update leaves the window", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const historyStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 40; index += 1) {
+      historyStore.append(
+        event(`precise-${index}`, {
+          command: index === 1 ? "ADD" : "UPDATE",
+          key: "precise-key"
+        })
+      );
+    }
+    const controller = renderPanel(root, undefined, {
+      store: historyStore,
+      bridge: { reinjectDraft }
+    });
+
+    clickCommandState();
+    document.querySelector<HTMLButtonElement>('.command-update-row[data-event-id="precise-40"]')?.click();
+    expect(texts(".command-summary-label")).not.toContain("Time ");
+
+    clickRowByText(".command-window-navigation button", "Older");
+    expect(texts(".command-summary-label")).toContain("Time ");
+    const preciseTime = document.querySelector<HTMLTimeElement>(
+      ".command-detail-summary time.command-summary-value"
+    );
+    expect(preciseTime?.dateTime).toBe(new Date(event("precise-40").timestamp).toISOString());
+    expect(preciseTime?.textContent).toMatch(/^\d{4}-\d{2}-\d{2} .* UTC[+-]\d{2}:\d{2}$/);
+    controller.dispose();
+  });
+
+  it("bounds high-volume COMMAND update and lifecycle DOM windows structurally", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const volumeStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 3_001; index += 1) {
+      volumeStore.append(
+        event(`volume-${index}`, {
+          command: index === 1 ? "ADD" : "UPDATE",
+          key: "hot-key",
+          fields: { command: index === 1 ? "ADD" : "UPDATE", key: "hot-key", qty: String(index) },
+          changedFields: { qty: String(index) }
+        })
+      );
+    }
+    const controller = renderPanel(root, undefined, {
+      store: volumeStore,
+      bridge: { reinjectDraft }
+    });
+
+    clickCommandState();
+
+    expect(document.querySelectorAll(".command-update-row")).toHaveLength(32);
+    expect(document.querySelectorAll(".command-lifecycle-entry")).toHaveLength(0);
+    expect(text(".command-window-status")).toBe("Showing updates 2,970–3,001 of 3,001.");
+    expect(root.querySelectorAll("*").length).toBeLessThan(900);
+
+    button(".command-lifecycle-toggle").click();
+
+    expect(document.querySelectorAll(".command-update-row")).toHaveLength(32);
+    expect(document.querySelectorAll(".command-lifecycle-entry")).toHaveLength(32);
+    expect(root.querySelectorAll("*").length).toBeLessThan(900);
+
+    button(".command-window-navigation .window-navigation-button").click();
+    expect(document.querySelector<HTMLButtonElement>(".command-update-row")?.dataset.eventId).toBe(
+      "volume-2938"
+    );
+    expect(document.querySelectorAll(".command-update-row")).toHaveLength(32);
+    expect(document.querySelectorAll(".command-lifecycle-entry")).toHaveLength(32);
+    controller.dispose();
+  });
+
+  it("reuses COMMAND lifecycle search projections across renders and invalidates on mutation", async () => {
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      clickCommandState();
+      const inactiveLifecycleValues = stringify.mock.calls
+        .map(([value]) => value)
+        .filter(
+          (value): value is unknown[] =>
+            Array.isArray(value) &&
+            value.length > 0 &&
+            typeof value[0] === "object" &&
+            value[0] !== null &&
+            "eventId" in value[0]
+        );
+      expect(inactiveLifecycleValues).toHaveLength(0);
+
+      stringify.mockClear();
+      input(".command-search", "alpha");
+      const activeLifecycleValues = stringify.mock.calls
+        .map(([value]) => value)
+        .filter(
+          (value): value is Record<string, unknown> =>
+            !Array.isArray(value) &&
+            typeof value === "object" &&
+            value !== null &&
+            "eventId" in value &&
+            "provenance" in value &&
+            "changedFields" in value
+        );
+      expect(activeLifecycleValues.length).toBeGreaterThan(0);
+      expect(activeLifecycleValues.length).toBe(new Set(activeLifecycleValues).size);
+
+      stringify.mockClear();
+      input(".command-search", "alpha ");
+      expect(
+        stringify.mock.calls.filter(
+          ([value]) =>
+            !Array.isArray(value) &&
+            typeof value === "object" &&
+            value !== null &&
+            "eventId" in value &&
+            "provenance" in value &&
+            "changedFields" in value
+        )
+      ).toHaveLength(0);
+
+      stringify.mockClear();
+      store.append(event("search-cache-update", { command: "UPDATE", key: "alpha" }));
+      await flushInteractionRender();
+      expect(
+        stringify.mock.calls.filter(
+          ([value]) =>
+            !Array.isArray(value) &&
+            typeof value === "object" &&
+            value !== null &&
+            "eventId" in value &&
+            "provenance" in value &&
+            "changedFields" in value
+        )
+      ).toHaveLength(1);
+    } finally {
+      stringify.mockRestore();
+    }
+  });
+
+  it("bounds 3,001 COMMAND subscription items independently of retained model cardinality", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const volumeStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 3_001; index += 1) {
+      volumeStore.append(
+        event(`item-volume-${index}`, {
+          itemName: `item-volume-${index}`,
+          itemPosition: index,
+          key: `item-key-${index}`
+        })
+      );
+    }
+    renderPanel(root, undefined, { store: volumeStore, bridge: { reinjectDraft } });
+    clickCommandState();
+
+    expect(document.querySelectorAll(".command-item-button").length).toBeLessThanOrEqual(60);
+    expect(text(".command-item-window-status")).toContain("3,001");
+    expect(root.querySelectorAll("*").length).toBeLessThan(1_000);
+  });
+
+  it("bounds 3,001 COMMAND keys and matching diagnostics independently of model cardinality", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const keyStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 3_001; index += 1) {
+      keyStore.append(event(`key-volume-${index}`, { key: `key-volume-${index}` }));
+    }
+    const keyController = renderPanel(root, undefined, {
+      store: keyStore,
+      bridge: { reinjectDraft }
+    });
+    clickCommandState();
+
+    expect(document.querySelectorAll(".command-current-row").length).toBeLessThanOrEqual(60);
+    expect(text(".command-key-window-status")).toContain("3,001");
+    expect(root.querySelectorAll("*").length).toBeLessThan(1_000);
+    keyController.dispose();
+
+    document.body.innerHTML = '<main id="app"></main>';
+    const diagnosticRoot = document.querySelector<HTMLElement>("#app");
+    const diagnosticStore = createEventStore();
+    if (!diagnosticRoot) {
+      throw new Error("missing diagnostic test root");
+    }
+    for (let index = 1; index <= 3_001; index += 1) {
+      diagnosticStore.append(
+        event(`diagnostic-volume-${index}`, {
+          command: "DELETE",
+          key: `ghost-${index}`
+        })
+      );
+    }
+    renderPanel(diagnosticRoot, undefined, {
+      store: diagnosticStore,
+      bridge: { reinjectDraft }
+    });
+    clickCommandState();
+    input(".command-search", "unknown-key-delete");
+
+    expect(document.querySelectorAll(".command-diagnostic-result").length).toBeLessThanOrEqual(32);
+    expect(text(".command-diagnostic-window-status")).toContain("3,001");
+    expect(diagnosticRoot.querySelectorAll("*").length).toBeLessThan(1_000);
+  });
+
+  it("round-trips the non-divisible oldest COMMAND lifecycle page", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const historyStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 1_002; index += 1) {
+      historyStore.append(
+        event(`roundtrip-${index}`, {
+          command: index === 1 ? "ADD" : "UPDATE",
+          key: "roundtrip-key"
+        })
+      );
+    }
+    renderPanel(root, undefined, { store: historyStore, bridge: { reinjectDraft } });
+    clickCommandState();
+
+    let priorWindowFirstId = "";
+    while (!Array.from(document.querySelectorAll<HTMLButtonElement>(
+      ".command-window-navigation button"
+    )).find((candidate) => candidate.textContent === "Older")?.disabled) {
+      priorWindowFirstId = document.querySelector<HTMLButtonElement>(
+        ".command-update-row"
+      )?.dataset.eventId ?? "";
+      clickRowByText(".command-window-navigation button", "Older");
+    }
+    expect(document.querySelector<HTMLButtonElement>(".command-update-row")?.dataset.eventId).toBe(
+      "roundtrip-1"
+    );
+
+    clickRowByText(".command-window-navigation button", "Newer");
+    expect(document.querySelector<HTMLButtonElement>(".command-update-row")?.dataset.eventId).toBe(
+      priorWindowFirstId
+    );
+    clickRowByText(".command-window-navigation button", "Older");
+    expect(document.querySelector<HTMLButtonElement>(".command-update-row")?.dataset.eventId).toBe(
+      "roundtrip-1"
+    );
+  });
+
+  it("anchors an older COMMAND lifecycle window during matching live append", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const historyStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 100; index += 1) {
+      historyStore.append(
+        event(`anchor-${index}`, {
+          command: index === 1 ? "ADD" : "UPDATE",
+          key: "anchor-key"
+        })
+      );
+    }
+    renderPanel(root, undefined, { store: historyStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    clickRowByText(".command-window-navigation button", "Older");
+    const visibleBefore = Array.from(document.querySelectorAll<HTMLButtonElement>(
+      ".command-update-row"
+    )).map((row) => row.dataset.eventId);
+
+    historyStore.append(event("anchor-101", { command: "UPDATE", key: "anchor-key" }));
+
+    expect(
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".command-update-row")).map(
+        (row) => row.dataset.eventId
+      )
+    ).toEqual(visibleBefore);
+  });
+
+  it("preserves a partial COMMAND history anchor across append, Latest, and Older", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const historyStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 65; index += 1) {
+      historyStore.append(
+        event(`partial-anchor-${index}`, {
+          command: index === 1 ? "ADD" : "UPDATE",
+          key: "partial-anchor-key"
+        })
+      );
+    }
+    renderPanel(root, undefined, { store: historyStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    clickRowByText(".command-window-navigation button", "Older");
+    clickRowByText(".command-window-navigation button", "Older");
+    expect(document.querySelector<HTMLButtonElement>(".command-update-row")?.dataset.eventId).toBe(
+      "partial-anchor-1"
+    );
+
+    historyStore.append(
+      event("partial-anchor-66", { command: "UPDATE", key: "partial-anchor-key" })
+    );
+    clickRowByText(".command-window-navigation button", "Newer");
+    clickRowByText(".command-window-navigation button", "Newer");
+    const anchoredFirstId = document.querySelector<HTMLButtonElement>(
+      ".command-update-row"
+    )?.dataset.eventId;
+    expect(anchoredFirstId).toBe("partial-anchor-34");
+
+    clickRowByText(".command-window-navigation button", "Latest");
+    clickRowByText(".command-window-navigation button", "Older");
+    expect(document.querySelector<HTMLButtonElement>(".command-update-row")?.dataset.eventId).toBe(
+      anchoredFirstId
+    );
+  });
+
+  it("restores keyboard focus for COMMAND paging and lifecycle controls", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const historyStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 80; index += 1) {
+      historyStore.append(
+        event(`focus-command-${index}`, {
+          command: index === 1 ? "ADD" : "UPDATE",
+          key: "focus-command-key"
+        })
+      );
+    }
+    renderPanel(root, undefined, { store: historyStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    const older = Array.from(document.querySelectorAll<HTMLButtonElement>(
+      ".command-window-navigation button"
+    )).find((candidate) => candidate.textContent === "Older");
+    older?.focus();
+    older?.click();
+    expect(document.activeElement?.textContent).toBe("Older");
+
+    const toggle = button(".command-lifecycle-toggle");
+    toggle.focus();
+    toggle.click();
+    expect(document.activeElement?.classList.contains("command-lifecycle-toggle")).toBe(true);
   });
 
   it("renders all high-volume COMMAND subscription groups without collapsing repeated subscription ids", () => {
@@ -392,7 +809,8 @@ describe("COMMAND State panel workbench", () => {
     expect(text(".event-count")).toBe(String(totalEvents));
     expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(15);
     expect(document.querySelectorAll(".command-item-button")).toHaveLength(17);
-    expect(sidebarText).toContain("subscription-15 COMMAND");
+    expect(sidebarText).toContain("subscription-15");
+    expect(sidebarText).not.toContain("subscription-15 COMMAND");
     expect(sidebarText).toContain("storeAlerts.STORE_NYC_001");
     expect(sidebarText).toContain("orderDetails.STORE_NYC_001");
     expect(sidebarText).toContain("healthCheck.SYS_MONITOR");
@@ -400,7 +818,10 @@ describe("COMMAND State panel workbench", () => {
     expect(sidebarText).toContain("salesActivity.STORE_NYC_001 position 2");
 
     clickRowByText(".command-item-button", "orderDetails.STORE_NYC_001");
+    input(".command-search", "orderdetails-store-nyc-001-850");
     expect(text(".command-current-table")).toContain("orderdetails-store-nyc-001-850");
+    input(".command-search", "");
+    clickRowByText(".command-item-button", "orderDetails.STORE_NYC_001");
     expect(button(".new-command-button").disabled).toBe(false);
     button(".new-command-button").click();
     expect(text(".command-draft-context")).toContain("orderDetails.STORE_NYC_001");
@@ -448,10 +869,10 @@ describe("COMMAND State panel workbench", () => {
 
     expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(1);
     expect(document.querySelectorAll(".command-item-button")).toHaveLength(1);
-    expect(text(".command-group-pane")).toContain("subscription-15 COMMAND");
+    expect(text(".command-group-pane")).toContain("subscription-15");
     expect(text(".command-group-pane")).toContain("storeAlerts.STORE_NYC_001");
-    expect(text(".command-group-pane")).not.toContain("subscription-1 COMMAND");
-    expect(text(".command-group-pane")).toContain("1 of 17 items match.");
+    expect(texts(".command-subscription-summary")).toEqual(["subscription-15"]);
+    expect(text(".command-group-pane")).toContain("Subscriptions (1 of 17)");
     expect(selectedTexts(".command-item-button")).toEqual([
       expect.stringContaining("storeAlerts.STORE_NYC_001")
     ]);
@@ -474,7 +895,7 @@ describe("COMMAND State panel workbench", () => {
 
     expect(document.querySelectorAll(".command-subscription-summary")).toHaveLength(1);
     expect(document.querySelectorAll(".command-item-button")).toHaveLength(2);
-    expect(text(".command-group-pane")).toContain("2 of 17 items match.");
+    expect(text(".command-group-pane")).toContain("Subscriptions (2 of 17)");
     expect(text(".command-group-pane")).toContain("salesActivity.STORE_NYC_001 position 1");
     expect(text(".command-group-pane")).toContain("salesActivity.STORE_NYC_001 position 2");
     expect(texts(".command-current-row")).toHaveLength(30);
@@ -529,7 +950,7 @@ describe("COMMAND State panel workbench", () => {
 
     clickCommandState();
 
-    expect(text(".command-group-pane")).toContain("subscription-19 COMMAND");
+    expect(text(".command-group-pane")).toContain("subscription-19");
     expect(text(".command-group-pane")).toContain("quiet.orders");
     expect(text(".command-current-rows")).not.toContain("alpha");
 
@@ -604,7 +1025,7 @@ describe("COMMAND State panel workbench", () => {
     await flushInteractionRender();
   });
 
-  it("preserves every COMMAND list viewport and focused control during live updates", () => {
+  it("preserves every COMMAND list viewport and focused control during live updates", async () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     const liveStore = createEventStore();
@@ -638,6 +1059,7 @@ describe("COMMAND State panel workbench", () => {
     originalItemButton?.focus();
 
     liveStore.append(event("command-3", { itemName: "item-a", itemPosition: 1, key: "charlie" }));
+    await flushInteractionRender();
 
     expect(groups.scrollTop).toBe(140);
     expect(groups.scrollLeft).toBe(11);
@@ -657,6 +1079,7 @@ describe("COMMAND State panel workbench", () => {
     originalKeyRow?.focus();
 
     liveStore.append(event("command-4", { itemName: "item-a", itemPosition: 1, key: "delta" }));
+    await flushInteractionRender();
 
     expect(keys.scrollTop).toBe(115);
     expect(updates.scrollTop).toBe(75);
@@ -675,6 +1098,7 @@ describe("COMMAND State panel workbench", () => {
         key: "alpha"
       })
     );
+    await flushInteractionRender();
 
     expect(updates.scrollTop).toBe(88);
     expect(document.activeElement).not.toBe(originalUpdateRow);
@@ -685,22 +1109,29 @@ describe("COMMAND State panel workbench", () => {
   it("renders help tooltips in a clamped overlay for hover and focus", () => {
     clickCommandState();
 
-    const helpText = "How many captured or synthetic updates are in this key lifecycle.";
-    const helpIcon = document.querySelector<HTMLButtonElement>('.command-help-icon[aria-label^="Updates:"]');
-    const tooltip = document.querySelector<HTMLElement>(".command-tooltip");
-    if (!helpIcon || !tooltip) {
-      throw new Error("missing tooltip test elements");
+    const helpText = "The latest field values for this active key after applying its lifecycle.";
+    const helpIcon = document.querySelector<HTMLButtonElement>(
+      '.command-help-icon[aria-label^="Current fields:"]'
+    );
+    if (!helpIcon) {
+      throw new Error("missing help trigger");
     }
+    expect(document.querySelector(".command-tooltip")).toBeNull();
 
     const originalInnerWidth = window.innerWidth;
     const originalInnerHeight = window.innerHeight;
     const helpIconRect = vi.spyOn(helpIcon, "getBoundingClientRect").mockReturnValue(rect(12, 2, 16, 16));
-    const tooltipRect = vi.spyOn(tooltip, "getBoundingClientRect").mockReturnValue(rect(0, 0, 220, 48));
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 160 });
 
     try {
       helpIcon.dispatchEvent(new Event("pointerover", { bubbles: true }));
+      const tooltip = document.querySelector<HTMLElement>(".command-tooltip");
+      if (!tooltip) {
+        throw new Error("missing lazy tooltip overlay");
+      }
+      const tooltipRect = vi.spyOn(tooltip, "getBoundingClientRect").mockReturnValue(rect(0, 0, 220, 48));
+      window.dispatchEvent(new Event("resize"));
 
       expect(tooltip.hidden).toBe(false);
       expect(tooltip.getAttribute("role")).toBe("tooltip");
@@ -713,21 +1144,22 @@ describe("COMMAND State panel workbench", () => {
 
       helpIcon.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }));
 
-      expect(tooltip.hidden).toBe(true);
+      expect(document.querySelector(".command-tooltip")).toBeNull();
       expect(helpIcon.title).toBe(helpText);
 
       helpIcon.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
 
-      expect(tooltip.hidden).toBe(false);
-      expect(helpIcon.getAttribute("aria-describedby")).toBe(tooltip.id);
+      const focusedTooltip = document.querySelector<HTMLElement>(".command-tooltip");
+      expect(focusedTooltip?.hidden).toBe(false);
+      expect(helpIcon.getAttribute("aria-describedby")).toBe(focusedTooltip?.id);
 
       helpIcon.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }));
 
-      expect(tooltip.hidden).toBe(true);
+      expect(document.querySelector(".command-tooltip")).toBeNull();
       expect(helpIcon.title).toBe(helpText);
+      tooltipRect.mockRestore();
     } finally {
       helpIconRect.mockRestore();
-      tooltipRect.mockRestore();
       Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
       Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
     }
@@ -737,21 +1169,20 @@ describe("COMMAND State panel workbench", () => {
     clickCommandState();
 
     const helpIcon = document.querySelector<HTMLButtonElement>(
-      '.command-help-icon[aria-label^="Updates:"]'
+      '.command-help-icon[aria-label^="Current fields:"]'
     );
-    const tooltip = document.querySelector<HTMLElement>(".command-tooltip");
-    if (!helpIcon || !tooltip) {
-      throw new Error("missing tooltip test elements");
+    if (!helpIcon) {
+      throw new Error("missing tooltip trigger");
     }
 
     helpIcon.dispatchEvent(new Event("pointerover", { bubbles: true }));
-    expect(tooltip.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>(".command-tooltip")?.hidden).toBe(false);
 
     store.append(event("tooltip-live", { key: "live-key" }));
     await flushInteractionRender();
 
     expect(helpIcon.isConnected).toBe(false);
-    expect(tooltip.hidden).toBe(true);
+    expect(document.querySelector(".command-tooltip")).toBeNull();
   });
 
   it("hides the COMMAND detail shell until COMMAND rows exist", () => {
@@ -778,13 +1209,19 @@ describe("COMMAND State panel workbench", () => {
     const detailText = text(".command-detail-pane");
     expect(detailText).toContain("Key alpha - active");
     expect(detailText).toContain("Current fields");
-    expect(detailText).toContain("Selected key lifecycle");
-    expect(detailText).toContain("Events for this key only.");
-    expect(detailText.indexOf("Current fields")).toBeLessThan(detailText.indexOf("Selected key lifecycle"));
+    expect(document.querySelector(".command-lifecycle")?.getAttribute("aria-label")).toBe(
+      "Selected key lifecycle"
+    );
     expect(detailText).toContain('"qty": "3"');
     expect(detailText).toContain("<strong>synthetic-value</strong>");
     expect(detailText).toContain("Origin snapshot server");
     expect(detailText).toContain("Latest synthetic UPDATE");
+    expect(document.querySelectorAll(".command-lifecycle-entry")).toHaveLength(0);
+    expect(text(".command-lifecycle-toggle")).toBe("Show lifecycle payloads (3)");
+
+    button(".command-lifecycle-toggle").click();
+
+    expect(text(".command-lifecycle-toggle")).toBe("Hide lifecycle payloads (3)");
     expect(texts(".command-lifecycle-entry")).toEqual(
       expect.arrayContaining([
         expect.stringContaining("event-1"),
@@ -792,11 +1229,12 @@ describe("COMMAND State panel workbench", () => {
         expect.stringContaining("event-5")
       ])
     );
-    expect(detailText).toContain("ADD");
-    expect(detailText).toContain("UPDATE");
-    expect(detailText).toContain("snapshot server");
-    expect(detailText).toContain("live server");
-    expect(detailText).toContain("synthetic live");
+    const expandedDetailText = text(".command-detail-pane");
+    expect(expandedDetailText).toContain("ADD");
+    expect(expandedDetailText).toContain("UPDATE");
+    expect(expandedDetailText).toContain("snapshot server");
+    expect(expandedDetailText).toContain("live server");
+    expect(expandedDetailText).toContain("synthetic live");
     expect(document.querySelector(".command-detail-pane img")).toBeNull();
     expect(document.querySelector(".command-detail-pane strong")).toBeNull();
 
@@ -815,10 +1253,12 @@ describe("COMMAND State panel workbench", () => {
 
     expect(text(".command-current-rows")).toContain("beta");
     expect(document.querySelector('.command-current-row[data-status="deleted"]')?.textContent).toContain("beta");
-    expect(text(".command-update-list")).toContain("Updates for selected key");
+    expect(text(".command-update-list")).toContain("Updates · beta · 2");
     expect(text(".command-update-list")).toContain("event-3");
     expect(text(".command-update-list")).toContain("event-4");
     expect(text(".command-detail-pane")).toContain("Key beta - deleted");
+    expect(text(".command-detail-pane")).not.toContain("event-3");
+    button(".command-lifecycle-toggle").click();
     expect(text(".command-detail-pane")).toContain("event-3");
     expect(text(".command-detail-pane")).toContain("event-4");
     expect(text(".command-detail-pane")).toContain("DELETE");
@@ -886,7 +1326,7 @@ describe("COMMAND State panel workbench", () => {
     expect(text(".command-diagnostic-event")).toBe("event-6");
     expect(selectedTexts(".command-diagnostic-result")).toHaveLength(1);
     expect(text(".command-update-list")).toContain(
-      "The selected diagnostic has no key update lifecycle."
+      "Selected diagnostic · no key lifecycle"
     );
     expect(text(".command-detail-pane")).toContain("COMMAND diagnostic");
     expect(text(".command-detail-pane")).toContain('"code": "unknown-key-delete"');
@@ -966,9 +1406,7 @@ describe("COMMAND State panel workbench", () => {
 
     expect(document.querySelector(".command-draft-controls")).toBeNull();
     expect(document.querySelector(".command-draft-key")).toBeNull();
-    expect(text(".new-command-editor")).toContain(
-      "Select a captured COMMAND subscription and item, then create a synthetic update from that context."
-    );
+    expect(document.querySelectorAll(".new-command-editor > *")).toHaveLength(1);
     expect(button(".new-command-button").disabled).toBe(false);
 
     button(".new-command-button").click();
@@ -1040,6 +1478,7 @@ describe("COMMAND State panel workbench", () => {
 
     await button(".inject-command-button").click();
     await Promise.resolve();
+    await flushInteractionRender();
 
     expect(reinjectDraft).toHaveBeenCalledTimes(1);
     expect(store.list().filter((entry) => entry.synthetic)).toHaveLength(2);
@@ -1048,6 +1487,7 @@ describe("COMMAND State panel workbench", () => {
     );
     expect(text(".command-current-rows")).toContain("bravo");
     clickRowByText(".command-current-row", "bravo");
+    button(".command-lifecycle-toggle").click();
     expect(text(".command-detail-pane")).toContain("synthetic-request-1");
     expect(store.list().at(-1)?.raw).toMatchObject({
       provenance: {

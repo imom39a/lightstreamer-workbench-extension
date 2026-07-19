@@ -8,6 +8,7 @@
     "build": "vite build && node scripts/build-content-scripts.mjs && node scripts/verify-extension-build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "benchmark:panel": "vitest bench --run",
     "release:package": "node scripts/package-extension.mjs",
     "release:zip": "node scripts/package-extension.mjs --format zip",
     "release:crx": "node scripts/package-extension.mjs --format crx",
