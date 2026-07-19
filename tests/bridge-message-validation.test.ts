@@ -6,12 +6,14 @@ import {
   CONTENT_CAPTURE_SYNC_REQUEST,
   PAGE_CAPTURE_SYNC_REQUEST,
   PANEL_REINJECT_REQUEST,
+  PANEL_VISIBILITY_MESSAGE,
   type ReinjectionDraftPayload,
   createCaptureMessage,
   isCaptureMessage,
   isContentCaptureSyncRequestMessage,
   isPageCaptureSyncRequestMessage,
-  isPanelReinjectRequestMessage
+  isPanelReinjectRequestMessage,
+  isPanelVisibilityMessage
 } from "../src/bridge/messages";
 import { createStableIdAllocator } from "../src/core/ids";
 
@@ -65,6 +67,21 @@ describe("bridge capture synchronization message validation", () => {
     expect(isPageCaptureSyncRequestMessage({ type: PAGE_CAPTURE_SYNC_REQUEST })).toBe(true);
     expect(isContentCaptureSyncRequestMessage({ type: PAGE_CAPTURE_SYNC_REQUEST })).toBe(false);
     expect(isPageCaptureSyncRequestMessage({ type: CONTENT_CAPTURE_SYNC_REQUEST })).toBe(false);
+  });
+});
+
+describe("panel visibility message validation", () => {
+  it("accepts only boolean panel visibility notifications", () => {
+    expect(
+      isPanelVisibilityMessage({ type: PANEL_VISIBILITY_MESSAGE, visible: true })
+    ).toBe(true);
+    expect(
+      isPanelVisibilityMessage({ type: PANEL_VISIBILITY_MESSAGE, visible: false })
+    ).toBe(true);
+    expect(
+      isPanelVisibilityMessage({ type: PANEL_VISIBILITY_MESSAGE, visible: "false" })
+    ).toBe(false);
+    expect(isPanelVisibilityMessage({ type: "wrong", visible: true })).toBe(false);
   });
 });
 

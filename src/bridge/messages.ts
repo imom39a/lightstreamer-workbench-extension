@@ -13,6 +13,7 @@ export const CONTENT_CAPTURE_SYNC_REQUEST = "lsew:content-capture-sync-request" 
 export const PAGE_CAPTURE_SYNC_REQUEST = "lsew:page-capture-sync-request" as const;
 export const RUNTIME_REINJECT_RESULT = "lsew:runtime-reinject-result" as const;
 export const PANEL_REINJECT_RESULT = "lsew:panel-reinject-result" as const;
+export const PANEL_VISIBILITY_MESSAGE = "lsew:panel-visibility" as const;
 
 export const CAPTURE_KINDS = [
   "client-created",
@@ -143,6 +144,11 @@ export type PanelCaptureMessage = {
   message: CaptureMessage;
 };
 
+export type PanelVisibilityMessage = {
+  type: typeof PANEL_VISIBILITY_MESSAGE;
+  visible: boolean;
+};
+
 const captureKindSet = new Set<string>(CAPTURE_KINDS);
 
 export function createCaptureMessage<K extends CaptureKind>(
@@ -206,6 +212,14 @@ export function isPanelCaptureMessage(value: unknown): value is PanelCaptureMess
     isRecord(value) &&
     value.type === PANEL_CAPTURE_MESSAGE &&
     isCaptureMessage(value.message)
+  );
+}
+
+export function isPanelVisibilityMessage(value: unknown): value is PanelVisibilityMessage {
+  return (
+    isRecord(value) &&
+    value.type === PANEL_VISIBILITY_MESSAGE &&
+    typeof value.visible === "boolean"
   );
 }
 

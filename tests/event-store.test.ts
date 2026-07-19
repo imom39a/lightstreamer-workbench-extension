@@ -1,4 +1,4 @@
-import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
@@ -224,6 +224,113 @@ describe("event store", () => {
       expect(getAllSpy).not.toHaveBeenCalled();
     } finally {
       getAllSpy.mockRestore();
+      store.close?.();
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+    }
+  });
+
+  it("reads an unfiltered IndexedDB count, page, and hydration from one transaction snapshot", async () => {
+    const sessionId = "event-store-consistent-page-test";
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const store = await createIndexedDbEventStore({ sessionId });
+    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
+
+    try {
+      await store.append(event("event-1"));
+      await store.append(event("event-2"));
+      await store.append(event("event-3"));
+      transactionSpy.mockClear();
+
+      const result = await store.queryEvents({ limit: 2 });
+
+      expect(result).toMatchObject({ total: 3 });
+      expect(result.events.map((entry) => entry.id)).toEqual(["event-2", "event-3"]);
+      expect(transactionSpy).toHaveBeenCalledTimes(1);
+      expect(transactionSpy.mock.calls[0]?.[0]).toEqual(
+        expect.arrayContaining(["events", "eventMeta"])
+      );
+    } finally {
+      transactionSpy.mockRestore();
+      store.close?.();
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+    }
+  });
+
+  it("reads filtered IndexedDB metadata, total, page, and hydration from one transaction snapshot", async () => {
+    const sessionId = "event-store-consistent-filtered-page-test";
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const store = await createIndexedDbEventStore({ sessionId });
+    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
+
+    try {
+      await store.append({
+        ...event("event-1"),
+        subscription: { id: "sub-1", mode: "COMMAND" }
+      });
+      await store.append({
+        ...event("event-2"),
+        subscription: { id: "sub-1", mode: "COMMAND" }
+      });
+      await store.append({
+        ...event("event-3"),
+        subscription: { id: "sub-2", mode: "MERGE" }
+      });
+      transactionSpy.mockClear();
+
+      const result = await store.queryEvents({
+        filters: { mode: "COMMAND" },
+        limit: 1
+      });
+
+      expect(result).toMatchObject({ total: 2 });
+      expect(result.events.map((entry) => entry.id)).toEqual(["event-2"]);
+      expect(transactionSpy).toHaveBeenCalledTimes(1);
+      expect(transactionSpy.mock.calls[0]?.[0]).toEqual(
+        expect.arrayContaining(["events", "eventMeta"])
+      );
+      expect(transactionSpy.mock.calls[0]?.[1]).toBe("readonly");
+    } finally {
+      transactionSpy.mockRestore();
+      store.close?.();
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+    }
+  });
+
+  it("reads full-text IndexedDB matches, total, page, and hydration from one transaction snapshot", async () => {
+    const sessionId = "event-store-consistent-full-text-page-test";
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const store = await createIndexedDbEventStore({ sessionId });
+    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
+
+    try {
+      await store.append({
+        ...event("event-1"),
+        item: { name: "matching-alpha", position: 1 }
+      });
+      await store.append({
+        ...event("event-2"),
+        item: { name: "matching-alpha", position: 2 }
+      });
+      await store.append({
+        ...event("event-3"),
+        item: { name: "other", position: 3 }
+      });
+      transactionSpy.mockClear();
+
+      const result = await store.queryEvents({
+        filters: { query: "matching-alpha" },
+        limit: 1
+      });
+
+      expect(result).toMatchObject({ total: 2 });
+      expect(result.events.map((entry) => entry.id)).toEqual(["event-2"]);
+      expect(transactionSpy).toHaveBeenCalledTimes(1);
+      expect(transactionSpy.mock.calls[0]?.[0]).toEqual(
+        expect.arrayContaining(["events", "eventMeta"])
+      );
+      expect(transactionSpy.mock.calls[0]?.[1]).toBe("readonly");
+    } finally {
+      transactionSpy.mockRestore();
       store.close?.();
       await deleteEventDatabase(eventDatabaseName(sessionId));
     }

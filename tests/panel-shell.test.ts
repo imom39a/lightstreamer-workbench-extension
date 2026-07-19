@@ -33,6 +33,10 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
 }
 
+async function flushPanelRender(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 40));
+}
+
 async function waitForCondition(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -91,6 +95,16 @@ function clickFirstEventRow(): void {
   row.click();
 }
 
+function clickButtonByText(selector: string, label: string): void {
+  const candidate = Array.from(document.querySelectorAll<HTMLButtonElement>(selector)).find(
+    (button) => button.textContent === label && !button.disabled
+  );
+  if (!candidate) {
+    throw new Error(`missing enabled ${label} button in ${selector}`);
+  }
+  candidate.click();
+}
+
 function detailSection(heading: string): HTMLDetailsElement {
   const section = Array.from(document.querySelectorAll<HTMLDetailsElement>(".detail-section")).find(
     (candidate) =>
@@ -99,6 +113,13 @@ function detailSection(heading: string): HTMLDetailsElement {
   if (!section) {
     throw new Error(`missing detail section ${heading}`);
   }
+  return section;
+}
+
+function openDetailSection(heading: string): HTMLDetailsElement {
+  const section = detailSection(heading);
+  section.open = true;
+  section.dispatchEvent(new Event("toggle"));
   return section;
 }
 
@@ -187,8 +208,6 @@ describe("panel shell", () => {
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
 
     clickFirstEventRow();
-
-    expect(text(".detail-pane")).toContain('"synthetic": false');
     expect(text(".detail-pane")).toContain('"key": "alpha"');
     expect(text(".detail-pane")).toContain("Listener");
     expect(document.querySelector<HTMLDetailsElement>(".detail-section")?.open).toBe(false);
@@ -197,6 +216,8 @@ describe("panel shell", () => {
         section.textContent?.includes("Update")
       )?.open
     ).toBe(true);
+    openDetailSection("Envelope");
+    expect(text(".detail-pane")).toContain('"synthetic": false');
     expect(text(".detail-pane").indexOf("Raw Diagnostics")).toBeLessThan(
       text(".detail-pane").indexOf("Update")
     );
@@ -207,6 +228,52 @@ describe("panel shell", () => {
 
     document.querySelector<HTMLButtonElement>(".detail-collapse-button")?.click();
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
+  });
+
+  it("uses compact exact semantic times across repeated seconds and local day boundaries", async () => {
+    const timestamps = [
+      new Date(2026, 0, 1, 23, 59, 59, 1).getTime(),
+      new Date(2026, 0, 1, 23, 59, 59, 2).getTime(),
+      new Date(2026, 0, 2, 0, 0, 0, 3).getTime()
+    ];
+    for (const [index, timestamp] of timestamps.entries()) {
+      panel.appendCaptureMessage(
+        createCaptureMessage(
+          "item-update",
+          {
+            subscription: { id: "subscription-time", mode: "MERGE" },
+            item: { name: "time-item", position: 1 },
+            update: {
+              isSnapshot: false,
+              fields: { value: index },
+              changedFields: { value: index }
+            }
+          },
+          timestamp
+        )
+      );
+    }
+    await flushPanelRender();
+
+    const rowTimes = Array.from(document.querySelectorAll<HTMLTimeElement>(".event-time"));
+    expect(rowTimes).toHaveLength(3);
+    expect(rowTimes.map((time) => time.dateTime)).toEqual(
+      timestamps.map((timestamp) => new Date(timestamp).toISOString())
+    );
+    expect(rowTimes.map((time) => time.textContent)).toEqual([
+      "23:59:59.001",
+      "23:59:59.002",
+      "00:00:00.003"
+    ]);
+    expect(rowTimes.every((time) => Boolean(time.title))).toBe(true);
+    expect(rowTimes.every((time) => (time.getAttribute("aria-label") ?? "").includes("2026-"))).toBe(
+      true
+    );
+    expect(rowTimes.some((time) => /\b(?:AM|PM)\b/i.test(time.textContent ?? ""))).toBe(false);
+
+    document.querySelector<HTMLButtonElement>(".event-row")?.click();
+    openDetailSection("Envelope");
+    expect(text(".detail-pane")).not.toContain('"timestamp"');
   });
 
   it("lets Timeline event detail width be adjusted like split panes", () => {
@@ -252,7 +319,7 @@ describe("panel shell", () => {
     expect(text(".filtered-count")).toBe("0 shown");
   });
 
-  it("surfaces high-volume retention options and loads more Timeline rows while scrolling", () => {
+  it("surfaces one retention clear action and pages Timeline history reversibly within a fixed DOM bound", () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     const store = createEventStore({ warningThreshold: 500 });
@@ -285,11 +352,16 @@ describe("panel shell", () => {
     expect(text(".event-count")).toBe("1002");
     expect(text(".retention-notice")).toContain("High volume: 1,002 events retained");
     expect(text(".retention-notice")).toContain("Keep events");
-    expect(text(".retention-notice")).toContain("Clear events");
+    expect(
+      Array.from(document.querySelectorAll<HTMLButtonElement>("button")).filter(
+        (button) => button.textContent === "Clear events" && !button.hidden
+      )
+    ).toHaveLength(1);
     expect(text(".event-render-limit")).toBe(
-      "All matching events are retained; showing latest 500 of 1002. Scroll to load more retained events."
+      "Showing 943–1,002 of 1,002 retained events."
     );
-    expect(document.querySelectorAll(".event-row")).toHaveLength(500);
+    expect(document.querySelectorAll(".event-row")).toHaveLength(60);
+    expect(root.querySelectorAll("*").length).toBeLessThan(1_000);
 
     const feed = document.querySelector<HTMLElement>(".event-feed");
     if (!feed) {
@@ -302,20 +374,34 @@ describe("panel shell", () => {
     feed.scrollTop = 800;
     feed.dispatchEvent(new Event("scroll"));
 
-    expect(document.querySelectorAll(".event-row")).toHaveLength(500);
+    expect(document.querySelectorAll(".event-row")).toHaveLength(60);
 
     feed.scrollTop = 0;
     feed.dispatchEvent(new Event("scroll"));
 
-    expect(document.querySelectorAll(".event-row")).toHaveLength(1000);
+    expect(document.querySelectorAll(".event-row")).toHaveLength(60);
+    clickButtonByText(".event-window-navigation button", "Older");
     expect(text(".event-render-limit")).toBe(
-      "All matching events are retained; showing latest 1000 of 1002. Scroll to load more retained events."
+      "Showing 883–942 of 1,002 retained events."
     );
 
-    feed.dispatchEvent(new Event("scroll"));
+    let priorWindowFirstId = "";
+    while (!Array.from(document.querySelectorAll<HTMLButtonElement>(
+      ".event-window-navigation button"
+    )).find((button) => button.textContent === "Older")?.disabled) {
+      priorWindowFirstId = document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId ?? "";
+      clickButtonByText(".event-window-navigation button", "Older");
+    }
+    expect(document.querySelectorAll(".event-row")).toHaveLength(42);
+    expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId).toBe("event-1");
+    expect(root.querySelectorAll("*").length).toBeLessThan(1_000);
 
-    expect(document.querySelectorAll(".event-row")).toHaveLength(1002);
-    expect(document.querySelector(".event-render-limit")).toBeNull();
+    clickButtonByText(".event-window-navigation button", "Newer");
+    expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId).toBe(
+      priorWindowFirstId
+    );
+    clickButtonByText(".event-window-navigation button", "Older");
+    expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId).toBe("event-1");
 
     const keepButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".event-volume-action")).find(
       (button) => button.textContent === "Keep events"
@@ -326,7 +412,310 @@ describe("panel shell", () => {
     expect(store.count()).toBe(1002);
   });
 
-  it("preserves the visible Timeline rows when async paging prepends older events", async () => {
+  it("keeps 3,001-event Timeline append and search rendering structurally bounded", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const storedEvent = (index: number) => ({
+      id: `volume-event-${index}`,
+      timestamp: index,
+      direction: "inbound" as const,
+      source: "server" as const,
+      synthetic: false,
+      kind: "item-update" as const,
+      subscription: { id: "subscription-1", mode: "COMMAND" },
+      item: { name: "volume-item", position: 1 },
+      update: {
+        isSnapshot: false,
+        fields: { command: "ADD", key: `volume-key-${index}`, qty: index },
+        changedFields: { command: "ADD", key: `volume-key-${index}`, qty: index },
+        command: "ADD",
+        key: `volume-key-${index}`
+      }
+    });
+    for (let index = 1; index <= 3_000; index += 1) {
+      store.append(storedEvent(index));
+    }
+    const queryEvents = vi.spyOn(store, "queryEvents");
+    const controller = renderPanel(root, undefined, { store });
+    queryEvents.mockClear();
+
+    store.append(storedEvent(3_001));
+    input(".search-input", "volume-event-3001");
+
+    expect(document.querySelectorAll(".event-row")).toHaveLength(1);
+    expect(root.querySelectorAll("*").length).toBeLessThan(1_000);
+    expect(queryEvents.mock.calls.length).toBeLessThanOrEqual(2);
+    controller.dispose();
+  });
+
+  it("keeps a pinned Timeline detail selected by id after it leaves the live window", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 61; index += 1) {
+      store.append({
+        id: `selection-${index}`,
+        timestamp: index,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "item-update",
+        update: { command: "ADD", key: `key-${index}` }
+      });
+    }
+    renderPanel(root, undefined, { store });
+    document.querySelector<HTMLButtonElement>('.event-row[data-event-id="selection-2"]')?.click();
+    expect(text(".detail-pane")).toContain("selection-2");
+    expect(document.querySelector(".detail-exact-time")).toBeNull();
+
+    store.append({
+      id: "selection-62",
+      timestamp: 62,
+      direction: "inbound",
+      source: "server",
+      synthetic: false,
+      kind: "item-update",
+      update: { command: "ADD", key: "key-62" }
+    });
+
+    expect(text(".detail-pane")).toContain("selection-2");
+    expect(text(".detail-pane")).not.toContain("selection-62");
+    const offWindowTime = document.querySelector<HTMLTimeElement>(".detail-exact-time-value");
+    expect(offWindowTime?.dateTime).toBe(new Date(2).toISOString());
+    expect(offWindowTime?.textContent).toMatch(/^\d{4}-\d{2}-\d{2} .* UTC[+-]\d{2}:\d{2}$/);
+  });
+
+  it("preserves a partial Timeline history anchor across append, Latest, and Older", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const append = (index: number) =>
+      store.append({
+        id: `timeline-roundtrip-${index}`,
+        timestamp: index,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "item-update",
+        update: { command: "ADD", key: `key-${index}` }
+      });
+    for (let index = 1; index <= 65; index += 1) {
+      append(index);
+    }
+    renderPanel(root, undefined, { store });
+
+    clickButtonByText(".event-window-navigation button", "Older");
+    expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId).toBe(
+      "timeline-roundtrip-1"
+    );
+    append(66);
+    clickButtonByText(".event-window-navigation button", "Newer");
+    const anchoredFirstId = document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId;
+    expect(anchoredFirstId).toBe("timeline-roundtrip-6");
+
+    clickButtonByText(".event-window-navigation button", "Latest");
+    clickButtonByText(".event-window-navigation button", "Older");
+    expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId).toBe(
+      anchoredFirstId
+    );
+  });
+
+  it("does not let a stale off-window detail lookup replace a newer selection", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const memoryStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 61; index += 1) {
+      memoryStore.append({
+        id: `detail-race-${index}`,
+        timestamp: index,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "item-update",
+        update: { command: "ADD", key: `key-${index}` }
+      });
+    }
+    const detailLookup: {
+      resolve?: (event: Awaited<ReturnType<EventStore["getEventById"]>>) => void;
+    } = {};
+    const store: EventStore = {
+      ...memoryStore,
+      getEventById(id) {
+        if (id !== "detail-race-2") {
+          return memoryStore.getEventById(id);
+        }
+        return new Promise((resolve) => {
+          detailLookup.resolve = resolve;
+        });
+      }
+    };
+    renderPanel(root, undefined, { store });
+    document.querySelector<HTMLButtonElement>('.event-row[data-event-id="detail-race-2"]')?.click();
+
+    memoryStore.append({
+      id: "detail-race-62",
+      timestamp: 62,
+      direction: "inbound",
+      source: "server",
+      synthetic: false,
+      kind: "item-update",
+      update: { command: "ADD", key: "key-62" }
+    });
+    document.querySelector<HTMLButtonElement>('.event-row[data-event-id="detail-race-62"]')?.click();
+    expect(text(".detail-pane")).toContain("detail-race-62");
+
+    const historical = await memoryStore.getEventById("detail-race-2");
+    detailLookup.resolve?.(historical);
+    await flushPromises();
+    expect(text(".detail-pane")).toContain("detail-race-62");
+    expect(text(".detail-pane")).not.toContain("detail-race-2");
+  });
+
+  it("restores Timeline pager focus and lazily creates collapsed payload DOM", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 130; index += 1) {
+      store.append({
+        id: `focus-${index}`,
+        timestamp: index,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "item-update",
+        update: { command: "ADD", key: `focus-key-${index}`, fields: { payload: index } }
+      });
+    }
+    renderPanel(root, undefined, { store });
+    const older = Array.from(document.querySelectorAll<HTMLButtonElement>(
+      ".event-window-navigation button"
+    )).find((button) => button.textContent === "Older");
+    older?.focus();
+    older?.click();
+
+    expect(document.activeElement?.textContent).toBe("Older");
+    document.querySelector<HTMLButtonElement>(".event-row")?.click();
+    expect(document.querySelectorAll(".detail-section:not([open]) pre")).toHaveLength(0);
+    expect(document.querySelector(".event-list")?.getAttribute("role")).not.toBe("list");
+    expect(document.querySelector(".event-header")?.getAttribute("role")).toBeNull();
+  });
+
+  it("suspends Timeline and COMMAND presentation work while the DevTools panel is hidden", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const queryEvents = vi.spyOn(store, "queryEvents");
+    const controller = renderPanel(root, undefined, { store }) as PanelController & {
+      setVisible(visible: boolean): void;
+    };
+    controller.setVisible(false);
+    queryEvents.mockClear();
+
+    store.append({
+      id: "hidden-1",
+      timestamp: 1,
+      direction: "inbound",
+      source: "server",
+      synthetic: false,
+      kind: "item-update",
+      subscription: { id: "sub-hidden", mode: "COMMAND" },
+      item: { name: "hidden-item", position: 1 },
+      update: { command: "ADD", key: "hidden-key" }
+    });
+
+    expect(queryEvents).not.toHaveBeenCalled();
+    expect(text(".event-count")).toBe("0");
+    controller.setVisible(true);
+    expect(queryEvents).toHaveBeenCalledTimes(1);
+    expect(text(".event-count")).toBe("1");
+  });
+
+  it("drops an in-flight Timeline query when the panel becomes hidden", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const memoryStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    memoryStore.append({
+      id: "hidden-query-1",
+      timestamp: 1,
+      direction: "inbound",
+      source: "server",
+      synthetic: false,
+      kind: "item-update",
+      update: { command: "ADD", key: "hidden-query-key" }
+    });
+    const pendingQuery: { resolve?: () => void } = {};
+    let queryCalls = 0;
+    const store: EventStore = {
+      ...memoryStore,
+      queryEvents(query) {
+        queryCalls += 1;
+        if (queryCalls === 1) {
+          return memoryStore.queryEvents(query);
+        }
+        return new Promise((resolve) => {
+          pendingQuery.resolve = () => resolve(memoryStore.queryEvents(query));
+        });
+      }
+    };
+    const controller = renderPanel(root, undefined, { store });
+    const eventCountBeforeHide = text(".event-count");
+    controller.setVisible(false);
+    pendingQuery.resolve?.();
+    await flushPromises();
+
+    expect(document.querySelectorAll(".event-row")).toHaveLength(0);
+    expect(text(".event-count")).toBe(eventCountBeforeHide);
+  });
+
+  it("starts hidden without painting retained events until it is shown", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    store.append({
+      id: "initially-hidden-1",
+      timestamp: 1,
+      direction: "inbound",
+      source: "server",
+      synthetic: false,
+      kind: "item-update",
+      update: { command: "ADD", key: "initially-hidden-key" }
+    });
+
+    const controller = renderPanel(root, undefined, { store, visible: false });
+    expect(document.querySelectorAll(".event-row")).toHaveLength(0);
+    expect(text(".event-count")).toBe("0");
+
+    controller.setVisible(true);
+    expect(document.querySelectorAll(".event-row")).toHaveLength(1);
+    expect(text(".event-count")).toBe("1");
+  });
+
+  it("moves an async Timeline store between bounded history windows", async () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     const memoryStore = createEventStore();
@@ -373,14 +762,17 @@ describe("panel shell", () => {
         get: () => document.querySelectorAll(".event-row").length
       }
     });
-    expect(document.querySelectorAll(".event-row")).toHaveLength(500);
-    feed.scrollTop = 0;
-
-    feed.dispatchEvent(new Event("scroll"));
+    expect(document.querySelectorAll(".event-row")).toHaveLength(60);
+    expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId).toBe(
+      "async-event-442"
+    );
+    clickButtonByText(".event-window-navigation button", "Older");
     await flushPromises();
 
-    expect(document.querySelectorAll(".event-row")).toHaveLength(501);
-    expect(feed.scrollTop).toBe(1);
+    expect(document.querySelectorAll(".event-row")).toHaveLength(60);
+    expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId).toBe(
+      "async-event-382"
+    );
   });
 
   it("coalesces high-volume append rendering into bounded Timeline queries", async () => {
@@ -417,14 +809,14 @@ describe("panel shell", () => {
       }
 
       expect(text(".event-count")).toBe("1000");
-      expect(queryCount - initialQueryCount).toBeLessThan(50);
+      expect(queryCount - initialQueryCount).toBeLessThanOrEqual(1);
       expect(document.querySelectorAll(".event-row").length).toBeLessThan(1000);
 
       await vi.runOnlyPendingTimersAsync();
       await flushPromises();
 
       expect(queryCount - initialQueryCount).toBeLessThan(50);
-      expect(document.querySelectorAll(".event-row")).toHaveLength(500);
+      expect(document.querySelectorAll(".event-row")).toHaveLength(60);
     } finally {
       controller?.dispose();
       window.requestAnimationFrame = originalRequestAnimationFrame;
@@ -458,7 +850,7 @@ describe("panel shell", () => {
 
       await vi.advanceTimersByTimeAsync(40);
 
-      expect(document.querySelectorAll(".event-row")).toHaveLength(100);
+      expect(document.querySelectorAll(".event-row")).toHaveLength(60);
       expect(Array.from(document.querySelectorAll(".event-command")).at(-1)?.textContent).toBe(
         "ADD/paused-frame-100"
       );
@@ -491,10 +883,10 @@ describe("panel shell", () => {
       }
 
       await waitForCondition(() => text(".event-count") === "600");
-      await waitForCondition(() => document.querySelectorAll(".event-row").length === 500);
+      await waitForCondition(() => document.querySelectorAll(".event-row").length === 60);
 
       expect(text(".event-render-limit")).toBe(
-        "All matching events are retained; showing latest 500 of 600. Scroll to load more retained events."
+        "Showing 541–600 of 600 retained events."
       );
       expect(Array.from(document.querySelectorAll(".event-command")).at(-1)?.textContent).toBe(
         "ADD/indexed-600"
@@ -504,26 +896,20 @@ describe("panel shell", () => {
       if (!feed) {
         throw new Error("missing Timeline feed");
       }
-      Object.defineProperties(feed, {
-        clientHeight: { configurable: true, value: 200 },
-        scrollHeight: {
-          configurable: true,
-          get: () => document.querySelectorAll(".event-row").length
-        }
-      });
-      feed.scrollTop = 0;
-      feed.dispatchEvent(new Event("scroll"));
-      await waitForCondition(() => document.querySelectorAll(".event-row").length === 600);
+      clickButtonByText(".event-window-navigation button", "Older");
+      await waitForCondition(
+        () => document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId === "event-481"
+      );
 
-      expect(document.querySelector(".event-render-limit")).toBeNull();
-      expect(document.querySelector(".event-command")?.textContent).toBe("ADD/indexed-1");
+      expect(document.querySelectorAll(".event-row")).toHaveLength(60);
+      expect(text(".event-render-limit")).toBe("Showing 481–540 of 600 retained events.");
     } finally {
       controller?.dispose();
       await store.close?.();
       await deleteEventDatabase(eventDatabaseName(sessionId));
       Reflect.set(globalThis, "indexedDB", previousIndexedDb);
     }
-  });
+  }, 15_000);
 
   it("realigns detail with newest visible event when filters hide the selected row", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
@@ -574,6 +960,7 @@ describe("panel shell", () => {
     expect(document.querySelector(".event-row")?.getAttribute("data-synthetic")).toBe("true");
     clickFirstEventRow();
     expect(text(".detail-pane")).toContain("Synthetic Provenance");
+    openDetailSection("Synthetic Provenance");
     expect(text(".detail-pane")).toContain('"sourceEventId": "event-1"');
   });
 
@@ -689,13 +1076,13 @@ describe("panel shell", () => {
 
     const nextTextarea = document.querySelector<HTMLTextAreaElement>(".draft-json");
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(false);
-    expect(text(".detail-pane")).toContain('"id": "event-1"');
+    expect(text(".draft-source-context")).toContain("event-1");
     expect(document.activeElement).toBe(nextTextarea);
     expect(nextTextarea?.selectionStart).toBe(18);
     expect(detail.scrollTop).toBe(280);
   });
 
-  it("preserves the Timeline viewport and focused event during live updates", () => {
+  it("preserves the Timeline viewport and focused event during live updates", async () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     appendCommandUpdate(panel, "beta", { qty: 2 });
 
@@ -715,6 +1102,7 @@ describe("panel shell", () => {
     originalRow.focus();
 
     appendCommandUpdate(panel, "gamma", { qty: 3 });
+    await flushPanelRender();
 
     expect(feed.scrollTop).toBe(180);
     expect(feed.scrollLeft).toBe(23);
@@ -723,7 +1111,7 @@ describe("panel shell", () => {
     expect(document.activeElement?.textContent).toContain("alpha");
   });
 
-  it("follows events captured while COMMAND State is active until the user scrolls into history", () => {
+  it("follows events captured while COMMAND State is active until the user scrolls into history", async () => {
     const feed = document.querySelector<HTMLElement>(".event-feed");
     if (!feed) {
       throw new Error("missing Timeline feed");
@@ -754,19 +1142,21 @@ describe("panel shell", () => {
     feed.scrollTop = 0;
     feed.dispatchEvent(new Event("scroll"));
     appendCommandUpdate(panel, "echo", { qty: 5 });
+    await flushPanelRender();
 
     expect(document.querySelectorAll(".event-row")).toHaveLength(5);
     expect(feed.scrollTop).toBe(0);
   });
 
-  it("keeps Timeline event detail sections expanded or collapsed when new events arrive", () => {
+  it("keeps Timeline event detail sections expanded or collapsed when new events arrive", async () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
 
-    detailSection("Envelope").open = true;
+    openDetailSection("Envelope");
     detailSection("Update").open = false;
 
     appendCommandUpdate(panel, "beta", { qty: 2 });
+    await flushPanelRender();
 
     expect(text(".detail-pane")).toContain('"id": "event-1"');
     expect(detailSection("Envelope").open).toBe(true);
@@ -845,6 +1235,7 @@ describe("panel shell", () => {
 
     expect(text(".reinject-button")).toBe("Reinjecting...");
     await flushPromises();
+    await flushPanelRender();
 
     const receivedDraft = receivedDrafts[0];
     expect(receivedDraft).toBeDefined();
@@ -858,6 +1249,7 @@ describe("panel shell", () => {
       "synthetic live"
     );
     expect(document.querySelectorAll<HTMLButtonElement>(".event-row")[0].dataset.selected).toBe("true");
+    openDetailSection("Envelope");
     expect(text(".detail-pane")).toContain('"id": "event-1"');
     expect(text(".detail-pane")).toContain('"source": "server"');
   });

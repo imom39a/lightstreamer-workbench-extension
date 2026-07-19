@@ -26,6 +26,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    include: [resolve(projectRoot, "tests/**/*.test.ts")]
+    include: [resolve(projectRoot, "tests/**/*.test.ts")],
+    benchmark: {
+      include: [resolve(projectRoot, "benchmarks/**/*.bench.ts")]
+    }
   }
 });

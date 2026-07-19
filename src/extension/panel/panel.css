@@ -444,22 +444,14 @@ button {
   bottom: calc(100% - 4px);
 }
 
-.command-pane-help {
-  margin: -2px 0 10px;
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
 .command-empty-body {
   margin: 8px 0;
   color: #6b7280;
 }
 
 .command-subscription-summary {
-  border-top: 1px solid #d8dee8;
-  margin-top: 8px;
-  padding: 8px 0 4px;
+  margin-top: 10px;
+  padding: 4px;
   color: #6b7280;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -471,7 +463,7 @@ button {
   width: 100%;
   min-height: 32px;
   border: 0;
-  border-bottom: 1px solid #d8dee8;
+  border-radius: 4px;
   background: #ffffff;
   color: #1f2937;
   cursor: pointer;
@@ -508,10 +500,6 @@ button {
   flex-direction: column;
 }
 
-.command-current-table > .command-pane-heading {
-  padding: 12px 12px 4px;
-}
-
 .command-current-header,
 .command-current-row {
   display: grid;
@@ -519,11 +507,11 @@ button {
   align-items: center;
   grid-template-columns: minmax(140px, 1fr) minmax(74px, 0.35fr) minmax(96px, 0.55fr);
   gap: 8px;
-  border-bottom: 1px solid #d8dee8;
   padding: 0 12px;
 }
 
 .command-current-header {
+  border-bottom: 1px solid #d8dee8;
   color: #6b7280;
   font-size: 12px;
   font-weight: 600;
@@ -531,14 +519,16 @@ button {
 
 .command-current-row {
   width: 100%;
-  border-top: 0;
-  border-right: 0;
-  border-left: 0;
+  border: 0;
   background: #ffffff;
   color: #1f2937;
   cursor: pointer;
   font: inherit;
   text-align: left;
+}
+
+.command-current-row:nth-child(even) {
+  background: #f8fafc;
 }
 
 .command-current-row[data-selected="true"] {
@@ -555,7 +545,6 @@ button {
 .command-diagnostic-results {
   display: grid;
   gap: 4px;
-  border-top: 1px solid #d8dee8;
   margin-top: 8px;
   padding: 12px;
 }
@@ -599,13 +588,6 @@ button {
   font-weight: 600;
 }
 
-.command-update-row[data-selected="true"] {
-  background: #dbeafe;
-  box-shadow:
-    inset 4px 0 0 #2563eb,
-    inset 0 0 0 1px #bfdbfe;
-}
-
 .command-current-cell {
   min-width: 0;
   overflow: hidden;
@@ -613,20 +595,6 @@ button {
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.command-current-cell-with-help {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  overflow: visible;
-}
-
-.command-current-cell-with-help .command-help-icon {
-  width: 14px;
-  height: 14px;
-  flex-basis: 14px;
-  font-size: 10px;
 }
 
 .command-key-cell,
@@ -648,10 +616,10 @@ button {
   align-items: center;
   grid-template-columns: minmax(76px, 0.55fr) minmax(92px, 0.65fr) minmax(76px, 0.45fr);
   gap: 8px;
-  border-bottom: 1px solid #d8dee8;
 }
 
 .command-update-header {
+  border-bottom: 1px solid #d8dee8;
   color: #6b7280;
   font-size: 12px;
   font-weight: 600;
@@ -659,14 +627,23 @@ button {
 
 .command-update-row {
   width: 100%;
-  border-top: 0;
-  border-right: 0;
-  border-left: 0;
+  border: 0;
   background: #ffffff;
   color: #1f2937;
   cursor: pointer;
   font: inherit;
   text-align: left;
+}
+
+.command-update-row:nth-child(even) {
+  background: #f8fafc;
+}
+
+.command-update-row[data-selected="true"] {
+  background: #dbeafe;
+  box-shadow:
+    inset 4px 0 0 #2563eb,
+    inset 0 0 0 1px #bfdbfe;
 }
 
 .command-update-cell {
@@ -697,9 +674,7 @@ button {
 .command-lifecycle,
 .command-diagnostics,
 .new-command-editor {
-  border-top: 1px solid #d8dee8;
   margin-top: 12px;
-  padding-top: 12px;
 }
 
 .command-summary-row {
@@ -752,12 +727,67 @@ button {
   grid-auto-rows: minmax(36px, auto);
 }
 
-.event-render-limit {
+.event-window-navigation,
+.command-window-navigation {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   border-bottom: 1px solid #d8dee8;
   background: #fff7ed;
   color: #a16207;
   font-size: 12px;
-  padding: 8px 12px;
+  padding: 6px 12px;
+}
+
+.event-render-limit,
+.command-window-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.window-navigation-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.window-navigation-button,
+.command-lifecycle-toggle {
+  min-height: 26px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #374151;
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 8px;
+}
+
+.window-navigation-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.window-navigation-button:focus-visible,
+.command-lifecycle-toggle:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.command-window-navigation {
+  margin-bottom: 6px;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.command-lifecycle-toggle {
+  margin-bottom: 8px;
 }
 
 .event-header,
@@ -787,11 +817,14 @@ button {
 .event-row {
   width: 100%;
   border: 0;
-  border-bottom: 1px solid #d8dee8;
   background: #ffffff;
   color: #1f2937;
   cursor: pointer;
   text-align: left;
+}
+
+.event-row:nth-child(even) {
+  background: #f8fafc;
 }
 
 .event-row[data-selected="true"] {
@@ -891,6 +924,28 @@ button {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.detail-exact-time {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.3fr) minmax(0, 1fr);
+  gap: 8px;
+  margin: 8px 0 0;
+  color: #1f2937;
+  font-size: 12px;
+}
+
+.detail-exact-time-label {
+  color: #6b7280;
+  font-weight: 600;
+}
+
+.detail-exact-time-value {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-collapse-button {
