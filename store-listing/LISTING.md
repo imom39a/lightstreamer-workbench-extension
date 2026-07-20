@@ -82,13 +82,13 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-0.1.1
+0.1.4
 ```
 
 What's new:
 
 ```text
-Bug-fix release focused on high-volume debugging and DevTools panel readability.
+High-volume debugging and DevTools panel readability release.
 
 - Shows retained, total, and pruned event counts so event-store limits are explicit during long sessions.
 - Keeps Timeline rendering responsive by bounding visible high-volume event lists and prompting users to narrow search results.
@@ -96,6 +96,7 @@ Bug-fix release focused on high-volume debugging and DevTools panel readability.
 - Adds visible table headers, collapsible detail panes, and clearer full-row selection highlighting.
 - Fixes help popups so tooltip text is visible on hover/focus and avoids viewport clipping.
 - Reorganizes event detail sections so raw diagnostics and useful update payloads are easier to inspect.
+- Improves COMMAND capture synchronization and keeps the Timeline current during live capture.
 ```
 
 ## Privacy Practices Draft
@@ -131,7 +132,7 @@ For deterministic local verification from the repository:
 
 - [ ] Confirm `public/manifest.json` version matches `package.json`.
 - [ ] Run `npm run release:package`.
-- [ ] Upload `release/lightstreamer-event-workbench-v0.1.1.zip`.
+- [ ] Upload `release/lightstreamer-event-workbench-v0.1.4.zip`.
 - [ ] Upload `public/icons/icon-128.png` as the store icon.
 - [ ] Upload all three screenshots in the order listed above.
 - [ ] Upload `store-listing/promo/small-promo-tile.png`.

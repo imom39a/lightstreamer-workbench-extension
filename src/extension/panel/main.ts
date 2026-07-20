@@ -4351,8 +4351,10 @@ async function createPanelEventStore(): Promise<EventStore> {
   }
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => void bootPanel(), { once: true });
-} else {
-  void bootPanel();
+if (document.documentElement.dataset.storeListingHarness !== "true") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => void bootPanel(), { once: true });
+  } else {
+    void bootPanel();
+  }
 }

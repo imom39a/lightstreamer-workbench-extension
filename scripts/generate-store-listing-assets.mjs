@@ -313,7 +313,7 @@ function setValue(selector, value) {
 
 function htmlSource() {
   return `<!doctype html>
-<html>
+<html data-store-listing-harness="true">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
