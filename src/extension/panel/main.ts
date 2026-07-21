@@ -1421,12 +1421,12 @@ export function renderPanel(
     workspace.dataset.detailOpen = "true";
     detail.append(createSelectedEventHeader(event));
     appendDraftSection(detail, event, draft?.sourceEventId === event.id ? draft : null);
-    appendDetailSection(detail, "Changed fields", event.update?.changedFields ?? {}, {
+    const currentFields = event.update?.fields ?? {};
+    const changedFieldNames = Object.keys(event.update?.changedFields ?? {});
+    appendDetailSection(detail, "Current item fields", currentFields, {
       open: true,
-      summary: `${Object.keys(event.update?.changedFields ?? {}).length} changed`
-    });
-    appendDetailSection(detail, "All current fields", event.update?.fields ?? {}, {
-      summary: `${Object.keys(event.update?.fields ?? {}).length} fields`
+      summary: `${Object.keys(currentFields).length} fields · ${changedFieldNames.length} changed`,
+      changedFieldNames
     });
     appendDetailSection(
       detail,
@@ -2349,21 +2349,13 @@ export function renderPanel(
       );
       commandDetailPane.append(summary);
 
-      const fields = document.createElement("section");
-      fields.className = "command-current-fields";
-      fields.append(
-        createHelpHeading(
-          "h3",
-          "command-detail-section-heading",
-          "Current fields",
+      commandDetailPane.append(
+        createCommandFieldsSection(
+          row.fields,
+          row.lifecycle[row.lifecycle.length - 1]?.changedFields ?? {},
           "The latest field values for this active key after applying its lifecycle."
         )
       );
-      const fieldsJson = document.createElement("pre");
-      fieldsJson.className = "command-json";
-      fieldsJson.textContent = JSON.stringify(row.fields, null, 2);
-      fields.append(fieldsJson);
-      commandDetailPane.append(fields);
 
       appendCommandLifecycle(row.lifecycle);
       appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
@@ -2497,7 +2489,7 @@ export function renderPanel(
     commandDetailPane.append(createDetailPaneHeader("COMMAND diagnostic", onCollapse));
     const pre = document.createElement("pre");
     pre.className = "command-json";
-    pre.textContent = JSON.stringify(diagnostic, null, 2);
+    pre.textContent = formatJsonForDisplay(diagnostic);
     commandDetailPane.append(pre);
   }
 
@@ -2521,33 +2513,36 @@ export function renderPanel(
     }
     commandDetailPane.append(summary);
 
-    const fields = document.createElement("section");
-    fields.className = "command-current-fields";
-    fields.append(
+    commandDetailPane.append(
+      createCommandFieldsSection(
+        entry.fields,
+        entry.changedFields,
+        "The current item values at this update. Changed field names are shown once above the payload."
+      )
+    );
+  }
+
+  function createCommandFieldsSection(
+    fields: Record<string, string | number | boolean | null>,
+    changedFields: Record<string, string | number | boolean | null>,
+    help: string
+  ): HTMLElement {
+    const section = document.createElement("section");
+    section.className = "command-current-fields";
+    section.append(
       createHelpHeading(
         "h3",
         "command-detail-section-heading",
-        "Update payload",
-        "The fields and changed fields captured for this COMMAND update."
+        "Current item fields",
+        help
       )
     );
+    section.append(createChangedFieldsSummary("command-changed-fields", Object.keys(changedFields)));
     const fieldsJson = document.createElement("pre");
     fieldsJson.className = "command-json";
-    fieldsJson.textContent = JSON.stringify(
-      {
-        eventId: entry.eventId,
-        command: entry.originalCommand,
-        effectiveCommand: entry.effectiveCommand,
-        source: provenanceLabel(entry.provenance),
-        fields: entry.fields,
-        changedFields: entry.changedFields,
-        diagnostics: entry.diagnosticCodes
-      },
-      null,
-      2
-    );
-    fields.append(fieldsJson);
-    commandDetailPane.append(fields);
+    fieldsJson.textContent = formatJsonForDisplay(fields);
+    section.append(fieldsJson);
+    return section;
   }
 
   function appendCommandLifecycle(lifecycle: readonly CommandLifecycleEntry[]): void {
@@ -2595,7 +2590,7 @@ export function renderPanel(
       );
       const json = document.createElement("pre");
       json.className = "command-json";
-      json.textContent = JSON.stringify(
+      json.textContent = formatJsonForDisplay(
         {
           eventId: entry.eventId,
           command: entry.originalCommand,
@@ -2604,9 +2599,7 @@ export function renderPanel(
           fields: entry.fields,
           changedFields: entry.changedFields,
           diagnostics: entry.diagnosticCodes
-        },
-        null,
-        2
+        }
       );
       lifecycleEntry.append(json);
       section.append(lifecycleEntry);
@@ -2630,7 +2623,7 @@ export function renderPanel(
     section.append(createTextElement("h3", "command-detail-section-heading", "Diagnostics"));
     const pre = document.createElement("pre");
     pre.className = "command-json";
-    pre.textContent = JSON.stringify(matching, null, 2);
+    pre.textContent = formatJsonForDisplay(matching);
     section.append(pre);
     commandDetailPane.append(section);
   }
@@ -2656,6 +2649,9 @@ export function renderPanel(
         return;
       }
       draft = nextDraft;
+      draftExecutionTarget = nextDraft.target.listenerId && bridgeReady
+        ? "captured-listener"
+        : "workbench-only";
       reinjectionMessage = null;
       renderCommandState();
     });
@@ -2686,7 +2682,23 @@ export function renderPanel(
     const controls = document.createElement("div");
     controls.className = "command-draft-controls";
 
-    const validation = validateNewCommandDraft(currentDraft, commandState, context);
+    if (!draftListenerAvailable(currentDraft) && draftExecutionTarget === "captured-listener") {
+      draftExecutionTarget = "workbench-only";
+    }
+
+    const validation = validateNewCommandDraft(
+      currentDraft,
+      commandState,
+      context,
+      draftExecutionTarget
+    );
+    const executionTargets = createDraftExecutionTargets(currentDraft, (nextTarget) => {
+      draftExecutionTarget = nextTarget;
+      reinjectionMessage = null;
+      renderCommandStatePreservingDraftEditorState(
+        `input[name="draft-execution-target"][value="${nextTarget}"]`
+      );
+    });
 
     const commandLabel = document.createElement("label");
     commandLabel.className = "command-draft-label";
@@ -2742,13 +2754,23 @@ export function renderPanel(
     snapshotLabel.append(snapshotInput, createTextElement("span", "draft-input-text", "Snapshot"));
 
     const fieldTable = createCommandDraftFieldTable(currentDraft, item);
-    const diagnostics = createCommandDraftDiagnostics(validation.diagnostics);
+    const diagnostics = createCommandDraftDiagnostics(
+      validation.diagnostics,
+      draftExecutionTarget
+    );
 
     const injectButton = document.createElement("button");
     injectButton.className = "inject-command-button reinject-button";
     injectButton.type = "button";
-    injectButton.textContent = reinjectionPending ? "Injecting..." : "Inject COMMAND update";
-    injectButton.disabled = !validation.valid || !bridgeReady || reinjectionPending;
+    injectButton.textContent = reinjectionPending
+      ? draftExecutionTarget === "captured-listener"
+        ? "Injecting..."
+        : "Adding..."
+      : "Inject COMMAND update";
+    injectButton.disabled =
+      !validation.valid ||
+      (draftExecutionTarget === "captured-listener" && !bridgeReady) ||
+      reinjectionPending;
     injectButton.addEventListener("click", () => {
       void injectCommandDraft(draft ?? currentDraft, context, item);
     });
@@ -2761,7 +2783,15 @@ export function renderPanel(
       controls.append(message);
     }
 
-    controls.append(commandLabel, keyLabel, snapshotLabel, fieldTable, diagnostics, injectButton);
+    controls.append(
+      executionTargets,
+      commandLabel,
+      keyLabel,
+      snapshotLabel,
+      fieldTable,
+      diagnostics,
+      injectButton
+    );
     return controls;
   }
 
@@ -2809,12 +2839,23 @@ export function renderPanel(
     return table;
   }
 
-  function createCommandDraftDiagnostics(diagnostics: readonly NewCommandDraftDiagnostic[]): HTMLElement {
+  function createCommandDraftDiagnostics(
+    diagnostics: readonly NewCommandDraftDiagnostic[],
+    executionTarget: ReinjectionExecutionTarget
+  ): HTMLElement {
     const section = document.createElement("section");
     section.className = "command-draft-diagnostics";
     section.append(createTextElement("h4", "draft-source-heading", "Diagnostics"));
     if (diagnostics.length === 0) {
-      section.append(createTextElement("p", "command-draft-diagnostic info", "Draft is ready for local listener-path injection."));
+      section.append(
+        createTextElement(
+          "p",
+          "command-draft-diagnostic info",
+          executionTarget === "captured-listener"
+            ? "Draft is ready for local listener-path injection."
+            : "Draft is ready for Workbench-only simulation. The inspected page will not change."
+        )
+      );
       return section;
     }
 
@@ -2835,8 +2876,17 @@ export function renderPanel(
     item: CommandItemGroup
   ): Promise<void> {
     const activeBridge = bridgeReady ? bridge : null;
-    const validation = validateNewCommandDraft(currentDraft, commandStateIndex.snapshot(), context);
-    if (!activeBridge || !validation.valid) {
+    const executionTarget = draftExecutionTarget;
+    const validation = validateNewCommandDraft(
+      currentDraft,
+      commandStateIndex.snapshot(),
+      context,
+      executionTarget
+    );
+    if (
+      !validation.valid ||
+      (executionTarget === "captured-listener" && !activeBridge)
+    ) {
       return;
     }
 
@@ -2854,13 +2904,30 @@ export function renderPanel(
     reinjectionMessage = null;
     renderCommandState();
 
-    const result = await activeBridge.reinjectDraft(currentDraft);
+    let result: ReinjectionResult;
+    if (executionTarget === "workbench-only") {
+      const timestamp = Date.now();
+      result = {
+        requestId: `workbench-command-${timestamp}-${++workbenchSimulationSequence}`,
+        ok: true,
+        status: "success",
+        timestamp
+      };
+    } else {
+      if (!activeBridge) {
+        return;
+      }
+      result = await activeBridge.reinjectDraft(currentDraft);
+    }
     reinjectionPending = false;
 
     if (result.ok && result.status === "success") {
       reinjectionMessage = {
         kind: "success",
-        text: "Synthetic COMMAND update injected through the captured listener."
+        text:
+          executionTarget === "captured-listener"
+            ? "Synthetic COMMAND update injected through the captured listener."
+            : "Synthetic COMMAND update added to Workbench only. The inspected page was not reached."
       };
       if (currentDraft.key) {
         selectedCommandKey = {
@@ -2871,9 +2938,12 @@ export function renderPanel(
         };
         selectedCommandUpdateEventId = null;
       }
-      resolveMaybe(store.append(createSyntheticEventFromDraft(currentDraft, result)), () => {
-        renderCommandState({ preservePaneState: true });
-      });
+      resolveMaybe(
+        store.append(createSyntheticEventFromDraft(currentDraft, result, executionTarget)),
+        () => {
+          renderCommandState({ preservePaneState: true });
+        }
+      );
       return;
     }
 
@@ -3358,7 +3428,7 @@ export function renderPanel(
     );
     const changedPreview = document.createElement("pre");
     changedPreview.className = "draft-changed-fields-preview";
-    changedPreview.textContent = JSON.stringify(currentDraft.changedFields, null, 2);
+    changedPreview.textContent = formatJsonForDisplay(currentDraft.changedFields);
     derived.append(derivedSummary, changedPreview);
     controls.append(derived);
 
@@ -3384,7 +3454,7 @@ export function renderPanel(
         ? ""
         : validationMessage(nextValidation.errors);
       jsonError.hidden = nextValidation.valid;
-      changedPreview.textContent = JSON.stringify(result.draft.changedFields, null, 2);
+      changedPreview.textContent = formatJsonForDisplay(result.draft.changedFields);
       controls.querySelector<HTMLElement>(".draft-dirty-count")!.textContent =
         `${draftChangeCount(result.draft)} changed`;
       derivedSummary.querySelector<HTMLElement>(".detail-section-marker")!.textContent =
@@ -3469,7 +3539,12 @@ export function renderPanel(
       }
       const originalCell = document.createElement("td");
       originalCell.className = "draft-field-original";
-      originalCell.append(createPrimitiveValue(original, { showPreview: !expandedJson }));
+      originalCell.append(
+        createPrimitiveValue(original, {
+          showPreview: !expandedJson,
+          previewLabel: "Original captured JSON"
+        })
+      );
       const draftCell = document.createElement("td");
       draftCell.className = "draft-field-value";
       if (expandedJson) {
@@ -3720,12 +3795,21 @@ export function renderPanel(
 
     const textInput = document.createElement("textarea");
     textInput.className = "structured-field-input structured-string-input";
+    const parsedJson = parseStructuredJsonString(value);
+    const formattedValue = parsedJson ? JSON.stringify(parsedJson, null, 2) : value;
     if (layout === "expanded-json") {
       textInput.classList.add("structured-json-input");
+    } else if (parsedJson) {
+      textInput.classList.add("structured-json-inline-input");
     }
     textInput.dataset.fieldName = fieldName;
-    textInput.rows = layout === "expanded-json" ? 10 : 1;
-    textInput.value = layout === "expanded-json" ? formatJsonStringForEditor(value) : value;
+    textInput.rows =
+      layout === "expanded-json"
+        ? 10
+        : parsedJson
+          ? Math.min(8, Math.max(3, formattedValue.split("\n").length))
+          : 1;
+    textInput.value = formattedValue;
     textInput.disabled = reinjectionPending;
     textInput.spellcheck = false;
     textInput.setAttribute("aria-label", `Draft field ${fieldName}`);
@@ -3735,13 +3819,6 @@ export function renderPanel(
       );
     });
     editor.append(textInput);
-    const parsed = createParsedJsonDisclosure(
-      value,
-      layout === "expanded-json" ? "Draft formatted preview" : "Formatted preview"
-    );
-    if (parsed) {
-      editor.append(parsed);
-    }
     return editor;
   }
 
@@ -3753,14 +3830,15 @@ export function renderPanel(
     renderEventForDraft(nextDraft, true);
   }
 
-  function createDraftExecutionTargets(currentDraft: ReinjectionDraft): HTMLFieldSetElement {
+  function createDraftExecutionTargets(
+    currentDraft: ReinjectionDraft,
+    onTargetChange?: (target: ReinjectionExecutionTarget) => void
+  ): HTMLFieldSetElement {
     const fieldset = document.createElement("fieldset");
     fieldset.className = "draft-execution-targets";
     fieldset.append(createTextElement("legend", "draft-target-legend", "Execution target"));
 
-    const listenerAvailable = Boolean(
-      currentDraft.captureSource !== "wire" && currentDraft.target.listenerId && bridgeReady
-    );
+    const listenerAvailable = draftListenerAvailable(currentDraft);
     if (!listenerAvailable && draftExecutionTarget === "captured-listener") {
       draftExecutionTarget = "workbench-only";
     }
@@ -3805,7 +3883,11 @@ export function renderPanel(
         }
         draftExecutionTarget = choice.value;
         reinjectionMessage = null;
-        renderEventForDraft(currentDraft, true);
+        if (onTargetChange) {
+          onTargetChange(choice.value);
+        } else {
+          renderEventForDraft(currentDraft, true);
+        }
       });
       const copy = document.createElement("span");
       copy.className = "draft-target-copy";
@@ -3815,6 +3897,12 @@ export function renderPanel(
     }
 
     return fieldset;
+  }
+
+  function draftListenerAvailable(currentDraft: ReinjectionDraft): boolean {
+    return Boolean(
+      currentDraft.captureSource !== "wire" && currentDraft.target.listenerId && bridgeReady
+    );
   }
 
   async function executeCurrentDraft(
@@ -4422,24 +4510,33 @@ function createCommandItemContext(
   item: CommandItemGroup,
   events: readonly LightstreamerEventEnvelope[]
 ): CommandItemContext {
-  const sourceEvent = [...events]
+  const matchingEvents = [...events]
     .reverse()
-    .find(
+    .filter(
       (event) =>
         event.kind === "item-update" &&
         event.subscription?.id === subscription.subscriptionId &&
         event.subscription?.mode === "COMMAND" &&
-        resolveCommandItemIdentity(event.subscription, event.item).itemId === item.itemId &&
-        event.listener?.id
+        resolveCommandItemIdentity(event.subscription, event.item).itemId === item.itemId
     );
+  const listenerEvent = matchingEvents.find((event) => event.listener?.id);
+  const sourceEvent = listenerEvent ?? matchingEvents[0];
+  const fields = Array.from(
+    new Set([
+      ...(sourceEvent?.subscription?.fields ?? subscription.subscription.fields ?? []),
+      ...matchingEvents.flatMap((event) => Object.keys(event.update?.fields ?? {}))
+    ])
+  );
 
   return {
     subscriptionId: subscription.subscriptionId,
     mode: subscription.mode,
-    listenerId: sourceEvent?.listener?.id ?? null,
+    listenerId: listenerEvent?.listener?.id ?? null,
+    captureSource:
+      listenerEvent?.captureSource ?? sourceEvent?.captureSource ?? (listenerEvent ? "listener" : "wire"),
     itemName: item.itemName,
     itemPosition: item.itemPosition,
-    fields: sourceEvent?.subscription?.fields ?? subscription.subscription.fields ?? null
+    fields
   };
 }
 
@@ -4449,6 +4546,7 @@ function createCommandDraftContext(context: CommandItemContext): HTMLElement {
   const rows: Array<[string, string]> = [
     ["Subscription", context.subscriptionId ?? "-"],
     ["Listener", context.listenerId ?? "-"],
+    ["Execution", context.listenerId ? "Original listener or Workbench only" : "Workbench only"],
     ["Item", context.itemName ?? String(context.itemPosition ?? "-")],
     ["Schema", context.fields?.join(", ") ?? "-"]
   ];
@@ -5284,6 +5382,7 @@ function defaultValueForDraftType(
 
 type PrimitiveValueOptions = {
   showPreview?: boolean;
+  previewLabel?: string;
 };
 
 function createPrimitiveValue(
@@ -5301,7 +5400,7 @@ function createPrimitiveValue(
     )
   );
   if (typeof value === "string" && options.showPreview !== false) {
-    const parsed = createParsedJsonDisclosure(value);
+    const parsed = createParsedJsonDisclosure(value, options.previewLabel);
     if (parsed) {
       container.append(parsed);
     }
@@ -5351,11 +5450,6 @@ function formatTextSize(length: number): string {
   return `${(length / 1_000).toFixed(length < 10_000 ? 1 : 0)}k chars`;
 }
 
-function formatJsonStringForEditor(value: string): string {
-  const parsed = parseStructuredJsonString(value);
-  return parsed ? JSON.stringify(parsed, null, 2) : value;
-}
-
 function createParsedJsonDisclosure(
   value: string,
   label = "Formatted preview"
@@ -5386,7 +5480,54 @@ function createFilterInput(label: string, className: string, placeholder: string
 type DetailSectionOptions = {
   open?: boolean;
   summary?: string | number | null;
+  changedFieldNames?: readonly string[];
 };
+
+function createChangedFieldsSummary(className: string, fieldNames: readonly string[]): HTMLElement {
+  const summary = document.createElement("p");
+  summary.className = className;
+  if (fieldNames.length === 0) {
+    summary.textContent = "No fields changed in this update.";
+    return summary;
+  }
+  summary.append(createTextElement("span", `${className}-label`, "Changed in this update:"));
+  for (const fieldName of fieldNames) {
+    summary.append(createTextElement("code", `${className}-name`, fieldName));
+  }
+  return summary;
+}
+
+function expandStructuredJsonStrings(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === "string") {
+    const parsed = parseStructuredJsonString(value);
+    return parsed ? expandStructuredJsonStrings(parsed, seen) : value;
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+    seen.add(value);
+    const expanded = value.map((entry) => expandStructuredJsonStrings(entry, seen));
+    seen.delete(value);
+    return expanded;
+  }
+  if (isRecord(value)) {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+    seen.add(value);
+    const expanded = Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, expandStructuredJsonStrings(entry, seen)])
+    );
+    seen.delete(value);
+    return expanded;
+  }
+  return value;
+}
+
+function formatJsonForDisplay(value: unknown): string {
+  return JSON.stringify(expandStructuredJsonStrings(value), null, 2) ?? String(value);
+}
 
 function appendDetailSection(
   parent: HTMLElement,
@@ -5415,9 +5556,12 @@ function appendDetailSection(
     if (section.querySelector(".detail-json")) {
       return;
     }
+    if (options.changedFieldNames) {
+      section.append(createChangedFieldsSummary("detail-changed-fields", options.changedFieldNames));
+    }
     const pre = document.createElement("pre");
     pre.className = "detail-json";
-    pre.textContent = JSON.stringify(value, null, 2);
+    pre.textContent = formatJsonForDisplay(value);
     section.append(pre);
   };
   if (section.open) {

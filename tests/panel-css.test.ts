@@ -69,11 +69,13 @@ describe("panel CSS", () => {
     expect(panelCss).toMatch(/\.event-command\s*{[\s\S]*?max-width:\s*100%;/);
   });
 
-  it("gives large JSON drafts a full-width bounded editor", () => {
+  it("gives parsed JSON drafts bounded multiline editors", () => {
     expect(panelCss).toContain('.draft-field-diff tr[data-layout="json-summary"]');
     expect(panelCss).toContain(".draft-json-editor-cell");
     expect(panelCss).toMatch(/\.structured-json-input\s*{[\s\S]*?min-height:\s*190px;/);
     expect(panelCss).toMatch(/\.structured-json-input\s*{[\s\S]*?max-height:/);
+    expect(panelCss).toMatch(/\.structured-json-inline-input\s*{[\s\S]*?min-height:\s*88px;/);
+    expect(panelCss).toContain(".detail-changed-fields");
   });
 
   it("keeps desktop split panes, stacks medium panes, and drills into detail on narrow panels", () => {

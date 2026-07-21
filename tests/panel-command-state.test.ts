@@ -1202,7 +1202,7 @@ describe("COMMAND State panel workbench", () => {
 
     const helpText = "The latest field values for this active key after applying its lifecycle.";
     const helpIcon = document.querySelector<HTMLButtonElement>(
-      '.command-help-icon[aria-label^="Current fields:"]'
+      '.command-help-icon[aria-label^="Current item fields:"]'
     );
     if (!helpIcon) {
       throw new Error("missing help trigger");
@@ -1260,7 +1260,7 @@ describe("COMMAND State panel workbench", () => {
     clickCommandState();
 
     const helpIcon = document.querySelector<HTMLButtonElement>(
-      '.command-help-icon[aria-label^="Current fields:"]'
+      '.command-help-icon[aria-label^="Current item fields:"]'
     );
     if (!helpIcon) {
       throw new Error("missing tooltip trigger");
@@ -1299,7 +1299,7 @@ describe("COMMAND State panel workbench", () => {
 
     const detailText = text(".command-detail-pane");
     expect(detailText).toContain("Key alpha - active");
-    expect(detailText).toContain("Current fields");
+    expect(detailText).toContain("Current item fields");
     expect(document.querySelector(".command-lifecycle")?.getAttribute("aria-label")).toBe(
       "Selected key lifecycle"
     );
@@ -1365,7 +1365,8 @@ describe("COMMAND State panel workbench", () => {
     clickRowByText(".command-update-row", "event-2");
 
     expect(text(".command-detail-pane")).toContain("Update event-2");
-    expect(text(".command-detail-pane")).toContain("Update payload");
+    expect(text(".command-detail-pane")).toContain("Current item fields");
+    expect(text(".command-detail-pane")).not.toContain("Update payload");
     expect(selectedTexts(".command-current-row")).toHaveLength(1);
     expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
     expect(selectedTexts(".command-update-row")).toHaveLength(1);
@@ -1377,6 +1378,39 @@ describe("COMMAND State panel workbench", () => {
     expect(selectedTexts(".command-current-row")).toHaveLength(1);
     expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
     expect(selectedTexts(".command-update-row")).toHaveLength(0);
+  });
+
+  it("formats JSON-looking strings in the selected COMMAND update field view", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const jsonStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    jsonStore.append(
+      event("json-command-update", {
+        key: "json-key",
+        fields: {
+          command: "ADD",
+          key: "json-key",
+          modelValues: JSON.stringify({ alarms: [{ domain: "passenger", status: "GREEN" }] })
+        },
+        changedFields: {
+          command: "ADD",
+          key: "json-key",
+          modelValues: JSON.stringify({ alarms: [{ domain: "passenger", status: "GREEN" }] })
+        }
+      })
+    );
+    renderPanel(root, undefined, { store: jsonStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    clickRowByText(".command-update-row", "json-command-update");
+
+    expect(text(".command-detail-section-heading")).toContain("Current item fields");
+    expect(text(".command-changed-fields")).toContain("modelValues");
+    expect(text(".command-json")).toContain('"modelValues": {');
+    expect(text(".command-json")).toContain('"domain": "passenger"');
+    expect(text(".command-json")).not.toContain('"modelValues": "{\\"');
   });
 
   it("reconciles selected COMMAND detail against the current visible results", () => {
@@ -1451,6 +1485,55 @@ describe("COMMAND State panel workbench", () => {
     expect((document.querySelector<HTMLInputElement>(".command-draft-snapshot")?.checked)).toBe(true);
     expect((document.querySelector<HTMLInputElement>('.command-draft-field-input[data-field-name="qty"]')?.value)).toBe("9");
     expect(button(".inject-command-button").disabled).toBe(false);
+  });
+
+  it("creates and injects a Workbench-only COMMAND update from wire context", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const wireStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const wireEvent = event("wire-event", { key: "wire-key" });
+    wireStore.append({
+      ...wireEvent,
+      captureSource: "wire",
+      listener: undefined,
+      subscription: wireEvent.subscription
+        ? { ...wireEvent.subscription, fields: undefined }
+        : undefined
+    });
+    renderPanel(root, undefined, { store: wireStore });
+    clickCommandState();
+
+    expect(button(".new-command-button").disabled).toBe(false);
+    button(".new-command-button").click();
+
+    const listenerTarget = document.querySelector<HTMLInputElement>(
+      'input[name="draft-execution-target"][value="captured-listener"]'
+    );
+    const workbenchTarget = document.querySelector<HTMLInputElement>(
+      'input[name="draft-execution-target"][value="workbench-only"]'
+    );
+    expect(listenerTarget?.disabled).toBe(true);
+    expect(workbenchTarget?.checked).toBe(true);
+    expect(text(".command-draft-context")).toContain("Workbench only");
+
+    input(".command-draft-command", "UPDATE");
+    input(".command-draft-key", "wire-key");
+    expect(button(".inject-command-button").disabled).toBe(false);
+
+    button(".inject-command-button").click();
+    await Promise.resolve();
+    await flushInteractionRender();
+
+    const synthetic = wireStore.list().find((entry) => entry.synthetic);
+    expect(synthetic?.raw).toMatchObject({
+      executionTarget: "workbench-only",
+      deliveredToPage: false,
+      serverContacted: false
+    });
+    expect(text(".reinjection-message")).toContain("added to Workbench only");
   });
 
   it("clears COMMAND state and reinjection context when events are cleared", () => {

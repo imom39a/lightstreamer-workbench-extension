@@ -316,8 +316,9 @@ describe("panel shell", () => {
     clickFirstEventRow();
     expect(text(".detail-pane")).toContain('"key": "alpha"');
     expect(text(".detail-pane")).toContain("Listener");
-    expect(detailSection("Changed fields").open).toBe(true);
-    expect(detailSection("All current fields").open).toBe(false);
+    expect(detailSection("Current item fields").open).toBe(true);
+    expect(document.querySelector('[data-detail-section="Changed fields"]')).toBeNull();
+    expect(document.querySelector('[data-detail-section="All current fields"]')).toBeNull();
     expect(detailSection("Context").open).toBe(false);
     openDetailSection("Context");
     expect(text(".detail-pane")).toContain('"synthetic": false');
@@ -1125,8 +1126,25 @@ describe("panel shell", () => {
     clickFirstEventRow();
 
     expect(document.querySelector(".detail-pane img")).toBeNull();
-    openDetailSection("All current fields");
+    openDetailSection("Current item fields");
     expect(text(".detail-pane")).toContain("<img src=x onerror=alert(1)>");
+  });
+
+  it("combines current item fields and formats JSON-looking string values for display", () => {
+    appendCommandUpdate(panel, "json-key", {
+      modelValues: JSON.stringify({ messageId: "6675531", messageType: "NEWS" })
+    });
+    clickFirstEventRow();
+
+    const fields = detailSection("Current item fields");
+    expect(fields.open).toBe(true);
+    expect(text(".detail-changed-fields")).toContain("command");
+    expect(text(".detail-changed-fields")).toContain("key");
+    expect(text(".detail-json")).toContain('"modelValues": {');
+    expect(text(".detail-json")).toContain('"messageType": "NEWS"');
+    expect(text(".detail-json")).not.toContain('"modelValues": "{\\"');
+    expect(document.querySelector('[data-detail-section="Changed fields"]')).toBeNull();
+    expect(document.querySelector('[data-detail-section="All current fields"]')).toBeNull();
   });
 
   it("copies the canonical selected event JSON and announces clipboard status", async () => {
@@ -1344,7 +1362,8 @@ describe("panel shell", () => {
       Array.from(editorRow?.querySelectorAll(".parsed-json-disclosure summary") ?? []).map(
         (summary) => summary.textContent
       )
-    ).toEqual(["Original captured JSON", "Draft formatted preview"]);
+    ).toEqual(["Original captured JSON"]);
+    expect(jsonInput?.value).toContain('"alarms": [');
 
     const editedModelValues = JSON.stringify({ alarms: [], baseItemKey: "DDE_HEALTH_EDITED" }, null, 2);
     input('.structured-json-input[data-field-name="modelValues"]', editedModelValues);
@@ -1358,6 +1377,31 @@ describe("panel shell", () => {
     const advanced = openAdvancedDraftJson();
     const advancedDraft = JSON.parse(advanced.value) as { fields: Record<string, unknown> };
     expect(advancedDraft.fields.modelValues).toBe(editedModelValues);
+  });
+
+  it("formats short JSON strings directly in their text editor without a draft preview", () => {
+    const modelValues = JSON.stringify({ messageId: "6675533", messageType: "TICKER" });
+    appendCommandUpdate(panel, "MESSENGER_TICKER", { modelValues });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+
+    const row = document.querySelector<HTMLTableRowElement>(
+      '.draft-field-diff tr[data-field-name="modelValues"]'
+    );
+    const jsonInput = row?.querySelector<HTMLTextAreaElement>(
+      '.structured-field-input[data-field-name="modelValues"]'
+    );
+
+    expect(row?.dataset.layout).toBe("scalar");
+    expect(jsonInput?.value).toContain("\n");
+    expect(jsonInput?.value).toContain('"messageType": "TICKER"');
+    expect(jsonInput?.classList).toContain("structured-json-inline-input");
+    expect(row?.querySelectorAll(".parsed-json-disclosure")).toHaveLength(1);
+    expect(row?.querySelector(".parsed-json-disclosure summary")?.textContent).toBe(
+      "Original captured JSON"
+    );
+    expect(row?.textContent).not.toContain("Draft formatted preview");
   });
 
   it("preserves focus on the selected execution target after its change rerender", () => {
@@ -1684,7 +1728,7 @@ describe("panel shell", () => {
     clickFirstEventRow();
 
     openDetailSection("Context");
-    detailSection("Changed fields").open = false;
+    detailSection("Current item fields").open = false;
     const selectedHeader = document.querySelector(".selected-event-header");
 
     appendCommandUpdate(panel, "beta", { qty: 2 });
@@ -1693,7 +1737,7 @@ describe("panel shell", () => {
     expect(document.querySelector(".selected-event-header")).toBe(selectedHeader);
     expect(text(".detail-pane")).toContain('"id": "event-1"');
     expect(detailSection("Context").open).toBe(true);
-    expect(detailSection("Changed fields").open).toBe(false);
+    expect(detailSection("Current item fields").open).toBe(false);
   });
 
   it("clears the cloned draft when selecting a different captured event", () => {

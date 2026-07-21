@@ -47,6 +47,7 @@ export type CommandItemContext = {
   subscriptionId?: string | null;
   mode?: string | null;
   listenerId?: string | null;
+  captureSource?: EventCaptureSource;
   itemName?: string | null;
   itemPosition?: number | null;
   fields?: string[] | null;
@@ -118,8 +119,8 @@ export function createDraftFromEvent(event: LightstreamerEventEnvelope): Reinjec
 }
 
 export function createNewCommandDraftFromContext(context: CommandItemContext): ReinjectionDraft | null {
-  const contextValidation = validateCommandItemContext(context);
-  if (!contextValidation.valid || !contextValidation.subscriptionId || !contextValidation.listenerId) {
+  const contextValidation = validateCommandItemContext(context, false);
+  if (!contextValidation.valid || !contextValidation.subscriptionId) {
     return null;
   }
 
@@ -130,9 +131,14 @@ export function createNewCommandDraftFromContext(context: CommandItemContext): R
   const fields = schemaFields(contextValidation.fields);
 
   return {
-    sourceEventId: newCommandSourceEventId(contextValidation.subscriptionId, contextValidation.listenerId, item),
+    sourceEventId: newCommandSourceEventId(
+      contextValidation.subscriptionId,
+      contextValidation.listenerId,
+      item
+    ),
     subscriptionMode: context.mode ?? "COMMAND",
-    captureSource: "listener",
+    captureSource:
+      context.captureSource ?? (contextValidation.listenerId ? "listener" : "wire"),
     target: {
       subscriptionId: contextValidation.subscriptionId,
       listenerId: contextValidation.listenerId
@@ -314,10 +320,12 @@ export function validateEditableDraft(draft: ReinjectionDraft | null): DraftVali
 export function validateNewCommandDraft(
   draft: ReinjectionDraft | null,
   state: CommandState,
-  context: CommandItemContext
+  context: CommandItemContext,
+  executionTarget: ReinjectionExecutionTarget = "captured-listener"
 ): NewCommandDraftValidationResult {
   const diagnostics: NewCommandDraftDiagnostic[] = [];
-  const contextValidation = validateCommandItemContext(context);
+  const requiresListener = executionTarget === "captured-listener";
+  const contextValidation = validateCommandItemContext(context, requiresListener);
 
   diagnostics.push(...contextValidation.diagnostics);
 
@@ -325,8 +333,10 @@ export function validateNewCommandDraft(
     diagnostics.push({
       severity: "error",
       code: "missing-context",
-      explanation: "New COMMAND updates must start from a captured COMMAND subscription, item, listener, and field schema.",
-      suggestion: "Select a captured COMMAND item update with an attached listener before creating a synthetic update."
+      explanation: "New COMMAND updates must start from a captured COMMAND subscription, item, and field schema.",
+      suggestion: requiresListener
+        ? "Select a captured COMMAND item update with an attached listener, or choose Workbench only."
+        : "Select a captured COMMAND item update before creating a synthetic update."
     });
     return toNewCommandDraftValidationResult(diagnostics);
   }
@@ -344,7 +354,7 @@ export function validateNewCommandDraft(
     });
   }
 
-  if (!draft.target.listenerId) {
+  if (requiresListener && !draft.target.listenerId) {
     diagnostics.push({
       severity: "error",
       code: "missing-context",
@@ -421,7 +431,10 @@ type ValidatedCommandItemContext = {
   diagnostics: NewCommandDraftDiagnostic[];
 };
 
-function validateCommandItemContext(context: CommandItemContext): ValidatedCommandItemContext {
+function validateCommandItemContext(
+  context: CommandItemContext,
+  requireListener = true
+): ValidatedCommandItemContext {
   const subscriptionId = nonEmptyString(context.subscriptionId);
   const listenerId = nonEmptyString(context.listenerId);
   const itemName = nonEmptyString(context.itemName);
@@ -443,7 +456,7 @@ function validateCommandItemContext(context: CommandItemContext): ValidatedComma
       suggestion: "Select a captured item from a COMMAND-mode subscription."
     });
   }
-  if (!listenerId) {
+  if (requireListener && !listenerId) {
     diagnostics.push(missingContextDiagnostic("captured listener target"));
   }
   if (!itemName && itemPosition === null) {
@@ -539,11 +552,11 @@ function toNewCommandDraftValidationResult(
 
 function newCommandSourceEventId(
   subscriptionId: string,
-  listenerId: string,
+  listenerId: string | null,
   item: EventItem
 ): string {
   const itemLabel = item.name ?? `position-${item.position ?? "unknown"}`;
-  return `new-command:${subscriptionId}:${listenerId}:${itemLabel}`;
+  return `new-command:${subscriptionId}:${listenerId ?? "workbench"}:${itemLabel}`;
 }
 
 function nonEmptyString(value: unknown): string | null {
