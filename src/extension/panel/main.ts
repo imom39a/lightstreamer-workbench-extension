@@ -634,6 +634,7 @@ export function renderPanel(
   let draftJsonText: string | null = null;
   let draftJsonError: string | null = null;
   let draftRenderVersion = 0;
+  let draftResultEventId: string | null = null;
   let detailCopyEventId: string | null = null;
   let detailCopyMessage: ReinjectionMessage | null = null;
   let workbenchSimulationSequence = 0;
@@ -1420,7 +1421,13 @@ export function renderPanel(
     }
     workspace.dataset.detailOpen = "true";
     detail.append(createSelectedEventHeader(event));
-    appendDraftSection(detail, event, draft?.sourceEventId === event.id ? draft : null);
+    appendDraftSection(
+      detail,
+      event,
+      draft && (draft.sourceEventId === event.id || draftResultEventId === event.id)
+        ? draft
+        : null
+    );
     const currentFields = event.update?.fields ?? {};
     const changedFieldNames = Object.keys(event.update?.changedFields ?? {});
     appendDetailSection(detail, "Current item fields", currentFields, {
@@ -2649,6 +2656,7 @@ export function renderPanel(
         return;
       }
       draft = nextDraft;
+      draftResultEventId = null;
       draftExecutionTarget = nextDraft.target.listenerId && bridgeReady
         ? "captured-listener"
         : "workbench-only";
@@ -2660,6 +2668,7 @@ export function renderPanel(
 
     if (draft?.provenance.source === "new-command" && !commandDraftMatchesContext(draft, context)) {
       draft = null;
+      draftResultEventId = null;
       reinjectionMessage = null;
     }
 
@@ -2892,6 +2901,7 @@ export function renderPanel(
 
     if (!commandDraftMatchesContext(currentDraft, context)) {
       draft = null;
+      draftResultEventId = null;
       reinjectionMessage = {
         kind: "error",
         text: "Draft context changed. Create a new COMMAND update for the selected item before injecting."
@@ -3071,6 +3081,7 @@ export function renderPanel(
         draftJsonText = null;
         draftJsonError = null;
       }
+      draftResultEventId = null;
       reinjectionMessage = null;
       resetTimelineRenderLimit();
       resetCommandListWindows();
@@ -3210,6 +3221,7 @@ export function renderPanel(
       selectedEventId = selectedEvent.id;
       selectedPinned = true;
       draft = nextDraft;
+      draftResultEventId = null;
       draftEditing = false;
       draftJsonText = formatDraftJson(nextDraft);
       draftJsonError = null;
@@ -3936,10 +3948,7 @@ export function renderPanel(
         text: `${actionMode === "source" ? "Source clone" : "Edited draft"} added to Workbench only. The inspected page was not reached.`
       };
       renderEventForDraft(currentDraft, true);
-      resolveMaybe(
-        store.append(createSyntheticEventFromDraft(currentDraft, result, executionTarget)),
-        () => undefined
-      );
+      appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
       return;
     }
 
@@ -3957,10 +3966,7 @@ export function renderPanel(
         text: `${actionMode === "source" ? "Source clone" : "Edited draft"} delivered to the original app listener. The inspected page was reached.`
       };
       renderEventForDraft(currentDraft, true);
-      resolveMaybe(
-        store.append(createSyntheticEventFromDraft(currentDraft, result, executionTarget)),
-        () => undefined
-      );
+      appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
       return;
     }
 
@@ -3968,15 +3974,47 @@ export function renderPanel(
     renderEventForDraft(currentDraft, true);
   }
 
+  function appendAndSelectSyntheticDraftResult(
+    currentDraft: ReinjectionDraft,
+    result: ReinjectionResult,
+    executionTarget: ReinjectionExecutionTarget
+  ): void {
+    const syntheticEvent = createSyntheticEventFromDraft(
+      currentDraft,
+      result,
+      executionTarget
+    );
+    resolveMaybe(store.append(syntheticEvent), (appendedEvent) => {
+      draftResultEventId = appendedEvent.id;
+      selectedEventId = appendedEvent.id;
+      selectedTimelineEvent = appendedEvent;
+      selectedPinned = true;
+      timelineDetailOpen = true;
+      timelineWindowOffset = 0;
+      timelineHistoryAnchor = 0;
+      timelineSelectionNeedsFilterReconciliation = false;
+      // Reveal the explicit action result once, then pin it against passive live traffic.
+      timelineFollowLatest = true;
+      renderFeed({}, () => {
+        if (selectedEventId === appendedEvent.id) {
+          timelineFollowLatest = false;
+        }
+      });
+    });
+  }
+
   function renderEventForDraft(currentDraft: ReinjectionDraft, preservePaneState = false): void {
     const renderVersion = ++draftRenderVersion;
-    const sourceEventId = currentDraft.sourceEventId;
-    resolveMaybe(selectedEventForDraft(currentDraft), (event) => {
+    const detailEventId =
+      selectedEventId === draftResultEventId && draftResultEventId
+        ? draftResultEventId
+        : currentDraft.sourceEventId;
+    resolveMaybe(selectedEventForDraft(detailEventId), (event) => {
       if (
         renderVersion !== draftRenderVersion ||
         !event ||
-        event.id !== sourceEventId ||
-        selectedEventId !== sourceEventId ||
+        event.id !== detailEventId ||
+        selectedEventId !== detailEventId ||
         !timelineDetailOpen ||
         !panelVisible
       ) {
@@ -3987,21 +4025,15 @@ export function renderPanel(
     });
   }
 
-  function selectedEventForDraft(
-    currentDraft: ReinjectionDraft
-  ): MaybePromise<LightstreamerEventEnvelope | null> {
-    const sourceEventId = currentDraft.sourceEventId;
-    if (!sourceEventId) {
-      return null;
-    }
+  function selectedEventForDraft(eventId: string): MaybePromise<LightstreamerEventEnvelope | null> {
     const cached =
-      (selectedTimelineEvent?.id === sourceEventId ? selectedTimelineEvent : null) ??
-      timelineEvents.find((event) => event.id === sourceEventId) ??
+      (selectedTimelineEvent?.id === eventId ? selectedTimelineEvent : null) ??
+      timelineEvents.find((event) => event.id === eventId) ??
       null;
     if (cached) {
       return cached;
     }
-    return store.getEventById(sourceEventId);
+    return store.getEventById(eventId);
   }
 
   function clearDraftForSelection(nextEventId: string | null): void {
@@ -4009,11 +4041,16 @@ export function renderPanel(
       detailCopyEventId = null;
       detailCopyMessage = null;
     }
-    if (!draft || draft.sourceEventId === nextEventId) {
+    if (!draft) {
+      draftResultEventId = null;
+      return;
+    }
+    if (draft.sourceEventId === nextEventId || draftResultEventId === nextEventId) {
       return;
     }
     draftRenderVersion += 1;
     draft = null;
+    draftResultEventId = null;
     draftEditing = false;
     draftJsonText = null;
     draftJsonError = null;

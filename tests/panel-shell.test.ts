@@ -1277,6 +1277,19 @@ describe("panel shell", () => {
       "Edited draft added to Workbench only. The inspected page was not reached."
     );
     expect(text(".event-count")).toBe("3");
+    const selectedResult = document.querySelector<HTMLButtonElement>(
+      '.event-row[data-selected="true"]'
+    );
+    expect(selectedResult?.dataset.synthetic).toBe("true");
+    expect(text(".selected-event-id")).toBe(selectedResult?.dataset.eventId);
+    expect(detailSection("Current item fields").textContent).toContain('"qty": "12"');
+    const provenance = openDetailSection("Synthetic provenance");
+    expect(provenance.textContent).toContain(
+      '"executionTarget": "workbench-only"'
+    );
+    expect(provenance.textContent).toContain(
+      '"deliveredToPage": false'
+    );
   });
 
   it("shows source context after cloning without changing the selected row", () => {
@@ -1885,10 +1898,16 @@ describe("panel shell", () => {
     expect(Array.from(document.querySelectorAll(".event-marker")).map((marker) => marker.textContent)).toContain(
       "synthetic live"
     );
-    expect(document.querySelectorAll<HTMLButtonElement>(".event-row")[0].dataset.selected).toBe("true");
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '.event-row[data-event-id="synthetic-request-1"]'
+      )?.dataset.selected
+    ).toBe("true");
+    expect(text(".selected-event-id")).toBe("synthetic-request-1");
+    expect(detailSection("Current item fields").textContent).toContain('"qty": 12');
     openDetailSection("Context");
-    expect(text(".detail-pane")).toContain('"id": "event-1"');
-    expect(text(".detail-pane")).toContain('"source": "server"');
+    expect(text(".detail-pane")).toContain('"id": "synthetic-request-1"');
+    expect(text(".detail-pane")).toContain('"source": "synthetic"');
   });
 
   it("shows stale-target copy without appending a synthetic row", async () => {

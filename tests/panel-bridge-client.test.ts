@@ -150,6 +150,61 @@ describe("panel bridge client", () => {
     });
   });
 
+  it("preserves an edited JSON-string field and its changed-field semantics across the panel bridge", async () => {
+    const port = createFakePort();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+    const resultPromise = bridge.reinjectDraft(createJsonMutationDraft());
+    const request = port.postedMessages.find(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+    ) as {
+      requestId: string;
+      draft: {
+        fields: Record<string, unknown>;
+        changedFields: Record<string, unknown>;
+      };
+    };
+
+    expect(typeof request.draft.fields.modelValues).toBe("string");
+    expect(JSON.parse(String(request.draft.fields.modelValues))).toMatchObject({
+      passenger: { selected: true, priority: false }
+    });
+    expect(Object.keys(request.draft.changedFields)).toEqual(["modelValues"]);
+    expect(JSON.parse(String(request.draft.changedFields.modelValues))).toMatchObject({
+      passenger: { selected: true }
+    });
+
+    port.messageListeners[0]({
+      type: PANEL_REINJECT_RESULT,
+      result: {
+        requestId: request.requestId,
+        ok: true,
+        status: "success",
+        timestamp: 234
+      }
+    });
+    await expect(resultPromise).resolves.toMatchObject({
+      requestId: request.requestId,
+      status: "success"
+    });
+  });
+
   it("serializes a non-COMMAND listener draft with null command and key", async () => {
     const port = createFakePort();
 
@@ -233,6 +288,61 @@ function createValidDraft(): ReinjectionDraft {
     },
     originalChangedFields: {
       price: 100
+    },
+    isSnapshot: false,
+    sourceIsSnapshot: false,
+    manualChangedFieldsOverride: false,
+    provenance: {
+      source: "clone",
+      sourceEventKind: "item-update",
+      sourceSynthetic: false
+    }
+  };
+}
+
+function createJsonMutationDraft(): ReinjectionDraft {
+  const sourceModelValues = JSON.stringify({
+    passenger: { selected: false, priority: false }
+  });
+  const modelValues = JSON.stringify({
+    passenger: { selected: true, priority: false }
+  });
+  return {
+    sourceEventId: "event-json",
+    subscriptionMode: "COMMAND",
+    captureSource: "listener",
+    target: {
+      subscriptionId: "subscription-1",
+      listenerId: "listener-1"
+    },
+    item: {
+      name: "customerDetail",
+      position: 1
+    },
+    command: "UPDATE",
+    key: "customer-1",
+    sourceCommand: "UPDATE",
+    sourceKey: "customer-1",
+    fields: {
+      command: "UPDATE",
+      key: "customer-1",
+      modelId: "CUSTOMER_INIT_INFO",
+      modelValues
+    },
+    sourceFields: {
+      command: "UPDATE",
+      key: "customer-1",
+      modelId: "CUSTOMER_INIT_INFO",
+      modelValues: sourceModelValues
+    },
+    changedFields: {
+      modelValues
+    },
+    originalChangedFields: {
+      command: "UPDATE",
+      key: "customer-1",
+      modelId: "CUSTOMER_INIT_INFO",
+      modelValues: sourceModelValues
     },
     isSnapshot: false,
     sourceIsSnapshot: false,
