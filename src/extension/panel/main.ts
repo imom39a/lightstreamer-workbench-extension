@@ -86,6 +86,7 @@ type DraftJsonParseResult = {
   error: string | null;
 };
 type ActiveView = "timeline" | "command";
+type DraftSurface = "timeline" | "command-replay" | "new-command";
 type CommandRowSelection = {
   subscriptionId: string;
   itemId: string;
@@ -635,6 +636,7 @@ export function renderPanel(
   let draftJsonError: string | null = null;
   let draftRenderVersion = 0;
   let draftResultEventId: string | null = null;
+  let draftSurface: DraftSurface | null = null;
   let detailCopyEventId: string | null = null;
   let detailCopyMessage: ReinjectionMessage | null = null;
   let workbenchSimulationSequence = 0;
@@ -1708,17 +1710,25 @@ export function renderPanel(
   ): boolean {
     if (
       !options.passiveStoreUpdate ||
-      draft?.provenance.source !== "new-command" ||
-      !commandDetailPane.querySelector(".command-draft-controls") ||
+      !draft ||
+      !commandDetailPane.querySelector(".command-draft-controls, .draft-controls") ||
       commandDetailPane.dataset.detailIdentity !==
         commandDetailIdentity(subscription, item, selectedCommandKey, selectedCommandUpdateEventId)
     ) {
       return false;
     }
 
-    return commandDraftMatchesContext(
-      draft,
-      createCommandItemContext(subscription, item, commandContextEvents)
+    if (draftSurface === "new-command" && draft.provenance.source === "new-command") {
+      return commandDraftMatchesContext(
+        draft,
+        createCommandItemContext(subscription, item, commandContextEvents)
+      );
+    }
+
+    return (
+      draftSurface === "command-replay" &&
+      (selectedCommandUpdateEventId === draft.sourceEventId ||
+        selectedCommandUpdateEventId === draftResultEventId)
     );
   }
 
@@ -1842,6 +1852,7 @@ export function renderPanel(
           selected.item.itemId === entry.item.itemId
       );
       itemButton.addEventListener("click", () => {
+        clearCommandDraftForSelection(null);
         selectedCommandItem = {
           subscriptionId: entry.subscription.subscriptionId,
           itemId: entry.item.itemId
@@ -1950,6 +1961,7 @@ export function renderPanel(
       );
       button.addEventListener("click", () => {
         const nextSelection = commandSelectionForKey(row);
+        clearCommandDraftForSelection(null);
         selectedCommandUpdateEventId = null;
         selectedCommandKey = nextSelection;
         resetCommandLifecycleWindow();
@@ -1997,6 +2009,7 @@ export function renderPanel(
       selectedCommandUpdateEventId &&
       !selectedLifecycle.some((entry) => entry.eventId === selectedCommandUpdateEventId)
     ) {
+      clearCommandDraftForSelection(null);
       selectedCommandUpdateEventId = null;
     }
 
@@ -2039,6 +2052,7 @@ export function renderPanel(
         updateRow.dataset.eventId = entry.eventId;
         updateRow.dataset.selected = String(selectedCommandUpdateEventId === entry.eventId);
         updateRow.addEventListener("click", () => {
+          clearCommandDraftForSelection(entry.eventId);
           selectedCommandUpdateEventId = entry.eventId;
           commandDetailOpen = true;
           renderCommandState();
@@ -2113,6 +2127,7 @@ export function renderPanel(
           `${diagnostic.key ?? "unknown key"}, diagnostic ${diagnostic.code}, event ${diagnostic.eventId ?? "unknown"}`
         );
         result.addEventListener("click", () => {
+          clearCommandDraftForSelection(null);
           selectedCommandUpdateEventId = null;
           selectedCommandKey = commandSelectionForDiagnostic(item, diagnostic);
           resetCommandLifecycleWindow();
@@ -2147,7 +2162,14 @@ export function renderPanel(
             }
           })
         : null;
-    commandCurrentTable.replaceChildren(...(keyNavigation ? [keyNavigation, header, rows] : [header, rows]));
+    const newCommandAction = createNewCommandAction(
+      createCommandItemContext(subscription, item, commandContextEvents)
+    );
+    commandCurrentTable.replaceChildren(
+      ...(keyNavigation
+        ? [newCommandAction, keyNavigation, header, rows]
+        : [newCommandAction, header, rows])
+    );
     if (emptyRows) {
       commandCurrentTable.append(emptyRows);
     }
@@ -2269,6 +2291,26 @@ export function renderPanel(
     commandWindowLifecycleLength = 0;
   }
 
+  function clearCommandDraftForSelection(nextEventId: string | null): void {
+    if (!draft || (draftSurface !== "command-replay" && draftSurface !== "new-command")) {
+      return;
+    }
+    if (
+      draftSurface === "command-replay" &&
+      (draft.sourceEventId === nextEventId || draftResultEventId === nextEventId)
+    ) {
+      return;
+    }
+    draftRenderVersion += 1;
+    draft = null;
+    draftSurface = null;
+    draftResultEventId = null;
+    draftEditing = false;
+    draftJsonText = null;
+    draftJsonError = null;
+    reinjectionMessage = null;
+  }
+
   function renderCommandDetail(
     subscription: CommandSubscriptionGroup,
     item: CommandItemGroup,
@@ -2298,6 +2340,11 @@ export function renderPanel(
     };
     const context = createCommandItemContext(subscription, item, commandContextEvents);
 
+    if (renderActiveNewCommandDraft(commandDetailPane, context, item, commandState, collapseCommandDetail)) {
+      restorePaneState(commandDetailPane, paneState);
+      return;
+    }
+
     if (!selectedCommandKey) {
       commandDetailPane.append(
         createDetailPaneHeader("COMMAND detail", collapseCommandDetail),
@@ -2307,7 +2354,6 @@ export function renderPanel(
           "Select a key or update to inspect its COMMAND details."
         )
       );
-      appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
       restorePaneState(commandDetailPane, paneState);
       return;
     }
@@ -2318,14 +2364,12 @@ export function renderPanel(
         createDetailPaneHeader("COMMAND detail", collapseCommandDetail),
         createTextElement("p", "command-empty-body", "Selected COMMAND key is no longer available.")
       );
-      appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
       restorePaneState(commandDetailPane, paneState);
       return;
     }
 
     if (target.kind === "diagnostic") {
       renderCommandDiagnosticDetail(target.diagnostic, collapseCommandDetail);
-      appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
       restorePaneState(commandDetailPane, paneState);
       return;
     }
@@ -2334,7 +2378,6 @@ export function renderPanel(
       const update = target.row.lifecycle.find((entry) => entry.eventId === selectedCommandUpdateEventId);
       if (update) {
         renderCommandUpdateDetail(target, update, collapseCommandDetail);
-        appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
         restorePaneState(commandDetailPane, paneState);
         return;
       }
@@ -2364,8 +2407,9 @@ export function renderPanel(
         )
       );
 
+      appendLatestCommandReplay(row.lifecycle);
+
       appendCommandLifecycle(row.lifecycle);
-      appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
       restorePaneState(commandDetailPane, paneState);
       return;
     }
@@ -2385,8 +2429,8 @@ export function renderPanel(
     );
     commandDetailPane.append(summary);
 
+    appendLatestCommandReplay(row.lifecycle);
     appendCommandLifecycle(row.lifecycle);
-    appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
     restorePaneState(commandDetailPane, paneState);
   }
 
@@ -2520,6 +2564,8 @@ export function renderPanel(
     }
     commandDetailPane.append(summary);
 
+    appendCommandReplay(entry.eventId);
+
     commandDetailPane.append(
       createCommandFieldsSection(
         entry.fields,
@@ -2527,6 +2573,27 @@ export function renderPanel(
         "The current item values at this update. Changed field names are shown once above the payload."
       )
     );
+  }
+
+  function appendLatestCommandReplay(lifecycle: readonly CommandLifecycleEntry[]): void {
+    const latest = lifecycle[lifecycle.length - 1];
+    if (latest) {
+      appendCommandReplay(latest.eventId);
+    }
+  }
+
+  function appendCommandReplay(eventId: string): void {
+    const selectedEvent = commandContextEvents.find((event) => event.id === eventId) ?? null;
+    if (!selectedEvent) {
+      return;
+    }
+    const currentDraft =
+      draftSurface === "command-replay" &&
+      draft &&
+      (draft.sourceEventId === eventId || draftResultEventId === eventId)
+        ? draft
+        : null;
+    appendDraftSection(commandDetailPane, selectedEvent, currentDraft, "command");
   }
 
   function createCommandFieldsSection(
@@ -2635,20 +2702,15 @@ export function renderPanel(
     commandDetailPane.append(section);
   }
 
-  function appendNewCommandDraftSection(
-    parent: HTMLElement,
-    context: CommandItemContext,
-    item: CommandItemGroup,
-    commandState: CommandState
-  ): void {
+  function createNewCommandAction(context: CommandItemContext): HTMLElement {
     const section = document.createElement("section");
-    section.className = "new-command-editor";
-    section.setAttribute("aria-label", "New synthetic COMMAND update");
+    section.className = "new-command-action";
+    section.setAttribute("aria-label", "Create a new synthetic COMMAND key");
 
     const createButton = document.createElement("button");
     createButton.className = "new-command-button";
     createButton.type = "button";
-    createButton.textContent = "New COMMAND update";
+    createButton.textContent = "New COMMAND key";
     createButton.disabled = !createNewCommandDraftFromContext(context);
     createButton.addEventListener("click", () => {
       const nextDraft = createNewCommandDraftFromContext(context);
@@ -2656,30 +2718,57 @@ export function renderPanel(
         return;
       }
       draft = nextDraft;
+      draftSurface = "new-command";
       draftResultEventId = null;
+      draftEditing = false;
+      draftJsonText = null;
+      draftJsonError = null;
       draftExecutionTarget = nextDraft.target.listenerId && bridgeReady
         ? "captured-listener"
         : "workbench-only";
       reinjectionMessage = null;
+      commandDetailOpen = true;
       renderCommandState();
     });
 
-    section.append(createButton);
+    section.append(
+      createButton,
+      createTextElement(
+        "span",
+        "new-command-helper",
+        "Create a key that does not exist in the selected item."
+      )
+    );
+    return section;
+  }
 
-    if (draft?.provenance.source === "new-command" && !commandDraftMatchesContext(draft, context)) {
+  function renderActiveNewCommandDraft(
+    parent: HTMLElement,
+    context: CommandItemContext,
+    item: CommandItemGroup,
+    commandState: CommandState,
+    onCollapse: () => void
+  ): boolean {
+    if (draftSurface !== "new-command" || draft?.provenance.source !== "new-command") {
+      return false;
+    }
+
+    if (!commandDraftMatchesContext(draft, context)) {
       draft = null;
+      draftSurface = null;
       draftResultEventId = null;
       reinjectionMessage = null;
+      return false;
     }
 
-    if (!draft || draft.provenance.source !== "new-command") {
-      parent.append(section);
-      return;
-    }
-
+    parent.append(createDetailPaneHeader("New COMMAND key", onCollapse));
+    const section = document.createElement("section");
+    section.className = "new-command-editor";
+    section.setAttribute("aria-label", "New synthetic COMMAND key editor");
     section.append(createCommandDraftContext(context));
     section.append(createCommandDraftControls(draft, context, item, commandState));
     parent.append(section);
+    return true;
   }
 
   function createCommandDraftControls(
@@ -2901,6 +2990,7 @@ export function renderPanel(
 
     if (!commandDraftMatchesContext(currentDraft, context)) {
       draft = null;
+      draftSurface = null;
       draftResultEventId = null;
       reinjectionMessage = {
         kind: "error",
@@ -3075,12 +3165,11 @@ export function renderPanel(
       draftRenderVersion += 1;
       resetCommandLifecycleWindow();
       commandSearchTextCache.keys.clear();
-      if (draft?.provenance.source !== "new-command") {
-        draft = null;
-        draftEditing = false;
-        draftJsonText = null;
-        draftJsonError = null;
-      }
+      draft = null;
+      draftSurface = null;
+      draftEditing = false;
+      draftJsonText = null;
+      draftJsonError = null;
       draftResultEventId = null;
       reinjectionMessage = null;
       resetTimelineRenderLimit();
@@ -3201,7 +3290,8 @@ export function renderPanel(
   function appendDraftSection(
     parent: HTMLElement,
     selectedEvent: LightstreamerEventEnvelope,
-    currentDraft: ReinjectionDraft | null
+    currentDraft: ReinjectionDraft | null,
+    surface: "timeline" | "command" = "timeline"
   ): void {
     const section = document.createElement("section");
     section.className = "replay-card draft-editor";
@@ -3218,9 +3308,8 @@ export function renderPanel(
       if (!nextDraft || !validateEditableDraft(nextDraft).valid) {
         return;
       }
-      selectedEventId = selectedEvent.id;
-      selectedPinned = true;
       draft = nextDraft;
+      draftSurface = surface === "command" ? "command-replay" : "timeline";
       draftResultEventId = null;
       draftEditing = false;
       draftJsonText = formatDraftJson(nextDraft);
@@ -3229,7 +3318,15 @@ export function renderPanel(
         ? "captured-listener"
         : "workbench-only";
       reinjectionMessage = null;
-      renderDetail(selectedEvent);
+      if (surface === "command") {
+        selectedCommandUpdateEventId = selectedEvent.id;
+        commandDetailOpen = true;
+        renderCommandState({ preservePaneState: true });
+      } else {
+        selectedEventId = selectedEvent.id;
+        selectedPinned = true;
+        renderDetail(selectedEvent);
+      }
     });
     section.append(cloneButton);
 
@@ -3294,7 +3391,7 @@ export function renderPanel(
       draftJsonText = draftJsonText ?? formatDraftJson(draft ?? currentDraft);
       draftJsonError = null;
       reinjectionMessage = null;
-      renderEventForDraft(draft ?? currentDraft, true);
+      renderDraftSurface(draft ?? currentDraft, true);
     });
     actionBar.append(reinjectButton, mutateButton);
     section.append(actionBar);
@@ -3372,7 +3469,7 @@ export function renderPanel(
       draftJsonText = formatDraftJson(draft);
       draftJsonError = null;
       reinjectionMessage = null;
-      renderEventForDraft(draft, true);
+      renderDraftSurface(draft, true);
     });
 
     const cancelButton = document.createElement("button");
@@ -3384,7 +3481,7 @@ export function renderPanel(
       draftEditing = false;
       draftJsonError = null;
       draftJsonText = formatDraftJson(draft ?? currentDraft);
-      renderEventForDraft(draft ?? currentDraft, true);
+      renderDraftSurface(draft ?? currentDraft, true);
     });
     editorActions.append(resetButton, cancelButton);
     controls.append(editorActions);
@@ -3485,7 +3582,7 @@ export function renderPanel(
         draftEditing = false;
         draftJsonError = null;
         draftJsonText = formatDraftJson(draft ?? currentDraft);
-        renderEventForDraft(draft ?? currentDraft, true);
+        renderDraftSurface(draft ?? currentDraft, true);
         return;
       }
       if (
@@ -3839,7 +3936,7 @@ export function renderPanel(
     draftJsonText = formatDraftJson(nextDraft);
     draftJsonError = null;
     reinjectionMessage = null;
-    renderEventForDraft(nextDraft, true);
+    renderDraftSurface(nextDraft, true);
   }
 
   function createDraftExecutionTargets(
@@ -3898,7 +3995,7 @@ export function renderPanel(
         if (onTargetChange) {
           onTargetChange(choice.value);
         } else {
-          renderEventForDraft(currentDraft, true);
+          renderDraftSurface(currentDraft, true);
         }
       });
       const copy = document.createElement("span");
@@ -3932,7 +4029,7 @@ export function renderPanel(
 
     reinjectionPending = true;
     reinjectionMessage = null;
-    renderEventForDraft(currentDraft, true);
+    renderDraftSurface(currentDraft, true);
 
     if (executionTarget === "workbench-only") {
       const timestamp = Date.now();
@@ -3947,7 +4044,7 @@ export function renderPanel(
         kind: "success",
         text: `${actionMode === "source" ? "Source clone" : "Edited draft"} added to Workbench only. The inspected page was not reached.`
       };
-      renderEventForDraft(currentDraft, true);
+      renderDraftSurface(currentDraft, true);
       appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
       return;
     }
@@ -3965,13 +4062,13 @@ export function renderPanel(
         kind: "success",
         text: `${actionMode === "source" ? "Source clone" : "Edited draft"} delivered to the original app listener. The inspected page was reached.`
       };
-      renderEventForDraft(currentDraft, true);
+      renderDraftSurface(currentDraft, true);
       appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
       return;
     }
 
     reinjectionMessage = createFailureMessage(result);
-    renderEventForDraft(currentDraft, true);
+    renderDraftSurface(currentDraft, true);
   }
 
   function appendAndSelectSyntheticDraftResult(
@@ -3986,6 +4083,13 @@ export function renderPanel(
     );
     resolveMaybe(store.append(syntheticEvent), (appendedEvent) => {
       draftResultEventId = appendedEvent.id;
+      if (draftSurface === "command-replay") {
+        selectedCommandKey = commandSelectionForSyntheticDraft(currentDraft);
+        selectedCommandUpdateEventId = appendedEvent.id;
+        commandDetailOpen = true;
+        renderCommandState({ preservePaneState: true });
+        return;
+      }
       selectedEventId = appendedEvent.id;
       selectedTimelineEvent = appendedEvent;
       selectedPinned = true;
@@ -4001,6 +4105,33 @@ export function renderPanel(
         }
       });
     });
+  }
+
+  function commandSelectionForSyntheticDraft(currentDraft: ReinjectionDraft): CommandRowSelection {
+    return {
+      subscriptionId: currentDraft.target.subscriptionId ?? "",
+      itemId: commandDraftItemId(currentDraft),
+      key: currentDraft.key ?? currentDraft.sourceKey ?? "",
+      status: currentDraft.command === "DELETE" ? "deleted" : "active"
+    };
+  }
+
+  function commandDraftItemId(currentDraft: ReinjectionDraft): string {
+    const matchingItem = flattenCommandItems(commandStateIndex.snapshot()).find(
+      ({ subscription, item }) =>
+        subscription.subscriptionId === currentDraft.target.subscriptionId &&
+        item.itemName === (currentDraft.item.name ?? null) &&
+        item.itemPosition === (currentDraft.item.position ?? null)
+    );
+    return matchingItem?.item.itemId ?? selectedCommandItem?.itemId ?? "";
+  }
+
+  function renderDraftSurface(currentDraft: ReinjectionDraft, preservePaneState = false): void {
+    if (draftSurface === "command-replay") {
+      renderCommandState({ preservePaneState });
+      return;
+    }
+    renderEventForDraft(currentDraft, preservePaneState);
   }
 
   function renderEventForDraft(currentDraft: ReinjectionDraft, preservePaneState = false): void {
@@ -4042,6 +4173,7 @@ export function renderPanel(
       detailCopyMessage = null;
     }
     if (!draft) {
+      draftSurface = null;
       draftResultEventId = null;
       return;
     }
@@ -4050,6 +4182,7 @@ export function renderPanel(
     }
     draftRenderVersion += 1;
     draft = null;
+    draftSurface = null;
     draftResultEventId = null;
     draftEditing = false;
     draftJsonText = null;
