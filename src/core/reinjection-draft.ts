@@ -5,15 +5,21 @@ import {
   type CommandState
 } from "./command-state";
 import {
+  type EventCaptureSource,
   type EventItem,
   type LightstreamerEventEnvelope
 } from "./event-envelope";
 
 export type DraftFieldValue = string | number | boolean | null;
 export type DraftFields = Record<string, DraftFieldValue>;
+export type ReinjectionExecutionTarget = "captured-listener" | "workbench-only";
 
 export type ReinjectionDraft = {
   sourceEventId: string;
+  /** Subscription semantics captured with the source event. */
+  subscriptionMode?: string | null;
+  /** Where the source event was observed; retained for honest replay provenance. */
+  captureSource?: EventCaptureSource;
   target: {
     subscriptionId: string | null;
     listenerId: string | null;
@@ -21,11 +27,14 @@ export type ReinjectionDraft = {
   item: EventItem;
   command: string | null;
   key: string | null;
+  sourceCommand: string | null;
+  sourceKey: string | null;
   fields: DraftFields;
   sourceFields: DraftFields;
   changedFields: DraftFields;
   originalChangedFields: DraftFields;
   isSnapshot: boolean;
+  sourceIsSnapshot: boolean;
   manualChangedFieldsOverride: boolean;
   provenance: {
     source: "clone" | "new-command";
@@ -63,6 +72,10 @@ export type DraftValidationResult = {
   errors: string[];
 };
 
+export type DraftExecutionValidationOptions = {
+  bridgeAvailable?: boolean;
+};
+
 export function createDraftFromEvent(event: LightstreamerEventEnvelope): ReinjectionDraft | null {
   if (event.kind !== "item-update") {
     return null;
@@ -75,6 +88,8 @@ export function createDraftFromEvent(event: LightstreamerEventEnvelope): Reinjec
 
   return {
     sourceEventId: event.id,
+    subscriptionMode: event.subscription?.mode ?? null,
+    captureSource: event.captureSource ?? "listener",
     target: {
       subscriptionId: event.subscription?.id ?? null,
       listenerId: event.listener?.id ?? null
@@ -85,11 +100,14 @@ export function createDraftFromEvent(event: LightstreamerEventEnvelope): Reinjec
     },
     command,
     key,
+    sourceCommand: command,
+    sourceKey: key,
     fields,
     sourceFields: { ...fields },
     changedFields: { ...changedFields },
     originalChangedFields: { ...changedFields },
     isSnapshot: Boolean(event.update?.isSnapshot),
+    sourceIsSnapshot: Boolean(event.update?.isSnapshot),
     manualChangedFieldsOverride: false,
     provenance: {
       source: "clone",
@@ -113,6 +131,8 @@ export function createNewCommandDraftFromContext(context: CommandItemContext): R
 
   return {
     sourceEventId: newCommandSourceEventId(contextValidation.subscriptionId, contextValidation.listenerId, item),
+    subscriptionMode: context.mode ?? "COMMAND",
+    captureSource: "listener",
     target: {
       subscriptionId: contextValidation.subscriptionId,
       listenerId: contextValidation.listenerId
@@ -120,11 +140,14 @@ export function createNewCommandDraftFromContext(context: CommandItemContext): R
     item,
     command: null,
     key: null,
+    sourceCommand: null,
+    sourceKey: null,
     fields,
     sourceFields: { ...fields },
     changedFields: {},
     originalChangedFields: {},
     isSnapshot: false,
+    sourceIsSnapshot: false,
     manualChangedFieldsOverride: false,
     provenance: {
       source: "new-command",
@@ -203,21 +226,52 @@ export function deriveChangedFields(sourceFields: DraftFields, draftFields: Draf
   return changedFields;
 }
 
+/**
+ * Creates an execution copy of the captured source, independent of any edits
+ * currently held by the staged draft.
+ */
+export function createSourceReplayDraft(draft: ReinjectionDraft): ReinjectionDraft {
+  return {
+    ...draft,
+    command: draft.sourceCommand,
+    key: draft.sourceKey,
+    fields: { ...draft.sourceFields },
+    changedFields: { ...draft.originalChangedFields },
+    isSnapshot: draft.sourceIsSnapshot,
+    manualChangedFieldsOverride: false
+  };
+}
+
 export function validateReinjectionDraft(draft: ReinjectionDraft | null): DraftValidationResult {
+  return validateDraftForExecutionTarget(draft, "captured-listener");
+}
+
+export function validateDraftForExecutionTarget(
+  draft: ReinjectionDraft | null,
+  executionTarget: ReinjectionExecutionTarget,
+  options: DraftExecutionValidationOptions = {}
+): DraftValidationResult {
   const result = validateEditableDraft(draft);
   if (!draft) {
     return result;
   }
 
   const errors = [...result.errors];
-  if (!draft.target.listenerId) {
-    errors.push("Missing original listener target.");
+  if (executionTarget === "captured-listener") {
+    if (!draft.target.listenerId) {
+      errors.push("Missing original listener target.");
+    }
+    if (options.bridgeAvailable === false) {
+      errors.push("Original listener bridge is unavailable.");
+    }
   }
-  if (!draft.command) {
-    errors.push("Missing COMMAND command value.");
-  }
-  if (!draft.key) {
-    errors.push("Missing COMMAND key value.");
+  if (draft.subscriptionMode === "COMMAND") {
+    if (!draft.command) {
+      errors.push("Missing COMMAND command value.");
+    }
+    if (!draft.key) {
+      errors.push("Missing COMMAND key value.");
+    }
   }
 
   return {
@@ -324,8 +378,31 @@ function refreshChangedFields(draft: ReinjectionDraft): ReinjectionDraft {
 
   return {
     ...draft,
-    changedFields: deriveChangedFields(draft.sourceFields, draft.fields)
+    changedFields: draftFieldsMatchSource(draft)
+      ? { ...draft.originalChangedFields }
+      : deriveChangedFields(draft.sourceFields, draft.fields)
   };
+}
+
+export function draftFieldsMatchSource(draft: ReinjectionDraft): boolean {
+  return (
+    draft.command === draft.sourceCommand &&
+    draft.key === draft.sourceKey &&
+    draft.isSnapshot === draft.sourceIsSnapshot &&
+    fieldRecordsEqual(draft.fields, draft.sourceFields)
+  );
+}
+
+function fieldRecordsEqual(left: DraftFields, right: DraftFields): boolean {
+  const leftEntries = Object.entries(left);
+  const rightKeys = Object.keys(right);
+  return (
+    leftEntries.length === rightKeys.length &&
+    leftEntries.every(
+      ([fieldName, value]) =>
+        Object.prototype.hasOwnProperty.call(right, fieldName) && Object.is(value, right[fieldName])
+    )
+  );
 }
 
 function normalizeFields(

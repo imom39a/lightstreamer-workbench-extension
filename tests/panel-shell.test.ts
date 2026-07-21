@@ -66,6 +66,21 @@ function editDraftJson(mutator: (draft: Record<string, unknown>) => void): void 
   input(".draft-json", JSON.stringify(draft, null, 2));
 }
 
+function openMutationEditor(): void {
+  clickButtonByText(".replay-action-bar button", "Mutate & Inject…");
+}
+
+function openAdvancedDraftJson(): HTMLTextAreaElement {
+  const section = detailSection("Advanced Draft JSON");
+  section.open = true;
+  section.dispatchEvent(new Event("toggle"));
+  const textarea = section.querySelector<HTMLTextAreaElement>(".draft-json");
+  if (!textarea) {
+    throw new Error("missing advanced draft JSON textarea");
+  }
+  return textarea;
+}
+
 function appendCommandUpdate(
   panel: PanelController,
   key: string,
@@ -153,6 +168,28 @@ describe("panel shell", () => {
     );
   });
 
+  it("offers Auto, Dark, and Light themes and applies an explicit selection", () => {
+    const root = document.querySelector<HTMLElement>("#app");
+    const select = document.querySelector<HTMLSelectElement>(".theme-select");
+
+    expect(select?.getAttribute("aria-label")).toBe("Workbench theme");
+    expect(Array.from(select?.options ?? []).map((option) => [option.value, option.textContent])).toEqual([
+      ["auto", "Auto"],
+      ["dark", "Dark"],
+      ["light", "Light"]
+    ]);
+
+    input(".theme-select", "dark");
+    expect(root?.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+
+    input(".theme-select", "light");
+    expect(root?.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+
+    input(".theme-select", "auto");
+  });
+
   it("closes the event store when the panel is disposed", () => {
     panel.dispose();
     document.body.innerHTML = '<main id="app"></main>';
@@ -205,25 +242,24 @@ describe("panel shell", () => {
     expect(text(".event-header")).toContain("Command / Key");
     expect(text(".event-marker")).toBe("server snapshot");
     expect(text(".event-command")).toBe("ADD/alpha");
+    expect(document.querySelector<HTMLElement>(".event-row")?.dataset.command).toBe("ADD");
+    expect(document.querySelector<HTMLElement>(".event-row")?.dataset.kind).toBe("item-update");
+    expect(document.querySelector<HTMLElement>(".event-row")?.dataset.source).toBe("listener");
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
 
     clickFirstEventRow();
     expect(text(".detail-pane")).toContain('"key": "alpha"');
     expect(text(".detail-pane")).toContain("Listener");
-    expect(document.querySelector<HTMLDetailsElement>(".detail-section")?.open).toBe(false);
-    expect(
-      Array.from(document.querySelectorAll<HTMLDetailsElement>(".detail-section")).find((section) =>
-        section.textContent?.includes("Update")
-      )?.open
-    ).toBe(true);
-    openDetailSection("Envelope");
+    expect(detailSection("Changed fields").open).toBe(true);
+    expect(detailSection("All current fields").open).toBe(false);
+    expect(detailSection("Context").open).toBe(false);
+    openDetailSection("Context");
     expect(text(".detail-pane")).toContain('"synthetic": false');
-    expect(text(".detail-pane").indexOf("Raw Diagnostics")).toBeLessThan(
-      text(".detail-pane").indexOf("Update")
+    expect(text(".detail-pane").indexOf("Raw capture")).toBeGreaterThan(
+      text(".detail-pane").indexOf("Context")
     );
-    expect(text(".detail-pane")).not.toContain("Changed Fields");
     expect(text(".editor-placeholder")).toBe(
-      "Clone a captured item update to edit and reinject it locally."
+      "Clone this captured item update to replay it unchanged or edit a staged copy."
     );
 
     document.querySelector<HTMLButtonElement>(".detail-collapse-button")?.click();
@@ -272,7 +308,7 @@ describe("panel shell", () => {
     expect(rowTimes.some((time) => /\b(?:AM|PM)\b/i.test(time.textContent ?? ""))).toBe(false);
 
     document.querySelector<HTMLButtonElement>(".event-row")?.click();
-    openDetailSection("Envelope");
+    openDetailSection("Context");
     expect(text(".detail-pane")).not.toContain('"timestamp"');
   });
 
@@ -473,7 +509,7 @@ describe("panel shell", () => {
     renderPanel(root, undefined, { store });
     document.querySelector<HTMLButtonElement>('.event-row[data-event-id="selection-2"]')?.click();
     expect(text(".detail-pane")).toContain("selection-2");
-    expect(document.querySelector(".detail-exact-time")).toBeNull();
+    expect(document.querySelector(".detail-exact-time")).not.toBeNull();
 
     store.append({
       id: "selection-62",
@@ -958,10 +994,62 @@ describe("panel shell", () => {
 
     expect(text(".event-marker")).toBe("synthetic live");
     expect(document.querySelector(".event-row")?.getAttribute("data-synthetic")).toBe("true");
+    expect(document.querySelector<HTMLElement>(".event-row")?.dataset.command).toBe("UPDATE");
+    expect(document.querySelector<HTMLElement>(".event-row")?.dataset.source).toBe("workbench");
     clickFirstEventRow();
-    expect(text(".detail-pane")).toContain("Synthetic Provenance");
-    openDetailSection("Synthetic Provenance");
+    expect(text(".selected-event-source")).toBe("Listener replay");
+    expect(document.querySelector(".selected-event-source")?.classList).toContain(
+      "source-listener-replay"
+    );
+    expect(text(".detail-pane")).toContain("Synthetic provenance");
+    openDetailSection("Synthetic provenance");
     expect(text(".detail-pane")).toContain('"sourceEventId": "event-1"');
+  });
+
+  it("labels Workbench-only simulations and shows their edited-field provenance", () => {
+    panel.dispose();
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const store = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    panel = renderPanel(root, undefined, { store });
+
+    store.append({
+      id: "synthetic-workbench-1",
+      timestamp: 2,
+      direction: "inbound",
+      source: "synthetic",
+      synthetic: true,
+      kind: "item-update",
+      subscription: { id: "subscription-1", mode: "COMMAND" },
+      item: { name: "scenario.snapshot-basic", position: 1 },
+      update: {
+        isSnapshot: false,
+        fields: { command: "UPDATE", key: "alpha", qty: 22 },
+        changedFields: { command: "UPDATE", key: "alpha" },
+        command: "UPDATE",
+        key: "alpha"
+      },
+      raw: {
+        sourceEventId: "event-1",
+        executionTarget: "workbench-only",
+        deliveredToPage: false,
+        editedFields: { qty: 22 }
+      }
+    });
+
+    expect(text(".event-marker")).toBe("workbench live");
+    clickFirstEventRow();
+    expect(text(".selected-event-source")).toBe("Workbench only");
+    expect(document.querySelector(".selected-event-source")?.classList).toContain(
+      "source-workbench-only"
+    );
+    const provenance = openDetailSection("Synthetic provenance").textContent ?? "";
+    expect(provenance).toContain('"executionTarget": "workbench-only"');
+    expect(provenance).toContain('"editedFields"');
+    expect(provenance).toContain('"qty": 22');
   });
 
   it("renders captured HTML-like field values as inert text", () => {
@@ -969,7 +1057,32 @@ describe("panel shell", () => {
     clickFirstEventRow();
 
     expect(document.querySelector(".detail-pane img")).toBeNull();
+    openDetailSection("All current fields");
     expect(text(".detail-pane")).toContain("<img src=x onerror=alert(1)>");
+  });
+
+  it("copies the canonical selected event JSON and announces clipboard status", async () => {
+    const writeText = vi.fn((_value: string) => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    appendCommandUpdate(panel, "copy-key", { qty: 7 });
+    clickFirstEventRow();
+
+    document.querySelector<HTMLButtonElement>(".copy-event-json-button")?.click();
+    await flushPromises();
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(writeText.mock.calls[0][0])).toMatchObject({
+      id: "event-1",
+      source: "server",
+      synthetic: false,
+      update: { fields: { key: "copy-key", qty: 7 } }
+    });
+    expect(text(".detail-copy-message")).toBe("Copied the canonical selected event JSON.");
+    expect(document.querySelector(".detail-copy-message")?.getAttribute("role")).toBe("status");
+    expect(document.querySelector(".detail-copy-message")?.getAttribute("aria-live")).toBe("polite");
   });
 
   it("disables Clone event for non-item-update rows", () => {
@@ -980,11 +1093,35 @@ describe("panel shell", () => {
     );
     clickFirstEventRow();
 
-    expect(text(".clone-button")).toBe("Clone event");
+    expect(text(".clone-button")).toBe("Clone");
     expect(document.querySelector<HTMLButtonElement>(".clone-button")?.disabled).toBe(true);
   });
 
-  it("allows cloning wire-captured updates while keeping reinjection disabled", () => {
+  it("stages an unchanged clone before exposing separate replay and mutation actions", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+
+    expect(text(".draft-source-context")).toContain("Staged source clone");
+    expect(text(".replay-source-button")).toBe("Re-inject");
+    expect(text(".mutate-inject-button")).toBe("Mutate & Inject…");
+    expect(document.querySelector(".draft-controls")).toBeNull();
+    expect(document.querySelector(".draft-json")).toBeNull();
+    expect(
+      document.querySelectorAll<HTMLInputElement>('input[name="draft-execution-target"]')
+    ).toHaveLength(2);
+  });
+
+  it("defaults wire captures to Workbench-only execution and bypasses the bridge", async () => {
+    const reinjectDraft = vi.fn(() => Promise.resolve(createSuccessResult("should-not-run")));
+    panel.dispose();
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    panel = renderPanel(root, undefined, { bridge: { reinjectDraft } });
     panel.appendCaptureMessage(
       createCaptureMessage("item-update", {
         client: { id: "client-1" },
@@ -1008,10 +1145,52 @@ describe("panel shell", () => {
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
 
     expect(text(".draft-source-context")).toContain("Listener-");
-    expect(text(".draft-validation-error")).toBe(
-      "This draft came from wire-level capture, so it can be inspected and edited but cannot be reinjected through an original listener."
+    const targets = Array.from(
+      document.querySelectorAll<HTMLInputElement>('input[name="draft-execution-target"]')
     );
-    expect(document.querySelector<HTMLButtonElement>(".reinject-button")?.disabled).toBe(true);
+    expect(targets).toHaveLength(2);
+    expect(targets.map((target) => target.value)).toEqual([
+      "captured-listener",
+      "workbench-only"
+    ]);
+    expect(targets[0].disabled).toBe(true);
+    expect(targets[1].checked).toBe(true);
+    expect(text('.draft-target-option[data-target="captured-listener"]')).toContain(
+      "Original app listener"
+    );
+    expect(text('.draft-target-option[data-target="workbench-only"]')).toContain(
+      "The inspected page is unchanged."
+    );
+
+    const executeButton = document.querySelector<HTMLButtonElement>(".reinject-button");
+    expect(executeButton?.textContent).toBe("Re-inject");
+    expect(executeButton?.disabled).toBe(false);
+    executeButton?.click();
+    await flushPromises();
+    await flushPanelRender();
+
+    expect(reinjectDraft).not.toHaveBeenCalled();
+    expect(text(".reinjection-message")).toBe(
+      "Source clone added to Workbench only. The inspected page was not reached."
+    );
+    expect(document.querySelector(".reinjection-message")?.getAttribute("role")).toBe("status");
+    expect(document.querySelector(".reinjection-message")?.getAttribute("aria-live")).toBe("polite");
+    expect(text(".event-count")).toBe("2");
+    expect(Array.from(document.querySelectorAll(".event-marker")).map((marker) => marker.textContent)).toContain(
+      "workbench snapshot"
+    );
+
+    openMutationEditor();
+    input('.structured-field-input[data-field-name="qty"]', "12");
+    document.querySelector<HTMLButtonElement>(".inject-edited-button")?.click();
+    await flushPromises();
+    await flushPanelRender();
+
+    expect(reinjectDraft).not.toHaveBeenCalled();
+    expect(text(".reinjection-message")).toBe(
+      "Edited draft added to Workbench only. The inspected page was not reached."
+    );
+    expect(text(".event-count")).toBe("3");
   });
 
   it("shows source context after cloning without changing the selected row", () => {
@@ -1031,13 +1210,103 @@ describe("panel shell", () => {
     expect(text(".draft-source-context")).toContain("listener-1");
     expect(text(".draft-source-context")).toContain("scenario.snapshot-basic");
     expect(text(".draft-source-context")).toContain("ADD/alpha");
-    expect(text(".draft-source-fields")).toContain('"qty": 1');
+    expect(document.querySelector(".draft-source-fields")).toBeNull();
+  });
+
+  it("keeps source command and key immutable in the source summary after edits", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+
+    input('.structured-field-input[data-field-name="command"]', "UPDATE");
+    input('.structured-field-input[data-field-name="key"]', "beta");
+
+    expect(text(".draft-source-summary-meta")).toContain("ADD/alpha");
+    const commandKeyRow = Array.from(
+      document.querySelectorAll<HTMLElement>(".draft-source-row")
+    ).find(
+      (row) => row.querySelector<HTMLElement>(".draft-source-label")?.textContent === "Command/key"
+    );
+    expect(commandKeyRow?.querySelector<HTMLElement>(".draft-source-value")?.textContent).toBe(
+      "ADD/alpha"
+    );
+  });
+
+  it("preserves focus on the selected execution target after its change rerender", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+
+    const workbenchTarget = document.querySelector<HTMLInputElement>(
+      'input[name="draft-execution-target"][value="workbench-only"]'
+    );
+    if (!workbenchTarget) {
+      throw new Error("missing Workbench execution target");
+    }
+    workbenchTarget.focus();
+    workbenchTarget.checked = true;
+    workbenchTarget.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const replacement = document.querySelector<HTMLInputElement>(
+      'input[name="draft-execution-target"][value="workbench-only"]'
+    );
+    expect(replacement?.checked).toBe(true);
+    expect(document.activeElement).toBe(replacement);
+  });
+
+  it("gates a production bridge by status and falls back after disconnect", async () => {
+    const reinjectDraft = vi.fn(() => Promise.resolve(createSuccessResult("should-not-run")));
+    panel.dispose();
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    panel = renderPanel(root);
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+
+    panel.setStatus("idle");
+    panel.setBridge({ reinjectDraft });
+    expect(
+      document.querySelector<HTMLInputElement>(
+        'input[name="draft-execution-target"][value="captured-listener"]'
+      )?.disabled
+    ).toBe(true);
+
+    panel.setStatus("bridge connected");
+    const listenerTarget = document.querySelector<HTMLInputElement>(
+      'input[name="draft-execution-target"][value="captured-listener"]'
+    );
+    expect(listenerTarget?.disabled).toBe(false);
+    listenerTarget?.click();
+    expect(listenerTarget?.checked).toBe(true);
+
+    panel.setStatus("bridge disconnected");
+    const disconnectedListener = document.querySelector<HTMLInputElement>(
+      'input[name="draft-execution-target"][value="captured-listener"]'
+    );
+    const workbenchTarget = document.querySelector<HTMLInputElement>(
+      'input[name="draft-execution-target"][value="workbench-only"]'
+    );
+    expect(disconnectedListener?.disabled).toBe(true);
+    expect(workbenchTarget?.disabled).toBe(false);
+    expect(workbenchTarget?.checked).toBe(true);
+
+    document.querySelector<HTMLButtonElement>(".reinject-button")?.click();
+    await flushPromises();
+    expect(reinjectDraft).not.toHaveBeenCalled();
+    expect(text(".reinjection-message")).toContain("added to Workbench only");
   });
 
   it("derives changed fields from draft JSON edits without remounting the editor", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+    openAdvancedDraftJson();
     const detail = document.querySelector<HTMLElement>(".detail-pane");
     const textarea = document.querySelector<HTMLTextAreaElement>(".draft-json");
     if (!detail || !textarea) {
@@ -1057,10 +1326,67 @@ describe("panel shell", () => {
     expect(detail.scrollTop).toBe(300);
   });
 
+  it("keeps the last valid draft when advanced JSON becomes invalid", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+    openAdvancedDraftJson();
+    editDraftJson((draftJson) => {
+      (draftJson.fields as Record<string, unknown>).qty = 3;
+    });
+
+    input(".draft-json", "{");
+
+    expect(text(".draft-json-error")).toContain("Draft JSON parse error");
+    expect(text(".draft-changed-fields-preview")).toContain('"qty": 3');
+    expect(document.querySelector<HTMLButtonElement>(".inject-edited-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(false);
+    expect(document.querySelector(".draft-json-error")?.getAttribute("role")).toBe("alert");
+  });
+
+  it("uses Escape to leave editing without changing the selected event", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+    const inputElement = document.querySelector<HTMLElement>(
+      '.structured-field-input[data-field-name="qty"]'
+    );
+    inputElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(document.querySelector(".draft-controls")).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.selected).toBe("true");
+    expect(text(".selected-event-id")).toBe("event-1");
+  });
+
+  it("uses Ctrl+Enter to execute the current valid edited action", async () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+    input('.structured-field-input[data-field-name="qty"]', "2");
+
+    document
+      .querySelector<HTMLElement>('.structured-field-input[data-field-name="qty"]')
+      ?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true })
+      );
+    await flushPromises();
+    await flushPanelRender();
+
+    expect(text(".event-count")).toBe("2");
+    expect(text(".reinjection-message")).toBe(
+      "Edited draft added to Workbench only. The inspected page was not reached."
+    );
+  });
+
   it("keeps the Timeline detail editor open and focused when new events arrive", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+    openAdvancedDraftJson();
 
     const detail = document.querySelector<HTMLElement>(".detail-pane");
     const textarea = document.querySelector<HTMLTextAreaElement>(".draft-json");
@@ -1152,15 +1478,15 @@ describe("panel shell", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
 
-    openDetailSection("Envelope");
-    detailSection("Update").open = false;
+    openDetailSection("Context");
+    detailSection("Changed fields").open = false;
 
     appendCommandUpdate(panel, "beta", { qty: 2 });
     await flushPanelRender();
 
     expect(text(".detail-pane")).toContain('"id": "event-1"');
-    expect(detailSection("Envelope").open).toBe(true);
-    expect(detailSection("Update").open).toBe(false);
+    expect(detailSection("Context").open).toBe(true);
+    expect(detailSection("Changed fields").open).toBe(false);
   });
 
   it("clears the cloned draft when selecting a different captured event", () => {
@@ -1170,6 +1496,8 @@ describe("panel shell", () => {
     const rows = document.querySelectorAll<HTMLButtonElement>(".event-row");
     rows[0].click();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+    openAdvancedDraftJson();
     editDraftJson((draft) => {
       const fields = draft.fields as Record<string, unknown>;
       fields.qty = "11";
@@ -1182,7 +1510,7 @@ describe("panel shell", () => {
 
     expect(document.querySelector<HTMLTextAreaElement>(".draft-json")).toBeNull();
     expect(text(".editor-placeholder")).toBe(
-      "Clone a captured item update to edit and reinject it locally."
+      "Clone this captured item update to replay it unchanged or edit a staged copy."
     );
     expect(document.querySelector<HTMLButtonElement>(".clone-button")?.disabled).toBe(false);
     expect(text(".draft-source-context")).toBe("");
@@ -1193,15 +1521,56 @@ describe("panel shell", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+    openAdvancedDraftJson();
 
     editDraftJson((draft) => {
       draft.key = "";
     });
 
-    expect(text(".draft-validation-error")).toBe(
+    expect(text(".draft-json-error")).toBe(
       "Draft is missing required COMMAND values. Add a captured subscription, item, command/key, and valid field names before reinjecting."
     );
-    expect(document.querySelector<HTMLButtonElement>(".reinject-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>(".inject-edited-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>(".reinject-button")?.disabled).toBe(false);
+  });
+
+  it("re-injects original source values and changed-field semantics after edits exist", async () => {
+    const receivedDrafts: ReinjectionDraft[] = [];
+    panel.dispose();
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    panel = renderPanel(root, undefined, {
+      bridge: {
+        reinjectDraft(currentDraft) {
+          receivedDrafts.push(currentDraft);
+          return Promise.resolve(createSuccessResult("source-replay"));
+        }
+      }
+    });
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+    openAdvancedDraftJson();
+    editDraftJson((draftJson) => {
+      draftJson.isSnapshot = false;
+      (draftJson.fields as Record<string, unknown>).qty = 12;
+    });
+
+    document.querySelector<HTMLButtonElement>(".replay-source-button")?.click();
+    await flushPromises();
+    await flushPanelRender();
+
+    expect(receivedDrafts[0]?.fields.qty).toBe(1);
+    expect(receivedDrafts[0]?.changedFields).toEqual({ command: "ADD", key: "alpha" });
+    expect(receivedDrafts[0]?.isSnapshot).toBe(true);
+    expect(text(".reinjection-message")).toBe(
+      "Source clone delivered to the original app listener. The inspected page was reached."
+    );
   });
 
   it("reinjects a valid draft and appends a synthetic live row", async () => {
@@ -1223,33 +1592,50 @@ describe("panel shell", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
-    editDraftJson((draft) => {
-      draft.isSnapshot = false;
-      const fields = draft.fields as Record<string, unknown>;
-      fields.qty = "12";
-    });
+    openMutationEditor();
+    input('.structured-field-input[data-field-name="qty"]', "2");
+    expect(text(".draft-dirty-count")).toBe("1 changed");
+    expect(document.querySelector<HTMLInputElement>('.structured-field-input[data-field-name="qty"]')?.type).toBe(
+      "number"
+    );
+    document.querySelector<HTMLButtonElement>(".reset-draft-button")?.click();
+    expect(text(".draft-dirty-count")).toBe("0 changed");
+    expect(document.querySelector<HTMLInputElement>('.structured-field-input[data-field-name="qty"]')?.value).toBe(
+      "1"
+    );
 
-    const button = document.querySelector<HTMLButtonElement>(".reinject-button");
+    input('.structured-field-input[data-field-name="qty"]', "12");
+    const snapshot = document.querySelector<HTMLInputElement>(".structured-snapshot-input");
+    if (!snapshot) {
+      throw new Error("missing snapshot control");
+    }
+    snapshot.checked = false;
+    snapshot.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const button = document.querySelector<HTMLButtonElement>(".inject-edited-button");
     expect(button?.disabled).toBe(false);
     button?.click();
 
-    expect(text(".reinject-button")).toBe("Reinjecting...");
+    expect(text(".inject-edited-button")).toBe("Injecting…");
+    expect(document.querySelector(".replay-card")?.getAttribute("aria-busy")).toBe("true");
     await flushPromises();
     await flushPanelRender();
 
     const receivedDraft = receivedDrafts[0];
     expect(receivedDraft).toBeDefined();
     expect(receivedDraft?.sourceEventId).toBe("event-1");
-    expect(receivedDraft?.fields.qty).toBe("12");
-    expect(receivedDraft?.changedFields.qty).toBe("12");
+    expect(receivedDraft?.fields.qty).toBe(12);
+    expect(receivedDraft?.changedFields.qty).toBe(12);
     expect(receivedDraft?.isSnapshot).toBe(false);
-    expect(text(".reinjection-message")).toBe("Synthetic update reinjected through the original listener.");
+    expect(text(".reinjection-message")).toBe(
+      "Edited draft delivered to the original app listener. The inspected page was reached."
+    );
     expect(text(".event-count")).toBe("2");
     expect(Array.from(document.querySelectorAll(".event-marker")).map((marker) => marker.textContent)).toContain(
       "synthetic live"
     );
     expect(document.querySelectorAll<HTMLButtonElement>(".event-row")[0].dataset.selected).toBe("true");
-    openDetailSection("Envelope");
+    openDetailSection("Context");
     expect(text(".detail-pane")).toContain('"id": "event-1"');
     expect(text(".detail-pane")).toContain('"source": "server"');
   });

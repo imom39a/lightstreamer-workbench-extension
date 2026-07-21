@@ -153,10 +153,6 @@ function serializeDraft(draft: ReinjectionDraft): ReinjectionDraftPayload | null
     return null;
   }
 
-  if (!draft.command || !draft.key) {
-    return null;
-  }
-
   return {
     sourceEventId: draft.sourceEventId,
     target: {

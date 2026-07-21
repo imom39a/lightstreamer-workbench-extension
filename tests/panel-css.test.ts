@@ -10,6 +10,7 @@ const panelCss = readFileSync(
   resolve(sourceRoot, "extension/panel/panel.css"),
   "utf8"
 );
+const panelHtml = readFileSync(resolve(sourceRoot, "extension/panel/index.html"), "utf8");
 const devtoolsSource = readFileSync(resolve(sourceRoot, "extension/devtools.ts"), "utf8");
 
 describe("panel CSS", () => {
@@ -43,6 +44,39 @@ describe("panel CSS", () => {
     expect(panelCss).toContain(".command-current-row:nth-child(even)");
     expect(panelCss).toContain(".command-update-row:nth-child(even)");
     expect(panelCss).not.toMatch(/\.event-row\s*{[^}]*border-bottom:/);
+  });
+
+  it("defines dark-first semantic tokens with an explicit light override", () => {
+    expect(panelCss).toMatch(/:root\s*{[\s\S]*?color-scheme:\s*dark;/);
+    expect(panelCss).toContain("--color-bg: #1f1f1f");
+    expect(panelCss).toContain("--color-surface: #242424");
+    expect(panelCss).toContain("--color-border: #3c4043");
+    expect(panelCss).toContain("--color-text: #e8eaed");
+    expect(panelCss).toContain("--color-accent: #8ab4f8");
+    expect(panelCss).toMatch(/\[data-theme="light"\]\s*{[\s\S]*?color-scheme:\s*light;/);
+    expect(panelHtml).toContain('<meta name="color-scheme" content="dark light" />');
+  });
+
+  it("styles command and Workbench source chips without removing their text", () => {
+    expect(panelCss).toContain('.event-row[data-command="ADD"] .event-command');
+    expect(panelCss).toContain('.event-row[data-command="UPDATE"] .event-command');
+    expect(panelCss).toContain('.event-row[data-command="DELETE"] .event-command');
+    expect(panelCss).toContain('.event-row[data-command="SUBSCRIBE"] .event-kind');
+    expect(panelCss).toContain('.event-row[data-command="EOS"] .event-kind');
+    expect(panelCss).toContain('.event-row[data-source="workbench"] .event-marker');
+  });
+
+  it("keeps desktop split panes, stacks medium panes, and drills into detail on narrow panels", () => {
+    expect(panelCss).toContain("@media (min-width: 960px)");
+    expect(panelCss).toContain("@media (min-width: 600px) and (max-width: 959px)");
+    expect(panelCss).toContain("@media (max-width: 599px)");
+    expect(panelCss).toContain(
+      '.workspace[data-detail-open="true"] .event-feed'
+    );
+    expect(panelCss).toContain(
+      '.workspace[data-detail-open="true"] .detail-pane'
+    );
+    expect(panelCss).toContain("@media (max-width: 400px)");
   });
 
   it("retains the DevTools panel handle and forwards shown and hidden lifecycle", () => {

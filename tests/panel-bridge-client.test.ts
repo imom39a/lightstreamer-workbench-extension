@@ -149,6 +149,58 @@ describe("panel bridge client", () => {
       timestamp: 123
     });
   });
+
+  it("serializes a non-COMMAND listener draft with null command and key", async () => {
+    const port = createFakePort();
+
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+    const resultPromise = bridge.reinjectDraft(createValidMergeDraft());
+    const request = port.postedMessages.find(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+    ) as {
+      requestId: string;
+      draft: { command: string | null; key: string | null; fields: Record<string, unknown> };
+    };
+
+    expect(request.draft).toMatchObject({
+      command: null,
+      key: null,
+      fields: { price: 101, status: "open" }
+    });
+
+    port.messageListeners[0]({
+      type: PANEL_REINJECT_RESULT,
+      result: {
+        requestId: request.requestId,
+        ok: true,
+        status: "success",
+        timestamp: 456
+      }
+    });
+
+    await expect(resultPromise).resolves.toMatchObject({
+      requestId: request.requestId,
+      ok: true,
+      status: "success"
+    });
+  });
 });
 
 function createValidDraft(): ReinjectionDraft {
@@ -164,6 +216,8 @@ function createValidDraft(): ReinjectionDraft {
     },
     command: "UPDATE",
     key: "item-1",
+    sourceCommand: "UPDATE",
+    sourceKey: "item-1",
     fields: {
       command: "UPDATE",
       key: "item-1",
@@ -181,6 +235,49 @@ function createValidDraft(): ReinjectionDraft {
       price: 100
     },
     isSnapshot: false,
+    sourceIsSnapshot: false,
+    manualChangedFieldsOverride: false,
+    provenance: {
+      source: "clone",
+      sourceEventKind: "item-update",
+      sourceSynthetic: false
+    }
+  };
+}
+
+function createValidMergeDraft(): ReinjectionDraft {
+  return {
+    sourceEventId: "event-merge",
+    subscriptionMode: "MERGE",
+    captureSource: "listener",
+    target: {
+      subscriptionId: "subscription-1",
+      listenerId: "listener-1"
+    },
+    item: {
+      name: "portfolio",
+      position: 1
+    },
+    command: null,
+    key: null,
+    sourceCommand: null,
+    sourceKey: null,
+    fields: {
+      price: 101,
+      status: "open"
+    },
+    sourceFields: {
+      price: 100,
+      status: "open"
+    },
+    changedFields: {
+      price: 101
+    },
+    originalChangedFields: {
+      price: 100
+    },
+    isSnapshot: false,
+    sourceIsSnapshot: false,
     manualChangedFieldsOverride: false,
     provenance: {
       source: "clone",

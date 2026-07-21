@@ -96,6 +96,36 @@ describe("bridge reinjection message validation", () => {
     ).toBe(true);
   });
 
+  it("accepts null COMMAND metadata for a non-COMMAND listener payload", () => {
+    const draft = createValidReinjectionDraftPayload();
+    draft.command = null;
+    draft.key = null;
+    draft.fields = { price: 101 };
+    draft.changedFields = { price: 101 };
+
+    expect(
+      isPanelReinjectRequestMessage({
+        type: PANEL_REINJECT_REQUEST,
+        requestId: "request-merge",
+        draft
+      })
+    ).toBe(true);
+  });
+
+  it("rejects empty COMMAND metadata strings while allowing null", () => {
+    const draft = createValidReinjectionDraftPayload();
+    draft.command = "";
+    draft.key = null;
+
+    expect(
+      isPanelReinjectRequestMessage({
+        type: PANEL_REINJECT_REQUEST,
+        requestId: "request-empty-command",
+        draft
+      })
+    ).toBe(false);
+  });
+
   it("rejects reinjection requests missing the target listener id", () => {
     const draft = createValidReinjectionDraftPayload();
     draft.target.listenerId = "";

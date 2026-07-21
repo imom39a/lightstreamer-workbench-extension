@@ -1,12 +1,24 @@
 import { type ReinjectionResult } from "../bridge/messages";
 import { type LightstreamerEventEnvelope } from "./event-envelope";
-import { type ReinjectionDraft } from "./reinjection-draft";
+import {
+  deriveChangedFields,
+  draftFieldsMatchSource,
+  type ReinjectionDraft,
+  type ReinjectionExecutionTarget
+} from "./reinjection-draft";
 
 export function createSyntheticEventFromDraft(
   draft: ReinjectionDraft,
-  result: ReinjectionResult
+  result: ReinjectionResult,
+  executionTarget: ReinjectionExecutionTarget = "captured-listener"
 ): LightstreamerEventEnvelope {
   const timestamp = result.timestamp || Date.now();
+  const editedFields = deriveChangedFields(draft.sourceFields, draft.fields);
+  const changedFields = draft.manualChangedFieldsOverride
+    ? { ...draft.changedFields }
+    : draftFieldsMatchSource(draft)
+      ? { ...draft.originalChangedFields }
+      : editedFields;
 
   return {
     id: `synthetic-${result.requestId}`,
@@ -15,13 +27,12 @@ export function createSyntheticEventFromDraft(
     source: "synthetic",
     synthetic: true,
     kind: "item-update",
+    ...(draft.captureSource ? { captureSource: draft.captureSource } : {}),
     subscription: {
       id: draft.target.subscriptionId ?? "unknown",
-      mode: "COMMAND"
+      mode: draft.subscriptionMode ?? "COMMAND"
     },
-    listener: {
-      id: draft.target.listenerId ?? "unknown"
-    },
+    ...(draft.target.listenerId ? { listener: { id: draft.target.listenerId } } : {}),
     item: {
       name: draft.item.name ?? null,
       position: draft.item.position ?? null
@@ -29,7 +40,7 @@ export function createSyntheticEventFromDraft(
     update: {
       isSnapshot: draft.isSnapshot,
       fields: { ...draft.fields },
-      changedFields: { ...draft.changedFields },
+      changedFields,
       command: draft.command,
       key: draft.key
     },
@@ -39,9 +50,12 @@ export function createSyntheticEventFromDraft(
       targetSubscriptionId: draft.target.subscriptionId,
       targetListenerId: draft.target.listenerId,
       syntheticTimestamp: timestamp,
-      editedFields: { ...draft.changedFields },
+      editedFields,
       requestId: result.requestId,
       status: result.status,
+      executionTarget,
+      deliveredToPage: executionTarget === "captured-listener",
+      serverContacted: false,
       manualChangedFieldsOverride: draft.manualChangedFieldsOverride,
       provenance: { ...draft.provenance }
     }

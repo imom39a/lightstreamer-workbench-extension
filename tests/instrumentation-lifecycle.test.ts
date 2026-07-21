@@ -1123,6 +1123,67 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     ).toBe(true);
   });
 
+  it("reinjects non-COMMAND fields without inventing command or key values", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription("MERGE", ["portfolio"], ["price", "status"]);
+    const receivedFields: Record<string, unknown> = {};
+    const receivedChangedFields: Record<string, unknown> = {};
+    const listener = {
+      onItemUpdate(update: {
+        forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void): void;
+        forEachChangedField(
+          iterator: (fieldName: string, fieldPos: number, value: unknown) => void
+        ): void;
+        getValue(fieldName: string): unknown;
+      }) {
+        update.forEachField((fieldName, _fieldPos, value) => {
+          receivedFields[fieldName] = value;
+        });
+        update.forEachChangedField((fieldName, _fieldPos, value) => {
+          receivedChangedFields[fieldName] = value;
+        });
+        receivedFields.commandValue = update.getValue("command");
+        receivedFields.keyValue = update.getValue("key");
+      }
+    };
+
+    client.subscribe(subscription);
+    subscription.addListener(listener);
+
+    messageListeners[0]({
+      source: target,
+      data: {
+        type: PAGE_REINJECT_REQUEST,
+        requestId: "request-merge",
+        draft: {
+          ...createValidPageDraft(),
+          sourceEventId: "event-merge",
+          command: null,
+          key: null,
+          fields: { price: 101, status: "open" },
+          changedFields: { price: 101 }
+        }
+      }
+    } as unknown as MessageEvent);
+
+    expect(receivedFields).toEqual({
+      price: 101,
+      status: "open",
+      commandValue: null,
+      keyValue: null
+    });
+    expect(receivedChangedFields).toEqual({ price: 101 });
+    expect(
+      messages.some(
+        (message) =>
+          isRuntimeReinjectResultMessage(message) &&
+          message.result.requestId === "request-merge" &&
+          message.result.status === "success"
+      )
+    ).toBe(true);
+  });
+
   it("reports stale target when the original subscription listener was removed", () => {
     const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
     const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");

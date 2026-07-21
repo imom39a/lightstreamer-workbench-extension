@@ -53,8 +53,8 @@ export type ReinjectionDraftPayload = {
     name?: string | null;
     position?: number | null;
   };
-  command: string;
-  key: string;
+  command: string | null;
+  key: string | null;
   fields: ReinjectionFields;
   changedFields: ReinjectionFields;
   isSnapshot: boolean;
@@ -238,8 +238,8 @@ export function isReinjectionDraftPayload(value: unknown): value is ReinjectionD
       (typeof value.item.position === "number" && Number.isInteger(value.item.position))) &&
     (isNonEmptyString(value.item.name) ||
       (typeof value.item.position === "number" && Number.isInteger(value.item.position))) &&
-    isNonEmptyString(value.command) &&
-    isNonEmptyString(value.key) &&
+    isNullableNonEmptyString(value.command) &&
+    isNullableNonEmptyString(value.key) &&
     isReinjectionFields(value.fields) &&
     Object.keys(value.fields).length > 0 &&
     isReinjectionFields(value.changedFields) &&
@@ -247,6 +247,10 @@ export function isReinjectionDraftPayload(value: unknown): value is ReinjectionD
     isRecord(value.provenance) &&
     isJsonValue(value.provenance)
   );
+}
+
+function isNullableNonEmptyString(value: unknown): value is string | null {
+  return value === null || isNonEmptyString(value);
 }
 
 export function isPanelReinjectRequestMessage(value: unknown): value is PanelReinjectRequestMessage {

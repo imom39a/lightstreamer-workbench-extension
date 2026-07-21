@@ -34,23 +34,26 @@ import {
 } from "../../core/command-state";
 import {
   createDraftFromEvent,
+  createSourceReplayDraft,
   createNewCommandDraftFromContext,
   deriveChangedFields,
   updateDraftCommand,
   updateDraftField,
   updateDraftKey,
   updateDraftSnapshot,
+  validateDraftForExecutionTarget,
   validateEditableDraft,
   validateNewCommandDraft,
-  validateReinjectionDraft,
   type CommandItemContext,
   type DraftFieldValue,
   type DraftFields,
   type NewCommandDraftDiagnostic,
-  type ReinjectionDraft
+  type ReinjectionDraft,
+  type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
+import { createThemeManager, type ThemePreference } from "./theme";
 
 type PanelState = {
   status: CaptureStatus;
@@ -203,6 +206,10 @@ const TIMELINE_RESIZE_STEP = 24;
 const TIMELINE_RESIZE_LARGE_STEP = 80;
 const activeTooltipDisposers = new WeakMap<HTMLElement, () => void>();
 let helpTooltipIdCounter = 0;
+
+function isBridgeReadyStatus(status: CaptureStatus): boolean {
+  return status === "bridge connected" || status === "capturing";
+}
 
 function createTextElement<K extends keyof HTMLElementTagNameMap>(
   tagName: K,
@@ -479,7 +486,18 @@ export function renderPanel(
   let timelineQueryVersion = 0;
   let currentStoreStats: EventStoreStats = storeStatsSnapshot();
   let draft: ReinjectionDraft | null = null;
+  let draftExecutionTarget: ReinjectionExecutionTarget = "captured-listener";
+  let draftEditing = false;
+  let draftJsonText: string | null = null;
+  let draftJsonError: string | null = null;
+  let detailCopyEventId: string | null = null;
+  let detailCopyMessage: ReinjectionMessage | null = null;
+  let workbenchSimulationSequence = 0;
   let bridge = options.bridge ?? null;
+  // A bridge supplied at construction time is a test/embedded bridge with no
+  // independent status channel. Production installs its bridge through
+  // setBridge(), where readiness is gated by the reported capture status.
+  let bridgeReady = Boolean(options.bridge);
   let reinjectionPending = false;
   let reinjectionMessage: ReinjectionMessage | null = null;
   let activeView: ActiveView = "timeline";
@@ -538,6 +556,10 @@ export function renderPanel(
   activeTooltipDisposers.delete(root);
   root.replaceChildren();
   root.className = "workbench-shell";
+  const themeManager = createThemeManager({
+    target: root,
+    documentElement: document.documentElement
+  });
 
   const toolbar = document.createElement("header");
   toolbar.className = "toolbar";
@@ -580,7 +602,36 @@ export function renderPanel(
     controller.clearEvents();
   });
 
-  toolbarMeta.append(status, eventCount, filteredCount, retentionNotice, clearButton);
+  const themeControl = document.createElement("label");
+  themeControl.className = "theme-control";
+  themeControl.append(createTextElement("span", "theme-label", "Theme"));
+  const themeSelect = document.createElement("select");
+  themeSelect.className = "theme-select";
+  themeSelect.setAttribute("aria-label", "Workbench theme");
+  for (const [value, label] of [
+    ["auto", "Auto"],
+    ["dark", "Dark"],
+    ["light", "Light"]
+  ] as const satisfies ReadonlyArray<readonly [ThemePreference, string]>) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    themeSelect.append(option);
+  }
+  themeSelect.value = themeManager.preference;
+  themeSelect.addEventListener("change", () => {
+    themeManager.setPreference(themeSelect.value as ThemePreference);
+  });
+  themeControl.append(themeSelect);
+
+  toolbarMeta.append(
+    status,
+    eventCount,
+    filteredCount,
+    retentionNotice,
+    themeControl,
+    clearButton
+  );
   toolbar.append(title, toolbarMeta);
 
   const viewSelector = document.createElement("nav");
@@ -1065,6 +1116,9 @@ export function renderPanel(
       row.dataset.eventId = event.id;
       row.dataset.selected = String(event.id === selectedEventId);
       row.dataset.synthetic = String(event.synthetic || event.source === "synthetic");
+      row.dataset.command = timelineCommandToken(event);
+      row.dataset.kind = event.kind;
+      row.dataset.source = timelineSourceToken(event);
       row.addEventListener("click", () => {
         selectedEventId = event.id;
         selectedPinned = true;
@@ -1180,52 +1234,137 @@ export function renderPanel(
 
     detail.hidden = false;
     workspace.dataset.detailOpen = "true";
-    detail.append(
-      createDetailPaneHeader("Event detail", () => {
+    detail.append(createSelectedEventHeader(event));
+    appendDraftSection(detail, event, draft?.sourceEventId === event.id ? draft : null);
+    appendDetailSection(detail, "Changed fields", event.update?.changedFields ?? {}, {
+      open: true,
+      summary: `${Object.keys(event.update?.changedFields ?? {}).length} changed`
+    });
+    appendDetailSection(detail, "All current fields", event.update?.fields ?? {}, {
+      summary: `${Object.keys(event.update?.fields ?? {}).length} fields`
+    });
+    appendDetailSection(
+      detail,
+      "Context",
+      {
+        envelope: {
+          id: event.id,
+          direction: event.direction,
+          source: event.source,
+          captureSource: event.captureSource ?? "listener",
+          synthetic: event.synthetic,
+          kind: event.kind
+        },
+        subscription: event.subscription ?? null,
+        listener: event.listener ?? null,
+        item: event.item ?? null,
+        update: {
+          command: event.update?.command ?? null,
+          key: event.update?.key ?? null,
+          isSnapshot: Boolean(event.update?.isSnapshot)
+        }
+      },
+      { summary: `${event.subscription?.id ?? "no subscription"} · ${detailItemSummary(event.item)}` }
+    );
+    const syntheticProvenance = createSyntheticProvenance(event);
+    if (syntheticProvenance) {
+      appendDetailSection(detail, "Synthetic provenance", syntheticProvenance, {
+        summary: String(event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? "synthetic")
+      });
+    }
+    appendDetailSection(detail, "Raw capture", event.raw ?? {}, {
+      summary: detailRawSummary(event.raw)
+    });
+    restorePaneState(detail, paneState);
+
+    function createSelectedEventHeader(
+      selectedEvent: LightstreamerEventEnvelope
+    ): HTMLElement {
+      const header = document.createElement("header");
+      header.className = "selected-event-header";
+
+      const summary = document.createElement("div");
+      summary.className = "selected-event-summary";
+      const sourceLabel = detailSourceLabel(selectedEvent);
+      summary.append(
+        createTextElement("span", "selected-event-kind", selectedEvent.kind),
+        createTextElement("strong", "selected-event-command", formatCommandKey(selectedEvent)),
+        createTextElement(
+          "span",
+          `selected-event-source source-${safeClassSlug(sourceLabel)}`,
+          sourceLabel
+        ),
+        createTextElement("span", "selected-event-id", selectedEvent.id)
+      );
+
+      const actions = document.createElement("div");
+      actions.className = "selected-event-actions";
+      const copyButton = document.createElement("button");
+      copyButton.className = "copy-event-json-button";
+      copyButton.type = "button";
+      copyButton.textContent = "Copy JSON";
+      copyButton.addEventListener("click", () => {
+        void copyCanonicalEventJson(selectedEvent);
+      });
+      const closeButton = document.createElement("button");
+      closeButton.className = "detail-collapse-button";
+      closeButton.type = "button";
+      closeButton.textContent = "Close";
+      closeButton.setAttribute("aria-label", "Close selected event detail");
+      closeButton.addEventListener("click", () => {
         timelineDetailOpen = false;
         renderFeed();
-      })
-    );
+      });
+      actions.append(copyButton, closeButton);
 
-    if (!timelineEvents.some((candidate) => candidate.id === event.id)) {
       const exactTime = document.createElement("p");
       exactTime.className = "detail-exact-time";
       exactTime.append(
-        createTextElement("span", "detail-exact-time-label", "Time "),
-        createTimestampElement(event.timestamp, "detail-exact-time-value", "precise")
+        createTextElement("span", "detail-exact-time-label", "Captured"),
+        createTimestampElement(selectedEvent.timestamp, "detail-exact-time-value", "precise")
       );
-      detail.append(exactTime);
+      header.append(summary, actions, exactTime);
+
+      if (detailCopyEventId === selectedEvent.id && detailCopyMessage) {
+        const message = createTextElement(
+          "p",
+          `detail-copy-message ${detailCopyMessage.kind}`,
+          detailCopyMessage.text
+        );
+        if (detailCopyMessage.kind === "error") {
+          message.setAttribute("role", "alert");
+        } else {
+          message.setAttribute("role", "status");
+          message.setAttribute("aria-live", "polite");
+        }
+        header.append(message);
+      }
+      return header;
     }
 
-    appendDetailSection(detail, "Envelope", {
-      id: event.id,
-      direction: event.direction,
-      source: event.source,
-      captureSource: event.captureSource ?? "listener",
-      synthetic: event.synthetic,
-      kind: event.kind
-    }, { summary: event.id });
-    appendDetailSection(detail, "Subscription", event.subscription, {
-      summary: event.subscription?.id ?? "no subscription"
-    });
-    appendDetailSection(detail, "Listener", event.listener, {
-      summary: event.listener?.id ?? "no listener"
-    });
-    appendDetailSection(detail, "Item", event.item, {
-      summary: detailItemSummary(event.item)
-    });
-    appendDetailSection(detail, "Raw Diagnostics", event.raw, {
-      summary: detailRawSummary(event.raw)
-    });
-    appendDetailSection(detail, "Update", event.update, {
-      open: true,
-      summary: detailUpdateSummary(event)
-    });
-    appendDetailSection(detail, "Synthetic Provenance", createSyntheticProvenance(event), {
-      summary: String(event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? "synthetic")
-    });
-    appendDraftSection(detail, event, draft?.sourceEventId === event.id ? draft : null);
-    restorePaneState(detail, paneState);
+    async function copyCanonicalEventJson(
+      selectedEvent: LightstreamerEventEnvelope
+    ): Promise<void> {
+      detailCopyEventId = selectedEvent.id;
+      try {
+        if (!navigator.clipboard?.writeText) {
+          throw new Error("Clipboard access is unavailable.");
+        }
+        await navigator.clipboard.writeText(JSON.stringify(selectedEvent, null, 2));
+        detailCopyMessage = {
+          kind: "success",
+          text: "Copied the canonical selected event JSON."
+        };
+      } catch (error) {
+        detailCopyMessage = {
+          kind: "error",
+          text: `Could not copy selected event JSON. ${error instanceof Error ? error.message : "Clipboard write failed."}`
+        };
+      }
+      if (selectedEventId === selectedEvent.id) {
+        renderDetail(selectedEvent, { preservePaneState: true });
+      }
+    }
   }
 
   function createTimelineDetailResizeHandle(): HTMLDivElement {
@@ -2372,7 +2511,7 @@ export function renderPanel(
     injectButton.className = "inject-command-button reinject-button";
     injectButton.type = "button";
     injectButton.textContent = reinjectionPending ? "Injecting..." : "Inject COMMAND update";
-    injectButton.disabled = !validation.valid || !bridge || reinjectionPending;
+    injectButton.disabled = !validation.valid || !bridgeReady || reinjectionPending;
     injectButton.addEventListener("click", () => {
       void injectCommandDraft(draft ?? currentDraft, context, item);
     });
@@ -2458,7 +2597,7 @@ export function renderPanel(
     context: CommandItemContext,
     item: CommandItemGroup
   ): Promise<void> {
-    const activeBridge = bridge;
+    const activeBridge = bridgeReady ? bridge : null;
     const validation = validateNewCommandDraft(currentDraft, commandStateIndex.snapshot(), context);
     if (!activeBridge || !validation.valid) {
       return;
@@ -2588,12 +2727,20 @@ export function renderPanel(
 
   const controller: PanelController = {
     setStatus(nextStatus) {
+      const previousBridgeReady = bridgeReady;
       panelState.status = nextStatus;
+      bridgeReady = Boolean(bridge) && isBridgeReadyStatus(nextStatus);
+      if (!bridgeReady && draftExecutionTarget === "captured-listener") {
+        draftExecutionTarget = "workbench-only";
+      }
       if (!panelVisible) {
         return;
       }
       status.textContent = nextStatus;
       status.dataset.status = nextStatus;
+      if (bridgeReady !== previousBridgeReady) {
+        renderSelectedTimelineDetail();
+      }
     },
 
     appendCaptureMessage(message) {
@@ -2609,6 +2756,9 @@ export function renderPanel(
       commandSearchTextCache.keys.clear();
       if (draft?.provenance.source !== "new-command") {
         draft = null;
+        draftEditing = false;
+        draftJsonText = null;
+        draftJsonError = null;
       }
       reinjectionMessage = null;
       resetTimelineRenderLimit();
@@ -2619,6 +2769,10 @@ export function renderPanel(
 
     setBridge(nextBridge) {
       bridge = nextBridge;
+      bridgeReady = isBridgeReadyStatus(panelState.status);
+      if (!bridgeReady && draftExecutionTarget === "captured-listener") {
+        draftExecutionTarget = "workbench-only";
+      }
       renderSelectedTimelineDetail();
     },
 
@@ -2664,6 +2818,7 @@ export function renderPanel(
       window.removeEventListener("beforeunload", closeStore);
       clearInteractionFlushTimer();
       helpTooltips.dispose();
+      themeManager.dispose();
       activeTooltipDisposers.delete(root);
       closeStore();
     }
@@ -2721,14 +2876,15 @@ export function renderPanel(
     currentDraft: ReinjectionDraft | null
   ): void {
     const section = document.createElement("section");
-    section.className = "draft-editor";
-    section.append(createTextElement("h3", "detail-section-heading", "Reinjection Draft"));
+    section.className = "replay-card draft-editor";
+    section.setAttribute("aria-busy", String(reinjectionPending));
+    section.append(createTextElement("h3", "detail-section-heading", "Replay"));
 
     const cloneButton = document.createElement("button");
     cloneButton.className = "clone-button";
     cloneButton.type = "button";
-    cloneButton.textContent = "Clone event";
-    cloneButton.disabled = !canCloneEvent(selectedEvent);
+    cloneButton.textContent = "Clone";
+    cloneButton.disabled = !canCloneEvent(selectedEvent) || reinjectionPending;
     cloneButton.addEventListener("click", () => {
       const nextDraft = createDraftFromEvent(selectedEvent);
       if (!nextDraft || !validateEditableDraft(nextDraft).valid) {
@@ -2737,6 +2893,12 @@ export function renderPanel(
       selectedEventId = selectedEvent.id;
       selectedPinned = true;
       draft = nextDraft;
+      draftEditing = false;
+      draftJsonText = formatDraftJson(nextDraft);
+      draftJsonError = null;
+      draftExecutionTarget = nextDraft.captureSource !== "wire" && nextDraft.target.listenerId && bridgeReady
+        ? "captured-listener"
+        : "workbench-only";
       reinjectionMessage = null;
       renderDetail(selectedEvent);
     });
@@ -2747,7 +2909,7 @@ export function renderPanel(
         createTextElement(
           "p",
           "editor-placeholder",
-          "Clone a captured item update to edit and reinject it locally."
+          "Clone this captured item update to replay it unchanged or edit a staged copy."
         )
       );
       parent.append(section);
@@ -2755,123 +2917,642 @@ export function renderPanel(
     }
 
     section.append(createSourceContext(currentDraft));
-    section.append(createDraftControls(currentDraft));
+    section.append(createDraftExecutionTargets(currentDraft));
+
+    if (reinjectionPending) {
+      const pending = createTextElement(
+        "p",
+        "reinjection-message pending",
+        draftExecutionTarget === "captured-listener"
+          ? "Delivering locally to the original app listener…"
+          : "Adding the synthetic update to Workbench…"
+      );
+      pending.setAttribute("role", "status");
+      pending.setAttribute("aria-live", "polite");
+      section.append(pending);
+    } else if (reinjectionMessage) {
+      section.append(createReinjectionMessageElement(reinjectionMessage));
+    }
+
+    const actionBar = document.createElement("div");
+    actionBar.className = "replay-action-bar";
+    const sourceReplay = createSourceReplayDraft(currentDraft);
+    const sourceValidation = validateDraftForExecutionTarget(sourceReplay, draftExecutionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    const reinjectButton = document.createElement("button");
+    reinjectButton.className = "reinject-button replay-source-button";
+    reinjectButton.type = "button";
+    reinjectButton.textContent = reinjectionPending ? "Re-injecting…" : "Re-inject";
+    reinjectButton.disabled = !sourceValidation.valid || reinjectionPending;
+    reinjectButton.addEventListener("click", () => {
+      const activeDraft = draft ?? currentDraft;
+      void executeCurrentDraft(
+        createSourceReplayDraft(activeDraft),
+        draftExecutionTarget,
+        "source"
+      );
+    });
+
+    const mutateButton = document.createElement("button");
+    mutateButton.className = "mutate-inject-button";
+    mutateButton.type = "button";
+    mutateButton.textContent = "Mutate & Inject…";
+    mutateButton.disabled = reinjectionPending;
+    mutateButton.setAttribute("aria-expanded", String(draftEditing));
+    mutateButton.addEventListener("click", () => {
+      draftEditing = true;
+      draftJsonText = draftJsonText ?? formatDraftJson(draft ?? currentDraft);
+      draftJsonError = null;
+      reinjectionMessage = null;
+      renderEventForDraft(draft ?? currentDraft, true);
+    });
+    actionBar.append(reinjectButton, mutateButton);
+    section.append(actionBar);
+
+    if (draftEditing) {
+      section.append(createDraftControls(currentDraft));
+    }
     parent.append(section);
   }
 
   function createDraftControls(currentDraft: ReinjectionDraft): HTMLElement {
     const controls = document.createElement("div");
     controls.className = "draft-controls";
+    controls.setAttribute("aria-label", "Edit staged replay draft");
 
-    const validation = validateReinjectionDraft(currentDraft);
+    const validation = validateDraftForExecutionTarget(currentDraft, draftExecutionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    const editorHeader = document.createElement("div");
+    editorHeader.className = "draft-editor-header";
+    editorHeader.append(
+      createTextElement("h4", "draft-editor-heading", "Mutate & Inject"),
+      createTextElement(
+        "span",
+        "draft-dirty-count",
+        `${draftChangeCount(currentDraft)} changed`
+      )
+    );
+    controls.append(editorHeader);
+
     if (!validation.valid) {
-      controls.append(
-        createTextElement(
-          "p",
-          "draft-validation-error",
-          validationMessage(validation.errors)
-        )
+      const validationError = createTextElement(
+        "p",
+        "draft-validation-error",
+        validationMessage(validation.errors)
       );
+      validationError.setAttribute("role", "alert");
+      controls.append(validationError);
     }
 
+    const injectButton = document.createElement("button");
+    injectButton.className = "inject-edited-button";
+    injectButton.type = "button";
+    injectButton.textContent = reinjectionPending
+      ? draftExecutionTarget === "captured-listener"
+        ? "Injecting…"
+        : "Adding…"
+      : "Inject edited draft";
+    injectButton.disabled = !validation.valid || Boolean(draftJsonError) || reinjectionPending;
+    injectButton.dataset.validationValid = String(validation.valid && !draftJsonError);
+    injectButton.addEventListener("click", () => {
+      const activeDraft = draft ?? currentDraft;
+      void executeCurrentDraft(activeDraft, draftExecutionTarget, "edited");
+    });
+
+    const structuredError = createTextElement(
+      "p",
+      "draft-validation-error draft-structured-error",
+      ""
+    );
+    structuredError.hidden = true;
+    structuredError.setAttribute("role", "alert");
+    controls.append(createStructuredDraftTable(currentDraft, injectButton, structuredError));
+    controls.append(structuredError);
+
+    const editorActions = document.createElement("div");
+    editorActions.className = "draft-editor-actions";
+    const resetButton = document.createElement("button");
+    resetButton.className = "reset-draft-button";
+    resetButton.type = "button";
+    resetButton.textContent = "Reset to source";
+    resetButton.disabled = reinjectionPending;
+    resetButton.addEventListener("click", () => {
+      draft = createSourceReplayDraft(draft ?? currentDraft);
+      draftJsonText = formatDraftJson(draft);
+      draftJsonError = null;
+      reinjectionMessage = null;
+      renderEventForDraft(draft, true);
+    });
+
+    const cancelButton = document.createElement("button");
+    cancelButton.className = "cancel-editing-button";
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel editing";
+    cancelButton.disabled = reinjectionPending;
+    cancelButton.addEventListener("click", () => {
+      draftEditing = false;
+      draftJsonError = null;
+      draftJsonText = formatDraftJson(draft ?? currentDraft);
+      renderEventForDraft(draft ?? currentDraft, true);
+    });
+    editorActions.append(resetButton, cancelButton);
+    controls.append(editorActions);
+
+    const advanced = document.createElement("details");
+    advanced.className = "detail-section draft-advanced-json";
+    advanced.dataset.detailSection = "Advanced Draft JSON";
+    const advancedSummary = document.createElement("summary");
+    advancedSummary.className = "detail-section-summary";
+    advancedSummary.append(
+      createTextElement("span", "detail-section-heading", "Advanced Draft JSON"),
+      createTextElement("span", "detail-section-marker", "bulk edit")
+    );
+    advanced.append(advancedSummary);
     const draftLabel = document.createElement("label");
     draftLabel.className = "draft-json-label";
-    draftLabel.append(createTextElement("span", "draft-input-text", "Draft JSON"));
+    draftLabel.append(
+      createTextElement(
+        "span",
+        "draft-input-text",
+        "Edit command, key, snapshot, and fields as one JSON object."
+      )
+    );
 
     const draftTextarea = document.createElement("textarea");
     draftTextarea.className = "draft-json";
     draftTextarea.setAttribute("aria-label", "Draft JSON");
     draftTextarea.spellcheck = false;
-    draftTextarea.value = formatDraftJson(currentDraft);
+    draftTextarea.value = draftJsonText ?? formatDraftJson(currentDraft);
+    draftTextarea.disabled = reinjectionPending;
     draftLabel.append(draftTextarea);
 
     const jsonError = createTextElement("p", "draft-validation-error draft-json-error", "");
-    jsonError.hidden = true;
+    jsonError.textContent = draftJsonError ?? "";
+    jsonError.hidden = !draftJsonError;
+    jsonError.setAttribute("role", "alert");
 
+    advanced.append(draftLabel, jsonError);
+    controls.append(advanced);
+
+    const derived = document.createElement("details");
+    derived.className = "detail-section draft-derived-fields";
+    derived.dataset.detailSection = "Derived changed fields";
+    const derivedSummary = document.createElement("summary");
+    derivedSummary.className = "detail-section-summary";
+    derivedSummary.append(
+      createTextElement("span", "detail-section-heading", "Derived changed fields"),
+      createTextElement(
+        "span",
+        "detail-section-marker",
+        `${Object.keys(currentDraft.changedFields).length} fields`
+      )
+    );
     const changedPreview = document.createElement("pre");
     changedPreview.className = "draft-changed-fields-preview";
     changedPreview.textContent = JSON.stringify(currentDraft.changedFields, null, 2);
-
-    const reinjectButton = document.createElement("button");
-    reinjectButton.className = "reinject-button";
-    reinjectButton.type = "button";
-    reinjectButton.textContent = reinjectionPending ? "Reinjecting..." : "Reinject draft";
-    reinjectButton.disabled = !validation.valid || !bridge || reinjectionPending;
-    reinjectButton.dataset.validationValid = String(validation.valid);
-    reinjectButton.addEventListener("click", () => {
-      const activeDraft = draft ?? currentDraft;
-      void reinjectCurrentDraft(activeDraft);
-    });
+    derived.append(derivedSummary, changedPreview);
+    controls.append(derived);
 
     draftTextarea.addEventListener("input", () => {
+      draftJsonText = draftTextarea.value;
       const result = parseDraftJson(currentDraft, draftTextarea.value);
       if (!result.draft) {
-        jsonError.textContent = result.error ?? "Draft JSON is invalid.";
+        draftJsonError = result.error ?? "Draft JSON is invalid.";
+        jsonError.textContent = draftJsonError;
         jsonError.hidden = false;
-        reinjectButton.disabled = true;
-        reinjectButton.dataset.validationValid = "false";
+        injectButton.disabled = true;
+        injectButton.dataset.validationValid = "false";
         return;
       }
 
       draft = result.draft;
+      draftJsonError = null;
       reinjectionMessage = null;
-      const nextValidation = validateReinjectionDraft(result.draft);
+      const nextValidation = validateDraftForExecutionTarget(result.draft, draftExecutionTarget, {
+        bridgeAvailable: bridgeReady
+      });
       jsonError.textContent = nextValidation.valid
         ? ""
         : validationMessage(nextValidation.errors);
       jsonError.hidden = nextValidation.valid;
       changedPreview.textContent = JSON.stringify(result.draft.changedFields, null, 2);
-      reinjectButton.disabled = !nextValidation.valid || !bridge || reinjectionPending;
-      reinjectButton.dataset.validationValid = String(nextValidation.valid);
+      controls.querySelector<HTMLElement>(".draft-dirty-count")!.textContent =
+        `${draftChangeCount(result.draft)} changed`;
+      derivedSummary.querySelector<HTMLElement>(".detail-section-marker")!.textContent =
+        `${Object.keys(result.draft.changedFields).length} fields`;
+      injectButton.disabled = !nextValidation.valid || reinjectionPending;
+      injectButton.dataset.validationValid = String(nextValidation.valid);
+      controls
+        .querySelector<HTMLTableElement>(".draft-field-diff")
+        ?.replaceWith(createStructuredDraftTable(result.draft, injectButton, structuredError));
     });
 
-    if (reinjectionMessage) {
-      const message = createTextElement("p", `reinjection-message ${reinjectionMessage.kind}`, reinjectionMessage.text);
-      if (reinjectionMessage.detail) {
-        message.append(createTextElement("span", "reinjection-detail", reinjectionMessage.detail));
+    controls.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !reinjectionPending) {
+        event.preventDefault();
+        event.stopPropagation();
+        draftEditing = false;
+        draftJsonError = null;
+        draftJsonText = formatDraftJson(draft ?? currentDraft);
+        renderEventForDraft(draft ?? currentDraft, true);
+        return;
       }
-      controls.append(message);
-    }
+      if (
+        event.key === "Enter" &&
+        (event.metaKey || event.ctrlKey) &&
+        !injectButton.disabled
+      ) {
+        event.preventDefault();
+        void executeCurrentDraft(draft ?? currentDraft, draftExecutionTarget, "edited");
+      }
+    });
 
-    controls.append(
-      draftLabel,
-      jsonError,
-      createTextElement("h4", "draft-source-heading", "Derived changed fields"),
-      changedPreview,
-      reinjectButton
-    );
+    controls.append(injectButton);
     return controls;
   }
 
-  async function reinjectCurrentDraft(currentDraft: ReinjectionDraft): Promise<void> {
-    const activeBridge = bridge;
-    if (!activeBridge || !validateReinjectionDraft(currentDraft).valid) {
+  function createStructuredDraftTable(
+    currentDraft: ReinjectionDraft,
+    injectButton: HTMLButtonElement,
+    structuredError: HTMLElement
+  ): HTMLTableElement {
+    const table = document.createElement("table");
+    table.className = "draft-field-diff";
+    const head = document.createElement("thead");
+    const headingRow = document.createElement("tr");
+    for (const heading of ["Field", "Original", "Draft", "State"]) {
+      headingRow.append(createTextElement("th", "draft-field-heading", heading));
+    }
+    head.append(headingRow);
+    const body = document.createElement("tbody");
+
+    const fieldNames = new Set([
+      ...(currentDraft.subscriptionMode === "COMMAND" ? ["command", "key"] : []),
+      ...Object.keys(currentDraft.sourceFields),
+      ...Object.keys(currentDraft.fields)
+    ]);
+    for (const fieldName of fieldNames) {
+      const original =
+        fieldName === "command"
+          ? currentDraft.sourceCommand
+          : fieldName === "key"
+            ? currentDraft.sourceKey
+            : currentDraft.sourceFields[fieldName];
+      const current =
+        fieldName === "command"
+          ? currentDraft.command
+          : fieldName === "key"
+            ? currentDraft.key
+            : currentDraft.fields[fieldName];
+      const row = document.createElement("tr");
+      row.dataset.fieldName = fieldName;
+      row.dataset.state = Object.is(original, current) ? "unchanged" : "changed";
+      const name = createTextElement("th", "draft-field-name", fieldName);
+      name.scope = "row";
+      const originalCell = document.createElement("td");
+      originalCell.className = "draft-field-original";
+      originalCell.append(createPrimitiveValue(original));
+      const draftCell = document.createElement("td");
+      draftCell.className = "draft-field-value";
+      draftCell.append(
+        createStructuredFieldEditor(
+          currentDraft,
+          fieldName,
+          current,
+          injectButton,
+          structuredError
+        )
+      );
+      const state = createTextElement(
+        "td",
+        "draft-field-state",
+        Object.is(original, current) ? "unchanged" : "changed"
+      );
+      row.append(name, originalCell, draftCell, state);
+      body.append(row);
+    }
+
+    const snapshotRow = document.createElement("tr");
+    snapshotRow.dataset.fieldName = "snapshot";
+    snapshotRow.dataset.state =
+      currentDraft.isSnapshot === currentDraft.sourceIsSnapshot ? "unchanged" : "changed";
+    const snapshotName = createTextElement("th", "draft-field-name", "snapshot");
+    snapshotName.scope = "row";
+    const snapshotOriginal = document.createElement("td");
+    snapshotOriginal.className = "draft-field-original";
+    snapshotOriginal.append(createPrimitiveValue(currentDraft.sourceIsSnapshot));
+    const snapshotDraft = document.createElement("td");
+    snapshotDraft.className = "draft-field-value";
+    const snapshotLabel = document.createElement("label");
+    snapshotLabel.className = "draft-snapshot-control";
+    const snapshotInput = document.createElement("input");
+    snapshotInput.className = "structured-snapshot-input";
+    snapshotInput.type = "checkbox";
+    snapshotInput.checked = currentDraft.isSnapshot;
+    snapshotInput.disabled = reinjectionPending;
+    snapshotInput.setAttribute("aria-label", "Draft snapshot state");
+    snapshotInput.addEventListener("change", () => {
+      applyStructuredDraftUpdate(
+        updateDraftSnapshot(draft ?? currentDraft, snapshotInput.checked)
+      );
+    });
+    snapshotLabel.append(snapshotInput, createTextElement("span", "draft-value-type", "boolean"));
+    snapshotDraft.append(snapshotLabel);
+    const snapshotState = createTextElement(
+      "td",
+      "draft-field-state",
+      currentDraft.isSnapshot === currentDraft.sourceIsSnapshot ? "unchanged" : "changed"
+    );
+    snapshotRow.append(snapshotName, snapshotOriginal, snapshotDraft, snapshotState);
+    body.append(snapshotRow);
+
+    table.append(head, body);
+    return table;
+  }
+
+  function createStructuredFieldEditor(
+    currentDraft: ReinjectionDraft,
+    fieldName: string,
+    value: DraftFieldValue | undefined,
+    injectButton: HTMLButtonElement,
+    structuredError: HTMLElement
+  ): HTMLElement {
+    const editor = document.createElement("div");
+    editor.className = "structured-field-editor";
+    const typeSelect = document.createElement("select");
+    typeSelect.className = "draft-field-type";
+    typeSelect.dataset.fieldName = fieldName;
+    typeSelect.setAttribute("aria-label", `Draft type ${fieldName}`);
+    typeSelect.disabled = reinjectionPending || fieldName === "command" || fieldName === "key";
+    for (const primitiveType of ["string", "number", "boolean", "null"] as const) {
+      const option = document.createElement("option");
+      option.value = primitiveType;
+      option.textContent = primitiveType;
+      typeSelect.append(option);
+    }
+    typeSelect.value = draftFieldType(value);
+    typeSelect.addEventListener("change", () => {
+      applyStructuredDraftUpdate(
+        updateDraftField(
+          draft ?? currentDraft,
+          fieldName,
+          defaultValueForDraftType(typeSelect.value, value)
+        )
+      );
+    });
+    editor.append(typeSelect);
+
+    if (fieldName === "command") {
+      const commandSelect = document.createElement("select");
+      commandSelect.className = "structured-field-input structured-command-input";
+      commandSelect.dataset.fieldName = fieldName;
+      commandSelect.setAttribute("aria-label", "Draft COMMAND command");
+      commandSelect.disabled = reinjectionPending;
+      for (const command of ["", "ADD", "UPDATE", "DELETE"]) {
+        const option = document.createElement("option");
+        option.value = command;
+        option.textContent = command || "Select command";
+        commandSelect.append(option);
+      }
+      commandSelect.value = currentDraft.command ?? "";
+      commandSelect.addEventListener("change", () => {
+        applyStructuredDraftUpdate(
+          updateDraftCommand(draft ?? currentDraft, commandSelect.value)
+        );
+      });
+      editor.append(commandSelect);
+      return editor;
+    }
+
+    if (fieldName === "key") {
+      const keyInput = document.createElement("textarea");
+      keyInput.className = "structured-field-input structured-string-input";
+      keyInput.dataset.fieldName = fieldName;
+      keyInput.rows = 1;
+      keyInput.value = currentDraft.key ?? "";
+      keyInput.disabled = reinjectionPending;
+      keyInput.setAttribute("aria-label", "Draft COMMAND key");
+      keyInput.addEventListener("input", () => {
+        applyStructuredDraftUpdate(updateDraftKey(draft ?? currentDraft, keyInput.value));
+      });
+      editor.append(keyInput);
+      return editor;
+    }
+
+    if (typeof value === "boolean") {
+      const booleanSelect = document.createElement("select");
+      booleanSelect.className = "structured-field-input";
+      booleanSelect.dataset.fieldName = fieldName;
+      booleanSelect.setAttribute("aria-label", `Draft field ${fieldName}`);
+      booleanSelect.disabled = reinjectionPending;
+      for (const booleanValue of ["true", "false"]) {
+        const option = document.createElement("option");
+        option.value = booleanValue;
+        option.textContent = booleanValue;
+        booleanSelect.append(option);
+      }
+      booleanSelect.value = String(value);
+      booleanSelect.addEventListener("change", () => {
+        applyStructuredDraftUpdate(
+          updateDraftField(draft ?? currentDraft, fieldName, booleanSelect.value === "true")
+        );
+      });
+      editor.append(booleanSelect);
+      return editor;
+    }
+
+    if (value === null || value === undefined) {
+      editor.append(createTextElement("span", "structured-null-value", "null"));
+      return editor;
+    }
+
+    if (typeof value === "number") {
+      const numberInput = document.createElement("input");
+      numberInput.className = "structured-field-input";
+      numberInput.dataset.fieldName = fieldName;
+      numberInput.type = "number";
+      numberInput.step = "any";
+      numberInput.value = String(value);
+      numberInput.disabled = reinjectionPending;
+      numberInput.setAttribute("aria-label", `Draft field ${fieldName}`);
+      numberInput.addEventListener("input", () => {
+        const nextValue = Number(numberInput.value);
+        if (numberInput.value.trim() === "" || !Number.isFinite(nextValue)) {
+          structuredError.textContent = `${fieldName} must be a finite number.`;
+          structuredError.hidden = false;
+          injectButton.disabled = true;
+          injectButton.dataset.validationValid = "false";
+          numberInput.setAttribute("aria-invalid", "true");
+          return;
+        }
+        applyStructuredDraftUpdate(
+          updateDraftField(draft ?? currentDraft, fieldName, nextValue)
+        );
+      });
+      editor.append(numberInput);
+      return editor;
+    }
+
+    const textInput = document.createElement("textarea");
+    textInput.className = "structured-field-input structured-string-input";
+    textInput.dataset.fieldName = fieldName;
+    textInput.rows = 1;
+    textInput.value = value;
+    textInput.disabled = reinjectionPending;
+    textInput.setAttribute("aria-label", `Draft field ${fieldName}`);
+    textInput.addEventListener("input", () => {
+      applyStructuredDraftUpdate(
+        updateDraftField(draft ?? currentDraft, fieldName, textInput.value)
+      );
+    });
+    editor.append(textInput);
+    const parsed = createParsedJsonDisclosure(value);
+    if (parsed) {
+      editor.append(parsed);
+    }
+    return editor;
+  }
+
+  function applyStructuredDraftUpdate(nextDraft: ReinjectionDraft): void {
+    draft = nextDraft;
+    draftJsonText = formatDraftJson(nextDraft);
+    draftJsonError = null;
+    reinjectionMessage = null;
+    renderEventForDraft(nextDraft, true);
+  }
+
+  function createDraftExecutionTargets(currentDraft: ReinjectionDraft): HTMLFieldSetElement {
+    const fieldset = document.createElement("fieldset");
+    fieldset.className = "draft-execution-targets";
+    fieldset.append(createTextElement("legend", "draft-target-legend", "Execution target"));
+
+    const listenerAvailable = Boolean(
+      currentDraft.captureSource !== "wire" && currentDraft.target.listenerId && bridgeReady
+    );
+    if (!listenerAvailable && draftExecutionTarget === "captured-listener") {
+      draftExecutionTarget = "workbench-only";
+    }
+    const choices: Array<{
+      value: ReinjectionExecutionTarget;
+      label: string;
+      helper: string;
+      disabled: boolean;
+    }> = [
+      {
+        value: "captured-listener",
+        label: "Original app listener",
+        helper: listenerAvailable
+          ? "Calls the captured listener in the inspected page. No server is contacted."
+          : "Unavailable because this capture has no live listener target or the panel bridge is disconnected.",
+        disabled: !listenerAvailable
+      },
+      {
+        value: "workbench-only",
+        label: "Workbench only",
+        helper: "Adds a synthetic update to Workbench state only. The inspected page is unchanged.",
+        disabled: false
+      }
+    ];
+
+    for (const choice of choices) {
+      const option = document.createElement("label");
+      option.className = "draft-target-option";
+      option.dataset.target = choice.value;
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "draft-execution-target";
+      input.value = choice.value;
+      input.checked = draftExecutionTarget === choice.value;
+      input.disabled = choice.disabled || reinjectionPending;
+      const helper = createTextElement("span", "draft-target-helper", choice.helper);
+      helper.id = `draft-target-${choice.value}-help`;
+      input.setAttribute("aria-describedby", helper.id);
+      input.addEventListener("change", () => {
+        if (!input.checked || input.disabled) {
+          return;
+        }
+        draftExecutionTarget = choice.value;
+        reinjectionMessage = null;
+        renderEventForDraft(currentDraft, true);
+      });
+      const copy = document.createElement("span");
+      copy.className = "draft-target-copy";
+      copy.append(createTextElement("span", "draft-target-label", choice.label), helper);
+      option.append(input, copy);
+      fieldset.append(option);
+    }
+
+    return fieldset;
+  }
+
+  async function executeCurrentDraft(
+    currentDraft: ReinjectionDraft,
+    executionTarget: ReinjectionExecutionTarget,
+    actionMode: "source" | "edited"
+  ): Promise<void> {
+    const activeBridge = bridgeReady ? bridge : null;
+    const validation = validateDraftForExecutionTarget(currentDraft, executionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    if (!validation.valid || (executionTarget === "captured-listener" && !activeBridge)) {
       return;
     }
 
     reinjectionPending = true;
     reinjectionMessage = null;
-    renderEventForDraft(currentDraft);
+    renderEventForDraft(currentDraft, true);
 
+    if (executionTarget === "workbench-only") {
+      const timestamp = Date.now();
+      const result: ReinjectionResult = {
+        requestId: `workbench-${timestamp}-${++workbenchSimulationSequence}`,
+        ok: true,
+        status: "success",
+        timestamp
+      };
+      reinjectionPending = false;
+      reinjectionMessage = {
+        kind: "success",
+        text: `${actionMode === "source" ? "Source clone" : "Edited draft"} added to Workbench only. The inspected page was not reached.`
+      };
+      renderEventForDraft(currentDraft, true);
+      resolveMaybe(
+        store.append(createSyntheticEventFromDraft(currentDraft, result, executionTarget)),
+        () => undefined
+      );
+      return;
+    }
+
+    // A captured-listener execution is intentionally strict: never fall back to a
+    // Workbench-only simulation when page delivery fails.
+    if (!activeBridge) {
+      return;
+    }
     const result = await activeBridge.reinjectDraft(currentDraft);
     reinjectionPending = false;
 
     if (result.ok && result.status === "success") {
       reinjectionMessage = {
         kind: "success",
-        text: "Synthetic update reinjected through the original listener."
+        text: `${actionMode === "source" ? "Source clone" : "Edited draft"} delivered to the original app listener. The inspected page was reached.`
       };
-      resolveMaybe(store.append(createSyntheticEventFromDraft(currentDraft, result)), () => undefined);
+      renderEventForDraft(currentDraft, true);
+      resolveMaybe(
+        store.append(createSyntheticEventFromDraft(currentDraft, result, executionTarget)),
+        () => undefined
+      );
       return;
     }
 
     reinjectionMessage = createFailureMessage(result);
-    renderEventForDraft(currentDraft);
+    renderEventForDraft(currentDraft, true);
   }
 
-  function renderEventForDraft(currentDraft: ReinjectionDraft): void {
+  function renderEventForDraft(currentDraft: ReinjectionDraft, preservePaneState = false): void {
     resolveMaybe(selectedEventForDraft(currentDraft), (event) => {
-      renderDetail(event);
+      renderDetail(event, { preservePaneState });
     });
   }
 
@@ -2890,10 +3571,17 @@ export function renderPanel(
   }
 
   function clearDraftForSelection(nextEventId: string | null): void {
+    if (detailCopyEventId !== nextEventId) {
+      detailCopyEventId = null;
+      detailCopyMessage = null;
+    }
     if (!draft || draft.sourceEventId === nextEventId) {
       return;
     }
     draft = null;
+    draftEditing = false;
+    draftJsonText = null;
+    draftJsonError = null;
     reinjectionMessage = null;
   }
 }
@@ -3087,6 +3775,17 @@ function restoreDetailSectionState(
 }
 
 function focusSelectorForElement(element: HTMLElement): string | null {
+  if (
+    element instanceof HTMLInputElement &&
+    element.type === "radio" &&
+    element.name &&
+    element.value
+  ) {
+    return `input[type="radio"][name="${cssAttributeValue(
+      element.name
+    )}"][value="${cssAttributeValue(element.value)}"]`;
+  }
+
   if (element.classList.contains("window-navigation-button") && element.dataset.windowAction) {
     return `.window-navigation-button[data-window-action="${cssAttributeValue(
       element.dataset.windowAction
@@ -3144,6 +3843,17 @@ function focusSelectorForElement(element: HTMLElement): string | null {
     return `.command-draft-field-input[data-field-name="${cssAttributeValue(element.dataset.fieldName)}"]`;
   }
 
+  if (
+    element.dataset.fieldName &&
+    (element.classList.contains("structured-field-input") ||
+      element.classList.contains("draft-field-type"))
+  ) {
+    const className = element.classList.contains("draft-field-type")
+      ? "draft-field-type"
+      : "structured-field-input";
+    return `.${className}[data-field-name="${cssAttributeValue(element.dataset.fieldName)}"]`;
+  }
+
   for (const className of [
     "draft-json",
     "command-draft-command",
@@ -3153,6 +3863,12 @@ function focusSelectorForElement(element: HTMLElement): string | null {
     "inject-command-button",
     "new-command-button",
     "clone-button",
+    "mutate-inject-button",
+    "inject-edited-button",
+    "reset-draft-button",
+    "cancel-editing-button",
+    "structured-snapshot-input",
+    "copy-event-json-button",
     "detail-collapse-button"
   ]) {
     if (element.classList.contains(className)) {
@@ -4112,6 +4828,123 @@ function formatDraftFieldValue(value: DraftFieldValue | undefined): string {
   return String(value);
 }
 
+function detailSourceLabel(
+  event: LightstreamerEventEnvelope
+): "Listener" | "Wire" | "Listener replay" | "Workbench only" {
+  if (event.synthetic || event.source === "synthetic") {
+    return event.raw?.executionTarget === "workbench-only"
+      ? "Workbench only"
+      : "Listener replay";
+  }
+  return event.captureSource === "wire" ? "Wire" : "Listener";
+}
+
+function safeClassSlug(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
+}
+
+function createReinjectionMessageElement(message: ReinjectionMessage): HTMLParagraphElement {
+  const element = createTextElement(
+    "p",
+    `reinjection-message ${message.kind}`,
+    message.text
+  );
+  if (message.kind === "error") {
+    element.setAttribute("role", "alert");
+  } else {
+    element.setAttribute("role", "status");
+    element.setAttribute("aria-live", "polite");
+  }
+  if (message.detail) {
+    element.append(createTextElement("span", "reinjection-detail", message.detail));
+  }
+  return element;
+}
+
+function draftChangeCount(draft: ReinjectionDraft): number {
+  const changed = new Set(Object.keys(deriveChangedFields(draft.sourceFields, draft.fields)));
+  if (draft.command !== draft.sourceCommand) {
+    changed.add("command");
+  }
+  if (draft.key !== draft.sourceKey) {
+    changed.add("key");
+  }
+  if (draft.isSnapshot !== draft.sourceIsSnapshot) {
+    changed.add("snapshot");
+  }
+  return changed.size;
+}
+
+function draftFieldType(value: DraftFieldValue | undefined): "string" | "number" | "boolean" | "null" {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  if (typeof value === "number") {
+    return "number";
+  }
+  if (typeof value === "boolean") {
+    return "boolean";
+  }
+  return "string";
+}
+
+function defaultValueForDraftType(
+  type: string,
+  current: DraftFieldValue | undefined
+): DraftFieldValue {
+  switch (type) {
+    case "string":
+      return typeof current === "string" ? current : current === null || current === undefined ? "" : String(current);
+    case "number":
+      return typeof current === "number" ? current : 0;
+    case "boolean":
+      return typeof current === "boolean" ? current : false;
+    default:
+      return null;
+  }
+}
+
+function createPrimitiveValue(value: DraftFieldValue | undefined): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "draft-primitive-value";
+  container.append(
+    createTextElement(
+      "span",
+      "draft-primitive-raw",
+      value === undefined ? "—" : value === null ? "null" : String(value)
+    )
+  );
+  if (typeof value === "string") {
+    const parsed = createParsedJsonDisclosure(value);
+    if (parsed) {
+      container.append(parsed);
+    }
+  }
+  return container;
+}
+
+function createParsedJsonDisclosure(value: string): HTMLDetailsElement | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  const disclosure = document.createElement("details");
+  disclosure.className = "parsed-json-disclosure";
+  const summary = document.createElement("summary");
+  summary.textContent = "Parsed JSON";
+  const payload = document.createElement("pre");
+  payload.className = "parsed-json-value";
+  payload.textContent = JSON.stringify(parsed, null, 2);
+  disclosure.append(summary, payload);
+  return disclosure;
+}
+
 function createFilterInput(label: string, className: string, placeholder: string): HTMLInputElement {
   const input = document.createElement("input");
   input.className = `filter-control ${className}`;
@@ -4202,16 +5035,27 @@ function canCloneEvent(event: LightstreamerEventEnvelope): boolean {
 }
 
 function createSourceContext(draft: ReinjectionDraft): HTMLElement {
-  const context = document.createElement("div");
+  const context = document.createElement("details");
   context.className = "draft-source-context";
+  const summary = document.createElement("summary");
+  summary.className = "draft-source-summary";
+  summary.append(
+    createTextElement("span", "draft-source-summary-title", "Staged source clone"),
+    createTextElement(
+      "span",
+      "draft-source-summary-meta",
+      `${draft.sourceCommand ?? "-"}/${draft.sourceKey ?? "-"} · ${draft.sourceIsSnapshot ? "snapshot" : "live"}`
+    )
+  );
+  context.append(summary);
 
   const rows: Array<[string, string]> = [
     ["Source event", draft.sourceEventId],
     ["Subscription", draft.target.subscriptionId ?? "-"],
     ["Listener", draft.target.listenerId ?? "-"],
     ["Item", draft.item.name ?? String(draft.item.position ?? "-")],
-    ["Command/key", `${draft.command ?? "-"}/${draft.key ?? "-"}`],
-    ["Snapshot", draft.isSnapshot ? "snapshot" : "live"]
+    ["Command/key", `${draft.sourceCommand ?? "-"}/${draft.sourceKey ?? "-"}`],
+    ["Snapshot", draft.sourceIsSnapshot ? "snapshot" : "live"]
   ];
 
   for (const [label, value] of rows) {
@@ -4223,12 +5067,6 @@ function createSourceContext(draft: ReinjectionDraft): HTMLElement {
     );
     context.append(row);
   }
-
-  const originalFields = document.createElement("pre");
-  originalFields.className = "draft-source-fields";
-  originalFields.textContent = JSON.stringify(draft.sourceFields, null, 2);
-  context.append(createTextElement("h4", "draft-source-heading", "Original field values"));
-  context.append(originalFields);
 
   return context;
 }
@@ -4281,7 +5119,34 @@ function formatCommandKey(event: LightstreamerEventEnvelope): string {
   return `${command}/${key}`;
 }
 
+function timelineCommandToken(event: LightstreamerEventEnvelope): string {
+  const command = event.update?.command?.trim().toUpperCase();
+  if (command === "ADD" || command === "UPDATE" || command === "DELETE") {
+    return command;
+  }
+  if (event.kind === "subscription-created" || event.kind === "subscription-started") {
+    return "SUBSCRIBE";
+  }
+  if (event.kind === "end-of-snapshot") {
+    return "EOS";
+  }
+  return "OTHER";
+}
+
+function timelineSourceToken(event: LightstreamerEventEnvelope): "listener" | "wire" | "workbench" {
+  if (event.synthetic || event.source === "synthetic") {
+    return "workbench";
+  }
+  return event.captureSource === "wire" ? "wire" : "listener";
+}
+
 function formatMarker(event: LightstreamerEventEnvelope): string {
+  if (
+    (event.synthetic || event.source === "synthetic") &&
+    event.raw?.executionTarget === "workbench-only"
+  ) {
+    return event.update?.isSnapshot ? "workbench snapshot" : "workbench live";
+  }
   const source =
     event.synthetic || event.source === "synthetic"
       ? "synthetic"
@@ -4294,7 +5159,10 @@ function formatMarker(event: LightstreamerEventEnvelope): string {
 
 function validationMessage(errors: string[]): string {
   if (errors.includes("Missing original listener target.")) {
-    return "This draft came from wire-level capture, so it can be inspected and edited but cannot be reinjected through an original listener.";
+    return "This capture has no original listener target. Choose Workbench only to simulate it without changing the inspected page.";
+  }
+  if (errors.includes("Original listener bridge is unavailable.")) {
+    return "The original listener bridge is unavailable. Choose Workbench only or reconnect the inspected page.";
   }
 
   return "Draft is missing required COMMAND values. Add a captured subscription, item, command/key, and valid field names before reinjecting.";
@@ -4311,7 +5179,10 @@ function createSyntheticProvenance(event: LightstreamerEventEnvelope): Record<st
     sourceEventId: event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? null,
     targetSubscriptionId: event.subscription?.id ?? null,
     targetListenerId: event.listener?.id ?? null,
-    editedFields: event.update?.changedFields ?? {}
+    executionTarget: event.raw?.executionTarget ?? "captured-listener",
+    deliveredToPage: event.raw?.deliveredToPage ?? true,
+    serverContacted: event.raw?.serverContacted ?? false,
+    editedFields: event.raw?.editedFields ?? event.update?.changedFields ?? {}
   };
 }
 

@@ -20,14 +20,65 @@ describe("synthetic reinjection event", () => {
       targetSubscriptionId: "subscription-1",
       targetListenerId: "listener-1",
       requestId: "request-1",
-      status: "success"
+      status: "success",
+      executionTarget: "captured-listener",
+      deliveredToPage: true,
+      serverContacted: false
     });
+  });
+
+  it("creates a listener-free Workbench simulation with derived edits and source semantics", () => {
+    const draft = createDraft();
+    draft.target.listenerId = null;
+    draft.subscriptionMode = "MERGE";
+    draft.captureSource = "wire";
+    draft.changedFields = { price: 999 };
+
+    const event = createSyntheticEventFromDraft(
+      draft,
+      {
+        requestId: "workbench-1",
+        ok: true,
+        status: "success",
+        timestamp: 456
+      },
+      "workbench-only"
+    );
+
+    expect(event.subscription?.mode).toBe("MERGE");
+    expect(event.captureSource).toBe("wire");
+    expect(event.listener).toBeUndefined();
+    expect(event.update?.changedFields).toEqual({ price: 101 });
+    expect(event.raw).toMatchObject({
+      executionTarget: "workbench-only",
+      deliveredToPage: false,
+      serverContacted: false,
+      editedFields: { price: 101 }
+    });
+  });
+
+  it("keeps manual changed-field semantics separate from actual edited-field provenance", () => {
+    const draft = createDraft();
+    draft.manualChangedFieldsOverride = true;
+    draft.changedFields = { command: "UPDATE" };
+
+    const event = createSyntheticEventFromDraft(draft, {
+      requestId: "manual-1",
+      ok: true,
+      status: "success",
+      timestamp: 789
+    });
+
+    expect(event.update?.changedFields).toEqual({ command: "UPDATE" });
+    expect(event.raw?.editedFields).toEqual({ price: 101 });
   });
 });
 
 function createDraft(): ReinjectionDraft {
   return {
     sourceEventId: "event-1",
+    subscriptionMode: "COMMAND",
+    captureSource: "listener",
     target: {
       subscriptionId: "subscription-1",
       listenerId: "listener-1"
@@ -38,6 +89,8 @@ function createDraft(): ReinjectionDraft {
     },
     command: "UPDATE",
     key: "item-1",
+    sourceCommand: "UPDATE",
+    sourceKey: "item-1",
     fields: {
       command: "UPDATE",
       key: "item-1",
@@ -55,6 +108,7 @@ function createDraft(): ReinjectionDraft {
       price: 100
     },
     isSnapshot: false,
+    sourceIsSnapshot: false,
     manualChangedFieldsOverride: false,
     provenance: {
       source: "clone",

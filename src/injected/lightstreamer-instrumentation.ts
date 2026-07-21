@@ -1836,11 +1836,13 @@ function reinjectDraft(
 }
 
 function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticItemUpdate {
-  const fields: Record<string, string | number | boolean | null> = {
-    ...draft.fields,
-    command: draft.command,
-    key: draft.key
-  };
+  const fields: Record<string, string | number | boolean | null> = { ...draft.fields };
+  if (draft.command !== null) {
+    fields.command = draft.command;
+  }
+  if (draft.key !== null) {
+    fields.key = draft.key;
+  }
   const changedFields = { ...draft.changedFields };
   const fieldEntries = Object.entries(fields);
   const changedFieldEntries = Object.entries(changedFields);
