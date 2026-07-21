@@ -1123,6 +1123,58 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     ).toBe(true);
   });
 
+  it("preserves subscription field positions for listener-path reinjection", () => {
+    const { target, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["scenario"],
+      ["command", "key", "price"]
+    );
+    const received: Record<string, unknown> = {};
+    const listener = {
+      onItemUpdate(update: {
+        forEachChangedField(
+          iterator: (fieldName: string, fieldPos: number, value: unknown) => void
+        ): void;
+        getValue(fieldNameOrPos: string | number): unknown;
+        isValueChanged(fieldNameOrPos: string | number): boolean;
+      }) {
+        update.forEachChangedField((fieldName, fieldPos, value) => {
+          received.fieldName = fieldName;
+          received.fieldPos = fieldPos;
+          received.value = value;
+          received.valueByPosition = update.getValue(fieldPos);
+          received.changedByPosition = update.isValueChanged(fieldPos);
+        });
+        received.commandByPosition = update.getValue(1);
+        received.keyByPosition = update.getValue(2);
+      }
+    };
+
+    client.subscribe(subscription);
+    subscription.addListener(listener);
+
+    messageListeners[0]({
+      source: target,
+      data: {
+        type: PAGE_REINJECT_REQUEST,
+        requestId: "request-positional-fields",
+        draft: createValidPageDraft()
+      }
+    } as unknown as MessageEvent);
+
+    expect(received).toEqual({
+      fieldName: "price",
+      fieldPos: 3,
+      value: 101,
+      valueByPosition: 101,
+      changedByPosition: true,
+      commandByPosition: "UPDATE",
+      keyByPosition: "item-1"
+    });
+  });
+
   it("reinjects non-COMMAND fields without inventing command or key values", () => {
     const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
     const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");

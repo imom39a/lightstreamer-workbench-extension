@@ -38,18 +38,21 @@ type MethodOwner = Record<string, unknown>;
 type ReinjectionListenerTarget = {
   subscriptionId: string;
   listenerId: string;
+  fieldNames: string[];
   callback(update: SyntheticItemUpdate): unknown;
 };
+
+type SyntheticFieldSelector = string | number;
 
 type SyntheticItemUpdate = {
   forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void): void;
   forEachChangedField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void): void;
   getItemName(): string | null;
   getItemPos(): number | null;
-  getValue(fieldName: string): unknown;
-  getValueAsJSONPatchIfAvailable(fieldName: string): null;
+  getValue(fieldNameOrPos: SyntheticFieldSelector): unknown;
+  getValueAsJSONPatchIfAvailable(fieldNameOrPos: SyntheticFieldSelector): null;
   isSnapshot(): boolean;
-  isValueChanged(fieldName: string): boolean;
+  isValueChanged(fieldNameOrPos: SyntheticFieldSelector): boolean;
 };
 
 type WireConnectionState = {
@@ -1544,8 +1547,16 @@ function registerReinjectionTarget(
   state.listenerTargets.set(targetKey(subscriptionId, listenerId), {
     subscriptionId,
     listenerId,
+    fieldNames: readSubscriptionFieldNames(subscription),
     callback
   });
+}
+
+function readSubscriptionFieldNames(subscription: object): string[] {
+  const fields = readGetter(subscription, "getFields");
+  return Array.isArray(fields) && fields.every((fieldName) => typeof fieldName === "string")
+    ? fields
+    : [];
 }
 
 function unregisterReinjectionTarget(
@@ -1817,7 +1828,7 @@ function reinjectDraft(
   }
 
   try {
-    target.callback(createSyntheticItemUpdate(draft));
+    target.callback(createSyntheticItemUpdate(draft, target.fieldNames));
     return {
       requestId,
       ok: true,
@@ -1835,7 +1846,10 @@ function reinjectDraft(
   }
 }
 
-function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticItemUpdate {
+function createSyntheticItemUpdate(
+  draft: ReinjectionDraftPayload,
+  subscriptionFieldNames: readonly string[]
+): SyntheticItemUpdate {
   const fields: Record<string, string | number | boolean | null> = { ...draft.fields };
   if (draft.command !== null) {
     fields.command = draft.command;
@@ -1844,18 +1858,28 @@ function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticIte
     fields.key = draft.key;
   }
   const changedFields = { ...draft.changedFields };
-  const fieldEntries = Object.entries(fields);
-  const changedFieldEntries = Object.entries(changedFields);
+  const fieldNames = orderedSyntheticFieldNames(
+    subscriptionFieldNames,
+    Object.keys(fields),
+    Object.keys(changedFields)
+  );
+  const fieldPositions = new Map(fieldNames.map((fieldName, index) => [fieldName, index + 1]));
+  const fieldEntries = fieldNames
+    .filter((fieldName) => Object.prototype.hasOwnProperty.call(fields, fieldName))
+    .map((fieldName) => [fieldName, fields[fieldName]] as const);
+  const changedFieldEntries = fieldNames
+    .filter((fieldName) => Object.prototype.hasOwnProperty.call(changedFields, fieldName))
+    .map((fieldName) => [fieldName, changedFields[fieldName]] as const);
 
   return {
     forEachField(iterator) {
-      fieldEntries.forEach(([fieldName, value], index) => {
-        iterator(fieldName, index + 1, value);
+      fieldEntries.forEach(([fieldName, value]) => {
+        iterator(fieldName, fieldPositions.get(fieldName) ?? 0, value);
       });
     },
     forEachChangedField(iterator) {
-      changedFieldEntries.forEach(([fieldName, value], index) => {
-        iterator(fieldName, index + 1, value);
+      changedFieldEntries.forEach(([fieldName, value]) => {
+        iterator(fieldName, fieldPositions.get(fieldName) ?? 0, value);
       });
     },
     getItemName() {
@@ -1864,7 +1888,11 @@ function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticIte
     getItemPos() {
       return draft.item.position ?? null;
     },
-    getValue(fieldName) {
+    getValue(fieldNameOrPos) {
+      const fieldName = resolveSyntheticFieldName(fieldNameOrPos, fieldNames);
+      if (!fieldName) {
+        return null;
+      }
       return Object.prototype.hasOwnProperty.call(fields, fieldName) ? fields[fieldName] : null;
     },
     getValueAsJSONPatchIfAvailable() {
@@ -1873,10 +1901,41 @@ function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticIte
     isSnapshot() {
       return draft.isSnapshot;
     },
-    isValueChanged(fieldName) {
+    isValueChanged(fieldNameOrPos) {
+      const fieldName = resolveSyntheticFieldName(fieldNameOrPos, fieldNames);
+      if (!fieldName) {
+        return false;
+      }
       return Object.prototype.hasOwnProperty.call(changedFields, fieldName);
     }
   };
+}
+
+function orderedSyntheticFieldNames(...groups: readonly (readonly string[])[]): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const fieldName of group) {
+      if (!seen.has(fieldName)) {
+        seen.add(fieldName);
+        names.push(fieldName);
+      }
+    }
+  }
+  return names;
+}
+
+function resolveSyntheticFieldName(
+  fieldNameOrPos: SyntheticFieldSelector,
+  fieldNames: readonly string[]
+): string | null {
+  if (typeof fieldNameOrPos === "string") {
+    return fieldNameOrPos;
+  }
+  if (!Number.isInteger(fieldNameOrPos) || fieldNameOrPos < 1) {
+    return null;
+  }
+  return fieldNames[fieldNameOrPos - 1] ?? null;
 }
 
 function targetKey(subscriptionId: string, listenerId: string): string {

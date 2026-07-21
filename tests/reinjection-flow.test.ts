@@ -193,7 +193,7 @@ describe("curated mutate-and-reinject contract", () => {
     controller.dispose();
   });
 
-  it("delivers the edited JSON value through the synthetic ItemUpdate API so an app listener rerenders", () => {
+  it("delivers both source replay and edited JSON through positional ItemUpdate APIs", () => {
     document.body.innerHTML = '<output id="application-view">not updated</output>';
     const messages: unknown[] = [];
     const messageListeners: Array<(event: MessageEvent) => void> = [];
@@ -216,20 +216,50 @@ describe("curated mutate-and-reinject contract", () => {
       ["customerDetail"],
       ["command", "key", "modelId", "modelValues"]
     );
-    let changedModelValues = false;
+    const receivedModelPositions: number[] = [];
+    const receivedSelections: boolean[] = [];
     subscription.addListener({
       onItemUpdate(update: SyntheticUpdateView) {
-        const model = JSON.parse(String(update.getValue("modelValues"))) as {
-          passenger: { selected: boolean };
-        };
-        changedModelValues = update.isValueChanged("modelValues");
-        const applicationView = document.querySelector<HTMLOutputElement>("#application-view");
-        if (applicationView) {
-          applicationView.value = model.passenger.selected ? "selected" : "not selected";
-        }
+        update.forEachChangedField((fieldName, fieldPos) => {
+          if (fieldName !== "modelValues") {
+            return;
+          }
+          const model = JSON.parse(String(update.getValue(fieldPos))) as {
+            passenger: { selected: boolean };
+          };
+          expect(update.isValueChanged(fieldPos)).toBe(true);
+          receivedModelPositions.push(fieldPos);
+          receivedSelections.push(model.passenger.selected);
+          const applicationView = document.querySelector<HTMLOutputElement>("#application-view");
+          if (applicationView) {
+            applicationView.value = model.passenger.selected ? "selected" : "not selected";
+          }
+        });
       }
     });
     client.subscribe(subscription);
+
+    messageListeners[0]?.({
+      source: target,
+      data: {
+        type: PAGE_REINJECT_REQUEST,
+        requestId: "curated-source-replay",
+        draft: {
+          ...pageDraft(),
+          fields: {
+            ...pageDraft().fields,
+            modelValues: SOURCE_MODEL_VALUES
+          },
+          changedFields: {
+            modelValues: SOURCE_MODEL_VALUES
+          }
+        }
+      }
+    } as unknown as MessageEvent);
+
+    expect(document.querySelector<HTMLOutputElement>("#application-view")?.value).toBe(
+      "not selected"
+    );
 
     messageListeners[0]?.({
       source: target,
@@ -240,7 +270,8 @@ describe("curated mutate-and-reinject contract", () => {
       }
     } as unknown as MessageEvent);
 
-    expect(changedModelValues).toBe(true);
+    expect(receivedModelPositions).toEqual([4, 4]);
+    expect(receivedSelections).toEqual([false, true]);
     expect(document.querySelector<HTMLOutputElement>("#application-view")?.value).toBe("selected");
     expect(
       messages.some(
@@ -254,8 +285,11 @@ describe("curated mutate-and-reinject contract", () => {
 });
 
 type SyntheticUpdateView = {
-  getValue(fieldName: string): unknown;
-  isValueChanged(fieldName: string): boolean;
+  forEachChangedField(
+    iterator: (fieldName: string, fieldPos: number, value: unknown) => void
+  ): void;
+  getValue(fieldNameOrPos: string | number): unknown;
+  isValueChanged(fieldNameOrPos: string | number): boolean;
 };
 
 class FakeLightstreamerClient {
