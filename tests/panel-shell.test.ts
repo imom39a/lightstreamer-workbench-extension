@@ -677,6 +677,7 @@ describe("panel shell", () => {
       kind: "item-update",
       update: { command: "ADD", key: "key-62" }
     });
+    clickButtonByText(".event-window-navigation button", "Latest");
     document.querySelector<HTMLButtonElement>('.event-row[data-event-id="detail-race-62"]')?.click();
     expect(text(".detail-pane")).toContain("detail-race-62");
 
@@ -1507,8 +1508,9 @@ describe("panel shell", () => {
     );
   });
 
-  it("keeps the Timeline detail editor open and focused when new events arrive", () => {
+  it("keeps the Timeline detail editor mounted and focused when new events arrive", async () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
+    await flushPanelRender();
     clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
@@ -1524,14 +1526,57 @@ describe("panel shell", () => {
     textarea.focus();
     textarea.setSelectionRange(18, 18);
 
-    appendCommandUpdate(panel, "beta", { qty: 2 });
+    for (let index = 0; index < 8; index += 1) {
+      appendCommandUpdate(panel, `burst-${index}`, { qty: index + 2 });
+    }
+    await flushPanelRender();
 
     const nextTextarea = document.querySelector<HTMLTextAreaElement>(".draft-json");
+    expect(nextTextarea).toBe(textarea);
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(false);
     expect(text(".draft-source-context")).toContain("event-1");
     expect(document.activeElement).toBe(nextTextarea);
     expect(nextTextarea?.selectionStart).toBe(18);
     expect(detail.scrollTop).toBe(280);
+  });
+
+  it("keeps editing the cloned source after it leaves the live Timeline window", async () => {
+    const modelValues = JSON.stringify({
+      selected: false,
+      passengers: Array.from({ length: 12 }, (_, index) => ({ id: index, active: true }))
+    });
+    for (let index = 0; index < 60; index += 1) {
+      appendCommandUpdate(panel, `key-${index}`, { modelValues });
+    }
+    await flushPanelRender();
+
+    const sourceRow = document.querySelector<HTMLButtonElement>(".event-row");
+    const sourceEventId = sourceRow?.dataset.eventId;
+    sourceRow?.click();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+
+    appendCommandUpdate(panel, "overflow", { modelValues });
+    await flushPanelRender();
+
+    const jsonInput = document.querySelector<HTMLTextAreaElement>(
+      '.structured-json-input[data-field-name="modelValues"]'
+    );
+    if (!jsonInput || !sourceEventId) {
+      throw new Error("missing out-of-window JSON draft");
+    }
+    jsonInput.value = jsonInput.value.replace('"selected": false', '"selected": true');
+    jsonInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+
+    expect(document.querySelector(".draft-controls")).not.toBeNull();
+    expect(text(".draft-source-context")).toContain(sourceEventId);
+    expect(text(".selected-event-id")).toBe(sourceEventId);
+    expect(
+      document.querySelector<HTMLTextAreaElement>(
+        '.structured-json-input[data-field-name="modelValues"]'
+      )?.value
+    ).toContain('"selected": true');
   });
 
   it("preserves the Timeline viewport and focused event during live updates", async () => {
@@ -1561,6 +1606,39 @@ describe("panel shell", () => {
     expect(document.activeElement).not.toBe(originalRow);
     expect(document.activeElement?.classList.contains("event-row")).toBe(true);
     expect(document.activeElement?.textContent).toContain("alpha");
+  });
+
+  it("anchors a selected full Timeline window while live events continue", async () => {
+    for (let index = 0; index < 60; index += 1) {
+      appendCommandUpdate(panel, `anchor-${index}`, { qty: index });
+    }
+    await flushPanelRender();
+
+    const initialRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".event-row"));
+    const initialEventIds = initialRows.map((row) => row.dataset.eventId);
+    const selectedRow = initialRows[20];
+    const selectedEventId = selectedRow?.dataset.eventId;
+    selectedRow?.click();
+
+    appendCommandUpdate(panel, "live-60", { qty: 60 });
+    appendCommandUpdate(panel, "live-61", { qty: 61 });
+    appendCommandUpdate(panel, "live-62", { qty: 62 });
+    await flushPanelRender();
+
+    expect(
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".event-row")).map(
+        (row) => row.dataset.eventId
+      )
+    ).toEqual(initialEventIds);
+    expect(
+      document.querySelector<HTMLButtonElement>('.event-row[data-selected="true"]')?.dataset.eventId
+    ).toBe(selectedEventId);
+    expect(text(".selected-event-id")).toBe(selectedEventId);
+    expect(
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".event-window-navigation button")).find(
+        (button) => button.textContent === "Latest"
+      )?.disabled
+    ).toBe(false);
   });
 
   it("follows events captured while COMMAND State is active until the user scrolls into history", async () => {
@@ -1602,14 +1680,17 @@ describe("panel shell", () => {
 
   it("keeps Timeline event detail sections expanded or collapsed when new events arrive", async () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
+    await flushPanelRender();
     clickFirstEventRow();
 
     openDetailSection("Context");
     detailSection("Changed fields").open = false;
+    const selectedHeader = document.querySelector(".selected-event-header");
 
     appendCommandUpdate(panel, "beta", { qty: 2 });
     await flushPanelRender();
 
+    expect(document.querySelector(".selected-event-header")).toBe(selectedHeader);
     expect(text(".detail-pane")).toContain('"id": "event-1"');
     expect(detailSection("Context").open).toBe(true);
     expect(detailSection("Changed fields").open).toBe(false);

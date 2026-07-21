@@ -156,6 +156,7 @@ type CommandKeyRow = CommandRow | DeletedCommandKey;
 type CommandKeyDetailTarget = Extract<CommandDetailTarget, { kind: "active" | "deleted" }>;
 type RenderOptions = {
   preservePaneState?: boolean;
+  passiveStoreUpdate?: boolean;
 };
 type ScheduledRender = {
   cancel(): void;
@@ -622,6 +623,7 @@ export function renderPanel(
   const store = options.store ?? createEventStore();
   const normalizer = options.normalizer ?? createEventNormalizer();
   let selectedEventId: string | null = null;
+  let selectedTimelineEvent: LightstreamerEventEnvelope | null = null;
   let selectedPinned = false;
   let timelineEvents: readonly LightstreamerEventEnvelope[] = [];
   let timelineQueryVersion = 0;
@@ -631,6 +633,7 @@ export function renderPanel(
   let draftEditing = false;
   let draftJsonText: string | null = null;
   let draftJsonError: string | null = null;
+  let draftRenderVersion = 0;
   let detailCopyEventId: string | null = null;
   let detailCopyMessage: ReinjectionMessage | null = null;
   let workbenchSimulationSequence = 0;
@@ -1106,7 +1109,8 @@ export function renderPanel(
 
   function mergeRenderOptions(left: RenderOptions | null, right: RenderOptions): RenderOptions {
     return {
-      preservePaneState: Boolean(left?.preservePaneState || right.preservePaneState)
+      preservePaneState: Boolean(left?.preservePaneState || right.preservePaneState),
+      passiveStoreUpdate: Boolean(left?.passiveStoreUpdate || right.passiveStoreUpdate)
     };
   }
 
@@ -1215,6 +1219,7 @@ export function renderPanel(
 
     if (currentStoreStats.retained === 0) {
       selectedEventId = null;
+      selectedTimelineEvent = null;
       selectedPinned = false;
       resetTimelineRenderLimit();
       clearDraftForSelection(null);
@@ -1225,6 +1230,7 @@ export function renderPanel(
 
     if (totalVisible === 0) {
       selectedEventId = null;
+      selectedTimelineEvent = null;
       resetTimelineRenderLimit();
       clearDraftForSelection(null);
       renderFilteredEmptyState();
@@ -1236,12 +1242,18 @@ export function renderPanel(
     const feedState =
       options.preservePaneState || !shouldFollowLatest ? capturePaneState(feed) : null;
 
-    const selectedStillVisible = renderedEvents.some((event) => event.id === selectedEventId);
+    const visibleSelectedEvent = renderedEvents.find((event) => event.id === selectedEventId) ?? null;
     if (!selectedPinned) {
       selectedEventId = timelineDetailOpen ? renderedEvents[renderedEvents.length - 1]?.id ?? null : null;
-    } else if (!selectedStillVisible && timelineSelectionNeedsFilterReconciliation) {
+      selectedTimelineEvent =
+        renderedEvents.find((event) => event.id === selectedEventId) ?? null;
+    } else if (!visibleSelectedEvent && timelineSelectionNeedsFilterReconciliation) {
       selectedEventId = renderedEvents[renderedEvents.length - 1]?.id ?? null;
+      selectedTimelineEvent =
+        renderedEvents.find((event) => event.id === selectedEventId) ?? null;
       timelineDetailOpen = Boolean(selectedEventId);
+    } else if (visibleSelectedEvent) {
+      selectedTimelineEvent = visibleSelectedEvent;
     }
     timelineSelectionNeedsFilterReconciliation = false;
     clearDraftForSelection(selectedEventId);
@@ -1267,8 +1279,10 @@ export function renderPanel(
       row.setAttribute("aria-label", timelineRowAccessibleLabel(event));
       row.addEventListener("click", () => {
         selectedEventId = event.id;
+        selectedTimelineEvent = event;
         selectedPinned = true;
         timelineDetailOpen = true;
+        timelineFollowLatest = false;
         clearDraftForSelection(event.id);
         renderFeed();
         renderDetail(event);
@@ -1305,7 +1319,14 @@ export function renderPanel(
     if (shouldFollowLatest) {
       scrollTimelineToLatest();
     }
-    renderSelectedTimelineDetail(options);
+    const selectedDetailIsCurrent =
+      timelineDetailOpen &&
+      selectedPinned &&
+      detail.dataset.eventId === selectedEventId &&
+      !detail.hidden;
+    if (!options.passiveStoreUpdate || !selectedDetailIsCurrent) {
+      renderSelectedTimelineDetail(options);
+    }
   }
 
   function createTimelineWindowNavigation(total: number, rendered: number): HTMLElement {
@@ -1358,8 +1379,12 @@ export function renderPanel(
       return;
     }
 
-    const cached = timelineEvents.find((event) => event.id === selectedEventId);
+    const cached =
+      selectedTimelineEvent?.id === selectedEventId
+        ? selectedTimelineEvent
+        : timelineEvents.find((event) => event.id === selectedEventId);
     if (cached) {
+      selectedTimelineEvent = cached;
       renderDetail(cached, options);
       return;
     }
@@ -1369,6 +1394,7 @@ export function renderPanel(
       if (selectedEventId !== requestedEventId || !timelineDetailOpen || !panelVisible) {
         return;
       }
+      selectedTimelineEvent = event;
       renderDetail(event, options);
     });
   }
@@ -1381,12 +1407,17 @@ export function renderPanel(
     detail.replaceChildren();
 
     if (!event || !timelineDetailOpen) {
+      delete detail.dataset.eventId;
       detail.hidden = true;
       workspace.dataset.detailOpen = "false";
       return;
     }
 
     detail.hidden = false;
+    detail.dataset.eventId = event.id;
+    if (selectedEventId === event.id) {
+      selectedTimelineEvent = event;
+    }
     workspace.dataset.detailOpen = "true";
     detail.append(createSelectedEventHeader(event));
     appendDraftSection(detail, event, draft?.sourceEventId === event.id ? draft : null);
@@ -1650,13 +1681,42 @@ export function renderPanel(
     const selected = findSelectedCommandItem(visibleItems, selectedCommandItem) ?? visibleItems[0];
     renderCommandGroups(visibleItems, selected, items.length, allItems.length);
     renderCommandRowsAndResults(selected.subscription, selected.item, filterEvaluation);
-    renderCommandDetail(selected.subscription, selected.item, commandState, options);
+    const preserveActiveDraftEditor = shouldPreserveCommandDraftEditor(
+      options,
+      selected.subscription,
+      selected.item
+    );
+    if (!preserveActiveDraftEditor) {
+      renderCommandDetail(selected.subscription, selected.item, commandState, options);
+    }
     restorePaneState(commandGroupPane, groupPaneState);
     restorePaneState(commandCurrentTable, currentPaneState);
     restorePaneState(commandUpdatePane, updatePaneState);
   }
 
+  function shouldPreserveCommandDraftEditor(
+    options: RenderOptions,
+    subscription: CommandSubscriptionGroup,
+    item: CommandItemGroup
+  ): boolean {
+    if (
+      !options.passiveStoreUpdate ||
+      draft?.provenance.source !== "new-command" ||
+      !commandDetailPane.querySelector(".command-draft-controls") ||
+      commandDetailPane.dataset.detailIdentity !==
+        commandDetailIdentity(subscription, item, selectedCommandKey, selectedCommandUpdateEventId)
+    ) {
+      return false;
+    }
+
+    return commandDraftMatchesContext(
+      draft,
+      createCommandItemContext(subscription, item, commandContextEvents)
+    );
+  }
+
   function renderCommandEmptyState(): void {
+    delete commandDetailPane.dataset.detailIdentity;
     commandDetailPane.hidden = true;
     commandWorkspace.dataset.detailOpen = "false";
     commandGroupPane.replaceChildren(
@@ -1683,6 +1743,7 @@ export function renderPanel(
   }
 
   function renderCommandNoMatchesState(): void {
+    delete commandDetailPane.dataset.detailIdentity;
     commandDetailPane.hidden = true;
     commandWorkspace.dataset.detailOpen = "false";
     commandGroupPane.replaceChildren(
@@ -1810,6 +1871,17 @@ export function renderPanel(
         )
       : [];
     const matchingKeys: CommandKeyRow[] = [...matchingRows, ...matchingDeleted];
+    const selectedKeyIndex = matchingKeys.findIndex((row) =>
+      commandSelectionMatchesStableKey(selectedCommandKey, row)
+    );
+    if (
+      selectedKeyIndex >= 0 &&
+      (selectedKeyIndex < commandKeyWindowOffset ||
+        selectedKeyIndex >= commandKeyWindowOffset + COMMAND_KEY_WINDOW_SIZE)
+    ) {
+      commandKeyWindowOffset =
+        Math.floor(selectedKeyIndex / COMMAND_KEY_WINDOW_SIZE) * COMMAND_KEY_WINDOW_SIZE;
+    }
     commandKeyWindowOffset = clampStartWindowOffset(
       commandKeyWindowOffset,
       matchingKeys.length,
@@ -1901,7 +1973,10 @@ export function renderPanel(
       selectionIdentity === commandWindowSelectionIdentity &&
       selectedLifecycle.length > commandWindowLifecycleLength
     ) {
-      if (commandUpdateWindowOffset > 0) {
+      const selectedWindowWasFull =
+        Boolean(selectedCommandUpdateEventId) &&
+        commandWindowLifecycleLength >= COMMAND_LIFECYCLE_WINDOW_SIZE;
+      if (commandUpdateWindowOffset > 0 || selectedWindowWasFull) {
         commandUpdateWindowOffset += selectedLifecycle.length - commandWindowLifecycleLength;
         commandUpdateHistoryAnchor =
           commandUpdateWindowOffset % COMMAND_LIFECYCLE_WINDOW_SIZE;
@@ -2196,12 +2271,19 @@ export function renderPanel(
     const paneState = options.preservePaneState ? capturePaneState(commandDetailPane) : null;
     commandDetailPane.replaceChildren();
     if (!commandDetailOpen) {
+      delete commandDetailPane.dataset.detailIdentity;
       commandDetailPane.hidden = true;
       commandWorkspace.dataset.detailOpen = "false";
       return;
     }
 
     commandDetailPane.hidden = false;
+    commandDetailPane.dataset.detailIdentity = commandDetailIdentity(
+      subscription,
+      item,
+      selectedCommandKey,
+      selectedCommandUpdateEventId
+    );
     commandWorkspace.dataset.detailOpen = "true";
     const collapseCommandDetail = () => {
       commandDetailOpen = false;
@@ -2789,7 +2871,9 @@ export function renderPanel(
         };
         selectedCommandUpdateEventId = null;
       }
-      resolveMaybe(store.append(createSyntheticEventFromDraft(currentDraft, result)), () => undefined);
+      resolveMaybe(store.append(createSyntheticEventFromDraft(currentDraft, result)), () => {
+        renderCommandState({ preservePaneState: true });
+      });
       return;
     }
 
@@ -2906,7 +2990,9 @@ export function renderPanel(
     clearEvents() {
       selectedPinned = false;
       selectedEventId = null;
+      selectedTimelineEvent = null;
       timelineDetailOpen = false;
+      draftRenderVersion += 1;
       resetCommandLifecycleWindow();
       commandSearchTextCache.keys.clear();
       if (draft?.provenance.source !== "new-command") {
@@ -2988,11 +3074,17 @@ export function renderPanel(
         for (const event of result.events) {
           rememberCommandContextEvent(event);
         }
-        renderActiveViewFromStoreUpdate({ preservePaneState: true });
+        renderActiveViewFromStoreUpdate({
+          preservePaneState: true,
+          passiveStoreUpdate: true
+        });
       });
     } else if (change.type === "append") {
       rememberCommandContextEvent(change.event);
-      if (timelineWindowOffset > 0 && matchesEventFilters(change.event, filterState)) {
+      const shouldAnchorTimelineWindow =
+        timelineWindowOffset > 0 ||
+        (!timelineFollowLatest && timelineEvents.length >= TIMELINE_WINDOW_SIZE);
+      if (shouldAnchorTimelineWindow && matchesEventFilters(change.event, filterState)) {
         timelineWindowOffset += 1;
         timelineHistoryAnchor = timelineWindowOffset % TIMELINE_WINDOW_SIZE;
       } else if (timelineWindowOffset === 0) {
@@ -3017,10 +3109,10 @@ export function renderPanel(
       return;
     }
     if (change.type === "append") {
-      renderActiveViewFromAppend({ preservePaneState: true });
+      renderActiveViewFromAppend({ preservePaneState: true, passiveStoreUpdate: true });
       return;
     }
-    renderActiveViewFromStoreUpdate({ preservePaneState: true });
+    renderActiveViewFromStoreUpdate({ preservePaneState: true, passiveStoreUpdate: true });
   });
 
   return controller;
@@ -3789,7 +3881,20 @@ export function renderPanel(
   }
 
   function renderEventForDraft(currentDraft: ReinjectionDraft, preservePaneState = false): void {
+    const renderVersion = ++draftRenderVersion;
+    const sourceEventId = currentDraft.sourceEventId;
     resolveMaybe(selectedEventForDraft(currentDraft), (event) => {
+      if (
+        renderVersion !== draftRenderVersion ||
+        !event ||
+        event.id !== sourceEventId ||
+        selectedEventId !== sourceEventId ||
+        !timelineDetailOpen ||
+        !panelVisible
+      ) {
+        return;
+      }
+      selectedTimelineEvent = event;
       renderDetail(event, { preservePaneState });
     });
   }
@@ -3797,15 +3902,18 @@ export function renderPanel(
   function selectedEventForDraft(
     currentDraft: ReinjectionDraft
   ): MaybePromise<LightstreamerEventEnvelope | null> {
+    const sourceEventId = currentDraft.sourceEventId;
+    if (!sourceEventId) {
+      return null;
+    }
     const cached =
-      timelineEvents.find((event) => event.id === currentDraft.sourceEventId) ??
-      timelineEvents.find((event) => event.id === selectedEventId) ??
-      timelineEvents[timelineEvents.length - 1] ??
+      (selectedTimelineEvent?.id === sourceEventId ? selectedTimelineEvent : null) ??
+      timelineEvents.find((event) => event.id === sourceEventId) ??
       null;
-    if (cached || !currentDraft.sourceEventId) {
+    if (cached) {
       return cached;
     }
-    return store.getEventById(currentDraft.sourceEventId);
+    return store.getEventById(sourceEventId);
   }
 
   function clearDraftForSelection(nextEventId: string | null): void {
@@ -3816,6 +3924,7 @@ export function renderPanel(
     if (!draft || draft.sourceEventId === nextEventId) {
       return;
     }
+    draftRenderVersion += 1;
     draft = null;
     draftEditing = false;
     draftJsonText = null;
@@ -4379,6 +4488,15 @@ function reconcileCommandSelection(
     return selection;
   }
 
+  if (selection?.status !== "diagnostic") {
+    const transitionedRow = [...matchingRows, ...matchingDeleted].find((row) =>
+      commandSelectionMatchesStableKey(selection, row)
+    );
+    if (transitionedRow) {
+      return commandSelectionForKey(transitionedRow);
+    }
+  }
+
   if (matchingRows[0]) {
     return commandSelectionForRow(matchingRows[0]);
   }
@@ -4472,6 +4590,19 @@ function commandSelectionMatchesKey(selection: CommandSelection, row: CommandKey
     : commandSelectionMatchesDeleted(selection, row);
 }
 
+function commandSelectionMatchesStableKey(
+  selection: CommandSelection,
+  row: CommandKeyRow
+): boolean {
+  return (
+    selection !== null &&
+    selection.status !== "diagnostic" &&
+    selection.subscriptionId === row.subscriptionId &&
+    selection.itemId === row.itemId &&
+    selection.key === row.key
+  );
+}
+
 function commandSelectionsEqual(left: CommandSelection, right: CommandSelection): boolean {
   if (left === right) {
     return true;
@@ -4504,6 +4635,20 @@ function commandSelectionIdentity(selection: CommandSelection): string | null {
     selection.status === "diagnostic" ? selection.diagnosticCode : "",
     selection.status === "diagnostic" ? selection.eventId ?? "" : ""
   ].join("\u0000");
+}
+
+function commandDetailIdentity(
+  subscription: CommandSubscriptionGroup,
+  item: CommandItemGroup,
+  selection: CommandSelection,
+  updateEventId: string | null
+): string {
+  return JSON.stringify([
+    subscription.subscriptionId,
+    item.itemId,
+    commandSelectionIdentity(selection) ?? "",
+    updateEventId ?? ""
+  ]);
 }
 
 function commandSelectionMatchesDeleted(

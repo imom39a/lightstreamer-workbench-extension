@@ -723,6 +723,53 @@ describe("COMMAND State panel workbench", () => {
     ).toEqual(visibleBefore);
   });
 
+  it("anchors a selected full COMMAND update window during live appends", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const historyStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 32; index += 1) {
+      historyStore.append(
+        event(`selected-anchor-${index}`, {
+          command: index === 1 ? "ADD" : "UPDATE",
+          key: "selected-anchor-key"
+        })
+      );
+    }
+    renderPanel(root, undefined, { store: historyStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    const visibleBefore = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".command-update-row")
+    ).map((row) => row.dataset.eventId);
+    document.querySelector<HTMLButtonElement>(".command-update-row")?.click();
+    const selectedEventId = document.querySelector<HTMLButtonElement>(
+      '.command-update-row[data-selected="true"]'
+    )?.dataset.eventId;
+
+    for (let index = 33; index <= 35; index += 1) {
+      historyStore.append(
+        event(`selected-anchor-${index}`, {
+          command: "UPDATE",
+          key: "selected-anchor-key"
+        })
+      );
+    }
+    await flushInteractionRender();
+
+    expect(
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".command-update-row")).map(
+        (row) => row.dataset.eventId
+      )
+    ).toEqual(visibleBefore);
+    expect(
+      document.querySelector<HTMLButtonElement>('.command-update-row[data-selected="true"]')?.dataset
+        .eventId
+    ).toBe(selectedEventId);
+    expect(text(".command-detail-pane")).toContain(`Update ${selectedEventId}`);
+  });
+
   it("preserves a partial COMMAND history anchor across append, Latest, and Older", () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
@@ -1108,6 +1155,48 @@ describe("COMMAND State panel workbench", () => {
     expect(document.activeElement?.textContent).toContain("command-1");
   });
 
+  it("keeps the same COMMAND key selected when its live status changes", async () => {
+    clickCommandState();
+    clickRowByText(".command-current-row", "alpha");
+
+    store.append(event("event-8", { command: "DELETE", key: "alpha" }));
+    await flushInteractionRender();
+
+    expect(selectedTexts(".command-current-row")).toHaveLength(1);
+    expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
+    expect(
+      document.querySelector<HTMLButtonElement>('.command-current-row[data-selected="true"]')?.dataset
+        .status
+    ).toBe("deleted");
+    expect(text(".command-detail-pane")).toContain("Key alpha - deleted");
+  });
+
+  it("keeps a transitioned COMMAND key visible across a full key window", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const liveStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 0; index < 70; index += 1) {
+      liveStore.append(event(`window-${index}`, { key: `key-${index}` }));
+    }
+    renderPanel(root, undefined, { store: liveStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    clickRowByText(".command-current-row", "key-0");
+
+    liveStore.append(event("window-delete", { command: "DELETE", key: "key-0" }));
+    await flushInteractionRender();
+
+    const selected = document.querySelector<HTMLButtonElement>(
+      '.command-current-row[data-selected="true"]'
+    );
+    expect(selected?.dataset.key).toBe("key-0");
+    expect(selected?.dataset.status).toBe("deleted");
+    expect(text(".command-key-window-status")).toContain("61–70 of 70");
+    expect(text(".command-detail-pane")).toContain("Key key-0 - deleted");
+  });
+
   it("renders help tooltips in a clamped overlay for hover and focus", () => {
     clickCommandState();
 
@@ -1439,8 +1528,9 @@ describe("COMMAND State panel workbench", () => {
     expect(nextKeyInput.value).toBe("g");
   });
 
-  it("keeps COMMAND detail editors open and focused when new events arrive", () => {
+  it("keeps COMMAND detail editors mounted and focused when new events arrive", async () => {
     clickCommandState();
+    await flushInteractionRender();
     button(".new-command-button").click();
     input(".command-draft-key", "g");
 
@@ -1454,9 +1544,13 @@ describe("COMMAND State panel workbench", () => {
     keyInput.focus();
     keyInput.setSelectionRange(1, 1);
 
-    store.append(event("event-8", { mode: "MERGE", key: "merge-key" }));
+    for (let index = 8; index < 16; index += 1) {
+      store.append(event(`event-${index}`, { mode: "MERGE", key: `merge-key-${index}` }));
+    }
+    await flushInteractionRender();
 
     const nextKeyInput = control(".command-draft-key") as HTMLInputElement;
+    expect(nextKeyInput).toBe(keyInput);
     expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(false);
     expect(document.activeElement).toBe(nextKeyInput);
     expect(nextKeyInput.value).toBe("g");
