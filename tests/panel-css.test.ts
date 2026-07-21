@@ -61,9 +61,19 @@ describe("panel CSS", () => {
     expect(panelCss).toContain('.event-row[data-command="ADD"] .event-command');
     expect(panelCss).toContain('.event-row[data-command="UPDATE"] .event-command');
     expect(panelCss).toContain('.event-row[data-command="DELETE"] .event-command');
-    expect(panelCss).toContain('.event-row[data-command="SUBSCRIBE"] .event-kind');
-    expect(panelCss).toContain('.event-row[data-command="EOS"] .event-kind');
+    expect(panelCss).toContain('.event-row[data-command="SUBSCRIBE"] .event-code');
+    expect(panelCss).toContain('.event-row[data-command="EOS"] .event-code');
+    expect(panelCss).toContain('.event-code[data-code-family="tlcp"]');
+    expect(panelCss).toContain('.event-code[data-code-family="workbench"]');
     expect(panelCss).toContain('.event-row[data-source="workbench"] .event-marker');
+    expect(panelCss).toMatch(/\.event-command\s*{[\s\S]*?max-width:\s*100%;/);
+  });
+
+  it("gives large JSON drafts a full-width bounded editor", () => {
+    expect(panelCss).toContain('.draft-field-diff tr[data-layout="json-summary"]');
+    expect(panelCss).toContain(".draft-json-editor-cell");
+    expect(panelCss).toMatch(/\.structured-json-input\s*{[\s\S]*?min-height:\s*190px;/);
+    expect(panelCss).toMatch(/\.structured-json-input\s*{[\s\S]*?max-height:/);
   });
 
   it("keeps desktop split panes, stacks medium panes, and drills into detail on narrow panels", () => {

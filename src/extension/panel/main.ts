@@ -169,6 +169,13 @@ type PaneState = {
 };
 type CommandResizablePane = "subscriptions" | "keys" | "updates";
 type CommandPaneWidths = Record<CommandResizablePane, number>;
+type TimelineCodeFamily = "tlcp" | "workbench";
+type TimelineCodeDefinition = {
+  code: string;
+  label: string;
+  description: string;
+  family: TimelineCodeFamily;
+};
 
 const initialState: PanelState = {
   status: "idle"
@@ -204,6 +211,92 @@ const TIMELINE_MIN_DETAIL_WIDTH = 280;
 const TIMELINE_MAX_DETAIL_WIDTH = 860;
 const TIMELINE_RESIZE_STEP = 24;
 const TIMELINE_RESIZE_LARGE_STEP = 80;
+const TIMELINE_CODE_DEFINITIONS: readonly TimelineCodeDefinition[] = [
+  {
+    code: "U",
+    label: "Update",
+    description: "Item update; the TLCP U notification carries snapshot and live data.",
+    family: "tlcp"
+  },
+  {
+    code: "SUBOK",
+    label: "Subscription active",
+    description: "A non-COMMAND subscription is active.",
+    family: "tlcp"
+  },
+  {
+    code: "SUBCMD",
+    label: "COMMAND subscription active",
+    description: "A COMMAND subscription is active.",
+    family: "tlcp"
+  },
+  {
+    code: "UNSUB",
+    label: "Unsubscribed",
+    description: "The subscription ended.",
+    family: "tlcp"
+  },
+  {
+    code: "EOS",
+    label: "End of snapshot",
+    description: "The item snapshot is complete.",
+    family: "tlcp"
+  },
+  {
+    code: "CS",
+    label: "Clear snapshot",
+    description: "The item snapshot was cleared.",
+    family: "tlcp"
+  },
+  {
+    code: "OV",
+    label: "Overflow",
+    description: "One or more item updates were lost.",
+    family: "tlcp"
+  },
+  {
+    code: "C+",
+    label: "Client observed",
+    description: "Workbench captured a Lightstreamer client.",
+    family: "workbench"
+  },
+  {
+    code: "C~",
+    label: "Client status",
+    description: "Workbench captured a client status change.",
+    family: "workbench"
+  },
+  {
+    code: "S+",
+    label: "Subscription observed",
+    description: "Workbench captured subscription configuration before activation.",
+    family: "workbench"
+  },
+  {
+    code: "S~",
+    label: "Subscription restored",
+    description: "Workbench restored an already-active subscription into panel state.",
+    family: "workbench"
+  },
+  {
+    code: "S!",
+    label: "Subscription error",
+    description: "Workbench captured a subscription error callback.",
+    family: "workbench"
+  },
+  {
+    code: "L+",
+    label: "Listener added",
+    description: "Workbench observed a subscription listener being added.",
+    family: "workbench"
+  },
+  {
+    code: "L−",
+    label: "Listener removed",
+    description: "Workbench observed a subscription listener being removed.",
+    family: "workbench"
+  }
+];
 const activeTooltipDisposers = new WeakMap<HTMLElement, () => void>();
 let helpTooltipIdCounter = 0;
 
@@ -234,6 +327,54 @@ function createProductLabel(): HTMLHeadingElement {
   const text = createTextElement("span", "product-label-text", "Lightstreamer Event Workbench");
   title.append(icon, text);
   return title;
+}
+
+function createTimelineCodeLegend(): HTMLDetailsElement {
+  const legend = document.createElement("details");
+  legend.className = "timeline-code-legend";
+  const summary = document.createElement("summary");
+  summary.className = "timeline-code-legend-toggle";
+  summary.textContent = "Codes";
+  summary.setAttribute("aria-label", "Timeline code legend");
+
+  const popover = document.createElement("div");
+  popover.className = "timeline-code-legend-popover";
+  popover.append(
+    createTextElement(
+      "p",
+      "timeline-code-legend-intro",
+      "Protocol tags stay aligned with Lightstreamer TLCP. Workbench-only capture lifecycle uses compact local codes."
+    )
+  );
+
+  for (const [family, heading] of [
+    ["tlcp", "Lightstreamer TLCP"],
+    ["workbench", "Workbench lifecycle"]
+  ] as const) {
+    const group = document.createElement("section");
+    group.className = "timeline-code-legend-group";
+    group.dataset.family = family;
+    group.append(createTextElement("h3", "timeline-code-legend-heading", heading));
+    const definitions = document.createElement("dl");
+    definitions.className = "timeline-code-legend-list";
+    for (const definition of TIMELINE_CODE_DEFINITIONS.filter(
+      (candidate) => candidate.family === family
+    )) {
+      definitions.append(
+        createTextElement("dt", `timeline-legend-code code-${family}`, definition.code),
+        createTextElement(
+          "dd",
+          "timeline-code-legend-description",
+          `${definition.label} — ${definition.description}`
+        )
+      );
+    }
+    group.append(definitions);
+    popover.append(group);
+  }
+
+  legend.append(summary, popover);
+  return legend;
 }
 
 function extensionAssetUrl(path: string): string {
@@ -656,7 +797,7 @@ export function renderPanel(
     setFilter("query", searchInput.value);
   });
 
-  filterStrip.append(searchInput);
+  filterStrip.append(searchInput, createTimelineCodeLegend());
 
   const commandFilterStrip = document.createElement("section");
   commandFilterStrip.className = "command-filter-strip";
@@ -1119,6 +1260,11 @@ export function renderPanel(
       row.dataset.command = timelineCommandToken(event);
       row.dataset.kind = event.kind;
       row.dataset.source = timelineSourceToken(event);
+      const codeDefinition = timelineCodeDefinition(event);
+      row.dataset.code = codeDefinition.code;
+      row.dataset.codeFamily = codeDefinition.family;
+      row.title = timelineRowContextTitle(event);
+      row.setAttribute("aria-label", timelineRowAccessibleLabel(event));
       row.addEventListener("click", () => {
         selectedEventId = event.id;
         selectedPinned = true;
@@ -1128,15 +1274,23 @@ export function renderPanel(
         renderDetail(event);
       });
 
+      const item = createTextElement("span", "event-cell event-item", formatTimelineItem(event));
+      item.title = timelineItemTitle(event);
+      const command = createTextElement(
+        "span",
+        "event-cell event-command",
+        formatTimelineCommandKey(event)
+      );
+      command.title = timelineCommandKeyTitle(event);
+      const marker = createTextElement("span", "event-cell event-marker", formatMarker(event));
+      marker.title = timelineSourceTitle(event);
+
       row.append(
         createTimestampElement(event.timestamp, "event-cell event-time"),
-        createTextElement("span", "event-cell event-kind", event.kind),
-        createTextElement("span", "event-cell event-client", event.client?.id ?? "-"),
-        createTextElement("span", "event-cell event-subscription", event.subscription?.id ?? "-"),
-        createTextElement("span", "event-cell event-mode", event.subscription?.mode ?? "-"),
-        createTextElement("span", "event-cell event-item", event.item?.name ?? "-"),
-        createTextElement("span", "event-cell event-command", formatCommandKey(event)),
-        createTextElement("span", "event-cell event-marker", formatMarker(event))
+        createTimelineCodeElement(event, "event-cell event-code"),
+        item,
+        command,
+        marker
       );
 
       list.append(row);
@@ -1255,6 +1409,7 @@ export function renderPanel(
           synthetic: event.synthetic,
           kind: event.kind
         },
+        client: event.client ?? null,
         subscription: event.subscription ?? null,
         listener: event.listener ?? null,
         item: event.item ?? null,
@@ -1287,7 +1442,7 @@ export function renderPanel(
       summary.className = "selected-event-summary";
       const sourceLabel = detailSourceLabel(selectedEvent);
       summary.append(
-        createTextElement("span", "selected-event-kind", selectedEvent.kind),
+        createTimelineCodeElement(selectedEvent, "selected-event-kind"),
         createTextElement("strong", "selected-event-command", formatCommandKey(selectedEvent)),
         createTextElement(
           "span",
@@ -3182,7 +3337,7 @@ export function renderPanel(
     table.className = "draft-field-diff";
     const head = document.createElement("thead");
     const headingRow = document.createElement("tr");
-    for (const heading of ["Field", "Original", "Draft", "State"]) {
+    for (const heading of ["Field", "Original", "Draft"]) {
       headingRow.append(createTextElement("th", "draft-field-heading", heading));
     }
     head.append(headingRow);
@@ -3206,40 +3361,66 @@ export function renderPanel(
           : fieldName === "key"
             ? currentDraft.key
             : currentDraft.fields[fieldName];
+      const expandedJson = shouldUseExpandedJsonEditor(original, current);
+      const fieldChanged = !Object.is(original, current);
       const row = document.createElement("tr");
       row.dataset.fieldName = fieldName;
-      row.dataset.state = Object.is(original, current) ? "unchanged" : "changed";
+      row.dataset.state = fieldChanged ? "changed" : "unchanged";
+      row.dataset.layout = expandedJson ? "json-summary" : "scalar";
       const name = createTextElement("th", "draft-field-name", fieldName);
       name.scope = "row";
+      if (fieldChanged) {
+        const changed = createTextElement("span", "draft-field-changed-indicator", "Δ");
+        changed.title = "Changed from captured value";
+        changed.setAttribute("aria-label", "changed");
+        name.append(changed);
+      }
       const originalCell = document.createElement("td");
       originalCell.className = "draft-field-original";
-      originalCell.append(createPrimitiveValue(original));
+      originalCell.append(createPrimitiveValue(original, { showPreview: !expandedJson }));
       const draftCell = document.createElement("td");
       draftCell.className = "draft-field-value";
-      draftCell.append(
-        createStructuredFieldEditor(
-          currentDraft,
-          fieldName,
-          current,
-          injectButton,
-          structuredError
-        )
-      );
-      const state = createTextElement(
-        "td",
-        "draft-field-state",
-        Object.is(original, current) ? "unchanged" : "changed"
-      );
-      row.append(name, originalCell, draftCell, state);
+      if (expandedJson) {
+        draftCell.append(createPrimitiveValue(current, { showPreview: false }));
+      } else {
+        draftCell.append(
+          createStructuredFieldEditor(
+            currentDraft,
+            fieldName,
+            current,
+            injectButton,
+            structuredError
+          )
+        );
+      }
+      row.append(name, originalCell, draftCell);
       body.append(row);
+      if (expandedJson) {
+        body.append(
+          createExpandedJsonFieldRow(
+            currentDraft,
+            fieldName,
+            original,
+            current,
+            injectButton,
+            structuredError
+          )
+        );
+      }
     }
 
     const snapshotRow = document.createElement("tr");
     snapshotRow.dataset.fieldName = "snapshot";
-    snapshotRow.dataset.state =
-      currentDraft.isSnapshot === currentDraft.sourceIsSnapshot ? "unchanged" : "changed";
+    const snapshotChanged = currentDraft.isSnapshot !== currentDraft.sourceIsSnapshot;
+    snapshotRow.dataset.state = snapshotChanged ? "changed" : "unchanged";
     const snapshotName = createTextElement("th", "draft-field-name", "snapshot");
     snapshotName.scope = "row";
+    if (snapshotChanged) {
+      const changed = createTextElement("span", "draft-field-changed-indicator", "Δ");
+      changed.title = "Changed from captured value";
+      changed.setAttribute("aria-label", "changed");
+      snapshotName.append(changed);
+    }
     const snapshotOriginal = document.createElement("td");
     snapshotOriginal.className = "draft-field-original";
     snapshotOriginal.append(createPrimitiveValue(currentDraft.sourceIsSnapshot));
@@ -3260,16 +3441,64 @@ export function renderPanel(
     });
     snapshotLabel.append(snapshotInput, createTextElement("span", "draft-value-type", "boolean"));
     snapshotDraft.append(snapshotLabel);
-    const snapshotState = createTextElement(
-      "td",
-      "draft-field-state",
-      currentDraft.isSnapshot === currentDraft.sourceIsSnapshot ? "unchanged" : "changed"
-    );
-    snapshotRow.append(snapshotName, snapshotOriginal, snapshotDraft, snapshotState);
+    snapshotRow.append(snapshotName, snapshotOriginal, snapshotDraft);
     body.append(snapshotRow);
 
     table.append(head, body);
     return table;
+  }
+
+  function createExpandedJsonFieldRow(
+    currentDraft: ReinjectionDraft,
+    fieldName: string,
+    original: DraftFieldValue | undefined,
+    current: DraftFieldValue | undefined,
+    injectButton: HTMLButtonElement,
+    structuredError: HTMLElement
+  ): HTMLTableRowElement {
+    const row = document.createElement("tr");
+    row.className = "draft-json-editor-row";
+    row.dataset.fieldName = fieldName;
+    row.dataset.layout = "json-editor";
+    row.dataset.state = Object.is(original, current) ? "unchanged" : "changed";
+    const cell = document.createElement("td");
+    cell.className = "draft-json-editor-cell";
+    cell.colSpan = 3;
+
+    const workspace = document.createElement("section");
+    workspace.className = "structured-json-workspace";
+    workspace.setAttribute("aria-label", `${fieldName} JSON field editor`);
+    const header = document.createElement("header");
+    header.className = "structured-json-editor-header";
+    header.append(
+      createTextElement("strong", "structured-json-editor-title", fieldName),
+      createTextElement(
+        "span",
+        "structured-json-editor-summary",
+        structuredJsonSummary(current) ?? structuredJsonSummary(original) ?? "Large string"
+      )
+    );
+    workspace.append(header);
+    if (typeof original === "string") {
+      const originalPreview = createParsedJsonDisclosure(original, "Original captured JSON");
+      if (originalPreview) {
+        originalPreview.classList.add("structured-json-original-preview");
+        workspace.append(originalPreview);
+      }
+    }
+    workspace.append(
+      createStructuredFieldEditor(
+        currentDraft,
+        fieldName,
+        current,
+        injectButton,
+        structuredError,
+        "expanded-json"
+      )
+    );
+    cell.append(workspace);
+    row.append(cell);
+    return row;
   }
 
   function createStructuredFieldEditor(
@@ -3277,10 +3506,12 @@ export function renderPanel(
     fieldName: string,
     value: DraftFieldValue | undefined,
     injectButton: HTMLButtonElement,
-    structuredError: HTMLElement
+    structuredError: HTMLElement,
+    layout: "compact" | "expanded-json" = "compact"
   ): HTMLElement {
     const editor = document.createElement("div");
     editor.className = "structured-field-editor";
+    editor.dataset.layout = layout;
     const typeSelect = document.createElement("select");
     typeSelect.className = "draft-field-type";
     typeSelect.dataset.fieldName = fieldName;
@@ -3397,10 +3628,14 @@ export function renderPanel(
 
     const textInput = document.createElement("textarea");
     textInput.className = "structured-field-input structured-string-input";
+    if (layout === "expanded-json") {
+      textInput.classList.add("structured-json-input");
+    }
     textInput.dataset.fieldName = fieldName;
-    textInput.rows = 1;
-    textInput.value = value;
+    textInput.rows = layout === "expanded-json" ? 10 : 1;
+    textInput.value = layout === "expanded-json" ? formatJsonStringForEditor(value) : value;
     textInput.disabled = reinjectionPending;
+    textInput.spellcheck = false;
     textInput.setAttribute("aria-label", `Draft field ${fieldName}`);
     textInput.addEventListener("input", () => {
       applyStructuredDraftUpdate(
@@ -3408,7 +3643,10 @@ export function renderPanel(
       );
     });
     editor.append(textInput);
-    const parsed = createParsedJsonDisclosure(value);
+    const parsed = createParsedJsonDisclosure(
+      value,
+      layout === "expanded-json" ? "Draft formatted preview" : "Formatted preview"
+    );
     if (parsed) {
       editor.append(parsed);
     }
@@ -3989,16 +4227,7 @@ function createCommandSummaryTimeRow(label: string, timestamp: number): HTMLElem
 function createTimelineHeader(): HTMLElement {
   const header = document.createElement("div");
   header.className = "event-header";
-  for (const heading of [
-    "Time",
-    "Event",
-    "Client",
-    "Subscription",
-    "Mode",
-    "Item",
-    "Command / Key",
-    "Source"
-  ]) {
+  for (const heading of ["Time", "Code", "Item", "Command / Key", "Source"]) {
     header.append(createTextElement("span", "event-cell event-header-cell", heading));
   }
   return header;
@@ -4908,17 +5137,25 @@ function defaultValueForDraftType(
   }
 }
 
-function createPrimitiveValue(value: DraftFieldValue | undefined): HTMLElement {
+type PrimitiveValueOptions = {
+  showPreview?: boolean;
+};
+
+function createPrimitiveValue(
+  value: DraftFieldValue | undefined,
+  options: PrimitiveValueOptions = {}
+): HTMLElement {
   const container = document.createElement("div");
   container.className = "draft-primitive-value";
+  const jsonSummary = structuredJsonSummary(value);
   container.append(
     createTextElement(
       "span",
-      "draft-primitive-raw",
-      value === undefined ? "—" : value === null ? "null" : String(value)
+      jsonSummary ? "draft-primitive-json-summary" : "draft-primitive-raw",
+      jsonSummary ?? (value === undefined ? "—" : value === null ? "null" : String(value))
     )
   );
-  if (typeof value === "string") {
+  if (typeof value === "string" && options.showPreview !== false) {
     const parsed = createParsedJsonDisclosure(value);
     if (parsed) {
       container.append(parsed);
@@ -4927,17 +5164,65 @@ function createPrimitiveValue(value: DraftFieldValue | undefined): HTMLElement {
   return container;
 }
 
-function createParsedJsonDisclosure(value: string): HTMLDetailsElement | null {
-  let parsed: unknown;
+function shouldUseExpandedJsonEditor(
+  original: DraftFieldValue | undefined,
+  current: DraftFieldValue | undefined
+): boolean {
+  return [original, current].some(
+    (value) =>
+      typeof value === "string" &&
+      value.length >= 160 &&
+      parseStructuredJsonString(value) !== null
+  );
+}
+
+function parseStructuredJsonString(value: string): Record<string, unknown> | unknown[] | null {
   try {
-    parsed = JSON.parse(value);
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) || isRecord(parsed) ? parsed : null;
   } catch {
+    return null;
+  }
+}
+
+function structuredJsonSummary(value: DraftFieldValue | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const parsed = parseStructuredJsonString(value);
+  if (!parsed) {
+    return null;
+  }
+  const shape = Array.isArray(parsed)
+    ? `${parsed.length.toLocaleString()} ${parsed.length === 1 ? "item" : "items"}`
+    : `${Object.keys(parsed).length.toLocaleString()} ${Object.keys(parsed).length === 1 ? "key" : "keys"}`;
+  return `JSON ${Array.isArray(parsed) ? "array" : "object"} · ${shape} · ${formatTextSize(value.length)}`;
+}
+
+function formatTextSize(length: number): string {
+  if (length < 1_000) {
+    return `${length.toLocaleString()} chars`;
+  }
+  return `${(length / 1_000).toFixed(length < 10_000 ? 1 : 0)}k chars`;
+}
+
+function formatJsonStringForEditor(value: string): string {
+  const parsed = parseStructuredJsonString(value);
+  return parsed ? JSON.stringify(parsed, null, 2) : value;
+}
+
+function createParsedJsonDisclosure(
+  value: string,
+  label = "Formatted preview"
+): HTMLDetailsElement | null {
+  const parsed = parseStructuredJsonString(value);
+  if (!parsed) {
     return null;
   }
   const disclosure = document.createElement("details");
   disclosure.className = "parsed-json-disclosure";
   const summary = document.createElement("summary");
-  summary.textContent = "Parsed JSON";
+  summary.textContent = label;
   const payload = document.createElement("pre");
   payload.className = "parsed-json-value";
   payload.textContent = JSON.stringify(parsed, null, 2);
@@ -5117,6 +5402,177 @@ function formatCommandKey(event: LightstreamerEventEnvelope): string {
   const command = event.update?.command ?? "-";
   const key = event.update?.key ?? "-";
   return `${command}/${key}`;
+}
+
+function timelineCodeDefinition(event: LightstreamerEventEnvelope): TimelineCodeDefinition {
+  let code: string;
+  switch (event.kind) {
+    case "item-update":
+      code = "U";
+      break;
+    case "end-of-snapshot":
+      code = "EOS";
+      break;
+    case "clear-snapshot":
+      code = "CS";
+      break;
+    case "lost-updates":
+      code = "OV";
+      break;
+    case "subscription-started":
+      code = event.subscription?.mode?.toUpperCase() === "COMMAND" ? "SUBCMD" : "SUBOK";
+      break;
+    case "subscription-ended":
+      code = "UNSUB";
+      break;
+    case "client-created":
+      code = "C+";
+      break;
+    case "client-status":
+      code = "C~";
+      break;
+    case "subscription-created":
+      code = "S+";
+      break;
+    case "subscription-snapshot":
+      code = "S~";
+      break;
+    case "subscription-error":
+      code = "S!";
+      break;
+    case "listener-added":
+      code = "L+";
+      break;
+    case "listener-removed":
+      code = "L−";
+      break;
+  }
+  const definition = TIMELINE_CODE_DEFINITIONS.find((candidate) => candidate.code === code);
+  if (!definition) {
+    throw new Error(`Missing Timeline code definition for ${event.kind}.`);
+  }
+  return definition;
+}
+
+function createTimelineCodeElement(
+  event: LightstreamerEventEnvelope,
+  className: string
+): HTMLSpanElement {
+  const definition = timelineCodeDefinition(event);
+  const code = createTextElement("span", className, definition.code);
+  code.dataset.codeFamily = definition.family;
+  code.title = `${definition.code} — ${definition.label} (${event.kind})`;
+  code.setAttribute(
+    "aria-label",
+    `${definition.code}: ${definition.label}; captured as ${event.kind}`
+  );
+  return code;
+}
+
+function formatTimelineItem(event: LightstreamerEventEnvelope): string {
+  const itemName = event.item?.name?.trim();
+  if (itemName) {
+    return itemName;
+  }
+
+  const subscriptionItems = (event.subscription?.items ?? []).filter(Boolean);
+  const itemPosition = event.item?.position;
+  if (itemPosition !== undefined && itemPosition !== null && subscriptionItems[itemPosition - 1]) {
+    return subscriptionItems[itemPosition - 1];
+  }
+  if (subscriptionItems.length === 1) {
+    return subscriptionItems[0];
+  }
+  if (subscriptionItems.length > 1) {
+    return `${subscriptionItems[0]} +${subscriptionItems.length - 1}`;
+  }
+  if (event.subscription?.itemGroup) {
+    return event.subscription.itemGroup;
+  }
+  if (itemPosition !== undefined && itemPosition !== null) {
+    return `item ${itemPosition}`;
+  }
+  return "—";
+}
+
+function timelineItemTitle(event: LightstreamerEventEnvelope): string {
+  const items = event.subscription?.items ?? [];
+  if (event.item?.name) {
+    return event.item.name;
+  }
+  if (items.length > 0) {
+    return items.join(", ");
+  }
+  if (event.subscription?.itemGroup) {
+    return event.subscription.itemGroup;
+  }
+  return event.item?.position !== undefined && event.item.position !== null
+    ? `Item position ${event.item.position}`
+    : "No item context";
+}
+
+function formatTimelineCommandKey(event: LightstreamerEventEnvelope): string {
+  const command = event.update?.command?.trim() ?? "";
+  const key = event.update?.key?.trim() ?? "";
+  if (command && key) {
+    return `${command}/${key}`;
+  }
+  return command || key || "—";
+}
+
+function timelineCommandKeyTitle(event: LightstreamerEventEnvelope): string {
+  const command = event.update?.command ?? null;
+  const key = event.update?.key ?? null;
+  if (!command && !key) {
+    return "No COMMAND command or key";
+  }
+  return `Command ${command ?? "none"}; key ${key ?? "none"}`;
+}
+
+function timelineRowContextTitle(event: LightstreamerEventEnvelope): string {
+  const definition = timelineCodeDefinition(event);
+  return [
+    `${definition.code} — ${definition.label}`,
+    event.kind,
+    event.client?.id ? `client ${event.client.id}` : null,
+    event.subscription?.id ? `subscription ${event.subscription.id}` : null,
+    event.subscription?.mode ? `mode ${event.subscription.mode}` : null
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+}
+
+function timelineRowAccessibleLabel(event: LightstreamerEventEnvelope): string {
+  const definition = timelineCodeDefinition(event);
+  const item = formatTimelineItem(event);
+  const commandKey = formatTimelineCommandKey(event);
+  return [
+    formatExactLocalTime(event.timestamp),
+    `${definition.code}, ${definition.label}`,
+    item === "—" ? null : `item ${item}`,
+    commandKey === "—" ? null : `command and key ${commandKey}`,
+    formatMarker(event),
+    event.client?.id ? `client ${event.client.id}` : null,
+    event.subscription?.id ? `subscription ${event.subscription.id}` : null,
+    event.subscription?.mode ? `mode ${event.subscription.mode}` : null
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("; ");
+}
+
+function timelineSourceTitle(event: LightstreamerEventEnvelope): string {
+  if (
+    (event.synthetic || event.source === "synthetic") &&
+    event.raw?.executionTarget === "workbench-only"
+  ) {
+    return "Synthetic update applied to Workbench state only";
+  }
+  if (event.synthetic || event.source === "synthetic") {
+    return "Synthetic update replayed through the captured listener";
+  }
+  return event.captureSource === "wire"
+    ? "Captured from the Lightstreamer wire protocol"
+    : "Captured from a Lightstreamer client listener";
 }
 
 function timelineCommandToken(event: LightstreamerEventEnvelope): string {

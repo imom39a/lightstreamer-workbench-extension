@@ -214,6 +214,57 @@ describe("panel shell", () => {
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
   });
 
+  it("explains TLCP-aligned and Workbench-only Timeline codes", () => {
+    const legend = document.querySelector<HTMLDetailsElement>(".timeline-code-legend");
+    expect(legend?.open).toBe(false);
+    expect(text(".timeline-code-legend-toggle")).toBe("Codes");
+    expect(document.querySelector(".timeline-code-legend-toggle")?.getAttribute("aria-label")).toBe(
+      "Timeline code legend"
+    );
+    expect(text('.timeline-code-legend-group[data-family="tlcp"]')).toContain("U");
+    expect(text('.timeline-code-legend-group[data-family="tlcp"]')).toContain("SUBCMD");
+    expect(text('.timeline-code-legend-group[data-family="tlcp"]')).toContain("EOS");
+    expect(text('.timeline-code-legend-group[data-family="tlcp"]')).toContain("CS");
+    expect(text('.timeline-code-legend-group[data-family="tlcp"]')).toContain("OV");
+    expect(text('.timeline-code-legend-group[data-family="workbench"]')).toContain("C+");
+    expect(text('.timeline-code-legend-group[data-family="workbench"]')).toContain("S+");
+    expect(text('.timeline-code-legend-group[data-family="workbench"]')).toContain("L−");
+  });
+
+  it("renders captured semantics with compact Lightstreamer-style codes", async () => {
+    const subscription = {
+      id: "subscription-codes",
+      mode: "COMMAND",
+      items: ["orders"]
+    };
+    for (const message of [
+      createCaptureMessage("subscription-created", { subscription }),
+      createCaptureMessage("subscription-started", { subscription }),
+      createCaptureMessage("item-update", {
+        subscription,
+        item: { name: "orders", position: 1 },
+        update: { fields: { command: "ADD", key: "alpha" }, changedFields: { command: "ADD", key: "alpha" } }
+      }),
+      createCaptureMessage("end-of-snapshot", { subscription, item: { name: "orders", position: 1 } }),
+      createCaptureMessage("clear-snapshot", { subscription, item: { name: "orders", position: 1 } }),
+      createCaptureMessage("lost-updates", { subscription, item: { name: "orders", position: 1 } }),
+      createCaptureMessage("subscription-ended", { subscription })
+    ]) {
+      panel.appendCaptureMessage(message);
+    }
+    await flushPanelRender();
+
+    expect(
+      Array.from(document.querySelectorAll<HTMLElement>(".event-code")).map(
+        (code) => code.textContent
+      )
+    ).toEqual(["S+", "SUBCMD", "U", "EOS", "CS", "OV", "UNSUB"]);
+    expect(Array.from(document.querySelectorAll<HTMLElement>(".event-item")).map((item) => item.textContent))
+      .toEqual(["orders", "orders", "orders", "orders", "orders", "orders", "orders"]);
+    expect(Array.from(document.querySelectorAll<HTMLElement>(".event-command")).map((cell) => cell.textContent))
+      .toEqual(["—", "—", "ADD/alpha", "—", "—", "—", "—"]);
+  });
+
   it("allows clearing an empty feed without changing the zero count", () => {
     const button = document.querySelector<HTMLButtonElement>(".clear-button");
     button?.click();
@@ -238,13 +289,28 @@ describe("panel shell", () => {
     );
 
     expect(text(".event-count")).toBe("1");
-    expect(text(".event-header")).toContain("Time");
-    expect(text(".event-header")).toContain("Command / Key");
+    expect(
+      Array.from(document.querySelectorAll<HTMLElement>(".event-header-cell")).map(
+        (cell) => cell.textContent
+      )
+    ).toEqual(["Time", "Code", "Item", "Command / Key", "Source"]);
+    expect(document.querySelector(".event-client")).toBeNull();
+    expect(document.querySelector(".event-subscription")).toBeNull();
+    expect(document.querySelector(".event-mode")).toBeNull();
+    expect(text(".event-code")).toBe("U");
+    expect(document.querySelector(".event-code")?.getAttribute("aria-label")).toContain(
+      "U: Update"
+    );
     expect(text(".event-marker")).toBe("server snapshot");
     expect(text(".event-command")).toBe("ADD/alpha");
     expect(document.querySelector<HTMLElement>(".event-row")?.dataset.command).toBe("ADD");
     expect(document.querySelector<HTMLElement>(".event-row")?.dataset.kind).toBe("item-update");
     expect(document.querySelector<HTMLElement>(".event-row")?.dataset.source).toBe("listener");
+    expect(document.querySelector<HTMLElement>(".event-row")?.title).toContain("client client-1");
+    expect(document.querySelector<HTMLElement>(".event-row")?.title).toContain(
+      "subscription subscription-1"
+    );
+    expect(document.querySelector<HTMLElement>(".event-row")?.title).toContain("mode COMMAND");
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
 
     clickFirstEventRow();
@@ -255,6 +321,7 @@ describe("panel shell", () => {
     expect(detailSection("Context").open).toBe(false);
     openDetailSection("Context");
     expect(text(".detail-pane")).toContain('"synthetic": false');
+    expect(text(".detail-pane")).toContain('"id": "client-1"');
     expect(text(".detail-pane").indexOf("Raw capture")).toBeGreaterThan(
       text(".detail-pane").indexOf("Context")
     );
@@ -1231,6 +1298,65 @@ describe("panel shell", () => {
     expect(commandKeyRow?.querySelector<HTMLElement>(".draft-source-value")?.textContent).toBe(
       "ADD/alpha"
     );
+  });
+
+  it("moves large JSON strings out of narrow diff cells into a full-width editor", () => {
+    const modelValues = JSON.stringify({
+      alarms: Array.from({ length: 18 }, (_, index) => ({
+        domain: `domain-${index}`,
+        status: "GREEN",
+        timestamp: 1_784_628_396_199 + index
+      })),
+      baseItemKey: "DDE_HEALTH"
+    });
+    appendCommandUpdate(panel, "DDE_HEALTH.HEARTBEAT", { modelValues });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
+
+    const summaryRow = document.querySelector<HTMLTableRowElement>(
+      '.draft-field-diff tr[data-field-name="modelValues"][data-layout="json-summary"]'
+    );
+    const editorRow = document.querySelector<HTMLTableRowElement>(
+      '.draft-json-editor-row[data-field-name="modelValues"]'
+    );
+    const jsonInput = editorRow?.querySelector<HTMLTextAreaElement>(".structured-json-input");
+
+    expect(summaryRow).not.toBeNull();
+    expect(summaryRow?.querySelector(".draft-field-original")?.textContent).toMatch(
+      /^JSON object · 2 keys · [\d.]+k chars$/
+    );
+    expect(summaryRow?.querySelector(".draft-field-original")?.textContent).not.toContain(
+      "domain-17"
+    );
+    expect(
+      Array.from(document.querySelectorAll<HTMLElement>(".draft-field-heading")).map(
+        (heading) => heading.textContent
+      )
+    ).toEqual(["Field", "Original", "Draft"]);
+    expect(editorRow?.querySelector<HTMLTableCellElement>(".draft-json-editor-cell")?.colSpan).toBe(3);
+    expect(jsonInput?.rows).toBe(10);
+    expect(jsonInput?.value).toContain("\n");
+    expect(jsonInput?.value).toContain('"baseItemKey": "DDE_HEALTH"');
+    expect(text(".structured-json-editor-summary")).toContain("JSON object");
+    expect(
+      Array.from(editorRow?.querySelectorAll(".parsed-json-disclosure summary") ?? []).map(
+        (summary) => summary.textContent
+      )
+    ).toEqual(["Original captured JSON", "Draft formatted preview"]);
+
+    const editedModelValues = JSON.stringify({ alarms: [], baseItemKey: "DDE_HEALTH_EDITED" }, null, 2);
+    input('.structured-json-input[data-field-name="modelValues"]', editedModelValues);
+
+    expect(text(".draft-dirty-count")).toBe("1 changed");
+    expect(
+      document.querySelector(
+        '.draft-field-diff tr[data-field-name="modelValues"] .draft-field-changed-indicator'
+      )?.getAttribute("aria-label")
+    ).toBe("changed");
+    const advanced = openAdvancedDraftJson();
+    const advancedDraft = JSON.parse(advanced.value) as { fields: Record<string, unknown> };
+    expect(advancedDraft.fields.modelValues).toBe(editedModelValues);
   });
 
   it("preserves focus on the selected execution target after its change rerender", () => {

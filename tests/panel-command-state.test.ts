@@ -945,8 +945,10 @@ describe("COMMAND State panel workbench", () => {
     quietStore.append(started);
     renderPanel(root, undefined, { store: quietStore, bridge: { reinjectDraft } });
 
-    expect(text(".event-feed")).toContain("subscription-snapshot");
-    expect(text(".event-feed")).toContain("subscription-19");
+    expect(text(".event-feed")).toContain("S~");
+    expect(text(".event-feed")).toContain("quiet.orders");
+    expect(text(".event-feed")).not.toContain("subscription-19");
+    expect(document.querySelector<HTMLElement>(".event-row")?.title).toContain("subscription subscription-19");
 
     clickCommandState();
 
