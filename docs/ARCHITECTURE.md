@@ -638,14 +638,14 @@ The project does not inject data into a real Lightstreamer server stream. Page r
 
 1. The injected script captures original `onItemUpdate` callbacks and active Lightstreamer WebSocket subscription schemas.
 2. The panel creates a `ReinjectionDraft`.
-3. The panel selects `captured-listener`, `captured-wire`, or `workbench-only` and validates the draft for that target.
+3. The panel derives the only valid page target from the capture: `captured-listener` for listener captures or `captured-wire` for wire captures. The action stays disabled if that target is unavailable.
 4. The service worker routes the request to the inspected tab.
 5. The content script posts a page message.
 6. For listener replay, the injected script calls the captured callback with a synthetic `ItemUpdate`-like object. For wire replay, it builds a complete schema-ordered TLCP `U` frame and dispatches a local `MessageEvent` on the captured page WebSocket.
-7. The injected script returns a `ReinjectionResult`.
+7. The injected script returns a `ReinjectionResult`; the content script relays it to the service worker as a separate runtime message rather than holding a Chrome response channel open.
 8. On success, the panel appends a local synthetic event envelope to its store.
 
-`workbench-only` skips page routing, applies the update only to Workbench state, and records `deliveredToPage: false`. Page-target failures never fall back silently to Workbench-only success.
+There is no panel-only injection path. A page-target failure returns an error and does not append a synthetic event.
 
 ```mermaid
 sequenceDiagram
@@ -673,7 +673,7 @@ sequenceDiagram
     WS-->>Inj: dispatch result
   end
   Inj-->>CS: RUNTIME_REINJECT_RESULT
-  CS-->>BG: ReinjectionResult response
+  CS-->>BG: CONTENT_REINJECT_RESULT
   BG-->>PBC: PANEL_REINJECT_RESULT
   PBC-->>UI: ReinjectionResult
   UI->>Store: append(createSyntheticEventFromDraft)
@@ -913,5 +913,5 @@ The panel is DOM-first. Follow the existing pattern:
 - The service worker routes panel ports by inspected tab ID; capture messages without a sender tab ID are ignored.
 - The panel may use temporary IndexedDB storage, but it resets the inspected-tab session on startup, clears on normal panel teardown, and still has a memory fallback.
 - Active wire fallback subscriptions can be replayed locally through their captured page WebSocket even when no listener target was captured. Closed, deleted, unsubscribed, or handed-off targets return `stale-target` without dispatch.
-- Synthetic events are local panel events. Page-target events are appended only after page-side delivery reports success; Workbench-only events are explicitly marked and never claim inspected-page delivery.
+- Synthetic events are appended to panel history only after page-side delivery reports success. Unavailable, stale, rejected, or timed-out page targets never create a synthetic event.
 - `dist/` is generated output. Architecture changes should be made in `src/`, `public/`, or `scripts/`, then rebuilt.

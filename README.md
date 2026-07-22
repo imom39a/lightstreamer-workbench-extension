@@ -80,7 +80,7 @@ Lightstreamer Event Workbench runs locally in the browser extension context. Cap
 
 The extension requests broad page access because it must instrument the inspected page's Lightstreamer Web Client runtime before application code creates clients or subscriptions. Use it only on pages you are authorized to debug, and avoid sharing screenshots or issue logs that contain production secrets, customer data, tokens, or proprietary event payloads.
 
-Synthetic events are marked in the UI and event envelope. Local page delivery uses either a captured listener callback or a synthetic TLCP update dispatched through the captured page WebSocket; neither path contacts the Lightstreamer server. Workbench-only application is labeled separately and does not change the inspected page.
+Synthetic events are marked in the UI and event envelope. Every reinjection must reach the inspected page: it uses either a captured listener callback or a synthetic TLCP update dispatched through the captured page WebSocket so the page's Lightstreamer client and application listeners receive it. Neither path contacts the Lightstreamer server, and failed or unavailable delivery never creates a local-only event.
 
 ## Official Distribution
 

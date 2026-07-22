@@ -14,10 +14,7 @@ import {
 
 export type DraftFieldValue = string | number | boolean | null;
 export type DraftFields = Record<string, DraftFieldValue>;
-export type ReinjectionExecutionTarget =
-  | "captured-listener"
-  | "captured-wire"
-  | "workbench-only";
+export type ReinjectionExecutionTarget = "captured-listener" | "captured-wire";
 
 export type ReinjectionDraft = {
   sourceEventId: string;
@@ -363,8 +360,8 @@ export function validateNewCommandDraft(
       code: "missing-context",
       explanation: "New COMMAND updates must start from a captured COMMAND subscription, item, and field schema.",
       suggestion: requiresListener
-        ? "Select a captured COMMAND item update with an attached listener, or choose Workbench only."
-        : "Select a captured COMMAND item update before creating a synthetic update."
+        ? "Select a captured COMMAND item update with an attached listener."
+        : "Select a wire-captured COMMAND item update with a live page stream."
     });
     return toNewCommandDraftValidationResult(diagnostics);
   }
@@ -397,7 +394,7 @@ export function validateNewCommandDraft(
         severity: "error",
         code: "missing-context",
         explanation: "A captured wire subscription is required for local transport replay.",
-        suggestion: "Select a wire-captured COMMAND item update, or choose Workbench only."
+        suggestion: "Select a wire-captured COMMAND item update with a live page stream."
       });
     }
     if (!draft.item.position || draft.item.position < 1) {
@@ -603,7 +600,7 @@ function newCommandSourceEventId(
   item: EventItem
 ): string {
   const itemLabel = item.name ?? `position-${item.position ?? "unknown"}`;
-  return `new-command:${subscriptionId}:${listenerId ?? "workbench"}:${itemLabel}`;
+  return `new-command:${subscriptionId}:${listenerId ?? "wire"}:${itemLabel}`;
 }
 
 function nonEmptyString(value: unknown): string | null {

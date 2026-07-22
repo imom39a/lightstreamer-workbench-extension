@@ -147,7 +147,11 @@ describe("panel shell", () => {
     if (!root) {
       throw new Error("missing test root");
     }
-    panel = renderPanel(root);
+    panel = renderPanel(root, undefined, {
+      bridge: {
+        reinjectDraft: vi.fn(() => Promise.resolve(createSuccessResult("panel-test")))
+      }
+    });
   });
 
   it("renders the toolbar status and zero event count", () => {
@@ -214,7 +218,7 @@ describe("panel shell", () => {
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
   });
 
-  it("explains TLCP-aligned and Workbench-only Timeline codes", () => {
+  it("explains TLCP-aligned and local capture lifecycle Timeline codes", () => {
     const legend = document.querySelector<HTMLDetailsElement>(".timeline-code-legend");
     expect(legend?.open).toBe(false);
     expect(text(".timeline-code-legend-toggle")).toBe("Codes");
@@ -1075,7 +1079,7 @@ describe("panel shell", () => {
     expect(text(".detail-pane")).toContain('"sourceEventId": "event-1"');
   });
 
-  it("labels Workbench-only simulations and shows their edited-field provenance", () => {
+  it("labels successful wire replays and shows their page-delivery provenance", () => {
     panel.dispose();
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
@@ -1086,7 +1090,7 @@ describe("panel shell", () => {
     panel = renderPanel(root, undefined, { store });
 
     store.append({
-      id: "synthetic-workbench-1",
+      id: "synthetic-wire-1",
       timestamp: 2,
       direction: "inbound",
       source: "synthetic",
@@ -1103,20 +1107,21 @@ describe("panel shell", () => {
       },
       raw: {
         sourceEventId: "event-1",
-        executionTarget: "workbench-only",
-        deliveredToPage: false,
+        executionTarget: "captured-wire",
+        deliveredToPage: true,
         editedFields: { qty: 22 }
       }
     });
 
-    expect(text(".event-marker")).toBe("workbench live");
+    expect(text(".event-marker")).toBe("wire replay live");
     clickFirstEventRow();
-    expect(text(".selected-event-source")).toBe("Workbench only");
+    expect(text(".selected-event-source")).toBe("Wire replay");
     expect(document.querySelector(".selected-event-source")?.classList).toContain(
-      "source-workbench-only"
+      "source-wire-replay"
     );
     const provenance = openDetailSection("Synthetic provenance").textContent ?? "";
-    expect(provenance).toContain('"executionTarget": "workbench-only"');
+    expect(provenance).toContain('"executionTarget": "captured-wire"');
+    expect(provenance).toContain('"deliveredToPage": true');
     expect(provenance).toContain('"editedFields"');
     expect(provenance).toContain('"qty": 22');
   });
@@ -1190,16 +1195,17 @@ describe("panel shell", () => {
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
 
     expect(text(".draft-source-context")).toContain("Staged source clone");
-    expect(text(".replay-source-button")).toBe("Apply to Workbench");
-    expect(text(".mutate-inject-button")).toBe("Mutate & Apply…");
+    expect(text(".replay-source-button")).toBe("Re-inject");
+    expect(text(".mutate-inject-button")).toBe("Mutate & Inject…");
     expect(document.querySelector(".draft-controls")).toBeNull();
     expect(document.querySelector(".draft-json")).toBeNull();
     expect(
       document.querySelectorAll<HTMLInputElement>('input[name="draft-execution-target"]')
-    ).toHaveLength(2);
+    ).toHaveLength(0);
+    expect(text(".draft-execution-targets")).toContain("Original app listener");
   });
 
-  it("falls back to explicit Workbench-only actions when the captured wire bridge is unavailable", async () => {
+  it("blocks replay when the captured page stream is unavailable", async () => {
     panel.dispose();
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
@@ -1230,63 +1236,32 @@ describe("panel shell", () => {
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
 
     expect(text(".draft-source-context")).toContain("Listener-");
-    const targets = Array.from(
-      document.querySelectorAll<HTMLInputElement>('input[name="draft-execution-target"]')
-    );
-    expect(targets).toHaveLength(2);
-    expect(targets.map((target) => target.value)).toEqual([
-      "captured-wire",
-      "workbench-only"
-    ]);
-    expect(targets[0].disabled).toBe(true);
-    expect(targets[1].checked).toBe(true);
-    expect(text('.draft-target-option[data-target="captured-wire"]')).toContain(
-      "Inspected page stream"
-    );
-    expect(text('.draft-target-option[data-target="workbench-only"]')).toContain(
-      "The inspected page is unchanged."
-    );
+    const target = document.querySelector<HTMLElement>(".draft-execution-targets");
+    expect(target?.dataset.target).toBe("captured-wire");
+    expect(target?.dataset.available).toBe("false");
+    expect(target?.textContent).toContain("Inspected page stream");
+    expect(target?.textContent).toContain("Unavailable");
+    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
 
     const executeButton = document.querySelector<HTMLButtonElement>(".reinject-button");
-    expect(executeButton?.textContent).toBe("Apply to Workbench");
-    expect(executeButton?.disabled).toBe(false);
+    expect(executeButton?.textContent).toBe("Re-inject");
+    expect(executeButton?.disabled).toBe(true);
     executeButton?.click();
     await flushPromises();
     await flushPanelRender();
 
-    expect(text(".reinjection-message")).toBe(
-      "Source clone added to Workbench only. The inspected page was not reached."
-    );
-    expect(document.querySelector(".reinjection-message")?.getAttribute("role")).toBe("status");
-    expect(document.querySelector(".reinjection-message")?.getAttribute("aria-live")).toBe("polite");
-    expect(text(".event-count")).toBe("2");
-    expect(Array.from(document.querySelectorAll(".event-marker")).map((marker) => marker.textContent)).toContain(
-      "workbench snapshot"
-    );
+    expect(document.querySelector(".reinjection-message")).toBeNull();
+    expect(text(".event-count")).toBe("1");
 
     openMutationEditor();
     input('.structured-field-input[data-field-name="qty"]', "12");
+    expect(document.querySelector<HTMLButtonElement>(".inject-edited-button")?.disabled).toBe(true);
     document.querySelector<HTMLButtonElement>(".inject-edited-button")?.click();
     await flushPromises();
     await flushPanelRender();
 
-    expect(text(".reinjection-message")).toBe(
-      "Edited draft added to Workbench only. The inspected page was not reached."
-    );
-    expect(text(".event-count")).toBe("3");
-    const selectedResult = document.querySelector<HTMLButtonElement>(
-      '.event-row[data-selected="true"]'
-    );
-    expect(selectedResult?.dataset.synthetic).toBe("true");
-    expect(text(".selected-event-id")).toBe(selectedResult?.dataset.eventId);
-    expect(detailSection("Current item fields").textContent).toContain('"qty": "12"');
-    const provenance = openDetailSection("Synthetic provenance");
-    expect(provenance.textContent).toContain(
-      '"executionTarget": "workbench-only"'
-    );
-    expect(provenance.textContent).toContain(
-      '"deliveredToPage": false'
-    );
+    expect(text(".event-count")).toBe("1");
+    expect(document.querySelector('.event-row[data-synthetic="true"]')).toBeNull();
   });
 
   it("shows source context after cloning without changing the selected row", () => {
@@ -1414,29 +1389,19 @@ describe("panel shell", () => {
     expect(row?.textContent).not.toContain("Draft formatted preview");
   });
 
-  it("preserves focus on the selected execution target after its change rerender", () => {
+  it("shows one immutable page delivery target instead of execution choices", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
 
-    const workbenchTarget = document.querySelector<HTMLInputElement>(
-      'input[name="draft-execution-target"][value="workbench-only"]'
-    );
-    if (!workbenchTarget) {
-      throw new Error("missing Workbench execution target");
-    }
-    workbenchTarget.focus();
-    workbenchTarget.checked = true;
-    workbenchTarget.dispatchEvent(new Event("change", { bubbles: true }));
-
-    const replacement = document.querySelector<HTMLInputElement>(
-      'input[name="draft-execution-target"][value="workbench-only"]'
-    );
-    expect(replacement?.checked).toBe(true);
-    expect(document.activeElement).toBe(replacement);
+    const target = document.querySelector<HTMLElement>(".draft-execution-targets");
+    expect(target?.dataset.target).toBe("captured-listener");
+    expect(target?.dataset.available).toBe("true");
+    expect(target?.textContent).toContain("Original app listener");
+    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
   });
 
-  it("gates a production bridge by status and falls back after disconnect", async () => {
+  it("gates a production bridge by status without a local fallback", async () => {
     const reinjectDraft = vi.fn(() => Promise.resolve(createSuccessResult("should-not-run")));
     panel.dispose();
     document.body.innerHTML = '<main id="app"></main>';
@@ -1451,35 +1416,22 @@ describe("panel shell", () => {
 
     panel.setStatus("idle");
     panel.setBridge({ reinjectDraft });
-    expect(
-      document.querySelector<HTMLInputElement>(
-        'input[name="draft-execution-target"][value="captured-listener"]'
-      )?.disabled
-    ).toBe(true);
+    expect(document.querySelector<HTMLElement>(".draft-execution-targets")?.dataset.available).toBe("false");
+    expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(true);
 
     panel.setStatus("bridge connected");
-    const listenerTarget = document.querySelector<HTMLInputElement>(
-      'input[name="draft-execution-target"][value="captured-listener"]'
-    );
-    expect(listenerTarget?.disabled).toBe(false);
-    listenerTarget?.click();
-    expect(listenerTarget?.checked).toBe(true);
+    expect(document.querySelector<HTMLElement>(".draft-execution-targets")?.dataset.available).toBe("true");
+    expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(false);
 
     panel.setStatus("bridge disconnected");
-    const disconnectedListener = document.querySelector<HTMLInputElement>(
-      'input[name="draft-execution-target"][value="captured-listener"]'
-    );
-    const workbenchTarget = document.querySelector<HTMLInputElement>(
-      'input[name="draft-execution-target"][value="workbench-only"]'
-    );
-    expect(disconnectedListener?.disabled).toBe(true);
-    expect(workbenchTarget?.disabled).toBe(false);
-    expect(workbenchTarget?.checked).toBe(true);
+    expect(document.querySelector<HTMLElement>(".draft-execution-targets")?.dataset.available).toBe("false");
+    expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(true);
+    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
 
     document.querySelector<HTMLButtonElement>(".reinject-button")?.click();
     await flushPromises();
     expect(reinjectDraft).not.toHaveBeenCalled();
-    expect(text(".reinjection-message")).toContain("added to Workbench only");
+    expect(document.querySelector(".reinjection-message")).toBeNull();
   });
 
   it("derives changed fields from draft JSON edits without remounting the editor", () => {
@@ -1558,7 +1510,7 @@ describe("panel shell", () => {
 
     expect(text(".event-count")).toBe("2");
     expect(text(".reinjection-message")).toBe(
-      "Edited draft added to Workbench only. The inspected page was not reached."
+      "Edited draft delivered to the original app listener. The inspected page was reached."
     );
   });
 

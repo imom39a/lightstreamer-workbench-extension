@@ -6,6 +6,7 @@ import {
   PANEL_REINJECT_RESULT,
   PANEL_STATUS_MESSAGE,
   type ReinjectionResult,
+  isContentReinjectResultMessage,
   isPanelRegisterMessage,
   isPanelReinjectRequestMessage,
   isRuntimeCaptureMessage
@@ -51,16 +52,17 @@ chrome.runtime.onConnect.addListener((port) => {
         requestId: message.requestId,
         draft: message.draft
       },
-      (result: ReinjectionResult | undefined) => {
+      (accepted: boolean | undefined) => {
         const runtimeError = chrome.runtime.lastError?.message;
+        if (!runtimeError && accepted === true) {
+          return;
+        }
         port.postMessage({
           type: PANEL_REINJECT_RESULT,
-          result:
-            result ??
-            createBridgeErrorResult(
-              message.requestId,
-              runtimeError ?? "Content script did not return a reinjection result."
-            )
+          result: createBridgeErrorResult(
+            message.requestId,
+            runtimeError ?? "Content script did not accept the reinjection request. Reload the inspected page and try again."
+          )
         });
       }
     );
@@ -75,6 +77,18 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender) => {
+  if (isContentReinjectResultMessage(message)) {
+    const tabId = sender.tab?.id;
+    if (tabId === undefined) {
+      return false;
+    }
+    panelPortsByTab.get(tabId)?.postMessage({
+      type: PANEL_REINJECT_RESULT,
+      result: message.result
+    });
+    return false;
+  }
+
   if (!isRuntimeCaptureMessage(message)) {
     return false;
   }

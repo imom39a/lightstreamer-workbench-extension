@@ -1428,7 +1428,7 @@ describe("COMMAND State panel workbench", () => {
     expect(text(".command-detail-pane")).toContain("Source clone delivered");
   });
 
-  it("replays a wire-captured COMMAND update in Workbench and selects the synthetic result", async () => {
+  it("does not replay a wire-captured COMMAND update without a live page target", async () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     const wireStore = createEventStore();
@@ -1443,29 +1443,21 @@ describe("COMMAND State panel workbench", () => {
 
     button(".command-detail-pane .clone-button").click();
 
-    expect(
-      document.querySelector<HTMLInputElement>(
-        '.command-detail-pane input[name="draft-execution-target"][value="captured-wire"]'
-      )?.disabled
-    ).toBe(true);
-    expect(
-      document.querySelector<HTMLInputElement>(
-        '.command-detail-pane input[name="draft-execution-target"][value="workbench-only"]'
-      )?.checked
-    ).toBe(true);
+    const target = document.querySelector<HTMLElement>(
+      ".command-detail-pane .draft-execution-targets"
+    );
+    expect(target?.dataset.target).toBe("captured-wire");
+    expect(target?.dataset.available).toBe("false");
+    expect(button(".command-detail-pane .replay-source-button").disabled).toBe(true);
+    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
 
     button(".command-detail-pane .replay-source-button").click();
     await Promise.resolve();
     await flushInteractionRender();
 
     const synthetic = wireStore.list().find((entry) => entry.synthetic);
-    expect(synthetic?.raw).toMatchObject({
-      executionTarget: "workbench-only",
-      deliveredToPage: false,
-      serverContacted: false
-    });
-    expect(selectedTexts(".command-update-row")[0]).toContain(synthetic?.id);
-    expect(text(".command-detail-pane")).toContain("added to Workbench only");
+    expect(synthetic).toBeUndefined();
+    expect(selectedTexts(".command-update-row")[0]).toContain("wire-command-replay");
   });
 
   it("mutates a wire-captured COMMAND update through the inspected page stream", async () => {
@@ -1497,11 +1489,11 @@ describe("COMMAND State panel workbench", () => {
 
     button(".command-detail-pane .clone-button").click();
 
-    const wireTarget = document.querySelector<HTMLInputElement>(
-      '.command-detail-pane input[name="draft-execution-target"][value="captured-wire"]'
+    const wireTarget = document.querySelector<HTMLElement>(
+      ".command-detail-pane .draft-execution-targets"
     );
-    expect(wireTarget?.disabled).toBe(false);
-    expect(wireTarget?.checked).toBe(true);
+    expect(wireTarget?.dataset.target).toBe("captured-wire");
+    expect(wireTarget?.dataset.available).toBe("true");
     button(".command-detail-pane .mutate-inject-button").click();
     input('.command-detail-pane .structured-field-input[data-field-name="qty"]', "42");
     button(".command-detail-pane .inject-edited-button").click();
@@ -1696,13 +1688,21 @@ describe("COMMAND State panel workbench", () => {
     expect(button(".inject-command-button").disabled).toBe(false);
   });
 
-  it("creates and injects a Workbench-only COMMAND update from wire context", async () => {
+  it("creates and injects a new COMMAND update through the captured page stream", async () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     const wireStore = createEventStore();
     if (!root) {
       throw new Error("missing test root");
     }
+    const reinjectWire = vi.fn((..._args: unknown[]) =>
+      Promise.resolve({
+        requestId: "wire-new-command",
+        ok: true as const,
+        status: "success" as const,
+        timestamp: 1_700_000_002_200
+      })
+    );
     const wireEvent = event("wire-event", { key: "wire-key" });
     wireStore.append({
       ...wireEvent,
@@ -1712,21 +1712,20 @@ describe("COMMAND State panel workbench", () => {
         ? { ...wireEvent.subscription, fields: undefined }
         : undefined
     });
-    renderPanel(root, undefined, { store: wireStore });
+    renderPanel(root, undefined, {
+      store: wireStore,
+      bridge: { reinjectDraft: reinjectWire }
+    });
     clickCommandState();
 
     expect(button(".new-command-button").disabled).toBe(false);
     button(".new-command-button").click();
 
-    const listenerTarget = document.querySelector<HTMLInputElement>(
-      'input[name="draft-execution-target"][value="captured-wire"]'
-    );
-    const workbenchTarget = document.querySelector<HTMLInputElement>(
-      'input[name="draft-execution-target"][value="workbench-only"]'
-    );
-    expect(listenerTarget?.disabled).toBe(true);
-    expect(workbenchTarget?.checked).toBe(true);
-    expect(text(".command-draft-context")).toContain("Captured page stream or Workbench only");
+    const target = document.querySelector<HTMLElement>(".draft-execution-targets");
+    expect(target?.dataset.target).toBe("captured-wire");
+    expect(target?.dataset.available).toBe("true");
+    expect(text(".command-draft-context")).toContain("Inspected page stream");
+    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
 
     input(".command-draft-command", "UPDATE");
     input(".command-draft-key", "wire-key");
@@ -1737,12 +1736,14 @@ describe("COMMAND State panel workbench", () => {
     await flushInteractionRender();
 
     const synthetic = wireStore.list().find((entry) => entry.synthetic);
+    expect(reinjectWire).toHaveBeenCalledTimes(1);
+    expect(reinjectWire.mock.calls[0]?.[1]).toBe("captured-wire");
     expect(synthetic?.raw).toMatchObject({
-      executionTarget: "workbench-only",
-      deliveredToPage: false,
+      executionTarget: "captured-wire",
+      deliveredToPage: true,
       serverContacted: false
     });
-    expect(text(".reinjection-message")).toContain("added to Workbench only");
+    expect(text(".reinjection-message")).toContain("captured page WebSocket");
   });
 
   it("clears COMMAND state and reinjection context when events are cleared", () => {

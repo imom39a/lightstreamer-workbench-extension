@@ -8,6 +8,7 @@ export const PANEL_STATUS_MESSAGE = "lsew:panel-status" as const;
 export const PANEL_CAPTURE_MESSAGE = "lsew:panel-capture" as const;
 export const PANEL_REINJECT_REQUEST = "lsew:panel-reinject-request" as const;
 export const CONTENT_REINJECT_REQUEST = "lsew:content-reinject-request" as const;
+export const CONTENT_REINJECT_RESULT = "lsew:content-reinject-result" as const;
 export const PAGE_REINJECT_REQUEST = "lsew:page-reinject-request" as const;
 export const CONTENT_CAPTURE_SYNC_REQUEST = "lsew:content-capture-sync-request" as const;
 export const PAGE_CAPTURE_SYNC_REQUEST = "lsew:page-capture-sync-request" as const;
@@ -111,6 +112,11 @@ export type ReinjectionResult = {
 
 export type RuntimeReinjectResultMessage = {
   type: typeof RUNTIME_REINJECT_RESULT;
+  result: ReinjectionResult;
+};
+
+export type ContentReinjectResultMessage = {
+  type: typeof CONTENT_REINJECT_RESULT;
   result: ReinjectionResult;
 };
 
@@ -312,6 +318,16 @@ export function isRuntimeReinjectResultMessage(
   return (
     isRecord(value) &&
     value.type === RUNTIME_REINJECT_RESULT &&
+    isReinjectionResult(value.result)
+  );
+}
+
+export function isContentReinjectResultMessage(
+  value: unknown
+): value is ContentReinjectResultMessage {
+  return (
+    isRecord(value) &&
+    value.type === CONTENT_REINJECT_RESULT &&
     isReinjectionResult(value.result)
   );
 }

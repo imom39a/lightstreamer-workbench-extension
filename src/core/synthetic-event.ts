@@ -62,13 +62,11 @@ export function createSyntheticEventFromDraft(
       requestId: result.requestId,
       status: result.status,
       executionTarget,
-      deliveredToPage: executionTarget !== "workbench-only",
+      deliveredToPage: true,
       deliveryPath:
         executionTarget === "captured-wire"
           ? "captured-websocket"
-          : executionTarget === "captured-listener"
-            ? "captured-listener"
-            : "workbench-state",
+          : "captured-listener",
       serverContacted: false,
       manualChangedFieldsOverride: draft.manualChangedFieldsOverride,
       provenance: { ...draft.provenance }

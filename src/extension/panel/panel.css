@@ -1177,11 +1177,6 @@ button {
   color: var(--color-info);
 }
 
-.selected-event-source.source-workbench-only {
-  background: var(--color-success-bg);
-  color: var(--color-success);
-}
-
 .selected-event-command,
 .selected-event-id {
   min-width: 0;
@@ -1511,26 +1506,11 @@ button {
 }
 
 .draft-target-legend {
+  margin: 0;
   color: var(--color-text);
   font-size: 12px;
   font-weight: 700;
-  padding: 0 4px;
-}
-
-.draft-target-option {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 8px;
-}
-
-.draft-target-option input {
-  margin-top: 2px;
-}
-
-.draft-target-copy {
-  display: grid;
-  gap: 2px;
+  padding: 0;
 }
 
 .draft-target-label {
@@ -1544,8 +1524,13 @@ button {
   line-height: 1.35;
 }
 
-.draft-target-option:has(input:disabled) {
-  opacity: 0.64;
+.draft-execution-targets[data-available="false"] {
+  border-color: color-mix(in srgb, var(--color-warning) 55%, transparent);
+  background: var(--color-warning-bg);
+}
+
+.draft-execution-targets[data-available="false"] .draft-target-label {
+  color: var(--color-warning);
 }
 
 .draft-field-diff {
@@ -2390,11 +2375,6 @@ textarea {
   color: var(--color-info);
 }
 
-.selected-event-source.source-workbench-only {
-  background: var(--color-workbench-bg);
-  color: var(--color-workbench);
-}
-
 .inject-edited-button,
 .reinject-button {
   border-color: var(--color-accent-fill);
@@ -2635,35 +2615,6 @@ textarea {
   position: static;
 }
 
-.draft-execution-targets {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  border: 0;
-  padding: 0;
-}
-
-.draft-target-legend {
-  grid-column: 1 / -1;
-  padding: 0;
-}
-
-.draft-target-option {
-  min-width: 0;
-  border: 1px solid var(--color-border);
-  border-radius: 5px;
-  background: var(--color-surface);
-  padding: 9px;
-}
-
-.draft-target-option:has(input:checked) {
-  border-color: var(--color-selected-border);
-  background: var(--color-selected);
-  box-shadow: inset 3px 0 0 var(--color-accent);
-}
-
-.draft-target-option input {
-  accent-color: var(--color-accent-fill);
-}
-
 .replay-action-bar {
   padding-top: 2px;
 }
@@ -2789,14 +2740,6 @@ textarea {
 
   .replay-card {
     top: 54px;
-  }
-
-  .draft-execution-targets {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .draft-target-legend {
-    grid-column: 1;
   }
 
   .draft-field-diff {

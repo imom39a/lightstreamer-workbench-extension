@@ -126,7 +126,7 @@ describe("curated mutate-and-reinject contract", () => {
     controller.dispose();
   });
 
-  it("applies a mutated wire COMMAND JSON value to Workbench state without claiming page delivery", async () => {
+  it("delivers a mutated wire COMMAND JSON value to the inspected page stream and reflected state", async () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     if (!root) {
@@ -148,7 +148,18 @@ describe("curated mutate-and-reinject contract", () => {
       2
     );
     const store = createEventStore();
-    const controller = renderPanel(root, undefined, { store });
+    const reinjectWire = vi.fn((..._args: unknown[]) =>
+      Promise.resolve({
+        requestId: "curated-wire-mutation",
+        ok: true as const,
+        status: "success" as const,
+        timestamp: 1_784_737_272_925
+      })
+    );
+    const controller = renderPanel(root, undefined, {
+      store,
+      bridge: { reinjectDraft: reinjectWire }
+    });
     store.append({
       id: "event-17",
       timestamp: 1_784_737_272_000,
@@ -204,11 +215,10 @@ describe("curated mutate-and-reinject contract", () => {
 
     click(".event-row");
     click(".clone-button");
-    expect(
-      document.querySelector<HTMLInputElement>(
-        'input[name="draft-execution-target"][value="workbench-only"]'
-      )?.checked
-    ).toBe(true);
+    const target = document.querySelector<HTMLElement>(".draft-execution-targets");
+    expect(target?.dataset.target).toBe("captured-wire");
+    expect(target?.dataset.available).toBe("true");
+    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
     click(".mutate-inject-button");
 
     const jsonEditor = document.querySelector<HTMLTextAreaElement>(
@@ -223,9 +233,15 @@ describe("curated mutate-and-reinject contract", () => {
     await flushPromises();
     await flushPanelRender();
 
+    expect(reinjectWire).toHaveBeenCalledTimes(1);
+    expect(reinjectWire.mock.calls[0]?.[1]).toBe("captured-wire");
+    const deliveredDraft = reinjectWire.mock.calls[0]?.[0] as ReinjectionDraftPayload;
+    expect(JSON.parse(String(deliveredDraft.fields.modelValues))).toMatchObject({
+      messageText: "!!!!Attention - DDE QA testing."
+    });
     const synthetic = store.list().at(-1);
     expect(synthetic).toMatchObject({
-      id: expect.stringMatching(/^synthetic-workbench-/),
+      id: "synthetic-curated-wire-mutation",
       client: {
         id: "client-1",
         adapterSet: "PME_ADAPTER"
@@ -240,8 +256,9 @@ describe("curated mutate-and-reinject contract", () => {
       },
       raw: {
         sourceEventId: "event-17",
-        executionTarget: "workbench-only",
-        deliveredToPage: false,
+        executionTarget: "captured-wire",
+        deliveryPath: "captured-websocket",
+        deliveredToPage: true,
         serverContacted: false
       }
     });

@@ -1,4 +1,5 @@
 import {
+  CONTENT_REINJECT_RESULT,
   PAGE_CAPTURE_SYNC_REQUEST,
   PAGE_REINJECT_REQUEST,
   RUNTIME_CAPTURE_MESSAGE,
@@ -10,7 +11,7 @@ import {
   isRuntimeReinjectResultMessage
 } from "../bridge/messages";
 
-const PAGE_REINJECT_TIMEOUT_MS = 2500;
+const PAGE_REINJECT_TIMEOUT_MS = 5000;
 
 window.addEventListener("message", (event) => {
   if (event.source !== window || !isCaptureMessage(event.data)) {
@@ -38,8 +39,22 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
       return false;
     }
 
-    forwardReinjectionToPage(message.requestId, message.draft).then(sendResponse);
-    return true;
+    void forwardReinjectionToPage(message.requestId, message.draft).then((result) => {
+      chrome.runtime.sendMessage(
+        {
+          type: CONTENT_REINJECT_RESULT,
+          result
+        },
+        () => {
+          void chrome.runtime.lastError;
+        }
+      );
+    });
+
+    // Acknowledge receipt synchronously. The eventual result travels as its own
+    // runtime message so it is not coupled to a long-lived sendResponse channel.
+    sendResponse(true);
+    return false;
   });
 }
 

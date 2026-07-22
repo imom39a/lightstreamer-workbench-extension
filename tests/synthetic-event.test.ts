@@ -27,7 +27,7 @@ describe("synthetic reinjection event", () => {
     });
   });
 
-  it("creates a listener-free Workbench simulation with derived edits and source semantics", () => {
+  it("creates a listener-free wire replay with derived edits and source semantics", () => {
     const draft = createDraft();
     draft.target.listenerId = null;
     draft.subscriptionMode = "MERGE";
@@ -37,12 +37,12 @@ describe("synthetic reinjection event", () => {
     const event = createSyntheticEventFromDraft(
       draft,
       {
-        requestId: "workbench-1",
+        requestId: "wire-merge-1",
         ok: true,
         status: "success",
         timestamp: 456
       },
-      "workbench-only"
+      "captured-wire"
     );
 
     expect(event.subscription?.mode).toBe("MERGE");
@@ -50,8 +50,8 @@ describe("synthetic reinjection event", () => {
     expect(event.listener).toBeUndefined();
     expect(event.update?.changedFields).toEqual({ price: 101 });
     expect(event.raw).toMatchObject({
-      executionTarget: "workbench-only",
-      deliveredToPage: false,
+      executionTarget: "captured-wire",
+      deliveredToPage: true,
       serverContacted: false,
       editedFields: { price: 101 }
     });

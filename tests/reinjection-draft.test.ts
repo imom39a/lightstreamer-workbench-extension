@@ -92,7 +92,7 @@ describe("reinjection drafts", () => {
     expect(edited.changedFields).toEqual({ status: "manual" });
   });
 
-  it("allows editing without a listener but keeps reinjection validation strict", () => {
+  it("allows editing without a listener but requires a captured page delivery path", () => {
     const draft = createDraftFromEvent(
       itemUpdate({
         listener: undefined,
@@ -112,10 +112,10 @@ describe("reinjection drafts", () => {
 
     expect(result.valid).toBe(false);
     expect(result.errors).toContain("Missing original listener target.");
-    expect(validateDraftForExecutionTarget(draft, "workbench-only").valid).toBe(true);
+    expect(validateDraftForExecutionTarget(draft, "captured-wire").valid).toBe(false);
   });
 
-  it("validates listener and Workbench execution targets independently", () => {
+  it("validates listener and wire execution targets independently", () => {
     const listenerDraft = createDraftFromEvent(itemUpdate());
     const wireDraft = createDraftFromEvent(
       itemUpdate({
@@ -145,7 +145,6 @@ describe("reinjection drafts", () => {
         bridgeAvailable: false
       }).errors
     ).toContain("Captured wire bridge is unavailable.");
-    expect(validateDraftForExecutionTarget(wireDraft, "workbench-only").valid).toBe(true);
   });
 
   it("requires command and key only for COMMAND-mode drafts", () => {
@@ -169,8 +168,8 @@ describe("reinjection drafts", () => {
       })
     );
 
-    expect(validateDraftForExecutionTarget(mergeDraft, "workbench-only").valid).toBe(true);
-    expect(validateDraftForExecutionTarget(commandDraft, "workbench-only").errors).toEqual([
+    expect(validateDraftForExecutionTarget(mergeDraft, "captured-listener").valid).toBe(true);
+    expect(validateDraftForExecutionTarget(commandDraft, "captured-listener").errors).toEqual([
       "Missing COMMAND command value.",
       "Missing COMMAND key value."
     ]);

@@ -56,12 +56,12 @@ describe("new context-bound COMMAND drafts", () => {
     expect(createNewCommandDraftFromContext(commandContext({ fields: [] }))).toBeNull();
   });
 
-  it("creates a Workbench-only draft when wire context has no listener", () => {
+  it("creates a captured-wire draft when wire context has no listener", () => {
     const context = commandContext({ listenerId: null, captureSource: "wire" });
     const draft = createNewCommandDraftFromContext(context);
 
     expect(draft).toMatchObject({
-      sourceEventId: "new-command:sub-command:workbench:item-a",
+      sourceEventId: "new-command:sub-command:wire:item-a",
       captureSource: "wire",
       target: {
         subscriptionId: "sub-command",
@@ -74,7 +74,7 @@ describe("new context-bound COMMAND drafts", () => {
     const ready = updateDraftKey(updateDraftCommand(draft, "UPDATE"), "alpha");
     const state = reduceCommandState([capturedAdd()]);
 
-    expect(validateNewCommandDraft(ready, state, context, "workbench-only").valid).toBe(true);
+    expect(validateNewCommandDraft(ready, state, context, "captured-wire").valid).toBe(true);
     expect(validateNewCommandDraft(ready, state, context, "captured-listener").valid).toBe(false);
   });
 

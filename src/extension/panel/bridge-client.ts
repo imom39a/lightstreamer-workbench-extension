@@ -31,7 +31,7 @@ export type PanelBridgeConnection = {
 };
 
 const RECONNECT_DELAY_MS = 500;
-const REINJECT_TIMEOUT_MS = 3000;
+const REINJECT_TIMEOUT_MS = 8000;
 
 export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeConnection {
   if (typeof chrome === "undefined" || !chrome.runtime?.connect || !chrome.devtools) {

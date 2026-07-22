@@ -4,6 +4,7 @@ import {
   CAPTURE_NAMESPACE,
   CAPTURE_VERSION,
   CONTENT_CAPTURE_SYNC_REQUEST,
+  CONTENT_REINJECT_RESULT,
   PAGE_CAPTURE_SYNC_REQUEST,
   PANEL_REINJECT_REQUEST,
   PANEL_VISIBILITY_MESSAGE,
@@ -12,6 +13,7 @@ import {
   createCaptureMessage,
   isCaptureMessage,
   isContentCaptureSyncRequestMessage,
+  isContentReinjectResultMessage,
   isPageCaptureSyncRequestMessage,
   isPanelReinjectRequestMessage,
   isPanelVisibilityMessage,
@@ -181,6 +183,31 @@ describe("bridge reinjection message validation", () => {
         }
       })
     ).toBe(true);
+  });
+
+  it("accepts a content-script result relay and rejects malformed status values", () => {
+    expect(
+      isContentReinjectResultMessage({
+        type: CONTENT_REINJECT_RESULT,
+        result: {
+          requestId: "request-relay",
+          ok: true,
+          status: "success",
+          timestamp: 123
+        }
+      })
+    ).toBe(true);
+    expect(
+      isContentReinjectResultMessage({
+        type: CONTENT_REINJECT_RESULT,
+        result: {
+          requestId: "request-relay",
+          ok: false,
+          status: "not-a-status",
+          timestamp: 123
+        }
+      })
+    ).toBe(false);
   });
 });
 
