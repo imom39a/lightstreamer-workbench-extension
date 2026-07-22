@@ -99,6 +99,8 @@ npm run fixture:test
 
 This command builds the extension, builds the fixture adapter, starts a local Lightstreamer container, waits for it to become ready, and runs the capture smoke test.
 
+To validate the complete orchestration without starting Docker or Maven, run `npm run fixture:test:dry-run`.
+
 The `fixture:*` npm commands use a cross-platform Node runner and work from Windows PowerShell/cmd as well as macOS and Linux shells. Individual lifecycle commands are also available:
 
 ```bash

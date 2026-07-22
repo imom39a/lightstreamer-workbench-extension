@@ -16,7 +16,8 @@ describe("cross-platform Lightstreamer fixture commands", () => {
     ["fixture:start", "start"],
     ["fixture:wait", "wait"],
     ["fixture:stop", "stop"],
-    ["fixture:test", "test"]
+    ["fixture:test", "test"],
+    ["fixture:test:dry-run", "test --dry-run"]
   ])("runs %s through Node instead of a platform shell", (scriptName, command) => {
     expect(packageJson.scripts[scriptName]).toBe(
       `node scripts/lightstreamer/fixture.mjs ${command}`

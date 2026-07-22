@@ -26,7 +26,8 @@
     "fixture:start": "node scripts/lightstreamer/fixture.mjs start",
     "fixture:wait": "node scripts/lightstreamer/fixture.mjs wait",
     "fixture:stop": "node scripts/lightstreamer/fixture.mjs stop",
-    "fixture:test": "node scripts/lightstreamer/fixture.mjs test"
+    "fixture:test": "node scripts/lightstreamer/fixture.mjs test",
+    "fixture:test:dry-run": "node scripts/lightstreamer/fixture.mjs test --dry-run"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.316",

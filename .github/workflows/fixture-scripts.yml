@@ -35,4 +35,4 @@ jobs:
         run: npm test
 
       - name: Exercise the full fixture orchestration without external services
-        run: npm run fixture:test -- --dry-run
+        run: npm run fixture:test:dry-run
