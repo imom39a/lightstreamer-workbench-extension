@@ -4,9 +4,12 @@ import {
   type PageReinjectionExecutionTarget,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
+  PAGE_REINJECTION_BRIDGE_GLOBAL,
+  PAGE_REINJECTION_BRIDGE_VERSION,
   PANEL_PORT_NAME,
   PANEL_REGISTER_MESSAGE,
   PANEL_REINJECT_REQUEST,
+  PANEL_REINJECT_RESULT,
   isPanelCaptureMessage,
   isPanelReinjectResultMessage,
   isPanelStatusMessage
@@ -32,6 +35,7 @@ export type PanelBridgeConnection = {
 
 const RECONNECT_DELAY_MS = 500;
 const REINJECT_TIMEOUT_MS = 8000;
+const INSPECTED_PAGE_EVAL_TIMEOUT_MS = 5000;
 
 export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeConnection {
   if (typeof chrome === "undefined" || !chrome.runtime?.connect || !chrome.devtools) {
@@ -118,6 +122,10 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
         return Promise.resolve(createBridgeErrorResult(requestId, "Bridge is disconnected."));
       }
 
+      if (typeof chrome.devtools.inspectedWindow.eval === "function") {
+        return reinjectThroughInspectedPage(requestId, payload);
+      }
+
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
           pendingReinjections.delete(requestId);
@@ -149,6 +157,85 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
     }
     pendingReinjections.clear();
   }
+}
+
+function reinjectThroughInspectedPage(
+  requestId: string,
+  draft: ReinjectionDraftPayload
+): Promise<ReinjectionResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (result: ReinjectionResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    timer = setTimeout(() => {
+      finish(
+        createBridgeErrorResult(
+          requestId,
+          "The DevTools page evaluation did not complete. Reload the inspected page and try again."
+        )
+      );
+    }, INSPECTED_PAGE_EVAL_TIMEOUT_MS);
+
+    try {
+      chrome.devtools.inspectedWindow.eval<unknown>(
+        pageReinjectionExpression(requestId, draft),
+        (result, exceptionInfo) => {
+          if (exceptionInfo?.isError || exceptionInfo?.isException) {
+            finish(
+              createBridgeErrorResult(
+                requestId,
+                exceptionInfo.description ||
+                  exceptionInfo.value ||
+                  "The inspected page rejected the reinjection evaluation."
+              )
+            );
+            return;
+          }
+
+          const message = {
+            type: PANEL_REINJECT_RESULT,
+            result
+          };
+          if (!isPanelReinjectResultMessage(message) || message.result.requestId !== requestId) {
+            finish(
+              createBridgeErrorResult(
+                requestId,
+                "The inspected page reinjection bridge is unavailable or outdated. Reload the inspected page and capture a fresh update."
+              )
+            );
+            return;
+          }
+          finish(message.result);
+        }
+      );
+    } catch (error) {
+      finish(
+        createBridgeErrorResult(
+          requestId,
+          error instanceof Error
+            ? error.message
+            : "The inspected page reinjection evaluation could not be started."
+        )
+      );
+    }
+  });
+}
+
+function pageReinjectionExpression(
+  requestId: string,
+  draft: ReinjectionDraftPayload
+): string {
+  const bridgeName = JSON.stringify(PAGE_REINJECTION_BRIDGE_GLOBAL);
+  const serializedRequestId = JSON.stringify(requestId);
+  const serializedDraft = JSON.stringify(draft);
+  return `(() => { const bridge = globalThis[${bridgeName}]; if (!bridge || bridge.version !== ${PAGE_REINJECTION_BRIDGE_VERSION} || typeof bridge.reinject !== "function") return null; return bridge.reinject(${serializedRequestId}, ${serializedDraft}); })()`;
 }
 
 function serializeDraft(

@@ -3,7 +3,7 @@
 
 Lightstreamer Event Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs COMMAND-mode state, and lets developers locally replay synthetic updates through captured listener callbacks or captured Lightstreamer WebSocket paths.
 
-The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, capture and reinjection messages cross the isolated content-script boundary, the service worker routes messages by inspected tab, and the DevTools panel owns storage, filtering, UI state, COMMAND reduction, and local synthetic event display.
+The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, capture messages cross the isolated content-script boundary, the service worker routes captures by inspected tab, and the DevTools panel owns storage, filtering, UI state, COMMAND reduction, and local synthetic event display. Reinjection uses a versioned MAIN-world capability invoked directly with `chrome.devtools.inspectedWindow.eval`, avoiding an asynchronous multi-hop acknowledgement path.
 
 ## Contents
 
@@ -42,8 +42,8 @@ The extension runs in four active JavaScript contexts plus optional test fixture
 | Context | Source | Built Output | Main Responsibility |
 | --- | --- | --- | --- |
 | Page `MAIN` world instrumentation | `src/injected/lightstreamer-instrumentation.ts` | `dist/injected/lightstreamer-instrumentation.js` | Wrap Lightstreamer constructors, client/subscription methods, subscription listeners, WebSocket fallback, and page-side reinjection handling. |
-| Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` capture events to the extension runtime and forward reinjection requests back into the page. |
-| Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by tab, route capture messages from content scripts to the right panel, and route reinjection requests from the panel to the inspected tab. |
+| Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` capture events to the extension runtime and retain a compatibility reinjection relay for older DevTools environments. |
+| Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by tab and route capture messages from content scripts to the right panel; retain compatibility routing for reinjection when direct inspected-page evaluation is unavailable. |
 | DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Event Workbench` DevTools panel. |
 | DevTools panel UI | `src/extension/panel/main.ts`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/panel.css`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Render timeline and COMMAND views, own event storage, build state indexes, edit drafts, and call the bridge for reinjection. |
 
@@ -69,9 +69,7 @@ flowchart LR
   Devtools -- "chrome.devtools.panels.create" --> Panel
   Panel -- "runtime Port: lsew-panel" --> Background
   Background -- "PanelCaptureMessage" --> Panel
-  Panel -- "PanelReinjectRequest" --> Background
-  Background -- "tabs.sendMessage" --> Content
-  Content -- "window.postMessage(PageReinjectRequest)" --> Injected
+  Panel -- "inspectedWindow.eval(versioned reinjection bridge)" --> Injected
 ```
 
 ## Repository Layout
@@ -339,7 +337,10 @@ clear-snapshot
 | `CONTENT_REINJECT_REQUEST` | service worker to content script | Forward panel reinjection request to the inspected tab. |
 | `PAGE_REINJECT_REQUEST` | content script to page | Ask MAIN-world instrumentation to use the selected captured listener or wire target. |
 | `RUNTIME_REINJECT_RESULT` | page to content script | Return page-side reinjection result. |
+| `CONTENT_REINJECT_RESULT` | content script to service worker | Relay a compatibility-path page result without holding a response channel open. |
 | `PANEL_REINJECT_RESULT` | service worker to panel | Return reinjection result to the panel. |
+
+The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Current Chrome DevTools reinjection calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. The page validates the serialized draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
 
 ### Reinjection Draft Payload
 
@@ -639,11 +640,10 @@ The project does not inject data into a real Lightstreamer server stream. Page r
 1. The injected script captures original `onItemUpdate` callbacks and active Lightstreamer WebSocket subscription schemas.
 2. The panel creates a `ReinjectionDraft`.
 3. The panel derives the only valid page target from the capture: `captured-listener` for listener captures or `captured-wire` for wire captures. The action stays disabled if that target is unavailable.
-4. The service worker routes the request to the inspected tab.
-5. The content script posts a page message.
-6. For listener replay, the injected script calls the captured callback with a synthetic `ItemUpdate`-like object. For wire replay, it builds a complete schema-ordered TLCP `U` frame and dispatches a local `MessageEvent` on the captured page WebSocket.
-7. The injected script returns a `ReinjectionResult`; the content script relays it to the service worker as a separate runtime message rather than holding a Chrome response channel open.
-8. On success, the panel appends a local synthetic event envelope to its store.
+4. The panel invokes the versioned MAIN-world reinjection capability through `chrome.devtools.inspectedWindow.eval`.
+5. For listener replay, the injected script calls the captured callback with a synthetic `ItemUpdate`-like object. For wire replay, it builds a complete schema-ordered TLCP `U` frame and dispatches a local `MessageEvent` on the captured page WebSocket.
+6. The capability synchronously returns a validated `ReinjectionResult` to the panel's DevTools evaluation callback.
+7. On success, the panel appends a local synthetic event envelope to its store.
 
 There is no panel-only injection path. A page-target failure returns an error and does not append a synthetic event.
 
@@ -651,8 +651,6 @@ There is no panel-only injection path. A page-target failure returns an error an
 sequenceDiagram
   participant UI as DevTools panel
   participant PBC as Panel bridge client
-  participant BG as Service worker
-  participant CS as Content script
   participant Inj as MAIN-world instrumentation
   participant Listener as Original onItemUpdate
   participant WS as Captured page WebSocket
@@ -660,9 +658,7 @@ sequenceDiagram
 
   UI->>UI: create or edit ReinjectionDraft
   UI->>PBC: reinjectDraft(draft, executionTarget)
-  PBC->>BG: PANEL_REINJECT_REQUEST
-  BG->>CS: CONTENT_REINJECT_REQUEST via tabs.sendMessage
-  CS->>Inj: PAGE_REINJECT_REQUEST via window.postMessage
+  PBC->>Inj: inspectedWindow.eval(versioned bridge.reinject)
   alt captured-listener
     Inj->>Inj: lookup subscriptionId:listenerId target
     Inj->>Listener: callback(createSyntheticItemUpdate(draft))
@@ -672,9 +668,7 @@ sequenceDiagram
     Inj->>WS: dispatchEvent(synthetic MessageEvent)
     WS-->>Inj: dispatch result
   end
-  Inj-->>CS: RUNTIME_REINJECT_RESULT
-  CS-->>BG: CONTENT_REINJECT_RESULT
-  BG-->>PBC: PANEL_REINJECT_RESULT
+  Inj-->>PBC: ReinjectionResult
   PBC-->>UI: ReinjectionResult
   UI->>Store: append(createSyntheticEventFromDraft)
 ```
@@ -907,7 +901,7 @@ The panel is DOM-first. Follow the existing pattern:
 
 ## Operational Notes
 
-- The source of truth for shared cross-context payloads is `src/bridge/messages.ts`; do not bypass these validators at runtime boundaries.
+- The source of truth for shared cross-context payloads is `src/bridge/messages.ts`; both the direct page capability and compatibility message path validate drafts and results at runtime boundaries.
 - The injected script must remain self-contained after esbuild bundling because it runs as a manifest content script in the page `MAIN` world.
 - The content bridge validates both capture messages and reinjection result messages before forwarding.
 - The service worker routes panel ports by inspected tab ID; capture messages without a sender tab ID are ignored.

@@ -1,6 +1,9 @@
 import {
   type CaptureKind,
   type CapturePayload,
+  PAGE_REINJECTION_BRIDGE_GLOBAL,
+  PAGE_REINJECTION_BRIDGE_VERSION,
+  PAGE_REINJECT_REQUEST,
   RUNTIME_REINJECT_RESULT,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
@@ -1838,6 +1841,34 @@ function installReinjectionHandler(
   postMessage: (message: unknown) => void,
   state: InstrumentationState
 ): void {
+  const bridge = {
+    version: PAGE_REINJECTION_BRIDGE_VERSION,
+    reinject(requestId: unknown, draft: unknown): ReinjectionResult {
+      const message = {
+        type: PAGE_REINJECT_REQUEST,
+        requestId,
+        draft
+      };
+      if (!isPageReinjectRequestMessage(message)) {
+        return pageBridgeErrorResult(
+          typeof requestId === "string" && requestId ? requestId : "invalid-request",
+          "The inspected page rejected an invalid reinjection request."
+        );
+      }
+      return reinjectDraft(message.requestId, message.draft, state);
+    }
+  };
+
+  try {
+    Object.defineProperty(host, PAGE_REINJECTION_BRIDGE_GLOBAL, {
+      configurable: true,
+      enumerable: false,
+      value: bridge
+    });
+  } catch (_error) {
+    (host as LightstreamerHost & Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] = bridge;
+  }
+
   if (typeof host.addEventListener !== "function") {
     return;
   }
@@ -1849,9 +1880,19 @@ function installReinjectionHandler(
 
     postMessage({
       type: RUNTIME_REINJECT_RESULT,
-      result: reinjectDraft(event.data.requestId, event.data.draft, state)
+      result: bridge.reinject(event.data.requestId, event.data.draft)
     });
   });
+}
+
+function pageBridgeErrorResult(requestId: string, error: string): ReinjectionResult {
+  return {
+    requestId,
+    ok: false,
+    status: "bridge-error",
+    timestamp: Date.now(),
+    error
+  };
 }
 
 function reinjectDraft(

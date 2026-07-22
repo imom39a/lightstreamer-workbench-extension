@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PAGE_REINJECTION_BRIDGE_GLOBAL,
+  PAGE_REINJECTION_BRIDGE_VERSION,
   PAGE_REINJECT_REQUEST,
   type CaptureMessage,
+  type ReinjectionDraftPayload,
+  type ReinjectionResult,
   isRuntimeReinjectResultMessage
 } from "../src/bridge/messages";
 import { reduceCommandState } from "../src/core/command-state";
@@ -542,39 +546,40 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       (message) => (message as CaptureMessage).kind === "item-update"
     ).length;
 
+    const wireDraft = (modelValues: string): ReinjectionDraftPayload => ({
+      sourceEventId: "event-17",
+      executionTarget: "captured-wire",
+      target: {
+        subscriptionId: "subscription-1",
+        listenerId: null
+      },
+      item: {
+        name: "snappHome.SNAPP",
+        position: 1
+      },
+      command: "ADD",
+      key: "MESSENGER_TICKER_6675530.MESSENGER",
+      fields: {
+        key: "MESSENGER_TICKER_6675530.MESSENGER",
+        command: "ADD",
+        modelId: "MESSENGER",
+        modelValues
+      },
+      changedFields: { modelValues },
+      isSnapshot: true,
+      provenance: {
+        source: "clone",
+        sourceEventKind: "item-update",
+        sourceSynthetic: false
+      }
+    });
     const sendWireReplay = (requestId: string, modelValues: string) => {
       pageMessageListeners[0]?.({
         source: target,
         data: {
           type: PAGE_REINJECT_REQUEST,
           requestId,
-          draft: {
-            sourceEventId: "event-17",
-            executionTarget: "captured-wire",
-            target: {
-              subscriptionId: "subscription-1",
-              listenerId: null
-            },
-            item: {
-              name: "snappHome.SNAPP",
-              position: 1
-            },
-            command: "ADD",
-            key: "MESSENGER_TICKER_6675530.MESSENGER",
-            fields: {
-              key: "MESSENGER_TICKER_6675530.MESSENGER",
-              command: "ADD",
-              modelId: "MESSENGER",
-              modelValues
-            },
-            changedFields: { modelValues },
-            isSnapshot: true,
-            provenance: {
-              source: "clone",
-              sourceEventKind: "item-update",
-              sourceSynthetic: false
-            }
-          }
+          draft: wireDraft(modelValues)
         }
       } as unknown as MessageEvent);
     };
@@ -607,6 +612,25 @@ describe("Lightstreamer lifecycle instrumentation", () => {
           message.result.status === "wire-error"
       )
     ).toBe(true);
+
+    applicationFrames.length = 0;
+    const directBridge = (target as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] as {
+      version: number;
+      reinject(requestId: string, draft: ReinjectionDraftPayload): ReinjectionResult;
+    };
+    expect(directBridge.version).toBe(PAGE_REINJECTION_BRIDGE_VERSION);
+    const directResult = directBridge.reinject(
+      "wire-request-direct",
+      wireDraft('{"messageText":"Direct inspected-page delivery"}')
+    );
+    expect(directResult).toMatchObject({
+      requestId: "wire-request-direct",
+      ok: true,
+      status: "success"
+    });
+    expect(applicationFrames).toEqual([
+      "U,3,1,MESSENGER_TICKER_6675530.MESSENGER|ADD|MESSENGER|%7B%22messageText%22%3A%22Direct%20inspected-page%20delivery%22%7D\r\n"
+    ]);
   });
 
   it.each(["socket close", "subscription delete"])(

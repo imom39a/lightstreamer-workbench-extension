@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  PAGE_REINJECTION_BRIDGE_GLOBAL,
+  PAGE_REINJECTION_BRIDGE_VERSION,
   PANEL_REGISTER_MESSAGE,
   PANEL_REINJECT_REQUEST,
   PANEL_REINJECT_RESULT
@@ -54,6 +56,7 @@ describe("panel bridge client", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     delete (globalThis as { chrome?: unknown }).chrome;
+    delete (globalThis as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL];
   });
 
   it("reconnects and re-registers the inspected tab after a port disconnect", () => {
@@ -147,6 +150,149 @@ describe("panel bridge client", () => {
       ok: true,
       status: "success",
       timestamp: 123
+    });
+  });
+
+  it("executes reinjection directly in the inspected page without a runtime-message relay", async () => {
+    vi.useFakeTimers();
+    const port = createFakePort();
+    let deliveredDraft: unknown = null;
+    (globalThis as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] = {
+      version: PAGE_REINJECTION_BRIDGE_VERSION,
+      reinject(requestId: string, draft: unknown) {
+        deliveredDraft = draft;
+        return {
+          requestId,
+          ok: true,
+          status: "success",
+          timestamp: 1_784_737_272_925
+        };
+      }
+    };
+    const evaluate = vi.fn(
+      (
+        expression: string,
+        callback?: (
+          result: unknown,
+          exceptionInfo: chrome.devtools.inspectedWindow.EvaluationExceptionInfo
+        ) => void
+      ) => {
+        callback?.(
+          globalThis.eval(expression),
+          {
+            isError: false,
+            code: "",
+            description: "",
+            details: [],
+            isException: false,
+            value: ""
+          }
+        );
+      }
+    );
+
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42,
+          eval: evaluate
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+    const wireDraft: ReinjectionDraft = {
+      ...createJsonMutationDraft(),
+      captureSource: "wire",
+      target: {
+        subscriptionId: "subscription-3",
+        listenerId: null
+      },
+      item: {
+        name: "snappHome.SNAPP",
+        position: 1
+      }
+    };
+    const resultPromise = bridge.reinjectDraft(wireDraft, "captured-wire");
+
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(
+      port.postedMessages.some(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+      )
+    ).toBe(false);
+    await expect(resultPromise).resolves.toMatchObject({
+      ok: true,
+      status: "success"
+    });
+    expect(deliveredDraft).toMatchObject({
+      executionTarget: "captured-wire",
+      target: {
+        subscriptionId: "subscription-3",
+        listenerId: null
+      },
+      item: {
+        name: "snappHome.SNAPP",
+        position: 1
+      }
+    });
+    const deliveredFields = (deliveredDraft as { fields: Record<string, unknown> }).fields;
+    expect(typeof deliveredFields.modelValues).toBe("string");
+    expect(JSON.parse(String(deliveredFields.modelValues))).toMatchObject({
+      passenger: { selected: true }
+    });
+  });
+
+  it("returns an immediate actionable error when the inspected page bridge is outdated", async () => {
+    const port = createFakePort();
+    const evaluate = vi.fn(
+      (
+        _expression: string,
+        callback?: (
+          result: unknown,
+          exceptionInfo: chrome.devtools.inspectedWindow.EvaluationExceptionInfo
+        ) => void
+      ) => {
+        callback?.(null, {
+          isError: false,
+          code: "",
+          description: "",
+          details: [],
+          isException: false,
+          value: ""
+        });
+      }
+    );
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42,
+          eval: evaluate
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+
+    await expect(bridge.reinjectDraft(createValidDraft())).resolves.toMatchObject({
+      ok: false,
+      status: "bridge-error",
+      error: expect.stringContaining("unavailable or outdated")
     });
   });
 

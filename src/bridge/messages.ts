@@ -15,6 +15,8 @@ export const PAGE_CAPTURE_SYNC_REQUEST = "lsew:page-capture-sync-request" as con
 export const RUNTIME_REINJECT_RESULT = "lsew:runtime-reinject-result" as const;
 export const PANEL_REINJECT_RESULT = "lsew:panel-reinject-result" as const;
 export const PANEL_VISIBILITY_MESSAGE = "lsew:panel-visibility" as const;
+export const PAGE_REINJECTION_BRIDGE_GLOBAL = "__LSEW_REINJECTION_BRIDGE__" as const;
+export const PAGE_REINJECTION_BRIDGE_VERSION = 1 as const;
 
 export const CAPTURE_KINDS = [
   "client-created",
