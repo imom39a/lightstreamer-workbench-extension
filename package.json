@@ -4,6 +4,9 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "build": "vite build && node scripts/build-content-scripts.mjs && node scripts/verify-extension-build.mjs",
     "typecheck": "tsc --noEmit",
@@ -19,15 +22,16 @@
     "release:rollout": "node scripts/chrome-web-store.mjs rollout",
     "release:cancel": "node scripts/chrome-web-store.mjs cancel",
     "store:assets": "node scripts/generate-store-listing-assets.mjs",
-    "fixture:build": "scripts/lightstreamer/build-adapter",
-    "fixture:start": "scripts/lightstreamer/start",
-    "fixture:wait": "scripts/lightstreamer/wait",
-    "fixture:stop": "scripts/lightstreamer/stop",
-    "fixture:test": "scripts/lightstreamer/test"
+    "fixture:build": "node scripts/lightstreamer/fixture.mjs build",
+    "fixture:start": "node scripts/lightstreamer/fixture.mjs start",
+    "fixture:wait": "node scripts/lightstreamer/fixture.mjs wait",
+    "fixture:stop": "node scripts/lightstreamer/fixture.mjs stop",
+    "fixture:test": "node scripts/lightstreamer/fixture.mjs test"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.316",
     "@types/node": "^25.0.0",
+    "cross-spawn": "^7.0.6",
     "esbuild": "^0.27.0",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^27.2.0",

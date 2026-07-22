@@ -91,13 +91,22 @@ If the target page created Lightstreamer clients before the extension was loaded
 
 ## Lightstreamer Fixture
 
-The fixture smoke path requires Docker:
+The fixture smoke path requires a project-supported Node.js release (`20.19+` or `22.12+`), Docker Desktop/Engine, and Maven on `PATH`:
 
 ```bash
 npm run fixture:test
 ```
 
 This command builds the extension, builds the fixture adapter, starts a local Lightstreamer container, waits for it to become ready, and runs the capture smoke test.
+
+The `fixture:*` npm commands use a cross-platform Node runner and work from Windows PowerShell/cmd as well as macOS and Linux shells. Individual lifecycle commands are also available:
+
+```bash
+npm run fixture:build
+npm run fixture:start
+npm run fixture:wait
+npm run fixture:stop
+```
 
 Use the fixture for instrumentation, capture, normalization, and reinjection changes whenever a unit test alone does not prove browser/runtime behavior.
 

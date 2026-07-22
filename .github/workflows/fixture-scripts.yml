@@ -1,0 +1,38 @@
+name: Fixture script compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture-runner:
+    name: Fixture runner (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify cross-platform fixture entry points
+        run: npm test -- --run tests/fixture-runner.test.ts
+
+      - name: Exercise the full fixture orchestration without external services
+        run: npm run fixture:test -- --dry-run

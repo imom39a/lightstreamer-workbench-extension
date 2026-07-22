@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONTAINER_NAME="${LSEW_LIGHTSTREAMER_CONTAINER:-lsew-lightstreamer-fixture}"
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-echo "Lightstreamer fixture stopped: $CONTAINER_NAME"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+exec node "$ROOT_DIR/scripts/lightstreamer/fixture.mjs" stop "$@"

@@ -825,6 +825,8 @@ The default `npm test` command runs the Vitest files ending in `.test.ts`. The L
 npm run fixture:test
 ```
 
+All `fixture:*` npm entry points route through `scripts/lightstreamer/fixture.mjs`. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
+
 Coverage is organized by architectural boundary:
 
 | Test File | Boundary Covered |
@@ -842,6 +844,7 @@ Coverage is organized by architectural boundary:
 | `tests/panel-shell.test.ts` | Timeline shell rendering, event detail, filtering, high-volume notices, lazy row rendering, clone/reinject UI. |
 | `tests/panel-command-state.test.ts` | COMMAND State workbench rendering, selection, filtering, panes, draft editor, and synthetic append behavior. |
 | `tests/panel-css.test.ts` | CSS constraints for the panel. |
+| `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |
 
 Other quality commands:
