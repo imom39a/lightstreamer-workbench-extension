@@ -67,7 +67,7 @@ function editDraftJson(mutator: (draft: Record<string, unknown>) => void): void 
 }
 
 function openMutationEditor(): void {
-  clickButtonByText(".replay-action-bar button", "Mutate & Inject…");
+  document.querySelector<HTMLButtonElement>(".mutate-inject-button")?.click();
 }
 
 function openAdvancedDraftJson(): HTMLTextAreaElement {
@@ -1190,8 +1190,8 @@ describe("panel shell", () => {
     document.querySelector<HTMLButtonElement>(".clone-button")?.click();
 
     expect(text(".draft-source-context")).toContain("Staged source clone");
-    expect(text(".replay-source-button")).toBe("Re-inject");
-    expect(text(".mutate-inject-button")).toBe("Mutate & Inject…");
+    expect(text(".replay-source-button")).toBe("Apply to Workbench");
+    expect(text(".mutate-inject-button")).toBe("Mutate & Apply…");
     expect(document.querySelector(".draft-controls")).toBeNull();
     expect(document.querySelector(".draft-json")).toBeNull();
     expect(
@@ -1199,15 +1199,14 @@ describe("panel shell", () => {
     ).toHaveLength(2);
   });
 
-  it("defaults wire captures to Workbench-only execution and bypasses the bridge", async () => {
-    const reinjectDraft = vi.fn(() => Promise.resolve(createSuccessResult("should-not-run")));
+  it("falls back to explicit Workbench-only actions when the captured wire bridge is unavailable", async () => {
     panel.dispose();
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");
     if (!root) {
       throw new Error("missing test root");
     }
-    panel = renderPanel(root, undefined, { bridge: { reinjectDraft } });
+    panel = renderPanel(root);
     panel.appendCaptureMessage(
       createCaptureMessage("item-update", {
         client: { id: "client-1" },
@@ -1236,26 +1235,25 @@ describe("panel shell", () => {
     );
     expect(targets).toHaveLength(2);
     expect(targets.map((target) => target.value)).toEqual([
-      "captured-listener",
+      "captured-wire",
       "workbench-only"
     ]);
     expect(targets[0].disabled).toBe(true);
     expect(targets[1].checked).toBe(true);
-    expect(text('.draft-target-option[data-target="captured-listener"]')).toContain(
-      "Original app listener"
+    expect(text('.draft-target-option[data-target="captured-wire"]')).toContain(
+      "Inspected page stream"
     );
     expect(text('.draft-target-option[data-target="workbench-only"]')).toContain(
       "The inspected page is unchanged."
     );
 
     const executeButton = document.querySelector<HTMLButtonElement>(".reinject-button");
-    expect(executeButton?.textContent).toBe("Re-inject");
+    expect(executeButton?.textContent).toBe("Apply to Workbench");
     expect(executeButton?.disabled).toBe(false);
     executeButton?.click();
     await flushPromises();
     await flushPanelRender();
 
-    expect(reinjectDraft).not.toHaveBeenCalled();
     expect(text(".reinjection-message")).toBe(
       "Source clone added to Workbench only. The inspected page was not reached."
     );
@@ -1272,7 +1270,6 @@ describe("panel shell", () => {
     await flushPromises();
     await flushPanelRender();
 
-    expect(reinjectDraft).not.toHaveBeenCalled();
     expect(text(".reinjection-message")).toBe(
       "Edited draft added to Workbench only. The inspected page was not reached."
     );
@@ -1937,7 +1934,7 @@ describe("panel shell", () => {
     await flushPromises();
 
     expect(text(".reinjection-message")).toBe(
-      "Original listener is no longer available. Capture a fresh update for this subscription, then clone it again."
+      "The captured page delivery target is no longer available. Capture a fresh update for this subscription, then clone it again."
     );
     expect(text(".event-count")).toBe("1");
     expect(Array.from(document.querySelectorAll(".event-marker")).map((marker) => marker.textContent)).not.toContain(
@@ -1972,7 +1969,7 @@ describe("panel shell", () => {
     await flushPromises();
 
     expect(text(".reinjection-message")).toContain(
-      "Reinjection failed before a synthetic event was appended. Review the listener error and adjust the draft."
+      "Reinjection failed before a synthetic event was appended. Review the delivery error and adjust the draft."
     );
     expect(text(".reinjection-detail")).toBe("fixture listener failed");
     expect(text(".event-count")).toBe("1");

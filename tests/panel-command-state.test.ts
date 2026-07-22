@@ -1445,7 +1445,7 @@ describe("COMMAND State panel workbench", () => {
 
     expect(
       document.querySelector<HTMLInputElement>(
-        '.command-detail-pane input[name="draft-execution-target"][value="captured-listener"]'
+        '.command-detail-pane input[name="draft-execution-target"][value="captured-wire"]'
       )?.disabled
     ).toBe(true);
     expect(
@@ -1466,6 +1466,64 @@ describe("COMMAND State panel workbench", () => {
     });
     expect(selectedTexts(".command-update-row")[0]).toContain(synthetic?.id);
     expect(text(".command-detail-pane")).toContain("added to Workbench only");
+  });
+
+  it("mutates a wire-captured COMMAND update through the inspected page stream", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const wireStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const reinjectWire = vi.fn((..._args: unknown[]) =>
+      Promise.resolve({
+        requestId: "wire-command-mutation",
+        ok: true as const,
+        status: "success" as const,
+        timestamp: 1_700_000_002_050
+      })
+    );
+    const captured = event("wire-command-mutation-source", {
+      command: "ADD",
+      key: "wire-key"
+    });
+    wireStore.append({ ...captured, captureSource: "wire", listener: undefined });
+    renderPanel(root, undefined, {
+      store: wireStore,
+      bridge: { reinjectDraft: reinjectWire }
+    });
+    clickCommandState();
+    clickRowByText(".command-update-row", "wire-command-mutation-source");
+
+    button(".command-detail-pane .clone-button").click();
+
+    const wireTarget = document.querySelector<HTMLInputElement>(
+      '.command-detail-pane input[name="draft-execution-target"][value="captured-wire"]'
+    );
+    expect(wireTarget?.disabled).toBe(false);
+    expect(wireTarget?.checked).toBe(true);
+    button(".command-detail-pane .mutate-inject-button").click();
+    input('.command-detail-pane .structured-field-input[data-field-name="qty"]', "42");
+    button(".command-detail-pane .inject-edited-button").click();
+    await Promise.resolve();
+    await flushInteractionRender();
+
+    expect(reinjectWire).toHaveBeenCalledTimes(1);
+    expect(reinjectWire.mock.calls[0]?.[0]).toMatchObject({
+      sourceEventId: "wire-command-mutation-source",
+      fields: { qty: "42" }
+    });
+    expect(reinjectWire.mock.calls[0]?.[1]).toBe("captured-wire");
+    const synthetic = wireStore.list().find((entry) => entry.synthetic);
+    expect(synthetic?.raw).toMatchObject({
+      executionTarget: "captured-wire",
+      deliveryPath: "captured-websocket",
+      deliveredToPage: true,
+      serverContacted: false
+    });
+    expect(selectedTexts(".command-update-row")[0]).toContain(synthetic?.id);
+    expect(text(".command-detail-pane")).toContain('"qty": "42"');
+    expect(text(".command-detail-pane")).toContain("captured page WebSocket");
   });
 
   it("mutates and reinjects a selected COMMAND update and reveals the applied fields", async () => {
@@ -1661,14 +1719,14 @@ describe("COMMAND State panel workbench", () => {
     button(".new-command-button").click();
 
     const listenerTarget = document.querySelector<HTMLInputElement>(
-      'input[name="draft-execution-target"][value="captured-listener"]'
+      'input[name="draft-execution-target"][value="captured-wire"]'
     );
     const workbenchTarget = document.querySelector<HTMLInputElement>(
       'input[name="draft-execution-target"][value="workbench-only"]'
     );
     expect(listenerTarget?.disabled).toBe(true);
     expect(workbenchTarget?.checked).toBe(true);
-    expect(text(".command-draft-context")).toContain("Workbench only");
+    expect(text(".command-draft-context")).toContain("Captured page stream or Workbench only");
 
     input(".command-draft-command", "UPDATE");
     input(".command-draft-key", "wire-key");
@@ -1845,7 +1903,7 @@ describe("COMMAND State panel workbench", () => {
 
     expect(store.list().filter((entry) => entry.synthetic)).toHaveLength(1);
     expect(text(".reinjection-message")).toContain(
-      "Synthetic COMMAND update was not appended. Review the listener error and adjust the draft."
+      "Synthetic COMMAND update was not appended. Review the delivery error and adjust the draft."
     );
     expect(text(".reinjection-message")).toContain("listener threw");
     expect(control(".command-draft-key").value).toBe("charlie");

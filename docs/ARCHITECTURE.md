@@ -1,7 +1,7 @@
 <!-- generated-by: gsd-doc-writer -->
 # Architecture
 
-Lightstreamer Event Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs COMMAND-mode state, and lets developers locally reinject synthetic updates through captured listener callbacks.
+Lightstreamer Event Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs COMMAND-mode state, and lets developers locally replay synthetic updates through captured listener callbacks or captured Lightstreamer WebSocket paths.
 
 The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, capture and reinjection messages cross the isolated content-script boundary, the service worker routes messages by inspected tab, and the DevTools panel owns storage, filtering, UI state, COMMAND reduction, and local synthetic event display.
 
@@ -32,7 +32,7 @@ The project is designed around these concrete implementation goals:
 - Install instrumentation at `document_start` so clients, subscriptions, and listeners can be wrapped before application code uses them.
 - Preserve application behavior while observing constructor calls, lifecycle methods, listener callbacks, and selected wire-level fallback frames.
 - Keep capture data local to the browser extension session.
-- Support backend-free local reinjection by invoking captured listener callbacks with synthetic `ItemUpdate`-like objects.
+- Support backend-free local reinjection through captured listener callbacks and local TLCP replay on captured page WebSockets.
 - Mark synthetic updates in the normalized event stream and UI.
 
 ## Runtime Contexts
@@ -185,6 +185,8 @@ Capture starts in the inspected page, where the instrumentation script installs 
 - WeakMaps from subscriptions to listener proxies.
 - A WeakMap from subscriptions to clients, used to attach client IDs to subscription callback events.
 - A map of reinjection listener targets keyed by `subscriptionId:listenerId`.
+- A map of active wire reinjection targets keyed by normalized subscription ID, retaining the captured socket and TLCP subscription schema.
+- A WeakSet of synthetic WebSocket `MessageEvent` objects, used to prevent local replay from being recaptured as server traffic.
 - A WeakMap of original `onItemUpdate` callbacks used for synthetic local reinjection.
 - An `emit()` function that posts validated capture messages to the page.
 
@@ -335,7 +337,7 @@ clear-snapshot
 | `PANEL_CAPTURE_MESSAGE` | service worker to panel | Deliver a capture message to the matching inspected tab panel. |
 | `PANEL_REINJECT_REQUEST` | panel to service worker | Ask to reinject a serialized draft. |
 | `CONTENT_REINJECT_REQUEST` | service worker to content script | Forward panel reinjection request to the inspected tab. |
-| `PAGE_REINJECT_REQUEST` | content script to page | Ask MAIN-world instrumentation to call the captured listener. |
+| `PAGE_REINJECT_REQUEST` | content script to page | Ask MAIN-world instrumentation to use the selected captured listener or wire target. |
 | `RUNTIME_REINJECT_RESULT` | page to content script | Return page-side reinjection result. |
 | `PANEL_REINJECT_RESULT` | service worker to panel | Return reinjection result to the panel. |
 
@@ -344,8 +346,9 @@ clear-snapshot
 `isReinjectionDraftPayload()` requires:
 
 - non-empty `sourceEventId`
+- `executionTarget` set to `captured-listener` or `captured-wire`
 - non-empty `target.subscriptionId`
-- non-empty `target.listenerId`
+- non-empty `target.listenerId` for listener replay; nullable for wire replay
 - an item name or an integer item position
 - non-empty `command`
 - non-empty `key`
@@ -358,6 +361,7 @@ Reinjection results use one of these statuses:
 - `success`
 - `stale-target`
 - `listener-error`
+- `wire-error`
 - `bridge-error`
 
 ## Event Model
@@ -630,16 +634,18 @@ Each active row keeps origin provenance and latest provenance separately. Delete
 
 ## Synthetic Reinjection Architecture
 
-The project does not inject data into a real Lightstreamer server stream. Reinjection is local and listener-path based:
+The project does not inject data into a real Lightstreamer server stream. Page reinjection is local and has two explicit delivery paths:
 
-1. The injected script captures the original listener's `onItemUpdate` callback when a subscription listener is added.
+1. The injected script captures original `onItemUpdate` callbacks and active Lightstreamer WebSocket subscription schemas.
 2. The panel creates a `ReinjectionDraft`.
-3. The panel bridge serializes and validates the draft.
+3. The panel selects `captured-listener`, `captured-wire`, or `workbench-only` and validates the draft for that target.
 4. The service worker routes the request to the inspected tab.
 5. The content script posts a page message.
-6. The injected script finds the original listener target and calls it with a synthetic `ItemUpdate`-like object.
+6. For listener replay, the injected script calls the captured callback with a synthetic `ItemUpdate`-like object. For wire replay, it builds a complete schema-ordered TLCP `U` frame and dispatches a local `MessageEvent` on the captured page WebSocket.
 7. The injected script returns a `ReinjectionResult`.
 8. On success, the panel appends a local synthetic event envelope to its store.
+
+`workbench-only` skips page routing, applies the update only to Workbench state, and records `deliveredToPage: false`. Page-target failures never fall back silently to Workbench-only success.
 
 ```mermaid
 sequenceDiagram
@@ -649,16 +655,23 @@ sequenceDiagram
   participant CS as Content script
   participant Inj as MAIN-world instrumentation
   participant Listener as Original onItemUpdate
+  participant WS as Captured page WebSocket
   participant Store as Panel EventStore
 
   UI->>UI: create or edit ReinjectionDraft
-  UI->>PBC: reinjectDraft(draft)
+  UI->>PBC: reinjectDraft(draft, executionTarget)
   PBC->>BG: PANEL_REINJECT_REQUEST
   BG->>CS: CONTENT_REINJECT_REQUEST via tabs.sendMessage
   CS->>Inj: PAGE_REINJECT_REQUEST via window.postMessage
-  Inj->>Inj: lookup subscriptionId:listenerId target
-  Inj->>Listener: callback(createSyntheticItemUpdate(draft))
-  Listener-->>Inj: return or throw
+  alt captured-listener
+    Inj->>Inj: lookup subscriptionId:listenerId target
+    Inj->>Listener: callback(createSyntheticItemUpdate(draft))
+    Listener-->>Inj: return or throw
+  else captured-wire
+    Inj->>Inj: lookup active subscription and encode TLCP U frame
+    Inj->>WS: dispatchEvent(synthetic MessageEvent)
+    WS-->>Inj: dispatch result
+  end
   Inj-->>CS: RUNTIME_REINJECT_RESULT
   CS-->>BG: ReinjectionResult response
   BG-->>PBC: PANEL_REINJECT_RESULT
@@ -702,8 +715,8 @@ Draft mutation helpers:
 Draft validation:
 
 - `validateEditableDraft()` checks source, subscription target, item context, fields, and field names.
-- `validateReinjectionDraft()` additionally requires listener target, command, and key.
-- `validateNewCommandDraft()` checks captured COMMAND context, schema membership, listener target, and semantic COMMAND validity against current state.
+- `validateDraftForExecutionTarget()` checks target-specific listener or wire context plus COMMAND command/key requirements.
+- `validateNewCommandDraft()` checks captured COMMAND context, schema membership, the selected execution target, and semantic COMMAND validity against current state.
 
 ## Panel UI Architecture
 
@@ -899,6 +912,6 @@ The panel is DOM-first. Follow the existing pattern:
 - The content bridge validates both capture messages and reinjection result messages before forwarding.
 - The service worker routes panel ports by inspected tab ID; capture messages without a sender tab ID are ignored.
 - The panel may use temporary IndexedDB storage, but it resets the inspected-tab session on startup, clears on normal panel teardown, and still has a memory fallback.
-- Wire fallback events can be inspected and searched, but cloned wire events without an original listener target cannot be reinjected through listener-path replay.
-- Synthetic events are local panel events. They are appended only after page-side listener reinjection reports success.
+- Active wire fallback subscriptions can be replayed locally through their captured page WebSocket even when no listener target was captured. Closed, deleted, unsubscribed, or handed-off targets return `stale-target` without dispatch.
+- Synthetic events are local panel events. Page-target events are appended only after page-side delivery reports success; Workbench-only events are explicitly marked and never claim inspected-page delivery.
 - `dist/` is generated output. Architecture changes should be made in `src/`, `public/`, or `scripts/`, then rebuilt.

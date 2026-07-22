@@ -165,7 +165,12 @@ describe("new context-bound COMMAND drafts", () => {
       "Bravo"
     );
 
-    expect(isReinjectionDraftPayload(ready)).toBe(true);
+    expect(
+      isReinjectionDraftPayload({
+        ...ready,
+        executionTarget: "captured-listener"
+      })
+    ).toBe(true);
 
     const event = createSyntheticEventFromDraft(ready, {
       requestId: "request-1",

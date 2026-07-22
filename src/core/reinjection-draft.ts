@@ -6,13 +6,18 @@ import {
 } from "./command-state";
 import {
   type EventCaptureSource,
+  type EventClient,
   type EventItem,
+  type EventSubscription,
   type LightstreamerEventEnvelope
 } from "./event-envelope";
 
 export type DraftFieldValue = string | number | boolean | null;
 export type DraftFields = Record<string, DraftFieldValue>;
-export type ReinjectionExecutionTarget = "captured-listener" | "workbench-only";
+export type ReinjectionExecutionTarget =
+  | "captured-listener"
+  | "captured-wire"
+  | "workbench-only";
 
 export type ReinjectionDraft = {
   sourceEventId: string;
@@ -20,6 +25,9 @@ export type ReinjectionDraft = {
   subscriptionMode?: string | null;
   /** Where the source event was observed; retained for honest replay provenance. */
   captureSource?: EventCaptureSource;
+  /** Source context retained so synthetic results remain inspectable as the same stream. */
+  sourceClient?: EventClient;
+  sourceSubscription?: EventSubscription;
   target: {
     subscriptionId: string | null;
     listenerId: string | null;
@@ -91,6 +99,16 @@ export function createDraftFromEvent(event: LightstreamerEventEnvelope): Reinjec
     sourceEventId: event.id,
     subscriptionMode: event.subscription?.mode ?? null,
     captureSource: event.captureSource ?? "listener",
+    ...(event.client ? { sourceClient: { ...event.client } } : {}),
+    ...(event.subscription
+      ? {
+          sourceSubscription: {
+            ...event.subscription,
+            ...(event.subscription.items ? { items: [...event.subscription.items] } : {}),
+            ...(event.subscription.fields ? { fields: [...event.subscription.fields] } : {})
+          }
+        }
+      : {}),
     target: {
       subscriptionId: event.subscription?.id ?? null,
       listenerId: event.listener?.id ?? null
@@ -270,6 +288,16 @@ export function validateDraftForExecutionTarget(
     if (options.bridgeAvailable === false) {
       errors.push("Original listener bridge is unavailable.");
     }
+  } else if (executionTarget === "captured-wire") {
+    if (draft.captureSource !== "wire") {
+      errors.push("Draft is not backed by a wire capture target.");
+    }
+    if (!draft.item.position || draft.item.position < 1) {
+      errors.push("Missing wire item position.");
+    }
+    if (options.bridgeAvailable === false) {
+      errors.push("Captured wire bridge is unavailable.");
+    }
   }
   if (draft.subscriptionMode === "COMMAND") {
     if (!draft.command) {
@@ -361,6 +389,25 @@ export function validateNewCommandDraft(
       explanation: "A captured listener target is required for backend-free local listener-path injection.",
       suggestion: "Capture a COMMAND update after the page listener is attached, then create the synthetic update again."
     });
+  }
+
+  if (executionTarget === "captured-wire") {
+    if (draft.captureSource !== "wire") {
+      diagnostics.push({
+        severity: "error",
+        code: "missing-context",
+        explanation: "A captured wire subscription is required for local transport replay.",
+        suggestion: "Select a wire-captured COMMAND item update, or choose Workbench only."
+      });
+    }
+    if (!draft.item.position || draft.item.position < 1) {
+      diagnostics.push({
+        severity: "error",
+        code: "missing-context",
+        explanation: "Wire transport replay requires the captured 1-based item position.",
+        suggestion: "Capture a complete wire update for this subscription item before replaying it."
+      });
+    }
   }
 
   diagnostics.push(...validateDraftFieldsAgainstSchema(draft, contextValidation.fields));

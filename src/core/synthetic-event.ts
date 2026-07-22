@@ -28,7 +28,15 @@ export function createSyntheticEventFromDraft(
     synthetic: true,
     kind: "item-update",
     ...(draft.captureSource ? { captureSource: draft.captureSource } : {}),
+    ...(draft.sourceClient ? { client: { ...draft.sourceClient } } : {}),
     subscription: {
+      ...draft.sourceSubscription,
+      ...(draft.sourceSubscription?.items
+        ? { items: [...draft.sourceSubscription.items] }
+        : {}),
+      ...(draft.sourceSubscription?.fields
+        ? { fields: [...draft.sourceSubscription.fields] }
+        : {}),
       id: draft.target.subscriptionId ?? "unknown",
       mode: draft.subscriptionMode ?? "COMMAND"
     },
@@ -54,7 +62,13 @@ export function createSyntheticEventFromDraft(
       requestId: result.requestId,
       status: result.status,
       executionTarget,
-      deliveredToPage: executionTarget === "captured-listener",
+      deliveredToPage: executionTarget !== "workbench-only",
+      deliveryPath:
+        executionTarget === "captured-wire"
+          ? "captured-websocket"
+          : executionTarget === "captured-listener"
+            ? "captured-listener"
+            : "workbench-state",
       serverContacted: false,
       manualChangedFieldsOverride: draft.manualChangedFieldsOverride,
       provenance: { ...draft.provenance }

@@ -1172,6 +1172,11 @@ button {
   color: var(--color-warning);
 }
 
+.selected-event-source.source-wire-replay {
+  background: var(--color-info-bg);
+  color: var(--color-info);
+}
+
 .selected-event-source.source-workbench-only {
   background: var(--color-success-bg);
   color: var(--color-success);
@@ -2378,6 +2383,11 @@ textarea {
 .selected-event-source.source-wire {
   background: var(--color-warning-bg);
   color: var(--color-warning);
+}
+
+.selected-event-source.source-wire-replay {
+  background: var(--color-info-bg);
+  color: var(--color-info);
 }
 
 .selected-event-source.source-workbench-only {

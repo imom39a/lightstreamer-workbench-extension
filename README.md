@@ -23,7 +23,7 @@ The first release focuses on local, current-session debugging for the inspected 
 - Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into a temporary local event store for the current DevTools session.
 - Shows a searchable Timeline with normalized event envelopes and raw diagnostic payloads.
 - Reconstructs COMMAND state by subscription, item, key, command, snapshot state, provenance, and diagnostics.
-- Lets developers clone compatible captured updates, edit fields, and locally reinject synthetic updates through captured listener paths.
+- Lets developers clone compatible captured updates, edit fields, and locally replay them through a captured listener or captured Lightstreamer WebSocket path.
 - Provides WebSocket/TLCP fallback diagnostics when primary Web Client API instrumentation is unavailable.
 - Marks synthetic events clearly so local replay activity is distinguishable from server-originated updates.
 
@@ -80,7 +80,7 @@ Lightstreamer Event Workbench runs locally in the browser extension context. Cap
 
 The extension requests broad page access because it must instrument the inspected page's Lightstreamer Web Client runtime before application code creates clients or subscriptions. Use it only on pages you are authorized to debug, and avoid sharing screenshots or issue logs that contain production secrets, customer data, tokens, or proprietary event payloads.
 
-Synthetic events are marked in the UI and event envelope. v1 local reinjection uses captured listener paths and does not create a real inbound Lightstreamer server event.
+Synthetic events are marked in the UI and event envelope. Local page delivery uses either a captured listener callback or a synthetic TLCP update dispatched through the captured page WebSocket; neither path contacts the Lightstreamer server. Workbench-only application is labeled separately and does not change the inspected page.
 
 ## Official Distribution
 

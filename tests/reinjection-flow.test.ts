@@ -68,7 +68,7 @@ describe("curated mutate-and-reinject contract", () => {
 
     click(".event-row");
     click(".clone-button");
-    clickButtonByText(".replay-action-bar button", "Mutate & Inject…");
+    click(".mutate-inject-button");
 
     const jsonEditor = document.querySelector<HTMLTextAreaElement>(
       '.structured-json-input[data-field-name="modelValues"]'
@@ -122,6 +122,142 @@ describe("curated mutate-and-reinject contract", () => {
     const currentCommandFields = document.querySelector<HTMLElement>(".command-json");
     expect(currentCommandFields?.textContent).toContain('"selected": true');
     expect(currentCommandFields?.textContent).not.toContain('"selected": false');
+
+    controller.dispose();
+  });
+
+  it("applies a mutated wire COMMAND JSON value to Workbench state without claiming page delivery", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    if (!root) {
+      throw new Error("missing test root");
+    }
+
+    const sourceModelValues = JSON.stringify({
+      messageId: "6675530",
+      messageText: "Attention - DDE QA testing.",
+      messageType: "TICKER"
+    });
+    const mutatedModelValues = JSON.stringify(
+      {
+        messageId: "6675530",
+        messageText: "!!!!Attention - DDE QA testing.",
+        messageType: "TICKER"
+      },
+      null,
+      2
+    );
+    const store = createEventStore();
+    const controller = renderPanel(root, undefined, { store });
+    store.append({
+      id: "event-17",
+      timestamp: 1_784_737_272_000,
+      direction: "inbound",
+      source: "server",
+      captureSource: "wire",
+      synthetic: false,
+      kind: "item-update",
+      client: {
+        id: "client-1",
+        serverAddress: "wss://example.test/lightstreamer",
+        adapterSet: "PME_ADAPTER"
+      },
+      subscription: {
+        id: "subscription-3",
+        mode: "COMMAND",
+        items: ["snappHome.SNAPP"],
+        fields: ["key", "command", "modelId", "modelValues"],
+        dataAdapter: "PME_DATA_PROVIDER",
+        requestedSnapshot: "true",
+        keyPosition: 1,
+        commandPosition: 2
+      },
+      item: { name: "snappHome.SNAPP", position: 1 },
+      update: {
+        isSnapshot: true,
+        command: "ADD",
+        key: "MESSENGER_TICKER_6675530.MESSENGER",
+        fields: {
+          key: "MESSENGER_TICKER_6675530.MESSENGER",
+          command: "ADD",
+          modelId: "MESSENGER",
+          modelValues: sourceModelValues
+        },
+        changedFields: {
+          key: "MESSENGER_TICKER_6675530.MESSENGER",
+          command: "ADD",
+          modelId: "MESSENGER",
+          modelValues: sourceModelValues
+        }
+      },
+      raw: {
+        captureSource: "websocket-tlcp",
+        transport: "websocket",
+        frameDirection: "inbound",
+        frameTag: "U",
+        rawSubId: "3",
+        itemPosition: 1,
+        unsupportedDiffFields: []
+      }
+    });
+    await flushPanelRender();
+
+    click(".event-row");
+    click(".clone-button");
+    expect(
+      document.querySelector<HTMLInputElement>(
+        'input[name="draft-execution-target"][value="workbench-only"]'
+      )?.checked
+    ).toBe(true);
+    click(".mutate-inject-button");
+
+    const jsonEditor = document.querySelector<HTMLTextAreaElement>(
+      '.structured-field-input[data-field-name="modelValues"]'
+    );
+    if (!jsonEditor) {
+      throw new Error("missing wire modelValues editor");
+    }
+    jsonEditor.value = mutatedModelValues;
+    jsonEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    click(".inject-edited-button");
+    await flushPromises();
+    await flushPanelRender();
+
+    const synthetic = store.list().at(-1);
+    expect(synthetic).toMatchObject({
+      id: expect.stringMatching(/^synthetic-workbench-/),
+      client: {
+        id: "client-1",
+        adapterSet: "PME_ADAPTER"
+      },
+      subscription: {
+        id: "subscription-3",
+        mode: "COMMAND",
+        items: ["snappHome.SNAPP"],
+        fields: ["key", "command", "modelId", "modelValues"],
+        keyPosition: 1,
+        commandPosition: 2
+      },
+      raw: {
+        sourceEventId: "event-17",
+        executionTarget: "workbench-only",
+        deliveredToPage: false,
+        serverContacted: false
+      }
+    });
+    expect(JSON.parse(String(synthetic?.update?.fields?.modelValues))).toMatchObject({
+      messageText: "!!!!Attention - DDE QA testing."
+    });
+    expect(selectedTimelineEventId()).toBe(synthetic?.id);
+    expect(detailSection("Current item fields").textContent).toContain(
+      "!!!!Attention - DDE QA testing."
+    );
+
+    clickButtonByText(".view-selector button", "COMMAND State");
+    expect(text(".command-json")).toContain("!!!!Attention - DDE QA testing.");
+    expect(text(".command-json")).not.toContain(
+      '"messageText": "Attention - DDE QA testing."'
+    );
 
     controller.dispose();
   });
@@ -396,6 +532,7 @@ function sourceEventAt(index: number): LightstreamerEventEnvelope {
 function pageDraft(): ReinjectionDraftPayload {
   return {
     sourceEventId: "source-json-update",
+    executionTarget: "captured-listener",
     target: {
       subscriptionId: "subscription-1",
       listenerId: "listener-1"

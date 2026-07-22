@@ -2723,9 +2723,7 @@ export function renderPanel(
       draftEditing = false;
       draftJsonText = null;
       draftJsonError = null;
-      draftExecutionTarget = nextDraft.target.listenerId && bridgeReady
-        ? "captured-listener"
-        : "workbench-only";
+      draftExecutionTarget = preferredDraftExecutionTarget(nextDraft);
       reinjectionMessage = null;
       commandDetailOpen = true;
       renderCommandState();
@@ -2780,7 +2778,10 @@ export function renderPanel(
     const controls = document.createElement("div");
     controls.className = "command-draft-controls";
 
-    if (!draftListenerAvailable(currentDraft) && draftExecutionTarget === "captured-listener") {
+    if (
+      draftExecutionTarget !== "workbench-only" &&
+      !draftPageTargetAvailable(currentDraft, draftExecutionTarget)
+    ) {
       draftExecutionTarget = "workbench-only";
     }
 
@@ -2861,13 +2862,15 @@ export function renderPanel(
     injectButton.className = "inject-command-button reinject-button";
     injectButton.type = "button";
     injectButton.textContent = reinjectionPending
-      ? draftExecutionTarget === "captured-listener"
-        ? "Injecting..."
-        : "Adding..."
-      : "Inject COMMAND update";
+      ? draftExecutionTarget === "workbench-only"
+        ? "Adding..."
+        : "Injecting..."
+      : draftExecutionTarget === "workbench-only"
+        ? "Add to Workbench"
+        : "Inject COMMAND update";
     injectButton.disabled =
       !validation.valid ||
-      (draftExecutionTarget === "captured-listener" && !bridgeReady) ||
+      (draftExecutionTarget !== "workbench-only" && !bridgeReady) ||
       reinjectionPending;
     injectButton.addEventListener("click", () => {
       void injectCommandDraft(draft ?? currentDraft, context, item);
@@ -2951,7 +2954,9 @@ export function renderPanel(
           "command-draft-diagnostic info",
           executionTarget === "captured-listener"
             ? "Draft is ready for local listener-path injection."
-            : "Draft is ready for Workbench-only simulation. The inspected page will not change."
+            : executionTarget === "captured-wire"
+              ? "Draft is ready for local replay through the captured page WebSocket. No server request will be sent."
+              : "Draft is ready for Workbench-only simulation. The inspected page will not change."
         )
       );
       return section;
@@ -2983,7 +2988,7 @@ export function renderPanel(
     );
     if (
       !validation.valid ||
-      (executionTarget === "captured-listener" && !activeBridge)
+      (executionTarget !== "workbench-only" && !activeBridge)
     ) {
       return;
     }
@@ -3017,7 +3022,7 @@ export function renderPanel(
       if (!activeBridge) {
         return;
       }
-      result = await activeBridge.reinjectDraft(currentDraft);
+      result = await activeBridge.reinjectDraft(currentDraft, executionTarget);
     }
     reinjectionPending = false;
 
@@ -3027,7 +3032,9 @@ export function renderPanel(
         text:
           executionTarget === "captured-listener"
             ? "Synthetic COMMAND update injected through the captured listener."
-            : "Synthetic COMMAND update added to Workbench only. The inspected page was not reached."
+            : executionTarget === "captured-wire"
+              ? "Synthetic COMMAND update delivered locally through the captured page WebSocket. No server was contacted."
+              : "Synthetic COMMAND update added to Workbench only. The inspected page was not reached."
       };
       if (currentDraft.key) {
         selectedCommandKey = {
@@ -3139,7 +3146,7 @@ export function renderPanel(
       const previousBridgeReady = bridgeReady;
       panelState.status = nextStatus;
       bridgeReady = Boolean(bridge) && isBridgeReadyStatus(nextStatus);
-      if (!bridgeReady && draftExecutionTarget === "captured-listener") {
+      if (!bridgeReady && draftExecutionTarget !== "workbench-only") {
         draftExecutionTarget = "workbench-only";
       }
       if (!panelVisible) {
@@ -3181,7 +3188,7 @@ export function renderPanel(
     setBridge(nextBridge) {
       bridge = nextBridge;
       bridgeReady = isBridgeReadyStatus(panelState.status);
-      if (!bridgeReady && draftExecutionTarget === "captured-listener") {
+      if (!bridgeReady && draftExecutionTarget !== "workbench-only") {
         draftExecutionTarget = "workbench-only";
       }
       renderSelectedTimelineDetail();
@@ -3314,9 +3321,7 @@ export function renderPanel(
       draftEditing = false;
       draftJsonText = formatDraftJson(nextDraft);
       draftJsonError = null;
-      draftExecutionTarget = nextDraft.captureSource !== "wire" && nextDraft.target.listenerId && bridgeReady
-        ? "captured-listener"
-        : "workbench-only";
+      draftExecutionTarget = preferredDraftExecutionTarget(nextDraft);
       reinjectionMessage = null;
       if (surface === "command") {
         selectedCommandUpdateEventId = selectedEvent.id;
@@ -3351,7 +3356,9 @@ export function renderPanel(
         "reinjection-message pending",
         draftExecutionTarget === "captured-listener"
           ? "Delivering locally to the original app listener…"
-          : "Adding the synthetic update to Workbench…"
+          : draftExecutionTarget === "captured-wire"
+            ? "Replaying locally through the captured page WebSocket…"
+            : "Adding the synthetic update to Workbench…"
       );
       pending.setAttribute("role", "status");
       pending.setAttribute("aria-live", "polite");
@@ -3369,7 +3376,13 @@ export function renderPanel(
     const reinjectButton = document.createElement("button");
     reinjectButton.className = "reinject-button replay-source-button";
     reinjectButton.type = "button";
-    reinjectButton.textContent = reinjectionPending ? "Re-injecting…" : "Re-inject";
+    reinjectButton.textContent = reinjectionPending
+      ? draftExecutionTarget === "workbench-only"
+        ? "Applying…"
+        : "Re-injecting…"
+      : draftExecutionTarget === "workbench-only"
+        ? "Apply to Workbench"
+        : "Re-inject";
     reinjectButton.disabled = !sourceValidation.valid || reinjectionPending;
     reinjectButton.addEventListener("click", () => {
       const activeDraft = draft ?? currentDraft;
@@ -3383,7 +3396,8 @@ export function renderPanel(
     const mutateButton = document.createElement("button");
     mutateButton.className = "mutate-inject-button";
     mutateButton.type = "button";
-    mutateButton.textContent = "Mutate & Inject…";
+    mutateButton.textContent =
+      draftExecutionTarget === "workbench-only" ? "Mutate & Apply…" : "Mutate & Inject…";
     mutateButton.disabled = reinjectionPending;
     mutateButton.setAttribute("aria-expanded", String(draftEditing));
     mutateButton.addEventListener("click", () => {
@@ -3413,7 +3427,11 @@ export function renderPanel(
     const editorHeader = document.createElement("div");
     editorHeader.className = "draft-editor-header";
     editorHeader.append(
-      createTextElement("h4", "draft-editor-heading", "Mutate & Inject"),
+      createTextElement(
+        "h4",
+        "draft-editor-heading",
+        draftExecutionTarget === "workbench-only" ? "Mutate & Apply" : "Mutate & Inject"
+      ),
       createTextElement(
         "span",
         "draft-dirty-count",
@@ -3436,10 +3454,12 @@ export function renderPanel(
     injectButton.className = "inject-edited-button";
     injectButton.type = "button";
     injectButton.textContent = reinjectionPending
-      ? draftExecutionTarget === "captured-listener"
-        ? "Injecting…"
-        : "Adding…"
-      : "Inject edited draft";
+      ? draftExecutionTarget === "workbench-only"
+        ? "Applying…"
+        : "Injecting…"
+      : draftExecutionTarget === "workbench-only"
+        ? "Apply edited draft"
+        : "Inject edited draft";
     injectButton.disabled = !validation.valid || Boolean(draftJsonError) || reinjectionPending;
     injectButton.dataset.validationValid = String(validation.valid && !draftJsonError);
     injectButton.addEventListener("click", () => {
@@ -3947,8 +3967,12 @@ export function renderPanel(
     fieldset.className = "draft-execution-targets";
     fieldset.append(createTextElement("legend", "draft-target-legend", "Execution target"));
 
-    const listenerAvailable = draftListenerAvailable(currentDraft);
-    if (!listenerAvailable && draftExecutionTarget === "captured-listener") {
+    const pageTarget = draftPageExecutionTarget(currentDraft);
+    const pageTargetAvailable = draftPageTargetAvailable(currentDraft, pageTarget);
+    if (
+      draftExecutionTarget !== "workbench-only" &&
+      (!pageTargetAvailable || draftExecutionTarget !== pageTarget)
+    ) {
       draftExecutionTarget = "workbench-only";
     }
     const choices: Array<{
@@ -3958,12 +3982,17 @@ export function renderPanel(
       disabled: boolean;
     }> = [
       {
-        value: "captured-listener",
-        label: "Original app listener",
-        helper: listenerAvailable
-          ? "Calls the captured listener in the inspected page. No server is contacted."
-          : "Unavailable because this capture has no live listener target or the panel bridge is disconnected.",
-        disabled: !listenerAvailable
+        value: pageTarget,
+        label: pageTarget === "captured-wire" ? "Inspected page stream" : "Original app listener",
+        helper:
+          pageTarget === "captured-wire"
+            ? pageTargetAvailable
+              ? "Locally replays a synthetic TLCP update through the captured page WebSocket. No server is contacted."
+              : "Unavailable because the captured page WebSocket or panel bridge is disconnected."
+            : pageTargetAvailable
+              ? "Calls the captured listener in the inspected page. No server is contacted."
+              : "Unavailable because this capture has no live listener target or the panel bridge is disconnected.",
+        disabled: !pageTargetAvailable
       },
       {
         value: "workbench-only",
@@ -4008,10 +4037,39 @@ export function renderPanel(
     return fieldset;
   }
 
-  function draftListenerAvailable(currentDraft: ReinjectionDraft): boolean {
+  function draftPageExecutionTarget(
+    currentDraft: ReinjectionDraft
+  ): "captured-listener" | "captured-wire" {
+    return currentDraft.captureSource === "wire" ? "captured-wire" : "captured-listener";
+  }
+
+  function draftPageTargetAvailable(
+    currentDraft: ReinjectionDraft,
+    executionTarget = draftPageExecutionTarget(currentDraft)
+  ): boolean {
+    if (!bridgeReady) {
+      return false;
+    }
+    if (executionTarget === "captured-wire") {
+      return Boolean(
+        currentDraft.captureSource === "wire" &&
+        currentDraft.target.subscriptionId &&
+        currentDraft.item.position &&
+        currentDraft.item.position > 0
+      );
+    }
     return Boolean(
-      currentDraft.captureSource !== "wire" && currentDraft.target.listenerId && bridgeReady
+      currentDraft.captureSource !== "wire" && currentDraft.target.listenerId
     );
+  }
+
+  function preferredDraftExecutionTarget(
+    currentDraft: ReinjectionDraft
+  ): ReinjectionExecutionTarget {
+    const pageTarget = draftPageExecutionTarget(currentDraft);
+    return draftPageTargetAvailable(currentDraft, pageTarget)
+      ? pageTarget
+      : "workbench-only";
   }
 
   async function executeCurrentDraft(
@@ -4023,7 +4081,7 @@ export function renderPanel(
     const validation = validateDraftForExecutionTarget(currentDraft, executionTarget, {
       bridgeAvailable: bridgeReady
     });
-    if (!validation.valid || (executionTarget === "captured-listener" && !activeBridge)) {
+    if (!validation.valid || (executionTarget !== "workbench-only" && !activeBridge)) {
       return;
     }
 
@@ -4049,18 +4107,21 @@ export function renderPanel(
       return;
     }
 
-    // A captured-listener execution is intentionally strict: never fall back to a
-    // Workbench-only simulation when page delivery fails.
+    // Page delivery is intentionally strict: never fall back to a Workbench-only
+    // simulation when listener or captured-wire delivery fails.
     if (!activeBridge) {
       return;
     }
-    const result = await activeBridge.reinjectDraft(currentDraft);
+    const result = await activeBridge.reinjectDraft(currentDraft, executionTarget);
     reinjectionPending = false;
 
     if (result.ok && result.status === "success") {
       reinjectionMessage = {
         kind: "success",
-        text: `${actionMode === "source" ? "Source clone" : "Edited draft"} delivered to the original app listener. The inspected page was reached.`
+        text:
+          executionTarget === "captured-wire"
+            ? `${actionMode === "source" ? "Source clone" : "Edited draft"} delivered locally through the captured page WebSocket. No server was contacted.`
+            : `${actionMode === "source" ? "Source clone" : "Edited draft"} delivered to the original app listener. The inspected page was reached.`
       };
       renderDraftSurface(currentDraft, true);
       appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
@@ -4716,7 +4777,14 @@ function createCommandDraftContext(context: CommandItemContext): HTMLElement {
   const rows: Array<[string, string]> = [
     ["Subscription", context.subscriptionId ?? "-"],
     ["Listener", context.listenerId ?? "-"],
-    ["Execution", context.listenerId ? "Original listener or Workbench only" : "Workbench only"],
+    [
+      "Execution",
+      context.listenerId
+        ? "Original listener or Workbench only"
+        : context.captureSource === "wire"
+          ? "Captured page stream or Workbench only"
+          : "Workbench only"
+    ],
     ["Item", context.itemName ?? String(context.itemPosition ?? "-")],
     ["Schema", context.fields?.join(", ") ?? "-"]
   ];
@@ -5437,13 +5505,13 @@ function createFailureMessage(result: ReinjectionResult): ReinjectionMessage {
   if (result.status === "stale-target") {
     return {
       kind: "error",
-      text: "Original listener is no longer available. Capture a fresh update for this subscription, then clone it again."
+      text: "The captured page delivery target is no longer available. Capture a fresh update for this subscription, then clone it again."
     };
   }
 
   return {
     kind: "error",
-    text: "Reinjection failed before a synthetic event was appended. Review the listener error and adjust the draft.",
+    text: "Reinjection failed before a synthetic event was appended. Review the delivery error and adjust the draft.",
     detail: result.error
   };
 }
@@ -5452,13 +5520,13 @@ function createCommandFailureMessage(result: ReinjectionResult): ReinjectionMess
   if (result.status === "stale-target") {
     return {
       kind: "error",
-      text: "Captured listener target is no longer available. Capture a fresh update for this subscription, then create the synthetic update again."
+      text: "The captured page delivery target is no longer available. Capture a fresh update for this subscription, then create the synthetic update again."
     };
   }
 
   return {
     kind: "error",
-    text: "Synthetic COMMAND update was not appended. Review the listener error and adjust the draft.",
+    text: "Synthetic COMMAND update was not appended. Review the delivery error and adjust the draft.",
     detail: result.error
   };
 }
@@ -5472,11 +5540,13 @@ function formatDraftFieldValue(value: DraftFieldValue | undefined): string {
 
 function detailSourceLabel(
   event: LightstreamerEventEnvelope
-): "Listener" | "Wire" | "Listener replay" | "Workbench only" {
+): "Listener" | "Wire" | "Listener replay" | "Wire replay" | "Workbench only" {
   if (event.synthetic || event.source === "synthetic") {
     return event.raw?.executionTarget === "workbench-only"
       ? "Workbench only"
-      : "Listener replay";
+      : event.raw?.executionTarget === "captured-wire"
+        ? "Wire replay"
+        : "Listener replay";
   }
   return event.captureSource === "wire" ? "Wire" : "Listener";
 }
@@ -6027,7 +6097,9 @@ function timelineSourceTitle(event: LightstreamerEventEnvelope): string {
     return "Synthetic update applied to Workbench state only";
   }
   if (event.synthetic || event.source === "synthetic") {
-    return "Synthetic update replayed through the captured listener";
+    return event.raw?.executionTarget === "captured-wire"
+      ? "Synthetic update replayed locally through the captured page WebSocket"
+      : "Synthetic update replayed through the captured listener";
   }
   return event.captureSource === "wire"
     ? "Captured from the Lightstreamer wire protocol"
@@ -6062,6 +6134,12 @@ function formatMarker(event: LightstreamerEventEnvelope): string {
   ) {
     return event.update?.isSnapshot ? "workbench snapshot" : "workbench live";
   }
+  if (
+    (event.synthetic || event.source === "synthetic") &&
+    event.raw?.executionTarget === "captured-wire"
+  ) {
+    return event.update?.isSnapshot ? "wire replay snapshot" : "wire replay live";
+  }
   const source =
     event.synthetic || event.source === "synthetic"
       ? "synthetic"
@@ -6079,6 +6157,15 @@ function validationMessage(errors: string[]): string {
   if (errors.includes("Original listener bridge is unavailable.")) {
     return "The original listener bridge is unavailable. Choose Workbench only or reconnect the inspected page.";
   }
+  if (errors.includes("Captured wire bridge is unavailable.")) {
+    return "The captured page WebSocket bridge is unavailable. Choose Workbench only or reconnect the inspected page.";
+  }
+  if (
+    errors.includes("Draft is not backed by a wire capture target.") ||
+    errors.includes("Missing wire item position.")
+  ) {
+    return "This draft lacks the wire subscription context required for inspected-page stream replay. Capture a fresh complete update or choose Workbench only.";
+  }
 
   return "Draft is missing required COMMAND values. Add a captured subscription, item, command/key, and valid field names before reinjecting.";
 }
@@ -6095,6 +6182,7 @@ function createSyntheticProvenance(event: LightstreamerEventEnvelope): Record<st
     targetSubscriptionId: event.subscription?.id ?? null,
     targetListenerId: event.listener?.id ?? null,
     executionTarget: event.raw?.executionTarget ?? "captured-listener",
+    deliveryPath: event.raw?.deliveryPath ?? "captured-listener",
     deliveredToPage: event.raw?.deliveredToPage ?? true,
     serverContacted: event.raw?.serverContacted ?? false,
     editedFields: event.raw?.editedFields ?? event.update?.changedFields ?? {}

@@ -30,6 +30,8 @@ type InstrumentationState = {
   commandReplayRows: Map<string, Map<string, CapturePayload>>;
   retiredFallbackSubscriptionIds: Set<string>;
   listenerTargets: Map<string, ReinjectionListenerTarget>;
+  wireTargets: Map<string, WireReinjectionTarget>;
+  syntheticWireEvents: WeakSet<object>;
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
 };
@@ -40,6 +42,12 @@ type ReinjectionListenerTarget = {
   listenerId: string;
   fieldNames: string[];
   callback(update: SyntheticItemUpdate): unknown;
+};
+
+type WireReinjectionTarget = {
+  subscriptionId: string;
+  socket: WebSocket;
+  subscription: WireSubscriptionState;
 };
 
 type SyntheticFieldSelector = string | number;
@@ -56,6 +64,7 @@ type SyntheticItemUpdate = {
 };
 
 type WireConnectionState = {
+  socket: WebSocket;
   clientId: string;
   url: string;
   sessionId: string | null;
@@ -125,6 +134,8 @@ export function installLightstreamerInstrumentation(
     commandReplayRows,
     retiredFallbackSubscriptionIds,
     listenerTargets: new Map<string, ReinjectionListenerTarget>(),
+    wireTargets: new Map<string, WireReinjectionTarget>(),
+    syntheticWireEvents: new WeakSet<object>(),
     originalItemUpdateCallbacks: new WeakMap<object, (update: SyntheticItemUpdate) => unknown>(),
     emit(kind, payload) {
       if (isRetiredFallbackCapture(retiredFallbackSubscriptionIds, payload)) {
@@ -274,6 +285,7 @@ function reconcileFallbackSubscription(
     })
   }));
   state.retiredFallbackSubscriptionIds.add(subscriptionId);
+  state.wireTargets.delete(subscriptionId);
   return replayRows;
 }
 
@@ -487,6 +499,7 @@ function installWireCaptureForSocket(
   state: InstrumentationState
 ): void {
   const wire: WireConnectionState = {
+    socket,
     clientId: state.clientIds.getId(socket),
     url,
     sessionId: null,
@@ -512,6 +525,9 @@ function installWireCaptureForSocket(
   }
 
   socket.addEventListener("message", (event) => {
+    if (state.syntheticWireEvents.has(event)) {
+      return;
+    }
     const text = textWirePayload(event.data);
     if (text === null) {
       return;
@@ -533,6 +549,7 @@ function handleWireClose(
       continue;
     }
     subscription.ended = true;
+    unregisterWireReinjectionTarget(subscription, state);
     state.emit("subscription-ended", {
       client: wireClientPayload(wire),
       subscription: wireSubscriptionPayload(subscription),
@@ -599,6 +616,7 @@ function handleWireSubscriptionAdd(
 
   const subscription = createWireSubscription(rawSubId, params, state);
   wire.subscriptions.set(rawSubId, subscription);
+  registerWireReinjectionTarget(wire, subscription, state);
   state.emit("subscription-created", {
     client: wireClientPayload(wire),
     subscription: wireSubscriptionPayload(subscription),
@@ -625,6 +643,7 @@ function handleWireSubscriptionDelete(
     return;
   }
   subscription.ended = true;
+  unregisterWireReinjectionTarget(subscription, state);
   state.emit("subscription-ended", {
     client: wireClientPayload(wire),
     subscription: { id: subscription.id },
@@ -737,6 +756,7 @@ function handleWireUnsub(
     return;
   }
   subscription.ended = true;
+  unregisterWireReinjectionTarget(subscription, state);
   state.emit("subscription-ended", {
     client: wireClientPayload(wire),
     subscription: { id: subscription.id },
@@ -919,6 +939,9 @@ function ensureWireSubscription(
 ): WireSubscriptionState {
   const existing = wire.subscriptions.get(rawSubId);
   if (existing) {
+    if (!existing.ended) {
+      registerWireReinjectionTarget(wire, existing, state);
+    }
     return existing;
   }
 
@@ -939,7 +962,30 @@ function ensureWireSubscription(
   };
   subscription.id = state.subscriptionIds.getId(subscription);
   wire.subscriptions.set(rawSubId, subscription);
+  registerWireReinjectionTarget(wire, subscription, state);
   return subscription;
+}
+
+function registerWireReinjectionTarget(
+  wire: WireConnectionState,
+  subscription: WireSubscriptionState,
+  state: InstrumentationState
+): void {
+  state.wireTargets.set(subscription.id, {
+    subscriptionId: subscription.id,
+    socket: wire.socket,
+    subscription
+  });
+}
+
+function unregisterWireReinjectionTarget(
+  subscription: WireSubscriptionState,
+  state: InstrumentationState
+): void {
+  const target = state.wireTargets.get(subscription.id);
+  if (target?.subscription === subscription) {
+    state.wireTargets.delete(subscription.id);
+  }
 }
 
 function getWireItemState(subscription: WireSubscriptionState, itemKey: string): WireItemState {
@@ -1813,9 +1859,14 @@ function reinjectDraft(
   draft: ReinjectionDraftPayload,
   state: InstrumentationState
 ): ReinjectionResult {
-  const target = state.listenerTargets.get(
-    targetKey(draft.target.subscriptionId, draft.target.listenerId)
-  );
+  if (draft.executionTarget === "captured-wire") {
+    return reinjectWireDraft(requestId, draft, state);
+  }
+
+  const listenerId = draft.target.listenerId;
+  const target = listenerId
+    ? state.listenerTargets.get(targetKey(draft.target.subscriptionId, listenerId))
+    : undefined;
 
   if (!target) {
     return {
@@ -1844,6 +1895,111 @@ function reinjectDraft(
       error: error instanceof Error ? error.message.slice(0, 500) : "Listener callback failed."
     };
   }
+}
+
+function reinjectWireDraft(
+  requestId: string,
+  draft: ReinjectionDraftPayload,
+  state: InstrumentationState
+): ReinjectionResult {
+  const target = state.wireTargets.get(draft.target.subscriptionId);
+  if (!target || target.subscription.ended || target.socket.readyState !== 1) {
+    return {
+      requestId,
+      ok: false,
+      status: "stale-target",
+      timestamp: Date.now(),
+      error: "Captured Lightstreamer WebSocket subscription is no longer available."
+    };
+  }
+
+  const itemPosition = draft.item.position;
+  if (!itemPosition || itemPosition < 1) {
+    return wireErrorResult(requestId, "Captured wire item position is missing.");
+  }
+
+  const fieldNames = target.subscription.fieldNames;
+  if (fieldNames.length === 0) {
+    return wireErrorResult(requestId, "Captured wire field schema is unavailable.");
+  }
+
+  const draftFields: Record<string, string | number | boolean | null> = {
+    ...draft.fields
+  };
+  if (draft.command !== null) {
+    draftFields.command = draft.command;
+  }
+  if (draft.key !== null) {
+    draftFields.key = draft.key;
+  }
+  const unknownFields = Object.keys(draftFields).filter(
+    (fieldName) => !fieldNames.includes(fieldName)
+  );
+  if (unknownFields.length > 0) {
+    return wireErrorResult(
+      requestId,
+      `Draft fields are not present in the captured wire schema: ${unknownFields.join(", ")}.`
+    );
+  }
+
+  let messageEvent: MessageEvent | null = null;
+  try {
+    const fieldData = fieldNames
+      .map((fieldName) =>
+        Object.prototype.hasOwnProperty.call(draftFields, fieldName)
+          ? encodeTlcpFieldValue(draftFields[fieldName] ?? null)
+          : ""
+      )
+      .join("|");
+    const frame = `U,${target.subscription.rawSubId},${itemPosition},${fieldData}\r\n`;
+    messageEvent = new MessageEvent("message", {
+      data: frame,
+      origin: webSocketOrigin(target.socket)
+    });
+    state.syntheticWireEvents.add(messageEvent);
+    target.socket.dispatchEvent(messageEvent);
+    return {
+      requestId,
+      ok: true,
+      status: "success",
+      timestamp: Date.now()
+    };
+  } catch (error) {
+    return wireErrorResult(
+      requestId,
+      error instanceof Error ? error.message.slice(0, 500) : "Wire replay failed."
+    );
+  } finally {
+    if (messageEvent) {
+      state.syntheticWireEvents.delete(messageEvent);
+    }
+  }
+}
+
+function encodeTlcpFieldValue(value: string | number | boolean | null): string {
+  if (value === null) {
+    return "#";
+  }
+  const text = String(value);
+  return text === "" ? "$" : encodeURIComponent(text);
+}
+
+function webSocketOrigin(socket: WebSocket): string {
+  try {
+    return new URL(String(socket.url)).origin;
+  } catch {
+    return "";
+  }
+}
+
+function wireErrorResult(requestId: string, error: string): ReinjectionResult {
+  return {
+    requestId,
+    ok: false,
+    status: "wire-error",
+    timestamp: Date.now(),
+    error
+  };
 }
 
 function createSyntheticItemUpdate(

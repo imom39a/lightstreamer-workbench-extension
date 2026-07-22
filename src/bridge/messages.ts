@@ -42,12 +42,14 @@ export type CapturePayload = JsonObject;
 
 export type ReinjectionFieldValue = string | number | boolean | null;
 export type ReinjectionFields = Record<string, ReinjectionFieldValue>;
+export type PageReinjectionExecutionTarget = "captured-listener" | "captured-wire";
 
 export type ReinjectionDraftPayload = {
   sourceEventId: string;
+  executionTarget: PageReinjectionExecutionTarget;
   target: {
     subscriptionId: string;
-    listenerId: string;
+    listenerId: string | null;
   };
   item: {
     name?: string | null;
@@ -96,6 +98,7 @@ export type ReinjectionResultStatus =
   | "success"
   | "stale-target"
   | "listener-error"
+  | "wire-error"
   | "bridge-error";
 
 export type ReinjectionResult = {
@@ -230,8 +233,11 @@ export function isReinjectionDraftPayload(value: unknown): value is ReinjectionD
 
   return (
     isNonEmptyString(value.sourceEventId) &&
+    isPageReinjectionExecutionTarget(value.executionTarget) &&
     isNonEmptyString(value.target.subscriptionId) &&
-    isNonEmptyString(value.target.listenerId) &&
+    (value.executionTarget === "captured-wire"
+      ? value.target.listenerId === null || isNonEmptyString(value.target.listenerId)
+      : isNonEmptyString(value.target.listenerId)) &&
     (value.item.name === undefined || value.item.name === null || typeof value.item.name === "string") &&
     (value.item.position === undefined ||
       value.item.position === null ||
@@ -247,6 +253,12 @@ export function isReinjectionDraftPayload(value: unknown): value is ReinjectionD
     isRecord(value.provenance) &&
     isJsonValue(value.provenance)
   );
+}
+
+function isPageReinjectionExecutionTarget(
+  value: unknown
+): value is PageReinjectionExecutionTarget {
+  return value === "captured-listener" || value === "captured-wire";
 }
 
 function isNullableNonEmptyString(value: unknown): value is string | null {
@@ -358,6 +370,7 @@ function isReinjectionResultStatus(value: unknown): value is ReinjectionResultSt
     value === "success" ||
     value === "stale-target" ||
     value === "listener-error" ||
+    value === "wire-error" ||
     value === "bridge-error"
   );
 }

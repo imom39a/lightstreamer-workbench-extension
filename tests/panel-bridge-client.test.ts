@@ -205,6 +205,68 @@ describe("panel bridge client", () => {
     });
   });
 
+  it("serializes a listenerless wire draft for captured WebSocket delivery", async () => {
+    const port = createFakePort();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+    const wireDraft: ReinjectionDraft = {
+      ...createValidDraft(),
+      captureSource: "wire",
+      target: {
+        subscriptionId: "subscription-3",
+        listenerId: null
+      }
+    };
+    const resultPromise = bridge.reinjectDraft(wireDraft, "captured-wire");
+    const request = port.postedMessages.find(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+    ) as {
+      requestId: string;
+      draft: {
+        executionTarget: string;
+        target: { subscriptionId: string; listenerId: string | null };
+      };
+    };
+
+    expect(request.draft).toMatchObject({
+      executionTarget: "captured-wire",
+      target: {
+        subscriptionId: "subscription-3",
+        listenerId: null
+      }
+    });
+
+    port.messageListeners[0]({
+      type: PANEL_REINJECT_RESULT,
+      result: {
+        requestId: request.requestId,
+        ok: true,
+        status: "success",
+        timestamp: 345
+      }
+    });
+    await expect(resultPromise).resolves.toMatchObject({
+      requestId: request.requestId,
+      status: "success"
+    });
+  });
+
   it("serializes a non-COMMAND listener draft with null command and key", async () => {
     const port = createFakePort();
 

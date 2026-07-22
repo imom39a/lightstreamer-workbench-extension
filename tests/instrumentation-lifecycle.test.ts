@@ -141,8 +141,11 @@ class FakeItemGroupSubscription {
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
+  static readonly OPEN = 1;
 
   sent: unknown[] = [];
+  readyState = FakeWebSocket.OPEN;
+  onmessage: ((event: MessageEvent) => void) | null = null;
   private messageListeners: Array<(event: MessageEvent) => void> = [];
   private closeListeners: Array<(event: CloseEvent) => void> = [];
 
@@ -166,9 +169,19 @@ class FakeWebSocket {
   }
 
   emitMessage(data: string) {
-    for (const listener of this.messageListeners) {
-      listener({ data } as MessageEvent);
+    this.dispatchEvent({ type: "message", data } as unknown as MessageEvent);
+  }
+
+  dispatchEvent(event: Event) {
+    if (event.type !== "message") {
+      return true;
     }
+    const messageEvent = event as MessageEvent;
+    for (const listener of this.messageListeners) {
+      listener(messageEvent);
+    }
+    this.onmessage?.(messageEvent);
+    return !messageEvent.defaultPrevented;
   }
 
   emitClose(code = 1006, reason = "connection lost", wasClean = false) {
@@ -493,6 +506,188 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       }
     });
   });
+
+  it("locally delivers a mutated wire COMMAND update through the captured WebSocket", () => {
+    FakeWebSocket.instances = [];
+    const messages: unknown[] = [];
+    const pageMessageListeners: Array<(event: MessageEvent) => void> = [];
+    const target = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        if (type === "message") {
+          pageMessageListeners.push(listener);
+        }
+      }
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message);
+    });
+
+    const socket = new target.WebSocket(
+      "wss://push.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    socket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=3&LS_group=snappHome.SNAPP&LS_schema=key+command+modelId+modelValues&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage(
+      "SUBCMD,3,1,4,1,2\nU,3,1,MESSENGER_TICKER_6675530.MESSENGER|ADD|MESSENGER|%7B%22messageText%22%3A%22Attention%22%7D"
+    );
+
+    const applicationFrames: string[] = [];
+    socket.addEventListener("message", (event: MessageEvent) => {
+      applicationFrames.push(String(event.data));
+    });
+    const capturedUpdatesBeforeReplay = messages.filter(
+      (message) => (message as CaptureMessage).kind === "item-update"
+    ).length;
+
+    const sendWireReplay = (requestId: string, modelValues: string) => {
+      pageMessageListeners[0]?.({
+        source: target,
+        data: {
+          type: PAGE_REINJECT_REQUEST,
+          requestId,
+          draft: {
+            sourceEventId: "event-17",
+            executionTarget: "captured-wire",
+            target: {
+              subscriptionId: "subscription-1",
+              listenerId: null
+            },
+            item: {
+              name: "snappHome.SNAPP",
+              position: 1
+            },
+            command: "ADD",
+            key: "MESSENGER_TICKER_6675530.MESSENGER",
+            fields: {
+              key: "MESSENGER_TICKER_6675530.MESSENGER",
+              command: "ADD",
+              modelId: "MESSENGER",
+              modelValues
+            },
+            changedFields: { modelValues },
+            isSnapshot: true,
+            provenance: {
+              source: "clone",
+              sourceEventKind: "item-update",
+              sourceSynthetic: false
+            }
+          }
+        }
+      } as unknown as MessageEvent);
+    };
+
+    sendWireReplay("wire-request-1", '{"messageText":"!!!!Attention | # $ %"}');
+
+    expect(applicationFrames).toEqual([
+      "U,3,1,MESSENGER_TICKER_6675530.MESSENGER|ADD|MESSENGER|%7B%22messageText%22%3A%22!!!!Attention%20%7C%20%23%20%24%20%25%22%7D\r\n"
+    ]);
+    expect(
+      messages.filter((message) => (message as CaptureMessage).kind === "item-update")
+    ).toHaveLength(capturedUpdatesBeforeReplay);
+    expect(
+      messages.some(
+        (message) =>
+          isRuntimeReinjectResultMessage(message) &&
+          message.result.requestId === "wire-request-1" &&
+          message.result.status === "success"
+      )
+    ).toBe(true);
+
+    applicationFrames.length = 0;
+    sendWireReplay("wire-request-invalid-unicode", "\ud800");
+    expect(applicationFrames).toEqual([]);
+    expect(
+      messages.some(
+        (message) =>
+          isRuntimeReinjectResultMessage(message) &&
+          message.result.requestId === "wire-request-invalid-unicode" &&
+          message.result.status === "wire-error"
+      )
+    ).toBe(true);
+  });
+
+  it.each(["socket close", "subscription delete"])(
+    "rejects captured-wire replay after %s without dispatching an application frame",
+    (retirement) => {
+      FakeWebSocket.instances = [];
+      const messages: unknown[] = [];
+      const pageMessageListeners: Array<(event: MessageEvent) => void> = [];
+      const target = {
+        WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+        addEventListener(type: string, listener: (event: MessageEvent) => void) {
+          if (type === "message") {
+            pageMessageListeners.push(listener);
+          }
+        }
+      };
+
+      installLightstreamerInstrumentation(target, (message) => {
+        messages.push(message);
+      });
+
+      const socket = new target.WebSocket(
+        "wss://push.example.test/lightstreamer"
+      ) as unknown as FakeWebSocket;
+      socket.send(
+        "LS_reqId=1&LS_op=add&LS_subId=3&LS_group=snappHome.SNAPP&LS_schema=key+command+modelId+modelValues&LS_mode=COMMAND&LS_snapshot=true"
+      );
+      socket.emitMessage(
+        "SUBCMD,3,1,4,1,2\nU,3,1,MESSENGER_TICKER_6675530.MESSENGER|ADD|MESSENGER|%7B%22messageText%22%3A%22Attention%22%7D"
+      );
+
+      const applicationFrames: string[] = [];
+      socket.addEventListener("message", (event: MessageEvent) => {
+        applicationFrames.push(String(event.data));
+      });
+      if (retirement === "socket close") {
+        socket.emitClose();
+      } else {
+        socket.send("LS_reqId=2&LS_op=delete&LS_subId=3");
+      }
+
+      pageMessageListeners[0]?.({
+        source: target,
+        data: {
+          type: PAGE_REINJECT_REQUEST,
+          requestId: `stale-${retirement}`,
+          draft: {
+            sourceEventId: "event-17",
+            executionTarget: "captured-wire",
+            target: { subscriptionId: "subscription-1", listenerId: null },
+            item: { name: "snappHome.SNAPP", position: 1 },
+            command: "ADD",
+            key: "MESSENGER_TICKER_6675530.MESSENGER",
+            fields: {
+              key: "MESSENGER_TICKER_6675530.MESSENGER",
+              command: "ADD",
+              modelId: "MESSENGER",
+              modelValues: '{"messageText":"mutated"}'
+            },
+            changedFields: { modelValues: '{"messageText":"mutated"}' },
+            isSnapshot: true,
+            provenance: {
+              source: "clone",
+              sourceEventKind: "item-update",
+              sourceSynthetic: false
+            }
+          }
+        }
+      } as unknown as MessageEvent);
+
+      expect(applicationFrames).toEqual([]);
+      expect(
+        messages.some(
+          (message) =>
+            isRuntimeReinjectResultMessage(message) &&
+            message.result.requestId === `stale-${retirement}` &&
+            message.result.status === "stale-target"
+        )
+      ).toBe(true);
+    }
+  );
 
   it("keeps fallback subscription identities unique across Lightstreamer connections", () => {
     FakeWebSocket.instances = [];
@@ -1304,6 +1499,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
 function createValidPageDraft() {
   return {
     sourceEventId: "event-1",
+    executionTarget: "captured-listener" as const,
     target: {
       subscriptionId: "subscription-1",
       listenerId: "listener-1"

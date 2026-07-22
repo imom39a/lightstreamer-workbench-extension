@@ -1,6 +1,7 @@
 import {
   type CaptureMessage,
   type CaptureStatus,
+  type PageReinjectionExecutionTarget,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
   PANEL_PORT_NAME,
@@ -13,7 +14,7 @@ import {
 import {
   type DraftFieldValue,
   type ReinjectionDraft,
-  validateReinjectionDraft
+  validateDraftForExecutionTarget
 } from "../../core/reinjection-draft";
 
 export type PanelBridgeHandlers = {
@@ -22,7 +23,10 @@ export type PanelBridgeHandlers = {
 };
 
 export type PanelBridgeConnection = {
-  reinjectDraft(draft: ReinjectionDraft): Promise<ReinjectionResult>;
+  reinjectDraft(
+    draft: ReinjectionDraft,
+    executionTarget?: PageReinjectionExecutionTarget
+  ): Promise<ReinjectionResult>;
   disconnect(): void;
 };
 
@@ -103,9 +107,9 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
   connect();
 
   return {
-    reinjectDraft(draft) {
+    reinjectDraft(draft, executionTarget = "captured-listener") {
       const requestId = createRequestId();
-      const payload = serializeDraft(draft);
+      const payload = serializeDraft(draft, executionTarget);
       if (!payload) {
         return Promise.resolve(createBridgeErrorResult(requestId, "Draft is not valid for reinjection."));
       }
@@ -147,17 +151,21 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
   }
 }
 
-function serializeDraft(draft: ReinjectionDraft): ReinjectionDraftPayload | null {
-  const validation = validateReinjectionDraft(draft);
-  if (!validation.valid || !draft.target.subscriptionId || !draft.target.listenerId) {
+function serializeDraft(
+  draft: ReinjectionDraft,
+  executionTarget: PageReinjectionExecutionTarget
+): ReinjectionDraftPayload | null {
+  const validation = validateDraftForExecutionTarget(draft, executionTarget);
+  if (!validation.valid || !draft.target.subscriptionId) {
     return null;
   }
 
   return {
     sourceEventId: draft.sourceEventId,
+    executionTarget,
     target: {
       subscriptionId: draft.target.subscriptionId,
-      listenerId: draft.target.listenerId
+      listenerId: draft.target.listenerId ?? null
     },
     item: {
       name: draft.item.name ?? null,

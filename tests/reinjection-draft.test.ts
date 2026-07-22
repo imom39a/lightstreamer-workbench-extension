@@ -135,6 +135,16 @@ describe("reinjection drafts", () => {
       }).errors
     ).toContain("Original listener bridge is unavailable.");
     expect(validateDraftForExecutionTarget(wireDraft, "captured-listener").valid).toBe(false);
+    expect(
+      validateDraftForExecutionTarget(wireDraft, "captured-wire", {
+        bridgeAvailable: true
+      }).valid
+    ).toBe(true);
+    expect(
+      validateDraftForExecutionTarget(wireDraft, "captured-wire", {
+        bridgeAvailable: false
+      }).errors
+    ).toContain("Captured wire bridge is unavailable.");
     expect(validateDraftForExecutionTarget(wireDraft, "workbench-only").valid).toBe(true);
   });
 

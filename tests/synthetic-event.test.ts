@@ -72,6 +72,57 @@ describe("synthetic reinjection event", () => {
     expect(event.update?.changedFields).toEqual({ command: "UPDATE" });
     expect(event.raw?.editedFields).toEqual({ price: 101 });
   });
+
+  it("marks captured-wire delivery and retains the source stream context", () => {
+    const draft = createDraft();
+    draft.captureSource = "wire";
+    draft.target.listenerId = null;
+    draft.sourceClient = {
+      id: "client-1",
+      serverAddress: "wss://example.test/lightstreamer",
+      adapterSet: "PME_ADAPTER"
+    };
+    draft.sourceSubscription = {
+      id: "subscription-1",
+      mode: "COMMAND",
+      items: ["snappHome.SNAPP"],
+      fields: ["key", "command", "modelId", "modelValues"],
+      dataAdapter: "PME_DATA_PROVIDER",
+      requestedSnapshot: "true",
+      keyPosition: 1,
+      commandPosition: 2
+    };
+
+    const event = createSyntheticEventFromDraft(
+      draft,
+      {
+        requestId: "wire-1",
+        ok: true,
+        status: "success",
+        timestamp: 790
+      },
+      "captured-wire"
+    );
+
+    expect(event.client).toMatchObject({
+      id: "client-1",
+      adapterSet: "PME_ADAPTER"
+    });
+    expect(event.subscription).toMatchObject({
+      id: "subscription-1",
+      mode: "COMMAND",
+      items: ["snappHome.SNAPP"],
+      fields: ["key", "command", "modelId", "modelValues"],
+      keyPosition: 1,
+      commandPosition: 2
+    });
+    expect(event.raw).toMatchObject({
+      executionTarget: "captured-wire",
+      deliveryPath: "captured-websocket",
+      deliveredToPage: true,
+      serverContacted: false
+    });
+  });
 });
 
 function createDraft(): ReinjectionDraft {

@@ -6,7 +6,7 @@ Thank you for helping improve Lightstreamer Event Workbench. This project is a C
 
 - Keep the core model Lightstreamer-native. Do not add app-specific business objects to core capture, normalization, or COMMAND state modules.
 - Preserve the local-only privacy posture. Do not add analytics, remote logging, account sign-in, or off-device event upload without an explicit design discussion.
-- Treat synthetic reinjection as local listener-path replay. Do not imply that the extension can inject inbound data into the real Lightstreamer server stream.
+- Treat synthetic reinjection as local page replay through a captured listener or captured WebSocket. Do not imply that either path injects data into the real Lightstreamer server stream.
 - Respect the official distribution boundary. Source forks are allowed under the project license, but the official Chrome Web Store item is published by maintainers only.
 - Prefer focused pull requests with clear user impact and test coverage.
 - Redact proprietary event payloads, tokens, cookies, customer data, account IDs, and internal URLs before posting issues or PR artifacts.
