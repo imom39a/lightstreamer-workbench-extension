@@ -37,6 +37,8 @@ async function readLocalText(path: string): Promise<string> {
 
 const html = await readText("/");
 const clientScript = await readText("/fixture-client.js");
+const mutateHtml = await readText("/mutate-reinject.html");
+const mutateClientScript = await readText("/mutate-reinject-client.js");
 const dataAdapter = await readLocalText(
   "../fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureDataAdapter.java"
 );
@@ -51,6 +53,14 @@ assert.match(clientScript, /issue-16/);
 assert.match(clientScript, /orderDetails\.STORE_NYC_001/);
 assert.match(clientScript, /storeAlerts\.STORE_NYC_001/);
 assert.match(clientScript, /"command", "key", "name", "qty", "status", "version"/);
+assert.match(mutateHtml, /Official Lightstreamer client application/);
+assert.match(mutateHtml, /id="message-text"/);
+assert.match(mutateClientScript, /scenario\.mutate-reinject/);
+assert.match(mutateClientScript, /lightstreamer-client-web/);
+assert.match(mutateClientScript, /\["key", "command", "modelId", "modelValues"\]/);
+assert.doesNotMatch(mutateClientScript, /window\.LightstreamerClient\s*=/);
+assert.match(dataAdapter, /scenario\.mutate-reinject/);
+assert.match(dataAdapter, /Attention - real Lightstreamer client\./);
 assert.match(dataAdapter, /ISSUE_16_EVENT_COUNTS/);
 assert.match(dataAdapter, /orderDetails\.STORE_NYC_001/);
 assert.match(dataAdapter, /storeAlerts\.STORE_NYC_001/);

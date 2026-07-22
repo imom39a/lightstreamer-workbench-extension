@@ -91,13 +91,21 @@ If the target page created Lightstreamer clients before the extension was loaded
 
 ## Lightstreamer Fixture
 
-The fixture smoke path requires a project-supported Node.js release (`20.19+` or `22.12+`), Docker Desktop/Engine, and Maven on `PATH`:
+The fixture path requires a project-supported Node.js release (`20.19+` or `22.12+`), Docker Desktop/Engine, Maven on `PATH`, and Chrome for Testing or Chromium. Install the dedicated test browser once with the cross-platform Puppeteer installer:
+
+```bash
+npm run fixture:browser:install
+```
+
+Then run the complete fixture verification:
 
 ```bash
 npm run fixture:test
 ```
 
-This command builds the extension, builds the fixture adapter, starts a local Lightstreamer container, waits for it to become ready, and runs the capture smoke test.
+This command builds the extension and fixture adapter, starts a local Lightstreamer container, runs the static capture assertions, then proves Mutate & Inject through the actual DevTools evaluation API, a listenerless TLCP capture, the official Lightstreamer client, and the fixture application's rendered UI.
+
+To run only the real-browser proof, use `npm run fixture:test:browser`. Set `LSEW_BROWSER_HEADLESS=false` when a visible Chrome for Testing window is useful for debugging.
 
 To validate the complete orchestration without starting Docker or Maven, run `npm run fixture:test:dry-run`.
 

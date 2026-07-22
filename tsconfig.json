@@ -16,5 +16,5 @@
     "noEmit": true,
     "types": ["chrome", "vitest/globals"]
   },
-  "include": ["src", "tests", "vite.config.ts"]
+  "include": ["src", "tests", "fixtures/lightstreamer/client", "vite.config.ts"]
 }

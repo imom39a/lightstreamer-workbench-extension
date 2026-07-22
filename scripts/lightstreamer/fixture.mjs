@@ -19,15 +19,35 @@ const deployLibDir = join(
 const adapterJar = join(adapterDir, "target", "lsew-fixture-adapter-0.1.0.jar");
 const deployedAdapterJar = join(deployLibDir, "lsew-fixture-adapter.jar");
 const fixtureSmokeSource = join(rootDir, "tests", "lightstreamer-fixture-capture.spec.ts");
+const fixtureBrowserSource = join(
+  rootDir,
+  "tests",
+  "lightstreamer-mutate-reinject.browser.spec.ts"
+);
+const fixtureClientSource = join(
+  rootDir,
+  "fixtures",
+  "lightstreamer",
+  "client",
+  "mutate-reinject-client.ts"
+);
+const fixtureClientOutput = join(
+  rootDir,
+  "fixtures",
+  "lightstreamer",
+  "pages",
+  "mutate-reinject-client.js"
+);
 
-const usage = `Usage: fixture.mjs <build|start|wait|stop|test> [--dry-run]
+const usage = `Usage: fixture.mjs <build|start|wait|stop|test|browser-test> [--dry-run]
 
 Commands:
   build  Build and deploy the Java fixture adapter
   start  Replace and start the fixture Docker container
   wait   Wait until the fixture HTTP endpoint is ready
   stop   Remove the fixture Docker container
-  test   Build the extension and adapter, run the fixture smoke test, then stop
+  test   Build everything, run smoke and real-browser reinjection tests, then stop
+  browser-test  Build everything, run the real-browser reinjection test, then stop
 
 The same commands are available through npm run fixture:<command>.`;
 
@@ -42,9 +62,11 @@ if (!command || command === "--help" || command === "-h" || command === "help") 
 try {
   switch (command) {
     case "build":
+      await buildFixtureClient();
       await buildAdapter();
       break;
     case "start":
+      await buildFixtureClient();
       await startFixture();
       break;
     case "wait":
@@ -55,6 +77,9 @@ try {
       break;
     case "test":
       await testFixture();
+      break;
+    case "browser-test":
+      await testFixture({ browserOnly: true });
       break;
     default:
       throw new Error(`Unknown fixture command: ${command}\n\n${usage}`);
@@ -75,6 +100,25 @@ async function buildAdapter() {
   }
   await mkdir(deployLibDir, { recursive: true });
   await copyFile(adapterJar, deployedAdapterJar);
+}
+
+async function buildFixtureClient() {
+  if (dryRun) {
+    console.log(
+      `[dry-run] bundle ${formatArgument(fixtureClientSource)} to ${formatArgument(fixtureClientOutput)}`
+    );
+    return;
+  }
+  const { build } = await import("esbuild");
+  await build({
+    entryPoints: [fixtureClientSource],
+    outfile: fixtureClientOutput,
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "chrome114",
+    logLevel: "silent"
+  });
 }
 
 async function startFixture() {
@@ -144,15 +188,49 @@ async function waitForFixture() {
   throw new Error(`Timed out waiting for Lightstreamer fixture at ${config.url}`);
 }
 
-async function testFixture() {
+async function testFixture({ browserOnly = false } = {}) {
   try {
     await runProcess("npm", ["run", "build"]);
+    await buildFixtureClient();
     await buildAdapter();
     await startFixture();
     await waitForFixture();
-    await runFixtureSmokeTest();
+    if (!browserOnly) {
+      await runFixtureSmokeTest();
+    }
+    await runFixtureBrowserTest();
   } finally {
     await stopFixture({ quiet: true });
+  }
+}
+
+async function runFixtureBrowserTest() {
+  const generatedBrowserTest = join(
+    rootDir,
+    "tests",
+    `.lightstreamer-mutate-reinject-${process.pid}-${Date.now()}.mjs`
+  );
+  if (dryRun) {
+    console.log(
+      `[dry-run] transpile ${formatArgument(fixtureBrowserSource)} and run with ${formatArgument(process.execPath)}`
+    );
+    return;
+  }
+
+  const { build } = await import("esbuild");
+  try {
+    await build({
+      entryPoints: [fixtureBrowserSource],
+      outfile: generatedBrowserTest,
+      bundle: false,
+      format: "esm",
+      platform: "node",
+      target: "node20",
+      logLevel: "silent"
+    });
+    await runProcess(process.execPath, [generatedBrowserTest]);
+  } finally {
+    await rm(generatedBrowserTest, { force: true });
   }
 }
 

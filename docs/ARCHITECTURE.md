@@ -799,6 +799,8 @@ The fixture under `fixtures/lightstreamer/` provides deterministic scenarios for
 | --- | --- |
 | `fixtures/lightstreamer/pages/index.html` | Browser fixture page served by the Lightstreamer fixture scripts. |
 | `fixtures/lightstreamer/pages/fixture-client.js` | Creates Lightstreamer COMMAND subscriptions and exposes expected deterministic event counts. |
+| `fixtures/lightstreamer/pages/mutate-reinject.html` | Application UI used to prove that a mutated update reaches an official Lightstreamer client listener and changes rendered state. |
+| `fixtures/lightstreamer/client/mutate-reinject-client.ts` | Module-bundled official client fixture; keeping constructors off `window` forces the production WebSocket/TLCP capture and replay path. |
 | `fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureDataAdapter.java` | Emits deterministic snapshot/live COMMAND rows through a Lightstreamer `SmartDataProvider`. |
 | `fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureMetadataAdapter.java` | Expands the `salesActivity.STORE_NYC_001` item group into invoice and expense items. |
 | `fixtures/lightstreamer/adapters/LSEW_FIXTURE/adapters.xml` | Registers fixture data and metadata adapter classes under adapter set `LSEW_FIXTURE`. |
@@ -808,6 +810,7 @@ Fixture scenarios include:
 
 - `scenario.snapshot-basic`
 - `scenario.add-update-delete`
+- `scenario.mutate-reinject`, whose `key, command, modelId, modelValues` schema mirrors the reported listenerless COMMAND capture
 - high-volume issue-style subscriptions totaling 1,692 expected events across 17 item groups in `fixture-client.js`
 
 The fixture page creates a `LightstreamerClient` for `http://localhost:8080` with adapter set `LSEW_FIXTURE`, adds subscription listeners, connects, and subscribes.
@@ -832,7 +835,9 @@ The default `npm test` command runs the Vitest files ending in `.test.ts`. The L
 npm run fixture:test
 ```
 
-All `fixture:*` npm entry points route through `scripts/lightstreamer/fixture.mjs`. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
+Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` includes the static fixture assertions and `tests/lightstreamer-mutate-reinject.browser.spec.ts`. The browser proof loads the built extension, opens a real DevTools session, invokes reinjection through `chrome.devtools.inspectedWindow.eval`, verifies that the source capture is listenerless `websocket-tlcp`, and asserts that the official client's application UI renders the edited JSON value.
+
+All fixture lifecycle and test entry points route through `scripts/lightstreamer/fixture.mjs`; the browser installer uses Puppeteer's cross-platform CLI. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
 
 Coverage is organized by architectural boundary:
 
@@ -853,6 +858,7 @@ Coverage is organized by architectural boundary:
 | `tests/panel-css.test.ts` | CSS constraints for the panel. |
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |
+| `tests/lightstreamer-mutate-reinject.browser.spec.ts` | Real Chrome extension + DevTools eval + listenerless TLCP + official Lightstreamer client + rendered application UI proof. |
 
 Other quality commands:
 

@@ -17,10 +17,17 @@ describe("cross-platform Lightstreamer fixture commands", () => {
     ["fixture:wait", "wait"],
     ["fixture:stop", "stop"],
     ["fixture:test", "test"],
+    ["fixture:test:browser", "browser-test"],
     ["fixture:test:dry-run", "test --dry-run"]
   ])("runs %s through Node instead of a platform shell", (scriptName, command) => {
     expect(packageJson.scripts[scriptName]).toBe(
       `node scripts/lightstreamer/fixture.mjs ${command}`
+    );
+  });
+
+  it("uses the cross-platform Puppeteer browser installer", () => {
+    expect(packageJson.scripts["fixture:browser:install"]).toBe(
+      "browsers install chrome@stable --path .cache/lsew-browsers"
     );
   });
 
@@ -31,7 +38,7 @@ describe("cross-platform Lightstreamer fixture commands", () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("fixture.mjs <build|start|wait|stop|test>");
+    expect(result.stdout).toContain("fixture.mjs <build|start|wait|stop|test|browser-test>");
   });
 
   it("constructs fixture startup as argument-safe Docker commands", () => {

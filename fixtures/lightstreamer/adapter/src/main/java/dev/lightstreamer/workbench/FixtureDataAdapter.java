@@ -69,6 +69,10 @@ public final class FixtureDataAdapter implements SmartDataProvider {
       emitSnapshotBasic(itemName, itemHandle);
       return;
     }
+    if ("scenario.mutate-reinject".equals(itemName)) {
+      emitMutateReinjectSnapshot(itemName, itemHandle);
+      return;
+    }
 
     Integer issue16Count = ISSUE_16_EVENT_COUNTS.get(itemName);
     if (issue16Count != null) {
@@ -87,6 +91,19 @@ public final class FixtureDataAdapter implements SmartDataProvider {
   private void emitSnapshotBasic(String itemName, Object itemHandle) throws FailureException {
     smartUpdateIfActive(itemName, itemHandle, row("ADD", "alpha", "Alpha", "10", "open", "1"), true);
     smartUpdateIfActive(itemName, itemHandle, row("ADD", "beta", "Beta", "20", "open", "1"), true);
+    smartEndOfSnapshotIfActive(itemName, itemHandle);
+  }
+
+  private void emitMutateReinjectSnapshot(String itemName, Object itemHandle)
+      throws FailureException {
+    Map<String, String> update = new LinkedHashMap<>();
+    update.put(COMMAND_FIELD, "ADD");
+    update.put(KEY_FIELD, "fixture-message.TICKER");
+    update.put("modelId", "MESSENGER");
+    update.put(
+        "modelValues",
+        "{\"messageId\":\"fixture-1\",\"messageText\":\"Attention - real Lightstreamer client.\",\"messageType\":\"TICKER\"}");
+    smartUpdateIfActive(itemName, itemHandle, update, true);
     smartEndOfSnapshotIfActive(itemName, itemHandle);
   }
 
@@ -176,6 +193,7 @@ public final class FixtureDataAdapter implements SmartDataProvider {
   private static boolean isFixtureItem(String itemName) {
     return "scenario.snapshot-basic".equals(itemName)
         || "scenario.add-update-delete".equals(itemName)
+        || "scenario.mutate-reinject".equals(itemName)
         || ISSUE_16_EVENT_COUNTS.containsKey(itemName);
   }
 

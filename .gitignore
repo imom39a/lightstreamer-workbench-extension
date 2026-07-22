@@ -8,6 +8,8 @@ private/
 .DS_Store
 .planning/
 .codex/
+.cache/lsew-browsers/
 fixtures/lightstreamer/adapter/target/
 fixtures/lightstreamer/adapters/*/lib/
+fixtures/lightstreamer/pages/mutate-reinject-client.js
 issues
