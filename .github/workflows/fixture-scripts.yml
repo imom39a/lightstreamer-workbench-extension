@@ -32,7 +32,7 @@ jobs:
         run: npm ci
 
       - name: Verify cross-platform fixture entry points
-        run: npm test -- --run tests/fixture-runner.test.ts
+        run: npm test
 
       - name: Exercise the full fixture orchestration without external services
         run: npm run fixture:test -- --dry-run
