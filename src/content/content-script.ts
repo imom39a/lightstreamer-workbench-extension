@@ -70,33 +70,68 @@ function forwardReinjectionToPage(
   draft: ReinjectionDraftPayload
 ): Promise<ReinjectionResult> {
   return new Promise((resolve) => {
+    let settled = false;
+    let responsePort: MessagePort | null = null;
     const timeout = setTimeout(() => {
-      window.removeEventListener("message", onPageMessage);
-      resolve(createBridgeErrorResult(requestId, "Timed out waiting for page reinjection result."));
+      finish(createBridgeErrorResult(requestId, "Timed out waiting for page reinjection result."));
     }, PAGE_REINJECT_TIMEOUT_MS);
 
-    function onPageMessage(event: MessageEvent) {
-      if (event.source !== window || !isRuntimeReinjectResultMessage(event.data)) {
+    function finish(result: ReinjectionResult) {
+      if (settled) {
         return;
       }
-      if (event.data.result.requestId !== requestId) {
-        return;
-      }
-
+      settled = true;
       clearTimeout(timeout);
       window.removeEventListener("message", onPageMessage);
-      resolve(event.data.result);
+      responsePort?.removeEventListener("message", onPortMessage);
+      responsePort?.close();
+      resolve(result);
+    }
+
+    function acceptPageResult(value: unknown) {
+      if (
+        !isRuntimeReinjectResultMessage(value) ||
+        value.result.requestId !== requestId
+      ) {
+        return;
+      }
+      finish(value.result);
+    }
+
+    function onPageMessage(event: MessageEvent) {
+      if (event.source !== window) {
+        return;
+      }
+      acceptPageResult(event.data);
+    }
+
+    function onPortMessage(event: MessageEvent) {
+      acceptPageResult(event.data);
     }
 
     window.addEventListener("message", onPageMessage);
-    window.postMessage(
-      {
-        type: PAGE_REINJECT_REQUEST,
-        requestId,
-        draft
-      },
-      "*"
-    );
+    const pageRequest = {
+      type: PAGE_REINJECT_REQUEST,
+      requestId,
+      draft
+    };
+
+    if (typeof MessageChannel === "function") {
+      try {
+        const channel = new MessageChannel();
+        responsePort = channel.port1;
+        responsePort.addEventListener("message", onPortMessage);
+        responsePort.start();
+        window.postMessage(pageRequest, "*", [channel.port2]);
+        return;
+      } catch {
+        responsePort?.removeEventListener("message", onPortMessage);
+        responsePort?.close();
+        responsePort = null;
+      }
+    }
+
+    window.postMessage(pageRequest, "*");
   });
 }
 

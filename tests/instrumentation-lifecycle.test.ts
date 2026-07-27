@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
   PAGE_REINJECT_REQUEST,
+  RUNTIME_REINJECT_RESULT,
   type CaptureMessage,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
@@ -1312,8 +1313,13 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     client.subscribe(subscription);
     subscription.addListener(listener);
 
+    const responsePort = {
+      postMessage: vi.fn(),
+      close: vi.fn()
+    } as unknown as MessagePort;
     messageListeners[0]({
       source: target,
+      ports: [responsePort],
       data: {
         type: PAGE_REINJECT_REQUEST,
         requestId: "request-1",
@@ -1340,6 +1346,15 @@ describe("Lightstreamer lifecycle instrumentation", () => {
           message.result.status === "success"
       )
     ).toBe(true);
+    expect(responsePort.postMessage).toHaveBeenCalledWith({
+      type: RUNTIME_REINJECT_RESULT,
+      result: expect.objectContaining({
+        requestId: "request-1",
+        ok: true,
+        status: "success"
+      })
+    });
+    expect(responsePort.close).toHaveBeenCalledTimes(1);
   });
 
   it("preserves subscription field positions for listener-path reinjection", () => {

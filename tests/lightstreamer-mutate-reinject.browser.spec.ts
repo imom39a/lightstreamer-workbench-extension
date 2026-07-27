@@ -73,6 +73,7 @@ const fixtureUrl = new URL(
 const listenerFixtureUrl = (() => {
   const url = new URL(fixtureUrl);
   url.searchParams.set("capture", "listener");
+  url.searchParams.set("feedback", "block-window-result");
   return url.href;
 })();
 const expectedInitialMessage = "Attention - real Lightstreamer client.";
@@ -368,6 +369,7 @@ async function runBrowserProof(): Promise<void> {
       cdp,
       `
       globalThis.__LSEW_REINJECTION_BRIDGE__?.version === 1 &&
+      new URL(location.href).searchParams.get("feedback") === "block-window-result" &&
       document.querySelector("#message-text")?.textContent === ${JSON.stringify(expectedInitialMessage)} &&
       Number(document.querySelector("#update-count")?.textContent) === 1 &&
       globalThis.__LSEW_E2E_CAPTURES__.some((capture) =>

@@ -340,9 +340,9 @@ clear-snapshot
 | `CONTENT_REINJECT_RESULT` | content script to service worker | Relay a compatibility-path page result independently of the original response channel. |
 | `PANEL_REINJECT_RESULT` | service worker to panel | Return reinjection result to the panel. |
 
-The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Current Chrome DevTools reinjection first calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. If evaluation reports that the capability is missing or version-skewed before executing reinjection, the panel sends the same validated request through the compatibility chain. The page validates the serialized draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
+The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Current Chrome DevTools reinjection first calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. If evaluation reports that the capability is missing or version-skewed before executing reinjection, the panel sends the same validated request through the compatibility chain. The content script transfers a request-scoped `MessagePort` with the page request, allowing MAIN-world instrumentation to return the result without depending on the application's shared `window.postMessage` result channel. The page validates the serialized draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
 
-For extension-reload compatibility, the content script returns the final `ReinjectionResult` through both the open `sendResponse` channel and `CONTENT_REINJECT_RESULT`. The service worker accepts either protocol, correlates the result by inspected tab and request ID to the panel port that originated it, and removes the pending request on first delivery so dual feedback cannot produce duplicate panel results.
+The MAIN-world handler also publishes `RUNTIME_REINJECT_RESULT` on `window` for compatibility with older content scripts. For extension-reload compatibility, the content script returns the first valid result from either page channel through both the open `sendResponse` channel and `CONTENT_REINJECT_RESULT`. The service worker accepts either protocol, correlates the result by inspected tab and request ID to the panel port that originated it, and removes the pending request on first delivery so redundant feedback cannot produce duplicate panel results.
 
 ### Reinjection Draft Payload
 
@@ -667,7 +667,8 @@ sequenceDiagram
   else capability missing or version-skewed
     PBC->>BG: PANEL_REINJECT_REQUEST
     BG->>CS: CONTENT_REINJECT_REQUEST
-    CS->>Inj: PAGE_REINJECT_REQUEST
+    CS->>CS: create request-scoped MessageChannel
+    CS->>Inj: PAGE_REINJECT_REQUEST + response port
   end
   alt captured-listener
     Inj->>Inj: lookup subscriptionId:listenerId target
@@ -681,7 +682,8 @@ sequenceDiagram
   alt direct result
     Inj-->>PBC: ReinjectionResult
   else compatibility result
-    Inj-->>CS: RUNTIME_REINJECT_RESULT
+    Inj-->>CS: RUNTIME_REINJECT_RESULT via response port
+    Inj-->>CS: RUNTIME_REINJECT_RESULT via window (legacy fallback)
     CS-->>BG: ReinjectionResult via sendResponse
     CS-->>BG: CONTENT_REINJECT_RESULT (independent fallback)
     BG->>BG: correlate request and accept first result

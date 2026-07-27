@@ -135,7 +135,8 @@ describe("reinjection bridge round trip", () => {
         type: PAGE_REINJECT_REQUEST,
         requestId: "roundtrip-1"
       }),
-      "*"
+      "*",
+      expect.any(Array)
     );
     expect(panelMessages).toContainEqual({
       type: PANEL_REINJECT_RESULT,

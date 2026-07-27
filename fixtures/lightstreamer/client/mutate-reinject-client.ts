@@ -27,6 +27,28 @@ const events = document.querySelector<HTMLOListElement>("#application-events");
 
 let receivedUpdates = 0;
 
+function installProductionFeedbackInterference(): void {
+  if (
+    new URLSearchParams(window.location.search).get("feedback") !==
+    "block-window-result"
+  ) {
+    return;
+  }
+
+  const originalPostMessage = window.postMessage;
+  window.postMessage = ((...args: unknown[]) => {
+    const [message] = args;
+    if (
+      typeof message === "object" &&
+      message !== null &&
+      (message as { type?: unknown }).type === "lsew:runtime-reinject-result"
+    ) {
+      return;
+    }
+    Reflect.apply(originalPostMessage, window, args);
+  }) as typeof window.postMessage;
+}
+
 function fixtureConstructors(): {
   LightstreamerClient: typeof LightstreamerClient;
   Subscription: typeof Subscription;
@@ -43,6 +65,8 @@ function fixtureConstructors(): {
     Subscription: fixtureWindow.Subscription
   };
 }
+
+installProductionFeedbackInterference();
 
 function setConnectionState(value: string): void {
   if (connectionState) {

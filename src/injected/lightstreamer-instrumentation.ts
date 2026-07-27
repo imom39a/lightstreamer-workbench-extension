@@ -1878,10 +1878,21 @@ function installReinjectionHandler(
       return;
     }
 
-    postMessage({
+    const resultMessage = {
       type: RUNTIME_REINJECT_RESULT,
       result: bridge.reinject(event.data.requestId, event.data.draft)
-    });
+    };
+    const responsePort = event.ports?.[0];
+    if (responsePort) {
+      try {
+        responsePort.postMessage(resultMessage);
+      } catch {
+        // Older or already-closed ports still have the window-message fallback.
+      } finally {
+        responsePort.close();
+      }
+    }
+    postMessage(resultMessage);
   });
 }
 
