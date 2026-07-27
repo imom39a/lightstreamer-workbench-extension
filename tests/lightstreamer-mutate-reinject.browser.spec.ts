@@ -70,10 +70,17 @@ const fixtureUrl = new URL(
   "/mutate-reinject.html",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
+const listenerFixtureUrl = (() => {
+  const url = new URL(fixtureUrl);
+  url.searchParams.set("capture", "listener");
+  return url.href;
+})();
 const expectedInitialMessage = "Attention - real Lightstreamer client.";
 const mutatedMessage = "Mutated and reinjected through the captured Lightstreamer WebSocket.";
 const fallbackMutatedMessage =
   "Mutated through the panel fallback and rendered by the Lightstreamer client.";
+const listenerFallbackMutatedMessage =
+  "Mutated through the listener fallback with acknowledged feedback.";
 
 async function runBrowserProof(): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-mutate-reinject-"));
@@ -233,7 +240,7 @@ async function runBrowserProof(): Promise<void> {
       "the shipped panel UI to render the captured wire update"
     );
 
-    const stagedDraft = await stageCapturedUpdate(panelCdp);
+    const stagedDraft = await stageCapturedUpdate(panelCdp, "wire");
     assert.deepEqual(stagedDraft, {
       staged: true,
       deliveryTarget: "captured-wire",
@@ -356,8 +363,142 @@ async function runBrowserProof(): Promise<void> {
     assert.match(finalUi.model, /Mutated through the panel fallback/);
     assert.equal(finalUi.updateCount, 3);
 
+    await cdp.request("Page.navigate", { url: listenerFixtureUrl });
+    await waitForCondition(
+      cdp,
+      `
+      globalThis.__LSEW_REINJECTION_BRIDGE__?.version === 1 &&
+      document.querySelector("#message-text")?.textContent === ${JSON.stringify(expectedInitialMessage)} &&
+      Number(document.querySelector("#update-count")?.textContent) === 1 &&
+      globalThis.__LSEW_E2E_CAPTURES__.some((capture) =>
+        capture.kind === "item-update" &&
+        capture.payload?.item?.name === "scenario.mutate-reinject" &&
+        typeof capture.payload?.listener?.id === "string"
+      )
+      `,
+      "official Lightstreamer listener capture and rendered snapshot"
+    );
+
+    const listenerProof = await evaluateByValue<PreparedBrowserProof>(
+      cdp,
+      `(() => {
+      const sourceCapture = globalThis.__LSEW_E2E_CAPTURES__.findLast((capture) =>
+        capture.kind === "item-update" &&
+        capture.payload?.item?.name === "scenario.mutate-reinject" &&
+        typeof capture.payload?.listener?.id === "string"
+      );
+      if (!sourceCapture) {
+        throw new Error("No official-client listener item update was captured.");
+      }
+      return {
+        bridgeVersion: globalThis.__LSEW_REINJECTION_BRIDGE__.version,
+        sourceCapture,
+        initialMessage: document.querySelector("#message-text")?.textContent ?? "",
+        initialUpdateCount: Number(document.querySelector("#update-count")?.textContent)
+      };
+    })()`
+    );
+    assert.equal(listenerProof.bridgeVersion, 1);
+    assert.ok(listenerProof.sourceCapture.payload?.listener?.id);
+    assert.notEqual(
+      listenerProof.sourceCapture.payload?.raw?.captureSource,
+      "websocket-tlcp"
+    );
+    assert.equal(listenerProof.initialMessage, expectedInitialMessage);
+    assert.equal(listenerProof.initialUpdateCount, 1);
+
+    await waitForCondition(
+      panelCdp,
+      `
+      [...document.querySelectorAll('.event-row[data-kind="item-update"][data-source="listener"][data-synthetic="false"]')]
+        .some((row) => row.querySelector(".event-item")?.textContent === "scenario.mutate-reinject")
+      `,
+      "the shipped panel UI to render the captured listener update"
+    );
+
+    const listenerDraft = await stageCapturedUpdate(panelCdp, "listener");
+    assert.deepEqual(listenerDraft, {
+      staged: true,
+      deliveryTarget: "captured-listener",
+      source: "listener",
+      command: "ADD"
+    });
+
+    const listenerEdit = await editPanelDraftMessage(
+      panelCdp,
+      listenerFallbackMutatedMessage
+    );
+    assert.deepEqual(JSON.parse(listenerEdit.value), {
+      messageId: "fixture-1",
+      messageText: listenerFallbackMutatedMessage,
+      messageType: "TICKER"
+    });
+    assert.deepEqual(
+      {
+        dirtyCount: listenerEdit.dirtyCount,
+        injectDisabled: listenerEdit.injectDisabled,
+        validationValid: listenerEdit.validationValid,
+        error: listenerEdit.error
+      },
+      {
+        dirtyCount: "1 changed",
+        injectDisabled: false,
+        validationValid: "true",
+        error: ""
+      }
+    );
+
+    assert.equal(
+      await evaluateByValue<boolean>(
+        cdp,
+        `delete globalThis.__LSEW_REINJECTION_BRIDGE__`
+      ),
+      true
+    );
+    assert.deepEqual(await clickPanelInject(panelCdp), {
+      clicked: true,
+      busy: "true"
+    });
+
+    await waitForCondition(
+      cdp,
+      `
+      document.querySelector("#message-text")?.textContent === ${JSON.stringify(listenerFallbackMutatedMessage)} &&
+      Number(document.querySelector("#update-count")?.textContent) === 2
+      `,
+      "listener fallback reinjection to update the official Lightstreamer client UI once"
+    );
+
+    await waitForCondition(
+      panelCdp,
+      `
+      document.querySelector(".replay-card")?.getAttribute("aria-busy") === "false" &&
+      document.querySelector(".reinjection-message")?.textContent?.includes(
+        "Edited draft delivered to the original app listener"
+      ) &&
+      ![...document.querySelectorAll('[role="alert"]')].some((alert) => !alert.hidden)
+      `,
+      "the shipped panel to acknowledge listener fallback success without an error"
+    );
+
+    const listenerFinalUi = await evaluateByValue<{
+      message: string;
+      model: string;
+      updateCount: number;
+    }>(
+      cdp,
+      `({
+      message: document.querySelector("#message-text")?.textContent ?? "",
+      model: document.querySelector("#rendered-model")?.textContent ?? "",
+      updateCount: Number(document.querySelector("#update-count")?.textContent)
+    })`
+    );
+    assert.equal(listenerFinalUi.message, listenerFallbackMutatedMessage);
+    assert.match(listenerFinalUi.model, /acknowledged feedback/);
+    assert.equal(listenerFinalUi.updateCount, 2);
+
     console.log(
-      "Mutate & Inject browser proof passed: shipped panel UI + direct/fallback delivery + official client UI"
+      "Mutate & Inject browser proof passed: wire + listener fallback delivery, feedback, and official client UI"
     );
   } catch (error) {
     const logTail = chromeLogs.join("").slice(-4_000);
@@ -445,7 +586,10 @@ async function showWorkbenchPanel(cdp: CdpClient): Promise<PanelSelectionProof> 
   );
 }
 
-async function stageCapturedUpdate(cdp: CdpClient): Promise<{
+async function stageCapturedUpdate(
+  cdp: CdpClient,
+  source: "wire" | "listener"
+): Promise<{
   staged: boolean;
   deliveryTarget: string | null;
   source: string | null;
@@ -455,13 +599,15 @@ async function stageCapturedUpdate(cdp: CdpClient): Promise<{
     cdp,
     `(() => {
       const row = [...document.querySelectorAll(
-        '.event-row[data-kind="item-update"][data-source="wire"][data-synthetic="false"]'
+        '.event-row[data-kind="item-update"][data-source=${JSON.stringify(source)}][data-synthetic="false"]'
       )].find(
         (candidate) =>
           candidate.querySelector(".event-item")?.textContent === "scenario.mutate-reinject"
       );
       if (!(row instanceof HTMLButtonElement)) {
-        throw new Error("The captured wire update row is missing from the shipped panel.");
+        throw new Error(${JSON.stringify(
+          `The captured ${source} update row is missing from the shipped panel.`
+        )});
       }
       const source = row.dataset.source ?? null;
       const command = row.dataset.command ?? null;

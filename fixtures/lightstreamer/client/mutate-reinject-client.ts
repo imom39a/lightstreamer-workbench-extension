@@ -11,6 +11,8 @@ type FixtureModel = {
 };
 
 type FixtureWindow = Window & {
+  LightstreamerClient?: typeof LightstreamerClient;
+  Subscription?: typeof Subscription;
   LSEW_MUTATE_FIXTURE?: {
     client: LightstreamerClient;
     subscription: Subscription;
@@ -24,6 +26,23 @@ const renderedModel = document.querySelector<HTMLElement>("#rendered-model");
 const events = document.querySelector<HTMLOListElement>("#application-events");
 
 let receivedUpdates = 0;
+
+function fixtureConstructors(): {
+  LightstreamerClient: typeof LightstreamerClient;
+  Subscription: typeof Subscription;
+} {
+  if (new URLSearchParams(window.location.search).get("capture") !== "listener") {
+    return { LightstreamerClient, Subscription };
+  }
+
+  const fixtureWindow = window as FixtureWindow;
+  fixtureWindow.LightstreamerClient = LightstreamerClient;
+  fixtureWindow.Subscription = Subscription;
+  return {
+    LightstreamerClient: fixtureWindow.LightstreamerClient,
+    Subscription: fixtureWindow.Subscription
+  };
+}
 
 function setConnectionState(value: string): void {
   if (connectionState) {
@@ -79,7 +98,8 @@ function parseModel(value: unknown): FixtureModel | null {
   return null;
 }
 
-const client = new LightstreamerClient(window.location.origin, "LSEW_FIXTURE");
+const constructors = fixtureConstructors();
+const client = new constructors.LightstreamerClient(window.location.origin, "LSEW_FIXTURE");
 client.connectionOptions.setForcedTransport("WS-STREAMING");
 client.addListener({
   onStatusChange(status) {
@@ -90,7 +110,7 @@ client.addListener({
   }
 });
 
-const subscription = new Subscription("COMMAND", [ITEM], FIELDS);
+const subscription = new constructors.Subscription("COMMAND", [ITEM], FIELDS);
 subscription.setRequestedSnapshot("yes");
 subscription.addListener({
   onSubscription() {

@@ -40,6 +40,16 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
     }
 
     void forwardReinjectionToPage(message.requestId, message.draft).then((result) => {
+      // Return the final result on the original channel for compatibility with
+      // background workers that predate the detached result message.
+      try {
+        sendResponse(result);
+      } catch {
+        // The detached result below remains available if this channel closed.
+      }
+
+      // Also publish it independently. This survives a response channel that
+      // closes while the inspected page is processing the update.
       chrome.runtime.sendMessage(
         {
           type: CONTENT_REINJECT_RESULT,
@@ -51,10 +61,7 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
       );
     });
 
-    // Acknowledge receipt synchronously. The eventual result travels as its own
-    // runtime message so it is not coupled to a long-lived sendResponse channel.
-    sendResponse(true);
-    return false;
+    return true;
   });
 }
 

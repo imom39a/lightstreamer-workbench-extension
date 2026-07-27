@@ -9,11 +9,19 @@ import {
   isContentReinjectResultMessage,
   isPanelRegisterMessage,
   isPanelReinjectRequestMessage,
+  isPanelReinjectResultMessage,
   isRuntimeCaptureMessage
 } from "../bridge/messages";
 
 const panelPortsByTab = new Map<number, chrome.runtime.Port>();
 const tabByPort = new WeakMap<chrome.runtime.Port, number>();
+const pendingReinjections = new Map<
+  string,
+  {
+    tabId: number;
+    port: chrome.runtime.Port;
+  }
+>();
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== PANEL_PORT_NAME) {
@@ -45,6 +53,10 @@ chrome.runtime.onConnect.addListener((port) => {
       return;
     }
 
+    pendingReinjections.set(pendingReinjectionKey(tabId, message.requestId), {
+      tabId,
+      port
+    });
     chrome.tabs.sendMessage(
       tabId,
       {
@@ -52,18 +64,33 @@ chrome.runtime.onConnect.addListener((port) => {
         requestId: message.requestId,
         draft: message.draft
       },
-      (accepted: boolean | undefined) => {
+      (response: unknown) => {
         const runtimeError = chrome.runtime.lastError?.message;
-        if (!runtimeError && accepted === true) {
+        if (!runtimeError && response === true) {
           return;
         }
-        port.postMessage({
+
+        const resultMessage = {
           type: PANEL_REINJECT_RESULT,
-          result: createBridgeErrorResult(
+          result: response
+        };
+        if (
+          !runtimeError &&
+          isPanelReinjectResultMessage(resultMessage) &&
+          resultMessage.result.requestId === message.requestId
+        ) {
+          deliverReinjectionResult(tabId, resultMessage.result);
+          return;
+        }
+
+        deliverReinjectionResult(
+          tabId,
+          createBridgeErrorResult(
             message.requestId,
-            runtimeError ?? "Content script did not accept the reinjection request. Reload the inspected page and try again."
+            runtimeError ??
+              "Content script did not accept the reinjection request. Reload the inspected page and try again."
           )
-        });
+        );
       }
     );
   });
@@ -72,6 +99,11 @@ chrome.runtime.onConnect.addListener((port) => {
     const tabId = tabByPort.get(port);
     if (tabId !== undefined && panelPortsByTab.get(tabId) === port) {
       panelPortsByTab.delete(tabId);
+    }
+    for (const [key, pending] of pendingReinjections) {
+      if (pending.port === port) {
+        pendingReinjections.delete(key);
+      }
     }
   });
 });
@@ -82,10 +114,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     if (tabId === undefined) {
       return false;
     }
-    panelPortsByTab.get(tabId)?.postMessage({
-      type: PANEL_REINJECT_RESULT,
-      result: message.result
-    });
+    deliverReinjectionResult(tabId, message.result);
     return false;
   }
 
@@ -115,6 +144,25 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
     timestamp: Date.now(),
     error
   };
+}
+
+function deliverReinjectionResult(tabId: number, result: ReinjectionResult): boolean {
+  const key = pendingReinjectionKey(tabId, result.requestId);
+  const pending = pendingReinjections.get(key);
+  if (!pending || pending.tabId !== tabId) {
+    return false;
+  }
+
+  pendingReinjections.delete(key);
+  pending.port.postMessage({
+    type: PANEL_REINJECT_RESULT,
+    result
+  });
+  return true;
+}
+
+function pendingReinjectionKey(tabId: number, requestId: string): string {
+  return JSON.stringify([tabId, requestId]);
 }
 
 function requestActiveSubscriptionSync(tabId: number): void {

@@ -5,8 +5,10 @@ import {
   CONTENT_REINJECT_REQUEST,
   CONTENT_REINJECT_RESULT,
   PAGE_CAPTURE_SYNC_REQUEST,
+  PAGE_REINJECT_REQUEST,
   PANEL_PORT_NAME,
   PANEL_REGISTER_MESSAGE,
+  RUNTIME_REINJECT_RESULT,
   type ReinjectionDraftPayload
 } from "../src/bridge/messages";
 
@@ -93,7 +95,90 @@ describe("active subscription capture synchronization bridge", () => {
     expect(postMessage).toHaveBeenCalledWith({ type: PAGE_CAPTURE_SYNC_REQUEST }, "*");
   });
 
-  it("acknowledges reinjection immediately and relays a page timeout as an explicit result", async () => {
+  it("returns the final page result through both feedback protocols", async () => {
+    let runtimeMessageListener:
+      | ((
+          message: unknown,
+          sender: chrome.runtime.MessageSender,
+          sendResponse: (response?: unknown) => void
+        ) => boolean)
+      | null = null;
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => callback?.());
+    vi.spyOn(window, "postMessage").mockImplementation((message) => {
+      if (
+        typeof message !== "object" ||
+        message === null ||
+        (message as { type?: unknown }).type !== PAGE_REINJECT_REQUEST
+      ) {
+        return;
+      }
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: window,
+          data: {
+            type: RUNTIME_REINJECT_RESULT,
+            result: {
+              requestId: (message as { requestId: string }).requestId,
+              ok: true,
+              status: "success",
+              timestamp: 1_784_737_272_925
+            }
+          }
+        })
+      );
+    });
+
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      runtime: {
+        lastError: undefined,
+        sendMessage,
+        onMessage: {
+          addListener(listener: NonNullable<typeof runtimeMessageListener>) {
+            runtimeMessageListener = listener as typeof runtimeMessageListener;
+          }
+        }
+      }
+    } as unknown as typeof chrome;
+
+    await import("../src/content/content-script");
+    const forwardRuntimeMessage = runtimeMessageListener as unknown as (
+      message: unknown,
+      sender: chrome.runtime.MessageSender,
+      sendResponse: (response?: unknown) => void
+    ) => boolean;
+    const sendResponse = vi.fn();
+    const asyncResponse = forwardRuntimeMessage(
+      {
+        type: CONTENT_REINJECT_REQUEST,
+        requestId: "success-request",
+        draft: wireDraft()
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse
+    );
+
+    expect(asyncResponse).toBe(true);
+    expect(sendResponse).not.toHaveBeenCalled();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const expectedResult = {
+      requestId: "success-request",
+      ok: true,
+      status: "success",
+      timestamp: 1_784_737_272_925
+    };
+    expect(sendResponse).toHaveBeenCalledWith(expectedResult);
+    expect(sendMessage).toHaveBeenCalledWith(
+      {
+        type: CONTENT_REINJECT_RESULT,
+        result: expectedResult
+      },
+      expect.any(Function)
+    );
+  });
+
+  it("returns a page timeout through both feedback protocols", async () => {
     vi.useFakeTimers();
     let runtimeMessageListener:
       | ((
@@ -133,11 +218,19 @@ describe("active subscription capture synchronization bridge", () => {
       sendResponse
     );
 
-    expect(asyncResponse).toBe(false);
-    expect(sendResponse).toHaveBeenCalledWith(true);
+    expect(asyncResponse).toBe(true);
+    expect(sendResponse).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(5_000);
 
+    expect(sendResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "timeout-request",
+        ok: false,
+        status: "bridge-error",
+        error: "Timed out waiting for page reinjection result."
+      })
+    );
     expect(sendMessage).toHaveBeenCalledWith(
       {
         type: CONTENT_REINJECT_RESULT,

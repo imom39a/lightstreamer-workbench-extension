@@ -337,10 +337,12 @@ clear-snapshot
 | `CONTENT_REINJECT_REQUEST` | service worker to content script | Forward panel reinjection request to the inspected tab. |
 | `PAGE_REINJECT_REQUEST` | content script to page | Ask MAIN-world instrumentation to use the selected captured listener or wire target. |
 | `RUNTIME_REINJECT_RESULT` | page to content script | Return page-side reinjection result. |
-| `CONTENT_REINJECT_RESULT` | content script to service worker | Relay a compatibility-path page result without holding a response channel open. |
+| `CONTENT_REINJECT_RESULT` | content script to service worker | Relay a compatibility-path page result independently of the original response channel. |
 | `PANEL_REINJECT_RESULT` | service worker to panel | Return reinjection result to the panel. |
 
 The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Current Chrome DevTools reinjection first calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. If evaluation reports that the capability is missing or version-skewed before executing reinjection, the panel sends the same validated request through the compatibility chain. The page validates the serialized draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
+
+For extension-reload compatibility, the content script returns the final `ReinjectionResult` through both the open `sendResponse` channel and `CONTENT_REINJECT_RESULT`. The service worker accepts either protocol, correlates the result by inspected tab and request ID to the panel port that originated it, and removes the pending request on first delivery so dual feedback cannot produce duplicate panel results.
 
 ### Reinjection Draft Payload
 
@@ -680,7 +682,9 @@ sequenceDiagram
     Inj-->>PBC: ReinjectionResult
   else compatibility result
     Inj-->>CS: RUNTIME_REINJECT_RESULT
-    CS-->>BG: CONTENT_REINJECT_RESULT
+    CS-->>BG: ReinjectionResult via sendResponse
+    CS-->>BG: CONTENT_REINJECT_RESULT (independent fallback)
+    BG->>BG: correlate request and accept first result
     BG-->>PBC: PANEL_REINJECT_RESULT
   end
   PBC-->>UI: ReinjectionResult
