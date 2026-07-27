@@ -103,7 +103,7 @@ Then run the complete fixture verification:
 npm run fixture:test
 ```
 
-This command builds the extension and fixture adapter, starts a local Lightstreamer container, runs the static capture assertions, then proves Mutate & Inject through the actual DevTools evaluation API, a listenerless TLCP capture, the official Lightstreamer client, and the fixture application's rendered UI.
+This command builds the extension and fixture adapter, starts a local Lightstreamer container, runs the static capture assertions, then opens the shipped Workbench panel in a real DevTools session. The browser proof selects a listenerless TLCP update, clones and edits it through the panel UI, clicks Inject, exercises both direct and compatibility-fallback delivery, and verifies that the official Lightstreamer client updates the fixture application's rendered UI exactly once per action.
 
 To run only the real-browser proof, use `npm run fixture:test:browser`. Set `LSEW_BROWSER_HEADLESS=false` when a visible Chrome for Testing window is useful for debugging.
 

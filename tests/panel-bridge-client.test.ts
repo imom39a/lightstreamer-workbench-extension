@@ -252,7 +252,82 @@ describe("panel bridge client", () => {
     });
   });
 
-  it("returns an immediate actionable error when the inspected page bridge is outdated", async () => {
+  it("falls back to the runtime relay when the inspected page bridge is version-skewed", async () => {
+    const port = createFakePort();
+    const staleReinject = vi.fn();
+    (globalThis as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] = {
+      version: PAGE_REINJECTION_BRIDGE_VERSION + 1,
+      reinject: staleReinject
+    };
+    const evaluate = vi.fn(
+      (
+        expression: string,
+        callback?: (
+          result: unknown,
+          exceptionInfo: chrome.devtools.inspectedWindow.EvaluationExceptionInfo
+        ) => void
+      ) => {
+        callback?.(
+          globalThis.eval(expression),
+          {
+            isError: false,
+            code: "",
+            description: "",
+            details: [],
+            isException: false,
+            value: ""
+          }
+        );
+      }
+    );
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42,
+          eval: evaluate
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+
+    const resultPromise = bridge.reinjectDraft(createValidDraft());
+    await Promise.resolve();
+    const request = port.postedMessages.find(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+    ) as { requestId: string } | undefined;
+
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(staleReinject).not.toHaveBeenCalled();
+    expect(request?.requestId).toMatch(/^reinject-/);
+
+    port.messageListeners[0]({
+      type: PANEL_REINJECT_RESULT,
+      result: {
+        requestId: request?.requestId,
+        ok: true,
+        status: "success",
+        timestamp: 456
+      }
+    });
+
+    await expect(resultPromise).resolves.toMatchObject({
+      requestId: request?.requestId,
+      ok: true,
+      status: "success"
+    });
+  });
+
+  it("does not retry a direct reinjection that returns an invalid result", async () => {
     const port = createFakePort();
     const evaluate = vi.fn(
       (
@@ -262,14 +337,22 @@ describe("panel bridge client", () => {
           exceptionInfo: chrome.devtools.inspectedWindow.EvaluationExceptionInfo
         ) => void
       ) => {
-        callback?.(null, {
-          isError: false,
-          code: "",
-          description: "",
-          details: [],
-          isException: false,
-          value: ""
-        });
+        callback?.(
+          {
+            requestId: "wrong-request",
+            ok: true,
+            status: "success",
+            timestamp: 456
+          },
+          {
+            isError: false,
+            code: "",
+            description: "",
+            details: [],
+            isException: false,
+            value: ""
+          }
+        );
       }
     );
     (globalThis as { chrome: typeof chrome }).chrome = {
@@ -292,8 +375,16 @@ describe("panel bridge client", () => {
     await expect(bridge.reinjectDraft(createValidDraft())).resolves.toMatchObject({
       ok: false,
       status: "bridge-error",
-      error: expect.stringContaining("unavailable or outdated")
+      error: expect.stringContaining("invalid result")
     });
+    expect(
+      port.postedMessages.some(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+      )
+    ).toBe(false);
   });
 
   it("preserves an edited JSON-string field and its changed-field semantics across the panel bridge", async () => {

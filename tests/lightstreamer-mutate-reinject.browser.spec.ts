@@ -42,23 +42,20 @@ type PreparedBrowserProof = {
   sourceCapture: CaptureMessage;
   initialMessage: string;
   initialUpdateCount: number;
-  draft: Record<string, unknown>;
 };
 
-type DevtoolsEvaluationProof = {
-  result: {
-    requestId: string;
-    ok: boolean;
-    status: string;
-    timestamp: number;
-    error?: string;
-  };
-  exceptionInfo: {
-    isError?: boolean;
-    isException?: boolean;
-    description?: string;
-    value?: string;
-  } | null;
+type PanelSelectionProof = {
+  panelId: string | null;
+  selectedTabId: string | null;
+  availableTabIds: string[];
+};
+
+type PanelDraftEditProof = {
+  value: string;
+  dirtyCount: string;
+  injectDisabled: boolean;
+  validationValid: string | null;
+  error: string;
 };
 
 type BrowserTarget = {
@@ -75,6 +72,9 @@ const fixtureUrl = new URL(
 ).href;
 const expectedInitialMessage = "Attention - real Lightstreamer client.";
 const mutatedMessage = "Mutated and reinjected through the captured Lightstreamer WebSocket.";
+const fallbackMutatedMessage =
+  "Mutated through the panel fallback and rendered by the Lightstreamer client.";
+
 async function runBrowserProof(): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-mutate-reinject-"));
   const chromeExecutable = await resolveChromeExecutable();
@@ -105,7 +105,8 @@ async function runBrowserProof(): Promise<void> {
   chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
 
   let cdp: CdpClient | null = null;
-  let devtoolsCdp: CdpClient | null = null;
+  let devtoolsFrontendCdp: CdpClient | null = null;
+  let panelCdp: CdpClient | null = null;
   try {
     const debuggingPort = await waitForDebuggingPort(profileDir, chrome);
     const targets = await waitForBrowserTargets(debuggingPort);
@@ -122,16 +123,27 @@ async function runBrowserProof(): Promise<void> {
         target.url.endsWith("/devtools.html") &&
         typeof target.webSocketDebuggerUrl === "string"
     );
+    const devtoolsFrontendTarget = targets.find(
+      (target) =>
+        target.type === "page" &&
+        target.url?.startsWith("devtools://") &&
+        typeof target.webSocketDebuggerUrl === "string"
+    );
     assert.ok(pageTarget?.webSocketDebuggerUrl, "Chrome should expose an inspectable page target");
     assert.ok(
       extensionDevtoolsTarget?.webSocketDebuggerUrl,
       "Chrome should load the extension DevTools page for the inspected fixture"
     );
+    assert.ok(
+      devtoolsFrontendTarget?.webSocketDebuggerUrl,
+      "Chrome should expose the DevTools frontend target"
+    );
 
     cdp = await CdpClient.connect(pageTarget.webSocketDebuggerUrl);
-    devtoolsCdp = await CdpClient.connect(extensionDevtoolsTarget.webSocketDebuggerUrl);
+    devtoolsFrontendCdp = await CdpClient.connect(devtoolsFrontendTarget.webSocketDebuggerUrl);
     await cdp.request("Page.enable");
     await cdp.request("Runtime.enable");
+    await devtoolsFrontendCdp.request("Runtime.enable");
     await cdp.request("Page.addScriptToEvaluateOnNewDocument", {
       source: `
       globalThis.__LSEW_E2E_CAPTURES__ = [];
@@ -169,43 +181,13 @@ async function runBrowserProof(): Promise<void> {
       if (!sourceCapture) {
         throw new Error("No listenerless websocket-tlcp item update was captured.");
       }
-      const payload = sourceCapture.payload;
       const initialMessage = document.querySelector("#message-text")?.textContent ?? "";
       const initialUpdateCount = Number(document.querySelector("#update-count")?.textContent);
-      const mutatedModel = JSON.stringify({
-        messageId: "fixture-1",
-        messageText: ${JSON.stringify(mutatedMessage)},
-        messageType: "TICKER"
-      });
-      const draft = {
-        sourceEventId: "browser-e2e-source",
-        executionTarget: "captured-wire",
-        target: {
-          subscriptionId: payload.subscription.id,
-          listenerId: null
-        },
-        item: {
-          name: payload.item.name,
-          position: payload.item.position
-        },
-        command: payload.update.command,
-        key: payload.update.key,
-        fields: {
-          ...payload.fields,
-          command: payload.update.command,
-          key: payload.update.key,
-          modelValues: mutatedModel
-        },
-        changedFields: { modelValues: mutatedModel },
-        isSnapshot: payload.update.isSnapshot,
-        provenance: { source: "browser-e2e" }
-      };
       return {
         bridgeVersion: globalThis.__LSEW_REINJECTION_BRIDGE__.version,
         sourceCapture,
         initialMessage,
-        initialUpdateCount,
-        draft
+        initialUpdateCount
       };
     })()`
     );
@@ -223,35 +205,65 @@ async function runBrowserProof(): Promise<void> {
     assert.equal(proof.sourceCapture.payload?.update?.isSnapshot, true);
     assert.equal(proof.initialMessage, expectedInitialMessage);
     assert.equal(proof.initialUpdateCount, 1);
-    const inspectedPageExpression = `(() => {
-    const bridge = globalThis.__LSEW_REINJECTION_BRIDGE__;
-    if (!bridge || bridge.version !== 1 || typeof bridge.reinject !== "function") return null;
-    return bridge.reinject("browser-e2e-reinject", ${JSON.stringify(proof.draft)});
-  })()`;
-    const devtoolsProof = await evaluateByValue<DevtoolsEvaluationProof>(
-      devtoolsCdp,
-      `new Promise((resolve) => {
-      chrome.devtools.inspectedWindow.eval(
-        ${JSON.stringify(inspectedPageExpression)},
-        (result, exceptionInfo) => resolve({
-          result,
-          exceptionInfo: exceptionInfo ? {
-            isError: exceptionInfo.isError,
-            isException: exceptionInfo.isException,
-            description: exceptionInfo.description,
-            value: exceptionInfo.value
-          } : null
-        })
-      );
-    })`
+
+    const panelSelection = await showWorkbenchPanel(devtoolsFrontendCdp);
+    assert.ok(
+      panelSelection.panelId,
+      `DevTools should register the Workbench panel. Available tabs: ${panelSelection.availableTabIds.join(
+        ", "
+      )}`
     );
-    assert.equal(devtoolsProof.exceptionInfo?.isError ?? false, false);
-    assert.equal(devtoolsProof.exceptionInfo?.isException ?? false, false);
-    assert.deepEqual(devtoolsProof.result, {
-      requestId: "browser-e2e-reinject",
-      ok: true,
-      status: "success",
-      timestamp: devtoolsProof.result.timestamp
+    assert.equal(panelSelection.selectedTabId, panelSelection.panelId);
+
+    const panelTarget = await waitForExtensionPanelTarget(debuggingPort);
+    assert.ok(
+      panelTarget.webSocketDebuggerUrl,
+      "Chrome should expose the selected Workbench panel target"
+    );
+    panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl);
+    await panelCdp.request("Runtime.enable");
+
+    await waitForCondition(
+      panelCdp,
+      `
+      document.querySelector(".status-badge")?.textContent === "capturing" &&
+      [...document.querySelectorAll('.event-row[data-kind="item-update"][data-source="wire"][data-synthetic="false"]')]
+        .some((row) => row.querySelector(".event-item")?.textContent === "scenario.mutate-reinject")
+      `,
+      "the shipped panel UI to render the captured wire update"
+    );
+
+    const stagedDraft = await stageCapturedUpdate(panelCdp);
+    assert.deepEqual(stagedDraft, {
+      staged: true,
+      deliveryTarget: "captured-wire",
+      source: "wire",
+      command: "ADD"
+    });
+
+    const directEdit = await editPanelDraftMessage(panelCdp, mutatedMessage);
+    assert.deepEqual(JSON.parse(directEdit.value), {
+      messageId: "fixture-1",
+      messageText: mutatedMessage,
+      messageType: "TICKER"
+    });
+    assert.deepEqual(
+      {
+        dirtyCount: directEdit.dirtyCount,
+        injectDisabled: directEdit.injectDisabled,
+        validationValid: directEdit.validationValid,
+        error: directEdit.error
+      },
+      {
+        dirtyCount: "1 changed",
+        injectDisabled: false,
+        validationValid: "true",
+        error: ""
+      }
+    );
+    assert.deepEqual(await clickPanelInject(panelCdp), {
+      clicked: true,
+      busy: "true"
     });
 
     await waitForCondition(
@@ -259,8 +271,73 @@ async function runBrowserProof(): Promise<void> {
       `
       document.querySelector("#message-text")?.textContent === ${JSON.stringify(mutatedMessage)} &&
       Number(document.querySelector("#update-count")?.textContent) === 2
+      `,
+      "the shipped panel mutation to reach the Lightstreamer listener and rendered UI"
+    );
+
+    await waitForCondition(
+      panelCdp,
+      `
+      document.querySelector(".replay-card")?.getAttribute("aria-busy") === "false" &&
+      document.querySelector(".reinjection-message")?.textContent?.includes(
+        "Edited draft delivered locally through the captured page WebSocket"
+      )
+      `,
+      "the shipped panel to render direct reinjection success"
+    );
+
+    assert.equal(
+      await evaluateByValue<boolean>(
+        cdp,
+        `delete globalThis.__LSEW_REINJECTION_BRIDGE__`
+      ),
+      true
+    );
+
+    const fallbackEdit = await editPanelDraftMessage(panelCdp, fallbackMutatedMessage);
+    assert.deepEqual(JSON.parse(fallbackEdit.value), {
+      messageId: "fixture-1",
+      messageText: fallbackMutatedMessage,
+      messageType: "TICKER"
+    });
+    assert.deepEqual(
+      {
+        dirtyCount: fallbackEdit.dirtyCount,
+        injectDisabled: fallbackEdit.injectDisabled,
+        validationValid: fallbackEdit.validationValid,
+        error: fallbackEdit.error
+      },
+      {
+        dirtyCount: "1 changed",
+        injectDisabled: false,
+        validationValid: "true",
+        error: ""
+      }
+    );
+    assert.deepEqual(await clickPanelInject(panelCdp), {
+      clicked: true,
+      busy: "true"
+    });
+
+    await waitForCondition(
+      cdp,
+      `
+      document.querySelector("#message-text")?.textContent === ${JSON.stringify(fallbackMutatedMessage)} &&
+      Number(document.querySelector("#update-count")?.textContent) === 3
     `,
-      "mutated Lightstreamer update to reach the application listener and rendered UI"
+      "fallback reinjection to reach the official Lightstreamer client listener and rendered UI"
+    );
+
+    await waitForCondition(
+      panelCdp,
+      `
+      document.querySelector(".replay-card")?.getAttribute("aria-busy") === "false" &&
+      document.querySelector(".reinjection-message")?.textContent?.includes(
+        "Edited draft delivered locally through the captured page WebSocket"
+      ) &&
+      ![...document.querySelectorAll('[role="alert"]')].some((alert) => !alert.hidden)
+      `,
+      "the shipped panel to render fallback reinjection success without an error"
     );
 
     const finalUi = await evaluateByValue<{
@@ -275,19 +352,17 @@ async function runBrowserProof(): Promise<void> {
       updateCount: Number(document.querySelector("#update-count")?.textContent)
     })`
     );
-    assert.equal(finalUi.message, mutatedMessage);
-    assert.match(
-      finalUi.model,
-      /Mutated and reinjected through the captured Lightstreamer WebSocket\./
-    );
-    assert.equal(finalUi.updateCount, 2);
+    assert.equal(finalUi.message, fallbackMutatedMessage);
+    assert.match(finalUi.model, /Mutated through the panel fallback/);
+    assert.equal(finalUi.updateCount, 3);
 
     console.log(
-      "Mutate & Inject browser proof passed: panel DevTools eval + listenerless TLCP capture + official client UI"
+      "Mutate & Inject browser proof passed: shipped panel UI + direct/fallback delivery + official client UI"
     );
   } catch (error) {
     const logTail = chromeLogs.join("").slice(-4_000);
     let pageState = "unavailable";
+    let panelState = "unavailable";
     if (cdp) {
       try {
         pageState = JSON.stringify(
@@ -314,17 +389,167 @@ async function runBrowserProof(): Promise<void> {
         pageState = `diagnostic failed: ${String(diagnosticError)}`;
       }
     }
+    if (panelCdp) {
+      try {
+        panelState = JSON.stringify(
+          await evaluateByValue(
+            panelCdp,
+            `({
+            readyState: document.readyState,
+            status: document.querySelector(".status-badge")?.textContent ?? null,
+            eventCount: document.querySelector(".event-count")?.textContent ?? null,
+            selectedEvent: document.querySelector('.event-row[data-selected="true"]')?.getAttribute("data-event-id") ?? null,
+            replay: document.querySelector(".replay-card")?.innerText ?? null,
+            alerts: [...document.querySelectorAll('[role="alert"]')]
+              .filter((alert) => !alert.hidden)
+              .map((alert) => alert.textContent)
+          })`
+          )
+        );
+      } catch (diagnosticError) {
+        panelState = `diagnostic failed: ${String(diagnosticError)}`;
+      }
+    }
     throw new Error(
-      `${error instanceof Error ? error.message : String(error)}\nPage state: ${pageState}${
+      `${error instanceof Error ? error.message : String(error)}\nPage state: ${pageState}\nPanel state: ${panelState}${
         logTail ? `\nChrome output:\n${logTail}` : ""
       }`
     );
   } finally {
     cdp?.close();
-    devtoolsCdp?.close();
+    devtoolsFrontendCdp?.close();
+    panelCdp?.close();
     await terminateChild(chrome);
     await rm(profileDir, { recursive: true, force: true });
   }
+}
+
+async function showWorkbenchPanel(cdp: CdpClient): Promise<PanelSelectionProof> {
+  return evaluateByValue<PanelSelectionProof>(
+    cdp,
+    `(async () => {
+      const UI = await import("devtools://devtools/bundled/ui/legacy/legacy.js");
+      const tabbedPane = UI.InspectorView.InspectorView.instance().tabbedPane;
+      const availableTabIds = tabbedPane.tabIds();
+      const panelId =
+        availableTabIds.find((id) => id.includes("LightstreamerEventWorkbench")) ?? null;
+      if (panelId) {
+        await tabbedPane.selectTab(panelId, true);
+      }
+      return {
+        panelId,
+        selectedTabId: tabbedPane.selectedTabId ?? null,
+        availableTabIds
+      };
+    })()`
+  );
+}
+
+async function stageCapturedUpdate(cdp: CdpClient): Promise<{
+  staged: boolean;
+  deliveryTarget: string | null;
+  source: string | null;
+  command: string | null;
+}> {
+  return evaluateByValue(
+    cdp,
+    `(() => {
+      const row = [...document.querySelectorAll(
+        '.event-row[data-kind="item-update"][data-source="wire"][data-synthetic="false"]'
+      )].find(
+        (candidate) =>
+          candidate.querySelector(".event-item")?.textContent === "scenario.mutate-reinject"
+      );
+      if (!(row instanceof HTMLButtonElement)) {
+        throw new Error("The captured wire update row is missing from the shipped panel.");
+      }
+      const source = row.dataset.source ?? null;
+      const command = row.dataset.command ?? null;
+      row.click();
+
+      const clone = document.querySelector(".clone-button");
+      if (!(clone instanceof HTMLButtonElement) || clone.disabled) {
+        throw new Error("The shipped panel did not expose an enabled Clone action.");
+      }
+      clone.click();
+
+      const mutate = document.querySelector(".mutate-inject-button");
+      if (!(mutate instanceof HTMLButtonElement) || mutate.disabled) {
+        throw new Error("The shipped panel did not expose an enabled Mutate & Inject action.");
+      }
+      mutate.click();
+
+      return {
+        staged: document.querySelector(".draft-controls") !== null,
+        deliveryTarget:
+          document.querySelector(".draft-execution-targets")?.getAttribute("data-target") ?? null,
+        source,
+        command
+      };
+    })()`
+  );
+}
+
+async function editPanelDraftMessage(
+  cdp: CdpClient,
+  messageText: string
+): Promise<PanelDraftEditProof> {
+  const modelValues = JSON.stringify({
+    messageId: "fixture-1",
+    messageText,
+    messageType: "TICKER"
+  });
+  return evaluateByValue<PanelDraftEditProof>(
+    cdp,
+    `(() => {
+      const input = document.querySelector(
+        '.structured-field-input[data-field-name="modelValues"]'
+      );
+      if (!(input instanceof HTMLTextAreaElement)) {
+        throw new Error("The shipped panel modelValues editor is unavailable.");
+      }
+      input.value = ${JSON.stringify(modelValues)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+
+      const currentInput = document.querySelector(
+        '.structured-field-input[data-field-name="modelValues"]'
+      );
+      const inject = document.querySelector(".inject-edited-button");
+      if (
+        !(currentInput instanceof HTMLTextAreaElement) ||
+        !(inject instanceof HTMLButtonElement)
+      ) {
+        throw new Error("The shipped panel did not retain the edited draft controls.");
+      }
+      return {
+        value: currentInput.value,
+        dirtyCount: document.querySelector(".draft-dirty-count")?.textContent ?? "",
+        injectDisabled: inject.disabled,
+        validationValid: inject.dataset.validationValid ?? null,
+        error: document.querySelector(".draft-structured-error")?.textContent ?? ""
+      };
+    })()`
+  );
+}
+
+async function clickPanelInject(cdp: CdpClient): Promise<{
+  clicked: boolean;
+  busy: string | null;
+}> {
+  return evaluateByValue(
+    cdp,
+    `(() => {
+      const inject = document.querySelector(".inject-edited-button");
+      if (!(inject instanceof HTMLButtonElement) || inject.disabled) {
+        throw new Error("The shipped panel edited-draft injection action is unavailable.");
+      }
+      inject.click();
+      return {
+        clicked: true,
+        busy: document.querySelector(".replay-card")?.getAttribute("aria-busy") ?? null
+      };
+    })()`
+  );
 }
 
 class CdpClient {
@@ -511,13 +736,44 @@ async function waitForBrowserTargets(port: number, timeoutMs = 10_000): Promise<
         target.url?.startsWith("chrome-extension://") &&
         target.url.endsWith("/devtools.html")
     );
-    if (hasPage && hasExtensionDevtools) {
+    const hasDevtoolsFrontend = latestTargets.some(
+      (target) => target.type === "page" && target.url?.startsWith("devtools://")
+    );
+    if (hasPage && hasExtensionDevtools && hasDevtoolsFrontend) {
       return latestTargets;
     }
     await delay(100);
   }
   throw new Error(
     `Timed out waiting for inspected-page and extension DevTools targets. Observed: ${JSON.stringify(
+      latestTargets.map(({ type, url }) => ({ type, url }))
+    )}`
+  );
+}
+
+async function waitForExtensionPanelTarget(
+  port: number,
+  timeoutMs = 10_000
+): Promise<BrowserTarget> {
+  const url = `http://127.0.0.1:${port}/json/list`;
+  const deadline = Date.now() + timeoutMs;
+  let latestTargets: BrowserTarget[] = [];
+  while (Date.now() < deadline) {
+    latestTargets = (await fetchJson(url)) as BrowserTarget[];
+    const panelTarget = latestTargets.find(
+      (target) =>
+        target.type === "iframe" &&
+        target.url?.startsWith("chrome-extension://") &&
+        target.url.endsWith("/extension/panel/index.html") &&
+        typeof target.webSocketDebuggerUrl === "string"
+    );
+    if (panelTarget) {
+      return panelTarget;
+    }
+    await delay(100);
+  }
+  throw new Error(
+    `Timed out waiting for the selected Workbench panel target. Observed: ${JSON.stringify(
       latestTargets.map(({ type, url }) => ({ type, url }))
     )}`
   );

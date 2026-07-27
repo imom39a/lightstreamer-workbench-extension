@@ -37,6 +37,10 @@ const RECONNECT_DELAY_MS = 500;
 const REINJECT_TIMEOUT_MS = 8000;
 const INSPECTED_PAGE_EVAL_TIMEOUT_MS = 5000;
 
+type PageReinjectionEvaluation =
+  | { bridgeState: "unavailable" }
+  | { bridgeState: "result"; result: unknown };
+
 export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeConnection {
   if (typeof chrome === "undefined" || !chrome.runtime?.connect || !chrome.devtools) {
     handlers.onStatusChange("bridge disconnected");
@@ -123,22 +127,12 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
       }
 
       if (typeof chrome.devtools.inspectedWindow.eval === "function") {
-        return reinjectThroughInspectedPage(requestId, payload);
+        return reinjectThroughInspectedPage(requestId, payload).then((result) => {
+          return result ?? reinjectThroughRuntime(requestId, payload);
+        });
       }
 
-      return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          pendingReinjections.delete(requestId);
-          resolve(createBridgeErrorResult(requestId, "Timed out waiting for reinjection result."));
-        }, REINJECT_TIMEOUT_MS);
-
-        pendingReinjections.set(requestId, { resolve, timer });
-        port?.postMessage({
-          type: PANEL_REINJECT_REQUEST,
-          requestId,
-          draft: payload
-        });
-      });
+      return reinjectThroughRuntime(requestId, payload);
     },
     disconnect() {
       disposed = true;
@@ -149,6 +143,29 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
       port?.disconnect();
     }
   };
+
+  function reinjectThroughRuntime(
+    requestId: string,
+    payload: ReinjectionDraftPayload
+  ): Promise<ReinjectionResult> {
+    if (!port) {
+      return Promise.resolve(createBridgeErrorResult(requestId, "Bridge is disconnected."));
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingReinjections.delete(requestId);
+        resolve(createBridgeErrorResult(requestId, "Timed out waiting for reinjection result."));
+      }, REINJECT_TIMEOUT_MS);
+
+      pendingReinjections.set(requestId, { resolve, timer });
+      port?.postMessage({
+        type: PANEL_REINJECT_REQUEST,
+        requestId,
+        draft: payload
+      });
+    });
+  }
 
   function resolvePendingWithBridgeError(error: string) {
     for (const [requestId, pending] of pendingReinjections.entries()) {
@@ -162,11 +179,11 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
 function reinjectThroughInspectedPage(
   requestId: string,
   draft: ReinjectionDraftPayload
-): Promise<ReinjectionResult> {
+): Promise<ReinjectionResult | null> {
   return new Promise((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout>;
-    const finish = (result: ReinjectionResult) => {
+    const finish = (result: ReinjectionResult | null) => {
       if (settled) {
         return;
       }
@@ -199,15 +216,21 @@ function reinjectThroughInspectedPage(
             return;
           }
 
+          const evaluation = readPageReinjectionEvaluation(result);
+          if (evaluation?.bridgeState === "unavailable") {
+            finish(null);
+            return;
+          }
+
           const message = {
             type: PANEL_REINJECT_RESULT,
-            result
+            result: evaluation?.bridgeState === "result" ? evaluation.result : undefined
           };
           if (!isPanelReinjectResultMessage(message) || message.result.requestId !== requestId) {
             finish(
               createBridgeErrorResult(
                 requestId,
-                "The inspected page reinjection bridge is unavailable or outdated. Reload the inspected page and capture a fresh update."
+                "The inspected page reinjection bridge returned an invalid result. Reload the inspected page and capture a fresh update."
               )
             );
             return;
@@ -235,7 +258,21 @@ function pageReinjectionExpression(
   const bridgeName = JSON.stringify(PAGE_REINJECTION_BRIDGE_GLOBAL);
   const serializedRequestId = JSON.stringify(requestId);
   const serializedDraft = JSON.stringify(draft);
-  return `(() => { const bridge = globalThis[${bridgeName}]; if (!bridge || bridge.version !== ${PAGE_REINJECTION_BRIDGE_VERSION} || typeof bridge.reinject !== "function") return null; return bridge.reinject(${serializedRequestId}, ${serializedDraft}); })()`;
+  return `(() => { const bridge = globalThis[${bridgeName}]; if (!bridge || bridge.version !== ${PAGE_REINJECTION_BRIDGE_VERSION} || typeof bridge.reinject !== "function") return { bridgeState: "unavailable" }; return { bridgeState: "result", result: bridge.reinject(${serializedRequestId}, ${serializedDraft}) }; })()`;
+}
+
+function readPageReinjectionEvaluation(value: unknown): PageReinjectionEvaluation | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.bridgeState === "unavailable") {
+    return { bridgeState: "unavailable" };
+  }
+  if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, "result")) {
+    return { bridgeState: "result", result: record.result };
+  }
+  return null;
 }
 
 function serializeDraft(

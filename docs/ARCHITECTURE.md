@@ -3,7 +3,7 @@
 
 Lightstreamer Event Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs COMMAND-mode state, and lets developers locally replay synthetic updates through captured listener callbacks or captured Lightstreamer WebSocket paths.
 
-The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, capture messages cross the isolated content-script boundary, the service worker routes captures by inspected tab, and the DevTools panel owns storage, filtering, UI state, COMMAND reduction, and local synthetic event display. Reinjection uses a versioned MAIN-world capability invoked directly with `chrome.devtools.inspectedWindow.eval`, avoiding an asynchronous multi-hop acknowledgement path.
+The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, capture messages cross the isolated content-script boundary, the service worker routes captures by inspected tab, and the DevTools panel owns storage, filtering, UI state, COMMAND reduction, and local synthetic event display. Reinjection prefers a versioned MAIN-world capability invoked directly with `chrome.devtools.inspectedWindow.eval`; if that capability is absent or version-skewed, the panel retries through the compatibility message relay.
 
 ## Contents
 
@@ -340,7 +340,7 @@ clear-snapshot
 | `CONTENT_REINJECT_RESULT` | content script to service worker | Relay a compatibility-path page result without holding a response channel open. |
 | `PANEL_REINJECT_RESULT` | service worker to panel | Return reinjection result to the panel. |
 
-The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Current Chrome DevTools reinjection calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. The page validates the serialized draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
+The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Current Chrome DevTools reinjection first calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. If evaluation reports that the capability is missing or version-skewed before executing reinjection, the panel sends the same validated request through the compatibility chain. The page validates the serialized draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
 
 ### Reinjection Draft Payload
 
@@ -640,9 +640,9 @@ The project does not inject data into a real Lightstreamer server stream. Page r
 1. The injected script captures original `onItemUpdate` callbacks and active Lightstreamer WebSocket subscription schemas.
 2. The panel creates a `ReinjectionDraft`.
 3. The panel derives the only valid page target from the capture: `captured-listener` for listener captures or `captured-wire` for wire captures. The action stays disabled if that target is unavailable.
-4. The panel invokes the versioned MAIN-world reinjection capability through `chrome.devtools.inspectedWindow.eval`.
+4. The panel invokes the versioned MAIN-world reinjection capability through `chrome.devtools.inspectedWindow.eval`. If that capability is absent or version-skewed, it sends the request through the panel → service worker → content script compatibility relay.
 5. For listener replay, the injected script calls the captured callback with a synthetic `ItemUpdate`-like object. For wire replay, it builds a complete schema-ordered TLCP `U` frame and dispatches a local `MessageEvent` on the captured page WebSocket.
-6. The capability synchronously returns a validated `ReinjectionResult` to the panel's DevTools evaluation callback.
+6. The page returns a validated `ReinjectionResult` either synchronously to the DevTools evaluation callback or through the correlated compatibility relay.
 7. On success, the panel appends a local synthetic event envelope to its store.
 
 There is no panel-only injection path. A page-target failure returns an error and does not append a synthetic event.
@@ -651,6 +651,8 @@ There is no panel-only injection path. A page-target failure returns an error an
 sequenceDiagram
   participant UI as DevTools panel
   participant PBC as Panel bridge client
+  participant BG as Service worker
+  participant CS as Content script
   participant Inj as MAIN-world instrumentation
   participant Listener as Original onItemUpdate
   participant WS as Captured page WebSocket
@@ -658,7 +660,13 @@ sequenceDiagram
 
   UI->>UI: create or edit ReinjectionDraft
   UI->>PBC: reinjectDraft(draft, executionTarget)
-  PBC->>Inj: inspectedWindow.eval(versioned bridge.reinject)
+  alt direct capability available
+    PBC->>Inj: inspectedWindow.eval(versioned bridge.reinject)
+  else capability missing or version-skewed
+    PBC->>BG: PANEL_REINJECT_REQUEST
+    BG->>CS: CONTENT_REINJECT_REQUEST
+    CS->>Inj: PAGE_REINJECT_REQUEST
+  end
   alt captured-listener
     Inj->>Inj: lookup subscriptionId:listenerId target
     Inj->>Listener: callback(createSyntheticItemUpdate(draft))
@@ -668,7 +676,13 @@ sequenceDiagram
     Inj->>WS: dispatchEvent(synthetic MessageEvent)
     WS-->>Inj: dispatch result
   end
-  Inj-->>PBC: ReinjectionResult
+  alt direct result
+    Inj-->>PBC: ReinjectionResult
+  else compatibility result
+    Inj-->>CS: RUNTIME_REINJECT_RESULT
+    CS-->>BG: CONTENT_REINJECT_RESULT
+    BG-->>PBC: PANEL_REINJECT_RESULT
+  end
   PBC-->>UI: ReinjectionResult
   UI->>Store: append(createSyntheticEventFromDraft)
 ```
@@ -835,7 +849,7 @@ The default `npm test` command runs the Vitest files ending in `.test.ts`. The L
 npm run fixture:test
 ```
 
-Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` includes the static fixture assertions and `tests/lightstreamer-mutate-reinject.browser.spec.ts`. The browser proof loads the built extension, opens a real DevTools session, invokes reinjection through `chrome.devtools.inspectedWindow.eval`, verifies that the source capture is listenerless `websocket-tlcp`, and asserts that the official client's application UI renders the edited JSON value.
+Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` includes the static fixture assertions and `tests/lightstreamer-mutate-reinject.browser.spec.ts`. The browser proof loads the built extension, opens the shipped Workbench panel in a real DevTools session, selects and clones a listenerless `websocket-tlcp` capture, edits `modelValues`, and invokes the real panel action. It verifies both direct evaluation and missing-capability fallback, panel success/error rendering, and exact official-client application UI update counts.
 
 All fixture lifecycle and test entry points route through `scripts/lightstreamer/fixture.mjs`; the browser installer uses Puppeteer's cross-platform CLI. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
 
@@ -852,13 +866,13 @@ Coverage is organized by architectural boundary:
 | `tests/reinjection-draft.test.ts` | Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
 | `tests/command-draft.test.ts` | Context-bound new COMMAND drafts, schema validation, and synthetic event conversion. |
 | `tests/synthetic-event.test.ts` | Synthetic envelope creation from successful reinjection results. |
-| `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, reinjection request routing, timeout/error behavior. |
+| `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, direct reinjection, missing-capability relay fallback, timeout/error behavior. |
 | `tests/panel-shell.test.ts` | Timeline shell rendering, event detail, filtering, high-volume notices, lazy row rendering, clone/reinject UI. |
 | `tests/panel-command-state.test.ts` | COMMAND State workbench rendering, selection, filtering, panes, draft editor, and synthetic append behavior. |
 | `tests/panel-css.test.ts` | CSS constraints for the panel. |
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |
-| `tests/lightstreamer-mutate-reinject.browser.spec.ts` | Real Chrome extension + DevTools eval + listenerless TLCP + official Lightstreamer client + rendered application UI proof. |
+| `tests/lightstreamer-mutate-reinject.browser.spec.ts` | Real Chrome extension + shipped Workbench panel interaction + direct/fallback delivery + listenerless TLCP + official Lightstreamer client + exact rendered application UI update proof. |
 
 Other quality commands:
 

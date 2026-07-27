@@ -8,6 +8,7 @@ private/
 .DS_Store
 .planning/
 .codex/
+.codex_/
 .cache/lsew-browsers/
 fixtures/lightstreamer/adapter/target/
 fixtures/lightstreamer/adapters/*/lib/
