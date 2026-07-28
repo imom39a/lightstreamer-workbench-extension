@@ -565,7 +565,12 @@ async function runBrowserProof(): Promise<void> {
     devtoolsFrontendCdp?.close();
     panelCdp?.close();
     await terminateChild(chrome);
-    await rm(profileDir, { recursive: true, force: true });
+    await rm(profileDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100
+    });
   }
 }
 
