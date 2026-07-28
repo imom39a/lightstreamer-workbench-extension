@@ -1,6 +1,9 @@
 import {
   type CaptureKind,
   type CapturePayload,
+  PAGE_REINJECTION_BRIDGE_GLOBAL,
+  PAGE_REINJECTION_BRIDGE_VERSION,
+  PAGE_REINJECT_REQUEST,
   RUNTIME_REINJECT_RESULT,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
@@ -30,6 +33,8 @@ type InstrumentationState = {
   commandReplayRows: Map<string, Map<string, CapturePayload>>;
   retiredFallbackSubscriptionIds: Set<string>;
   listenerTargets: Map<string, ReinjectionListenerTarget>;
+  wireTargets: Map<string, WireReinjectionTarget>;
+  syntheticWireEvents: WeakSet<object>;
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
 };
@@ -38,21 +43,31 @@ type MethodOwner = Record<string, unknown>;
 type ReinjectionListenerTarget = {
   subscriptionId: string;
   listenerId: string;
+  fieldNames: string[];
   callback(update: SyntheticItemUpdate): unknown;
 };
+
+type WireReinjectionTarget = {
+  subscriptionId: string;
+  socket: WebSocket;
+  subscription: WireSubscriptionState;
+};
+
+type SyntheticFieldSelector = string | number;
 
 type SyntheticItemUpdate = {
   forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void): void;
   forEachChangedField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void): void;
   getItemName(): string | null;
   getItemPos(): number | null;
-  getValue(fieldName: string): unknown;
-  getValueAsJSONPatchIfAvailable(fieldName: string): null;
+  getValue(fieldNameOrPos: SyntheticFieldSelector): unknown;
+  getValueAsJSONPatchIfAvailable(fieldNameOrPos: SyntheticFieldSelector): null;
   isSnapshot(): boolean;
-  isValueChanged(fieldName: string): boolean;
+  isValueChanged(fieldNameOrPos: SyntheticFieldSelector): boolean;
 };
 
 type WireConnectionState = {
+  socket: WebSocket;
   clientId: string;
   url: string;
   sessionId: string | null;
@@ -122,6 +137,8 @@ export function installLightstreamerInstrumentation(
     commandReplayRows,
     retiredFallbackSubscriptionIds,
     listenerTargets: new Map<string, ReinjectionListenerTarget>(),
+    wireTargets: new Map<string, WireReinjectionTarget>(),
+    syntheticWireEvents: new WeakSet<object>(),
     originalItemUpdateCallbacks: new WeakMap<object, (update: SyntheticItemUpdate) => unknown>(),
     emit(kind, payload) {
       if (isRetiredFallbackCapture(retiredFallbackSubscriptionIds, payload)) {
@@ -271,6 +288,7 @@ function reconcileFallbackSubscription(
     })
   }));
   state.retiredFallbackSubscriptionIds.add(subscriptionId);
+  state.wireTargets.delete(subscriptionId);
   return replayRows;
 }
 
@@ -484,6 +502,7 @@ function installWireCaptureForSocket(
   state: InstrumentationState
 ): void {
   const wire: WireConnectionState = {
+    socket,
     clientId: state.clientIds.getId(socket),
     url,
     sessionId: null,
@@ -509,6 +528,9 @@ function installWireCaptureForSocket(
   }
 
   socket.addEventListener("message", (event) => {
+    if (state.syntheticWireEvents.has(event)) {
+      return;
+    }
     const text = textWirePayload(event.data);
     if (text === null) {
       return;
@@ -530,6 +552,7 @@ function handleWireClose(
       continue;
     }
     subscription.ended = true;
+    unregisterWireReinjectionTarget(subscription, state);
     state.emit("subscription-ended", {
       client: wireClientPayload(wire),
       subscription: wireSubscriptionPayload(subscription),
@@ -596,6 +619,7 @@ function handleWireSubscriptionAdd(
 
   const subscription = createWireSubscription(rawSubId, params, state);
   wire.subscriptions.set(rawSubId, subscription);
+  registerWireReinjectionTarget(wire, subscription, state);
   state.emit("subscription-created", {
     client: wireClientPayload(wire),
     subscription: wireSubscriptionPayload(subscription),
@@ -622,6 +646,7 @@ function handleWireSubscriptionDelete(
     return;
   }
   subscription.ended = true;
+  unregisterWireReinjectionTarget(subscription, state);
   state.emit("subscription-ended", {
     client: wireClientPayload(wire),
     subscription: { id: subscription.id },
@@ -734,6 +759,7 @@ function handleWireUnsub(
     return;
   }
   subscription.ended = true;
+  unregisterWireReinjectionTarget(subscription, state);
   state.emit("subscription-ended", {
     client: wireClientPayload(wire),
     subscription: { id: subscription.id },
@@ -916,6 +942,9 @@ function ensureWireSubscription(
 ): WireSubscriptionState {
   const existing = wire.subscriptions.get(rawSubId);
   if (existing) {
+    if (!existing.ended) {
+      registerWireReinjectionTarget(wire, existing, state);
+    }
     return existing;
   }
 
@@ -936,7 +965,30 @@ function ensureWireSubscription(
   };
   subscription.id = state.subscriptionIds.getId(subscription);
   wire.subscriptions.set(rawSubId, subscription);
+  registerWireReinjectionTarget(wire, subscription, state);
   return subscription;
+}
+
+function registerWireReinjectionTarget(
+  wire: WireConnectionState,
+  subscription: WireSubscriptionState,
+  state: InstrumentationState
+): void {
+  state.wireTargets.set(subscription.id, {
+    subscriptionId: subscription.id,
+    socket: wire.socket,
+    subscription
+  });
+}
+
+function unregisterWireReinjectionTarget(
+  subscription: WireSubscriptionState,
+  state: InstrumentationState
+): void {
+  const target = state.wireTargets.get(subscription.id);
+  if (target?.subscription === subscription) {
+    state.wireTargets.delete(subscription.id);
+  }
 }
 
 function getWireItemState(subscription: WireSubscriptionState, itemKey: string): WireItemState {
@@ -1544,8 +1596,16 @@ function registerReinjectionTarget(
   state.listenerTargets.set(targetKey(subscriptionId, listenerId), {
     subscriptionId,
     listenerId,
+    fieldNames: readSubscriptionFieldNames(subscription),
     callback
   });
+}
+
+function readSubscriptionFieldNames(subscription: object): string[] {
+  const fields = readGetter(subscription, "getFields");
+  return Array.isArray(fields) && fields.every((fieldName) => typeof fieldName === "string")
+    ? fields
+    : [];
 }
 
 function unregisterReinjectionTarget(
@@ -1781,6 +1841,34 @@ function installReinjectionHandler(
   postMessage: (message: unknown) => void,
   state: InstrumentationState
 ): void {
+  const bridge = {
+    version: PAGE_REINJECTION_BRIDGE_VERSION,
+    reinject(requestId: unknown, draft: unknown): ReinjectionResult {
+      const message = {
+        type: PAGE_REINJECT_REQUEST,
+        requestId,
+        draft
+      };
+      if (!isPageReinjectRequestMessage(message)) {
+        return pageBridgeErrorResult(
+          typeof requestId === "string" && requestId ? requestId : "invalid-request",
+          "The inspected page rejected an invalid reinjection request."
+        );
+      }
+      return reinjectDraft(message.requestId, message.draft, state);
+    }
+  };
+
+  try {
+    Object.defineProperty(host, PAGE_REINJECTION_BRIDGE_GLOBAL, {
+      configurable: true,
+      enumerable: false,
+      value: bridge
+    });
+  } catch (_error) {
+    (host as LightstreamerHost & Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] = bridge;
+  }
+
   if (typeof host.addEventListener !== "function") {
     return;
   }
@@ -1790,11 +1878,32 @@ function installReinjectionHandler(
       return;
     }
 
-    postMessage({
+    const resultMessage = {
       type: RUNTIME_REINJECT_RESULT,
-      result: reinjectDraft(event.data.requestId, event.data.draft, state)
-    });
+      result: bridge.reinject(event.data.requestId, event.data.draft)
+    };
+    const responsePort = event.ports?.[0];
+    if (responsePort) {
+      try {
+        responsePort.postMessage(resultMessage);
+      } catch {
+        // Older or already-closed ports still have the window-message fallback.
+      } finally {
+        responsePort.close();
+      }
+    }
+    postMessage(resultMessage);
   });
+}
+
+function pageBridgeErrorResult(requestId: string, error: string): ReinjectionResult {
+  return {
+    requestId,
+    ok: false,
+    status: "bridge-error",
+    timestamp: Date.now(),
+    error
+  };
 }
 
 function reinjectDraft(
@@ -1802,9 +1911,14 @@ function reinjectDraft(
   draft: ReinjectionDraftPayload,
   state: InstrumentationState
 ): ReinjectionResult {
-  const target = state.listenerTargets.get(
-    targetKey(draft.target.subscriptionId, draft.target.listenerId)
-  );
+  if (draft.executionTarget === "captured-wire") {
+    return reinjectWireDraft(requestId, draft, state);
+  }
+
+  const listenerId = draft.target.listenerId;
+  const target = listenerId
+    ? state.listenerTargets.get(targetKey(draft.target.subscriptionId, listenerId))
+    : undefined;
 
   if (!target) {
     return {
@@ -1817,7 +1931,7 @@ function reinjectDraft(
   }
 
   try {
-    target.callback(createSyntheticItemUpdate(draft));
+    target.callback(createSyntheticItemUpdate(draft, target.fieldNames));
     return {
       requestId,
       ok: true,
@@ -1835,25 +1949,145 @@ function reinjectDraft(
   }
 }
 
-function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticItemUpdate {
-  const fields: Record<string, string | number | boolean | null> = {
-    ...draft.fields,
-    command: draft.command,
-    key: draft.key
+function reinjectWireDraft(
+  requestId: string,
+  draft: ReinjectionDraftPayload,
+  state: InstrumentationState
+): ReinjectionResult {
+  const target = state.wireTargets.get(draft.target.subscriptionId);
+  if (!target || target.subscription.ended || target.socket.readyState !== 1) {
+    return {
+      requestId,
+      ok: false,
+      status: "stale-target",
+      timestamp: Date.now(),
+      error: "Captured Lightstreamer WebSocket subscription is no longer available."
+    };
+  }
+
+  const itemPosition = draft.item.position;
+  if (!itemPosition || itemPosition < 1) {
+    return wireErrorResult(requestId, "Captured wire item position is missing.");
+  }
+
+  const fieldNames = target.subscription.fieldNames;
+  if (fieldNames.length === 0) {
+    return wireErrorResult(requestId, "Captured wire field schema is unavailable.");
+  }
+
+  const draftFields: Record<string, string | number | boolean | null> = {
+    ...draft.fields
   };
+  if (draft.command !== null) {
+    draftFields.command = draft.command;
+  }
+  if (draft.key !== null) {
+    draftFields.key = draft.key;
+  }
+  const unknownFields = Object.keys(draftFields).filter(
+    (fieldName) => !fieldNames.includes(fieldName)
+  );
+  if (unknownFields.length > 0) {
+    return wireErrorResult(
+      requestId,
+      `Draft fields are not present in the captured wire schema: ${unknownFields.join(", ")}.`
+    );
+  }
+
+  let messageEvent: MessageEvent | null = null;
+  try {
+    const fieldData = fieldNames
+      .map((fieldName) =>
+        Object.prototype.hasOwnProperty.call(draftFields, fieldName)
+          ? encodeTlcpFieldValue(draftFields[fieldName] ?? null)
+          : ""
+      )
+      .join("|");
+    const frame = `U,${target.subscription.rawSubId},${itemPosition},${fieldData}\r\n`;
+    messageEvent = new MessageEvent("message", {
+      data: frame,
+      origin: webSocketOrigin(target.socket)
+    });
+    state.syntheticWireEvents.add(messageEvent);
+    target.socket.dispatchEvent(messageEvent);
+    return {
+      requestId,
+      ok: true,
+      status: "success",
+      timestamp: Date.now()
+    };
+  } catch (error) {
+    return wireErrorResult(
+      requestId,
+      error instanceof Error ? error.message.slice(0, 500) : "Wire replay failed."
+    );
+  } finally {
+    if (messageEvent) {
+      state.syntheticWireEvents.delete(messageEvent);
+    }
+  }
+}
+
+function encodeTlcpFieldValue(value: string | number | boolean | null): string {
+  if (value === null) {
+    return "#";
+  }
+  const text = String(value);
+  return text === "" ? "$" : encodeURIComponent(text);
+}
+
+function webSocketOrigin(socket: WebSocket): string {
+  try {
+    return new URL(String(socket.url)).origin;
+  } catch {
+    return "";
+  }
+}
+
+function wireErrorResult(requestId: string, error: string): ReinjectionResult {
+  return {
+    requestId,
+    ok: false,
+    status: "wire-error",
+    timestamp: Date.now(),
+    error
+  };
+}
+
+function createSyntheticItemUpdate(
+  draft: ReinjectionDraftPayload,
+  subscriptionFieldNames: readonly string[]
+): SyntheticItemUpdate {
+  const fields: Record<string, string | number | boolean | null> = { ...draft.fields };
+  if (draft.command !== null) {
+    fields.command = draft.command;
+  }
+  if (draft.key !== null) {
+    fields.key = draft.key;
+  }
   const changedFields = { ...draft.changedFields };
-  const fieldEntries = Object.entries(fields);
-  const changedFieldEntries = Object.entries(changedFields);
+  const fieldNames = orderedSyntheticFieldNames(
+    subscriptionFieldNames,
+    Object.keys(fields),
+    Object.keys(changedFields)
+  );
+  const fieldPositions = new Map(fieldNames.map((fieldName, index) => [fieldName, index + 1]));
+  const fieldEntries = fieldNames
+    .filter((fieldName) => Object.prototype.hasOwnProperty.call(fields, fieldName))
+    .map((fieldName) => [fieldName, fields[fieldName]] as const);
+  const changedFieldEntries = fieldNames
+    .filter((fieldName) => Object.prototype.hasOwnProperty.call(changedFields, fieldName))
+    .map((fieldName) => [fieldName, changedFields[fieldName]] as const);
 
   return {
     forEachField(iterator) {
-      fieldEntries.forEach(([fieldName, value], index) => {
-        iterator(fieldName, index + 1, value);
+      fieldEntries.forEach(([fieldName, value]) => {
+        iterator(fieldName, fieldPositions.get(fieldName) ?? 0, value);
       });
     },
     forEachChangedField(iterator) {
-      changedFieldEntries.forEach(([fieldName, value], index) => {
-        iterator(fieldName, index + 1, value);
+      changedFieldEntries.forEach(([fieldName, value]) => {
+        iterator(fieldName, fieldPositions.get(fieldName) ?? 0, value);
       });
     },
     getItemName() {
@@ -1862,7 +2096,11 @@ function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticIte
     getItemPos() {
       return draft.item.position ?? null;
     },
-    getValue(fieldName) {
+    getValue(fieldNameOrPos) {
+      const fieldName = resolveSyntheticFieldName(fieldNameOrPos, fieldNames);
+      if (!fieldName) {
+        return null;
+      }
       return Object.prototype.hasOwnProperty.call(fields, fieldName) ? fields[fieldName] : null;
     },
     getValueAsJSONPatchIfAvailable() {
@@ -1871,10 +2109,41 @@ function createSyntheticItemUpdate(draft: ReinjectionDraftPayload): SyntheticIte
     isSnapshot() {
       return draft.isSnapshot;
     },
-    isValueChanged(fieldName) {
+    isValueChanged(fieldNameOrPos) {
+      const fieldName = resolveSyntheticFieldName(fieldNameOrPos, fieldNames);
+      if (!fieldName) {
+        return false;
+      }
       return Object.prototype.hasOwnProperty.call(changedFields, fieldName);
     }
   };
+}
+
+function orderedSyntheticFieldNames(...groups: readonly (readonly string[])[]): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const fieldName of group) {
+      if (!seen.has(fieldName)) {
+        seen.add(fieldName);
+        names.push(fieldName);
+      }
+    }
+  }
+  return names;
+}
+
+function resolveSyntheticFieldName(
+  fieldNameOrPos: SyntheticFieldSelector,
+  fieldNames: readonly string[]
+): string | null {
+  if (typeof fieldNameOrPos === "string") {
+    return fieldNameOrPos;
+  }
+  if (!Number.isInteger(fieldNameOrPos) || fieldNameOrPos < 1) {
+    return null;
+  }
+  return fieldNames[fieldNameOrPos - 1] ?? null;
 }
 
 function targetKey(subscriptionId: string, listenerId: string): string {

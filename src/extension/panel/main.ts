@@ -34,23 +34,36 @@ import {
 } from "../../core/command-state";
 import {
   createDraftFromEvent,
+  createSourceReplayDraft,
   createNewCommandDraftFromContext,
   deriveChangedFields,
   updateDraftCommand,
   updateDraftField,
   updateDraftKey,
   updateDraftSnapshot,
+  validateDraftForExecutionTarget,
   validateEditableDraft,
   validateNewCommandDraft,
-  validateReinjectionDraft,
   type CommandItemContext,
   type DraftFieldValue,
   type DraftFields,
   type NewCommandDraftDiagnostic,
-  type ReinjectionDraft
+  type ReinjectionDraft,
+  type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
+import {
+  createDisabledAnalytics,
+  createGoogleAnalytics,
+  eventCountBucket,
+  type AnalyticsReplayOutcome,
+  type AnalyticsReplaySurface,
+  type AnalyticsReplayTarget,
+  type WorkbenchAnalytics,
+  type WorkbenchAnalyticsEvent
+} from "../analytics";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
+import { createThemeManager, type ThemePreference } from "./theme";
 
 type PanelState = {
   status: CaptureStatus;
@@ -70,6 +83,7 @@ export type RenderPanelOptions = {
   normalizer?: EventNormalizer;
   bridge?: PanelReinjectBridge;
   visible?: boolean;
+  analytics?: WorkbenchAnalytics;
 };
 
 type PanelReinjectBridge = Pick<PanelBridgeConnection, "reinjectDraft">;
@@ -83,6 +97,7 @@ type DraftJsonParseResult = {
   error: string | null;
 };
 type ActiveView = "timeline" | "command";
+type DraftSurface = "timeline" | "command-replay" | "new-command";
 type CommandRowSelection = {
   subscriptionId: string;
   itemId: string;
@@ -153,6 +168,7 @@ type CommandKeyRow = CommandRow | DeletedCommandKey;
 type CommandKeyDetailTarget = Extract<CommandDetailTarget, { kind: "active" | "deleted" }>;
 type RenderOptions = {
   preservePaneState?: boolean;
+  passiveStoreUpdate?: boolean;
 };
 type ScheduledRender = {
   cancel(): void;
@@ -162,10 +178,18 @@ type PaneState = {
   scrollLeft: number;
   focusSelector: string | null;
   selection: { start: number | null; end: number | null } | null;
+  controlScroll: { top: number; left: number } | null;
   detailSections: Record<string, boolean>;
 };
 type CommandResizablePane = "subscriptions" | "keys" | "updates";
 type CommandPaneWidths = Record<CommandResizablePane, number>;
+type TimelineCodeFamily = "tlcp" | "workbench";
+type TimelineCodeDefinition = {
+  code: string;
+  label: string;
+  description: string;
+  family: TimelineCodeFamily;
+};
 
 const initialState: PanelState = {
   status: "idle"
@@ -201,8 +225,98 @@ const TIMELINE_MIN_DETAIL_WIDTH = 280;
 const TIMELINE_MAX_DETAIL_WIDTH = 860;
 const TIMELINE_RESIZE_STEP = 24;
 const TIMELINE_RESIZE_LARGE_STEP = 80;
+const TIMELINE_CODE_DEFINITIONS: readonly TimelineCodeDefinition[] = [
+  {
+    code: "U",
+    label: "Update",
+    description: "Item update; the TLCP U notification carries snapshot and live data.",
+    family: "tlcp"
+  },
+  {
+    code: "SUBOK",
+    label: "Subscription active",
+    description: "A non-COMMAND subscription is active.",
+    family: "tlcp"
+  },
+  {
+    code: "SUBCMD",
+    label: "COMMAND subscription active",
+    description: "A COMMAND subscription is active.",
+    family: "tlcp"
+  },
+  {
+    code: "UNSUB",
+    label: "Unsubscribed",
+    description: "The subscription ended.",
+    family: "tlcp"
+  },
+  {
+    code: "EOS",
+    label: "End of snapshot",
+    description: "The item snapshot is complete.",
+    family: "tlcp"
+  },
+  {
+    code: "CS",
+    label: "Clear snapshot",
+    description: "The item snapshot was cleared.",
+    family: "tlcp"
+  },
+  {
+    code: "OV",
+    label: "Overflow",
+    description: "One or more item updates were lost.",
+    family: "tlcp"
+  },
+  {
+    code: "C+",
+    label: "Client observed",
+    description: "Workbench captured a Lightstreamer client.",
+    family: "workbench"
+  },
+  {
+    code: "C~",
+    label: "Client status",
+    description: "Workbench captured a client status change.",
+    family: "workbench"
+  },
+  {
+    code: "S+",
+    label: "Subscription observed",
+    description: "Workbench captured subscription configuration before activation.",
+    family: "workbench"
+  },
+  {
+    code: "S~",
+    label: "Subscription restored",
+    description: "Workbench restored an already-active subscription into panel state.",
+    family: "workbench"
+  },
+  {
+    code: "S!",
+    label: "Subscription error",
+    description: "Workbench captured a subscription error callback.",
+    family: "workbench"
+  },
+  {
+    code: "L+",
+    label: "Listener added",
+    description: "Workbench observed a subscription listener being added.",
+    family: "workbench"
+  },
+  {
+    code: "L−",
+    label: "Listener removed",
+    description: "Workbench observed a subscription listener being removed.",
+    family: "workbench"
+  }
+];
 const activeTooltipDisposers = new WeakMap<HTMLElement, () => void>();
 let helpTooltipIdCounter = 0;
+
+function isBridgeReadyStatus(status: CaptureStatus): boolean {
+  return status === "bridge connected" || status === "capturing";
+}
 
 function createTextElement<K extends keyof HTMLElementTagNameMap>(
   tagName: K,
@@ -227,6 +341,54 @@ function createProductLabel(): HTMLHeadingElement {
   const text = createTextElement("span", "product-label-text", "Lightstreamer Event Workbench");
   title.append(icon, text);
   return title;
+}
+
+function createTimelineCodeLegend(): HTMLDetailsElement {
+  const legend = document.createElement("details");
+  legend.className = "timeline-code-legend";
+  const summary = document.createElement("summary");
+  summary.className = "timeline-code-legend-toggle";
+  summary.textContent = "Codes";
+  summary.setAttribute("aria-label", "Timeline code legend");
+
+  const popover = document.createElement("div");
+  popover.className = "timeline-code-legend-popover";
+  popover.append(
+    createTextElement(
+      "p",
+      "timeline-code-legend-intro",
+      "Protocol tags stay aligned with Lightstreamer TLCP. Local capture lifecycle events use compact codes."
+    )
+  );
+
+  for (const [family, heading] of [
+    ["tlcp", "Lightstreamer TLCP"],
+    ["workbench", "Local capture lifecycle"]
+  ] as const) {
+    const group = document.createElement("section");
+    group.className = "timeline-code-legend-group";
+    group.dataset.family = family;
+    group.append(createTextElement("h3", "timeline-code-legend-heading", heading));
+    const definitions = document.createElement("dl");
+    definitions.className = "timeline-code-legend-list";
+    for (const definition of TIMELINE_CODE_DEFINITIONS.filter(
+      (candidate) => candidate.family === family
+    )) {
+      definitions.append(
+        createTextElement("dt", `timeline-legend-code code-${family}`, definition.code),
+        createTextElement(
+          "dd",
+          "timeline-code-legend-description",
+          `${definition.label} — ${definition.description}`
+        )
+      );
+    }
+    group.append(definitions);
+    popover.append(group);
+  }
+
+  legend.append(summary, popover);
+  return legend;
 }
 
 function extensionAssetUrl(path: string): string {
@@ -473,13 +635,28 @@ export function renderPanel(
   const panelState = { ...state };
   const store = options.store ?? createEventStore();
   const normalizer = options.normalizer ?? createEventNormalizer();
+  const analytics = options.analytics ?? createDisabledAnalytics();
   let selectedEventId: string | null = null;
+  let selectedTimelineEvent: LightstreamerEventEnvelope | null = null;
   let selectedPinned = false;
   let timelineEvents: readonly LightstreamerEventEnvelope[] = [];
   let timelineQueryVersion = 0;
   let currentStoreStats: EventStoreStats = storeStatsSnapshot();
   let draft: ReinjectionDraft | null = null;
+  let draftExecutionTarget: ReinjectionExecutionTarget = "captured-listener";
+  let draftEditing = false;
+  let draftJsonText: string | null = null;
+  let draftJsonError: string | null = null;
+  let draftRenderVersion = 0;
+  let draftResultEventId: string | null = null;
+  let draftSurface: DraftSurface | null = null;
+  let detailCopyEventId: string | null = null;
+  let detailCopyMessage: ReinjectionMessage | null = null;
   let bridge = options.bridge ?? null;
+  // A bridge supplied at construction time is a test/embedded bridge with no
+  // independent status channel. Production installs its bridge through
+  // setBridge(), where readiness is gated by the reported capture status.
+  let bridgeReady = Boolean(options.bridge);
   let reinjectionPending = false;
   let reinjectionMessage: ReinjectionMessage | null = null;
   let activeView: ActiveView = "timeline";
@@ -521,6 +698,16 @@ export function renderPanel(
   let appendRenderBudgetReset: ScheduledRender | null = null;
   let storeCloseStarted = false;
   let panelVisible = options.visible ?? true;
+  let analyticsDisclosureRequested =
+    analytics.available && analytics.getConsent() === "unknown";
+  let analyticsConsentPending = false;
+  let analyticsControlError: string | null = null;
+  let analyticsSummarySent = false;
+  let analyticsDetected = false;
+  let analyticsCapturedEventCount = 0;
+  let analyticsCommandViewUsed = false;
+  let analyticsReplayUsed = false;
+  const analyticsSearchViews = new Set<ActiveView>();
   const commandSearchTextCache: CommandSearchTextCache = {
     keys: new Map()
   };
@@ -538,6 +725,10 @@ export function renderPanel(
   activeTooltipDisposers.delete(root);
   root.replaceChildren();
   root.className = "workbench-shell";
+  const themeManager = createThemeManager({
+    target: root,
+    documentElement: document.documentElement
+  });
 
   const toolbar = document.createElement("header");
   toolbar.className = "toolbar";
@@ -580,8 +771,116 @@ export function renderPanel(
     controller.clearEvents();
   });
 
-  toolbarMeta.append(status, eventCount, filteredCount, retentionNotice, clearButton);
+  const themeControl = document.createElement("label");
+  themeControl.className = "theme-control";
+  themeControl.append(createTextElement("span", "theme-label", "Theme"));
+  const themeSelect = document.createElement("select");
+  themeSelect.className = "theme-select";
+  themeSelect.setAttribute("aria-label", "Workbench theme");
+  for (const [value, label] of [
+    ["auto", "Auto"],
+    ["dark", "Dark"],
+    ["light", "Light"]
+  ] as const satisfies ReadonlyArray<readonly [ThemePreference, string]>) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    themeSelect.append(option);
+  }
+  themeSelect.value = themeManager.preference;
+  themeSelect.addEventListener("change", () => {
+    themeManager.setPreference(themeSelect.value as ThemePreference);
+  });
+  themeControl.append(themeSelect);
+
+  const analyticsControlButton = document.createElement("button");
+  analyticsControlButton.className = "analytics-control";
+  analyticsControlButton.type = "button";
+  analyticsControlButton.addEventListener("click", () => {
+    if (analyticsConsentPending) {
+      return;
+    }
+    if (analytics.getConsent() === "granted") {
+      void setAnalyticsConsent("denied");
+      return;
+    }
+    analyticsDisclosureRequested = true;
+    analyticsControlError = null;
+    renderAnalyticsControls();
+    analyticsAllowButton.focus();
+  });
+
+  toolbarMeta.append(
+    status,
+    eventCount,
+    filteredCount,
+    retentionNotice,
+    themeControl,
+    analyticsControlButton,
+    clearButton
+  );
   toolbar.append(title, toolbarMeta);
+
+  const analyticsDisclosure = document.createElement("section");
+  analyticsDisclosure.className = "analytics-disclosure";
+  analyticsDisclosure.setAttribute("aria-label", "Optional usage analytics");
+
+  const analyticsDisclosureCopy = document.createElement("div");
+  analyticsDisclosureCopy.className = "analytics-disclosure-copy";
+  analyticsDisclosureCopy.append(
+    createTextElement("strong", "analytics-disclosure-heading", "Optional usage analytics"),
+    createTextElement(
+      "p",
+      "analytics-disclosure-body",
+      "Help improve the workbench by sharing coarse feature usage: views used, whether search or local replay was used, replay result category, and a bucketed captured-event count. Google Analytics receives a random installation ID plus standard request and device information. The extension never sends inspected URLs, Lightstreamer server addresses, captured values, item, field, or key names, search text, or error details. Analytics is not used for advertising."
+    )
+  );
+
+  const analyticsDisclosureActions = document.createElement("div");
+  analyticsDisclosureActions.className = "analytics-disclosure-actions";
+
+  const analyticsAllowButton = document.createElement("button");
+  analyticsAllowButton.className = "analytics-allow-button";
+  analyticsAllowButton.type = "button";
+  analyticsAllowButton.textContent = "Allow analytics";
+  analyticsAllowButton.addEventListener("click", () => {
+    void setAnalyticsConsent("granted");
+  });
+
+  const analyticsDeclineButton = document.createElement("button");
+  analyticsDeclineButton.className = "analytics-decline-button";
+  analyticsDeclineButton.type = "button";
+  analyticsDeclineButton.textContent = "Not now";
+  analyticsDeclineButton.addEventListener("click", () => {
+    void setAnalyticsConsent("denied");
+  });
+
+  const analyticsPrivacyLink = document.createElement("a");
+  analyticsPrivacyLink.className = "analytics-privacy-link";
+  analyticsPrivacyLink.href =
+    "https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/PRIVACY.md";
+  analyticsPrivacyLink.target = "_blank";
+  analyticsPrivacyLink.rel = "noopener noreferrer";
+  analyticsPrivacyLink.referrerPolicy = "no-referrer";
+  analyticsPrivacyLink.textContent = "Privacy details";
+
+  const analyticsControlMessage = createTextElement(
+    "p",
+    "analytics-control-message",
+    ""
+  );
+  analyticsControlMessage.hidden = true;
+
+  analyticsDisclosureActions.append(
+    analyticsAllowButton,
+    analyticsDeclineButton,
+    analyticsPrivacyLink
+  );
+  analyticsDisclosure.append(
+    analyticsDisclosureCopy,
+    analyticsDisclosureActions,
+    analyticsControlMessage
+  );
 
   const viewSelector = document.createElement("nav");
   viewSelector.className = "view-selector";
@@ -602,10 +901,11 @@ export function renderPanel(
   );
   searchInput.type = "search";
   searchInput.addEventListener("input", () => {
+    recordAnalyticsSearch("timeline", searchInput.value);
     setFilter("query", searchInput.value);
   });
 
-  filterStrip.append(searchInput);
+  filterStrip.append(searchInput, createTimelineCodeLegend());
 
   const commandFilterStrip = document.createElement("section");
   commandFilterStrip.className = "command-filter-strip";
@@ -618,6 +918,7 @@ export function renderPanel(
   );
   commandSearchInput.type = "search";
   commandSearchInput.addEventListener("input", () => {
+    recordAnalyticsSearch("command", commandSearchInput.value);
     setCommandFilter("query", commandSearchInput.value);
   });
 
@@ -678,7 +979,15 @@ export function renderPanel(
     commandDetailPane
   );
   applyCommandPaneWidths();
-  root.append(toolbar, viewSelector, filterStrip, commandFilterStrip, workspace, commandWorkspace);
+  root.append(
+    toolbar,
+    analyticsDisclosure,
+    viewSelector,
+    filterStrip,
+    commandFilterStrip,
+    workspace,
+    commandWorkspace
+  );
   const helpTooltips = installHelpTooltipOverlay(root);
   feed.addEventListener("scroll", handleTimelineScroll);
   root.addEventListener("pointerdown", beginPointerInteraction, true);
@@ -689,7 +998,144 @@ export function renderPanel(
   root.addEventListener("keyup", endKeyboardInteraction, true);
   window.addEventListener("pagehide", closeStore);
   window.addEventListener("beforeunload", closeStore);
+  renderAnalyticsControls();
+  trackAnalytics({ name: "panel_view" });
   updateActiveViewChrome();
+
+  function analyticsEnabled(): boolean {
+    return analytics.available && analytics.getConsent() === "granted";
+  }
+
+  function trackAnalytics(event: WorkbenchAnalyticsEvent): void {
+    if (!analyticsEnabled()) {
+      return;
+    }
+    void analytics.track(event);
+  }
+
+  function resetAnalyticsSessionMetrics(): void {
+    analyticsSummarySent = false;
+    analyticsDetected = false;
+    analyticsCapturedEventCount = 0;
+    analyticsCommandViewUsed = false;
+    analyticsReplayUsed = false;
+    analyticsSearchViews.clear();
+  }
+
+  async function setAnalyticsConsent(
+    nextConsent: "granted" | "denied"
+  ): Promise<void> {
+    if (analyticsConsentPending || !analytics.available) {
+      return;
+    }
+
+    analyticsConsentPending = true;
+    analyticsControlError = null;
+    renderAnalyticsControls();
+    try {
+      const updated = await analytics.setConsent(nextConsent);
+      if (!updated) {
+        analyticsDisclosureRequested = true;
+        analyticsControlError =
+          "Usage analytics is unavailable in this build. Nothing was sent.";
+        return;
+      }
+
+      analyticsDisclosureRequested = false;
+      resetAnalyticsSessionMetrics();
+      if (nextConsent === "granted") {
+        trackAnalytics({ name: "analytics_enabled" });
+        if (panelVisible) {
+          trackAnalytics({ name: "panel_view" });
+        }
+      }
+    } catch {
+      analyticsDisclosureRequested = true;
+      analyticsControlError = "Usage analytics could not be updated. Nothing was sent.";
+    } finally {
+      analyticsConsentPending = false;
+      renderAnalyticsControls();
+    }
+  }
+
+  function renderAnalyticsControls(): void {
+    const consent = analytics.getConsent();
+    analyticsControlButton.hidden = !analytics.available;
+    analyticsControlButton.disabled = analyticsConsentPending;
+    analyticsControlButton.dataset.enabled = String(consent === "granted");
+    analyticsControlButton.textContent =
+      consent === "granted" ? "Usage analytics: On" : "Usage analytics: Off";
+    analyticsControlButton.title =
+      consent === "granted"
+        ? "Turn off usage analytics and remove its random installation ID."
+        : "Review the optional usage analytics disclosure.";
+
+    analyticsAllowButton.disabled = analyticsConsentPending;
+    analyticsDeclineButton.disabled = analyticsConsentPending;
+    analyticsAllowButton.textContent = analyticsConsentPending
+      ? "Updating..."
+      : "Allow analytics";
+    analyticsDisclosure.hidden =
+      !analytics.available || !analyticsDisclosureRequested;
+    analyticsControlMessage.hidden = !analyticsControlError;
+    analyticsControlMessage.textContent = analyticsControlError ?? "";
+  }
+
+  function flushAnalyticsSummary(): void {
+    if (analyticsSummarySent || !analyticsEnabled()) {
+      return;
+    }
+    analyticsSummarySent = true;
+    trackAnalytics({
+      name: "session_summary",
+      eventCountBucket: eventCountBucket(analyticsCapturedEventCount),
+      commandViewUsed: analyticsCommandViewUsed,
+      searchUsed: analyticsSearchViews.size > 0,
+      replayUsed: analyticsReplayUsed
+    });
+  }
+
+  function recordAnalyticsReplayAttempt(
+    surface: AnalyticsReplaySurface,
+    executionTarget: ReinjectionExecutionTarget,
+    edited: boolean
+  ): void {
+    if (!analyticsEnabled()) {
+      return;
+    }
+    analyticsReplayUsed = true;
+    trackAnalytics({
+      name: "replay_attempt",
+      surface,
+      target: analyticsReplayTarget(executionTarget),
+      edited
+    });
+  }
+
+  function recordAnalyticsReplayResult(
+    surface: AnalyticsReplaySurface,
+    executionTarget: ReinjectionExecutionTarget,
+    edited: boolean,
+    result: ReinjectionResult
+  ): void {
+    trackAnalytics({
+      name: "replay_result",
+      surface,
+      target: analyticsReplayTarget(executionTarget),
+      edited,
+      outcome: analyticsReplayOutcome(result)
+    });
+  }
+
+  function currentAnalyticsReplaySurface(): AnalyticsReplaySurface {
+    if (draftSurface === "command-replay") {
+      return "command_state";
+    }
+    if (draftSurface === "new-command") {
+      return "new_command";
+    }
+    return "timeline";
+  }
 
   function setFilter<K extends keyof EventFilterState>(
     key: K,
@@ -703,6 +1149,17 @@ export function renderPanel(
     resetTimelineRenderLimit();
     timelineSelectionNeedsFilterReconciliation = true;
     renderFeed();
+  }
+
+  function recordAnalyticsSearch(view: ActiveView, value: string): void {
+    if (!analyticsEnabled() || value.trim() === "" || analyticsSearchViews.has(view)) {
+      return;
+    }
+    analyticsSearchViews.add(view);
+    trackAnalytics({
+      name: "search_used",
+      view: view === "command" ? "command_state" : "timeline"
+    });
   }
 
   function setCommandFilter<K extends keyof CommandFilterState>(
@@ -723,7 +1180,15 @@ export function renderPanel(
     button.type = "button";
     button.textContent = label;
     button.addEventListener("click", () => {
+      const changed = activeView !== view;
       activeView = view;
+      if (changed && analyticsEnabled()) {
+        analyticsCommandViewUsed ||= view === "command";
+        trackAnalytics({
+          name: "view_changed",
+          view: view === "command" ? "command_state" : "timeline"
+        });
+      }
       updateActiveViewChrome();
       renderActiveView();
     });
@@ -914,7 +1379,8 @@ export function renderPanel(
 
   function mergeRenderOptions(left: RenderOptions | null, right: RenderOptions): RenderOptions {
     return {
-      preservePaneState: Boolean(left?.preservePaneState || right.preservePaneState)
+      preservePaneState: Boolean(left?.preservePaneState || right.preservePaneState),
+      passiveStoreUpdate: Boolean(left?.passiveStoreUpdate || right.passiveStoreUpdate)
     };
   }
 
@@ -1023,6 +1489,7 @@ export function renderPanel(
 
     if (currentStoreStats.retained === 0) {
       selectedEventId = null;
+      selectedTimelineEvent = null;
       selectedPinned = false;
       resetTimelineRenderLimit();
       clearDraftForSelection(null);
@@ -1033,6 +1500,7 @@ export function renderPanel(
 
     if (totalVisible === 0) {
       selectedEventId = null;
+      selectedTimelineEvent = null;
       resetTimelineRenderLimit();
       clearDraftForSelection(null);
       renderFilteredEmptyState();
@@ -1044,12 +1512,18 @@ export function renderPanel(
     const feedState =
       options.preservePaneState || !shouldFollowLatest ? capturePaneState(feed) : null;
 
-    const selectedStillVisible = renderedEvents.some((event) => event.id === selectedEventId);
+    const visibleSelectedEvent = renderedEvents.find((event) => event.id === selectedEventId) ?? null;
     if (!selectedPinned) {
       selectedEventId = timelineDetailOpen ? renderedEvents[renderedEvents.length - 1]?.id ?? null : null;
-    } else if (!selectedStillVisible && timelineSelectionNeedsFilterReconciliation) {
+      selectedTimelineEvent =
+        renderedEvents.find((event) => event.id === selectedEventId) ?? null;
+    } else if (!visibleSelectedEvent && timelineSelectionNeedsFilterReconciliation) {
       selectedEventId = renderedEvents[renderedEvents.length - 1]?.id ?? null;
+      selectedTimelineEvent =
+        renderedEvents.find((event) => event.id === selectedEventId) ?? null;
       timelineDetailOpen = Boolean(selectedEventId);
+    } else if (visibleSelectedEvent) {
+      selectedTimelineEvent = visibleSelectedEvent;
     }
     timelineSelectionNeedsFilterReconciliation = false;
     clearDraftForSelection(selectedEventId);
@@ -1065,24 +1539,42 @@ export function renderPanel(
       row.dataset.eventId = event.id;
       row.dataset.selected = String(event.id === selectedEventId);
       row.dataset.synthetic = String(event.synthetic || event.source === "synthetic");
+      row.dataset.command = timelineCommandToken(event);
+      row.dataset.kind = event.kind;
+      row.dataset.source = timelineSourceToken(event);
+      const codeDefinition = timelineCodeDefinition(event);
+      row.dataset.code = codeDefinition.code;
+      row.dataset.codeFamily = codeDefinition.family;
+      row.title = timelineRowContextTitle(event);
+      row.setAttribute("aria-label", timelineRowAccessibleLabel(event));
       row.addEventListener("click", () => {
         selectedEventId = event.id;
+        selectedTimelineEvent = event;
         selectedPinned = true;
         timelineDetailOpen = true;
+        timelineFollowLatest = false;
         clearDraftForSelection(event.id);
         renderFeed();
         renderDetail(event);
       });
 
+      const item = createTextElement("span", "event-cell event-item", formatTimelineItem(event));
+      item.title = timelineItemTitle(event);
+      const command = createTextElement(
+        "span",
+        "event-cell event-command",
+        formatTimelineCommandKey(event)
+      );
+      command.title = timelineCommandKeyTitle(event);
+      const marker = createTextElement("span", "event-cell event-marker", formatMarker(event));
+      marker.title = timelineSourceTitle(event);
+
       row.append(
         createTimestampElement(event.timestamp, "event-cell event-time"),
-        createTextElement("span", "event-cell event-kind", event.kind),
-        createTextElement("span", "event-cell event-client", event.client?.id ?? "-"),
-        createTextElement("span", "event-cell event-subscription", event.subscription?.id ?? "-"),
-        createTextElement("span", "event-cell event-mode", event.subscription?.mode ?? "-"),
-        createTextElement("span", "event-cell event-item", event.item?.name ?? "-"),
-        createTextElement("span", "event-cell event-command", formatCommandKey(event)),
-        createTextElement("span", "event-cell event-marker", formatMarker(event))
+        createTimelineCodeElement(event, "event-cell event-code"),
+        item,
+        command,
+        marker
       );
 
       list.append(row);
@@ -1097,7 +1589,14 @@ export function renderPanel(
     if (shouldFollowLatest) {
       scrollTimelineToLatest();
     }
-    renderSelectedTimelineDetail(options);
+    const selectedDetailIsCurrent =
+      timelineDetailOpen &&
+      selectedPinned &&
+      detail.dataset.eventId === selectedEventId &&
+      !detail.hidden;
+    if (!options.passiveStoreUpdate || !selectedDetailIsCurrent) {
+      renderSelectedTimelineDetail(options);
+    }
   }
 
   function createTimelineWindowNavigation(total: number, rendered: number): HTMLElement {
@@ -1150,8 +1649,12 @@ export function renderPanel(
       return;
     }
 
-    const cached = timelineEvents.find((event) => event.id === selectedEventId);
+    const cached =
+      selectedTimelineEvent?.id === selectedEventId
+        ? selectedTimelineEvent
+        : timelineEvents.find((event) => event.id === selectedEventId);
     if (cached) {
+      selectedTimelineEvent = cached;
       renderDetail(cached, options);
       return;
     }
@@ -1161,6 +1664,7 @@ export function renderPanel(
       if (selectedEventId !== requestedEventId || !timelineDetailOpen || !panelVisible) {
         return;
       }
+      selectedTimelineEvent = event;
       renderDetail(event, options);
     });
   }
@@ -1173,59 +1677,156 @@ export function renderPanel(
     detail.replaceChildren();
 
     if (!event || !timelineDetailOpen) {
+      delete detail.dataset.eventId;
       detail.hidden = true;
       workspace.dataset.detailOpen = "false";
       return;
     }
 
     detail.hidden = false;
+    detail.dataset.eventId = event.id;
+    if (selectedEventId === event.id) {
+      selectedTimelineEvent = event;
+    }
     workspace.dataset.detailOpen = "true";
-    detail.append(
-      createDetailPaneHeader("Event detail", () => {
+    detail.append(createSelectedEventHeader(event));
+    appendDraftSection(
+      detail,
+      event,
+      draft && (draft.sourceEventId === event.id || draftResultEventId === event.id)
+        ? draft
+        : null
+    );
+    const currentFields = event.update?.fields ?? {};
+    const changedFieldNames = Object.keys(event.update?.changedFields ?? {});
+    appendDetailSection(detail, "Current item fields", currentFields, {
+      open: true,
+      summary: `${Object.keys(currentFields).length} fields · ${changedFieldNames.length} changed`,
+      changedFieldNames
+    });
+    appendDetailSection(
+      detail,
+      "Context",
+      {
+        envelope: {
+          id: event.id,
+          direction: event.direction,
+          source: event.source,
+          captureSource: event.captureSource ?? "listener",
+          synthetic: event.synthetic,
+          kind: event.kind
+        },
+        client: event.client ?? null,
+        subscription: event.subscription ?? null,
+        listener: event.listener ?? null,
+        item: event.item ?? null,
+        update: {
+          command: event.update?.command ?? null,
+          key: event.update?.key ?? null,
+          isSnapshot: Boolean(event.update?.isSnapshot)
+        }
+      },
+      { summary: `${event.subscription?.id ?? "no subscription"} · ${detailItemSummary(event.item)}` }
+    );
+    const syntheticProvenance = createSyntheticProvenance(event);
+    if (syntheticProvenance) {
+      appendDetailSection(detail, "Synthetic provenance", syntheticProvenance, {
+        summary: String(event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? "synthetic")
+      });
+    }
+    appendDetailSection(detail, "Raw capture", event.raw ?? {}, {
+      summary: detailRawSummary(event.raw)
+    });
+    restorePaneState(detail, paneState);
+
+    function createSelectedEventHeader(
+      selectedEvent: LightstreamerEventEnvelope
+    ): HTMLElement {
+      const header = document.createElement("header");
+      header.className = "selected-event-header";
+
+      const summary = document.createElement("div");
+      summary.className = "selected-event-summary";
+      const sourceLabel = detailSourceLabel(selectedEvent);
+      summary.append(
+        createTimelineCodeElement(selectedEvent, "selected-event-kind"),
+        createTextElement("strong", "selected-event-command", formatCommandKey(selectedEvent)),
+        createTextElement(
+          "span",
+          `selected-event-source source-${safeClassSlug(sourceLabel)}`,
+          sourceLabel
+        ),
+        createTextElement("span", "selected-event-id", selectedEvent.id)
+      );
+
+      const actions = document.createElement("div");
+      actions.className = "selected-event-actions";
+      const copyButton = document.createElement("button");
+      copyButton.className = "copy-event-json-button";
+      copyButton.type = "button";
+      copyButton.textContent = "Copy JSON";
+      copyButton.addEventListener("click", () => {
+        void copyCanonicalEventJson(selectedEvent);
+      });
+      const closeButton = document.createElement("button");
+      closeButton.className = "detail-collapse-button";
+      closeButton.type = "button";
+      closeButton.textContent = "Close";
+      closeButton.setAttribute("aria-label", "Close selected event detail");
+      closeButton.addEventListener("click", () => {
         timelineDetailOpen = false;
         renderFeed();
-      })
-    );
+      });
+      actions.append(copyButton, closeButton);
 
-    if (!timelineEvents.some((candidate) => candidate.id === event.id)) {
       const exactTime = document.createElement("p");
       exactTime.className = "detail-exact-time";
       exactTime.append(
-        createTextElement("span", "detail-exact-time-label", "Time "),
-        createTimestampElement(event.timestamp, "detail-exact-time-value", "precise")
+        createTextElement("span", "detail-exact-time-label", "Captured"),
+        createTimestampElement(selectedEvent.timestamp, "detail-exact-time-value", "precise")
       );
-      detail.append(exactTime);
+      header.append(summary, actions, exactTime);
+
+      if (detailCopyEventId === selectedEvent.id && detailCopyMessage) {
+        const message = createTextElement(
+          "p",
+          `detail-copy-message ${detailCopyMessage.kind}`,
+          detailCopyMessage.text
+        );
+        if (detailCopyMessage.kind === "error") {
+          message.setAttribute("role", "alert");
+        } else {
+          message.setAttribute("role", "status");
+          message.setAttribute("aria-live", "polite");
+        }
+        header.append(message);
+      }
+      return header;
     }
 
-    appendDetailSection(detail, "Envelope", {
-      id: event.id,
-      direction: event.direction,
-      source: event.source,
-      captureSource: event.captureSource ?? "listener",
-      synthetic: event.synthetic,
-      kind: event.kind
-    }, { summary: event.id });
-    appendDetailSection(detail, "Subscription", event.subscription, {
-      summary: event.subscription?.id ?? "no subscription"
-    });
-    appendDetailSection(detail, "Listener", event.listener, {
-      summary: event.listener?.id ?? "no listener"
-    });
-    appendDetailSection(detail, "Item", event.item, {
-      summary: detailItemSummary(event.item)
-    });
-    appendDetailSection(detail, "Raw Diagnostics", event.raw, {
-      summary: detailRawSummary(event.raw)
-    });
-    appendDetailSection(detail, "Update", event.update, {
-      open: true,
-      summary: detailUpdateSummary(event)
-    });
-    appendDetailSection(detail, "Synthetic Provenance", createSyntheticProvenance(event), {
-      summary: String(event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? "synthetic")
-    });
-    appendDraftSection(detail, event, draft?.sourceEventId === event.id ? draft : null);
-    restorePaneState(detail, paneState);
+    async function copyCanonicalEventJson(
+      selectedEvent: LightstreamerEventEnvelope
+    ): Promise<void> {
+      detailCopyEventId = selectedEvent.id;
+      try {
+        if (!navigator.clipboard?.writeText) {
+          throw new Error("Clipboard access is unavailable.");
+        }
+        await navigator.clipboard.writeText(JSON.stringify(selectedEvent, null, 2));
+        detailCopyMessage = {
+          kind: "success",
+          text: "Copied the canonical selected event JSON."
+        };
+      } catch (error) {
+        detailCopyMessage = {
+          kind: "error",
+          text: `Could not copy selected event JSON. ${error instanceof Error ? error.message : "Clipboard write failed."}`
+        };
+      }
+      if (selectedEventId === selectedEvent.id) {
+        renderDetail(selectedEvent, { preservePaneState: true });
+      }
+    }
   }
 
   function createTimelineDetailResizeHandle(): HTMLDivElement {
@@ -1356,13 +1957,50 @@ export function renderPanel(
     const selected = findSelectedCommandItem(visibleItems, selectedCommandItem) ?? visibleItems[0];
     renderCommandGroups(visibleItems, selected, items.length, allItems.length);
     renderCommandRowsAndResults(selected.subscription, selected.item, filterEvaluation);
-    renderCommandDetail(selected.subscription, selected.item, commandState, options);
+    const preserveActiveDraftEditor = shouldPreserveCommandDraftEditor(
+      options,
+      selected.subscription,
+      selected.item
+    );
+    if (!preserveActiveDraftEditor) {
+      renderCommandDetail(selected.subscription, selected.item, commandState, options);
+    }
     restorePaneState(commandGroupPane, groupPaneState);
     restorePaneState(commandCurrentTable, currentPaneState);
     restorePaneState(commandUpdatePane, updatePaneState);
   }
 
+  function shouldPreserveCommandDraftEditor(
+    options: RenderOptions,
+    subscription: CommandSubscriptionGroup,
+    item: CommandItemGroup
+  ): boolean {
+    if (
+      !options.passiveStoreUpdate ||
+      !draft ||
+      !commandDetailPane.querySelector(".command-draft-controls, .draft-controls") ||
+      commandDetailPane.dataset.detailIdentity !==
+        commandDetailIdentity(subscription, item, selectedCommandKey, selectedCommandUpdateEventId)
+    ) {
+      return false;
+    }
+
+    if (draftSurface === "new-command" && draft.provenance.source === "new-command") {
+      return commandDraftMatchesContext(
+        draft,
+        createCommandItemContext(subscription, item, commandContextEvents)
+      );
+    }
+
+    return (
+      draftSurface === "command-replay" &&
+      (selectedCommandUpdateEventId === draft.sourceEventId ||
+        selectedCommandUpdateEventId === draftResultEventId)
+    );
+  }
+
   function renderCommandEmptyState(): void {
+    delete commandDetailPane.dataset.detailIdentity;
     commandDetailPane.hidden = true;
     commandWorkspace.dataset.detailOpen = "false";
     commandGroupPane.replaceChildren(
@@ -1389,6 +2027,7 @@ export function renderPanel(
   }
 
   function renderCommandNoMatchesState(): void {
+    delete commandDetailPane.dataset.detailIdentity;
     commandDetailPane.hidden = true;
     commandWorkspace.dataset.detailOpen = "false";
     commandGroupPane.replaceChildren(
@@ -1480,6 +2119,7 @@ export function renderPanel(
           selected.item.itemId === entry.item.itemId
       );
       itemButton.addEventListener("click", () => {
+        clearCommandDraftForSelection(null);
         selectedCommandItem = {
           subscriptionId: entry.subscription.subscriptionId,
           itemId: entry.item.itemId
@@ -1516,6 +2156,17 @@ export function renderPanel(
         )
       : [];
     const matchingKeys: CommandKeyRow[] = [...matchingRows, ...matchingDeleted];
+    const selectedKeyIndex = matchingKeys.findIndex((row) =>
+      commandSelectionMatchesStableKey(selectedCommandKey, row)
+    );
+    if (
+      selectedKeyIndex >= 0 &&
+      (selectedKeyIndex < commandKeyWindowOffset ||
+        selectedKeyIndex >= commandKeyWindowOffset + COMMAND_KEY_WINDOW_SIZE)
+    ) {
+      commandKeyWindowOffset =
+        Math.floor(selectedKeyIndex / COMMAND_KEY_WINDOW_SIZE) * COMMAND_KEY_WINDOW_SIZE;
+    }
     commandKeyWindowOffset = clampStartWindowOffset(
       commandKeyWindowOffset,
       matchingKeys.length,
@@ -1577,6 +2228,7 @@ export function renderPanel(
       );
       button.addEventListener("click", () => {
         const nextSelection = commandSelectionForKey(row);
+        clearCommandDraftForSelection(null);
         selectedCommandUpdateEventId = null;
         selectedCommandKey = nextSelection;
         resetCommandLifecycleWindow();
@@ -1607,7 +2259,10 @@ export function renderPanel(
       selectionIdentity === commandWindowSelectionIdentity &&
       selectedLifecycle.length > commandWindowLifecycleLength
     ) {
-      if (commandUpdateWindowOffset > 0) {
+      const selectedWindowWasFull =
+        Boolean(selectedCommandUpdateEventId) &&
+        commandWindowLifecycleLength >= COMMAND_LIFECYCLE_WINDOW_SIZE;
+      if (commandUpdateWindowOffset > 0 || selectedWindowWasFull) {
         commandUpdateWindowOffset += selectedLifecycle.length - commandWindowLifecycleLength;
         commandUpdateHistoryAnchor =
           commandUpdateWindowOffset % COMMAND_LIFECYCLE_WINDOW_SIZE;
@@ -1621,6 +2276,7 @@ export function renderPanel(
       selectedCommandUpdateEventId &&
       !selectedLifecycle.some((entry) => entry.eventId === selectedCommandUpdateEventId)
     ) {
+      clearCommandDraftForSelection(null);
       selectedCommandUpdateEventId = null;
     }
 
@@ -1663,6 +2319,7 @@ export function renderPanel(
         updateRow.dataset.eventId = entry.eventId;
         updateRow.dataset.selected = String(selectedCommandUpdateEventId === entry.eventId);
         updateRow.addEventListener("click", () => {
+          clearCommandDraftForSelection(entry.eventId);
           selectedCommandUpdateEventId = entry.eventId;
           commandDetailOpen = true;
           renderCommandState();
@@ -1737,6 +2394,7 @@ export function renderPanel(
           `${diagnostic.key ?? "unknown key"}, diagnostic ${diagnostic.code}, event ${diagnostic.eventId ?? "unknown"}`
         );
         result.addEventListener("click", () => {
+          clearCommandDraftForSelection(null);
           selectedCommandUpdateEventId = null;
           selectedCommandKey = commandSelectionForDiagnostic(item, diagnostic);
           resetCommandLifecycleWindow();
@@ -1771,7 +2429,14 @@ export function renderPanel(
             }
           })
         : null;
-    commandCurrentTable.replaceChildren(...(keyNavigation ? [keyNavigation, header, rows] : [header, rows]));
+    const newCommandAction = createNewCommandAction(
+      createCommandItemContext(subscription, item, commandContextEvents)
+    );
+    commandCurrentTable.replaceChildren(
+      ...(keyNavigation
+        ? [newCommandAction, keyNavigation, header, rows]
+        : [newCommandAction, header, rows])
+    );
     if (emptyRows) {
       commandCurrentTable.append(emptyRows);
     }
@@ -1893,6 +2558,26 @@ export function renderPanel(
     commandWindowLifecycleLength = 0;
   }
 
+  function clearCommandDraftForSelection(nextEventId: string | null): void {
+    if (!draft || (draftSurface !== "command-replay" && draftSurface !== "new-command")) {
+      return;
+    }
+    if (
+      draftSurface === "command-replay" &&
+      (draft.sourceEventId === nextEventId || draftResultEventId === nextEventId)
+    ) {
+      return;
+    }
+    draftRenderVersion += 1;
+    draft = null;
+    draftSurface = null;
+    draftResultEventId = null;
+    draftEditing = false;
+    draftJsonText = null;
+    draftJsonError = null;
+    reinjectionMessage = null;
+  }
+
   function renderCommandDetail(
     subscription: CommandSubscriptionGroup,
     item: CommandItemGroup,
@@ -1902,18 +2587,30 @@ export function renderPanel(
     const paneState = options.preservePaneState ? capturePaneState(commandDetailPane) : null;
     commandDetailPane.replaceChildren();
     if (!commandDetailOpen) {
+      delete commandDetailPane.dataset.detailIdentity;
       commandDetailPane.hidden = true;
       commandWorkspace.dataset.detailOpen = "false";
       return;
     }
 
     commandDetailPane.hidden = false;
+    commandDetailPane.dataset.detailIdentity = commandDetailIdentity(
+      subscription,
+      item,
+      selectedCommandKey,
+      selectedCommandUpdateEventId
+    );
     commandWorkspace.dataset.detailOpen = "true";
     const collapseCommandDetail = () => {
       commandDetailOpen = false;
       renderCommandState();
     };
     const context = createCommandItemContext(subscription, item, commandContextEvents);
+
+    if (renderActiveNewCommandDraft(commandDetailPane, context, item, commandState, collapseCommandDetail)) {
+      restorePaneState(commandDetailPane, paneState);
+      return;
+    }
 
     if (!selectedCommandKey) {
       commandDetailPane.append(
@@ -1924,7 +2621,6 @@ export function renderPanel(
           "Select a key or update to inspect its COMMAND details."
         )
       );
-      appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
       restorePaneState(commandDetailPane, paneState);
       return;
     }
@@ -1935,14 +2631,12 @@ export function renderPanel(
         createDetailPaneHeader("COMMAND detail", collapseCommandDetail),
         createTextElement("p", "command-empty-body", "Selected COMMAND key is no longer available.")
       );
-      appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
       restorePaneState(commandDetailPane, paneState);
       return;
     }
 
     if (target.kind === "diagnostic") {
       renderCommandDiagnosticDetail(target.diagnostic, collapseCommandDetail);
-      appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
       restorePaneState(commandDetailPane, paneState);
       return;
     }
@@ -1951,7 +2645,6 @@ export function renderPanel(
       const update = target.row.lifecycle.find((entry) => entry.eventId === selectedCommandUpdateEventId);
       if (update) {
         renderCommandUpdateDetail(target, update, collapseCommandDetail);
-        appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
         restorePaneState(commandDetailPane, paneState);
         return;
       }
@@ -1973,24 +2666,17 @@ export function renderPanel(
       );
       commandDetailPane.append(summary);
 
-      const fields = document.createElement("section");
-      fields.className = "command-current-fields";
-      fields.append(
-        createHelpHeading(
-          "h3",
-          "command-detail-section-heading",
-          "Current fields",
+      commandDetailPane.append(
+        createCommandFieldsSection(
+          row.fields,
+          row.lifecycle[row.lifecycle.length - 1]?.changedFields ?? {},
           "The latest field values for this active key after applying its lifecycle."
         )
       );
-      const fieldsJson = document.createElement("pre");
-      fieldsJson.className = "command-json";
-      fieldsJson.textContent = JSON.stringify(row.fields, null, 2);
-      fields.append(fieldsJson);
-      commandDetailPane.append(fields);
+
+      appendLatestCommandReplay(row.lifecycle);
 
       appendCommandLifecycle(row.lifecycle);
-      appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
       restorePaneState(commandDetailPane, paneState);
       return;
     }
@@ -2010,8 +2696,8 @@ export function renderPanel(
     );
     commandDetailPane.append(summary);
 
+    appendLatestCommandReplay(row.lifecycle);
     appendCommandLifecycle(row.lifecycle);
-    appendNewCommandDraftSection(commandDetailPane, context, item, commandState);
     restorePaneState(commandDetailPane, paneState);
   }
 
@@ -2121,7 +2807,7 @@ export function renderPanel(
     commandDetailPane.append(createDetailPaneHeader("COMMAND diagnostic", onCollapse));
     const pre = document.createElement("pre");
     pre.className = "command-json";
-    pre.textContent = JSON.stringify(diagnostic, null, 2);
+    pre.textContent = formatJsonForDisplay(diagnostic);
     commandDetailPane.append(pre);
   }
 
@@ -2145,33 +2831,59 @@ export function renderPanel(
     }
     commandDetailPane.append(summary);
 
-    const fields = document.createElement("section");
-    fields.className = "command-current-fields";
-    fields.append(
+    appendCommandReplay(entry.eventId);
+
+    commandDetailPane.append(
+      createCommandFieldsSection(
+        entry.fields,
+        entry.changedFields,
+        "The current item values at this update. Changed field names are shown once above the payload."
+      )
+    );
+  }
+
+  function appendLatestCommandReplay(lifecycle: readonly CommandLifecycleEntry[]): void {
+    const latest = lifecycle[lifecycle.length - 1];
+    if (latest) {
+      appendCommandReplay(latest.eventId);
+    }
+  }
+
+  function appendCommandReplay(eventId: string): void {
+    const selectedEvent = commandContextEvents.find((event) => event.id === eventId) ?? null;
+    if (!selectedEvent) {
+      return;
+    }
+    const currentDraft =
+      draftSurface === "command-replay" &&
+      draft &&
+      (draft.sourceEventId === eventId || draftResultEventId === eventId)
+        ? draft
+        : null;
+    appendDraftSection(commandDetailPane, selectedEvent, currentDraft, "command");
+  }
+
+  function createCommandFieldsSection(
+    fields: Record<string, string | number | boolean | null>,
+    changedFields: Record<string, string | number | boolean | null>,
+    help: string
+  ): HTMLElement {
+    const section = document.createElement("section");
+    section.className = "command-current-fields";
+    section.append(
       createHelpHeading(
         "h3",
         "command-detail-section-heading",
-        "Update payload",
-        "The fields and changed fields captured for this COMMAND update."
+        "Current item fields",
+        help
       )
     );
+    section.append(createChangedFieldsSummary("command-changed-fields", Object.keys(changedFields)));
     const fieldsJson = document.createElement("pre");
     fieldsJson.className = "command-json";
-    fieldsJson.textContent = JSON.stringify(
-      {
-        eventId: entry.eventId,
-        command: entry.originalCommand,
-        effectiveCommand: entry.effectiveCommand,
-        source: provenanceLabel(entry.provenance),
-        fields: entry.fields,
-        changedFields: entry.changedFields,
-        diagnostics: entry.diagnosticCodes
-      },
-      null,
-      2
-    );
-    fields.append(fieldsJson);
-    commandDetailPane.append(fields);
+    fieldsJson.textContent = formatJsonForDisplay(fields);
+    section.append(fieldsJson);
+    return section;
   }
 
   function appendCommandLifecycle(lifecycle: readonly CommandLifecycleEntry[]): void {
@@ -2219,7 +2931,7 @@ export function renderPanel(
       );
       const json = document.createElement("pre");
       json.className = "command-json";
-      json.textContent = JSON.stringify(
+      json.textContent = formatJsonForDisplay(
         {
           eventId: entry.eventId,
           command: entry.originalCommand,
@@ -2228,9 +2940,7 @@ export function renderPanel(
           fields: entry.fields,
           changedFields: entry.changedFields,
           diagnostics: entry.diagnosticCodes
-        },
-        null,
-        2
+        }
       );
       lifecycleEntry.append(json);
       section.append(lifecycleEntry);
@@ -2254,25 +2964,20 @@ export function renderPanel(
     section.append(createTextElement("h3", "command-detail-section-heading", "Diagnostics"));
     const pre = document.createElement("pre");
     pre.className = "command-json";
-    pre.textContent = JSON.stringify(matching, null, 2);
+    pre.textContent = formatJsonForDisplay(matching);
     section.append(pre);
     commandDetailPane.append(section);
   }
 
-  function appendNewCommandDraftSection(
-    parent: HTMLElement,
-    context: CommandItemContext,
-    item: CommandItemGroup,
-    commandState: CommandState
-  ): void {
+  function createNewCommandAction(context: CommandItemContext): HTMLElement {
     const section = document.createElement("section");
-    section.className = "new-command-editor";
-    section.setAttribute("aria-label", "New synthetic COMMAND update");
+    section.className = "new-command-action";
+    section.setAttribute("aria-label", "Create a new synthetic COMMAND key");
 
     const createButton = document.createElement("button");
     createButton.className = "new-command-button";
     createButton.type = "button";
-    createButton.textContent = "New COMMAND update";
+    createButton.textContent = "New COMMAND key";
     createButton.disabled = !createNewCommandDraftFromContext(context);
     createButton.addEventListener("click", () => {
       const nextDraft = createNewCommandDraftFromContext(context);
@@ -2280,25 +2985,55 @@ export function renderPanel(
         return;
       }
       draft = nextDraft;
+      draftSurface = "new-command";
+      draftResultEventId = null;
+      draftEditing = false;
+      draftJsonText = null;
+      draftJsonError = null;
+      draftExecutionTarget = preferredDraftExecutionTarget(nextDraft);
       reinjectionMessage = null;
+      commandDetailOpen = true;
       renderCommandState();
     });
 
-    section.append(createButton);
+    section.append(
+      createButton,
+      createTextElement(
+        "span",
+        "new-command-helper",
+        "Create a key that does not exist in the selected item."
+      )
+    );
+    return section;
+  }
 
-    if (draft?.provenance.source === "new-command" && !commandDraftMatchesContext(draft, context)) {
+  function renderActiveNewCommandDraft(
+    parent: HTMLElement,
+    context: CommandItemContext,
+    item: CommandItemGroup,
+    commandState: CommandState,
+    onCollapse: () => void
+  ): boolean {
+    if (draftSurface !== "new-command" || draft?.provenance.source !== "new-command") {
+      return false;
+    }
+
+    if (!commandDraftMatchesContext(draft, context)) {
       draft = null;
+      draftSurface = null;
+      draftResultEventId = null;
       reinjectionMessage = null;
+      return false;
     }
 
-    if (!draft || draft.provenance.source !== "new-command") {
-      parent.append(section);
-      return;
-    }
-
+    parent.append(createDetailPaneHeader("New COMMAND key", onCollapse));
+    const section = document.createElement("section");
+    section.className = "new-command-editor";
+    section.setAttribute("aria-label", "New synthetic COMMAND key editor");
     section.append(createCommandDraftContext(context));
     section.append(createCommandDraftControls(draft, context, item, commandState));
     parent.append(section);
+    return true;
   }
 
   function createCommandDraftControls(
@@ -2310,7 +3045,12 @@ export function renderPanel(
     const controls = document.createElement("div");
     controls.className = "command-draft-controls";
 
-    const validation = validateNewCommandDraft(currentDraft, commandState, context);
+    const validation = validateNewCommandDraft(
+      currentDraft,
+      commandState,
+      context,
+      draftExecutionTarget
+    );
 
     const commandLabel = document.createElement("label");
     commandLabel.className = "command-draft-label";
@@ -2331,9 +3071,12 @@ export function renderPanel(
     }
     commandSelect.value = currentDraft.command ?? "";
     commandSelect.addEventListener("change", () => {
-      draft = updateDraftCommand(draft ?? currentDraft, commandSelect.value);
-      reinjectionMessage = null;
-      renderCommandStatePreservingDraftEditorState(".command-draft-command");
+      applyNewCommandDraftControlUpdate(
+        updateDraftCommand(draft ?? currentDraft, commandSelect.value),
+        commandSelect,
+        context,
+        item
+      );
     });
     commandLabel.append(commandSelect);
 
@@ -2345,9 +3088,12 @@ export function renderPanel(
     keyInput.setAttribute("aria-label", "COMMAND key");
     keyInput.value = currentDraft.key ?? "";
     keyInput.addEventListener("input", () => {
-      draft = updateDraftKey(draft ?? currentDraft, keyInput.value);
-      reinjectionMessage = null;
-      renderCommandStatePreservingDraftEditorState(".command-draft-key");
+      applyNewCommandDraftControlUpdate(
+        updateDraftKey(draft ?? currentDraft, keyInput.value),
+        keyInput,
+        context,
+        item
+      );
     });
     keyLabel.append(keyInput);
 
@@ -2359,20 +3105,31 @@ export function renderPanel(
     snapshotInput.checked = currentDraft.isSnapshot;
     snapshotInput.setAttribute("aria-label", "Snapshot update");
     snapshotInput.addEventListener("change", () => {
-      draft = updateDraftSnapshot(draft ?? currentDraft, snapshotInput.checked);
-      reinjectionMessage = null;
-      renderCommandStatePreservingDraftEditorState(".command-draft-snapshot");
+      applyNewCommandDraftControlUpdate(
+        updateDraftSnapshot(draft ?? currentDraft, snapshotInput.checked),
+        snapshotInput,
+        context,
+        item
+      );
     });
     snapshotLabel.append(snapshotInput, createTextElement("span", "draft-input-text", "Snapshot"));
 
-    const fieldTable = createCommandDraftFieldTable(currentDraft, item);
-    const diagnostics = createCommandDraftDiagnostics(validation.diagnostics);
+    const fieldTable = createCommandDraftFieldTable(currentDraft, context, item);
+    const diagnostics = createCommandDraftDiagnostics(
+      validation.diagnostics,
+      draftExecutionTarget
+    );
 
     const injectButton = document.createElement("button");
     injectButton.className = "inject-command-button reinject-button";
     injectButton.type = "button";
-    injectButton.textContent = reinjectionPending ? "Injecting..." : "Inject COMMAND update";
-    injectButton.disabled = !validation.valid || !bridge || reinjectionPending;
+    injectButton.textContent = reinjectionPending
+      ? "Injecting..."
+      : "Inject COMMAND update";
+    injectButton.disabled =
+      !validation.valid ||
+      !bridgeReady ||
+      reinjectionPending;
     injectButton.addEventListener("click", () => {
       void injectCommandDraft(draft ?? currentDraft, context, item);
     });
@@ -2385,11 +3142,22 @@ export function renderPanel(
       controls.append(message);
     }
 
-    controls.append(commandLabel, keyLabel, snapshotLabel, fieldTable, diagnostics, injectButton);
+    controls.append(
+      commandLabel,
+      keyLabel,
+      snapshotLabel,
+      fieldTable,
+      diagnostics,
+      injectButton
+    );
     return controls;
   }
 
-  function createCommandDraftFieldTable(currentDraft: ReinjectionDraft, item: CommandItemGroup): HTMLElement {
+  function createCommandDraftFieldTable(
+    currentDraft: ReinjectionDraft,
+    context: CommandItemContext,
+    item: CommandItemGroup
+  ): HTMLElement {
     const table = document.createElement("div");
     table.className = "command-draft-field-table";
     table.append(
@@ -2410,16 +3178,22 @@ export function renderPanel(
         "command-draft-field-current",
         formatDraftFieldValue(currentRow?.fields[fieldName])
       );
+      current.dataset.fieldName = fieldName;
       const draftInput = document.createElement("input");
       draftInput.className = "filter-control command-draft-field-input";
       draftInput.setAttribute("aria-label", `Draft field ${fieldName}`);
       draftInput.dataset.fieldName = fieldName;
       draftInput.value = formatDraftFieldValue(value);
       draftInput.addEventListener("input", () => {
-        draft = updateDraftField(draft ?? currentDraft, fieldName, draftInput.value === "" ? null : draftInput.value);
-        reinjectionMessage = null;
-        renderCommandStatePreservingDraftEditorState(
-          `.command-draft-field-input[data-field-name="${cssAttributeValue(fieldName)}"]`
+        applyNewCommandDraftControlUpdate(
+          updateDraftField(
+            draft ?? currentDraft,
+            fieldName,
+            draftInput.value === "" ? null : draftInput.value
+          ),
+          draftInput,
+          context,
+          item
         );
       });
       const changed = createTextElement(
@@ -2427,18 +3201,127 @@ export function renderPanel(
         "command-draft-field-changed",
         Object.prototype.hasOwnProperty.call(currentDraft.changedFields, fieldName) ? "changed" : "-"
       );
+      changed.dataset.fieldName = fieldName;
       table.append(name, current, draftInput, changed);
     }
 
     return table;
   }
 
-  function createCommandDraftDiagnostics(diagnostics: readonly NewCommandDraftDiagnostic[]): HTMLElement {
+  function applyNewCommandDraftControlUpdate(
+    nextDraft: ReinjectionDraft,
+    activeControl: HTMLInputElement | HTMLSelectElement,
+    context: CommandItemContext,
+    item: CommandItemGroup
+  ): void {
+    draft = nextDraft;
+    reinjectionMessage = null;
+
+    const controls = activeControl.closest<HTMLElement>(".command-draft-controls");
+    if (!controls || !activeControl.isConnected) {
+      renderCommandState({ preservePaneState: true });
+      return;
+    }
+
+    controls.querySelector<HTMLElement>(".reinjection-message")?.remove();
+
+    const currentState = commandStateIndex.snapshot();
+    const validation = validateNewCommandDraft(
+      nextDraft,
+      currentState,
+      context,
+      draftExecutionTarget
+    );
+    const latestItem =
+      flattenCommandItems(currentState).find(
+        (entry) =>
+          entry.item.subscriptionId === item.subscriptionId &&
+          entry.item.itemId === item.itemId
+      )?.item ?? item;
+    const currentRow = nextDraft.key
+      ? latestItem.activeRows.find((row) => row.key === nextDraft.key)
+      : null;
+
+    const commandControl = controls.querySelector<HTMLSelectElement>(
+      ".command-draft-command"
+    );
+    if (commandControl && commandControl !== activeControl) {
+      commandControl.value = nextDraft.command ?? "";
+    }
+    const keyControl = controls.querySelector<HTMLInputElement>(".command-draft-key");
+    if (keyControl && keyControl !== activeControl) {
+      keyControl.value = nextDraft.key ?? "";
+    }
+    const snapshotControl = controls.querySelector<HTMLInputElement>(
+      ".command-draft-snapshot"
+    );
+    if (snapshotControl) {
+      snapshotControl.checked = nextDraft.isSnapshot;
+    }
+
+    for (const fieldInput of controls.querySelectorAll<HTMLInputElement>(
+      ".command-draft-field-input[data-field-name]"
+    )) {
+      const fieldName = fieldInput.dataset.fieldName;
+      if (fieldName && fieldInput !== activeControl) {
+        fieldInput.value = formatDraftFieldValue(nextDraft.fields[fieldName]);
+      }
+    }
+    for (const currentValue of controls.querySelectorAll<HTMLElement>(
+      ".command-draft-field-current[data-field-name]"
+    )) {
+      const fieldName = currentValue.dataset.fieldName;
+      if (fieldName) {
+        currentValue.textContent = formatDraftFieldValue(currentRow?.fields[fieldName]);
+      }
+    }
+    for (const changedValue of controls.querySelectorAll<HTMLElement>(
+      ".command-draft-field-changed[data-field-name]"
+    )) {
+      const fieldName = changedValue.dataset.fieldName;
+      if (fieldName) {
+        changedValue.textContent = Object.prototype.hasOwnProperty.call(
+          nextDraft.changedFields,
+          fieldName
+        )
+          ? "changed"
+          : "-";
+      }
+    }
+
+    controls
+      .querySelector<HTMLElement>(".command-draft-diagnostics")
+      ?.replaceWith(
+        createCommandDraftDiagnostics(validation.diagnostics, draftExecutionTarget)
+      );
+    const injectButton = controls.querySelector<HTMLButtonElement>(
+      ".inject-command-button"
+    );
+    if (injectButton) {
+      injectButton.disabled =
+        !validation.valid ||
+        !bridgeReady ||
+        reinjectionPending;
+    }
+  }
+
+  function createCommandDraftDiagnostics(
+    diagnostics: readonly NewCommandDraftDiagnostic[],
+    executionTarget: ReinjectionExecutionTarget
+  ): HTMLElement {
     const section = document.createElement("section");
     section.className = "command-draft-diagnostics";
     section.append(createTextElement("h4", "draft-source-heading", "Diagnostics"));
     if (diagnostics.length === 0) {
-      section.append(createTextElement("p", "command-draft-diagnostic info", "Draft is ready for local listener-path injection."));
+      section.append(
+        createTextElement(
+          "p",
+          "command-draft-diagnostic info",
+          executionTarget === "captured-listener"
+            ? "Draft is ready for local listener-path injection."
+            : "Draft is ready for local replay through the captured page WebSocket. No server request will be sent."
+        )
+      );
       return section;
     }
 
@@ -2458,14 +3341,22 @@ export function renderPanel(
     context: CommandItemContext,
     item: CommandItemGroup
   ): Promise<void> {
-    const activeBridge = bridge;
-    const validation = validateNewCommandDraft(currentDraft, commandStateIndex.snapshot(), context);
-    if (!activeBridge || !validation.valid) {
+    const activeBridge = bridgeReady ? bridge : null;
+    const executionTarget = draftExecutionTarget;
+    const validation = validateNewCommandDraft(
+      currentDraft,
+      commandStateIndex.snapshot(),
+      context,
+      executionTarget
+    );
+    if (!validation.valid || !activeBridge) {
       return;
     }
 
     if (!commandDraftMatchesContext(currentDraft, context)) {
       draft = null;
+      draftSurface = null;
+      draftResultEventId = null;
       reinjectionMessage = {
         kind: "error",
         text: "Draft context changed. Create a new COMMAND update for the selected item before injecting."
@@ -2478,13 +3369,18 @@ export function renderPanel(
     reinjectionMessage = null;
     renderCommandState();
 
-    const result = await activeBridge.reinjectDraft(currentDraft);
+    recordAnalyticsReplayAttempt("new_command", executionTarget, true);
+    const result = await activeBridge.reinjectDraft(currentDraft, executionTarget);
     reinjectionPending = false;
+    recordAnalyticsReplayResult("new_command", executionTarget, true, result);
 
     if (result.ok && result.status === "success") {
       reinjectionMessage = {
         kind: "success",
-        text: "Synthetic COMMAND update injected through the captured listener."
+        text:
+          executionTarget === "captured-listener"
+            ? "Synthetic COMMAND update injected through the captured listener."
+            : "Synthetic COMMAND update delivered locally through the captured page WebSocket. No server was contacted."
       };
       if (currentDraft.key) {
         selectedCommandKey = {
@@ -2495,41 +3391,17 @@ export function renderPanel(
         };
         selectedCommandUpdateEventId = null;
       }
-      resolveMaybe(store.append(createSyntheticEventFromDraft(currentDraft, result)), () => undefined);
+      resolveMaybe(
+        store.append(createSyntheticEventFromDraft(currentDraft, result, executionTarget)),
+        () => {
+          renderCommandState({ preservePaneState: true });
+        }
+      );
       return;
     }
 
     reinjectionMessage = createCommandFailureMessage(result);
     renderCommandState();
-  }
-
-  function renderCommandStatePreservingDraftEditorState(focusSelector: string): void {
-    const scrollTop = commandDetailPane.scrollTop;
-    const scrollLeft = commandDetailPane.scrollLeft;
-    const activeElement = document.activeElement;
-    const selection =
-      activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
-        ? {
-            start: activeElement.selectionStart,
-            end: activeElement.selectionEnd
-          }
-        : null;
-
-    renderCommandState();
-
-    const nextFocus = commandDetailPane.querySelector<HTMLElement>(focusSelector);
-    nextFocus?.focus({ preventScroll: true });
-    if (
-      selection &&
-      nextFocus instanceof HTMLInputElement &&
-      isTextSelectionInput(nextFocus) &&
-      typeof selection.start === "number" &&
-      typeof selection.end === "number"
-    ) {
-      nextFocus.setSelectionRange(selection.start, selection.end);
-    }
-    commandDetailPane.scrollTop = scrollTop;
-    commandDetailPane.scrollLeft = scrollLeft;
   }
 
   function rememberCommandContextEvent(event: LightstreamerEventEnvelope): void {
@@ -2557,6 +3429,7 @@ export function renderPanel(
   }
 
   function closeStore(): void {
+    flushAnalyticsSummary();
     if (storeCloseStarted) {
       return;
     }
@@ -2588,15 +3461,27 @@ export function renderPanel(
 
   const controller: PanelController = {
     setStatus(nextStatus) {
+      const previousBridgeReady = bridgeReady;
       panelState.status = nextStatus;
+      bridgeReady = Boolean(bridge) && isBridgeReadyStatus(nextStatus);
       if (!panelVisible) {
         return;
       }
       status.textContent = nextStatus;
       status.dataset.status = nextStatus;
+      if (bridgeReady !== previousBridgeReady) {
+        renderActiveView({ preservePaneState: true });
+      }
     },
 
     appendCaptureMessage(message) {
+      if (analyticsEnabled()) {
+        analyticsCapturedEventCount += 1;
+        if (!analyticsDetected) {
+          analyticsDetected = true;
+          trackAnalytics({ name: "lightstreamer_detected" });
+        }
+      }
       resolveMaybe(store.append(normalizer.normalize(message)), () => undefined);
       controller.setStatus("capturing");
     },
@@ -2604,12 +3489,17 @@ export function renderPanel(
     clearEvents() {
       selectedPinned = false;
       selectedEventId = null;
+      selectedTimelineEvent = null;
       timelineDetailOpen = false;
+      draftRenderVersion += 1;
       resetCommandLifecycleWindow();
       commandSearchTextCache.keys.clear();
-      if (draft?.provenance.source !== "new-command") {
-        draft = null;
-      }
+      draft = null;
+      draftSurface = null;
+      draftEditing = false;
+      draftJsonText = null;
+      draftJsonError = null;
+      draftResultEventId = null;
       reinjectionMessage = null;
       resetTimelineRenderLimit();
       resetCommandListWindows();
@@ -2619,7 +3509,8 @@ export function renderPanel(
 
     setBridge(nextBridge) {
       bridge = nextBridge;
-      renderSelectedTimelineDetail();
+      bridgeReady = isBridgeReadyStatus(panelState.status);
+      renderActiveView({ preservePaneState: true });
     },
 
     setVisible(visible) {
@@ -2647,6 +3538,7 @@ export function renderPanel(
       );
       renderEventVolumeNotice(currentStoreStats);
       immediateAppendRenderCount = 0;
+      trackAnalytics({ name: "panel_view" });
       renderActiveView({ preservePaneState: true });
     },
 
@@ -2664,6 +3556,7 @@ export function renderPanel(
       window.removeEventListener("beforeunload", closeStore);
       clearInteractionFlushTimer();
       helpTooltips.dispose();
+      themeManager.dispose();
       activeTooltipDisposers.delete(root);
       closeStore();
     }
@@ -2678,11 +3571,17 @@ export function renderPanel(
         for (const event of result.events) {
           rememberCommandContextEvent(event);
         }
-        renderActiveViewFromStoreUpdate({ preservePaneState: true });
+        renderActiveViewFromStoreUpdate({
+          preservePaneState: true,
+          passiveStoreUpdate: true
+        });
       });
     } else if (change.type === "append") {
       rememberCommandContextEvent(change.event);
-      if (timelineWindowOffset > 0 && matchesEventFilters(change.event, filterState)) {
+      const shouldAnchorTimelineWindow =
+        timelineWindowOffset > 0 ||
+        (!timelineFollowLatest && timelineEvents.length >= TIMELINE_WINDOW_SIZE);
+      if (shouldAnchorTimelineWindow && matchesEventFilters(change.event, filterState)) {
         timelineWindowOffset += 1;
         timelineHistoryAnchor = timelineWindowOffset % TIMELINE_WINDOW_SIZE;
       } else if (timelineWindowOffset === 0) {
@@ -2707,10 +3606,10 @@ export function renderPanel(
       return;
     }
     if (change.type === "append") {
-      renderActiveViewFromAppend({ preservePaneState: true });
+      renderActiveViewFromAppend({ preservePaneState: true, passiveStoreUpdate: true });
       return;
     }
-    renderActiveViewFromStoreUpdate({ preservePaneState: true });
+    renderActiveViewFromStoreUpdate({ preservePaneState: true, passiveStoreUpdate: true });
   });
 
   return controller;
@@ -2718,182 +3617,990 @@ export function renderPanel(
   function appendDraftSection(
     parent: HTMLElement,
     selectedEvent: LightstreamerEventEnvelope,
-    currentDraft: ReinjectionDraft | null
+    currentDraft: ReinjectionDraft | null,
+    surface: "timeline" | "command" = "timeline"
   ): void {
     const section = document.createElement("section");
-    section.className = "draft-editor";
-    section.append(createTextElement("h3", "detail-section-heading", "Reinjection Draft"));
+    section.className = "replay-card draft-editor";
+    section.setAttribute("aria-busy", String(reinjectionPending));
+    section.append(createTextElement("h3", "detail-section-heading", "Replay"));
 
-    const cloneButton = document.createElement("button");
-    cloneButton.className = "clone-button";
-    cloneButton.type = "button";
-    cloneButton.textContent = "Clone event";
-    cloneButton.disabled = !canCloneEvent(selectedEvent);
-    cloneButton.addEventListener("click", () => {
-      const nextDraft = createDraftFromEvent(selectedEvent);
-      if (!nextDraft || !validateEditableDraft(nextDraft).valid) {
+    const availableDraft = currentDraft ?? createReplayDraftFromEvent(selectedEvent);
+    const executionTarget = availableDraft
+      ? preferredDraftExecutionTarget(availableDraft)
+      : "captured-listener";
+    const sourceReplay = availableDraft ? createSourceReplayDraft(availableDraft) : null;
+    const sourceValidation = validateDraftForExecutionTarget(sourceReplay, executionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    const editValidation = validateEditableDraft(availableDraft);
+
+    const activateDraft = (editing: boolean): ReinjectionDraft | null => {
+      if (!availableDraft) {
+        return null;
+      }
+      if (!currentDraft) {
+        draft = availableDraft;
+        draftSurface = surface === "command" ? "command-replay" : "timeline";
+        draftResultEventId = null;
+        draftEditing = editing;
+        draftJsonText = formatDraftJson(availableDraft);
+        draftJsonError = null;
+        reinjectionMessage = null;
+        if (surface === "command") {
+          selectedCommandUpdateEventId = selectedEvent.id;
+          commandDetailOpen = true;
+        } else {
+          selectedEventId = selectedEvent.id;
+          selectedPinned = true;
+        }
+      }
+      draftExecutionTarget = executionTarget;
+      return draft ?? availableDraft;
+    };
+
+    const actionBar = document.createElement("div");
+    actionBar.className = "replay-action-bar";
+    const reinjectButton = document.createElement("button");
+    reinjectButton.className = "reinject-button replay-source-button";
+    reinjectButton.type = "button";
+    reinjectButton.textContent = reinjectionPending ? "Re-injecting…" : "Re-inject";
+    reinjectButton.disabled = !sourceValidation.valid || reinjectionPending;
+    if (!sourceValidation.valid) {
+      reinjectButton.title = validationMessage(sourceValidation.errors);
+    }
+    reinjectButton.addEventListener("click", () => {
+      const activeDraft = activateDraft(false);
+      if (!activeDraft) {
         return;
       }
-      selectedEventId = selectedEvent.id;
-      selectedPinned = true;
-      draft = nextDraft;
-      reinjectionMessage = null;
-      renderDetail(selectedEvent);
-    });
-    section.append(cloneButton);
-
-    if (!currentDraft) {
-      section.append(
-        createTextElement(
-          "p",
-          "editor-placeholder",
-          "Clone a captured item update to edit and reinject it locally."
-        )
+      void executeCurrentDraft(
+        createSourceReplayDraft(activeDraft),
+        executionTarget,
+        "source"
       );
-      parent.append(section);
-      return;
+    });
+
+    const mutateButton = document.createElement("button");
+    mutateButton.className = "mutate-inject-button";
+    mutateButton.type = "button";
+    mutateButton.textContent = "Mutate & re-inject…";
+    mutateButton.disabled = !editValidation.valid || reinjectionPending;
+    mutateButton.setAttribute("aria-expanded", String(draftEditing));
+    if (!editValidation.valid) {
+      mutateButton.title = validationMessage(editValidation.errors);
+    }
+    mutateButton.addEventListener("click", () => {
+      const activeDraft = activateDraft(true);
+      if (!activeDraft) {
+        return;
+      }
+      draftEditing = true;
+      draftJsonText = draftJsonText ?? formatDraftJson(activeDraft);
+      draftJsonError = null;
+      reinjectionMessage = null;
+      renderDraftSurface(activeDraft, true);
+    });
+    actionBar.append(reinjectButton, mutateButton);
+    section.append(actionBar);
+
+    if (currentDraft) {
+      draftExecutionTarget = executionTarget;
+      section.append(createSourceContext(currentDraft));
     }
 
-    section.append(createSourceContext(currentDraft));
-    section.append(createDraftControls(currentDraft));
+    if (reinjectionPending) {
+      const pending = createTextElement(
+        "p",
+        "reinjection-message pending",
+        executionTarget === "captured-listener"
+          ? "Delivering locally to the original app listener…"
+          : "Replaying locally through the captured page WebSocket…"
+      );
+      pending.setAttribute("role", "status");
+      pending.setAttribute("aria-live", "polite");
+      section.append(pending);
+    } else if (reinjectionMessage) {
+      section.append(createReinjectionMessageElement(reinjectionMessage));
+    }
+
+    if (currentDraft && draftEditing) {
+      section.append(createDraftControls(currentDraft));
+    }
     parent.append(section);
   }
 
   function createDraftControls(currentDraft: ReinjectionDraft): HTMLElement {
     const controls = document.createElement("div");
     controls.className = "draft-controls";
+    controls.setAttribute("aria-label", "Edit staged replay draft");
 
-    const validation = validateReinjectionDraft(currentDraft);
+    const validation = validateDraftForExecutionTarget(currentDraft, draftExecutionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    const editorHeader = document.createElement("div");
+    editorHeader.className = "draft-editor-header";
+    editorHeader.append(
+      createTextElement(
+        "h4",
+        "draft-editor-heading",
+        "Mutate & re-inject"
+      ),
+      createTextElement(
+        "span",
+        "draft-dirty-count",
+        `${draftChangeCount(currentDraft)} changed`
+      )
+    );
+    controls.append(editorHeader);
+
     if (!validation.valid) {
-      controls.append(
-        createTextElement(
-          "p",
-          "draft-validation-error",
-          validationMessage(validation.errors)
-        )
+      const validationError = createTextElement(
+        "p",
+        "draft-validation-error",
+        validationMessage(validation.errors)
       );
+      validationError.setAttribute("role", "alert");
+      controls.append(validationError);
     }
 
+    const injectButton = document.createElement("button");
+    injectButton.className = "inject-edited-button";
+    injectButton.type = "button";
+    injectButton.textContent = reinjectionPending
+      ? "Re-injecting…"
+      : "Re-inject edited update";
+    injectButton.disabled = !validation.valid || Boolean(draftJsonError) || reinjectionPending;
+    injectButton.dataset.validationValid = String(validation.valid && !draftJsonError);
+    injectButton.addEventListener("click", () => {
+      const activeDraft = draft ?? currentDraft;
+      void executeCurrentDraft(activeDraft, draftExecutionTarget, "edited");
+    });
+
+    const structuredError = createTextElement(
+      "p",
+      "draft-validation-error draft-structured-error",
+      ""
+    );
+    structuredError.hidden = true;
+    structuredError.setAttribute("role", "alert");
+    controls.append(createStructuredDraftTable(currentDraft, injectButton, structuredError));
+    controls.append(structuredError);
+
+    const editorActions = document.createElement("div");
+    editorActions.className = "draft-editor-actions";
+    const resetButton = document.createElement("button");
+    resetButton.className = "reset-draft-button";
+    resetButton.type = "button";
+    resetButton.textContent = "Reset to source";
+    resetButton.disabled = reinjectionPending;
+    resetButton.addEventListener("click", () => {
+      draft = createSourceReplayDraft(draft ?? currentDraft);
+      draftJsonText = formatDraftJson(draft);
+      draftJsonError = null;
+      reinjectionMessage = null;
+      renderDraftSurface(draft, true);
+    });
+
+    const cancelButton = document.createElement("button");
+    cancelButton.className = "cancel-editing-button";
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel editing";
+    cancelButton.disabled = reinjectionPending;
+    cancelButton.addEventListener("click", () => {
+      draftEditing = false;
+      draftJsonError = null;
+      draftJsonText = formatDraftJson(draft ?? currentDraft);
+      renderDraftSurface(draft ?? currentDraft, true);
+    });
+    editorActions.append(resetButton, cancelButton);
+    controls.append(editorActions);
+
+    const advanced = document.createElement("details");
+    advanced.className = "detail-section draft-advanced-json";
+    advanced.dataset.detailSection = "Advanced Draft JSON";
+    const advancedSummary = document.createElement("summary");
+    advancedSummary.className = "detail-section-summary";
+    advancedSummary.append(
+      createTextElement("span", "detail-section-heading", "Advanced Draft JSON"),
+      createTextElement("span", "detail-section-marker", "bulk edit")
+    );
+    advanced.append(advancedSummary);
     const draftLabel = document.createElement("label");
     draftLabel.className = "draft-json-label";
-    draftLabel.append(createTextElement("span", "draft-input-text", "Draft JSON"));
+    draftLabel.append(
+      createTextElement(
+        "span",
+        "draft-input-text",
+        "Edit command, key, snapshot, and fields as one JSON object."
+      )
+    );
 
     const draftTextarea = document.createElement("textarea");
     draftTextarea.className = "draft-json";
     draftTextarea.setAttribute("aria-label", "Draft JSON");
     draftTextarea.spellcheck = false;
-    draftTextarea.value = formatDraftJson(currentDraft);
+    draftTextarea.value = draftJsonText ?? formatDraftJson(currentDraft);
+    draftTextarea.disabled = reinjectionPending;
     draftLabel.append(draftTextarea);
 
     const jsonError = createTextElement("p", "draft-validation-error draft-json-error", "");
-    jsonError.hidden = true;
+    jsonError.textContent = draftJsonError ?? "";
+    jsonError.hidden = !draftJsonError;
+    jsonError.setAttribute("role", "alert");
 
+    advanced.append(draftLabel, jsonError);
+    controls.append(advanced);
+
+    const derived = document.createElement("details");
+    derived.className = "detail-section draft-derived-fields";
+    derived.dataset.detailSection = "Derived changed fields";
+    const derivedSummary = document.createElement("summary");
+    derivedSummary.className = "detail-section-summary";
+    derivedSummary.append(
+      createTextElement("span", "detail-section-heading", "Derived changed fields"),
+      createTextElement(
+        "span",
+        "detail-section-marker",
+        `${Object.keys(currentDraft.changedFields).length} fields`
+      )
+    );
     const changedPreview = document.createElement("pre");
     changedPreview.className = "draft-changed-fields-preview";
-    changedPreview.textContent = JSON.stringify(currentDraft.changedFields, null, 2);
-
-    const reinjectButton = document.createElement("button");
-    reinjectButton.className = "reinject-button";
-    reinjectButton.type = "button";
-    reinjectButton.textContent = reinjectionPending ? "Reinjecting..." : "Reinject draft";
-    reinjectButton.disabled = !validation.valid || !bridge || reinjectionPending;
-    reinjectButton.dataset.validationValid = String(validation.valid);
-    reinjectButton.addEventListener("click", () => {
-      const activeDraft = draft ?? currentDraft;
-      void reinjectCurrentDraft(activeDraft);
-    });
+    changedPreview.textContent = formatJsonForDisplay(currentDraft.changedFields);
+    derived.append(derivedSummary, changedPreview);
+    controls.append(derived);
 
     draftTextarea.addEventListener("input", () => {
+      draftJsonText = draftTextarea.value;
       const result = parseDraftJson(currentDraft, draftTextarea.value);
       if (!result.draft) {
-        jsonError.textContent = result.error ?? "Draft JSON is invalid.";
+        draftJsonError = result.error ?? "Draft JSON is invalid.";
+        jsonError.textContent = draftJsonError;
         jsonError.hidden = false;
-        reinjectButton.disabled = true;
-        reinjectButton.dataset.validationValid = "false";
+        injectButton.disabled = true;
+        injectButton.dataset.validationValid = "false";
         return;
       }
 
       draft = result.draft;
+      draftJsonError = null;
       reinjectionMessage = null;
-      const nextValidation = validateReinjectionDraft(result.draft);
+      const nextValidation = validateDraftForExecutionTarget(result.draft, draftExecutionTarget, {
+        bridgeAvailable: bridgeReady
+      });
       jsonError.textContent = nextValidation.valid
         ? ""
         : validationMessage(nextValidation.errors);
       jsonError.hidden = nextValidation.valid;
-      changedPreview.textContent = JSON.stringify(result.draft.changedFields, null, 2);
-      reinjectButton.disabled = !nextValidation.valid || !bridge || reinjectionPending;
-      reinjectButton.dataset.validationValid = String(nextValidation.valid);
+      changedPreview.textContent = formatJsonForDisplay(result.draft.changedFields);
+      controls.querySelector<HTMLElement>(".draft-dirty-count")!.textContent =
+        `${draftChangeCount(result.draft)} changed`;
+      derivedSummary.querySelector<HTMLElement>(".detail-section-marker")!.textContent =
+        `${Object.keys(result.draft.changedFields).length} fields`;
+      injectButton.disabled = !nextValidation.valid || reinjectionPending;
+      injectButton.dataset.validationValid = String(nextValidation.valid);
+      controls
+        .querySelector<HTMLTableElement>(".draft-field-diff")
+        ?.replaceWith(createStructuredDraftTable(result.draft, injectButton, structuredError));
     });
 
-    if (reinjectionMessage) {
-      const message = createTextElement("p", `reinjection-message ${reinjectionMessage.kind}`, reinjectionMessage.text);
-      if (reinjectionMessage.detail) {
-        message.append(createTextElement("span", "reinjection-detail", reinjectionMessage.detail));
+    controls.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !reinjectionPending) {
+        event.preventDefault();
+        event.stopPropagation();
+        draftEditing = false;
+        draftJsonError = null;
+        draftJsonText = formatDraftJson(draft ?? currentDraft);
+        renderDraftSurface(draft ?? currentDraft, true);
+        return;
       }
-      controls.append(message);
-    }
+      if (
+        event.key === "Enter" &&
+        (event.metaKey || event.ctrlKey) &&
+        !injectButton.disabled
+      ) {
+        event.preventDefault();
+        void executeCurrentDraft(draft ?? currentDraft, draftExecutionTarget, "edited");
+      }
+    });
 
-    controls.append(
-      draftLabel,
-      jsonError,
-      createTextElement("h4", "draft-source-heading", "Derived changed fields"),
-      changedPreview,
-      reinjectButton
-    );
+    controls.append(injectButton);
     return controls;
   }
 
-  async function reinjectCurrentDraft(currentDraft: ReinjectionDraft): Promise<void> {
-    const activeBridge = bridge;
-    if (!activeBridge || !validateReinjectionDraft(currentDraft).valid) {
+  function createStructuredDraftTable(
+    currentDraft: ReinjectionDraft,
+    injectButton: HTMLButtonElement,
+    structuredError: HTMLElement
+  ): HTMLTableElement {
+    const table = document.createElement("table");
+    table.className = "draft-field-diff";
+    const head = document.createElement("thead");
+    const headingRow = document.createElement("tr");
+    for (const heading of ["Field", "Original", "Draft"]) {
+      headingRow.append(createTextElement("th", "draft-field-heading", heading));
+    }
+    head.append(headingRow);
+    const body = document.createElement("tbody");
+
+    const fieldNames = new Set([
+      ...(currentDraft.subscriptionMode === "COMMAND" ? ["command", "key"] : []),
+      ...Object.keys(currentDraft.sourceFields),
+      ...Object.keys(currentDraft.fields)
+    ]);
+    for (const fieldName of fieldNames) {
+      const original =
+        fieldName === "command"
+          ? currentDraft.sourceCommand
+          : fieldName === "key"
+            ? currentDraft.sourceKey
+            : currentDraft.sourceFields[fieldName];
+      const current =
+        fieldName === "command"
+          ? currentDraft.command
+          : fieldName === "key"
+            ? currentDraft.key
+            : currentDraft.fields[fieldName];
+      const expandedJson = shouldUseExpandedJsonEditor(original, current);
+      const fieldChanged = !Object.is(original, current);
+      const row = document.createElement("tr");
+      row.dataset.fieldName = fieldName;
+      row.dataset.state = fieldChanged ? "changed" : "unchanged";
+      row.dataset.layout = expandedJson ? "json-summary" : "scalar";
+      const name = createTextElement("th", "draft-field-name", fieldName);
+      name.scope = "row";
+      if (fieldChanged) {
+        const changed = createTextElement("span", "draft-field-changed-indicator", "Δ");
+        changed.title = "Changed from captured value";
+        changed.setAttribute("aria-label", "changed");
+        name.append(changed);
+      }
+      const originalCell = document.createElement("td");
+      originalCell.className = "draft-field-original";
+      originalCell.append(
+        createPrimitiveValue(original, {
+          showPreview: !expandedJson,
+          previewLabel: "Original captured JSON"
+        })
+      );
+      const draftCell = document.createElement("td");
+      draftCell.className = "draft-field-value";
+      if (expandedJson) {
+        draftCell.append(createPrimitiveValue(current, { showPreview: false }));
+      } else {
+        draftCell.append(
+          createStructuredFieldEditor(
+            currentDraft,
+            fieldName,
+            current,
+            injectButton,
+            structuredError
+          )
+        );
+      }
+      row.append(name, originalCell, draftCell);
+      body.append(row);
+      if (expandedJson) {
+        body.append(
+          createExpandedJsonFieldRow(
+            currentDraft,
+            fieldName,
+            original,
+            current,
+            injectButton,
+            structuredError
+          )
+        );
+      }
+    }
+
+    const snapshotRow = document.createElement("tr");
+    snapshotRow.dataset.fieldName = "snapshot";
+    const snapshotChanged = currentDraft.isSnapshot !== currentDraft.sourceIsSnapshot;
+    snapshotRow.dataset.state = snapshotChanged ? "changed" : "unchanged";
+    const snapshotName = createTextElement("th", "draft-field-name", "snapshot");
+    snapshotName.scope = "row";
+    if (snapshotChanged) {
+      const changed = createTextElement("span", "draft-field-changed-indicator", "Δ");
+      changed.title = "Changed from captured value";
+      changed.setAttribute("aria-label", "changed");
+      snapshotName.append(changed);
+    }
+    const snapshotOriginal = document.createElement("td");
+    snapshotOriginal.className = "draft-field-original";
+    snapshotOriginal.append(createPrimitiveValue(currentDraft.sourceIsSnapshot));
+    const snapshotDraft = document.createElement("td");
+    snapshotDraft.className = "draft-field-value";
+    const snapshotLabel = document.createElement("label");
+    snapshotLabel.className = "draft-snapshot-control";
+    const snapshotInput = document.createElement("input");
+    snapshotInput.className = "structured-snapshot-input";
+    snapshotInput.type = "checkbox";
+    snapshotInput.checked = currentDraft.isSnapshot;
+    snapshotInput.disabled = reinjectionPending;
+    snapshotInput.setAttribute("aria-label", "Draft snapshot state");
+    snapshotInput.addEventListener("change", () => {
+      applyStructuredDraftUpdate(
+        updateDraftSnapshot(draft ?? currentDraft, snapshotInput.checked)
+      );
+    });
+    snapshotLabel.append(snapshotInput, createTextElement("span", "draft-value-type", "boolean"));
+    snapshotDraft.append(snapshotLabel);
+    snapshotRow.append(snapshotName, snapshotOriginal, snapshotDraft);
+    body.append(snapshotRow);
+
+    table.append(head, body);
+    return table;
+  }
+
+  function createExpandedJsonFieldRow(
+    currentDraft: ReinjectionDraft,
+    fieldName: string,
+    original: DraftFieldValue | undefined,
+    current: DraftFieldValue | undefined,
+    injectButton: HTMLButtonElement,
+    structuredError: HTMLElement
+  ): HTMLTableRowElement {
+    const row = document.createElement("tr");
+    row.className = "draft-json-editor-row";
+    row.dataset.fieldName = fieldName;
+    row.dataset.layout = "json-editor";
+    row.dataset.state = Object.is(original, current) ? "unchanged" : "changed";
+    const cell = document.createElement("td");
+    cell.className = "draft-json-editor-cell";
+    cell.colSpan = 3;
+
+    const workspace = document.createElement("section");
+    workspace.className = "structured-json-workspace";
+    workspace.setAttribute("aria-label", `${fieldName} JSON field editor`);
+    const header = document.createElement("header");
+    header.className = "structured-json-editor-header";
+    header.append(
+      createTextElement("strong", "structured-json-editor-title", fieldName),
+      createTextElement(
+        "span",
+        "structured-json-editor-summary",
+        structuredJsonSummary(current) ?? structuredJsonSummary(original) ?? "Large string"
+      )
+    );
+    workspace.append(header);
+    if (typeof original === "string") {
+      const originalPreview = createParsedJsonDisclosure(original, "Original captured JSON");
+      if (originalPreview) {
+        originalPreview.classList.add("structured-json-original-preview");
+        workspace.append(originalPreview);
+      }
+    }
+    workspace.append(
+      createStructuredFieldEditor(
+        currentDraft,
+        fieldName,
+        current,
+        injectButton,
+        structuredError,
+        "expanded-json"
+      )
+    );
+    cell.append(workspace);
+    row.append(cell);
+    return row;
+  }
+
+  function createStructuredFieldEditor(
+    currentDraft: ReinjectionDraft,
+    fieldName: string,
+    value: DraftFieldValue | undefined,
+    injectButton: HTMLButtonElement,
+    structuredError: HTMLElement,
+    layout: "compact" | "expanded-json" = "compact"
+  ): HTMLElement {
+    const editor = document.createElement("div");
+    editor.className = "structured-field-editor";
+    editor.dataset.layout = layout;
+    const typeSelect = document.createElement("select");
+    typeSelect.className = "draft-field-type";
+    typeSelect.dataset.fieldName = fieldName;
+    typeSelect.setAttribute("aria-label", `Draft type ${fieldName}`);
+    typeSelect.disabled = reinjectionPending || fieldName === "command" || fieldName === "key";
+    for (const primitiveType of ["string", "number", "boolean", "null"] as const) {
+      const option = document.createElement("option");
+      option.value = primitiveType;
+      option.textContent = primitiveType;
+      typeSelect.append(option);
+    }
+    typeSelect.value = draftFieldType(value);
+    typeSelect.addEventListener("change", () => {
+      applyStructuredDraftUpdate(
+        updateDraftField(
+          draft ?? currentDraft,
+          fieldName,
+          defaultValueForDraftType(typeSelect.value, value)
+        )
+      );
+    });
+    editor.append(typeSelect);
+
+    if (fieldName === "command") {
+      const commandSelect = document.createElement("select");
+      commandSelect.className = "structured-field-input structured-command-input";
+      commandSelect.dataset.fieldName = fieldName;
+      commandSelect.setAttribute("aria-label", "Draft COMMAND command");
+      commandSelect.disabled = reinjectionPending;
+      for (const command of ["", "ADD", "UPDATE", "DELETE"]) {
+        const option = document.createElement("option");
+        option.value = command;
+        option.textContent = command || "Select command";
+        commandSelect.append(option);
+      }
+      commandSelect.value = currentDraft.command ?? "";
+      commandSelect.addEventListener("change", () => {
+        applyStructuredDraftUpdate(
+          updateDraftCommand(draft ?? currentDraft, commandSelect.value)
+        );
+      });
+      editor.append(commandSelect);
+      return editor;
+    }
+
+    if (fieldName === "key") {
+      const keyInput = document.createElement("textarea");
+      keyInput.className = "structured-field-input structured-string-input";
+      keyInput.dataset.fieldName = fieldName;
+      keyInput.rows = 1;
+      keyInput.value = currentDraft.key ?? "";
+      keyInput.disabled = reinjectionPending;
+      keyInput.setAttribute("aria-label", "Draft COMMAND key");
+      keyInput.addEventListener("input", () => {
+        applyStructuredInputDraftUpdate(
+          updateDraftKey(draft ?? currentDraft, keyInput.value),
+          fieldName,
+          keyInput,
+          injectButton,
+          structuredError
+        );
+      });
+      editor.append(keyInput);
+      return editor;
+    }
+
+    if (typeof value === "boolean") {
+      const booleanSelect = document.createElement("select");
+      booleanSelect.className = "structured-field-input";
+      booleanSelect.dataset.fieldName = fieldName;
+      booleanSelect.setAttribute("aria-label", `Draft field ${fieldName}`);
+      booleanSelect.disabled = reinjectionPending;
+      for (const booleanValue of ["true", "false"]) {
+        const option = document.createElement("option");
+        option.value = booleanValue;
+        option.textContent = booleanValue;
+        booleanSelect.append(option);
+      }
+      booleanSelect.value = String(value);
+      booleanSelect.addEventListener("change", () => {
+        applyStructuredDraftUpdate(
+          updateDraftField(draft ?? currentDraft, fieldName, booleanSelect.value === "true")
+        );
+      });
+      editor.append(booleanSelect);
+      return editor;
+    }
+
+    if (value === null || value === undefined) {
+      editor.append(createTextElement("span", "structured-null-value", "null"));
+      return editor;
+    }
+
+    if (typeof value === "number") {
+      const numberInput = document.createElement("input");
+      numberInput.className = "structured-field-input";
+      numberInput.dataset.fieldName = fieldName;
+      numberInput.type = "number";
+      numberInput.step = "any";
+      numberInput.value = String(value);
+      numberInput.disabled = reinjectionPending;
+      numberInput.setAttribute("aria-label", `Draft field ${fieldName}`);
+      numberInput.addEventListener("input", () => {
+        const nextValue = Number(numberInput.value);
+        if (numberInput.value.trim() === "" || !Number.isFinite(nextValue)) {
+          structuredError.textContent = `${fieldName} must be a finite number.`;
+          structuredError.hidden = false;
+          injectButton.disabled = true;
+          injectButton.dataset.validationValid = "false";
+          numberInput.setAttribute("aria-invalid", "true");
+          return;
+        }
+        numberInput.removeAttribute("aria-invalid");
+        applyStructuredInputDraftUpdate(
+          updateDraftField(draft ?? currentDraft, fieldName, nextValue),
+          fieldName,
+          numberInput,
+          injectButton,
+          structuredError
+        );
+      });
+      editor.append(numberInput);
+      return editor;
+    }
+
+    const textInput = document.createElement("textarea");
+    textInput.className = "structured-field-input structured-string-input";
+    const parsedJson = parseStructuredJsonString(value);
+    const formattedValue = parsedJson ? JSON.stringify(parsedJson, null, 2) : value;
+    if (layout === "expanded-json") {
+      textInput.classList.add("structured-json-input");
+    } else if (parsedJson) {
+      textInput.classList.add("structured-json-inline-input");
+    }
+    textInput.dataset.fieldName = fieldName;
+    textInput.rows =
+      layout === "expanded-json"
+        ? 10
+        : parsedJson
+          ? Math.min(8, Math.max(3, formattedValue.split("\n").length))
+          : 1;
+    textInput.value = formattedValue;
+    textInput.disabled = reinjectionPending;
+    textInput.spellcheck = false;
+    textInput.setAttribute("aria-label", `Draft field ${fieldName}`);
+    textInput.addEventListener("input", () => {
+      applyStructuredInputDraftUpdate(
+        updateDraftField(draft ?? currentDraft, fieldName, textInput.value),
+        fieldName,
+        textInput,
+        injectButton,
+        structuredError
+      );
+    });
+    editor.append(textInput);
+    return editor;
+  }
+
+  function applyStructuredDraftUpdate(nextDraft: ReinjectionDraft): void {
+    draft = nextDraft;
+    draftJsonText = formatDraftJson(nextDraft);
+    draftJsonError = null;
+    reinjectionMessage = null;
+    renderDraftSurface(nextDraft, true);
+  }
+
+  function applyStructuredInputDraftUpdate(
+    nextDraft: ReinjectionDraft,
+    fieldName: string,
+    input: HTMLInputElement | HTMLTextAreaElement,
+    injectButton: HTMLButtonElement,
+    structuredError: HTMLElement
+  ): void {
+    draft = nextDraft;
+    draftJsonText = formatDraftJson(nextDraft);
+    draftJsonError = null;
+    reinjectionMessage = null;
+
+    const controls = input.closest<HTMLElement>(".draft-controls");
+    if (!controls || !input.isConnected) {
+      renderDraftSurface(nextDraft, true);
+      return;
+    }
+
+    controls
+      .closest<HTMLElement>(".replay-card")
+      ?.querySelector<HTMLElement>(".reinjection-message")
+      ?.remove();
+
+    const validation = validateDraftForExecutionTarget(nextDraft, draftExecutionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    injectButton.disabled = !validation.valid || reinjectionPending;
+    injectButton.dataset.validationValid = String(validation.valid);
+    structuredError.textContent = "";
+    structuredError.hidden = true;
+
+    const validationError = Array.from(controls.children).find(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement &&
+        child.classList.contains("draft-validation-error") &&
+        !child.classList.contains("draft-structured-error")
+    );
+    if (validation.valid) {
+      validationError?.remove();
+    } else if (validationError) {
+      validationError.textContent = validationMessage(validation.errors);
+    } else {
+      const nextValidationError = createTextElement(
+        "p",
+        "draft-validation-error",
+        validationMessage(validation.errors)
+      );
+      nextValidationError.setAttribute("role", "alert");
+      controls.querySelector(".draft-editor-header")?.after(nextValidationError);
+    }
+
+    const dirtyCount = controls.querySelector<HTMLElement>(".draft-dirty-count");
+    if (dirtyCount) {
+      dirtyCount.textContent = `${draftChangeCount(nextDraft)} changed`;
+    }
+
+    const draftTextarea = controls.querySelector<HTMLTextAreaElement>(".draft-json");
+    if (draftTextarea) {
+      draftTextarea.value = draftJsonText;
+    }
+    const draftJsonErrorElement = controls.querySelector<HTMLElement>(".draft-json-error");
+    if (draftJsonErrorElement) {
+      draftJsonErrorElement.textContent = "";
+      draftJsonErrorElement.hidden = true;
+    }
+
+    const changedPreview = controls.querySelector<HTMLElement>(
+      ".draft-changed-fields-preview"
+    );
+    if (changedPreview) {
+      changedPreview.textContent = formatJsonForDisplay(nextDraft.changedFields);
+    }
+    const changedFieldsMarker = controls.querySelector<HTMLElement>(
+      ".draft-derived-fields .detail-section-marker"
+    );
+    if (changedFieldsMarker) {
+      changedFieldsMarker.textContent =
+        `${Object.keys(nextDraft.changedFields).length} fields`;
+    }
+
+    const original =
+      fieldName === "command"
+        ? nextDraft.sourceCommand
+        : fieldName === "key"
+          ? nextDraft.sourceKey
+          : nextDraft.sourceFields[fieldName];
+    const current =
+      fieldName === "command"
+        ? nextDraft.command
+        : fieldName === "key"
+          ? nextDraft.key
+          : nextDraft.fields[fieldName];
+    const fieldChanged = !Object.is(original, current);
+    const jsonSummary = structuredJsonSummary(current);
+    const currentSummary =
+      jsonSummary ??
+      (typeof current === "string"
+        ? `Text · ${formatTextSize(current.length)}`
+        : structuredJsonSummary(original) ?? "Large string");
+    const fieldRows = Array.from(
+      controls.querySelectorAll<HTMLTableRowElement>(
+        ".draft-field-diff tr[data-field-name]"
+      )
+    ).filter((row) => row.dataset.fieldName === fieldName);
+    for (const row of fieldRows) {
+      row.dataset.state = fieldChanged ? "changed" : "unchanged";
+      const fieldNameCell = row.querySelector<HTMLElement>(".draft-field-name");
+      const changedIndicator = fieldNameCell?.querySelector<HTMLElement>(
+        ".draft-field-changed-indicator"
+      );
+      if (fieldChanged && fieldNameCell && !changedIndicator) {
+        const nextChangedIndicator = createTextElement(
+          "span",
+          "draft-field-changed-indicator",
+          "Δ"
+        );
+        nextChangedIndicator.title = "Changed from captured value";
+        nextChangedIndicator.setAttribute("aria-label", "changed");
+        fieldNameCell.append(nextChangedIndicator);
+      } else if (!fieldChanged) {
+        changedIndicator?.remove();
+      }
+
+      if (row.dataset.layout === "json-summary") {
+        const draftSummary = row.querySelector<HTMLElement>(
+          ".draft-field-value .draft-primitive-value > span"
+        );
+        if (draftSummary) {
+          draftSummary.className = jsonSummary
+            ? "draft-primitive-json-summary"
+            : "draft-primitive-raw";
+          draftSummary.textContent = currentSummary;
+        }
+      }
+      const editorSummary = row.querySelector<HTMLElement>(
+        ".structured-json-editor-summary"
+      );
+      if (editorSummary) {
+        editorSummary.textContent = currentSummary;
+      }
+    }
+  }
+
+  function draftPageExecutionTarget(
+    currentDraft: ReinjectionDraft
+  ): "captured-listener" | "captured-wire" {
+    return currentDraft.captureSource === "wire" ? "captured-wire" : "captured-listener";
+  }
+
+  function preferredDraftExecutionTarget(
+    currentDraft: ReinjectionDraft
+  ): ReinjectionExecutionTarget {
+    return draftPageExecutionTarget(currentDraft);
+  }
+
+  async function executeCurrentDraft(
+    currentDraft: ReinjectionDraft,
+    executionTarget: ReinjectionExecutionTarget,
+    actionMode: "source" | "edited"
+  ): Promise<void> {
+    const activeBridge = bridgeReady ? bridge : null;
+    const validation = validateDraftForExecutionTarget(currentDraft, executionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    if (!validation.valid || !activeBridge) {
       return;
     }
 
     reinjectionPending = true;
     reinjectionMessage = null;
-    renderEventForDraft(currentDraft);
+    renderDraftSurface(currentDraft, true);
 
-    const result = await activeBridge.reinjectDraft(currentDraft);
+    const analyticsSurface = currentAnalyticsReplaySurface();
+    const analyticsEdited = actionMode === "edited";
+    recordAnalyticsReplayAttempt(analyticsSurface, executionTarget, analyticsEdited);
+    const result = await activeBridge.reinjectDraft(currentDraft, executionTarget);
     reinjectionPending = false;
+    recordAnalyticsReplayResult(
+      analyticsSurface,
+      executionTarget,
+      analyticsEdited,
+      result
+    );
 
     if (result.ok && result.status === "success") {
       reinjectionMessage = {
         kind: "success",
-        text: "Synthetic update reinjected through the original listener."
+        text:
+          executionTarget === "captured-wire"
+            ? `${actionMode === "source" ? "Source update" : "Edited update"} delivered locally through the captured page WebSocket. No server was contacted.`
+            : `${actionMode === "source" ? "Source update" : "Edited update"} delivered to the original app listener. The inspected page was reached.`
       };
-      resolveMaybe(store.append(createSyntheticEventFromDraft(currentDraft, result)), () => undefined);
+      renderDraftSurface(currentDraft, true);
+      appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
       return;
     }
 
     reinjectionMessage = createFailureMessage(result);
-    renderEventForDraft(currentDraft);
+    renderDraftSurface(currentDraft, true);
   }
 
-  function renderEventForDraft(currentDraft: ReinjectionDraft): void {
-    resolveMaybe(selectedEventForDraft(currentDraft), (event) => {
-      renderDetail(event);
+  function appendAndSelectSyntheticDraftResult(
+    currentDraft: ReinjectionDraft,
+    result: ReinjectionResult,
+    executionTarget: ReinjectionExecutionTarget
+  ): void {
+    const syntheticEvent = createSyntheticEventFromDraft(
+      currentDraft,
+      result,
+      executionTarget
+    );
+    resolveMaybe(store.append(syntheticEvent), (appendedEvent) => {
+      draftResultEventId = appendedEvent.id;
+      if (draftSurface === "command-replay") {
+        selectedCommandKey = commandSelectionForSyntheticDraft(currentDraft);
+        selectedCommandUpdateEventId = appendedEvent.id;
+        commandDetailOpen = true;
+        renderCommandState({ preservePaneState: true });
+        return;
+      }
+      selectedEventId = appendedEvent.id;
+      selectedTimelineEvent = appendedEvent;
+      selectedPinned = true;
+      timelineDetailOpen = true;
+      timelineWindowOffset = 0;
+      timelineHistoryAnchor = 0;
+      timelineSelectionNeedsFilterReconciliation = false;
+      // Reveal the explicit action result once, then pin it against passive live traffic.
+      timelineFollowLatest = true;
+      renderFeed({}, () => {
+        if (selectedEventId === appendedEvent.id) {
+          timelineFollowLatest = false;
+        }
+      });
     });
   }
 
-  function selectedEventForDraft(
-    currentDraft: ReinjectionDraft
-  ): MaybePromise<LightstreamerEventEnvelope | null> {
+  function commandSelectionForSyntheticDraft(currentDraft: ReinjectionDraft): CommandRowSelection {
+    return {
+      subscriptionId: currentDraft.target.subscriptionId ?? "",
+      itemId: commandDraftItemId(currentDraft),
+      key: currentDraft.key ?? currentDraft.sourceKey ?? "",
+      status: currentDraft.command === "DELETE" ? "deleted" : "active"
+    };
+  }
+
+  function commandDraftItemId(currentDraft: ReinjectionDraft): string {
+    const matchingItem = flattenCommandItems(commandStateIndex.snapshot()).find(
+      ({ subscription, item }) =>
+        subscription.subscriptionId === currentDraft.target.subscriptionId &&
+        item.itemName === (currentDraft.item.name ?? null) &&
+        item.itemPosition === (currentDraft.item.position ?? null)
+    );
+    return matchingItem?.item.itemId ?? selectedCommandItem?.itemId ?? "";
+  }
+
+  function renderDraftSurface(currentDraft: ReinjectionDraft, preservePaneState = false): void {
+    if (draftSurface === "command-replay") {
+      renderCommandState({ preservePaneState });
+      return;
+    }
+    renderEventForDraft(currentDraft, preservePaneState);
+  }
+
+  function renderEventForDraft(currentDraft: ReinjectionDraft, preservePaneState = false): void {
+    const renderVersion = ++draftRenderVersion;
+    const detailEventId =
+      selectedEventId === draftResultEventId && draftResultEventId
+        ? draftResultEventId
+        : currentDraft.sourceEventId;
+    resolveMaybe(selectedEventForDraft(detailEventId), (event) => {
+      if (
+        renderVersion !== draftRenderVersion ||
+        !event ||
+        event.id !== detailEventId ||
+        selectedEventId !== detailEventId ||
+        !timelineDetailOpen ||
+        !panelVisible
+      ) {
+        return;
+      }
+      selectedTimelineEvent = event;
+      renderDetail(event, { preservePaneState });
+    });
+  }
+
+  function selectedEventForDraft(eventId: string): MaybePromise<LightstreamerEventEnvelope | null> {
     const cached =
-      timelineEvents.find((event) => event.id === currentDraft.sourceEventId) ??
-      timelineEvents.find((event) => event.id === selectedEventId) ??
-      timelineEvents[timelineEvents.length - 1] ??
+      (selectedTimelineEvent?.id === eventId ? selectedTimelineEvent : null) ??
+      timelineEvents.find((event) => event.id === eventId) ??
       null;
-    if (cached || !currentDraft.sourceEventId) {
+    if (cached) {
       return cached;
     }
-    return store.getEventById(currentDraft.sourceEventId);
+    return store.getEventById(eventId);
   }
 
   function clearDraftForSelection(nextEventId: string | null): void {
-    if (!draft || draft.sourceEventId === nextEventId) {
+    if (detailCopyEventId !== nextEventId) {
+      detailCopyEventId = null;
+      detailCopyMessage = null;
+    }
+    if (!draft) {
+      draftSurface = null;
+      draftResultEventId = null;
       return;
     }
+    if (draft.sourceEventId === nextEventId || draftResultEventId === nextEventId) {
+      return;
+    }
+    draftRenderVersion += 1;
     draft = null;
+    draftSurface = null;
+    draftResultEventId = null;
+    draftEditing = false;
+    draftJsonText = null;
+    draftJsonError = null;
     reinjectionMessage = null;
   }
 }
@@ -3030,6 +4737,13 @@ function capturePaneState(pane: HTMLElement): PaneState {
             end: activeElement.selectionEnd
           }
         : null,
+    controlScroll:
+      activeInPane && isTextSelectionControl(activeElement)
+        ? {
+            top: activeElement.scrollTop,
+            left: activeElement.scrollLeft
+          }
+        : null,
     detailSections: captureDetailSectionState(pane)
   };
 }
@@ -3056,6 +4770,10 @@ function restorePaneState(pane: HTMLElement, state: PaneState | null): void {
       typeof state.selection.end === "number"
     ) {
       nextFocus.setSelectionRange(state.selection.start, state.selection.end);
+    }
+    if (nextFocus && state.controlScroll) {
+      nextFocus.scrollTop = state.controlScroll.top;
+      nextFocus.scrollLeft = state.controlScroll.left;
     }
   }
 
@@ -3087,6 +4805,17 @@ function restoreDetailSectionState(
 }
 
 function focusSelectorForElement(element: HTMLElement): string | null {
+  if (
+    element instanceof HTMLInputElement &&
+    element.type === "radio" &&
+    element.name &&
+    element.value
+  ) {
+    return `input[type="radio"][name="${cssAttributeValue(
+      element.name
+    )}"][value="${cssAttributeValue(element.value)}"]`;
+  }
+
   if (element.classList.contains("window-navigation-button") && element.dataset.windowAction) {
     return `.window-navigation-button[data-window-action="${cssAttributeValue(
       element.dataset.windowAction
@@ -3144,6 +4873,17 @@ function focusSelectorForElement(element: HTMLElement): string | null {
     return `.command-draft-field-input[data-field-name="${cssAttributeValue(element.dataset.fieldName)}"]`;
   }
 
+  if (
+    element.dataset.fieldName &&
+    (element.classList.contains("structured-field-input") ||
+      element.classList.contains("draft-field-type"))
+  ) {
+    const className = element.classList.contains("draft-field-type")
+      ? "draft-field-type"
+      : "structured-field-input";
+    return `.${className}[data-field-name="${cssAttributeValue(element.dataset.fieldName)}"]`;
+  }
+
   for (const className of [
     "draft-json",
     "command-draft-command",
@@ -3152,7 +4892,12 @@ function focusSelectorForElement(element: HTMLElement): string | null {
     "reinject-button",
     "inject-command-button",
     "new-command-button",
-    "clone-button",
+    "mutate-inject-button",
+    "inject-edited-button",
+    "reset-draft-button",
+    "cancel-editing-button",
+    "structured-snapshot-input",
+    "copy-event-json-button",
     "detail-collapse-button"
   ]) {
     if (element.classList.contains(className)) {
@@ -3273,16 +5018,7 @@ function createCommandSummaryTimeRow(label: string, timestamp: number): HTMLElem
 function createTimelineHeader(): HTMLElement {
   const header = document.createElement("div");
   header.className = "event-header";
-  for (const heading of [
-    "Time",
-    "Event",
-    "Client",
-    "Subscription",
-    "Mode",
-    "Item",
-    "Command / Key",
-    "Source"
-  ]) {
+  for (const heading of ["Time", "Code", "Item", "Command / Key", "Source"]) {
     header.append(createTextElement("span", "event-cell event-header-cell", heading));
   }
   return header;
@@ -3368,24 +5104,33 @@ function createCommandItemContext(
   item: CommandItemGroup,
   events: readonly LightstreamerEventEnvelope[]
 ): CommandItemContext {
-  const sourceEvent = [...events]
+  const matchingEvents = [...events]
     .reverse()
-    .find(
+    .filter(
       (event) =>
         event.kind === "item-update" &&
         event.subscription?.id === subscription.subscriptionId &&
         event.subscription?.mode === "COMMAND" &&
-        resolveCommandItemIdentity(event.subscription, event.item).itemId === item.itemId &&
-        event.listener?.id
+        resolveCommandItemIdentity(event.subscription, event.item).itemId === item.itemId
     );
+  const listenerEvent = matchingEvents.find((event) => event.listener?.id);
+  const sourceEvent = listenerEvent ?? matchingEvents[0];
+  const fields = Array.from(
+    new Set([
+      ...(sourceEvent?.subscription?.fields ?? subscription.subscription.fields ?? []),
+      ...matchingEvents.flatMap((event) => Object.keys(event.update?.fields ?? {}))
+    ])
+  );
 
   return {
     subscriptionId: subscription.subscriptionId,
     mode: subscription.mode,
-    listenerId: sourceEvent?.listener?.id ?? null,
+    listenerId: listenerEvent?.listener?.id ?? null,
+    captureSource:
+      listenerEvent?.captureSource ?? sourceEvent?.captureSource ?? (listenerEvent ? "listener" : "wire"),
     itemName: item.itemName,
     itemPosition: item.itemPosition,
-    fields: sourceEvent?.subscription?.fields ?? subscription.subscription.fields ?? null
+    fields
   };
 }
 
@@ -3395,6 +5140,14 @@ function createCommandDraftContext(context: CommandItemContext): HTMLElement {
   const rows: Array<[string, string]> = [
     ["Subscription", context.subscriptionId ?? "-"],
     ["Listener", context.listenerId ?? "-"],
+    [
+      "Execution",
+      context.listenerId
+        ? "Original app listener"
+        : context.captureSource === "wire"
+          ? "Inspected page stream"
+          : "No live page target"
+    ],
     ["Item", context.itemName ?? String(context.itemPosition ?? "-")],
     ["Schema", context.fields?.join(", ") ?? "-"]
   ];
@@ -3432,6 +5185,15 @@ function reconcileCommandSelection(
     )
   ) {
     return selection;
+  }
+
+  if (selection?.status !== "diagnostic") {
+    const transitionedRow = [...matchingRows, ...matchingDeleted].find((row) =>
+      commandSelectionMatchesStableKey(selection, row)
+    );
+    if (transitionedRow) {
+      return commandSelectionForKey(transitionedRow);
+    }
   }
 
   if (matchingRows[0]) {
@@ -3527,6 +5289,19 @@ function commandSelectionMatchesKey(selection: CommandSelection, row: CommandKey
     : commandSelectionMatchesDeleted(selection, row);
 }
 
+function commandSelectionMatchesStableKey(
+  selection: CommandSelection,
+  row: CommandKeyRow
+): boolean {
+  return (
+    selection !== null &&
+    selection.status !== "diagnostic" &&
+    selection.subscriptionId === row.subscriptionId &&
+    selection.itemId === row.itemId &&
+    selection.key === row.key
+  );
+}
+
 function commandSelectionsEqual(left: CommandSelection, right: CommandSelection): boolean {
   if (left === right) {
     return true;
@@ -3559,6 +5334,20 @@ function commandSelectionIdentity(selection: CommandSelection): string | null {
     selection.status === "diagnostic" ? selection.diagnosticCode : "",
     selection.status === "diagnostic" ? selection.eventId ?? "" : ""
   ].join("\u0000");
+}
+
+function commandDetailIdentity(
+  subscription: CommandSubscriptionGroup,
+  item: CommandItemGroup,
+  selection: CommandSelection,
+  updateEventId: string | null
+): string {
+  return JSON.stringify([
+    subscription.subscriptionId,
+    item.itemId,
+    commandSelectionIdentity(selection) ?? "",
+    updateEventId ?? ""
+  ]);
 }
 
 function commandSelectionMatchesDeleted(
@@ -4075,17 +5864,46 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function analyticsReplayTarget(
+  executionTarget: ReinjectionExecutionTarget
+): AnalyticsReplayTarget {
+  return executionTarget === "captured-wire" ? "wire" : "listener";
+}
+
+function analyticsReplayOutcome(result: ReinjectionResult): AnalyticsReplayOutcome {
+  switch (result.status) {
+    case "success":
+      return "success";
+    case "stale-target":
+      return "stale_target";
+    case "listener-error":
+      return "listener_error";
+    case "wire-error":
+      return "wire_error";
+    case "bridge-error":
+      return "bridge_error";
+  }
+}
+
 function createFailureMessage(result: ReinjectionResult): ReinjectionMessage {
   if (result.status === "stale-target") {
     return {
       kind: "error",
-      text: "Original listener is no longer available. Capture a fresh update for this subscription, then clone it again."
+      text: "The inspected page can no longer receive this replay. Capture a fresh update for this subscription, then try again."
+    };
+  }
+
+  if (result.status === "bridge-error") {
+    return {
+      kind: "error",
+      text: "The inspected page did not acknowledge reinjection. Reload the inspected page, capture a fresh update, and try again.",
+      detail: result.error
     };
   }
 
   return {
     kind: "error",
-    text: "Reinjection failed before a synthetic event was appended. Review the listener error and adjust the draft.",
+    text: "Reinjection failed before a synthetic event was appended. Review the delivery error and adjust the draft.",
     detail: result.error
   };
 }
@@ -4094,13 +5912,21 @@ function createCommandFailureMessage(result: ReinjectionResult): ReinjectionMess
   if (result.status === "stale-target") {
     return {
       kind: "error",
-      text: "Captured listener target is no longer available. Capture a fresh update for this subscription, then create the synthetic update again."
+      text: "The inspected page can no longer receive this update. Capture a fresh update for this subscription, then create the synthetic update again."
+    };
+  }
+
+  if (result.status === "bridge-error") {
+    return {
+      kind: "error",
+      text: "The inspected page did not acknowledge the COMMAND reinjection. Reload the inspected page, capture a fresh update, and try again.",
+      detail: result.error
     };
   }
 
   return {
     kind: "error",
-    text: "Synthetic COMMAND update was not appended. Review the listener error and adjust the draft.",
+    text: "Synthetic COMMAND update was not appended. Review the delivery error and adjust the draft.",
     detail: result.error
   };
 }
@@ -4110,6 +5936,175 @@ function formatDraftFieldValue(value: DraftFieldValue | undefined): string {
     return "";
   }
   return String(value);
+}
+
+function detailSourceLabel(
+  event: LightstreamerEventEnvelope
+): "Listener" | "Wire" | "Listener replay" | "Wire replay" {
+  if (event.synthetic || event.source === "synthetic") {
+    return event.raw?.executionTarget === "captured-wire"
+      ? "Wire replay"
+      : "Listener replay";
+  }
+  return event.captureSource === "wire" ? "Wire" : "Listener";
+}
+
+function safeClassSlug(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
+}
+
+function createReinjectionMessageElement(message: ReinjectionMessage): HTMLParagraphElement {
+  const element = createTextElement(
+    "p",
+    `reinjection-message ${message.kind}`,
+    message.text
+  );
+  if (message.kind === "error") {
+    element.setAttribute("role", "alert");
+  } else {
+    element.setAttribute("role", "status");
+    element.setAttribute("aria-live", "polite");
+  }
+  if (message.detail) {
+    element.append(createTextElement("span", "reinjection-detail", message.detail));
+  }
+  return element;
+}
+
+function draftChangeCount(draft: ReinjectionDraft): number {
+  const changed = new Set(Object.keys(deriveChangedFields(draft.sourceFields, draft.fields)));
+  if (draft.command !== draft.sourceCommand) {
+    changed.add("command");
+  }
+  if (draft.key !== draft.sourceKey) {
+    changed.add("key");
+  }
+  if (draft.isSnapshot !== draft.sourceIsSnapshot) {
+    changed.add("snapshot");
+  }
+  return changed.size;
+}
+
+function draftFieldType(value: DraftFieldValue | undefined): "string" | "number" | "boolean" | "null" {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  if (typeof value === "number") {
+    return "number";
+  }
+  if (typeof value === "boolean") {
+    return "boolean";
+  }
+  return "string";
+}
+
+function defaultValueForDraftType(
+  type: string,
+  current: DraftFieldValue | undefined
+): DraftFieldValue {
+  switch (type) {
+    case "string":
+      return typeof current === "string" ? current : current === null || current === undefined ? "" : String(current);
+    case "number":
+      return typeof current === "number" ? current : 0;
+    case "boolean":
+      return typeof current === "boolean" ? current : false;
+    default:
+      return null;
+  }
+}
+
+type PrimitiveValueOptions = {
+  showPreview?: boolean;
+  previewLabel?: string;
+};
+
+function createPrimitiveValue(
+  value: DraftFieldValue | undefined,
+  options: PrimitiveValueOptions = {}
+): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "draft-primitive-value";
+  const jsonSummary = structuredJsonSummary(value);
+  container.append(
+    createTextElement(
+      "span",
+      jsonSummary ? "draft-primitive-json-summary" : "draft-primitive-raw",
+      jsonSummary ?? (value === undefined ? "—" : value === null ? "null" : String(value))
+    )
+  );
+  if (typeof value === "string" && options.showPreview !== false) {
+    const parsed = createParsedJsonDisclosure(value, options.previewLabel);
+    if (parsed) {
+      container.append(parsed);
+    }
+  }
+  return container;
+}
+
+function shouldUseExpandedJsonEditor(
+  original: DraftFieldValue | undefined,
+  current: DraftFieldValue | undefined
+): boolean {
+  return [original, current].some(
+    (value) =>
+      typeof value === "string" &&
+      value.length >= 160 &&
+      parseStructuredJsonString(value) !== null
+  );
+}
+
+function parseStructuredJsonString(value: string): Record<string, unknown> | unknown[] | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) || isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function structuredJsonSummary(value: DraftFieldValue | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const parsed = parseStructuredJsonString(value);
+  if (!parsed) {
+    return null;
+  }
+  const shape = Array.isArray(parsed)
+    ? `${parsed.length.toLocaleString()} ${parsed.length === 1 ? "item" : "items"}`
+    : `${Object.keys(parsed).length.toLocaleString()} ${Object.keys(parsed).length === 1 ? "key" : "keys"}`;
+  return `JSON ${Array.isArray(parsed) ? "array" : "object"} · ${shape} · ${formatTextSize(value.length)}`;
+}
+
+function formatTextSize(length: number): string {
+  if (length < 1_000) {
+    return `${length.toLocaleString()} chars`;
+  }
+  return `${(length / 1_000).toFixed(length < 10_000 ? 1 : 0)}k chars`;
+}
+
+function createParsedJsonDisclosure(
+  value: string,
+  label = "Formatted preview"
+): HTMLDetailsElement | null {
+  const parsed = parseStructuredJsonString(value);
+  if (!parsed) {
+    return null;
+  }
+  const disclosure = document.createElement("details");
+  disclosure.className = "parsed-json-disclosure";
+  const summary = document.createElement("summary");
+  summary.textContent = label;
+  const payload = document.createElement("pre");
+  payload.className = "parsed-json-value";
+  payload.textContent = JSON.stringify(parsed, null, 2);
+  disclosure.append(summary, payload);
+  return disclosure;
 }
 
 function createFilterInput(label: string, className: string, placeholder: string): HTMLInputElement {
@@ -4123,7 +6118,54 @@ function createFilterInput(label: string, className: string, placeholder: string
 type DetailSectionOptions = {
   open?: boolean;
   summary?: string | number | null;
+  changedFieldNames?: readonly string[];
 };
+
+function createChangedFieldsSummary(className: string, fieldNames: readonly string[]): HTMLElement {
+  const summary = document.createElement("p");
+  summary.className = className;
+  if (fieldNames.length === 0) {
+    summary.textContent = "No fields changed in this update.";
+    return summary;
+  }
+  summary.append(createTextElement("span", `${className}-label`, "Changed in this update:"));
+  for (const fieldName of fieldNames) {
+    summary.append(createTextElement("code", `${className}-name`, fieldName));
+  }
+  return summary;
+}
+
+function expandStructuredJsonStrings(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === "string") {
+    const parsed = parseStructuredJsonString(value);
+    return parsed ? expandStructuredJsonStrings(parsed, seen) : value;
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+    seen.add(value);
+    const expanded = value.map((entry) => expandStructuredJsonStrings(entry, seen));
+    seen.delete(value);
+    return expanded;
+  }
+  if (isRecord(value)) {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+    seen.add(value);
+    const expanded = Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, expandStructuredJsonStrings(entry, seen)])
+    );
+    seen.delete(value);
+    return expanded;
+  }
+  return value;
+}
+
+function formatJsonForDisplay(value: unknown): string {
+  return JSON.stringify(expandStructuredJsonStrings(value), null, 2) ?? String(value);
+}
 
 function appendDetailSection(
   parent: HTMLElement,
@@ -4152,9 +6194,12 @@ function appendDetailSection(
     if (section.querySelector(".detail-json")) {
       return;
     }
+    if (options.changedFieldNames) {
+      section.append(createChangedFieldsSummary("detail-changed-fields", options.changedFieldNames));
+    }
     const pre = document.createElement("pre");
     pre.className = "detail-json";
-    pre.textContent = JSON.stringify(value, null, 2);
+    pre.textContent = formatJsonForDisplay(value);
     section.append(pre);
   };
   if (section.open) {
@@ -4193,25 +6238,38 @@ function detailUpdateSummary(event: LightstreamerEventEnvelope): string {
   return `${commandKey} ${snapshot} ${changed} changed`;
 }
 
-function canCloneEvent(event: LightstreamerEventEnvelope): boolean {
+function createReplayDraftFromEvent(
+  event: LightstreamerEventEnvelope
+): ReinjectionDraft | null {
   if (event.source !== "server" || event.synthetic) {
-    return false;
+    return null;
   }
   const draft = createDraftFromEvent(event);
-  return validateEditableDraft(draft).valid;
+  return validateEditableDraft(draft).valid ? draft : null;
 }
 
 function createSourceContext(draft: ReinjectionDraft): HTMLElement {
-  const context = document.createElement("div");
+  const context = document.createElement("details");
   context.className = "draft-source-context";
+  const summary = document.createElement("summary");
+  summary.className = "draft-source-summary";
+  summary.append(
+    createTextElement("span", "draft-source-summary-title", "Replay source"),
+    createTextElement(
+      "span",
+      "draft-source-summary-meta",
+      `${draft.sourceCommand ?? "-"}/${draft.sourceKey ?? "-"} · ${draft.sourceIsSnapshot ? "snapshot" : "live"}`
+    )
+  );
+  context.append(summary);
 
   const rows: Array<[string, string]> = [
     ["Source event", draft.sourceEventId],
     ["Subscription", draft.target.subscriptionId ?? "-"],
     ["Listener", draft.target.listenerId ?? "-"],
     ["Item", draft.item.name ?? String(draft.item.position ?? "-")],
-    ["Command/key", `${draft.command ?? "-"}/${draft.key ?? "-"}`],
-    ["Snapshot", draft.isSnapshot ? "snapshot" : "live"]
+    ["Command/key", `${draft.sourceCommand ?? "-"}/${draft.sourceKey ?? "-"}`],
+    ["Snapshot", draft.sourceIsSnapshot ? "snapshot" : "live"]
   ];
 
   for (const [label, value] of rows) {
@@ -4223,12 +6281,6 @@ function createSourceContext(draft: ReinjectionDraft): HTMLElement {
     );
     context.append(row);
   }
-
-  const originalFields = document.createElement("pre");
-  originalFields.className = "draft-source-fields";
-  originalFields.textContent = JSON.stringify(draft.sourceFields, null, 2);
-  context.append(createTextElement("h4", "draft-source-heading", "Original field values"));
-  context.append(originalFields);
 
   return context;
 }
@@ -4281,7 +6333,201 @@ function formatCommandKey(event: LightstreamerEventEnvelope): string {
   return `${command}/${key}`;
 }
 
+function timelineCodeDefinition(event: LightstreamerEventEnvelope): TimelineCodeDefinition {
+  let code: string;
+  switch (event.kind) {
+    case "item-update":
+      code = "U";
+      break;
+    case "end-of-snapshot":
+      code = "EOS";
+      break;
+    case "clear-snapshot":
+      code = "CS";
+      break;
+    case "lost-updates":
+      code = "OV";
+      break;
+    case "subscription-started":
+      code = event.subscription?.mode?.toUpperCase() === "COMMAND" ? "SUBCMD" : "SUBOK";
+      break;
+    case "subscription-ended":
+      code = "UNSUB";
+      break;
+    case "client-created":
+      code = "C+";
+      break;
+    case "client-status":
+      code = "C~";
+      break;
+    case "subscription-created":
+      code = "S+";
+      break;
+    case "subscription-snapshot":
+      code = "S~";
+      break;
+    case "subscription-error":
+      code = "S!";
+      break;
+    case "listener-added":
+      code = "L+";
+      break;
+    case "listener-removed":
+      code = "L−";
+      break;
+  }
+  const definition = TIMELINE_CODE_DEFINITIONS.find((candidate) => candidate.code === code);
+  if (!definition) {
+    throw new Error(`Missing Timeline code definition for ${event.kind}.`);
+  }
+  return definition;
+}
+
+function createTimelineCodeElement(
+  event: LightstreamerEventEnvelope,
+  className: string
+): HTMLSpanElement {
+  const definition = timelineCodeDefinition(event);
+  const code = createTextElement("span", className, definition.code);
+  code.dataset.codeFamily = definition.family;
+  code.title = `${definition.code} — ${definition.label} (${event.kind})`;
+  code.setAttribute(
+    "aria-label",
+    `${definition.code}: ${definition.label}; captured as ${event.kind}`
+  );
+  return code;
+}
+
+function formatTimelineItem(event: LightstreamerEventEnvelope): string {
+  const itemName = event.item?.name?.trim();
+  if (itemName) {
+    return itemName;
+  }
+
+  const subscriptionItems = (event.subscription?.items ?? []).filter(Boolean);
+  const itemPosition = event.item?.position;
+  if (itemPosition !== undefined && itemPosition !== null && subscriptionItems[itemPosition - 1]) {
+    return subscriptionItems[itemPosition - 1];
+  }
+  if (subscriptionItems.length === 1) {
+    return subscriptionItems[0];
+  }
+  if (subscriptionItems.length > 1) {
+    return `${subscriptionItems[0]} +${subscriptionItems.length - 1}`;
+  }
+  if (event.subscription?.itemGroup) {
+    return event.subscription.itemGroup;
+  }
+  if (itemPosition !== undefined && itemPosition !== null) {
+    return `item ${itemPosition}`;
+  }
+  return "—";
+}
+
+function timelineItemTitle(event: LightstreamerEventEnvelope): string {
+  const items = event.subscription?.items ?? [];
+  if (event.item?.name) {
+    return event.item.name;
+  }
+  if (items.length > 0) {
+    return items.join(", ");
+  }
+  if (event.subscription?.itemGroup) {
+    return event.subscription.itemGroup;
+  }
+  return event.item?.position !== undefined && event.item.position !== null
+    ? `Item position ${event.item.position}`
+    : "No item context";
+}
+
+function formatTimelineCommandKey(event: LightstreamerEventEnvelope): string {
+  const command = event.update?.command?.trim() ?? "";
+  const key = event.update?.key?.trim() ?? "";
+  if (command && key) {
+    return `${command}/${key}`;
+  }
+  return command || key || "—";
+}
+
+function timelineCommandKeyTitle(event: LightstreamerEventEnvelope): string {
+  const command = event.update?.command ?? null;
+  const key = event.update?.key ?? null;
+  if (!command && !key) {
+    return "No COMMAND command or key";
+  }
+  return `Command ${command ?? "none"}; key ${key ?? "none"}`;
+}
+
+function timelineRowContextTitle(event: LightstreamerEventEnvelope): string {
+  const definition = timelineCodeDefinition(event);
+  return [
+    `${definition.code} — ${definition.label}`,
+    event.kind,
+    event.client?.id ? `client ${event.client.id}` : null,
+    event.subscription?.id ? `subscription ${event.subscription.id}` : null,
+    event.subscription?.mode ? `mode ${event.subscription.mode}` : null
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+}
+
+function timelineRowAccessibleLabel(event: LightstreamerEventEnvelope): string {
+  const definition = timelineCodeDefinition(event);
+  const item = formatTimelineItem(event);
+  const commandKey = formatTimelineCommandKey(event);
+  return [
+    formatExactLocalTime(event.timestamp),
+    `${definition.code}, ${definition.label}`,
+    item === "—" ? null : `item ${item}`,
+    commandKey === "—" ? null : `command and key ${commandKey}`,
+    formatMarker(event),
+    event.client?.id ? `client ${event.client.id}` : null,
+    event.subscription?.id ? `subscription ${event.subscription.id}` : null,
+    event.subscription?.mode ? `mode ${event.subscription.mode}` : null
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("; ");
+}
+
+function timelineSourceTitle(event: LightstreamerEventEnvelope): string {
+  if (event.synthetic || event.source === "synthetic") {
+    return event.raw?.executionTarget === "captured-wire"
+      ? "Synthetic update replayed locally through the captured page WebSocket"
+      : "Synthetic update replayed through the captured listener";
+  }
+  return event.captureSource === "wire"
+    ? "Captured from the Lightstreamer wire protocol"
+    : "Captured from a Lightstreamer client listener";
+}
+
+function timelineCommandToken(event: LightstreamerEventEnvelope): string {
+  const command = event.update?.command?.trim().toUpperCase();
+  if (command === "ADD" || command === "UPDATE" || command === "DELETE") {
+    return command;
+  }
+  if (event.kind === "subscription-created" || event.kind === "subscription-started") {
+    return "SUBSCRIBE";
+  }
+  if (event.kind === "end-of-snapshot") {
+    return "EOS";
+  }
+  return "OTHER";
+}
+
+function timelineSourceToken(event: LightstreamerEventEnvelope): "listener" | "wire" | "workbench" {
+  if (event.synthetic || event.source === "synthetic") {
+    return "workbench";
+  }
+  return event.captureSource === "wire" ? "wire" : "listener";
+}
+
 function formatMarker(event: LightstreamerEventEnvelope): string {
+  if (
+    (event.synthetic || event.source === "synthetic") &&
+    event.raw?.executionTarget === "captured-wire"
+  ) {
+    return event.update?.isSnapshot ? "wire replay snapshot" : "wire replay live";
+  }
   const source =
     event.synthetic || event.source === "synthetic"
       ? "synthetic"
@@ -4294,7 +6540,19 @@ function formatMarker(event: LightstreamerEventEnvelope): string {
 
 function validationMessage(errors: string[]): string {
   if (errors.includes("Missing original listener target.")) {
-    return "This draft came from wire-level capture, so it can be inspected and edited but cannot be reinjected through an original listener.";
+    return "This capture has no live listener target. Capture a fresh listener update before reinjecting.";
+  }
+  if (errors.includes("Original listener bridge is unavailable.")) {
+    return "The original listener bridge is unavailable. Reconnect or reload the inspected page, then capture a fresh update.";
+  }
+  if (errors.includes("Captured wire bridge is unavailable.")) {
+    return "The captured page WebSocket bridge is unavailable. Reconnect or reload the inspected page, then capture a fresh update.";
+  }
+  if (
+    errors.includes("Draft is not backed by a wire capture target.") ||
+    errors.includes("Missing wire item position.")
+  ) {
+    return "This draft lacks the wire subscription context required for inspected-page stream replay. Capture a fresh complete update.";
   }
 
   return "Draft is missing required COMMAND values. Add a captured subscription, item, command/key, and valid field names before reinjecting.";
@@ -4311,8 +6569,26 @@ function createSyntheticProvenance(event: LightstreamerEventEnvelope): Record<st
     sourceEventId: event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? null,
     targetSubscriptionId: event.subscription?.id ?? null,
     targetListenerId: event.listener?.id ?? null,
-    editedFields: event.update?.changedFields ?? {}
+    executionTarget: event.raw?.executionTarget ?? "captured-listener",
+    deliveryPath: event.raw?.deliveryPath ?? "captured-listener",
+    deliveredToPage: event.raw?.deliveredToPage ?? true,
+    serverContacted: event.raw?.serverContacted ?? false,
+    editedFields: event.raw?.editedFields ?? event.update?.changedFields ?? {}
   };
+}
+
+function createPanelAnalytics(): WorkbenchAnalytics {
+  try {
+    return createGoogleAnalytics({
+      measurementId: import.meta.env.VITE_LSEW_GA_MEASUREMENT_ID ?? "",
+      apiSecret: import.meta.env.VITE_LSEW_GA_API_SECRET ?? "",
+      extensionVersion: chrome.runtime.getManifest().version,
+      storage: window.localStorage,
+      fetcher: globalThis.fetch.bind(globalThis)
+    });
+  } catch {
+    return createDisabledAnalytics();
+  }
 }
 
 async function bootPanel(): Promise<void> {
@@ -4329,7 +6605,11 @@ async function bootPanel(): Promise<void> {
     });
     root.textContent = "Initializing event storage...";
     const store = await createPanelEventStore();
-    panel = renderPanel(root, undefined, { store, visible });
+    panel = renderPanel(root, undefined, {
+      store,
+      visible,
+      analytics: createPanelAnalytics()
+    });
     const bridge = connectPanelBridge({
       onStatusChange: panel.setStatus,
       onCaptureMessage: panel.appendCaptureMessage

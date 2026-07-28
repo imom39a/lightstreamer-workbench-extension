@@ -6,13 +6,22 @@ import {
   PANEL_REINJECT_RESULT,
   PANEL_STATUS_MESSAGE,
   type ReinjectionResult,
+  isContentReinjectResultMessage,
   isPanelRegisterMessage,
   isPanelReinjectRequestMessage,
+  isPanelReinjectResultMessage,
   isRuntimeCaptureMessage
 } from "../bridge/messages";
 
 const panelPortsByTab = new Map<number, chrome.runtime.Port>();
 const tabByPort = new WeakMap<chrome.runtime.Port, number>();
+const pendingReinjections = new Map<
+  string,
+  {
+    tabId: number;
+    port: chrome.runtime.Port;
+  }
+>();
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== PANEL_PORT_NAME) {
@@ -44,6 +53,10 @@ chrome.runtime.onConnect.addListener((port) => {
       return;
     }
 
+    pendingReinjections.set(pendingReinjectionKey(tabId, message.requestId), {
+      tabId,
+      port
+    });
     chrome.tabs.sendMessage(
       tabId,
       {
@@ -51,17 +64,33 @@ chrome.runtime.onConnect.addListener((port) => {
         requestId: message.requestId,
         draft: message.draft
       },
-      (result: ReinjectionResult | undefined) => {
+      (response: unknown) => {
         const runtimeError = chrome.runtime.lastError?.message;
-        port.postMessage({
+        if (!runtimeError && response === true) {
+          return;
+        }
+
+        const resultMessage = {
           type: PANEL_REINJECT_RESULT,
-          result:
-            result ??
-            createBridgeErrorResult(
-              message.requestId,
-              runtimeError ?? "Content script did not return a reinjection result."
-            )
-        });
+          result: response
+        };
+        if (
+          !runtimeError &&
+          isPanelReinjectResultMessage(resultMessage) &&
+          resultMessage.result.requestId === message.requestId
+        ) {
+          deliverReinjectionResult(tabId, resultMessage.result);
+          return;
+        }
+
+        deliverReinjectionResult(
+          tabId,
+          createBridgeErrorResult(
+            message.requestId,
+            runtimeError ??
+              "Content script did not accept the reinjection request. Reload the inspected page and try again."
+          )
+        );
       }
     );
   });
@@ -71,10 +100,24 @@ chrome.runtime.onConnect.addListener((port) => {
     if (tabId !== undefined && panelPortsByTab.get(tabId) === port) {
       panelPortsByTab.delete(tabId);
     }
+    for (const [key, pending] of pendingReinjections) {
+      if (pending.port === port) {
+        pendingReinjections.delete(key);
+      }
+    }
   });
 });
 
 chrome.runtime.onMessage.addListener((message, sender) => {
+  if (isContentReinjectResultMessage(message)) {
+    const tabId = sender.tab?.id;
+    if (tabId === undefined) {
+      return false;
+    }
+    deliverReinjectionResult(tabId, message.result);
+    return false;
+  }
+
   if (!isRuntimeCaptureMessage(message)) {
     return false;
   }
@@ -101,6 +144,25 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
     timestamp: Date.now(),
     error
   };
+}
+
+function deliverReinjectionResult(tabId: number, result: ReinjectionResult): boolean {
+  const key = pendingReinjectionKey(tabId, result.requestId);
+  const pending = pendingReinjections.get(key);
+  if (!pending || pending.tabId !== tabId) {
+    return false;
+  }
+
+  pendingReinjections.delete(key);
+  pending.port.postMessage({
+    type: PANEL_REINJECT_RESULT,
+    result
+  });
+  return true;
+}
+
+function pendingReinjectionKey(tabId: number, requestId: string): string {
+  return JSON.stringify([tabId, requestId]);
 }
 
 function requestActiveSubscriptionSync(tabId: number): void {

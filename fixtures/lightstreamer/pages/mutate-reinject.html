@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mutate and Reinject Lightstreamer Fixture</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 2rem auto;
+        max-width: 60rem;
+        padding: 0 1.5rem;
+      }
+      .card {
+        border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+        border-radius: 0.75rem;
+        padding: 1.25rem;
+      }
+      dt {
+        font-weight: 600;
+      }
+      dd {
+        margin: 0.25rem 0 1rem;
+      }
+      #message-text {
+        font-size: 1.5rem;
+        font-weight: 700;
+      }
+      pre {
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Official Lightstreamer client application</h1>
+      <p>
+        This page is the end-to-end target for Workbench Mutate &amp; Inject. It supports both
+        module-bundled WebSocket capture and an exposed official-client listener mode.
+      </p>
+      <section class="card" aria-label="Current application state">
+        <dl>
+          <dt>Connection</dt>
+          <dd id="connection-state">loading</dd>
+          <dt>Rendered message</dt>
+          <dd id="message-text">waiting for snapshot</dd>
+          <dt>Updates rendered</dt>
+          <dd id="update-count">0</dd>
+        </dl>
+        <pre id="rendered-model" aria-label="Rendered model JSON"></pre>
+      </section>
+      <h2>Application listener events</h2>
+      <ol id="application-events"></ol>
+    </main>
+    <script type="module" src="/mutate-reinject-client.js"></script>
+  </body>
+</html>

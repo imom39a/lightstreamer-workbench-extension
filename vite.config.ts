@@ -1,11 +1,13 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+import { normalizePath } from "vite";
 
 const projectRoot = __dirname;
 const sourceRoot = resolve(projectRoot, "src");
 
 export default defineConfig({
   root: sourceRoot,
+  envDir: projectRoot,
   publicDir: resolve(projectRoot, "public"),
   build: {
     emptyOutDir: true,
@@ -26,9 +28,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    include: [resolve(projectRoot, "tests/**/*.test.ts")],
+    include: [normalizePath(resolve(projectRoot, "tests/**/*.test.ts"))],
     benchmark: {
-      include: [resolve(projectRoot, "benchmarks/**/*.bench.ts")]
+      include: [normalizePath(resolve(projectRoot, "benchmarks/**/*.bench.ts"))]
     }
   }
 });

@@ -15,7 +15,7 @@ import { isReinjectionDraftPayload } from "../src/bridge/messages";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
 describe("new context-bound COMMAND drafts", () => {
-  it("creates schema-derived empty drafts only from captured COMMAND subscription, item, listener, and fields", () => {
+  it("creates schema-derived empty drafts from captured COMMAND subscription, item, and fields", () => {
     const draft = createNewCommandDraftFromContext(commandContext());
 
     expect(draft).toMatchObject({
@@ -47,14 +47,35 @@ describe("new context-bound COMMAND drafts", () => {
     expect(draft?.changedFields).toEqual({});
   });
 
-  it("returns null when captured subscription, item, listener, or COMMAND field schema context is missing", () => {
+  it("returns null when captured subscription, item, or COMMAND field schema context is missing", () => {
     expect(createNewCommandDraftFromContext(commandContext({ subscriptionId: "" }))).toBeNull();
     expect(createNewCommandDraftFromContext(commandContext({ itemName: null, itemPosition: null }))).toBeNull();
-    expect(createNewCommandDraftFromContext(commandContext({ listenerId: null }))).toBeNull();
     expect(createNewCommandDraftFromContext(commandContext({ mode: "MERGE" }))).toBeNull();
     expect(createNewCommandDraftFromContext(commandContext({ fields: ["command", "name"] }))).toBeNull();
     expect(createNewCommandDraftFromContext(commandContext({ fields: ["key", "name"] }))).toBeNull();
     expect(createNewCommandDraftFromContext(commandContext({ fields: [] }))).toBeNull();
+  });
+
+  it("creates a captured-wire draft when wire context has no listener", () => {
+    const context = commandContext({ listenerId: null, captureSource: "wire" });
+    const draft = createNewCommandDraftFromContext(context);
+
+    expect(draft).toMatchObject({
+      sourceEventId: "new-command:sub-command:wire:item-a",
+      captureSource: "wire",
+      target: {
+        subscriptionId: "sub-command",
+        listenerId: null
+      }
+    });
+    if (!draft) {
+      throw new Error("missing wire draft");
+    }
+    const ready = updateDraftKey(updateDraftCommand(draft, "UPDATE"), "alpha");
+    const state = reduceCommandState([capturedAdd()]);
+
+    expect(validateNewCommandDraft(ready, state, context, "captured-wire").valid).toBe(true);
+    expect(validateNewCommandDraft(ready, state, context, "captured-listener").valid).toBe(false);
   });
 
   it("reports blocking validation diagnostics for arbitrary fabrication and malformed draft values", () => {
@@ -144,7 +165,12 @@ describe("new context-bound COMMAND drafts", () => {
       "Bravo"
     );
 
-    expect(isReinjectionDraftPayload(ready)).toBe(true);
+    expect(
+      isReinjectionDraftPayload({
+        ...ready,
+        executionTarget: "captured-listener"
+      })
+    ).toBe(true);
 
     const event = createSyntheticEventFromDraft(ready, {
       requestId: "request-1",

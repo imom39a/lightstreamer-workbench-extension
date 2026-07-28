@@ -1,4 +1,5 @@
 import {
+  CONTENT_REINJECT_RESULT,
   PAGE_CAPTURE_SYNC_REQUEST,
   PAGE_REINJECT_REQUEST,
   RUNTIME_CAPTURE_MESSAGE,
@@ -10,7 +11,7 @@ import {
   isRuntimeReinjectResultMessage
 } from "../bridge/messages";
 
-const PAGE_REINJECT_TIMEOUT_MS = 2500;
+const PAGE_REINJECT_TIMEOUT_MS = 5000;
 
 window.addEventListener("message", (event) => {
   if (event.source !== window || !isCaptureMessage(event.data)) {
@@ -38,7 +39,28 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
       return false;
     }
 
-    forwardReinjectionToPage(message.requestId, message.draft).then(sendResponse);
+    void forwardReinjectionToPage(message.requestId, message.draft).then((result) => {
+      // Return the final result on the original channel for compatibility with
+      // background workers that predate the detached result message.
+      try {
+        sendResponse(result);
+      } catch {
+        // The detached result below remains available if this channel closed.
+      }
+
+      // Also publish it independently. This survives a response channel that
+      // closes while the inspected page is processing the update.
+      chrome.runtime.sendMessage(
+        {
+          type: CONTENT_REINJECT_RESULT,
+          result
+        },
+        () => {
+          void chrome.runtime.lastError;
+        }
+      );
+    });
+
     return true;
   });
 }
@@ -48,33 +70,68 @@ function forwardReinjectionToPage(
   draft: ReinjectionDraftPayload
 ): Promise<ReinjectionResult> {
   return new Promise((resolve) => {
+    let settled = false;
+    let responsePort: MessagePort | null = null;
     const timeout = setTimeout(() => {
-      window.removeEventListener("message", onPageMessage);
-      resolve(createBridgeErrorResult(requestId, "Timed out waiting for page reinjection result."));
+      finish(createBridgeErrorResult(requestId, "Timed out waiting for page reinjection result."));
     }, PAGE_REINJECT_TIMEOUT_MS);
 
-    function onPageMessage(event: MessageEvent) {
-      if (event.source !== window || !isRuntimeReinjectResultMessage(event.data)) {
+    function finish(result: ReinjectionResult) {
+      if (settled) {
         return;
       }
-      if (event.data.result.requestId !== requestId) {
-        return;
-      }
-
+      settled = true;
       clearTimeout(timeout);
       window.removeEventListener("message", onPageMessage);
-      resolve(event.data.result);
+      responsePort?.removeEventListener("message", onPortMessage);
+      responsePort?.close();
+      resolve(result);
+    }
+
+    function acceptPageResult(value: unknown) {
+      if (
+        !isRuntimeReinjectResultMessage(value) ||
+        value.result.requestId !== requestId
+      ) {
+        return;
+      }
+      finish(value.result);
+    }
+
+    function onPageMessage(event: MessageEvent) {
+      if (event.source !== window) {
+        return;
+      }
+      acceptPageResult(event.data);
+    }
+
+    function onPortMessage(event: MessageEvent) {
+      acceptPageResult(event.data);
     }
 
     window.addEventListener("message", onPageMessage);
-    window.postMessage(
-      {
-        type: PAGE_REINJECT_REQUEST,
-        requestId,
-        draft
-      },
-      "*"
-    );
+    const pageRequest = {
+      type: PAGE_REINJECT_REQUEST,
+      requestId,
+      draft
+    };
+
+    if (typeof MessageChannel === "function") {
+      try {
+        const channel = new MessageChannel();
+        responsePort = channel.port1;
+        responsePort.addEventListener("message", onPortMessage);
+        responsePort.start();
+        window.postMessage(pageRequest, "*", [channel.port2]);
+        return;
+      } catch {
+        responsePort?.removeEventListener("message", onPortMessage);
+        responsePort?.close();
+        responsePort = null;
+      }
+    }
+
+    window.postMessage(pageRequest, "*");
   });
 }
 

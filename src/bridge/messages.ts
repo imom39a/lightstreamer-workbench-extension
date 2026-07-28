@@ -8,12 +8,15 @@ export const PANEL_STATUS_MESSAGE = "lsew:panel-status" as const;
 export const PANEL_CAPTURE_MESSAGE = "lsew:panel-capture" as const;
 export const PANEL_REINJECT_REQUEST = "lsew:panel-reinject-request" as const;
 export const CONTENT_REINJECT_REQUEST = "lsew:content-reinject-request" as const;
+export const CONTENT_REINJECT_RESULT = "lsew:content-reinject-result" as const;
 export const PAGE_REINJECT_REQUEST = "lsew:page-reinject-request" as const;
 export const CONTENT_CAPTURE_SYNC_REQUEST = "lsew:content-capture-sync-request" as const;
 export const PAGE_CAPTURE_SYNC_REQUEST = "lsew:page-capture-sync-request" as const;
 export const RUNTIME_REINJECT_RESULT = "lsew:runtime-reinject-result" as const;
 export const PANEL_REINJECT_RESULT = "lsew:panel-reinject-result" as const;
 export const PANEL_VISIBILITY_MESSAGE = "lsew:panel-visibility" as const;
+export const PAGE_REINJECTION_BRIDGE_GLOBAL = "__LSEW_REINJECTION_BRIDGE__" as const;
+export const PAGE_REINJECTION_BRIDGE_VERSION = 1 as const;
 
 export const CAPTURE_KINDS = [
   "client-created",
@@ -42,19 +45,21 @@ export type CapturePayload = JsonObject;
 
 export type ReinjectionFieldValue = string | number | boolean | null;
 export type ReinjectionFields = Record<string, ReinjectionFieldValue>;
+export type PageReinjectionExecutionTarget = "captured-listener" | "captured-wire";
 
 export type ReinjectionDraftPayload = {
   sourceEventId: string;
+  executionTarget: PageReinjectionExecutionTarget;
   target: {
     subscriptionId: string;
-    listenerId: string;
+    listenerId: string | null;
   };
   item: {
     name?: string | null;
     position?: number | null;
   };
-  command: string;
-  key: string;
+  command: string | null;
+  key: string | null;
   fields: ReinjectionFields;
   changedFields: ReinjectionFields;
   isSnapshot: boolean;
@@ -96,6 +101,7 @@ export type ReinjectionResultStatus =
   | "success"
   | "stale-target"
   | "listener-error"
+  | "wire-error"
   | "bridge-error";
 
 export type ReinjectionResult = {
@@ -108,6 +114,11 @@ export type ReinjectionResult = {
 
 export type RuntimeReinjectResultMessage = {
   type: typeof RUNTIME_REINJECT_RESULT;
+  result: ReinjectionResult;
+};
+
+export type ContentReinjectResultMessage = {
+  type: typeof CONTENT_REINJECT_RESULT;
   result: ReinjectionResult;
 };
 
@@ -230,16 +241,19 @@ export function isReinjectionDraftPayload(value: unknown): value is ReinjectionD
 
   return (
     isNonEmptyString(value.sourceEventId) &&
+    isPageReinjectionExecutionTarget(value.executionTarget) &&
     isNonEmptyString(value.target.subscriptionId) &&
-    isNonEmptyString(value.target.listenerId) &&
+    (value.executionTarget === "captured-wire"
+      ? value.target.listenerId === null || isNonEmptyString(value.target.listenerId)
+      : isNonEmptyString(value.target.listenerId)) &&
     (value.item.name === undefined || value.item.name === null || typeof value.item.name === "string") &&
     (value.item.position === undefined ||
       value.item.position === null ||
       (typeof value.item.position === "number" && Number.isInteger(value.item.position))) &&
     (isNonEmptyString(value.item.name) ||
       (typeof value.item.position === "number" && Number.isInteger(value.item.position))) &&
-    isNonEmptyString(value.command) &&
-    isNonEmptyString(value.key) &&
+    isNullableNonEmptyString(value.command) &&
+    isNullableNonEmptyString(value.key) &&
     isReinjectionFields(value.fields) &&
     Object.keys(value.fields).length > 0 &&
     isReinjectionFields(value.changedFields) &&
@@ -247,6 +261,16 @@ export function isReinjectionDraftPayload(value: unknown): value is ReinjectionD
     isRecord(value.provenance) &&
     isJsonValue(value.provenance)
   );
+}
+
+function isPageReinjectionExecutionTarget(
+  value: unknown
+): value is PageReinjectionExecutionTarget {
+  return value === "captured-listener" || value === "captured-wire";
+}
+
+function isNullableNonEmptyString(value: unknown): value is string | null {
+  return value === null || isNonEmptyString(value);
 }
 
 export function isPanelReinjectRequestMessage(value: unknown): value is PanelReinjectRequestMessage {
@@ -296,6 +320,16 @@ export function isRuntimeReinjectResultMessage(
   return (
     isRecord(value) &&
     value.type === RUNTIME_REINJECT_RESULT &&
+    isReinjectionResult(value.result)
+  );
+}
+
+export function isContentReinjectResultMessage(
+  value: unknown
+): value is ContentReinjectResultMessage {
+  return (
+    isRecord(value) &&
+    value.type === CONTENT_REINJECT_RESULT &&
     isReinjectionResult(value.result)
   );
 }
@@ -354,6 +388,7 @@ function isReinjectionResultStatus(value: unknown): value is ReinjectionResultSt
     value === "success" ||
     value === "stale-target" ||
     value === "listener-error" ||
+    value === "wire-error" ||
     value === "bridge-error"
   );
 }

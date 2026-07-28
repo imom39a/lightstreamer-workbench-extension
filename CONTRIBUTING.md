@@ -5,8 +5,8 @@ Thank you for helping improve Lightstreamer Event Workbench. This project is a C
 ## Ground Rules
 
 - Keep the core model Lightstreamer-native. Do not add app-specific business objects to core capture, normalization, or COMMAND state modules.
-- Preserve the local-only privacy posture. Do not add analytics, remote logging, account sign-in, or off-device event upload without an explicit design discussion.
-- Treat synthetic reinjection as local listener-path replay. Do not imply that the extension can inject inbound data into the real Lightstreamer server stream.
+- Preserve the captured-data privacy boundary. Inspected URLs, Lightstreamer addresses, captured values/identifiers, search text, replay drafts, and raw errors must stay local. Changes to the opt-in analytics allowlist, remote logging, account sign-in, or any other off-device upload require an explicit design discussion.
+- Treat synthetic reinjection as local page replay through a captured listener or captured WebSocket. Do not imply that either path injects data into the real Lightstreamer server stream.
 - Respect the official distribution boundary. Source forks are allowed under the project license, but the official Chrome Web Store item is published by maintainers only.
 - Prefer focused pull requests with clear user impact and test coverage.
 - Redact proprietary event payloads, tokens, cookies, customer data, account IDs, and internal URLs before posting issues or PR artifacts.
@@ -78,6 +78,8 @@ Package for local Chrome loading:
 npm run release:package
 ```
 
+Analytics is disabled when the two build variables are absent. To exercise the consent UI and transport locally, copy `.env.analytics.example` to an ignored `.env.local` and use a dedicated GA4 web stream and Measurement Protocol secret. Never use a secret shared with another product. Measurement Protocol secrets are embedded in built client code, so they must be treated as dedicated, revocable anti-spam credentials rather than confidential server credentials.
+
 Then load the extension:
 
 1. Open `chrome://extensions`.
@@ -91,13 +93,32 @@ If the target page created Lightstreamer clients before the extension was loaded
 
 ## Lightstreamer Fixture
 
-The fixture smoke path requires Docker:
+The fixture path requires a project-supported Node.js release (`20.19+` or `22.12+`), Docker Desktop/Engine, Maven on `PATH`, and Chrome for Testing or Chromium. Install the dedicated test browser once with the cross-platform Puppeteer installer:
+
+```bash
+npm run fixture:browser:install
+```
+
+Then run the complete fixture verification:
 
 ```bash
 npm run fixture:test
 ```
 
-This command builds the extension, builds the fixture adapter, starts a local Lightstreamer container, waits for it to become ready, and runs the capture smoke test.
+This command builds the extension and fixture adapter, starts a local Lightstreamer container, runs the static capture assertions, then opens the shipped Workbench panel in a real DevTools session. The browser proof selects a listenerless TLCP update, opens **Mutate & re-inject**, edits it through the panel UI, re-injects the update, exercises both direct and compatibility-fallback delivery, and verifies that the official Lightstreamer client updates the fixture application's rendered UI exactly once per action.
+
+To run only the real-browser proof, use `npm run fixture:test:browser`. Set `LSEW_BROWSER_HEADLESS=false` when a visible Chrome for Testing window is useful for debugging.
+
+To validate the complete orchestration without starting Docker or Maven, run `npm run fixture:test:dry-run`.
+
+The `fixture:*` npm commands use a cross-platform Node runner and work from Windows PowerShell/cmd as well as macOS and Linux shells. Individual lifecycle commands are also available:
+
+```bash
+npm run fixture:build
+npm run fixture:start
+npm run fixture:wait
+npm run fixture:stop
+```
 
 Use the fixture for instrumentation, capture, normalization, and reinjection changes whenever a unit test alone does not prove browser/runtime behavior.
 
@@ -130,6 +151,7 @@ Reviewers should look for:
 - Correctness of Lightstreamer semantics, especially COMMAND ADD/UPDATE/DELETE and snapshot handling.
 - Extension-context boundaries across injected script, content script, background service worker, and DevTools panel.
 - Privacy regressions, expanded permissions, remote calls, or persistence changes.
+- Analytics changes that bypass consent, expand the typed coarse-event allowlist, retain an identifier after opt-out, or expose captured/search/error data.
 - Clear synthetic event labeling and local-only behavior.
 - Tests that cover the changed behavior at the right layer.
 

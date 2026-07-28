@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  PAGE_REINJECTION_BRIDGE_GLOBAL,
+  PAGE_REINJECTION_BRIDGE_VERSION,
   PAGE_REINJECT_REQUEST,
+  RUNTIME_REINJECT_RESULT,
   type CaptureMessage,
+  type ReinjectionDraftPayload,
+  type ReinjectionResult,
   isRuntimeReinjectResultMessage
 } from "../src/bridge/messages";
 import { reduceCommandState } from "../src/core/command-state";
@@ -141,8 +146,11 @@ class FakeItemGroupSubscription {
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
+  static readonly OPEN = 1;
 
   sent: unknown[] = [];
+  readyState = FakeWebSocket.OPEN;
+  onmessage: ((event: MessageEvent) => void) | null = null;
   private messageListeners: Array<(event: MessageEvent) => void> = [];
   private closeListeners: Array<(event: CloseEvent) => void> = [];
 
@@ -166,9 +174,19 @@ class FakeWebSocket {
   }
 
   emitMessage(data: string) {
-    for (const listener of this.messageListeners) {
-      listener({ data } as MessageEvent);
+    this.dispatchEvent({ type: "message", data } as unknown as MessageEvent);
+  }
+
+  dispatchEvent(event: Event) {
+    if (event.type !== "message") {
+      return true;
     }
+    const messageEvent = event as MessageEvent;
+    for (const listener of this.messageListeners) {
+      listener(messageEvent);
+    }
+    this.onmessage?.(messageEvent);
+    return !messageEvent.defaultPrevented;
   }
 
   emitClose(code = 1006, reason = "connection lost", wasClean = false) {
@@ -493,6 +511,208 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       }
     });
   });
+
+  it("locally delivers a mutated wire COMMAND update through the captured WebSocket", () => {
+    FakeWebSocket.instances = [];
+    const messages: unknown[] = [];
+    const pageMessageListeners: Array<(event: MessageEvent) => void> = [];
+    const target = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        if (type === "message") {
+          pageMessageListeners.push(listener);
+        }
+      }
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message);
+    });
+
+    const socket = new target.WebSocket(
+      "wss://push.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    socket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=3&LS_group=snappHome.SNAPP&LS_schema=key+command+modelId+modelValues&LS_mode=COMMAND&LS_snapshot=true"
+    );
+    socket.emitMessage(
+      "SUBCMD,3,1,4,1,2\nU,3,1,MESSENGER_TICKER_6675530.MESSENGER|ADD|MESSENGER|%7B%22messageText%22%3A%22Attention%22%7D"
+    );
+
+    const applicationFrames: string[] = [];
+    socket.addEventListener("message", (event: MessageEvent) => {
+      applicationFrames.push(String(event.data));
+    });
+    const capturedUpdatesBeforeReplay = messages.filter(
+      (message) => (message as CaptureMessage).kind === "item-update"
+    ).length;
+
+    const wireDraft = (modelValues: string): ReinjectionDraftPayload => ({
+      sourceEventId: "event-17",
+      executionTarget: "captured-wire",
+      target: {
+        subscriptionId: "subscription-1",
+        listenerId: null
+      },
+      item: {
+        name: "snappHome.SNAPP",
+        position: 1
+      },
+      command: "ADD",
+      key: "MESSENGER_TICKER_6675530.MESSENGER",
+      fields: {
+        key: "MESSENGER_TICKER_6675530.MESSENGER",
+        command: "ADD",
+        modelId: "MESSENGER",
+        modelValues
+      },
+      changedFields: { modelValues },
+      isSnapshot: true,
+      provenance: {
+        source: "clone",
+        sourceEventKind: "item-update",
+        sourceSynthetic: false
+      }
+    });
+    const sendWireReplay = (requestId: string, modelValues: string) => {
+      pageMessageListeners[0]?.({
+        source: target,
+        data: {
+          type: PAGE_REINJECT_REQUEST,
+          requestId,
+          draft: wireDraft(modelValues)
+        }
+      } as unknown as MessageEvent);
+    };
+
+    sendWireReplay("wire-request-1", '{"messageText":"!!!!Attention | # $ %"}');
+
+    expect(applicationFrames).toEqual([
+      "U,3,1,MESSENGER_TICKER_6675530.MESSENGER|ADD|MESSENGER|%7B%22messageText%22%3A%22!!!!Attention%20%7C%20%23%20%24%20%25%22%7D\r\n"
+    ]);
+    expect(
+      messages.filter((message) => (message as CaptureMessage).kind === "item-update")
+    ).toHaveLength(capturedUpdatesBeforeReplay);
+    expect(
+      messages.some(
+        (message) =>
+          isRuntimeReinjectResultMessage(message) &&
+          message.result.requestId === "wire-request-1" &&
+          message.result.status === "success"
+      )
+    ).toBe(true);
+
+    applicationFrames.length = 0;
+    sendWireReplay("wire-request-invalid-unicode", "\ud800");
+    expect(applicationFrames).toEqual([]);
+    expect(
+      messages.some(
+        (message) =>
+          isRuntimeReinjectResultMessage(message) &&
+          message.result.requestId === "wire-request-invalid-unicode" &&
+          message.result.status === "wire-error"
+      )
+    ).toBe(true);
+
+    applicationFrames.length = 0;
+    const directBridge = (target as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] as {
+      version: number;
+      reinject(requestId: string, draft: ReinjectionDraftPayload): ReinjectionResult;
+    };
+    expect(directBridge.version).toBe(PAGE_REINJECTION_BRIDGE_VERSION);
+    const directResult = directBridge.reinject(
+      "wire-request-direct",
+      wireDraft('{"messageText":"Direct inspected-page delivery"}')
+    );
+    expect(directResult).toMatchObject({
+      requestId: "wire-request-direct",
+      ok: true,
+      status: "success"
+    });
+    expect(applicationFrames).toEqual([
+      "U,3,1,MESSENGER_TICKER_6675530.MESSENGER|ADD|MESSENGER|%7B%22messageText%22%3A%22Direct%20inspected-page%20delivery%22%7D\r\n"
+    ]);
+  });
+
+  it.each(["socket close", "subscription delete"])(
+    "rejects captured-wire replay after %s without dispatching an application frame",
+    (retirement) => {
+      FakeWebSocket.instances = [];
+      const messages: unknown[] = [];
+      const pageMessageListeners: Array<(event: MessageEvent) => void> = [];
+      const target = {
+        WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+        addEventListener(type: string, listener: (event: MessageEvent) => void) {
+          if (type === "message") {
+            pageMessageListeners.push(listener);
+          }
+        }
+      };
+
+      installLightstreamerInstrumentation(target, (message) => {
+        messages.push(message);
+      });
+
+      const socket = new target.WebSocket(
+        "wss://push.example.test/lightstreamer"
+      ) as unknown as FakeWebSocket;
+      socket.send(
+        "LS_reqId=1&LS_op=add&LS_subId=3&LS_group=snappHome.SNAPP&LS_schema=key+command+modelId+modelValues&LS_mode=COMMAND&LS_snapshot=true"
+      );
+      socket.emitMessage(
+        "SUBCMD,3,1,4,1,2\nU,3,1,MESSENGER_TICKER_6675530.MESSENGER|ADD|MESSENGER|%7B%22messageText%22%3A%22Attention%22%7D"
+      );
+
+      const applicationFrames: string[] = [];
+      socket.addEventListener("message", (event: MessageEvent) => {
+        applicationFrames.push(String(event.data));
+      });
+      if (retirement === "socket close") {
+        socket.emitClose();
+      } else {
+        socket.send("LS_reqId=2&LS_op=delete&LS_subId=3");
+      }
+
+      pageMessageListeners[0]?.({
+        source: target,
+        data: {
+          type: PAGE_REINJECT_REQUEST,
+          requestId: `stale-${retirement}`,
+          draft: {
+            sourceEventId: "event-17",
+            executionTarget: "captured-wire",
+            target: { subscriptionId: "subscription-1", listenerId: null },
+            item: { name: "snappHome.SNAPP", position: 1 },
+            command: "ADD",
+            key: "MESSENGER_TICKER_6675530.MESSENGER",
+            fields: {
+              key: "MESSENGER_TICKER_6675530.MESSENGER",
+              command: "ADD",
+              modelId: "MESSENGER",
+              modelValues: '{"messageText":"mutated"}'
+            },
+            changedFields: { modelValues: '{"messageText":"mutated"}' },
+            isSnapshot: true,
+            provenance: {
+              source: "clone",
+              sourceEventKind: "item-update",
+              sourceSynthetic: false
+            }
+          }
+        }
+      } as unknown as MessageEvent);
+
+      expect(applicationFrames).toEqual([]);
+      expect(
+        messages.some(
+          (message) =>
+            isRuntimeReinjectResultMessage(message) &&
+            message.result.requestId === `stale-${retirement}` &&
+            message.result.status === "stale-target"
+        )
+      ).toBe(true);
+    }
+  );
 
   it("keeps fallback subscription identities unique across Lightstreamer connections", () => {
     FakeWebSocket.instances = [];
@@ -1093,8 +1313,13 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     client.subscribe(subscription);
     subscription.addListener(listener);
 
+    const responsePort = {
+      postMessage: vi.fn(),
+      close: vi.fn()
+    } as unknown as MessagePort;
     messageListeners[0]({
       source: target,
+      ports: [responsePort],
       data: {
         type: PAGE_REINJECT_REQUEST,
         requestId: "request-1",
@@ -1118,6 +1343,128 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         (message) =>
           isRuntimeReinjectResultMessage(message) &&
           message.result.requestId === "request-1" &&
+          message.result.status === "success"
+      )
+    ).toBe(true);
+    expect(responsePort.postMessage).toHaveBeenCalledWith({
+      type: RUNTIME_REINJECT_RESULT,
+      result: expect.objectContaining({
+        requestId: "request-1",
+        ok: true,
+        status: "success"
+      })
+    });
+    expect(responsePort.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves subscription field positions for listener-path reinjection", () => {
+    const { target, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["scenario"],
+      ["command", "key", "price"]
+    );
+    const received: Record<string, unknown> = {};
+    const listener = {
+      onItemUpdate(update: {
+        forEachChangedField(
+          iterator: (fieldName: string, fieldPos: number, value: unknown) => void
+        ): void;
+        getValue(fieldNameOrPos: string | number): unknown;
+        isValueChanged(fieldNameOrPos: string | number): boolean;
+      }) {
+        update.forEachChangedField((fieldName, fieldPos, value) => {
+          received.fieldName = fieldName;
+          received.fieldPos = fieldPos;
+          received.value = value;
+          received.valueByPosition = update.getValue(fieldPos);
+          received.changedByPosition = update.isValueChanged(fieldPos);
+        });
+        received.commandByPosition = update.getValue(1);
+        received.keyByPosition = update.getValue(2);
+      }
+    };
+
+    client.subscribe(subscription);
+    subscription.addListener(listener);
+
+    messageListeners[0]({
+      source: target,
+      data: {
+        type: PAGE_REINJECT_REQUEST,
+        requestId: "request-positional-fields",
+        draft: createValidPageDraft()
+      }
+    } as unknown as MessageEvent);
+
+    expect(received).toEqual({
+      fieldName: "price",
+      fieldPos: 3,
+      value: 101,
+      valueByPosition: 101,
+      changedByPosition: true,
+      commandByPosition: "UPDATE",
+      keyByPosition: "item-1"
+    });
+  });
+
+  it("reinjects non-COMMAND fields without inventing command or key values", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription("MERGE", ["portfolio"], ["price", "status"]);
+    const receivedFields: Record<string, unknown> = {};
+    const receivedChangedFields: Record<string, unknown> = {};
+    const listener = {
+      onItemUpdate(update: {
+        forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void): void;
+        forEachChangedField(
+          iterator: (fieldName: string, fieldPos: number, value: unknown) => void
+        ): void;
+        getValue(fieldName: string): unknown;
+      }) {
+        update.forEachField((fieldName, _fieldPos, value) => {
+          receivedFields[fieldName] = value;
+        });
+        update.forEachChangedField((fieldName, _fieldPos, value) => {
+          receivedChangedFields[fieldName] = value;
+        });
+        receivedFields.commandValue = update.getValue("command");
+        receivedFields.keyValue = update.getValue("key");
+      }
+    };
+
+    client.subscribe(subscription);
+    subscription.addListener(listener);
+
+    messageListeners[0]({
+      source: target,
+      data: {
+        type: PAGE_REINJECT_REQUEST,
+        requestId: "request-merge",
+        draft: {
+          ...createValidPageDraft(),
+          sourceEventId: "event-merge",
+          command: null,
+          key: null,
+          fields: { price: 101, status: "open" },
+          changedFields: { price: 101 }
+        }
+      }
+    } as unknown as MessageEvent);
+
+    expect(receivedFields).toEqual({
+      price: 101,
+      status: "open",
+      commandValue: null,
+      keyValue: null
+    });
+    expect(receivedChangedFields).toEqual({ price: 101 });
+    expect(
+      messages.some(
+        (message) =>
+          isRuntimeReinjectResultMessage(message) &&
+          message.result.requestId === "request-merge" &&
           message.result.status === "success"
       )
     ).toBe(true);
@@ -1191,6 +1538,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
 function createValidPageDraft() {
   return {
     sourceEventId: "event-1",
+    executionTarget: "captured-listener" as const,
     target: {
       subscriptionId: "subscription-1",
       listenerId: "listener-1"

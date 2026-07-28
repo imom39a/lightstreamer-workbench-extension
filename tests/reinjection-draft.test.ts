@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   createDraftFromEvent,
+  createSourceReplayDraft,
   setManualChangedFieldsOverride,
   updateDraftField,
+  validateDraftForExecutionTarget,
   validateEditableDraft,
   validateReinjectionDraft
 } from "../src/core/reinjection-draft";
@@ -38,6 +40,8 @@ describe("reinjection drafts", () => {
     expect(draft?.sourceEventId).toBe("event-1");
     expect(draft?.target.subscriptionId).toBe("subscription-1");
     expect(draft?.target.listenerId).toBe("listener-1");
+    expect(draft?.subscriptionMode).toBe("COMMAND");
+    expect(draft?.captureSource).toBe("listener");
     expect(draft?.command).toBe("ADD");
     expect(draft?.key).toBe("alpha");
     expect(draft?.fields).toEqual({ command: "ADD", key: "alpha", qty: 10, status: "open" });
@@ -55,6 +59,26 @@ describe("reinjection drafts", () => {
     expect(edited.changedFields).toEqual({ qty: 11 });
   });
 
+  it("creates an unchanged source replay after the staged draft has been edited", () => {
+    const source = createDraftFromEvent(itemUpdate());
+    if (!source) {
+      throw new Error("missing draft");
+    }
+    const edited = updateDraftField(source, "qty", 11);
+    edited.command = "UPDATE";
+    edited.key = "different";
+    edited.isSnapshot = false;
+
+    const replay = createSourceReplayDraft(edited);
+
+    expect(replay.fields).toEqual(source.sourceFields);
+    expect(replay.changedFields).toEqual(source.originalChangedFields);
+    expect(replay.command).toBe("ADD");
+    expect(replay.key).toBe("alpha");
+    expect(replay.isSnapshot).toBe(true);
+    expect(edited.fields.qty).toBe(11);
+  });
+
   it("preserves manual changed-fields override when active", () => {
     const draft = createDraftFromEvent(itemUpdate());
     if (!draft) {
@@ -68,7 +92,7 @@ describe("reinjection drafts", () => {
     expect(edited.changedFields).toEqual({ status: "manual" });
   });
 
-  it("allows editing without a listener but keeps reinjection validation strict", () => {
+  it("allows editing without a listener but requires a captured page delivery path", () => {
     const draft = createDraftFromEvent(
       itemUpdate({
         listener: undefined,
@@ -88,6 +112,67 @@ describe("reinjection drafts", () => {
 
     expect(result.valid).toBe(false);
     expect(result.errors).toContain("Missing original listener target.");
+    expect(validateDraftForExecutionTarget(draft, "captured-wire").valid).toBe(false);
+  });
+
+  it("validates listener and wire execution targets independently", () => {
+    const listenerDraft = createDraftFromEvent(itemUpdate());
+    const wireDraft = createDraftFromEvent(
+      itemUpdate({
+        captureSource: "wire",
+        listener: undefined
+      })
+    );
+
+    expect(
+      validateDraftForExecutionTarget(listenerDraft, "captured-listener", {
+        bridgeAvailable: true
+      }).valid
+    ).toBe(true);
+    expect(
+      validateDraftForExecutionTarget(listenerDraft, "captured-listener", {
+        bridgeAvailable: false
+      }).errors
+    ).toContain("Original listener bridge is unavailable.");
+    expect(validateDraftForExecutionTarget(wireDraft, "captured-listener").valid).toBe(false);
+    expect(
+      validateDraftForExecutionTarget(wireDraft, "captured-wire", {
+        bridgeAvailable: true
+      }).valid
+    ).toBe(true);
+    expect(
+      validateDraftForExecutionTarget(wireDraft, "captured-wire", {
+        bridgeAvailable: false
+      }).errors
+    ).toContain("Captured wire bridge is unavailable.");
+  });
+
+  it("requires command and key only for COMMAND-mode drafts", () => {
+    const mergeDraft = createDraftFromEvent(
+      itemUpdate({
+        subscription: { id: "subscription-1", mode: "MERGE" },
+        update: {
+          isSnapshot: false,
+          fields: { price: 101 },
+          changedFields: { price: 101 }
+        }
+      })
+    );
+    const commandDraft = createDraftFromEvent(
+      itemUpdate({
+        update: {
+          isSnapshot: false,
+          fields: { price: 101 },
+          changedFields: { price: 101 }
+        }
+      })
+    );
+
+    expect(validateDraftForExecutionTarget(mergeDraft, "captured-listener").valid).toBe(true);
+    expect(validateDraftForExecutionTarget(commandDraft, "captured-listener").errors).toEqual([
+      "Missing COMMAND command value.",
+      "Missing COMMAND key value."
+    ]);
   });
 
   it("fails editable validation for empty field names", () => {

@@ -102,7 +102,6 @@ if (scene === "command-state") {
 } else if (scene === "timeline-detail") {
   clickView("Timeline");
   clickRow(".event-row", "UPDATE/alpha");
-  clickButton(".clone-button");
 } else if (scene === "new-command") {
   clickView("COMMAND State");
   clickRow(".command-current-row", "alpha");
@@ -555,8 +554,8 @@ function realAppGalleryOverlaySvg() {
   <text x="996" y="534" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Compare current values and</text>
   <text x="996" y="562" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">recent changes at a glance.</text>
   <rect x="966" y="606" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
-  <text x="996" y="654" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">3. Clone for replay</text>
-  <text x="996" y="694" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Start a synthetic local update</text>
+  <text x="996" y="654" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">3. Re-inject or edit</text>
+  <text x="996" y="694" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Replay directly or mutate first</text>
   <text x="996" y="722" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">from the captured event.</text>
 </svg>`;
 }

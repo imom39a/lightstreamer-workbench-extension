@@ -4,16 +4,20 @@ import {
   CAPTURE_NAMESPACE,
   CAPTURE_VERSION,
   CONTENT_CAPTURE_SYNC_REQUEST,
+  CONTENT_REINJECT_RESULT,
   PAGE_CAPTURE_SYNC_REQUEST,
   PANEL_REINJECT_REQUEST,
   PANEL_VISIBILITY_MESSAGE,
+  RUNTIME_REINJECT_RESULT,
   type ReinjectionDraftPayload,
   createCaptureMessage,
   isCaptureMessage,
   isContentCaptureSyncRequestMessage,
+  isContentReinjectResultMessage,
   isPageCaptureSyncRequestMessage,
   isPanelReinjectRequestMessage,
-  isPanelVisibilityMessage
+  isPanelVisibilityMessage,
+  isRuntimeReinjectResultMessage
 } from "../src/bridge/messages";
 import { createStableIdAllocator } from "../src/core/ids";
 
@@ -96,6 +100,36 @@ describe("bridge reinjection message validation", () => {
     ).toBe(true);
   });
 
+  it("accepts null COMMAND metadata for a non-COMMAND listener payload", () => {
+    const draft = createValidReinjectionDraftPayload();
+    draft.command = null;
+    draft.key = null;
+    draft.fields = { price: 101 };
+    draft.changedFields = { price: 101 };
+
+    expect(
+      isPanelReinjectRequestMessage({
+        type: PANEL_REINJECT_REQUEST,
+        requestId: "request-merge",
+        draft
+      })
+    ).toBe(true);
+  });
+
+  it("rejects empty COMMAND metadata strings while allowing null", () => {
+    const draft = createValidReinjectionDraftPayload();
+    draft.command = "";
+    draft.key = null;
+
+    expect(
+      isPanelReinjectRequestMessage({
+        type: PANEL_REINJECT_REQUEST,
+        requestId: "request-empty-command",
+        draft
+      })
+    ).toBe(false);
+  });
+
   it("rejects reinjection requests missing the target listener id", () => {
     const draft = createValidReinjectionDraftPayload();
     draft.target.listenerId = "";
@@ -109,6 +143,20 @@ describe("bridge reinjection message validation", () => {
     ).toBe(false);
   });
 
+  it("accepts a listenerless captured-wire request with explicit page delivery", () => {
+    const draft = createValidReinjectionDraftPayload();
+    draft.executionTarget = "captured-wire";
+    draft.target.listenerId = null;
+
+    expect(
+      isPanelReinjectRequestMessage({
+        type: PANEL_REINJECT_REQUEST,
+        requestId: "request-wire",
+        draft
+      })
+    ).toBe(true);
+  });
+
   it("rejects reinjection requests missing usable item context", () => {
     const draft = createValidReinjectionDraftPayload();
     draft.item = { name: null, position: null };
@@ -118,6 +166,46 @@ describe("bridge reinjection message validation", () => {
         type: PANEL_REINJECT_REQUEST,
         requestId: "request-1",
         draft
+      })
+    ).toBe(false);
+  });
+
+  it("accepts a wire delivery error result across the runtime boundary", () => {
+    expect(
+      isRuntimeReinjectResultMessage({
+        type: RUNTIME_REINJECT_RESULT,
+        result: {
+          requestId: "request-wire-error",
+          ok: false,
+          status: "wire-error",
+          timestamp: 123,
+          error: "Captured wire field schema is unavailable."
+        }
+      })
+    ).toBe(true);
+  });
+
+  it("accepts a content-script result relay and rejects malformed status values", () => {
+    expect(
+      isContentReinjectResultMessage({
+        type: CONTENT_REINJECT_RESULT,
+        result: {
+          requestId: "request-relay",
+          ok: true,
+          status: "success",
+          timestamp: 123
+        }
+      })
+    ).toBe(true);
+    expect(
+      isContentReinjectResultMessage({
+        type: CONTENT_REINJECT_RESULT,
+        result: {
+          requestId: "request-relay",
+          ok: false,
+          status: "not-a-status",
+          timestamp: 123
+        }
       })
     ).toBe(false);
   });
@@ -137,6 +225,7 @@ describe("stable id allocator", () => {
 function createValidReinjectionDraftPayload(): ReinjectionDraftPayload {
   return {
     sourceEventId: "event-1",
+    executionTarget: "captured-listener",
     target: {
       subscriptionId: "subscription-1",
       listenerId: "listener-1"

@@ -44,6 +44,7 @@ Key features:
 - New COMMAND update editor with schema-based fields, validation diagnostics, and listener-target checks.
 - WebSocket/TLCP fallback diagnostics when primary Web Client instrumentation is unavailable.
 - Current-tab in-memory state only; no backend service is required.
+- Optional, consent-based coarse feature analytics that never includes inspected-page or captured Lightstreamer data.
 
 This extension is intended for developers and QA engineers who need to understand and reproduce Lightstreamer COMMAND subscription behavior inside Chrome DevTools.
 ```
@@ -97,20 +98,23 @@ High-volume debugging and DevTools panel readability release.
 - Fixes help popups so tooltip text is visible on hover/focus and avoids viewport clipping.
 - Reorganizes event detail sections so raw diagnostics and useful update payloads are easier to inspect.
 - Improves COMMAND capture synchronization and keeps the Timeline current during live capture.
+- Adds optional coarse usage analytics with an in-panel disclosure, explicit consent, and immediate opt-out.
 ```
 
 ## Privacy Practices Draft
 
 ```text
-Lightstreamer Event Workbench processes inspected-page Lightstreamer event data locally inside the browser DevTools session. Captured events are kept in memory for the current tab/session and are not transmitted to the developer, this extension's authors, or any external service by the extension.
+Lightstreamer Event Workbench processes inspected-page Lightstreamer event data locally inside the browser DevTools session. Captured events are kept in temporary storage for the current tab/session and are not transmitted to the developer, this extension's authors, Google Analytics, or any other external service by the extension.
 
-The extension does not use analytics, advertising, remote logging, or account sign-in. It does not sell or transfer user data. Host/page access is used only to instrument the inspected page's Lightstreamer Web Client activity and to support developer-controlled local synthetic reinjection through captured listener callbacks.
+The extension offers optional coarse product-usage analytics through a dedicated Google Analytics 4 property. Analytics remains off until the user accepts a prominent disclosure in the DevTools panel. When enabled, events are limited to workbench panel/view use, whether Lightstreamer was detected, whether search or local replay was used, replay target/result categories, a bucketed captured-event count, extension version, session timing, and a random installation identifier. It never sends inspected URLs, Lightstreamer addresses, captured values or identifiers, item/field/key names, search text, replay drafts, raw errors, or stack traces. Advertising consent is denied and analytics is used only to improve the extension. Turning analytics off deletes the identifier and blocks future requests. The analytics integration adds no Chrome permission.
+
+The extension does not use advertising, remote error logging, or account sign-in. It does not sell user data. Required host/page access is used to instrument the inspected page's Lightstreamer Web Client activity and to support developer-controlled local synthetic reinjection.
 ```
 
 Privacy questionnaire note:
 
 ```text
-Recommended answer for data handling review: no off-device collection or sale. The extension locally processes website content/event payloads from the inspected page, so review Chrome Web Store privacy fields carefully and disclose local processing if prompted.
+Declare the extension's opt-in collection of coarse product interaction/user-activity metrics and the random analytics installation identifier. Disclose Google Analytics as the processor/recipient and product improvement as the sole use. Do not declare inspected URLs, browsing history, website content, Lightstreamer payloads, authentication information, or personal communications as transmitted: those remain local. Certify no sale, no advertising use, and no use outside the extension's single purpose. The privacy policy, listing, dashboard privacy fields, and in-product disclosure must remain identical in substance.
 ```
 
 ## Reviewer Test Instructions
@@ -119,6 +123,8 @@ Recommended answer for data handling review: no off-device collection or sale. T
 No account or login is required.
 
 This is a Chrome DevTools extension. After installing it, open Chrome DevTools on a page that uses the official Lightstreamer Web Client and select the "Lightstreamer Event Workbench" panel. The panel stays idle until the inspected page creates Lightstreamer clients/subscriptions. Captured updates appear in the Timeline view; COMMAND subscriptions can be inspected in the COMMAND State view.
+
+On the first panel open in an analytics-configured official build, a disclosure explains the exact coarse metrics and excluded inspected data. **Not now** keeps analytics disabled. **Allow analytics** begins the documented coarse collection; the toolbar control can turn analytics off again, delete the random identifier, and block later requests.
 
 For deterministic local verification from the repository:
 
@@ -139,4 +145,8 @@ For deterministic local verification from the repository:
 - [ ] Optionally upload `store-listing/promo/marquee-promo-tile.png`.
 - [ ] Paste the summary and detailed description from this file.
 - [ ] Review the privacy practices answer before submission.
+- [ ] Declare the opt-in product-usage collection and Google Analytics recipient in the dashboard privacy fields.
+- [ ] Confirm the analytics-enabled build adds no Chrome permission and contacts only the documented GA4 collection endpoint.
+- [ ] Confirm the GA4 property has advertising features disabled and only the documented custom dimensions.
+- [ ] Verify **Not now**, allow, and opt-out/revocation paths in a packaged build.
 - [ ] Confirm distribution, support URL, homepage URL, and staged publishing settings in the dashboard.

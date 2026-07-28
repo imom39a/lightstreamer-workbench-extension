@@ -515,6 +515,27 @@ describe("COMMAND State panel workbench", () => {
     controller.dispose();
   });
 
+  it("keeps the COMMAND search input mounted while filtering", () => {
+    clickCommandState();
+    const searchInput = document.querySelector<HTMLInputElement>(".command-search");
+    if (!searchInput) {
+      throw new Error("missing COMMAND search input");
+    }
+
+    searchInput.focus();
+    searchInput.value = "alpha";
+    searchInput.setSelectionRange(5, 5);
+    searchInput.scrollLeft = 13;
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(document.querySelector(".command-search")).toBe(searchInput);
+    expect(document.activeElement).toBe(searchInput);
+    expect(searchInput.selectionStart).toBe(5);
+    expect(searchInput.selectionEnd).toBe(5);
+    expect(searchInput.scrollLeft).toBe(13);
+    expect(text(".command-current-rows")).toContain("alpha");
+  });
+
   it("reuses COMMAND lifecycle search projections across renders and invalidates on mutation", async () => {
     const stringify = vi.spyOn(JSON, "stringify");
     try {
@@ -721,6 +742,53 @@ describe("COMMAND State panel workbench", () => {
         (row) => row.dataset.eventId
       )
     ).toEqual(visibleBefore);
+  });
+
+  it("anchors a selected full COMMAND update window during live appends", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const historyStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 1; index <= 32; index += 1) {
+      historyStore.append(
+        event(`selected-anchor-${index}`, {
+          command: index === 1 ? "ADD" : "UPDATE",
+          key: "selected-anchor-key"
+        })
+      );
+    }
+    renderPanel(root, undefined, { store: historyStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    const visibleBefore = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".command-update-row")
+    ).map((row) => row.dataset.eventId);
+    document.querySelector<HTMLButtonElement>(".command-update-row")?.click();
+    const selectedEventId = document.querySelector<HTMLButtonElement>(
+      '.command-update-row[data-selected="true"]'
+    )?.dataset.eventId;
+
+    for (let index = 33; index <= 35; index += 1) {
+      historyStore.append(
+        event(`selected-anchor-${index}`, {
+          command: "UPDATE",
+          key: "selected-anchor-key"
+        })
+      );
+    }
+    await flushInteractionRender();
+
+    expect(
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".command-update-row")).map(
+        (row) => row.dataset.eventId
+      )
+    ).toEqual(visibleBefore);
+    expect(
+      document.querySelector<HTMLButtonElement>('.command-update-row[data-selected="true"]')?.dataset
+        .eventId
+    ).toBe(selectedEventId);
+    expect(text(".command-detail-pane")).toContain(`Update ${selectedEventId}`);
   });
 
   it("preserves a partial COMMAND history anchor across append, Latest, and Older", () => {
@@ -945,8 +1013,10 @@ describe("COMMAND State panel workbench", () => {
     quietStore.append(started);
     renderPanel(root, undefined, { store: quietStore, bridge: { reinjectDraft } });
 
-    expect(text(".event-feed")).toContain("subscription-snapshot");
-    expect(text(".event-feed")).toContain("subscription-19");
+    expect(text(".event-feed")).toContain("S~");
+    expect(text(".event-feed")).toContain("quiet.orders");
+    expect(text(".event-feed")).not.toContain("subscription-19");
+    expect(document.querySelector<HTMLElement>(".event-row")?.title).toContain("subscription subscription-19");
 
     clickCommandState();
 
@@ -1106,12 +1176,54 @@ describe("COMMAND State panel workbench", () => {
     expect(document.activeElement?.textContent).toContain("command-1");
   });
 
+  it("keeps the same COMMAND key selected when its live status changes", async () => {
+    clickCommandState();
+    clickRowByText(".command-current-row", "alpha");
+
+    store.append(event("event-8", { command: "DELETE", key: "alpha" }));
+    await flushInteractionRender();
+
+    expect(selectedTexts(".command-current-row")).toHaveLength(1);
+    expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
+    expect(
+      document.querySelector<HTMLButtonElement>('.command-current-row[data-selected="true"]')?.dataset
+        .status
+    ).toBe("deleted");
+    expect(text(".command-detail-pane")).toContain("Key alpha - deleted");
+  });
+
+  it("keeps a transitioned COMMAND key visible across a full key window", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const liveStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    for (let index = 0; index < 70; index += 1) {
+      liveStore.append(event(`window-${index}`, { key: `key-${index}` }));
+    }
+    renderPanel(root, undefined, { store: liveStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    clickRowByText(".command-current-row", "key-0");
+
+    liveStore.append(event("window-delete", { command: "DELETE", key: "key-0" }));
+    await flushInteractionRender();
+
+    const selected = document.querySelector<HTMLButtonElement>(
+      '.command-current-row[data-selected="true"]'
+    );
+    expect(selected?.dataset.key).toBe("key-0");
+    expect(selected?.dataset.status).toBe("deleted");
+    expect(text(".command-key-window-status")).toContain("61–70 of 70");
+    expect(text(".command-detail-pane")).toContain("Key key-0 - deleted");
+  });
+
   it("renders help tooltips in a clamped overlay for hover and focus", () => {
     clickCommandState();
 
     const helpText = "The latest field values for this active key after applying its lifecycle.";
     const helpIcon = document.querySelector<HTMLButtonElement>(
-      '.command-help-icon[aria-label^="Current fields:"]'
+      '.command-help-icon[aria-label^="Current item fields:"]'
     );
     if (!helpIcon) {
       throw new Error("missing help trigger");
@@ -1169,7 +1281,7 @@ describe("COMMAND State panel workbench", () => {
     clickCommandState();
 
     const helpIcon = document.querySelector<HTMLButtonElement>(
-      '.command-help-icon[aria-label^="Current fields:"]'
+      '.command-help-icon[aria-label^="Current item fields:"]'
     );
     if (!helpIcon) {
       throw new Error("missing tooltip trigger");
@@ -1208,7 +1320,7 @@ describe("COMMAND State panel workbench", () => {
 
     const detailText = text(".command-detail-pane");
     expect(detailText).toContain("Key alpha - active");
-    expect(detailText).toContain("Current fields");
+    expect(detailText).toContain("Current item fields");
     expect(document.querySelector(".command-lifecycle")?.getAttribute("aria-label")).toBe(
       "Selected key lifecycle"
     );
@@ -1274,7 +1386,8 @@ describe("COMMAND State panel workbench", () => {
     clickRowByText(".command-update-row", "event-2");
 
     expect(text(".command-detail-pane")).toContain("Update event-2");
-    expect(text(".command-detail-pane")).toContain("Update payload");
+    expect(text(".command-detail-pane")).toContain("Current item fields");
+    expect(text(".command-detail-pane")).not.toContain("Update payload");
     expect(selectedTexts(".command-current-row")).toHaveLength(1);
     expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
     expect(selectedTexts(".command-update-row")).toHaveLength(1);
@@ -1286,6 +1399,225 @@ describe("COMMAND State panel workbench", () => {
     expect(selectedTexts(".command-current-row")).toHaveLength(1);
     expect(selectedTexts(".command-current-row")[0]).toContain("alpha");
     expect(selectedTexts(".command-update-row")).toHaveLength(0);
+  });
+
+  it("keeps new-key creation in the keys pane and selected-update replay in detail", () => {
+    clickCommandState();
+
+    expect(text(".command-current-table .new-command-button")).toContain("New COMMAND key");
+    expect(document.querySelector(".command-detail-pane .new-command-button")).toBeNull();
+
+    clickRowByText(".command-update-row", "event-2");
+
+    expect(text(".command-detail-pane")).toContain("Update event-2");
+    expect(text(".command-detail-pane .replay-source-button")).toBe("Re-inject");
+    expect(text(".command-detail-pane .mutate-inject-button")).toBe("Mutate & re-inject…");
+    expect(document.querySelector(".command-detail-pane .clone-button")).toBeNull();
+
+    button(".command-current-table .new-command-button").click();
+
+    expect(text(".command-detail-pane")).toContain("New COMMAND key");
+    expect(document.querySelector(".command-detail-pane .command-draft-controls")).not.toBeNull();
+    expect(document.querySelector(".command-detail-pane .replay-source-button")).toBeNull();
+  });
+
+  it("re-injects the unchanged selected COMMAND update through its captured listener", async () => {
+    reinjectDraft.mockResolvedValue({
+      requestId: "command-source-replay",
+      ok: true,
+      status: "success",
+      timestamp: 1_700_000_002_000
+    });
+    clickCommandState();
+    clickRowByText(".command-update-row", "event-2");
+
+    expect(text(".command-detail-pane .replay-source-button")).toBe("Re-inject");
+    expect(text(".command-detail-pane .mutate-inject-button")).toBe("Mutate & re-inject…");
+
+    button(".command-detail-pane .replay-source-button").click();
+    await Promise.resolve();
+    await flushInteractionRender();
+
+    expect(reinjectDraft).toHaveBeenCalledTimes(1);
+    expect(reinjectDraft.mock.calls[0]?.[0]).toMatchObject({
+      sourceEventId: "event-2",
+      command: "UPDATE",
+      key: "alpha",
+      fields: { qty: "2" }
+    });
+    expect(selectedTexts(".command-update-row")[0]).toContain("synthetic-command-source-replay");
+    expect(text(".command-detail-pane")).toContain("Source update delivered");
+  });
+
+  it("does not replay a wire-captured COMMAND update without a live page target", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const wireStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const captured = event("wire-command-replay", { command: "ADD", key: "wire-key" });
+    wireStore.append({ ...captured, captureSource: "wire", listener: undefined });
+    renderPanel(root, undefined, { store: wireStore });
+    clickCommandState();
+    clickRowByText(".command-update-row", "wire-command-replay");
+
+    expect(button(".command-detail-pane .replay-source-button").disabled).toBe(true);
+    expect(button(".command-detail-pane .replay-source-button").title).toContain(
+      "captured page WebSocket bridge is unavailable"
+    );
+    expect(document.querySelector(".command-detail-pane .draft-execution-targets")).toBeNull();
+
+    button(".command-detail-pane .replay-source-button").click();
+    await Promise.resolve();
+    await flushInteractionRender();
+
+    const synthetic = wireStore.list().find((entry) => entry.synthetic);
+    expect(synthetic).toBeUndefined();
+    expect(selectedTexts(".command-update-row")[0]).toContain("wire-command-replay");
+  });
+
+  it("mutates a wire-captured COMMAND update through the inspected page stream", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const wireStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const reinjectWire = vi.fn((..._args: unknown[]) =>
+      Promise.resolve({
+        requestId: "wire-command-mutation",
+        ok: true as const,
+        status: "success" as const,
+        timestamp: 1_700_000_002_050
+      })
+    );
+    const captured = event("wire-command-mutation-source", {
+      command: "ADD",
+      key: "wire-key"
+    });
+    wireStore.append({ ...captured, captureSource: "wire", listener: undefined });
+    renderPanel(root, undefined, {
+      store: wireStore,
+      bridge: { reinjectDraft: reinjectWire }
+    });
+    clickCommandState();
+    clickRowByText(".command-update-row", "wire-command-mutation-source");
+
+    expect(document.querySelector(".command-detail-pane .draft-execution-targets")).toBeNull();
+    button(".command-detail-pane .mutate-inject-button").click();
+    input('.command-detail-pane .structured-field-input[data-field-name="qty"]', "42");
+    button(".command-detail-pane .inject-edited-button").click();
+    await Promise.resolve();
+    await flushInteractionRender();
+
+    expect(reinjectWire).toHaveBeenCalledTimes(1);
+    expect(reinjectWire.mock.calls[0]?.[0]).toMatchObject({
+      sourceEventId: "wire-command-mutation-source",
+      fields: { qty: "42" }
+    });
+    expect(reinjectWire.mock.calls[0]?.[1]).toBe("captured-wire");
+    const synthetic = wireStore.list().find((entry) => entry.synthetic);
+    expect(synthetic?.raw).toMatchObject({
+      executionTarget: "captured-wire",
+      deliveryPath: "captured-websocket",
+      deliveredToPage: true,
+      serverContacted: false
+    });
+    expect(selectedTexts(".command-update-row")[0]).toContain(synthetic?.id);
+    expect(text(".command-detail-pane")).toContain('"qty": "42"');
+    expect(text(".command-detail-pane")).toContain("captured page WebSocket");
+  });
+
+  it("mutates and reinjects a selected COMMAND update and reveals the applied fields", async () => {
+    reinjectDraft.mockResolvedValue({
+      requestId: "command-mutated-replay",
+      ok: true,
+      status: "success",
+      timestamp: 1_700_000_002_100
+    });
+    clickCommandState();
+    clickRowByText(".command-update-row", "event-2");
+    button(".command-detail-pane .mutate-inject-button").click();
+
+    input('.command-detail-pane .structured-field-input[data-field-name="qty"]', "42");
+
+    expect(text(".command-detail-pane .draft-dirty-count")).toBe("1 changed");
+    button(".command-detail-pane .inject-edited-button").click();
+    await Promise.resolve();
+    await flushInteractionRender();
+
+    expect(reinjectDraft).toHaveBeenCalledTimes(1);
+    expect(reinjectDraft.mock.calls[0]?.[0].fields.qty).toBe("42");
+    expect(selectedTexts(".command-update-row")[0]).toContain("synthetic-command-mutated-replay");
+    expect(text(".command-detail-pane")).toContain('"qty": "42"');
+    expect(text(".command-detail-pane")).toContain("Edited update delivered");
+  });
+
+  it("keeps a selected COMMAND mutation editor mounted while live updates arrive", async () => {
+    clickCommandState();
+    clickRowByText(".command-update-row", "event-2");
+    button(".command-detail-pane .mutate-inject-button").click();
+    input('.command-detail-pane .structured-field-input[data-field-name="qty"]', "4");
+
+    const detailPane = document.querySelector<HTMLElement>(".command-detail-pane");
+    const qtyInput = document.querySelector<HTMLTextAreaElement>(
+      '.command-detail-pane .structured-field-input[data-field-name="qty"]'
+    );
+    if (!detailPane || !qtyInput) {
+      throw new Error("missing selected COMMAND mutation editor");
+    }
+    detailPane.scrollTop = 220;
+    qtyInput.focus();
+    qtyInput.setSelectionRange(1, 1);
+
+    for (let index = 20; index < 32; index += 1) {
+      store.append(event(`live-command-${index}`, { key: `live-key-${index}` }));
+    }
+    await flushInteractionRender();
+
+    const currentQtyInput = document.querySelector<HTMLTextAreaElement>(
+      '.command-detail-pane .structured-field-input[data-field-name="qty"]'
+    );
+    expect(currentQtyInput).toBe(qtyInput);
+    expect(currentQtyInput?.value).toBe("4");
+    expect(document.activeElement).toBe(qtyInput);
+    expect(qtyInput.selectionStart).toBe(1);
+    expect(detailPane.scrollTop).toBe(220);
+    expect(selectedTexts(".command-update-row")[0]).toContain("event-2");
+  });
+
+  it("formats JSON-looking strings in the selected COMMAND update field view", () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const jsonStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    jsonStore.append(
+      event("json-command-update", {
+        key: "json-key",
+        fields: {
+          command: "ADD",
+          key: "json-key",
+          modelValues: JSON.stringify({ alarms: [{ domain: "passenger", status: "GREEN" }] })
+        },
+        changedFields: {
+          command: "ADD",
+          key: "json-key",
+          modelValues: JSON.stringify({ alarms: [{ domain: "passenger", status: "GREEN" }] })
+        }
+      })
+    );
+    renderPanel(root, undefined, { store: jsonStore, bridge: { reinjectDraft } });
+    clickCommandState();
+    clickRowByText(".command-update-row", "json-command-update");
+
+    expect(text(".command-detail-section-heading")).toContain("Current item fields");
+    expect(text(".command-changed-fields")).toContain("modelValues");
+    expect(text(".command-json")).toContain('"modelValues": {');
+    expect(text(".command-json")).toContain('"domain": "passenger"');
+    expect(text(".command-json")).not.toContain('"modelValues": "{\\"');
   });
 
   it("reconciles selected COMMAND detail against the current visible results", () => {
@@ -1336,9 +1668,12 @@ describe("COMMAND State panel workbench", () => {
   it("creates a schema-derived COMMAND draft with validation diagnostics and no auto-correction", () => {
     clickCommandState();
 
-    expect(text(".command-detail-pane")).toContain("New COMMAND update");
+    expect(text(".command-current-table")).toContain("New COMMAND key");
+    expect(text(".command-detail-pane")).not.toContain("New COMMAND key");
 
     button(".new-command-button").click();
+
+    expect(text(".command-detail-pane")).toContain("New COMMAND key");
 
     expect(text(".command-draft-context")).toContain("sub-command");
     expect(text(".command-draft-context")).toContain("item-a");
@@ -1360,6 +1695,62 @@ describe("COMMAND State panel workbench", () => {
     expect((document.querySelector<HTMLInputElement>(".command-draft-snapshot")?.checked)).toBe(true);
     expect((document.querySelector<HTMLInputElement>('.command-draft-field-input[data-field-name="qty"]')?.value)).toBe("9");
     expect(button(".inject-command-button").disabled).toBe(false);
+  });
+
+  it("creates and injects a new COMMAND update through the captured page stream", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const wireStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    const reinjectWire = vi.fn((..._args: unknown[]) =>
+      Promise.resolve({
+        requestId: "wire-new-command",
+        ok: true as const,
+        status: "success" as const,
+        timestamp: 1_700_000_002_200
+      })
+    );
+    const wireEvent = event("wire-event", { key: "wire-key" });
+    wireStore.append({
+      ...wireEvent,
+      captureSource: "wire",
+      listener: undefined,
+      subscription: wireEvent.subscription
+        ? { ...wireEvent.subscription, fields: undefined }
+        : undefined
+    });
+    renderPanel(root, undefined, {
+      store: wireStore,
+      bridge: { reinjectDraft: reinjectWire }
+    });
+    clickCommandState();
+
+    expect(button(".new-command-button").disabled).toBe(false);
+    button(".new-command-button").click();
+
+    expect(document.querySelector(".draft-execution-targets")).toBeNull();
+    expect(text(".command-draft-context")).toContain("Inspected page stream");
+    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
+
+    input(".command-draft-command", "UPDATE");
+    input(".command-draft-key", "wire-key");
+    expect(button(".inject-command-button").disabled).toBe(false);
+
+    button(".inject-command-button").click();
+    await Promise.resolve();
+    await flushInteractionRender();
+
+    const synthetic = wireStore.list().find((entry) => entry.synthetic);
+    expect(reinjectWire).toHaveBeenCalledTimes(1);
+    expect(reinjectWire.mock.calls[0]?.[1]).toBe("captured-wire");
+    expect(synthetic?.raw).toMatchObject({
+      executionTarget: "captured-wire",
+      deliveredToPage: true,
+      serverContacted: false
+    });
+    expect(text(".reinjection-message")).toContain("captured page WebSocket");
   });
 
   it("clears COMMAND state and reinjection context when events are cleared", () => {
@@ -1406,7 +1797,7 @@ describe("COMMAND State panel workbench", () => {
 
     expect(document.querySelector(".command-draft-controls")).toBeNull();
     expect(document.querySelector(".command-draft-key")).toBeNull();
-    expect(document.querySelectorAll(".new-command-editor > *")).toHaveLength(1);
+    expect(document.querySelector(".new-command-editor")).toBeNull();
     expect(button(".new-command-button").disabled).toBe(false);
 
     button(".new-command-button").click();
@@ -1415,7 +1806,7 @@ describe("COMMAND State panel workbench", () => {
     expect(control(".command-draft-key").value).toBe("");
   });
 
-  it("keeps the new COMMAND draft editor in view while typing", () => {
+  it("keeps new COMMAND free-text editors mounted and in view while typing", () => {
     clickCommandState();
     button(".new-command-button").click();
 
@@ -1423,22 +1814,54 @@ describe("COMMAND State panel workbench", () => {
     if (!detailPane) {
       throw new Error("missing command detail pane");
     }
-    detailPane.scrollTop = 240;
+    resetScrollWhenChildrenAreReplaced(detailPane);
 
     const keyInput = control(".command-draft-key") as HTMLInputElement;
     keyInput.focus();
     keyInput.value = "g";
     keyInput.setSelectionRange(1, 1);
+    keyInput.scrollLeft = 11;
+    detailPane.scrollTop = 240;
+    detailPane.scrollLeft = 7;
     keyInput.dispatchEvent(new Event("input", { bubbles: true }));
 
     const nextKeyInput = control(".command-draft-key") as HTMLInputElement;
+    expect(nextKeyInput).toBe(keyInput);
+    expect(keyInput.isConnected).toBe(true);
     expect(detailPane.scrollTop).toBe(240);
-    expect(document.activeElement).toBe(nextKeyInput);
-    expect(nextKeyInput.value).toBe("g");
+    expect(detailPane.scrollLeft).toBe(7);
+    expect(document.activeElement).toBe(keyInput);
+    expect(keyInput.value).toBe("g");
+    expect(keyInput.selectionStart).toBe(1);
+    expect(keyInput.selectionEnd).toBe(1);
+    expect(keyInput.scrollLeft).toBe(11);
+
+    const fieldInput = control(
+      '.command-draft-field-input[data-field-name="name"]'
+    ) as HTMLInputElement;
+    fieldInput.focus();
+    fieldInput.value = "A long new COMMAND value";
+    fieldInput.setSelectionRange(18, 18);
+    fieldInput.scrollLeft = 19;
+    detailPane.scrollTop = 260;
+    detailPane.scrollLeft = 9;
+    fieldInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(
+      control('.command-draft-field-input[data-field-name="name"]')
+    ).toBe(fieldInput);
+    expect(fieldInput.isConnected).toBe(true);
+    expect(document.activeElement).toBe(fieldInput);
+    expect(fieldInput.selectionStart).toBe(18);
+    expect(fieldInput.selectionEnd).toBe(18);
+    expect(fieldInput.scrollLeft).toBe(19);
+    expect(detailPane.scrollTop).toBe(260);
+    expect(detailPane.scrollLeft).toBe(9);
   });
 
-  it("keeps COMMAND detail editors open and focused when new events arrive", () => {
+  it("keeps COMMAND detail editors mounted and focused when new events arrive", async () => {
     clickCommandState();
+    await flushInteractionRender();
     button(".new-command-button").click();
     input(".command-draft-key", "g");
 
@@ -1452,9 +1875,13 @@ describe("COMMAND State panel workbench", () => {
     keyInput.focus();
     keyInput.setSelectionRange(1, 1);
 
-    store.append(event("event-8", { mode: "MERGE", key: "merge-key" }));
+    for (let index = 8; index < 16; index += 1) {
+      store.append(event(`event-${index}`, { mode: "MERGE", key: `merge-key-${index}` }));
+    }
+    await flushInteractionRender();
 
     const nextKeyInput = control(".command-draft-key") as HTMLInputElement;
+    expect(nextKeyInput).toBe(keyInput);
     expect(document.querySelector<HTMLElement>(".command-detail-pane")?.hidden).toBe(false);
     expect(document.activeElement).toBe(nextKeyInput);
     expect(nextKeyInput.value).toBe("g");
@@ -1515,7 +1942,7 @@ describe("COMMAND State panel workbench", () => {
 
     expect(store.list().filter((entry) => entry.synthetic)).toHaveLength(1);
     expect(text(".reinjection-message")).toContain(
-      "Synthetic COMMAND update was not appended. Review the listener error and adjust the draft."
+      "Synthetic COMMAND update was not appended. Review the delivery error and adjust the draft."
     );
     expect(text(".reinjection-message")).toContain("listener threw");
     expect(control(".command-draft-key").value).toBe("charlie");

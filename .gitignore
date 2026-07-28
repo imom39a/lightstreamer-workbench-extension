@@ -2,12 +2,16 @@ node_modules/
 dist/
 release/
 .env.release
+.env.local
+.env.*.local
 private/
 *.crx
 *.pem
 .DS_Store
-.planning/
 .codex/
+.codex_/
+.cache/lsew-browsers/
 fixtures/lightstreamer/adapter/target/
 fixtures/lightstreamer/adapters/*/lib/
+fixtures/lightstreamer/pages/mutate-reinject-client.js
 issues

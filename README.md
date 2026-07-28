@@ -23,17 +23,18 @@ The first release focuses on local, current-session debugging for the inspected 
 - Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into a temporary local event store for the current DevTools session.
 - Shows a searchable Timeline with normalized event envelopes and raw diagnostic payloads.
 - Reconstructs COMMAND state by subscription, item, key, command, snapshot state, provenance, and diagnostics.
-- Lets developers clone compatible captured updates, edit fields, and locally reinject synthetic updates through captured listener paths.
+- Lets developers directly re-inject compatible captured updates or edit and re-inject them through a captured listener or captured Lightstreamer WebSocket path.
 - Provides WebSocket/TLCP fallback diagnostics when primary Web Client API instrumentation is unavailable.
 - Marks synthetic events clearly so local replay activity is distinguishable from server-originated updates.
 
 ## What It Does Not Do
 
-- It does not send captured data to this project, the maintainers, analytics services, or any external backend.
+- It does not send inspected URLs, Lightstreamer addresses, captured values, identifiers, search text, replay drafts, or error details to this project, the maintainers, analytics services, or any external backend.
 - It does not intentionally retain captured events after the current DevTools/tab session; temporary local storage is reset on panel startup and cleared on normal panel teardown.
 - It does not inject data into the real Lightstreamer server stream.
 - It does not provide app-specific interpretation rules in the core product.
 - It does not treat arbitrary WebSocket protocols as first-class Lightstreamer domain models.
+- It does not enable optional product analytics unless the user accepts the in-panel disclosure.
 
 ## Who This Helps
 
@@ -71,16 +72,19 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 - [RELEASE.md](RELEASE.md) - release packaging, Chrome Web Store publishing, GitHub Pages deployment, and maintainer-only release flow.
 - [MAINTAINERS.md](MAINTAINERS.md) - maintainer roles, official distribution boundaries, and release authority.
 - [PRIVACY.md](PRIVACY.md) - extension privacy behavior and Chrome Web Store privacy language.
+- [docs/ANALYTICS.md](docs/ANALYTICS.md) - opt-in event dictionary, GA4 custom definitions, and product-improvement reports.
 - [SECURITY.md](SECURITY.md) - security reporting path and sensitive-data guidance.
 - [store-listing/](store-listing/) - Chrome Web Store listing copy, screenshots, icons, promo assets, and reviewer notes.
 
 ## Privacy And Safety
 
-Lightstreamer Event Workbench runs locally in the browser extension context. Captured event data is kept in temporary local storage for the current DevTools/tab session and is not transmitted off-device by the extension.
+Lightstreamer Event Workbench keeps captured event data in temporary local storage for the current DevTools/tab session; that data is not transmitted off-device by the extension.
+
+Official builds may offer optional, opt-in Google Analytics for coarse product usage such as views used, whether search or local replay was used, replay result category, and a bucketed event count. The extension creates a random analytics installation ID and sends requests only after the user accepts the prominent panel disclosure. Opt-out deletes that ID and blocks future analytics requests. Analytics adds no Chrome permission and never receives inspected-page URLs or captured Lightstreamer content; see [PRIVACY.md](PRIVACY.md) for the exact allowlist.
 
 The extension requests broad page access because it must instrument the inspected page's Lightstreamer Web Client runtime before application code creates clients or subscriptions. Use it only on pages you are authorized to debug, and avoid sharing screenshots or issue logs that contain production secrets, customer data, tokens, or proprietary event payloads.
 
-Synthetic events are marked in the UI and event envelope. v1 local reinjection uses captured listener paths and does not create a real inbound Lightstreamer server event.
+Synthetic events are marked in the UI and event envelope. Every reinjection must reach the inspected page: it uses either a captured listener callback or a synthetic TLCP update dispatched through the captured page WebSocket so the page's Lightstreamer client and application listeners receive it. Neither path contacts the Lightstreamer server, and failed or unavailable delivery never creates a local-only event.
 
 ## Official Distribution
 
