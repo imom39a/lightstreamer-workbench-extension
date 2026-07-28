@@ -515,6 +515,27 @@ describe("COMMAND State panel workbench", () => {
     controller.dispose();
   });
 
+  it("keeps the COMMAND search input mounted while filtering", () => {
+    clickCommandState();
+    const searchInput = document.querySelector<HTMLInputElement>(".command-search");
+    if (!searchInput) {
+      throw new Error("missing COMMAND search input");
+    }
+
+    searchInput.focus();
+    searchInput.value = "alpha";
+    searchInput.setSelectionRange(5, 5);
+    searchInput.scrollLeft = 13;
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(document.querySelector(".command-search")).toBe(searchInput);
+    expect(document.activeElement).toBe(searchInput);
+    expect(searchInput.selectionStart).toBe(5);
+    expect(searchInput.selectionEnd).toBe(5);
+    expect(searchInput.scrollLeft).toBe(13);
+    expect(text(".command-current-rows")).toContain("alpha");
+  });
+
   it("reuses COMMAND lifecycle search projections across renders and invalidates on mutation", async () => {
     const stringify = vi.spyOn(JSON, "stringify");
     try {
@@ -1785,7 +1806,7 @@ describe("COMMAND State panel workbench", () => {
     expect(control(".command-draft-key").value).toBe("");
   });
 
-  it("keeps the new COMMAND draft editor in view while typing", () => {
+  it("keeps new COMMAND free-text editors mounted and in view while typing", () => {
     clickCommandState();
     button(".new-command-button").click();
 
@@ -1793,18 +1814,49 @@ describe("COMMAND State panel workbench", () => {
     if (!detailPane) {
       throw new Error("missing command detail pane");
     }
-    detailPane.scrollTop = 240;
+    resetScrollWhenChildrenAreReplaced(detailPane);
 
     const keyInput = control(".command-draft-key") as HTMLInputElement;
     keyInput.focus();
     keyInput.value = "g";
     keyInput.setSelectionRange(1, 1);
+    keyInput.scrollLeft = 11;
+    detailPane.scrollTop = 240;
+    detailPane.scrollLeft = 7;
     keyInput.dispatchEvent(new Event("input", { bubbles: true }));
 
     const nextKeyInput = control(".command-draft-key") as HTMLInputElement;
+    expect(nextKeyInput).toBe(keyInput);
+    expect(keyInput.isConnected).toBe(true);
     expect(detailPane.scrollTop).toBe(240);
-    expect(document.activeElement).toBe(nextKeyInput);
-    expect(nextKeyInput.value).toBe("g");
+    expect(detailPane.scrollLeft).toBe(7);
+    expect(document.activeElement).toBe(keyInput);
+    expect(keyInput.value).toBe("g");
+    expect(keyInput.selectionStart).toBe(1);
+    expect(keyInput.selectionEnd).toBe(1);
+    expect(keyInput.scrollLeft).toBe(11);
+
+    const fieldInput = control(
+      '.command-draft-field-input[data-field-name="name"]'
+    ) as HTMLInputElement;
+    fieldInput.focus();
+    fieldInput.value = "A long new COMMAND value";
+    fieldInput.setSelectionRange(18, 18);
+    fieldInput.scrollLeft = 19;
+    detailPane.scrollTop = 260;
+    detailPane.scrollLeft = 9;
+    fieldInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(
+      control('.command-draft-field-input[data-field-name="name"]')
+    ).toBe(fieldInput);
+    expect(fieldInput.isConnected).toBe(true);
+    expect(document.activeElement).toBe(fieldInput);
+    expect(fieldInput.selectionStart).toBe(18);
+    expect(fieldInput.selectionEnd).toBe(18);
+    expect(fieldInput.scrollLeft).toBe(19);
+    expect(detailPane.scrollTop).toBe(260);
+    expect(detailPane.scrollLeft).toBe(9);
   });
 
   it("keeps COMMAND detail editors mounted and focused when new events arrive", async () => {

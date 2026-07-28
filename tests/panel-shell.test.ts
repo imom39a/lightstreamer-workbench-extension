@@ -408,8 +408,21 @@ describe("panel shell", () => {
     appendCommandUpdate(panel, "alpha");
     appendCommandUpdate(panel, "beta");
 
-    input(".search-input", "alpha");
+    const searchInput = document.querySelector<HTMLInputElement>(".search-input");
+    if (!searchInput) {
+      throw new Error("missing Timeline search input");
+    }
+    searchInput.focus();
+    searchInput.value = "alpha";
+    searchInput.setSelectionRange(5, 5);
+    searchInput.scrollLeft = 12;
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
 
+    expect(document.querySelector(".search-input")).toBe(searchInput);
+    expect(document.activeElement).toBe(searchInput);
+    expect(searchInput.selectionStart).toBe(5);
+    expect(searchInput.selectionEnd).toBe(5);
+    expect(searchInput.scrollLeft).toBe(12);
     expect(document.querySelectorAll(".event-row")).toHaveLength(1);
     expect(text(".event-command")).toBe("ADD/alpha");
     expect(text(".filtered-count")).toBe("1 shown");
@@ -1407,6 +1420,76 @@ describe("panel shell", () => {
     }
   });
 
+  it("keeps replay key and number inputs mounted while editing", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 12_345 });
+    clickFirstEventRow();
+    openMutationEditor();
+
+    const detail = document.querySelector<HTMLElement>(".detail-pane");
+    const keyInput = document.querySelector<HTMLTextAreaElement>(
+      '.structured-field-input[data-field-name="key"]'
+    );
+    if (!detail || !keyInput) {
+      throw new Error("missing replay key editor");
+    }
+    resetScrollWhenChildrenAreReplaced(detail);
+
+    keyInput.focus();
+    keyInput.setSelectionRange(2, 2);
+    keyInput.scrollTop = 22;
+    keyInput.scrollLeft = 14;
+    detail.scrollTop = 520;
+    detail.scrollLeft = 8;
+    keyInput.setRangeText("X", 2, 2, "end");
+    keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>(
+        '.structured-field-input[data-field-name="key"]'
+      )
+    ).toBe(keyInput);
+    expect(keyInput.isConnected).toBe(true);
+    expect(document.activeElement).toBe(keyInput);
+    expect(keyInput.selectionStart).toBe(3);
+    expect(keyInput.selectionEnd).toBe(3);
+    expect(keyInput.scrollTop).toBe(22);
+    expect(keyInput.scrollLeft).toBe(14);
+    expect(detail.scrollTop).toBe(520);
+    expect(detail.scrollLeft).toBe(8);
+
+    const numberInput = document.querySelector<HTMLInputElement>(
+      '.structured-field-input[data-field-name="qty"]'
+    );
+    if (!numberInput) {
+      throw new Error("missing replay number editor");
+    }
+    numberInput.focus();
+    numberInput.value = "123456";
+    numberInput.scrollLeft = 17;
+    detail.scrollTop = 540;
+    detail.scrollLeft = 9;
+    numberInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(
+      document.querySelector<HTMLInputElement>(
+        '.structured-field-input[data-field-name="qty"]'
+      )
+    ).toBe(numberInput);
+    expect(numberInput.isConnected).toBe(true);
+    expect(document.activeElement).toBe(numberInput);
+    expect(numberInput.scrollLeft).toBe(17);
+    expect(detail.scrollTop).toBe(540);
+    expect(detail.scrollLeft).toBe(9);
+    expect(text(".draft-dirty-count")).toBe("2 changed");
+
+    const advancedDraft = JSON.parse(openAdvancedDraftJson().value) as {
+      key: string;
+      fields: Record<string, unknown>;
+    };
+    expect(advancedDraft.key).toBe("alXpha");
+    expect(advancedDraft.fields.qty).toBe(123456);
+  });
+
   it("formats short JSON strings directly in their text editor without a draft preview", () => {
     const modelValues = JSON.stringify({ messageId: "6675533", messageType: "TICKER" });
     appendCommandUpdate(panel, "MESSENGER_TICKER", { modelValues });
@@ -1467,6 +1550,40 @@ describe("panel shell", () => {
     await flushPromises();
     expect(reinjectDraft).not.toHaveBeenCalled();
     expect(document.querySelector(".reinjection-message")).toBeNull();
+  });
+
+  it("preserves nested editor state when bridge availability rerenders the detail", () => {
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    openMutationEditor();
+    const textarea = openAdvancedDraftJson();
+    const detail = document.querySelector<HTMLElement>(".detail-pane");
+    if (!detail) {
+      throw new Error("missing Timeline detail pane");
+    }
+    resetScrollWhenChildrenAreReplaced(detail);
+
+    textarea.focus();
+    textarea.setSelectionRange(40, 40);
+    textarea.scrollTop = 180;
+    textarea.scrollLeft = 16;
+    detail.scrollTop = 460;
+    detail.scrollLeft = 10;
+
+    panel.setBridge({
+      reinjectDraft: vi.fn(() => Promise.resolve(createSuccessResult("replacement-bridge")))
+    });
+
+    const nextTextarea = document.querySelector<HTMLTextAreaElement>(".draft-json");
+    expect(nextTextarea).not.toBeNull();
+    expect(document.activeElement).toBe(nextTextarea);
+    expect(nextTextarea?.selectionStart).toBe(40);
+    expect(nextTextarea?.selectionEnd).toBe(40);
+    expect(nextTextarea?.scrollTop).toBe(180);
+    expect(nextTextarea?.scrollLeft).toBe(16);
+    expect(detail.scrollTop).toBe(460);
+    expect(detail.scrollLeft).toBe(10);
+    expect(detailSection("Advanced Draft JSON").open).toBe(true);
   });
 
   it("derives changed fields from draft JSON edits without remounting the editor", () => {

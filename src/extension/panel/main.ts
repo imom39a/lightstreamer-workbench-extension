@@ -178,6 +178,7 @@ type PaneState = {
   scrollLeft: number;
   focusSelector: string | null;
   selection: { start: number | null; end: number | null } | null;
+  controlScroll: { top: number; left: number } | null;
   detailSections: Record<string, boolean>;
 };
 type CommandResizablePane = "subscriptions" | "keys" | "updates";
@@ -3070,9 +3071,12 @@ export function renderPanel(
     }
     commandSelect.value = currentDraft.command ?? "";
     commandSelect.addEventListener("change", () => {
-      draft = updateDraftCommand(draft ?? currentDraft, commandSelect.value);
-      reinjectionMessage = null;
-      renderCommandStatePreservingDraftEditorState(".command-draft-command");
+      applyNewCommandDraftControlUpdate(
+        updateDraftCommand(draft ?? currentDraft, commandSelect.value),
+        commandSelect,
+        context,
+        item
+      );
     });
     commandLabel.append(commandSelect);
 
@@ -3084,9 +3088,12 @@ export function renderPanel(
     keyInput.setAttribute("aria-label", "COMMAND key");
     keyInput.value = currentDraft.key ?? "";
     keyInput.addEventListener("input", () => {
-      draft = updateDraftKey(draft ?? currentDraft, keyInput.value);
-      reinjectionMessage = null;
-      renderCommandStatePreservingDraftEditorState(".command-draft-key");
+      applyNewCommandDraftControlUpdate(
+        updateDraftKey(draft ?? currentDraft, keyInput.value),
+        keyInput,
+        context,
+        item
+      );
     });
     keyLabel.append(keyInput);
 
@@ -3098,13 +3105,16 @@ export function renderPanel(
     snapshotInput.checked = currentDraft.isSnapshot;
     snapshotInput.setAttribute("aria-label", "Snapshot update");
     snapshotInput.addEventListener("change", () => {
-      draft = updateDraftSnapshot(draft ?? currentDraft, snapshotInput.checked);
-      reinjectionMessage = null;
-      renderCommandStatePreservingDraftEditorState(".command-draft-snapshot");
+      applyNewCommandDraftControlUpdate(
+        updateDraftSnapshot(draft ?? currentDraft, snapshotInput.checked),
+        snapshotInput,
+        context,
+        item
+      );
     });
     snapshotLabel.append(snapshotInput, createTextElement("span", "draft-input-text", "Snapshot"));
 
-    const fieldTable = createCommandDraftFieldTable(currentDraft, item);
+    const fieldTable = createCommandDraftFieldTable(currentDraft, context, item);
     const diagnostics = createCommandDraftDiagnostics(
       validation.diagnostics,
       draftExecutionTarget
@@ -3143,7 +3153,11 @@ export function renderPanel(
     return controls;
   }
 
-  function createCommandDraftFieldTable(currentDraft: ReinjectionDraft, item: CommandItemGroup): HTMLElement {
+  function createCommandDraftFieldTable(
+    currentDraft: ReinjectionDraft,
+    context: CommandItemContext,
+    item: CommandItemGroup
+  ): HTMLElement {
     const table = document.createElement("div");
     table.className = "command-draft-field-table";
     table.append(
@@ -3164,16 +3178,22 @@ export function renderPanel(
         "command-draft-field-current",
         formatDraftFieldValue(currentRow?.fields[fieldName])
       );
+      current.dataset.fieldName = fieldName;
       const draftInput = document.createElement("input");
       draftInput.className = "filter-control command-draft-field-input";
       draftInput.setAttribute("aria-label", `Draft field ${fieldName}`);
       draftInput.dataset.fieldName = fieldName;
       draftInput.value = formatDraftFieldValue(value);
       draftInput.addEventListener("input", () => {
-        draft = updateDraftField(draft ?? currentDraft, fieldName, draftInput.value === "" ? null : draftInput.value);
-        reinjectionMessage = null;
-        renderCommandStatePreservingDraftEditorState(
-          `.command-draft-field-input[data-field-name="${cssAttributeValue(fieldName)}"]`
+        applyNewCommandDraftControlUpdate(
+          updateDraftField(
+            draft ?? currentDraft,
+            fieldName,
+            draftInput.value === "" ? null : draftInput.value
+          ),
+          draftInput,
+          context,
+          item
         );
       });
       const changed = createTextElement(
@@ -3181,10 +3201,108 @@ export function renderPanel(
         "command-draft-field-changed",
         Object.prototype.hasOwnProperty.call(currentDraft.changedFields, fieldName) ? "changed" : "-"
       );
+      changed.dataset.fieldName = fieldName;
       table.append(name, current, draftInput, changed);
     }
 
     return table;
+  }
+
+  function applyNewCommandDraftControlUpdate(
+    nextDraft: ReinjectionDraft,
+    activeControl: HTMLInputElement | HTMLSelectElement,
+    context: CommandItemContext,
+    item: CommandItemGroup
+  ): void {
+    draft = nextDraft;
+    reinjectionMessage = null;
+
+    const controls = activeControl.closest<HTMLElement>(".command-draft-controls");
+    if (!controls || !activeControl.isConnected) {
+      renderCommandState({ preservePaneState: true });
+      return;
+    }
+
+    controls.querySelector<HTMLElement>(".reinjection-message")?.remove();
+
+    const currentState = commandStateIndex.snapshot();
+    const validation = validateNewCommandDraft(
+      nextDraft,
+      currentState,
+      context,
+      draftExecutionTarget
+    );
+    const latestItem =
+      flattenCommandItems(currentState).find(
+        (entry) =>
+          entry.item.subscriptionId === item.subscriptionId &&
+          entry.item.itemId === item.itemId
+      )?.item ?? item;
+    const currentRow = nextDraft.key
+      ? latestItem.activeRows.find((row) => row.key === nextDraft.key)
+      : null;
+
+    const commandControl = controls.querySelector<HTMLSelectElement>(
+      ".command-draft-command"
+    );
+    if (commandControl && commandControl !== activeControl) {
+      commandControl.value = nextDraft.command ?? "";
+    }
+    const keyControl = controls.querySelector<HTMLInputElement>(".command-draft-key");
+    if (keyControl && keyControl !== activeControl) {
+      keyControl.value = nextDraft.key ?? "";
+    }
+    const snapshotControl = controls.querySelector<HTMLInputElement>(
+      ".command-draft-snapshot"
+    );
+    if (snapshotControl) {
+      snapshotControl.checked = nextDraft.isSnapshot;
+    }
+
+    for (const fieldInput of controls.querySelectorAll<HTMLInputElement>(
+      ".command-draft-field-input[data-field-name]"
+    )) {
+      const fieldName = fieldInput.dataset.fieldName;
+      if (fieldName && fieldInput !== activeControl) {
+        fieldInput.value = formatDraftFieldValue(nextDraft.fields[fieldName]);
+      }
+    }
+    for (const currentValue of controls.querySelectorAll<HTMLElement>(
+      ".command-draft-field-current[data-field-name]"
+    )) {
+      const fieldName = currentValue.dataset.fieldName;
+      if (fieldName) {
+        currentValue.textContent = formatDraftFieldValue(currentRow?.fields[fieldName]);
+      }
+    }
+    for (const changedValue of controls.querySelectorAll<HTMLElement>(
+      ".command-draft-field-changed[data-field-name]"
+    )) {
+      const fieldName = changedValue.dataset.fieldName;
+      if (fieldName) {
+        changedValue.textContent = Object.prototype.hasOwnProperty.call(
+          nextDraft.changedFields,
+          fieldName
+        )
+          ? "changed"
+          : "-";
+      }
+    }
+
+    controls
+      .querySelector<HTMLElement>(".command-draft-diagnostics")
+      ?.replaceWith(
+        createCommandDraftDiagnostics(validation.diagnostics, draftExecutionTarget)
+      );
+    const injectButton = controls.querySelector<HTMLButtonElement>(
+      ".inject-command-button"
+    );
+    if (injectButton) {
+      injectButton.disabled =
+        !validation.valid ||
+        !bridgeReady ||
+        reinjectionPending;
+    }
   }
 
   function createCommandDraftDiagnostics(
@@ -3286,35 +3404,6 @@ export function renderPanel(
     renderCommandState();
   }
 
-  function renderCommandStatePreservingDraftEditorState(focusSelector: string): void {
-    const scrollTop = commandDetailPane.scrollTop;
-    const scrollLeft = commandDetailPane.scrollLeft;
-    const activeElement = document.activeElement;
-    const selection =
-      activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
-        ? {
-            start: activeElement.selectionStart,
-            end: activeElement.selectionEnd
-          }
-        : null;
-
-    renderCommandState();
-
-    const nextFocus = commandDetailPane.querySelector<HTMLElement>(focusSelector);
-    nextFocus?.focus({ preventScroll: true });
-    if (
-      selection &&
-      nextFocus instanceof HTMLInputElement &&
-      isTextSelectionInput(nextFocus) &&
-      typeof selection.start === "number" &&
-      typeof selection.end === "number"
-    ) {
-      nextFocus.setSelectionRange(selection.start, selection.end);
-    }
-    commandDetailPane.scrollTop = scrollTop;
-    commandDetailPane.scrollLeft = scrollLeft;
-  }
-
   function rememberCommandContextEvent(event: LightstreamerEventEnvelope): void {
     const subscriptionId = event.subscription?.id ?? null;
     const mode = event.subscription?.mode ?? null;
@@ -3381,7 +3470,7 @@ export function renderPanel(
       status.textContent = nextStatus;
       status.dataset.status = nextStatus;
       if (bridgeReady !== previousBridgeReady) {
-        renderSelectedTimelineDetail();
+        renderActiveView({ preservePaneState: true });
       }
     },
 
@@ -3421,7 +3510,7 @@ export function renderPanel(
     setBridge(nextBridge) {
       bridge = nextBridge;
       bridgeReady = isBridgeReadyStatus(panelState.status);
-      renderSelectedTimelineDetail();
+      renderActiveView({ preservePaneState: true });
     },
 
     setVisible(visible) {
@@ -4083,7 +4172,13 @@ export function renderPanel(
       keyInput.disabled = reinjectionPending;
       keyInput.setAttribute("aria-label", "Draft COMMAND key");
       keyInput.addEventListener("input", () => {
-        applyStructuredDraftUpdate(updateDraftKey(draft ?? currentDraft, keyInput.value));
+        applyStructuredInputDraftUpdate(
+          updateDraftKey(draft ?? currentDraft, keyInput.value),
+          fieldName,
+          keyInput,
+          injectButton,
+          structuredError
+        );
       });
       editor.append(keyInput);
       return editor;
@@ -4135,8 +4230,13 @@ export function renderPanel(
           numberInput.setAttribute("aria-invalid", "true");
           return;
         }
-        applyStructuredDraftUpdate(
-          updateDraftField(draft ?? currentDraft, fieldName, nextValue)
+        numberInput.removeAttribute("aria-invalid");
+        applyStructuredInputDraftUpdate(
+          updateDraftField(draft ?? currentDraft, fieldName, nextValue),
+          fieldName,
+          numberInput,
+          injectButton,
+          structuredError
         );
       });
       editor.append(numberInput);
@@ -4164,7 +4264,7 @@ export function renderPanel(
     textInput.spellcheck = false;
     textInput.setAttribute("aria-label", `Draft field ${fieldName}`);
     textInput.addEventListener("input", () => {
-      applyStructuredTextDraftUpdate(
+      applyStructuredInputDraftUpdate(
         updateDraftField(draft ?? currentDraft, fieldName, textInput.value),
         fieldName,
         textInput,
@@ -4184,10 +4284,10 @@ export function renderPanel(
     renderDraftSurface(nextDraft, true);
   }
 
-  function applyStructuredTextDraftUpdate(
+  function applyStructuredInputDraftUpdate(
     nextDraft: ReinjectionDraft,
     fieldName: string,
-    textInput: HTMLTextAreaElement,
+    input: HTMLInputElement | HTMLTextAreaElement,
     injectButton: HTMLButtonElement,
     structuredError: HTMLElement
   ): void {
@@ -4196,8 +4296,8 @@ export function renderPanel(
     draftJsonError = null;
     reinjectionMessage = null;
 
-    const controls = textInput.closest<HTMLElement>(".draft-controls");
-    if (!controls || !textInput.isConnected) {
+    const controls = input.closest<HTMLElement>(".draft-controls");
+    if (!controls || !input.isConnected) {
       renderDraftSurface(nextDraft, true);
       return;
     }
@@ -4637,6 +4737,13 @@ function capturePaneState(pane: HTMLElement): PaneState {
             end: activeElement.selectionEnd
           }
         : null,
+    controlScroll:
+      activeInPane && isTextSelectionControl(activeElement)
+        ? {
+            top: activeElement.scrollTop,
+            left: activeElement.scrollLeft
+          }
+        : null,
     detailSections: captureDetailSectionState(pane)
   };
 }
@@ -4663,6 +4770,10 @@ function restorePaneState(pane: HTMLElement, state: PaneState | null): void {
       typeof state.selection.end === "number"
     ) {
       nextFocus.setSelectionRange(state.selection.start, state.selection.end);
+    }
+    if (nextFocus && state.controlScroll) {
+      nextFocus.scrollTop = state.controlScroll.top;
+      nextFocus.scrollLeft = state.controlScroll.left;
     }
   }
 
