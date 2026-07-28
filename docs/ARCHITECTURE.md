@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 # Architecture
 
 Lightstreamer Event Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs COMMAND-mode state, and lets developers locally replay synthetic updates through captured listener callbacks or captured Lightstreamer WebSocket paths.
