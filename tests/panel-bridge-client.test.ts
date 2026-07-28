@@ -252,6 +252,81 @@ describe("panel bridge client", () => {
     });
   });
 
+  it("polls a request-scoped legacy page result instead of using the runtime relay", async () => {
+    vi.useFakeTimers();
+    const port = createFakePort();
+    let requestId = "";
+    let evaluationCount = 0;
+    const evaluate = vi.fn(
+      (
+        expression: string,
+        callback?: (
+          result: unknown,
+          exceptionInfo: chrome.devtools.inspectedWindow.EvaluationExceptionInfo
+        ) => void
+      ) => {
+        evaluationCount += 1;
+        requestId ||= expression.match(/reinject-\d+-[\w-]+/)?.[0] ?? "";
+        callback?.(
+          evaluationCount === 1
+            ? { bridgeState: "pending" }
+            : {
+                bridgeState: "result",
+                result: {
+                  requestId,
+                  ok: true,
+                  status: "success",
+                  timestamp: 1_784_737_272_925
+                }
+              },
+          {
+            isError: false,
+            code: "",
+            description: "",
+            details: [],
+            isException: false,
+            value: ""
+          }
+        );
+      }
+    );
+
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42,
+          eval: evaluate
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+    const resultPromise = bridge.reinjectDraft(createValidDraft());
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    await expect(resultPromise).resolves.toMatchObject({
+      requestId,
+      ok: true,
+      status: "success"
+    });
+    expect(evaluate).toHaveBeenCalledTimes(2);
+    expect(
+      port.postedMessages.some(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+      )
+    ).toBe(false);
+  });
+
   it("falls back to the runtime relay when the inspected page bridge is version-skewed", async () => {
     const port = createFakePort();
     const staleReinject = vi.fn();

@@ -6,10 +6,12 @@ import {
   type ReinjectionResult,
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
+  PAGE_REINJECT_REQUEST,
   PANEL_PORT_NAME,
   PANEL_REGISTER_MESSAGE,
   PANEL_REINJECT_REQUEST,
   PANEL_REINJECT_RESULT,
+  RUNTIME_REINJECT_RESULT,
   isPanelCaptureMessage,
   isPanelReinjectResultMessage,
   isPanelStatusMessage
@@ -36,9 +38,12 @@ export type PanelBridgeConnection = {
 const RECONNECT_DELAY_MS = 500;
 const REINJECT_TIMEOUT_MS = 8000;
 const INSPECTED_PAGE_EVAL_TIMEOUT_MS = 5000;
+const LEGACY_PAGE_REINJECT_POLL_MS = 50;
+const LEGACY_PAGE_REINJECT_STATE_PREFIX = "__LSEW_LEGACY_REINJECTION__";
 
 type PageReinjectionEvaluation =
   | { bridgeState: "unavailable" }
+  | { bridgeState: "pending" }
   | { bridgeState: "result"; result: unknown };
 
 export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeConnection {
@@ -182,6 +187,8 @@ function reinjectThroughInspectedPage(
 ): Promise<ReinjectionResult | null> {
   return new Promise((resolve) => {
     let settled = false;
+    let legacyRequestStarted = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let timer: ReturnType<typeof setTimeout>;
     const finish = (result: ReinjectionResult | null) => {
       if (settled) {
@@ -189,64 +196,105 @@ function reinjectThroughInspectedPage(
       }
       settled = true;
       clearTimeout(timer);
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+      }
       resolve(result);
     };
     timer = setTimeout(() => {
+      if (legacyRequestStarted) {
+        cleanupLegacyPageReinjection(requestId);
+      }
       finish(
         createBridgeErrorResult(
           requestId,
-          "The DevTools page evaluation did not complete. Reload the inspected page and try again."
+          legacyRequestStarted
+            ? "Timed out waiting for the inspected-page reinjection result."
+            : "The DevTools page evaluation did not complete. Reload the inspected page and try again."
         )
       );
     }, INSPECTED_PAGE_EVAL_TIMEOUT_MS);
 
-    try {
-      chrome.devtools.inspectedWindow.eval<unknown>(
-        pageReinjectionExpression(requestId, draft),
-        (result, exceptionInfo) => {
-          if (exceptionInfo?.isError || exceptionInfo?.isException) {
-            finish(
-              createBridgeErrorResult(
-                requestId,
-                exceptionInfo.description ||
-                  exceptionInfo.value ||
-                  "The inspected page rejected the reinjection evaluation."
-              )
-            );
-            return;
-          }
+    evaluate(pageReinjectionExpression(requestId, draft));
 
-          const evaluation = readPageReinjectionEvaluation(result);
-          if (evaluation?.bridgeState === "unavailable") {
-            finish(null);
-            return;
-          }
+    function evaluate(expression: string): void {
+      try {
+        chrome.devtools.inspectedWindow.eval<unknown>(
+          expression,
+          (result, exceptionInfo) => {
+            if (settled) {
+              return;
+            }
+            if (exceptionInfo?.isError || exceptionInfo?.isException) {
+              if (legacyRequestStarted) {
+                cleanupLegacyPageReinjection(requestId);
+              }
+              finish(
+                createBridgeErrorResult(
+                  requestId,
+                  exceptionInfo.description ||
+                    exceptionInfo.value ||
+                    "The inspected page rejected the reinjection evaluation."
+                )
+              );
+              return;
+            }
 
-          const message = {
-            type: PANEL_REINJECT_RESULT,
-            result: evaluation?.bridgeState === "result" ? evaluation.result : undefined
-          };
-          if (!isPanelReinjectResultMessage(message) || message.result.requestId !== requestId) {
-            finish(
-              createBridgeErrorResult(
-                requestId,
-                "The inspected page reinjection bridge returned an invalid result. Reload the inspected page and capture a fresh update."
-              )
-            );
-            return;
+            const evaluation = readPageReinjectionEvaluation(result);
+            if (evaluation?.bridgeState === "unavailable") {
+              if (legacyRequestStarted) {
+                finish(
+                  createBridgeErrorResult(
+                    requestId,
+                    "The inspected-page reinjection request lost its result channel. Reload the inspected page and capture a fresh update."
+                  )
+                );
+                return;
+              }
+              finish(null);
+              return;
+            }
+            if (evaluation?.bridgeState === "pending") {
+              legacyRequestStarted = true;
+              pollTimer = setTimeout(() => {
+                pollTimer = null;
+                evaluate(legacyPageReinjectionResultExpression(requestId));
+              }, LEGACY_PAGE_REINJECT_POLL_MS);
+              return;
+            }
+
+            const message = {
+              type: PANEL_REINJECT_RESULT,
+              result: evaluation?.bridgeState === "result" ? evaluation.result : undefined
+            };
+            if (!isPanelReinjectResultMessage(message) || message.result.requestId !== requestId) {
+              if (legacyRequestStarted) {
+                cleanupLegacyPageReinjection(requestId);
+              }
+              finish(
+                createBridgeErrorResult(
+                  requestId,
+                  "The inspected page reinjection bridge returned an invalid result. Reload the inspected page and capture a fresh update."
+                )
+              );
+              return;
+            }
+            finish(message.result);
           }
-          finish(message.result);
+        );
+      } catch (error) {
+        if (legacyRequestStarted) {
+          cleanupLegacyPageReinjection(requestId);
         }
-      );
-    } catch (error) {
-      finish(
-        createBridgeErrorResult(
-          requestId,
-          error instanceof Error
-            ? error.message
-            : "The inspected page reinjection evaluation could not be started."
-        )
-      );
+        finish(
+          createBridgeErrorResult(
+            requestId,
+            error instanceof Error
+              ? error.message
+              : "The inspected page reinjection evaluation could not be started."
+          )
+        );
+      }
     }
   });
 }
@@ -256,9 +304,140 @@ function pageReinjectionExpression(
   draft: ReinjectionDraftPayload
 ): string {
   const bridgeName = JSON.stringify(PAGE_REINJECTION_BRIDGE_GLOBAL);
+  const stateName = JSON.stringify(legacyPageReinjectionStateName(requestId));
   const serializedRequestId = JSON.stringify(requestId);
   const serializedDraft = JSON.stringify(draft);
-  return `(() => { const bridge = globalThis[${bridgeName}]; if (!bridge || bridge.version !== ${PAGE_REINJECTION_BRIDGE_VERSION} || typeof bridge.reinject !== "function") return { bridgeState: "unavailable" }; return { bridgeState: "result", result: bridge.reinject(${serializedRequestId}, ${serializedDraft}) }; })()`;
+  const pageRequestType = JSON.stringify(PAGE_REINJECT_REQUEST);
+  const pageResultType = JSON.stringify(RUNTIME_REINJECT_RESULT);
+  return `(() => {
+    const host = globalThis;
+    const bridge = host[${bridgeName}];
+    if (bridge) {
+      if (
+        bridge.version !== ${PAGE_REINJECTION_BRIDGE_VERSION} ||
+        typeof bridge.reinject !== "function"
+      ) {
+        return { bridgeState: "unavailable" };
+      }
+      return {
+        bridgeState: "result",
+        result: bridge.reinject(${serializedRequestId}, ${serializedDraft})
+      };
+    }
+    if (
+      typeof host.addEventListener !== "function" ||
+      typeof host.removeEventListener !== "function" ||
+      typeof host.postMessage !== "function"
+    ) {
+      return { bridgeState: "unavailable" };
+    }
+    const stateName = ${stateName};
+    const existing = host[stateName];
+    if (existing?.status === "pending") {
+      return { bridgeState: "pending" };
+    }
+    if (existing?.status === "result") {
+      const result = existing.result;
+      existing.cleanup?.();
+      delete host[stateName];
+      return { bridgeState: "result", result };
+    }
+    let responsePort = null;
+    const state = {
+      status: "pending",
+      result: undefined,
+      cleanup: undefined
+    };
+    const accept = (value) => {
+      if (
+        !value ||
+        value.type !== ${pageResultType} ||
+        value.result?.requestId !== ${serializedRequestId}
+      ) {
+        return;
+      }
+      state.status = "result";
+      state.result = value.result;
+      state.cleanup?.();
+    };
+    const onWindowMessage = (event) => {
+      if (event.source === host) {
+        accept(event.data);
+      }
+    };
+    const onPortMessage = (event) => accept(event.data);
+    state.cleanup = () => {
+      host.removeEventListener("message", onWindowMessage);
+      responsePort?.removeEventListener?.("message", onPortMessage);
+      responsePort?.close?.();
+      responsePort = null;
+    };
+    try {
+      Object.defineProperty(host, stateName, {
+        configurable: true,
+        enumerable: false,
+        value: state
+      });
+      host.addEventListener("message", onWindowMessage);
+      const request = {
+        type: ${pageRequestType},
+        requestId: ${serializedRequestId},
+        draft: ${serializedDraft}
+      };
+      if (typeof host.MessageChannel === "function") {
+        const channel = new host.MessageChannel();
+        responsePort = channel.port1;
+        responsePort.addEventListener("message", onPortMessage);
+        responsePort.start();
+        host.postMessage(request, "*", [channel.port2]);
+      } else {
+        host.postMessage(request, "*");
+      }
+      return { bridgeState: "pending" };
+    } catch {
+      state.cleanup?.();
+      delete host[stateName];
+      return { bridgeState: "unavailable" };
+    }
+  })()`;
+}
+
+function legacyPageReinjectionResultExpression(requestId: string): string {
+  const stateName = JSON.stringify(legacyPageReinjectionStateName(requestId));
+  return `(() => {
+    const stateName = ${stateName};
+    const state = globalThis[stateName];
+    if (!state) {
+      return { bridgeState: "unavailable" };
+    }
+    if (state.status !== "result") {
+      return { bridgeState: "pending" };
+    }
+    const result = state.result;
+    state.cleanup?.();
+    delete globalThis[stateName];
+    return { bridgeState: "result", result };
+  })()`;
+}
+
+function cleanupLegacyPageReinjection(requestId: string): void {
+  const stateName = JSON.stringify(legacyPageReinjectionStateName(requestId));
+  try {
+    chrome.devtools.inspectedWindow.eval(
+      `(() => {
+        const stateName = ${stateName};
+        const state = globalThis[stateName];
+        state?.cleanup?.();
+        delete globalThis[stateName];
+      })()`
+    );
+  } catch {
+    // The inspected page may already be gone; its listeners are gone with it.
+  }
+}
+
+function legacyPageReinjectionStateName(requestId: string): string {
+  return `${LEGACY_PAGE_REINJECT_STATE_PREFIX}${requestId}`;
 }
 
 function readPageReinjectionEvaluation(value: unknown): PageReinjectionEvaluation | null {
@@ -268,6 +447,9 @@ function readPageReinjectionEvaluation(value: unknown): PageReinjectionEvaluatio
   const record = value as Record<string, unknown>;
   if (record.bridgeState === "unavailable") {
     return { bridgeState: "unavailable" };
+  }
+  if (record.bridgeState === "pending") {
+    return { bridgeState: "pending" };
   }
   if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, "result")) {
     return { bridgeState: "result", result: record.result };
