@@ -12,7 +12,7 @@ Lightstreamer Event Workbench is an open-source Chrome DevTools extension for de
 
 ## Project Status
 
-Version `0.1.1` is the current bug-fix package. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf), or build from source and load the generated `dist/` directory as an unpacked extension.
+Version `0.1.5` is the current release. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf), or build from source and load the generated `dist/` directory as an unpacked extension.
 
 The first release focuses on local, current-session debugging for the inspected tab. The UI and internal event envelope may evolve as more Lightstreamer workflows are validated.
 

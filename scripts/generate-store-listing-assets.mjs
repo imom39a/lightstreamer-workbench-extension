@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -42,6 +42,11 @@ const server = createStaticServer(tempDir);
 try {
   await generateRasterBrandAssets();
   await mkdir(outputDir, { recursive: true });
+  await mkdir(join(tempDir, "icons"), { recursive: true });
+  await copyFile(
+    resolve(projectRoot, "public/icons/title-icon.svg"),
+    join(tempDir, "icons/title-icon.svg")
+  );
   await writeFile(join(tempDir, "entry.ts"), screenshotHarnessSource());
   await writeFile(join(tempDir, "index.html"), htmlSource());
   await build({
@@ -365,6 +370,8 @@ function contentType(path) {
       return "text/javascript; charset=utf-8";
     case ".png":
       return "image/png";
+    case ".svg":
+      return "image/svg+xml";
     default:
       return "application/octet-stream";
   }

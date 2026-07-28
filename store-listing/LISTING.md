@@ -31,7 +31,7 @@ English (United States)
 ```text
 Lightstreamer Event Workbench adds a Chrome DevTools panel for developers debugging web applications that use the official Lightstreamer Web Client.
 
-It captures client, subscription, listener, item update, snapshot, and COMMAND-mode key lifecycle activity from the inspected page, then shows it in a searchable in-memory workbench with explicit retention status. Developers can inspect normalized Lightstreamer event envelopes, reconstruct current COMMAND state, review key lifecycles, and locally reinject edited synthetic updates through captured listener paths without backend access.
+It captures client, subscription, listener, item update, snapshot, and COMMAND-mode key lifecycle activity from the inspected page, then shows it in a searchable in-memory workbench with explicit retention status. Developers can inspect normalized Lightstreamer event envelopes, reconstruct current COMMAND state, review key lifecycles, and locally reinject captured or edited synthetic updates through captured listener or Lightstreamer WebSocket paths without backend access.
 
 Key features:
 
@@ -40,7 +40,7 @@ Key features:
 - Single free-text search in Timeline and COMMAND State for event IDs, Lightstreamer fields, commands, keys, diagnostics, source, and JSON payloads.
 - Collapsible detail panes, table headers, and clearer selected-row highlighting for faster scanning.
 - Lifecycle detail for ADD, UPDATE, DELETE, snapshot, live, and synthetic COMMAND events, with diagnostics and update payloads surfaced first.
-- Draft editor for cloning captured updates and locally reinjecting safe synthetic events.
+- Direct replay and edit-and-reinject actions for compatible captured updates, with request-scoped delivery feedback.
 - New COMMAND update editor with schema-based fields, validation diagnostics, and listener-target checks.
 - WebSocket/TLCP fallback diagnostics when primary Web Client instrumentation is unavailable.
 - Current-tab in-memory state only; no backend service is required.
@@ -83,22 +83,20 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-0.1.4
+0.1.5
 ```
 
 What's new:
 
 ```text
-High-volume debugging and DevTools panel readability release.
+Reinjection workflow, reliability, and opt-in analytics release.
 
-- Shows retained, total, and pruned event counts so event-store limits are explicit during long sessions.
-- Keeps Timeline rendering responsive by bounding visible high-volume event lists and prompting users to narrow search results.
-- Replaces dense Timeline and COMMAND State filter rows with one free-text search per view.
-- Adds visible table headers, collapsible detail panes, and clearer full-row selection highlighting.
-- Fixes help popups so tooltip text is visible on hover/focus and avoids viewport clipping.
-- Reorganizes event detail sections so raw diagnostics and useful update payloads are easier to inspect.
-- Improves COMMAND capture synchronization and keeps the Timeline current during live capture.
-- Adds optional coarse usage analytics with an in-panel disclosure, explicit consent, and immediate opt-out.
+- Adds direct replay, edit-and-reinject, and new COMMAND update workflows with clearer target selection.
+- Delivers synthetic updates through captured listener or Lightstreamer WebSocket paths and returns request-scoped success or failure feedback.
+- Preserves selection, editor drafts, scrolling, and field positions during live capture and editing.
+- Refreshes the panel with theme-aware styling, simpler JSON editing, and clearer replay results.
+- Adds optional coarse usage analytics with prominent consent, a Not now path, and immediate opt-out; no inspected-page or captured payload data is sent.
+- Makes the fixture tooling cross-platform and expands end-to-end reinjection and analytics coverage.
 ```
 
 ## Privacy Practices Draft
@@ -138,7 +136,7 @@ For deterministic local verification from the repository:
 
 - [ ] Confirm `public/manifest.json` version matches `package.json`.
 - [ ] Run `npm run release:package`.
-- [ ] Upload `release/lightstreamer-event-workbench-v0.1.4.zip`.
+- [ ] Upload `release/lightstreamer-event-workbench-v0.1.5.zip`.
 - [ ] Upload `public/icons/icon-128.png` as the store icon.
 - [ ] Upload all three screenshots in the order listed above.
 - [ ] Upload `store-listing/promo/small-promo-tile.png`.
