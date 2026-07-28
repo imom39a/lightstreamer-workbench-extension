@@ -2783,7 +2783,6 @@ export function renderPanel(
       context,
       draftExecutionTarget
     );
-    const executionTargets = createDraftExecutionTargets(currentDraft);
 
     const commandLabel = document.createElement("label");
     commandLabel.className = "command-draft-label";
@@ -2867,7 +2866,6 @@ export function renderPanel(
     }
 
     controls.append(
-      executionTargets,
       commandLabel,
       keyLabel,
       snapshotLabel,
@@ -3260,56 +3258,95 @@ export function renderPanel(
     section.setAttribute("aria-busy", String(reinjectionPending));
     section.append(createTextElement("h3", "detail-section-heading", "Replay"));
 
-    const cloneButton = document.createElement("button");
-    cloneButton.className = "clone-button";
-    cloneButton.type = "button";
-    cloneButton.textContent = "Clone";
-    cloneButton.disabled = !canCloneEvent(selectedEvent) || reinjectionPending;
-    cloneButton.addEventListener("click", () => {
-      const nextDraft = createDraftFromEvent(selectedEvent);
-      if (!nextDraft || !validateEditableDraft(nextDraft).valid) {
+    const availableDraft = currentDraft ?? createReplayDraftFromEvent(selectedEvent);
+    const executionTarget = availableDraft
+      ? preferredDraftExecutionTarget(availableDraft)
+      : "captured-listener";
+    const sourceReplay = availableDraft ? createSourceReplayDraft(availableDraft) : null;
+    const sourceValidation = validateDraftForExecutionTarget(sourceReplay, executionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    const editValidation = validateEditableDraft(availableDraft);
+
+    const activateDraft = (editing: boolean): ReinjectionDraft | null => {
+      if (!availableDraft) {
+        return null;
+      }
+      if (!currentDraft) {
+        draft = availableDraft;
+        draftSurface = surface === "command" ? "command-replay" : "timeline";
+        draftResultEventId = null;
+        draftEditing = editing;
+        draftJsonText = formatDraftJson(availableDraft);
+        draftJsonError = null;
+        reinjectionMessage = null;
+        if (surface === "command") {
+          selectedCommandUpdateEventId = selectedEvent.id;
+          commandDetailOpen = true;
+        } else {
+          selectedEventId = selectedEvent.id;
+          selectedPinned = true;
+        }
+      }
+      draftExecutionTarget = executionTarget;
+      return draft ?? availableDraft;
+    };
+
+    const actionBar = document.createElement("div");
+    actionBar.className = "replay-action-bar";
+    const reinjectButton = document.createElement("button");
+    reinjectButton.className = "reinject-button replay-source-button";
+    reinjectButton.type = "button";
+    reinjectButton.textContent = reinjectionPending ? "Re-injecting…" : "Re-inject";
+    reinjectButton.disabled = !sourceValidation.valid || reinjectionPending;
+    if (!sourceValidation.valid) {
+      reinjectButton.title = validationMessage(sourceValidation.errors);
+    }
+    reinjectButton.addEventListener("click", () => {
+      const activeDraft = activateDraft(false);
+      if (!activeDraft) {
         return;
       }
-      draft = nextDraft;
-      draftSurface = surface === "command" ? "command-replay" : "timeline";
-      draftResultEventId = null;
-      draftEditing = false;
-      draftJsonText = formatDraftJson(nextDraft);
-      draftJsonError = null;
-      draftExecutionTarget = preferredDraftExecutionTarget(nextDraft);
-      reinjectionMessage = null;
-      if (surface === "command") {
-        selectedCommandUpdateEventId = selectedEvent.id;
-        commandDetailOpen = true;
-        renderCommandState({ preservePaneState: true });
-      } else {
-        selectedEventId = selectedEvent.id;
-        selectedPinned = true;
-        renderDetail(selectedEvent);
-      }
-    });
-    section.append(cloneButton);
-
-    if (!currentDraft) {
-      section.append(
-        createTextElement(
-          "p",
-          "editor-placeholder",
-          "Clone this captured item update to replay it unchanged or edit a staged copy."
-        )
+      void executeCurrentDraft(
+        createSourceReplayDraft(activeDraft),
+        executionTarget,
+        "source"
       );
-      parent.append(section);
-      return;
-    }
+    });
 
-    section.append(createSourceContext(currentDraft));
-    section.append(createDraftExecutionTargets(currentDraft));
+    const mutateButton = document.createElement("button");
+    mutateButton.className = "mutate-inject-button";
+    mutateButton.type = "button";
+    mutateButton.textContent = "Mutate & re-inject…";
+    mutateButton.disabled = !editValidation.valid || reinjectionPending;
+    mutateButton.setAttribute("aria-expanded", String(draftEditing));
+    if (!editValidation.valid) {
+      mutateButton.title = validationMessage(editValidation.errors);
+    }
+    mutateButton.addEventListener("click", () => {
+      const activeDraft = activateDraft(true);
+      if (!activeDraft) {
+        return;
+      }
+      draftEditing = true;
+      draftJsonText = draftJsonText ?? formatDraftJson(activeDraft);
+      draftJsonError = null;
+      reinjectionMessage = null;
+      renderDraftSurface(activeDraft, true);
+    });
+    actionBar.append(reinjectButton, mutateButton);
+    section.append(actionBar);
+
+    if (currentDraft) {
+      draftExecutionTarget = executionTarget;
+      section.append(createSourceContext(currentDraft));
+    }
 
     if (reinjectionPending) {
       const pending = createTextElement(
         "p",
         "reinjection-message pending",
-        draftExecutionTarget === "captured-listener"
+        executionTarget === "captured-listener"
           ? "Delivering locally to the original app listener…"
           : "Replaying locally through the captured page WebSocket…"
       );
@@ -3320,43 +3357,7 @@ export function renderPanel(
       section.append(createReinjectionMessageElement(reinjectionMessage));
     }
 
-    const actionBar = document.createElement("div");
-    actionBar.className = "replay-action-bar";
-    const sourceReplay = createSourceReplayDraft(currentDraft);
-    const sourceValidation = validateDraftForExecutionTarget(sourceReplay, draftExecutionTarget, {
-      bridgeAvailable: bridgeReady
-    });
-    const reinjectButton = document.createElement("button");
-    reinjectButton.className = "reinject-button replay-source-button";
-    reinjectButton.type = "button";
-    reinjectButton.textContent = reinjectionPending ? "Re-injecting…" : "Re-inject";
-    reinjectButton.disabled = !sourceValidation.valid || reinjectionPending;
-    reinjectButton.addEventListener("click", () => {
-      const activeDraft = draft ?? currentDraft;
-      void executeCurrentDraft(
-        createSourceReplayDraft(activeDraft),
-        draftExecutionTarget,
-        "source"
-      );
-    });
-
-    const mutateButton = document.createElement("button");
-    mutateButton.className = "mutate-inject-button";
-    mutateButton.type = "button";
-    mutateButton.textContent = "Mutate & Inject…";
-    mutateButton.disabled = reinjectionPending;
-    mutateButton.setAttribute("aria-expanded", String(draftEditing));
-    mutateButton.addEventListener("click", () => {
-      draftEditing = true;
-      draftJsonText = draftJsonText ?? formatDraftJson(draft ?? currentDraft);
-      draftJsonError = null;
-      reinjectionMessage = null;
-      renderDraftSurface(draft ?? currentDraft, true);
-    });
-    actionBar.append(reinjectButton, mutateButton);
-    section.append(actionBar);
-
-    if (draftEditing) {
+    if (currentDraft && draftEditing) {
       section.append(createDraftControls(currentDraft));
     }
     parent.append(section);
@@ -3376,7 +3377,7 @@ export function renderPanel(
       createTextElement(
         "h4",
         "draft-editor-heading",
-        "Mutate & Inject"
+        "Mutate & re-inject"
       ),
       createTextElement(
         "span",
@@ -3399,7 +3400,9 @@ export function renderPanel(
     const injectButton = document.createElement("button");
     injectButton.className = "inject-edited-button";
     injectButton.type = "button";
-    injectButton.textContent = reinjectionPending ? "Injecting…" : "Inject edited draft";
+    injectButton.textContent = reinjectionPending
+      ? "Re-injecting…"
+      : "Re-inject edited update";
     injectButton.disabled = !validation.valid || Boolean(draftJsonError) || reinjectionPending;
     injectButton.dataset.validationValid = String(validation.valid && !draftJsonError);
     injectButton.addEventListener("click", () => {
@@ -3899,61 +3902,10 @@ export function renderPanel(
     renderDraftSurface(nextDraft, true);
   }
 
-  function createDraftExecutionTargets(currentDraft: ReinjectionDraft): HTMLElement {
-    const target = document.createElement("section");
-    target.className = "draft-execution-targets";
-    target.setAttribute("aria-label", "Delivery target");
-    target.append(createTextElement("h4", "draft-target-legend", "Delivery target"));
-    const pageTarget = draftPageExecutionTarget(currentDraft);
-    const pageTargetAvailable = draftPageTargetAvailable(currentDraft, pageTarget);
-    draftExecutionTarget = pageTarget;
-    target.dataset.target = pageTarget;
-    target.dataset.available = String(pageTargetAvailable);
-    target.append(
-      createTextElement(
-        "span",
-        "draft-target-label",
-        pageTarget === "captured-wire" ? "Inspected page stream" : "Original app listener"
-      ),
-      createTextElement(
-        "span",
-        "draft-target-helper",
-        pageTarget === "captured-wire"
-          ? pageTargetAvailable
-            ? "Replays locally through the captured page WebSocket so the Lightstreamer client and application listeners receive the update."
-            : "Unavailable because the captured page WebSocket or panel bridge is disconnected. Reload the inspected page if the extension was updated."
-          : pageTargetAvailable
-            ? "Calls the captured listener in the inspected page so the application receives the update."
-            : "Unavailable because this capture has no live listener target or the panel bridge is disconnected. Capture a fresh update."
-      )
-    );
-    return target;
-  }
-
   function draftPageExecutionTarget(
     currentDraft: ReinjectionDraft
   ): "captured-listener" | "captured-wire" {
     return currentDraft.captureSource === "wire" ? "captured-wire" : "captured-listener";
-  }
-
-  function draftPageTargetAvailable(
-    currentDraft: ReinjectionDraft,
-    executionTarget = draftPageExecutionTarget(currentDraft)
-  ): boolean {
-    if (!bridgeReady) {
-      return false;
-    }
-    if (executionTarget === "captured-wire") {
-      return Boolean(
-        currentDraft.captureSource === "wire" &&
-        currentDraft.target.subscriptionId &&
-        currentDraft.item.position &&
-        currentDraft.item.position > 0
-      );
-    }
-    return Boolean(
-      currentDraft.captureSource !== "wire" && currentDraft.target.listenerId
-    );
   }
 
   function preferredDraftExecutionTarget(
@@ -3987,8 +3939,8 @@ export function renderPanel(
         kind: "success",
         text:
           executionTarget === "captured-wire"
-            ? `${actionMode === "source" ? "Source clone" : "Edited draft"} delivered locally through the captured page WebSocket. No server was contacted.`
-            : `${actionMode === "source" ? "Source clone" : "Edited draft"} delivered to the original app listener. The inspected page was reached.`
+            ? `${actionMode === "source" ? "Source update" : "Edited update"} delivered locally through the captured page WebSocket. No server was contacted.`
+            : `${actionMode === "source" ? "Source update" : "Edited update"} delivered to the original app listener. The inspected page was reached.`
       };
       renderDraftSurface(currentDraft, true);
       appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
@@ -4395,7 +4347,6 @@ function focusSelectorForElement(element: HTMLElement): string | null {
     "reinject-button",
     "inject-command-button",
     "new-command-button",
-    "clone-button",
     "mutate-inject-button",
     "inject-edited-button",
     "reset-draft-button",
@@ -5372,7 +5323,7 @@ function createFailureMessage(result: ReinjectionResult): ReinjectionMessage {
   if (result.status === "stale-target") {
     return {
       kind: "error",
-      text: "The captured page delivery target is no longer available. Capture a fresh update for this subscription, then clone it again."
+      text: "The inspected page can no longer receive this replay. Capture a fresh update for this subscription, then try again."
     };
   }
 
@@ -5395,7 +5346,7 @@ function createCommandFailureMessage(result: ReinjectionResult): ReinjectionMess
   if (result.status === "stale-target") {
     return {
       kind: "error",
-      text: "The captured page delivery target is no longer available. Capture a fresh update for this subscription, then create the synthetic update again."
+      text: "The inspected page can no longer receive this update. Capture a fresh update for this subscription, then create the synthetic update again."
     };
   }
 
@@ -5721,12 +5672,14 @@ function detailUpdateSummary(event: LightstreamerEventEnvelope): string {
   return `${commandKey} ${snapshot} ${changed} changed`;
 }
 
-function canCloneEvent(event: LightstreamerEventEnvelope): boolean {
+function createReplayDraftFromEvent(
+  event: LightstreamerEventEnvelope
+): ReinjectionDraft | null {
   if (event.source !== "server" || event.synthetic) {
-    return false;
+    return null;
   }
   const draft = createDraftFromEvent(event);
-  return validateEditableDraft(draft).valid;
+  return validateEditableDraft(draft).valid ? draft : null;
 }
 
 function createSourceContext(draft: ReinjectionDraft): HTMLElement {
@@ -5735,7 +5688,7 @@ function createSourceContext(draft: ReinjectionDraft): HTMLElement {
   const summary = document.createElement("summary");
   summary.className = "draft-source-summary";
   summary.append(
-    createTextElement("span", "draft-source-summary-title", "Staged source clone"),
+    createTextElement("span", "draft-source-summary-title", "Replay source"),
     createTextElement(
       "span",
       "draft-source-summary-meta",

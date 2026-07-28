@@ -330,9 +330,10 @@ describe("panel shell", () => {
     expect(text(".detail-pane").indexOf("Raw capture")).toBeGreaterThan(
       text(".detail-pane").indexOf("Context")
     );
-    expect(text(".editor-placeholder")).toBe(
-      "Clone this captured item update to replay it unchanged or edit a staged copy."
-    );
+    expect(text(".replay-source-button")).toBe("Re-inject");
+    expect(text(".mutate-inject-button")).toBe("Mutate & re-inject…");
+    expect(document.querySelector(".clone-button")).toBeNull();
+    expect(document.querySelector(".draft-execution-targets")).toBeNull();
 
     document.querySelector<HTMLButtonElement>(".detail-collapse-button")?.click();
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
@@ -1176,7 +1177,7 @@ describe("panel shell", () => {
     expect(document.querySelector(".detail-copy-message")?.getAttribute("aria-live")).toBe("polite");
   });
 
-  it("disables Clone event for non-item-update rows", () => {
+  it("disables replay actions for non-item-update rows", () => {
     panel.appendCaptureMessage(
       createCaptureMessage("client-status", {
         client: { id: "client-1", status: "CONNECTED:WS-STREAMING" }
@@ -1184,25 +1185,25 @@ describe("panel shell", () => {
     );
     clickFirstEventRow();
 
-    expect(text(".clone-button")).toBe("Clone");
-    expect(document.querySelector<HTMLButtonElement>(".clone-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>(".mutate-inject-button")?.disabled).toBe(true);
+    expect(document.querySelector(".clone-button")).toBeNull();
   });
 
-  it("stages an unchanged clone before exposing separate replay and mutation actions", () => {
+  it("exposes direct replay and mutation actions without a delivery-target step", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
 
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
-
-    expect(text(".draft-source-context")).toContain("Staged source clone");
     expect(text(".replay-source-button")).toBe("Re-inject");
-    expect(text(".mutate-inject-button")).toBe("Mutate & Inject…");
-    expect(document.querySelector(".draft-controls")).toBeNull();
-    expect(document.querySelector(".draft-json")).toBeNull();
-    expect(
-      document.querySelectorAll<HTMLInputElement>('input[name="draft-execution-target"]')
-    ).toHaveLength(0);
-    expect(text(".draft-execution-targets")).toContain("Original app listener");
+    expect(text(".mutate-inject-button")).toBe("Mutate & re-inject…");
+    expect(document.querySelector(".clone-button")).toBeNull();
+    expect(document.querySelector(".draft-execution-targets")).toBeNull();
+    expect(document.querySelector(".draft-source-context")).toBeNull();
+
+    openMutationEditor();
+
+    expect(text(".draft-source-context")).toContain("Replay source");
+    expect(document.querySelector(".draft-controls")).not.toBeNull();
   });
 
   it("blocks replay when the captured page stream is unavailable", async () => {
@@ -1231,21 +1232,13 @@ describe("panel shell", () => {
 
     expect(text(".event-marker")).toBe("wire snapshot");
     clickFirstEventRow();
-    expect(document.querySelector<HTMLButtonElement>(".clone-button")?.disabled).toBe(false);
-
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
-
-    expect(text(".draft-source-context")).toContain("Listener-");
-    const target = document.querySelector<HTMLElement>(".draft-execution-targets");
-    expect(target?.dataset.target).toBe("captured-wire");
-    expect(target?.dataset.available).toBe("false");
-    expect(target?.textContent).toContain("Inspected page stream");
-    expect(target?.textContent).toContain("Unavailable");
-    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
 
     const executeButton = document.querySelector<HTMLButtonElement>(".reinject-button");
     expect(executeButton?.textContent).toBe("Re-inject");
     expect(executeButton?.disabled).toBe(true);
+    expect(executeButton?.title).toContain("captured page WebSocket bridge is unavailable");
+    expect(document.querySelector<HTMLButtonElement>(".mutate-inject-button")?.disabled).toBe(false);
+    expect(document.querySelector(".draft-execution-targets")).toBeNull();
     executeButton?.click();
     await flushPromises();
     await flushPanelRender();
@@ -1264,7 +1257,7 @@ describe("panel shell", () => {
     expect(document.querySelector('.event-row[data-synthetic="true"]')).toBeNull();
   });
 
-  it("shows source context after cloning without changing the selected row", () => {
+  it("shows source context after opening mutation without changing the selected row", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     appendCommandUpdate(panel, "beta", { qty: 2 });
 
@@ -1272,7 +1265,7 @@ describe("panel shell", () => {
     firstRow.click();
     expect(document.querySelectorAll<HTMLButtonElement>(".event-row")[0].getAttribute("data-selected")).toBe("true");
 
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
+    openMutationEditor();
 
     expect(document.querySelectorAll<HTMLButtonElement>(".event-row")[0].getAttribute("data-selected")).toBe("true");
     expect(text(".draft-source-context")).toContain("Source event");
@@ -1287,7 +1280,6 @@ describe("panel shell", () => {
   it("keeps source command and key immutable in the source summary after edits", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
 
     input('.structured-field-input[data-field-name="command"]', "UPDATE");
@@ -1315,7 +1307,6 @@ describe("panel shell", () => {
     });
     appendCommandUpdate(panel, "DDE_HEALTH.HEARTBEAT", { modelValues });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
 
     const summaryRow = document.querySelector<HTMLTableRowElement>(
@@ -1368,7 +1359,6 @@ describe("panel shell", () => {
     const modelValues = JSON.stringify({ messageId: "6675533", messageType: "TICKER" });
     appendCommandUpdate(panel, "MESSENGER_TICKER", { modelValues });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
 
     const row = document.querySelector<HTMLTableRowElement>(
@@ -1389,16 +1379,13 @@ describe("panel shell", () => {
     expect(row?.textContent).not.toContain("Draft formatted preview");
   });
 
-  it("shows one immutable page delivery target instead of execution choices", () => {
+  it("keeps the capture-derived delivery path out of the replay UI", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
 
-    const target = document.querySelector<HTMLElement>(".draft-execution-targets");
-    expect(target?.dataset.target).toBe("captured-listener");
-    expect(target?.dataset.available).toBe("true");
-    expect(target?.textContent).toContain("Original app listener");
+    expect(document.querySelector(".draft-execution-targets")).toBeNull();
     expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
+    expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(false);
   });
 
   it("gates a production bridge by status without a local fallback", async () => {
@@ -1412,21 +1399,17 @@ describe("panel shell", () => {
     panel = renderPanel(root);
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
 
     panel.setStatus("idle");
     panel.setBridge({ reinjectDraft });
-    expect(document.querySelector<HTMLElement>(".draft-execution-targets")?.dataset.available).toBe("false");
     expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(true);
 
     panel.setStatus("bridge connected");
-    expect(document.querySelector<HTMLElement>(".draft-execution-targets")?.dataset.available).toBe("true");
     expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(false);
 
     panel.setStatus("bridge disconnected");
-    expect(document.querySelector<HTMLElement>(".draft-execution-targets")?.dataset.available).toBe("false");
     expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(true);
-    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
+    expect(document.querySelector(".draft-execution-targets")).toBeNull();
 
     document.querySelector<HTMLButtonElement>(".reinject-button")?.click();
     await flushPromises();
@@ -1437,7 +1420,6 @@ describe("panel shell", () => {
   it("derives changed fields from draft JSON edits without remounting the editor", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     openAdvancedDraftJson();
     const detail = document.querySelector<HTMLElement>(".detail-pane");
@@ -1462,7 +1444,6 @@ describe("panel shell", () => {
   it("keeps the last valid draft when advanced JSON becomes invalid", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     openAdvancedDraftJson();
     editDraftJson((draftJson) => {
@@ -1481,7 +1462,6 @@ describe("panel shell", () => {
   it("uses Escape to leave editing without changing the selected event", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     const inputElement = document.querySelector<HTMLElement>(
       '.structured-field-input[data-field-name="qty"]'
@@ -1496,7 +1476,6 @@ describe("panel shell", () => {
   it("uses Ctrl+Enter to execute the current valid edited action", async () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     input('.structured-field-input[data-field-name="qty"]', "2");
 
@@ -1510,7 +1489,7 @@ describe("panel shell", () => {
 
     expect(text(".event-count")).toBe("2");
     expect(text(".reinjection-message")).toBe(
-      "Edited draft delivered to the original app listener. The inspected page was reached."
+      "Edited update delivered to the original app listener. The inspected page was reached."
     );
   });
 
@@ -1518,7 +1497,6 @@ describe("panel shell", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     await flushPanelRender();
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     openAdvancedDraftJson();
 
@@ -1546,7 +1524,7 @@ describe("panel shell", () => {
     expect(detail.scrollTop).toBe(280);
   });
 
-  it("keeps editing the cloned source after it leaves the live Timeline window", async () => {
+  it("keeps editing the replay source after it leaves the live Timeline window", async () => {
     const modelValues = JSON.stringify({
       selected: false,
       passengers: Array.from({ length: 12 }, (_, index) => ({ id: index, active: true }))
@@ -1559,7 +1537,6 @@ describe("panel shell", () => {
     const sourceRow = document.querySelector<HTMLButtonElement>(".event-row");
     const sourceEventId = sourceRow?.dataset.eventId;
     sourceRow?.click();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
 
     appendCommandUpdate(panel, "overflow", { modelValues });
@@ -1702,13 +1679,12 @@ describe("panel shell", () => {
     expect(detailSection("Current item fields").open).toBe(false);
   });
 
-  it("clears the cloned draft when selecting a different captured event", () => {
+  it("clears the replay draft when selecting a different captured event", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     appendCommandUpdate(panel, "beta", { qty: 2 });
 
     const rows = document.querySelectorAll<HTMLButtonElement>(".event-row");
     rows[0].click();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     openAdvancedDraftJson();
     editDraftJson((draft) => {
@@ -1722,10 +1698,9 @@ describe("panel shell", () => {
     document.querySelectorAll<HTMLButtonElement>(".event-row")[1].click();
 
     expect(document.querySelector<HTMLTextAreaElement>(".draft-json")).toBeNull();
-    expect(text(".editor-placeholder")).toBe(
-      "Clone this captured item update to replay it unchanged or edit a staged copy."
-    );
-    expect(document.querySelector<HTMLButtonElement>(".clone-button")?.disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>(".replay-source-button")?.disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>(".mutate-inject-button")?.disabled).toBe(false);
+    expect(document.querySelector(".clone-button")).toBeNull();
     expect(text(".draft-source-context")).toBe("");
     expect(text(".reinjection-message")).toBe("");
   });
@@ -1733,7 +1708,6 @@ describe("panel shell", () => {
   it("shows validation and disables reinjection when the draft key is cleared", () => {
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     openAdvancedDraftJson();
 
@@ -1766,7 +1740,6 @@ describe("panel shell", () => {
     });
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     openAdvancedDraftJson();
     editDraftJson((draftJson) => {
@@ -1782,7 +1755,7 @@ describe("panel shell", () => {
     expect(receivedDrafts[0]?.changedFields).toEqual({ command: "ADD", key: "alpha" });
     expect(receivedDrafts[0]?.isSnapshot).toBe(true);
     expect(text(".reinjection-message")).toBe(
-      "Source clone delivered to the original app listener. The inspected page was reached."
+      "Source update delivered to the original app listener. The inspected page was reached."
     );
   });
 
@@ -1804,7 +1777,6 @@ describe("panel shell", () => {
 
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     openMutationEditor();
     input('.structured-field-input[data-field-name="qty"]', "2");
     expect(text(".draft-dirty-count")).toBe("1 changed");
@@ -1829,7 +1801,7 @@ describe("panel shell", () => {
     expect(button?.disabled).toBe(false);
     button?.click();
 
-    expect(text(".inject-edited-button")).toBe("Injecting…");
+    expect(text(".inject-edited-button")).toBe("Re-injecting…");
     expect(document.querySelector(".replay-card")?.getAttribute("aria-busy")).toBe("true");
     await flushPromises();
     await flushPanelRender();
@@ -1841,7 +1813,7 @@ describe("panel shell", () => {
     expect(receivedDraft?.changedFields.qty).toBe(12);
     expect(receivedDraft?.isSnapshot).toBe(false);
     expect(text(".reinjection-message")).toBe(
-      "Edited draft delivered to the original app listener. The inspected page was reached."
+      "Edited update delivered to the original app listener. The inspected page was reached."
     );
     expect(text(".event-count")).toBe("2");
     expect(Array.from(document.querySelectorAll(".event-marker")).map((marker) => marker.textContent)).toContain(
@@ -1881,12 +1853,11 @@ describe("panel shell", () => {
 
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     document.querySelector<HTMLButtonElement>(".reinject-button")?.click();
     await flushPromises();
 
     expect(text(".reinjection-message")).toBe(
-      "The captured page delivery target is no longer available. Capture a fresh update for this subscription, then clone it again."
+      "The inspected page can no longer receive this replay. Capture a fresh update for this subscription, then try again."
     );
     expect(text(".event-count")).toBe("1");
     expect(Array.from(document.querySelectorAll(".event-marker")).map((marker) => marker.textContent)).not.toContain(
@@ -1916,7 +1887,6 @@ describe("panel shell", () => {
 
     appendCommandUpdate(panel, "alpha", { qty: 1 });
     clickFirstEventRow();
-    document.querySelector<HTMLButtonElement>(".clone-button")?.click();
     document.querySelector<HTMLButtonElement>(".reinject-button")?.click();
     await flushPromises();
 

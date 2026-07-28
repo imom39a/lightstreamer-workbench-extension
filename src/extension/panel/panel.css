@@ -1325,31 +1325,6 @@ button {
   font-weight: 700;
 }
 
-.clone-button {
-  min-height: 30px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: var(--color-surface);
-  color: var(--color-text);
-  cursor: pointer;
-  padding: 4px 8px;
-}
-
-.clone-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.56;
-}
-
-.clone-button:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-
-.editor-placeholder {
-  margin: 8px 0 0;
-  color: var(--color-muted);
-}
-
 .draft-source-context {
   min-width: 0;
   margin: 0;
@@ -1493,44 +1468,6 @@ button {
   font-size: 11px;
   font-weight: 700;
   padding: 4px 7px;
-}
-
-.draft-execution-targets {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-  margin: 0;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  padding: 10px;
-}
-
-.draft-target-legend {
-  margin: 0;
-  color: var(--color-text);
-  font-size: 12px;
-  font-weight: 700;
-  padding: 0;
-}
-
-.draft-target-label {
-  color: var(--color-text);
-  font-weight: 600;
-}
-
-.draft-target-helper {
-  color: var(--color-muted);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.draft-execution-targets[data-available="false"] {
-  border-color: color-mix(in srgb, var(--color-warning) 55%, transparent);
-  background: var(--color-warning-bg);
-}
-
-.draft-execution-targets[data-available="false"] .draft-target-label {
-  color: var(--color-warning);
 }
 
 .draft-field-diff {
@@ -2167,7 +2104,6 @@ textarea {
 .command-help-icon,
 .copy-event-json-button,
 .detail-collapse-button,
-.clone-button,
 .mutate-inject-button,
 .reset-draft-button,
 .cancel-editing-button,
@@ -2215,8 +2151,6 @@ textarea {
 .draft-source-value,
 .draft-source-fields,
 .draft-editor-heading,
-.draft-target-legend,
-.draft-target-label,
 .draft-field-heading,
 .draft-field-name,
 .draft-field-original,
@@ -2242,12 +2176,10 @@ textarea {
 .detail-placeholder,
 .detail-exact-time-label,
 .detail-section-marker,
-.editor-placeholder,
 .draft-source-summary,
 .draft-source-summary-meta,
 .draft-source-label,
 .draft-source-heading,
-.draft-target-helper,
 .draft-value-type,
 .structured-null-value,
 .parsed-json-disclosure,
@@ -2271,7 +2203,6 @@ textarea {
 .detail-section,
 .draft-editor,
 .draft-controls,
-.draft-execution-targets,
 .draft-field-diff,
 .draft-field-heading,
 .draft-field-name,
@@ -2439,7 +2370,6 @@ textarea {
 .command-lifecycle-toggle,
 .copy-event-json-button,
 .detail-collapse-button,
-.clone-button,
 .mutate-inject-button,
 .inject-edited-button,
 .reset-draft-button,
@@ -2501,7 +2431,6 @@ textarea {
 .draft-field-name,
 .draft-field-original,
 .draft-field-value,
-.draft-target-helper,
 .command-summary-value,
 .command-lifecycle-line {
   overflow-wrap: anywhere;

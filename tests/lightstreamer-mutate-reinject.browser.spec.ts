@@ -244,7 +244,8 @@ async function runBrowserProof(): Promise<void> {
     const stagedDraft = await stageCapturedUpdate(panelCdp, "wire");
     assert.deepEqual(stagedDraft, {
       staged: true,
-      deliveryTarget: "captured-wire",
+      cloneVisible: false,
+      deliveryTargetVisible: false,
       source: "wire",
       command: "ADD"
     });
@@ -288,7 +289,7 @@ async function runBrowserProof(): Promise<void> {
       `
       document.querySelector(".replay-card")?.getAttribute("aria-busy") === "false" &&
       document.querySelector(".reinjection-message")?.textContent?.includes(
-        "Edited draft delivered locally through the captured page WebSocket"
+        "Edited update delivered locally through the captured page WebSocket"
       )
       `,
       "the shipped panel to render direct reinjection success"
@@ -341,7 +342,7 @@ async function runBrowserProof(): Promise<void> {
       `
       document.querySelector(".replay-card")?.getAttribute("aria-busy") === "false" &&
       document.querySelector(".reinjection-message")?.textContent?.includes(
-        "Edited draft delivered locally through the captured page WebSocket"
+        "Edited update delivered locally through the captured page WebSocket"
       ) &&
       ![...document.querySelectorAll('[role="alert"]')].some((alert) => !alert.hidden)
       `,
@@ -421,7 +422,8 @@ async function runBrowserProof(): Promise<void> {
     const listenerDraft = await stageCapturedUpdate(panelCdp, "listener");
     assert.deepEqual(listenerDraft, {
       staged: true,
-      deliveryTarget: "captured-listener",
+      cloneVisible: false,
+      deliveryTargetVisible: false,
       source: "listener",
       command: "ADD"
     });
@@ -476,7 +478,7 @@ async function runBrowserProof(): Promise<void> {
       `
       document.querySelector(".replay-card")?.getAttribute("aria-busy") === "false" &&
       document.querySelector(".reinjection-message")?.textContent?.includes(
-        "Edited draft delivered to the original app listener"
+        "Edited update delivered to the original app listener"
       ) &&
       ![...document.querySelectorAll('[role="alert"]')].some((alert) => !alert.hidden)
       `,
@@ -500,7 +502,7 @@ async function runBrowserProof(): Promise<void> {
     assert.equal(listenerFinalUi.updateCount, 2);
 
     console.log(
-      "Mutate & Inject browser proof passed: wire + listener fallback delivery, feedback, and official client UI"
+      "Mutate & re-inject browser proof passed: wire + listener fallback delivery, feedback, and official client UI"
     );
   } catch (error) {
     const logTail = chromeLogs.join("").slice(-4_000);
@@ -593,7 +595,8 @@ async function stageCapturedUpdate(
   source: "wire" | "listener"
 ): Promise<{
   staged: boolean;
-  deliveryTarget: string | null;
+  cloneVisible: boolean;
+  deliveryTargetVisible: boolean;
   source: string | null;
   command: string | null;
 }> {
@@ -615,22 +618,21 @@ async function stageCapturedUpdate(
       const command = row.dataset.command ?? null;
       row.click();
 
-      const clone = document.querySelector(".clone-button");
-      if (!(clone instanceof HTMLButtonElement) || clone.disabled) {
-        throw new Error("The shipped panel did not expose an enabled Clone action.");
+      const reinject = document.querySelector(".replay-source-button");
+      if (!(reinject instanceof HTMLButtonElement) || reinject.disabled) {
+        throw new Error("The shipped panel did not expose an enabled Re-inject action.");
       }
-      clone.click();
 
       const mutate = document.querySelector(".mutate-inject-button");
       if (!(mutate instanceof HTMLButtonElement) || mutate.disabled) {
-        throw new Error("The shipped panel did not expose an enabled Mutate & Inject action.");
+        throw new Error("The shipped panel did not expose an enabled Mutate & re-inject action.");
       }
       mutate.click();
 
       return {
         staged: document.querySelector(".draft-controls") !== null,
-        deliveryTarget:
-          document.querySelector(".draft-execution-targets")?.getAttribute("data-target") ?? null,
+        cloneVisible: document.querySelector(".clone-button") !== null,
+        deliveryTargetVisible: document.querySelector(".draft-execution-targets") !== null,
         source,
         command
       };
@@ -824,7 +826,7 @@ async function resolveChromeExecutable(): Promise<string> {
     }
   }
   throw new Error(
-    "Chrome for Testing or Chromium was not found. Run npm run fixture:browser:install, or set CHROME_PATH, to run the real Mutate & Inject browser proof."
+    "Chrome for Testing or Chromium was not found. Run npm run fixture:browser:install, or set CHROME_PATH, to run the real Mutate & re-inject browser proof."
   );
 }
 

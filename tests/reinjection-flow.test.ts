@@ -67,7 +67,6 @@ describe("curated mutate-and-reinject contract", () => {
     await flushPanelRender();
 
     click(".event-row");
-    click(".clone-button");
     click(".mutate-inject-button");
 
     const jsonEditor = document.querySelector<HTMLTextAreaElement>(
@@ -214,11 +213,7 @@ describe("curated mutate-and-reinject contract", () => {
     await flushPanelRender();
 
     click(".event-row");
-    click(".clone-button");
-    const target = document.querySelector<HTMLElement>(".draft-execution-targets");
-    expect(target?.dataset.target).toBe("captured-wire");
-    expect(target?.dataset.available).toBe("true");
-    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
+    expect(document.querySelector(".draft-execution-targets")).toBeNull();
     click(".mutate-inject-button");
 
     const jsonEditor = document.querySelector<HTMLTextAreaElement>(
@@ -306,8 +301,7 @@ describe("curated mutate-and-reinject contract", () => {
     await flushPanelRender();
 
     click(".event-row");
-    click(".clone-button");
-    clickButtonByText(".replay-action-bar button", "Mutate & Inject…");
+    clickButtonByText(".replay-action-bar button", "Mutate & re-inject…");
     const jsonEditor = document.querySelector<HTMLTextAreaElement>(
       '.structured-json-input[data-field-name="modelValues"]'
     );
@@ -323,7 +317,7 @@ describe("curated mutate-and-reinject contract", () => {
     expect(selectedTimelineEventId()).toBe("synthetic-high-volume-json-mutation");
     expect(document.querySelector(".draft-controls")).not.toBeNull();
     expect(text(".reinjection-message")).toContain(
-      "Edited draft delivered to the original app listener"
+      "Edited update delivered to the original app listener"
     );
     expect(
       document.querySelector<HTMLTextAreaElement>(

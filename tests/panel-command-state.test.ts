@@ -1389,13 +1389,15 @@ describe("COMMAND State panel workbench", () => {
     clickRowByText(".command-update-row", "event-2");
 
     expect(text(".command-detail-pane")).toContain("Update event-2");
-    expect(text(".command-detail-pane .clone-button")).toBe("Clone");
+    expect(text(".command-detail-pane .replay-source-button")).toBe("Re-inject");
+    expect(text(".command-detail-pane .mutate-inject-button")).toBe("Mutate & re-inject…");
+    expect(document.querySelector(".command-detail-pane .clone-button")).toBeNull();
 
     button(".command-current-table .new-command-button").click();
 
     expect(text(".command-detail-pane")).toContain("New COMMAND key");
     expect(document.querySelector(".command-detail-pane .command-draft-controls")).not.toBeNull();
-    expect(document.querySelector(".command-detail-pane .clone-button")).toBeNull();
+    expect(document.querySelector(".command-detail-pane .replay-source-button")).toBeNull();
   });
 
   it("re-injects the unchanged selected COMMAND update through its captured listener", async () => {
@@ -1408,10 +1410,8 @@ describe("COMMAND State panel workbench", () => {
     clickCommandState();
     clickRowByText(".command-update-row", "event-2");
 
-    button(".command-detail-pane .clone-button").click();
-
     expect(text(".command-detail-pane .replay-source-button")).toBe("Re-inject");
-    expect(text(".command-detail-pane .mutate-inject-button")).toBe("Mutate & Inject…");
+    expect(text(".command-detail-pane .mutate-inject-button")).toBe("Mutate & re-inject…");
 
     button(".command-detail-pane .replay-source-button").click();
     await Promise.resolve();
@@ -1425,7 +1425,7 @@ describe("COMMAND State panel workbench", () => {
       fields: { qty: "2" }
     });
     expect(selectedTexts(".command-update-row")[0]).toContain("synthetic-command-source-replay");
-    expect(text(".command-detail-pane")).toContain("Source clone delivered");
+    expect(text(".command-detail-pane")).toContain("Source update delivered");
   });
 
   it("does not replay a wire-captured COMMAND update without a live page target", async () => {
@@ -1441,15 +1441,11 @@ describe("COMMAND State panel workbench", () => {
     clickCommandState();
     clickRowByText(".command-update-row", "wire-command-replay");
 
-    button(".command-detail-pane .clone-button").click();
-
-    const target = document.querySelector<HTMLElement>(
-      ".command-detail-pane .draft-execution-targets"
-    );
-    expect(target?.dataset.target).toBe("captured-wire");
-    expect(target?.dataset.available).toBe("false");
     expect(button(".command-detail-pane .replay-source-button").disabled).toBe(true);
-    expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
+    expect(button(".command-detail-pane .replay-source-button").title).toContain(
+      "captured page WebSocket bridge is unavailable"
+    );
+    expect(document.querySelector(".command-detail-pane .draft-execution-targets")).toBeNull();
 
     button(".command-detail-pane .replay-source-button").click();
     await Promise.resolve();
@@ -1487,13 +1483,7 @@ describe("COMMAND State panel workbench", () => {
     clickCommandState();
     clickRowByText(".command-update-row", "wire-command-mutation-source");
 
-    button(".command-detail-pane .clone-button").click();
-
-    const wireTarget = document.querySelector<HTMLElement>(
-      ".command-detail-pane .draft-execution-targets"
-    );
-    expect(wireTarget?.dataset.target).toBe("captured-wire");
-    expect(wireTarget?.dataset.available).toBe("true");
+    expect(document.querySelector(".command-detail-pane .draft-execution-targets")).toBeNull();
     button(".command-detail-pane .mutate-inject-button").click();
     input('.command-detail-pane .structured-field-input[data-field-name="qty"]', "42");
     button(".command-detail-pane .inject-edited-button").click();
@@ -1527,7 +1517,6 @@ describe("COMMAND State panel workbench", () => {
     });
     clickCommandState();
     clickRowByText(".command-update-row", "event-2");
-    button(".command-detail-pane .clone-button").click();
     button(".command-detail-pane .mutate-inject-button").click();
 
     input('.command-detail-pane .structured-field-input[data-field-name="qty"]', "42");
@@ -1541,13 +1530,12 @@ describe("COMMAND State panel workbench", () => {
     expect(reinjectDraft.mock.calls[0]?.[0].fields.qty).toBe("42");
     expect(selectedTexts(".command-update-row")[0]).toContain("synthetic-command-mutated-replay");
     expect(text(".command-detail-pane")).toContain('"qty": "42"');
-    expect(text(".command-detail-pane")).toContain("Edited draft delivered");
+    expect(text(".command-detail-pane")).toContain("Edited update delivered");
   });
 
   it("keeps a selected COMMAND mutation editor mounted while live updates arrive", async () => {
     clickCommandState();
     clickRowByText(".command-update-row", "event-2");
-    button(".command-detail-pane .clone-button").click();
     button(".command-detail-pane .mutate-inject-button").click();
     input('.command-detail-pane .structured-field-input[data-field-name="qty"]', "4");
 
@@ -1721,9 +1709,7 @@ describe("COMMAND State panel workbench", () => {
     expect(button(".new-command-button").disabled).toBe(false);
     button(".new-command-button").click();
 
-    const target = document.querySelector<HTMLElement>(".draft-execution-targets");
-    expect(target?.dataset.target).toBe("captured-wire");
-    expect(target?.dataset.available).toBe("true");
+    expect(document.querySelector(".draft-execution-targets")).toBeNull();
     expect(text(".command-draft-context")).toContain("Inspected page stream");
     expect(document.querySelectorAll('input[name="draft-execution-target"]')).toHaveLength(0);
 

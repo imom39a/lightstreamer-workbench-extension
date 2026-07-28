@@ -714,7 +714,7 @@ The page-side synthetic update implements:
 
 | Workflow | Function | UI Location | Notes |
 | --- | --- | --- | --- |
-| Clone captured event | `createDraftFromEvent(event)` | Timeline event detail | Requires a captured `item-update`, copies fields, changed fields, item, target subscription, and listener. |
+| Replay captured event | `createDraftFromEvent(event)` | Timeline event detail | **Re-inject** executes the captured values directly; **Mutate & re-inject** opens an editable draft. Requires a captured `item-update` and internally copies fields, changed fields, item, target subscription, and listener. |
 | New COMMAND update | `createNewCommandDraftFromContext(context)` | COMMAND detail pane | Requires captured COMMAND subscription, item, listener target, and field schema including `command` and `key`. |
 
 Draft mutation helpers:
@@ -855,7 +855,7 @@ The default `npm test` command runs the Vitest files ending in `.test.ts`. The L
 npm run fixture:test
 ```
 
-Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` includes the static fixture assertions and `tests/lightstreamer-mutate-reinject.browser.spec.ts`. The browser proof loads the built extension, opens the shipped Workbench panel in a real DevTools session, selects and clones a listenerless `websocket-tlcp` capture, edits `modelValues`, and invokes the real panel action. It verifies both direct evaluation and missing-capability fallback, panel success/error rendering, and exact official-client application UI update counts.
+Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` includes the static fixture assertions and `tests/lightstreamer-mutate-reinject.browser.spec.ts`. The browser proof loads the built extension, opens the shipped Workbench panel in a real DevTools session, selects a listenerless `websocket-tlcp` capture, opens **Mutate & re-inject**, edits `modelValues`, and invokes the real panel action. It verifies both direct evaluation and missing-capability fallback, panel success/error rendering, and exact official-client application UI update counts.
 
 All fixture lifecycle and test entry points route through `scripts/lightstreamer/fixture.mjs`; the browser installer uses Puppeteer's cross-platform CLI. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
 
@@ -873,7 +873,7 @@ Coverage is organized by architectural boundary:
 | `tests/command-draft.test.ts` | Context-bound new COMMAND drafts, schema validation, and synthetic event conversion. |
 | `tests/synthetic-event.test.ts` | Synthetic envelope creation from successful reinjection results. |
 | `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, direct reinjection, missing-capability relay fallback, timeout/error behavior. |
-| `tests/panel-shell.test.ts` | Timeline shell rendering, event detail, filtering, high-volume notices, lazy row rendering, clone/reinject UI. |
+| `tests/panel-shell.test.ts` | Timeline shell rendering, event detail, filtering, high-volume notices, lazy row rendering, and direct replay UI. |
 | `tests/panel-command-state.test.ts` | COMMAND State workbench rendering, selection, filtering, panes, draft editor, and synthetic append behavior. |
 | `tests/panel-css.test.ts` | CSS constraints for the panel. |
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |

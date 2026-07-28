@@ -23,7 +23,7 @@ The first release focuses on local, current-session debugging for the inspected 
 - Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into a temporary local event store for the current DevTools session.
 - Shows a searchable Timeline with normalized event envelopes and raw diagnostic payloads.
 - Reconstructs COMMAND state by subscription, item, key, command, snapshot state, provenance, and diagnostics.
-- Lets developers clone compatible captured updates, edit fields, and locally replay them through a captured listener or captured Lightstreamer WebSocket path.
+- Lets developers directly re-inject compatible captured updates or edit and re-inject them through a captured listener or captured Lightstreamer WebSocket path.
 - Provides WebSocket/TLCP fallback diagnostics when primary Web Client API instrumentation is unavailable.
 - Marks synthetic events clearly so local replay activity is distinguishable from server-originated updates.
 
