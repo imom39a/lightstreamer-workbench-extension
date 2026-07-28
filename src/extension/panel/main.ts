@@ -52,6 +52,16 @@ import {
   type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
+import {
+  createDisabledAnalytics,
+  createGoogleAnalytics,
+  eventCountBucket,
+  type AnalyticsReplayOutcome,
+  type AnalyticsReplaySurface,
+  type AnalyticsReplayTarget,
+  type WorkbenchAnalytics,
+  type WorkbenchAnalyticsEvent
+} from "../analytics";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
 import { createThemeManager, type ThemePreference } from "./theme";
 
@@ -73,6 +83,7 @@ export type RenderPanelOptions = {
   normalizer?: EventNormalizer;
   bridge?: PanelReinjectBridge;
   visible?: boolean;
+  analytics?: WorkbenchAnalytics;
 };
 
 type PanelReinjectBridge = Pick<PanelBridgeConnection, "reinjectDraft">;
@@ -623,6 +634,7 @@ export function renderPanel(
   const panelState = { ...state };
   const store = options.store ?? createEventStore();
   const normalizer = options.normalizer ?? createEventNormalizer();
+  const analytics = options.analytics ?? createDisabledAnalytics();
   let selectedEventId: string | null = null;
   let selectedTimelineEvent: LightstreamerEventEnvelope | null = null;
   let selectedPinned = false;
@@ -685,6 +697,16 @@ export function renderPanel(
   let appendRenderBudgetReset: ScheduledRender | null = null;
   let storeCloseStarted = false;
   let panelVisible = options.visible ?? true;
+  let analyticsDisclosureRequested =
+    analytics.available && analytics.getConsent() === "unknown";
+  let analyticsConsentPending = false;
+  let analyticsControlError: string | null = null;
+  let analyticsSummarySent = false;
+  let analyticsDetected = false;
+  let analyticsCapturedEventCount = 0;
+  let analyticsCommandViewUsed = false;
+  let analyticsReplayUsed = false;
+  const analyticsSearchViews = new Set<ActiveView>();
   const commandSearchTextCache: CommandSearchTextCache = {
     keys: new Map()
   };
@@ -770,15 +792,94 @@ export function renderPanel(
   });
   themeControl.append(themeSelect);
 
+  const analyticsControlButton = document.createElement("button");
+  analyticsControlButton.className = "analytics-control";
+  analyticsControlButton.type = "button";
+  analyticsControlButton.addEventListener("click", () => {
+    if (analyticsConsentPending) {
+      return;
+    }
+    if (analytics.getConsent() === "granted") {
+      void setAnalyticsConsent("denied");
+      return;
+    }
+    analyticsDisclosureRequested = true;
+    analyticsControlError = null;
+    renderAnalyticsControls();
+    analyticsAllowButton.focus();
+  });
+
   toolbarMeta.append(
     status,
     eventCount,
     filteredCount,
     retentionNotice,
     themeControl,
+    analyticsControlButton,
     clearButton
   );
   toolbar.append(title, toolbarMeta);
+
+  const analyticsDisclosure = document.createElement("section");
+  analyticsDisclosure.className = "analytics-disclosure";
+  analyticsDisclosure.setAttribute("aria-label", "Optional usage analytics");
+
+  const analyticsDisclosureCopy = document.createElement("div");
+  analyticsDisclosureCopy.className = "analytics-disclosure-copy";
+  analyticsDisclosureCopy.append(
+    createTextElement("strong", "analytics-disclosure-heading", "Optional usage analytics"),
+    createTextElement(
+      "p",
+      "analytics-disclosure-body",
+      "Help improve the workbench by sharing coarse feature usage: views used, whether search or local replay was used, replay result category, and a bucketed captured-event count. Google Analytics receives a random installation ID plus standard request and device information. The extension never sends inspected URLs, Lightstreamer server addresses, captured values, item, field, or key names, search text, or error details. Analytics is not used for advertising."
+    )
+  );
+
+  const analyticsDisclosureActions = document.createElement("div");
+  analyticsDisclosureActions.className = "analytics-disclosure-actions";
+
+  const analyticsAllowButton = document.createElement("button");
+  analyticsAllowButton.className = "analytics-allow-button";
+  analyticsAllowButton.type = "button";
+  analyticsAllowButton.textContent = "Allow analytics";
+  analyticsAllowButton.addEventListener("click", () => {
+    void setAnalyticsConsent("granted");
+  });
+
+  const analyticsDeclineButton = document.createElement("button");
+  analyticsDeclineButton.className = "analytics-decline-button";
+  analyticsDeclineButton.type = "button";
+  analyticsDeclineButton.textContent = "Not now";
+  analyticsDeclineButton.addEventListener("click", () => {
+    void setAnalyticsConsent("denied");
+  });
+
+  const analyticsPrivacyLink = document.createElement("a");
+  analyticsPrivacyLink.className = "analytics-privacy-link";
+  analyticsPrivacyLink.href =
+    "https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/PRIVACY.md";
+  analyticsPrivacyLink.target = "_blank";
+  analyticsPrivacyLink.rel = "noopener noreferrer";
+  analyticsPrivacyLink.referrerPolicy = "no-referrer";
+  analyticsPrivacyLink.textContent = "Privacy details";
+
+  const analyticsControlMessage = createTextElement(
+    "p",
+    "analytics-control-message",
+    ""
+  );
+  analyticsControlMessage.hidden = true;
+
+  analyticsDisclosureActions.append(
+    analyticsAllowButton,
+    analyticsDeclineButton,
+    analyticsPrivacyLink
+  );
+  analyticsDisclosure.append(
+    analyticsDisclosureCopy,
+    analyticsDisclosureActions,
+    analyticsControlMessage
+  );
 
   const viewSelector = document.createElement("nav");
   viewSelector.className = "view-selector";
@@ -799,6 +900,7 @@ export function renderPanel(
   );
   searchInput.type = "search";
   searchInput.addEventListener("input", () => {
+    recordAnalyticsSearch("timeline", searchInput.value);
     setFilter("query", searchInput.value);
   });
 
@@ -815,6 +917,7 @@ export function renderPanel(
   );
   commandSearchInput.type = "search";
   commandSearchInput.addEventListener("input", () => {
+    recordAnalyticsSearch("command", commandSearchInput.value);
     setCommandFilter("query", commandSearchInput.value);
   });
 
@@ -875,7 +978,15 @@ export function renderPanel(
     commandDetailPane
   );
   applyCommandPaneWidths();
-  root.append(toolbar, viewSelector, filterStrip, commandFilterStrip, workspace, commandWorkspace);
+  root.append(
+    toolbar,
+    analyticsDisclosure,
+    viewSelector,
+    filterStrip,
+    commandFilterStrip,
+    workspace,
+    commandWorkspace
+  );
   const helpTooltips = installHelpTooltipOverlay(root);
   feed.addEventListener("scroll", handleTimelineScroll);
   root.addEventListener("pointerdown", beginPointerInteraction, true);
@@ -886,7 +997,144 @@ export function renderPanel(
   root.addEventListener("keyup", endKeyboardInteraction, true);
   window.addEventListener("pagehide", closeStore);
   window.addEventListener("beforeunload", closeStore);
+  renderAnalyticsControls();
+  trackAnalytics({ name: "panel_view" });
   updateActiveViewChrome();
+
+  function analyticsEnabled(): boolean {
+    return analytics.available && analytics.getConsent() === "granted";
+  }
+
+  function trackAnalytics(event: WorkbenchAnalyticsEvent): void {
+    if (!analyticsEnabled()) {
+      return;
+    }
+    void analytics.track(event);
+  }
+
+  function resetAnalyticsSessionMetrics(): void {
+    analyticsSummarySent = false;
+    analyticsDetected = false;
+    analyticsCapturedEventCount = 0;
+    analyticsCommandViewUsed = false;
+    analyticsReplayUsed = false;
+    analyticsSearchViews.clear();
+  }
+
+  async function setAnalyticsConsent(
+    nextConsent: "granted" | "denied"
+  ): Promise<void> {
+    if (analyticsConsentPending || !analytics.available) {
+      return;
+    }
+
+    analyticsConsentPending = true;
+    analyticsControlError = null;
+    renderAnalyticsControls();
+    try {
+      const updated = await analytics.setConsent(nextConsent);
+      if (!updated) {
+        analyticsDisclosureRequested = true;
+        analyticsControlError =
+          "Usage analytics is unavailable in this build. Nothing was sent.";
+        return;
+      }
+
+      analyticsDisclosureRequested = false;
+      resetAnalyticsSessionMetrics();
+      if (nextConsent === "granted") {
+        trackAnalytics({ name: "analytics_enabled" });
+        if (panelVisible) {
+          trackAnalytics({ name: "panel_view" });
+        }
+      }
+    } catch {
+      analyticsDisclosureRequested = true;
+      analyticsControlError = "Usage analytics could not be updated. Nothing was sent.";
+    } finally {
+      analyticsConsentPending = false;
+      renderAnalyticsControls();
+    }
+  }
+
+  function renderAnalyticsControls(): void {
+    const consent = analytics.getConsent();
+    analyticsControlButton.hidden = !analytics.available;
+    analyticsControlButton.disabled = analyticsConsentPending;
+    analyticsControlButton.dataset.enabled = String(consent === "granted");
+    analyticsControlButton.textContent =
+      consent === "granted" ? "Usage analytics: On" : "Usage analytics: Off";
+    analyticsControlButton.title =
+      consent === "granted"
+        ? "Turn off usage analytics and remove its random installation ID."
+        : "Review the optional usage analytics disclosure.";
+
+    analyticsAllowButton.disabled = analyticsConsentPending;
+    analyticsDeclineButton.disabled = analyticsConsentPending;
+    analyticsAllowButton.textContent = analyticsConsentPending
+      ? "Updating..."
+      : "Allow analytics";
+    analyticsDisclosure.hidden =
+      !analytics.available || !analyticsDisclosureRequested;
+    analyticsControlMessage.hidden = !analyticsControlError;
+    analyticsControlMessage.textContent = analyticsControlError ?? "";
+  }
+
+  function flushAnalyticsSummary(): void {
+    if (analyticsSummarySent || !analyticsEnabled()) {
+      return;
+    }
+    analyticsSummarySent = true;
+    trackAnalytics({
+      name: "session_summary",
+      eventCountBucket: eventCountBucket(analyticsCapturedEventCount),
+      commandViewUsed: analyticsCommandViewUsed,
+      searchUsed: analyticsSearchViews.size > 0,
+      replayUsed: analyticsReplayUsed
+    });
+  }
+
+  function recordAnalyticsReplayAttempt(
+    surface: AnalyticsReplaySurface,
+    executionTarget: ReinjectionExecutionTarget,
+    edited: boolean
+  ): void {
+    if (!analyticsEnabled()) {
+      return;
+    }
+    analyticsReplayUsed = true;
+    trackAnalytics({
+      name: "replay_attempt",
+      surface,
+      target: analyticsReplayTarget(executionTarget),
+      edited
+    });
+  }
+
+  function recordAnalyticsReplayResult(
+    surface: AnalyticsReplaySurface,
+    executionTarget: ReinjectionExecutionTarget,
+    edited: boolean,
+    result: ReinjectionResult
+  ): void {
+    trackAnalytics({
+      name: "replay_result",
+      surface,
+      target: analyticsReplayTarget(executionTarget),
+      edited,
+      outcome: analyticsReplayOutcome(result)
+    });
+  }
+
+  function currentAnalyticsReplaySurface(): AnalyticsReplaySurface {
+    if (draftSurface === "command-replay") {
+      return "command_state";
+    }
+    if (draftSurface === "new-command") {
+      return "new_command";
+    }
+    return "timeline";
+  }
 
   function setFilter<K extends keyof EventFilterState>(
     key: K,
@@ -900,6 +1148,17 @@ export function renderPanel(
     resetTimelineRenderLimit();
     timelineSelectionNeedsFilterReconciliation = true;
     renderFeed();
+  }
+
+  function recordAnalyticsSearch(view: ActiveView, value: string): void {
+    if (!analyticsEnabled() || value.trim() === "" || analyticsSearchViews.has(view)) {
+      return;
+    }
+    analyticsSearchViews.add(view);
+    trackAnalytics({
+      name: "search_used",
+      view: view === "command" ? "command_state" : "timeline"
+    });
   }
 
   function setCommandFilter<K extends keyof CommandFilterState>(
@@ -920,7 +1179,15 @@ export function renderPanel(
     button.type = "button";
     button.textContent = label;
     button.addEventListener("click", () => {
+      const changed = activeView !== view;
       activeView = view;
+      if (changed && analyticsEnabled()) {
+        analyticsCommandViewUsed ||= view === "command";
+        trackAnalytics({
+          name: "view_changed",
+          view: view === "command" ? "command_state" : "timeline"
+        });
+      }
       updateActiveViewChrome();
       renderActiveView();
     });
@@ -2984,8 +3251,10 @@ export function renderPanel(
     reinjectionMessage = null;
     renderCommandState();
 
+    recordAnalyticsReplayAttempt("new_command", executionTarget, true);
     const result = await activeBridge.reinjectDraft(currentDraft, executionTarget);
     reinjectionPending = false;
+    recordAnalyticsReplayResult("new_command", executionTarget, true, result);
 
     if (result.ok && result.status === "success") {
       reinjectionMessage = {
@@ -3071,6 +3340,7 @@ export function renderPanel(
   }
 
   function closeStore(): void {
+    flushAnalyticsSummary();
     if (storeCloseStarted) {
       return;
     }
@@ -3116,6 +3386,13 @@ export function renderPanel(
     },
 
     appendCaptureMessage(message) {
+      if (analyticsEnabled()) {
+        analyticsCapturedEventCount += 1;
+        if (!analyticsDetected) {
+          analyticsDetected = true;
+          trackAnalytics({ name: "lightstreamer_detected" });
+        }
+      }
       resolveMaybe(store.append(normalizer.normalize(message)), () => undefined);
       controller.setStatus("capturing");
     },
@@ -3172,6 +3449,7 @@ export function renderPanel(
       );
       renderEventVolumeNotice(currentStoreStats);
       immediateAppendRenderCount = 0;
+      trackAnalytics({ name: "panel_view" });
       renderActiveView({ preservePaneState: true });
     },
 
@@ -3931,8 +4209,17 @@ export function renderPanel(
     reinjectionMessage = null;
     renderDraftSurface(currentDraft, true);
 
+    const analyticsSurface = currentAnalyticsReplaySurface();
+    const analyticsEdited = actionMode === "edited";
+    recordAnalyticsReplayAttempt(analyticsSurface, executionTarget, analyticsEdited);
     const result = await activeBridge.reinjectDraft(currentDraft, executionTarget);
     reinjectionPending = false;
+    recordAnalyticsReplayResult(
+      analyticsSurface,
+      executionTarget,
+      analyticsEdited,
+      result
+    );
 
     if (result.ok && result.status === "success") {
       reinjectionMessage = {
@@ -5319,6 +5606,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function analyticsReplayTarget(
+  executionTarget: ReinjectionExecutionTarget
+): AnalyticsReplayTarget {
+  return executionTarget === "captured-wire" ? "wire" : "listener";
+}
+
+function analyticsReplayOutcome(result: ReinjectionResult): AnalyticsReplayOutcome {
+  switch (result.status) {
+    case "success":
+      return "success";
+    case "stale-target":
+      return "stale_target";
+    case "listener-error":
+      return "listener_error";
+    case "wire-error":
+      return "wire_error";
+    case "bridge-error":
+      return "bridge_error";
+  }
+}
+
 function createFailureMessage(result: ReinjectionResult): ReinjectionMessage {
   if (result.status === "stale-target") {
     return {
@@ -6011,6 +6319,20 @@ function createSyntheticProvenance(event: LightstreamerEventEnvelope): Record<st
   };
 }
 
+function createPanelAnalytics(): WorkbenchAnalytics {
+  try {
+    return createGoogleAnalytics({
+      measurementId: import.meta.env.VITE_LSEW_GA_MEASUREMENT_ID ?? "",
+      apiSecret: import.meta.env.VITE_LSEW_GA_API_SECRET ?? "",
+      extensionVersion: chrome.runtime.getManifest().version,
+      storage: window.localStorage,
+      fetcher: globalThis.fetch.bind(globalThis)
+    });
+  } catch {
+    return createDisabledAnalytics();
+  }
+}
+
 async function bootPanel(): Promise<void> {
   const root = document.querySelector<HTMLElement>("#app");
   if (root) {
@@ -6025,7 +6347,11 @@ async function bootPanel(): Promise<void> {
     });
     root.textContent = "Initializing event storage...";
     const store = await createPanelEventStore();
-    panel = renderPanel(root, undefined, { store, visible });
+    panel = renderPanel(root, undefined, {
+      store,
+      visible,
+      analytics: createPanelAnalytics()
+    });
     const bridge = connectPanelBridge({
       onStatusChange: panel.setStatus,
       onCaptureMessage: panel.appendCaptureMessage

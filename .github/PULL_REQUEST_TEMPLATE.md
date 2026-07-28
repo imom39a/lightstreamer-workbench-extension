@@ -33,7 +33,7 @@ Commands run:
 ## Extension Safety Checklist
 
 - [ ] No secrets, credentials, private URLs, or production payloads are committed.
-- [ ] No new off-device analytics, logging, or event upload behavior is introduced.
+- [ ] Any off-device analytics, logging, or event upload is explicitly consented, narrowly allowlisted, tested, and documented; inspected-page capture data stays local.
 - [ ] New permissions or host-access changes are explained.
 - [ ] Synthetic events remain clearly marked and local to the inspected page workflow.
 - [ ] Persistent storage behavior is unchanged or explicitly documented.

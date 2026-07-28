@@ -18,6 +18,7 @@ The architecture is event-driven and split across Chrome extension execution con
 - [COMMAND State Architecture](#command-state-architecture)
 - [Synthetic Reinjection Architecture](#synthetic-reinjection-architecture)
 - [Panel UI Architecture](#panel-ui-architecture)
+- [Optional Usage Analytics](#optional-usage-analytics)
 - [Lightstreamer Fixture](#lightstreamer-fixture)
 - [Testing Architecture](#testing-architecture)
 - [Extension Points](#extension-points)
@@ -31,7 +32,7 @@ The project is designed around these concrete implementation goals:
 - Run entirely inside a Chrome DevTools extension for the inspected tab.
 - Install instrumentation at `document_start` so clients, subscriptions, and listeners can be wrapped before application code uses them.
 - Preserve application behavior while observing constructor calls, lifecycle methods, listener callbacks, and selected wire-level fallback frames.
-- Keep capture data local to the browser extension session.
+- Keep capture data local to the browser extension session; optional analytics may receive only a separate typed coarse-event allowlist after explicit consent.
 - Support backend-free local reinjection through captured listener callbacks and local TLCP replay on captured page WebSockets.
 - Mark synthetic updates in the normalized event stream and UI.
 
@@ -45,7 +46,7 @@ The extension runs in four active JavaScript contexts plus optional test fixture
 | Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` capture events to the extension runtime and retain a compatibility reinjection relay for older DevTools environments. |
 | Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by tab and route capture messages from content scripts to the right panel; retain compatibility routing for reinjection when direct inspected-page evaluation is unavailable. |
 | DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Event Workbench` DevTools panel. |
-| DevTools panel UI | `src/extension/panel/main.ts`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/panel.css`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Render timeline and COMMAND views, own event storage, build state indexes, edit drafts, and call the bridge for reinjection. |
+| DevTools panel UI | `src/extension/panel/main.ts`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/panel.css`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Render timeline and COMMAND views, own event storage, build state indexes, edit drafts, call the bridge for reinjection, and gate optional coarse analytics behind in-product consent. |
 
 ```mermaid
 flowchart LR
@@ -106,6 +107,7 @@ flowchart LR
 | `src/injected/` | Code that must run in the inspected page `MAIN` world so it can patch page-owned Lightstreamer constructors and listener objects. |
 | `src/content/` | Isolated content-script bridge between `window.postMessage` in the page and Chrome extension messaging APIs. |
 | `src/extension/` | Extension runtime code: MV3 service worker and DevTools panel registration. |
+| `src/extension/analytics.ts` | Consent persistence, strict coarse-event serialization, and direct CORS-safe GA4 Measurement Protocol transport. It has no capture-envelope input. |
 | `src/extension/panel/` | DOM-rendered DevTools panel UI, bridge client, HTML entry, and CSS. |
 | `src/core/` | Runtime-independent domain logic: event envelopes, normalization, filtering, storage, COMMAND state reduction, reinjection drafts, synthetic events, and Lightstreamer-like structural types. |
 | `src/core/indexeddb/` | IndexedDB schema/open/delete helpers for event storage. |
@@ -810,6 +812,27 @@ The panel avoids rerendering aggressively during high-volume append bursts:
 - Later appends are scheduled with `requestAnimationFrame` when available, or a 16 ms timeout fallback.
 - Pointer and keyboard activation defer store-triggered renders until the interaction completes.
 - Detail panes can preserve scroll position, focus selector, text selection, and open/closed `details` section state across rerenders.
+
+## Optional Usage Analytics
+
+`src/extension/analytics.ts` is a deliberately separate boundary from capture normalization and storage. Its public `track()` input is a closed TypeScript union of coarse product actions; it never accepts a `CaptureMessage`, `LightstreamerEventEnvelope`, reinjection draft, search string, URL, or raw error.
+
+```mermaid
+flowchart LR
+  User["User presses Allow analytics"] --> Consent["Persist granted consent + random installation ID"]
+  Panel["Panel coarse actions"] --> Allowlist["Typed runtime allowlist"]
+  Consent --> Allowlist
+  Allowlist --> MP["Bundled GA4 Measurement Protocol transport"]
+  MP --> GA["Dedicated GA4 property"]
+  Capture["Captured Lightstreamer envelopes"] -. "no analytics API path" .-> Allowlist
+  OptOut["User turns analytics off"] --> Stop["Delete ID + block future requests"]
+```
+
+The transport sends one event per HTTPS request with advertising consent denied, credentials omitted, no referrer, and no retry path. Failures are swallowed so analytics cannot change capture, storage, rendering, or reinjection behavior. The random client ID is created only after consent. Session summaries use broad count buckets rather than exact high-volume totals.
+
+The transport uses a simple CORS content type accepted by the GA4 Measurement Protocol endpoint, so analytics adds no Chrome permission. Opt-out persists `denied`, deletes the local client ID, and prevents all later transport calls.
+
+Vite reads the dedicated stream's measurement ID and Measurement Protocol secret from `VITE_LSEW_GA_MEASUREMENT_ID` and `VITE_LSEW_GA_API_SECRET`. If either is absent or invalid, the integration reports itself unavailable and the panel renders no analytics UI or transport. No remote script is loaded.
 
 ## Lightstreamer Fixture
 

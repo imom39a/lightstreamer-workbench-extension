@@ -7,6 +7,7 @@ const sourceRoot = resolve(projectRoot, "src");
 
 export default defineConfig({
   root: sourceRoot,
+  envDir: projectRoot,
   publicDir: resolve(projectRoot, "public"),
   build: {
     emptyOutDir: true,

@@ -39,6 +39,27 @@ npm run release:package -- --skip-build
 
 The package step fails if `package.json` and `public/manifest.json` do not use the same version. Before every store update, bump both versions and rebuild.
 
+## Optional Usage Analytics Configuration
+
+Official builds can enable the consent-based GA4 Measurement Protocol integration with:
+
+```text
+VITE_LSEW_GA_MEASUREMENT_ID=G-...
+VITE_LSEW_GA_API_SECRET=...
+```
+
+Use `.env.analytics.example` as the field-name reference. Put local values in ignored `.env.local` or supply them as protected CI/release environment variables. Builds without either value keep the analytics disclosure, identifier creation, and network transport disabled.
+
+Use a dedicated GA4 property, web stream, and Measurement Protocol secret for this extension. The stream must not be shared with the Chrome Web Store-managed listing analytics property or another product. A Measurement Protocol secret is embedded in the packaged extension and can be extracted, so monitor the stream for spam and rotate only this dedicated secret if it is abused. Never commit the populated values.
+
+Before an analytics-enabled release:
+
+1. Keep Google signals, advertising personalization, and data sharing not required for the product disabled.
+2. Configure the shortest practical event-data retention and register only the coarse custom dimensions documented in [docs/ANALYTICS.md](docs/ANALYTICS.md).
+3. Build with the official stream values and confirm the ZIP contains no remote analytics script.
+4. Test first-run decline, explicit allow, event delivery, opt-out, identifier removal, and the post-opt-out network block.
+5. Reconcile `PRIVACY.md`, `store-listing/LISTING.md`, the in-panel disclosure, and Chrome Web Store privacy declarations.
+
 ## Store Listing Assets
 
 Source-controlled listing copy, screenshots, icon assets, promo tiles, privacy notes, reviewer instructions, and the dashboard checklist live in:

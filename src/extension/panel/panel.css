@@ -281,6 +281,92 @@ button {
   outline-offset: 2px;
 }
 
+.analytics-control {
+  min-height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.analytics-control[data-enabled="true"] {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.analytics-disclosure {
+  display: grid;
+  align-items: center;
+  gap: 8px 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  border-bottom: 1px solid var(--color-selected-border);
+  background: var(--color-info-bg);
+  color: var(--color-text);
+  padding: 9px 12px;
+}
+
+.analytics-disclosure-copy {
+  min-width: 0;
+}
+
+.analytics-disclosure-heading {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--color-info);
+  font-size: 12px;
+}
+
+.analytics-disclosure-body,
+.analytics-control-message {
+  margin: 0;
+}
+
+.analytics-disclosure-body {
+  max-width: 1100px;
+  color: var(--color-muted);
+  line-height: 1.45;
+}
+
+.analytics-disclosure-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.analytics-allow-button,
+.analytics-decline-button {
+  min-height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 4px 9px;
+}
+
+.analytics-allow-button {
+  border-color: var(--color-accent-fill);
+  background: var(--color-accent-fill);
+  color: var(--color-on-accent);
+}
+
+.analytics-decline-button {
+  background: var(--color-control);
+  color: var(--color-text);
+}
+
+.analytics-privacy-link {
+  color: var(--color-accent);
+  padding: 4px 2px;
+}
+
+.analytics-control-message {
+  grid-column: 1 / -1;
+  color: var(--color-error);
+}
+
 .filter-strip {
   display: grid;
   min-height: 44px;
@@ -1947,6 +2033,11 @@ button {
     justify-content: space-between;
   }
 
+  .analytics-disclosure {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .filter-strip {
     grid-template-columns: minmax(0, 1fr) auto;
   }
@@ -2097,6 +2188,8 @@ textarea {
 .theme-select,
 .filter-control,
 .clear-button,
+.analytics-control,
+.analytics-decline-button,
 .event-volume-action,
 .view-selector button,
 .window-navigation-button,
@@ -2365,6 +2458,9 @@ textarea {
 .theme-select,
 .filter-control,
 .clear-button,
+.analytics-control,
+.analytics-allow-button,
+.analytics-decline-button,
 .view-selector button,
 .window-navigation-button,
 .command-lifecycle-toggle,
