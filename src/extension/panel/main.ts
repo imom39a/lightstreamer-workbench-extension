@@ -4164,8 +4164,12 @@ export function renderPanel(
     textInput.spellcheck = false;
     textInput.setAttribute("aria-label", `Draft field ${fieldName}`);
     textInput.addEventListener("input", () => {
-      applyStructuredDraftUpdate(
-        updateDraftField(draft ?? currentDraft, fieldName, textInput.value)
+      applyStructuredTextDraftUpdate(
+        updateDraftField(draft ?? currentDraft, fieldName, textInput.value),
+        fieldName,
+        textInput,
+        injectButton,
+        structuredError
       );
     });
     editor.append(textInput);
@@ -4178,6 +4182,149 @@ export function renderPanel(
     draftJsonError = null;
     reinjectionMessage = null;
     renderDraftSurface(nextDraft, true);
+  }
+
+  function applyStructuredTextDraftUpdate(
+    nextDraft: ReinjectionDraft,
+    fieldName: string,
+    textInput: HTMLTextAreaElement,
+    injectButton: HTMLButtonElement,
+    structuredError: HTMLElement
+  ): void {
+    draft = nextDraft;
+    draftJsonText = formatDraftJson(nextDraft);
+    draftJsonError = null;
+    reinjectionMessage = null;
+
+    const controls = textInput.closest<HTMLElement>(".draft-controls");
+    if (!controls || !textInput.isConnected) {
+      renderDraftSurface(nextDraft, true);
+      return;
+    }
+
+    controls
+      .closest<HTMLElement>(".replay-card")
+      ?.querySelector<HTMLElement>(".reinjection-message")
+      ?.remove();
+
+    const validation = validateDraftForExecutionTarget(nextDraft, draftExecutionTarget, {
+      bridgeAvailable: bridgeReady
+    });
+    injectButton.disabled = !validation.valid || reinjectionPending;
+    injectButton.dataset.validationValid = String(validation.valid);
+    structuredError.textContent = "";
+    structuredError.hidden = true;
+
+    const validationError = Array.from(controls.children).find(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement &&
+        child.classList.contains("draft-validation-error") &&
+        !child.classList.contains("draft-structured-error")
+    );
+    if (validation.valid) {
+      validationError?.remove();
+    } else if (validationError) {
+      validationError.textContent = validationMessage(validation.errors);
+    } else {
+      const nextValidationError = createTextElement(
+        "p",
+        "draft-validation-error",
+        validationMessage(validation.errors)
+      );
+      nextValidationError.setAttribute("role", "alert");
+      controls.querySelector(".draft-editor-header")?.after(nextValidationError);
+    }
+
+    const dirtyCount = controls.querySelector<HTMLElement>(".draft-dirty-count");
+    if (dirtyCount) {
+      dirtyCount.textContent = `${draftChangeCount(nextDraft)} changed`;
+    }
+
+    const draftTextarea = controls.querySelector<HTMLTextAreaElement>(".draft-json");
+    if (draftTextarea) {
+      draftTextarea.value = draftJsonText;
+    }
+    const draftJsonErrorElement = controls.querySelector<HTMLElement>(".draft-json-error");
+    if (draftJsonErrorElement) {
+      draftJsonErrorElement.textContent = "";
+      draftJsonErrorElement.hidden = true;
+    }
+
+    const changedPreview = controls.querySelector<HTMLElement>(
+      ".draft-changed-fields-preview"
+    );
+    if (changedPreview) {
+      changedPreview.textContent = formatJsonForDisplay(nextDraft.changedFields);
+    }
+    const changedFieldsMarker = controls.querySelector<HTMLElement>(
+      ".draft-derived-fields .detail-section-marker"
+    );
+    if (changedFieldsMarker) {
+      changedFieldsMarker.textContent =
+        `${Object.keys(nextDraft.changedFields).length} fields`;
+    }
+
+    const original =
+      fieldName === "command"
+        ? nextDraft.sourceCommand
+        : fieldName === "key"
+          ? nextDraft.sourceKey
+          : nextDraft.sourceFields[fieldName];
+    const current =
+      fieldName === "command"
+        ? nextDraft.command
+        : fieldName === "key"
+          ? nextDraft.key
+          : nextDraft.fields[fieldName];
+    const fieldChanged = !Object.is(original, current);
+    const jsonSummary = structuredJsonSummary(current);
+    const currentSummary =
+      jsonSummary ??
+      (typeof current === "string"
+        ? `Text · ${formatTextSize(current.length)}`
+        : structuredJsonSummary(original) ?? "Large string");
+    const fieldRows = Array.from(
+      controls.querySelectorAll<HTMLTableRowElement>(
+        ".draft-field-diff tr[data-field-name]"
+      )
+    ).filter((row) => row.dataset.fieldName === fieldName);
+    for (const row of fieldRows) {
+      row.dataset.state = fieldChanged ? "changed" : "unchanged";
+      const fieldNameCell = row.querySelector<HTMLElement>(".draft-field-name");
+      const changedIndicator = fieldNameCell?.querySelector<HTMLElement>(
+        ".draft-field-changed-indicator"
+      );
+      if (fieldChanged && fieldNameCell && !changedIndicator) {
+        const nextChangedIndicator = createTextElement(
+          "span",
+          "draft-field-changed-indicator",
+          "Δ"
+        );
+        nextChangedIndicator.title = "Changed from captured value";
+        nextChangedIndicator.setAttribute("aria-label", "changed");
+        fieldNameCell.append(nextChangedIndicator);
+      } else if (!fieldChanged) {
+        changedIndicator?.remove();
+      }
+
+      if (row.dataset.layout === "json-summary") {
+        const draftSummary = row.querySelector<HTMLElement>(
+          ".draft-field-value .draft-primitive-value > span"
+        );
+        if (draftSummary) {
+          draftSummary.className = jsonSummary
+            ? "draft-primitive-json-summary"
+            : "draft-primitive-raw";
+          draftSummary.textContent = currentSummary;
+        }
+      }
+      const editorSummary = row.querySelector<HTMLElement>(
+        ".structured-json-editor-summary"
+      );
+      if (editorSummary) {
+        editorSummary.textContent = currentSummary;
+      }
+    }
   }
 
   function draftPageExecutionTarget(

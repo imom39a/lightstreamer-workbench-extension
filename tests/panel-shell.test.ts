@@ -1355,6 +1355,58 @@ describe("panel shell", () => {
     expect(advancedDraft.fields.modelValues).toBe(editedModelValues);
   });
 
+  it("preserves JSON editor and detail scroll state across repeated field edits", () => {
+    const modelValues = JSON.stringify({
+      alarms: Array.from({ length: 24 }, (_, index) => ({
+        domain: `domain-${index}`,
+        status: "GREEN",
+        timestamp: 1_784_628_396_199 + index
+      })),
+      baseItemKey: "DDE_HEALTH"
+    });
+    appendCommandUpdate(panel, "DDE_HEALTH.HEARTBEAT", { modelValues });
+    clickFirstEventRow();
+    openMutationEditor();
+
+    const detail = document.querySelector<HTMLElement>(".detail-pane");
+    const jsonInput = document.querySelector<HTMLTextAreaElement>(
+      '.structured-json-input[data-field-name="modelValues"]'
+    );
+    if (!detail || !jsonInput) {
+      throw new Error("missing expanded JSON field editor");
+    }
+    resetScrollWhenChildrenAreReplaced(detail);
+
+    jsonInput.focus();
+    const initialCaret = jsonInput.value.lastIndexOf("}");
+    jsonInput.setSelectionRange(initialCaret, initialCaret);
+    jsonInput.scrollTop = 360;
+    jsonInput.scrollLeft = 18;
+    detail.scrollTop = 640;
+    detail.scrollLeft = 12;
+
+    for (const insertedText of [" ", "x", " "]) {
+      const caret = jsonInput.selectionStart ?? 0;
+      jsonInput.setRangeText(insertedText, caret, caret, "end");
+      const expectedCaret = caret + insertedText.length;
+      jsonInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+      expect(
+        document.querySelector<HTMLTextAreaElement>(
+          '.structured-json-input[data-field-name="modelValues"]'
+        )
+      ).toBe(jsonInput);
+      expect(jsonInput.isConnected).toBe(true);
+      expect(document.activeElement).toBe(jsonInput);
+      expect(jsonInput.selectionStart).toBe(expectedCaret);
+      expect(jsonInput.selectionEnd).toBe(expectedCaret);
+      expect(jsonInput.scrollTop).toBe(360);
+      expect(jsonInput.scrollLeft).toBe(18);
+      expect(detail.scrollTop).toBe(640);
+      expect(detail.scrollLeft).toBe(12);
+    }
+  });
+
   it("formats short JSON strings directly in their text editor without a draft preview", () => {
     const modelValues = JSON.stringify({ messageId: "6675533", messageType: "TICKER" });
     appendCommandUpdate(panel, "MESSENGER_TICKER", { modelValues });
