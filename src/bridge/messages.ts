@@ -503,9 +503,7 @@ export function isReinjectionDraftPayload(value: unknown): value is ReinjectionD
     isNonEmptyString(value.sourceEventId) &&
     isPageReinjectionExecutionTarget(value.executionTarget) &&
     isNonEmptyString(value.target.subscriptionId) &&
-    (value.executionTarget === "captured-wire"
-      ? value.target.listenerId === null || isNonEmptyString(value.target.listenerId)
-      : isNonEmptyString(value.target.listenerId)) &&
+    (value.target.listenerId === null || isNonEmptyString(value.target.listenerId)) &&
     (value.item.name === undefined || value.item.name === null || typeof value.item.name === "string") &&
     (value.item.position === undefined ||
       value.item.position === null ||

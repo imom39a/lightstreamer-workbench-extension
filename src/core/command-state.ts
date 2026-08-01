@@ -165,6 +165,19 @@ export type CommandStateIndex = {
   snapshot(): CommandState;
 };
 
+export type CommandStateProjection = "observed-server" | "local-effective";
+
+/**
+ * Maintains the two COMMAND projections required by Workbench's capture semantics.
+ * Captured page events advance both projections; synthetic Local Injected Updates
+ * advance only the locally effective projection.
+ */
+export type CommandStateProjections = {
+  apply(event: LightstreamerEventEnvelope): void;
+  clear(): void;
+  snapshot(projection: CommandStateProjection): CommandState;
+};
+
 const SUPPORTED_COMMANDS = new Set<CommandLifecycleCommand>(["ADD", "UPDATE", "DELETE"]);
 
 export function reduceCommandState(events: readonly LightstreamerEventEnvelope[]): CommandState {
@@ -190,6 +203,35 @@ export function createCommandStateIndex(): CommandStateIndex {
       return commandStateFromAccumulator(accumulator);
     }
   };
+}
+
+export function createCommandStateProjections(): CommandStateProjections {
+  const observedServer = createCommandStateIndex();
+  const localEffective = createCommandStateIndex();
+
+  return {
+    apply(event) {
+      localEffective.apply(event);
+      if (!isLocalInjectedEvent(event)) {
+        observedServer.apply(event);
+      }
+    },
+
+    clear() {
+      observedServer.clear();
+      localEffective.clear();
+    },
+
+    snapshot(projection) {
+      return projection === "observed-server"
+        ? observedServer.snapshot()
+        : localEffective.snapshot();
+    }
+  };
+}
+
+function isLocalInjectedEvent(event: LightstreamerEventEnvelope): boolean {
+  return event.synthetic || event.source === "synthetic";
 }
 
 function createCommandStateAccumulator(): CommandStateAccumulator {

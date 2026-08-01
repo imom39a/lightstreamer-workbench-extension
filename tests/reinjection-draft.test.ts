@@ -92,7 +92,7 @@ describe("reinjection drafts", () => {
     expect(edited.changedFields).toEqual({ status: "manual" });
   });
 
-  it("allows editing without a listener but requires a captured page delivery path", () => {
+  it("targets a captured Subscription without requiring source listener provenance", () => {
     const draft = createDraftFromEvent(
       itemUpdate({
         listener: undefined,
@@ -108,10 +108,8 @@ describe("reinjection drafts", () => {
 
     expect(validateEditableDraft(draft).valid).toBe(true);
 
-    const result = validateReinjectionDraft(draft);
-
-    expect(result.valid).toBe(false);
-    expect(result.errors).toContain("Missing original listener target.");
+    expect(validateReinjectionDraft(draft).valid).toBe(true);
+    expect(validateDraftForExecutionTarget(draft, "captured-listener").valid).toBe(true);
     expect(validateDraftForExecutionTarget(draft, "captured-wire").valid).toBe(false);
   });
 
@@ -133,8 +131,8 @@ describe("reinjection drafts", () => {
       validateDraftForExecutionTarget(listenerDraft, "captured-listener", {
         bridgeAvailable: false
       }).errors
-    ).toContain("Original listener bridge is unavailable.");
-    expect(validateDraftForExecutionTarget(wireDraft, "captured-listener").valid).toBe(false);
+    ).toContain("Subscription listener bridge is unavailable.");
+    expect(validateDraftForExecutionTarget(wireDraft, "captured-listener").valid).toBe(true);
     expect(
       validateDraftForExecutionTarget(wireDraft, "captured-wire", {
         bridgeAvailable: true

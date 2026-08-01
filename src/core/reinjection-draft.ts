@@ -134,7 +134,7 @@ export function createDraftFromEvent(event: LightstreamerEventEnvelope): Reinjec
 }
 
 export function createNewCommandDraftFromContext(context: CommandItemContext): ReinjectionDraft | null {
-  const contextValidation = validateCommandItemContext(context, false);
+  const contextValidation = validateCommandItemContext(context);
   if (!contextValidation.valid || !contextValidation.subscriptionId) {
     return null;
   }
@@ -279,11 +279,8 @@ export function validateDraftForExecutionTarget(
 
   const errors = [...result.errors];
   if (executionTarget === "captured-listener") {
-    if (!draft.target.listenerId) {
-      errors.push("Missing original listener target.");
-    }
     if (options.bridgeAvailable === false) {
-      errors.push("Original listener bridge is unavailable.");
+      errors.push("Subscription listener bridge is unavailable.");
     }
   } else if (executionTarget === "captured-wire") {
     if (draft.captureSource !== "wire") {
@@ -349,8 +346,8 @@ export function validateNewCommandDraft(
   executionTarget: ReinjectionExecutionTarget = "captured-listener"
 ): NewCommandDraftValidationResult {
   const diagnostics: NewCommandDraftDiagnostic[] = [];
-  const requiresListener = executionTarget === "captured-listener";
-  const contextValidation = validateCommandItemContext(context, requiresListener);
+  const listenerPath = executionTarget === "captured-listener";
+  const contextValidation = validateCommandItemContext(context);
 
   diagnostics.push(...contextValidation.diagnostics);
 
@@ -359,8 +356,8 @@ export function validateNewCommandDraft(
       severity: "error",
       code: "missing-context",
       explanation: "New COMMAND updates must start from a captured COMMAND subscription, item, and field schema.",
-      suggestion: requiresListener
-        ? "Select a captured COMMAND item update with an attached listener."
+      suggestion: listenerPath
+        ? "Select a captured COMMAND Subscription and item with a live Local Injection Target."
         : "Select a wire-captured COMMAND item update with a live page stream."
     });
     return toNewCommandDraftValidationResult(diagnostics);
@@ -376,15 +373,6 @@ export function validateNewCommandDraft(
         error === "Field names must be non-empty."
           ? "Remove empty field names from the draft before injecting."
           : "Create the draft from a captured COMMAND subscription and item context."
-    });
-  }
-
-  if (requiresListener && !draft.target.listenerId) {
-    diagnostics.push({
-      severity: "error",
-      code: "missing-context",
-      explanation: "A captured listener target is required for backend-free local listener-path injection.",
-      suggestion: "Capture a COMMAND update after the page listener is attached, then create the synthetic update again."
     });
   }
 
@@ -476,8 +464,7 @@ type ValidatedCommandItemContext = {
 };
 
 function validateCommandItemContext(
-  context: CommandItemContext,
-  requireListener = true
+  context: CommandItemContext
 ): ValidatedCommandItemContext {
   const subscriptionId = nonEmptyString(context.subscriptionId);
   const listenerId = nonEmptyString(context.listenerId);
@@ -499,9 +486,6 @@ function validateCommandItemContext(
       explanation: "New synthetic updates can only be created for captured COMMAND subscriptions.",
       suggestion: "Select a captured item from a COMMAND-mode subscription."
     });
-  }
-  if (requireListener && !listenerId) {
-    diagnostics.push(missingContextDiagnostic("captured listener target"));
   }
   if (!itemName && itemPosition === null) {
     diagnostics.push(missingContextDiagnostic("captured item name or position"));

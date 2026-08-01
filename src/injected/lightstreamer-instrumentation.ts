@@ -34,6 +34,10 @@ import {
   type LightstreamerListenerLike,
   type LightstreamerSubscriptionLike
 } from "../core/lightstreamer-types";
+import {
+  createSubscriptionLocalInjectionRegistry,
+  type SubscriptionLocalInjectionRegistry
+} from "./subscription-local-injection";
 
 type InstrumentationState = {
   pageEpoch: string;
@@ -60,7 +64,7 @@ type InstrumentationState = {
   activeSubscriptions: Map<string, CapturePayload>;
   commandReplayRows: Map<string, Map<string, CapturePayload>>;
   retiredFallbackSubscriptionIds: Set<string>;
-  listenerTargets: Map<string, ReinjectionListenerTarget>;
+  localInjectionTargets: SubscriptionLocalInjectionRegistry<SyntheticItemUpdate>;
   listenerRegistrations: Map<string, ListenerRegistrationState>;
   subscriptionListenerIds: Map<string, Set<string>>;
   wireTargets: Map<string, WireReinjectionTarget>;
@@ -71,15 +75,6 @@ type InstrumentationState = {
 };
 
 type MethodOwner = Record<string, unknown>;
-type ReinjectionListenerTarget = {
-  subscriptionId: string;
-  listenerId: string;
-  subscription: object;
-  listener: LightstreamerListenerLike;
-  fieldNames: string[];
-  callback(update: SyntheticItemUpdate): unknown;
-};
-
 type ListenerRegistrationState = {
   addCount: number;
   active: boolean;
@@ -191,7 +186,7 @@ export function installLightstreamerInstrumentation(
     activeSubscriptions,
     commandReplayRows,
     retiredFallbackSubscriptionIds,
-    listenerTargets: new Map<string, ReinjectionListenerTarget>(),
+    localInjectionTargets: createSubscriptionLocalInjectionRegistry<SyntheticItemUpdate>(),
     listenerRegistrations: new Map<string, ListenerRegistrationState>(),
     subscriptionListenerIds: new Map<string, Set<string>>(),
     wireTargets: new Map<string, WireReinjectionTarget>(),
@@ -2821,11 +2816,8 @@ function emitSubscriptionListenerCallback(
         callback === "onItemUpdate" && isObject(args[0])
           ? state.updateIds.getId(args[0])
           : undefined,
-      targetAvailable: state.listenerTargets.has(
-        targetKey(
-          state.subscriptionIds.getId(subscription),
-          state.listenerIds.getId(listener)
-        )
+      targetAvailable: state.localInjectionTargets.hasTarget(
+        state.subscriptionIds.getId(subscription)
       ),
       args:
         callback === "onItemUpdate"
@@ -2858,13 +2850,10 @@ function registerReinjectionTarget(
 
   const subscriptionId = state.subscriptionIds.getId(subscription);
   const listenerId = state.listenerIds.getId(listener);
-  state.listenerTargets.set(targetKey(subscriptionId, listenerId), {
-    subscriptionId,
+  state.localInjectionTargets.register(subscriptionId, {
     listenerId,
-    subscription,
-    listener,
     fieldNames: readSubscriptionFieldNames(subscription),
-    callback
+    deliver: callback
   });
 }
 
@@ -2940,9 +2929,7 @@ function acknowledgeSubscriptionListenerLifecycle(
     },
     listener: subscriptionListenerPayload(subscription, listener, state),
     raw: {
-      targetAvailable: state.listenerTargets.has(
-        targetKey(subscriptionId, state.listenerIds.getId(listener))
-      )
+      targetAvailable: state.localInjectionTargets.hasTarget(subscriptionId)
     }
   }));
 }
@@ -3005,8 +2992,9 @@ function unregisterReinjectionTarget(
   listener: object,
   state: InstrumentationState
 ): void {
-  state.listenerTargets.delete(
-    targetKey(state.subscriptionIds.getId(subscription), state.listenerIds.getId(listener))
+  state.localInjectionTargets.unregister(
+    state.subscriptionIds.getId(subscription),
+    state.listenerIds.getId(listener)
   );
 }
 
@@ -3449,38 +3437,34 @@ function reinjectDraft(
     return reinjectWireDraft(requestId, draft, state);
   }
 
-  const listenerId = draft.target.listenerId;
-  const target = listenerId
-    ? state.listenerTargets.get(targetKey(draft.target.subscriptionId, listenerId))
-    : undefined;
-
-  if (!target) {
+  const delivery = state.localInjectionTargets.deliver(
+    draft.target.subscriptionId,
+    (fieldNames) => createSyntheticItemUpdate(draft, fieldNames)
+  );
+  if (!delivery.ok && delivery.reason === "stale-target") {
     return {
       requestId,
       ok: false,
       status: "stale-target",
       timestamp: Date.now(),
-      error: "Original subscription listener is no longer available."
+      error: "The target Subscription has no current Item Update listeners."
     };
   }
-
-  try {
-    target.callback(createSyntheticItemUpdate(draft, target.fieldNames));
-    return {
-      requestId,
-      ok: true,
-      status: "success",
-      timestamp: Date.now()
-    };
-  } catch (error) {
+  if (!delivery.ok) {
     return {
       requestId,
       ok: false,
       status: "listener-error",
       timestamp: Date.now(),
-      error: error instanceof Error ? error.message.slice(0, 500) : "Listener callback failed."
+      error: delivery.error
     };
   }
+  return {
+    requestId,
+    ok: true,
+    status: "success",
+    timestamp: Date.now()
+  };
 }
 
 function reinjectWireDraft(

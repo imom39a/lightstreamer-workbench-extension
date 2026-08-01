@@ -478,7 +478,7 @@ async function runBrowserProof(): Promise<void> {
       `
       document.querySelector(".replay-card")?.getAttribute("aria-busy") === "false" &&
       document.querySelector(".reinjection-message")?.textContent?.includes(
-        "Edited update delivered to the original app listener"
+        "Edited update delivered to every current listener on the target Subscription"
       ) &&
       ![...document.querySelectorAll('[role="alert"]')].some((alert) => !alert.hidden)
       `,

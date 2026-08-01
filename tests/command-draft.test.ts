@@ -75,7 +75,7 @@ describe("new context-bound COMMAND drafts", () => {
     const state = reduceCommandState([capturedAdd()]);
 
     expect(validateNewCommandDraft(ready, state, context, "captured-wire").valid).toBe(true);
-    expect(validateNewCommandDraft(ready, state, context, "captured-listener").valid).toBe(false);
+    expect(validateNewCommandDraft(ready, state, context, "captured-listener").valid).toBe(true);
   });
 
   it("reports blocking validation diagnostics for arbitrary fabrication and malformed draft values", () => {
@@ -185,7 +185,7 @@ describe("new context-bound COMMAND drafts", () => {
       sourceEventId: "new-command:sub-command:listener-1:item-a",
       clonedSourceEventId: null,
       targetSubscriptionId: "sub-command",
-      targetListenerId: "listener-1",
+      sourceListenerId: "listener-1",
       requestId: "request-1",
       status: "success",
       provenance: {

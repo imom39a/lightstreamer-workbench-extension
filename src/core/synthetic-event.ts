@@ -40,7 +40,6 @@ export function createSyntheticEventFromDraft(
       id: draft.target.subscriptionId ?? "unknown",
       mode: draft.subscriptionMode ?? "COMMAND"
     },
-    ...(draft.target.listenerId ? { listener: { id: draft.target.listenerId } } : {}),
     item: {
       name: draft.item.name ?? null,
       position: draft.item.position ?? null
@@ -56,7 +55,7 @@ export function createSyntheticEventFromDraft(
       sourceEventId: draft.sourceEventId,
       clonedSourceEventId: draft.provenance.source === "clone" ? draft.sourceEventId : null,
       targetSubscriptionId: draft.target.subscriptionId,
-      targetListenerId: draft.target.listenerId,
+      sourceListenerId: draft.target.listenerId,
       syntheticTimestamp: timestamp,
       editedFields,
       requestId: result.requestId,

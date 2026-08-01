@@ -451,7 +451,7 @@ describe("topology inspector", () => {
     document
       .querySelector<HTMLButtonElement>('.event-row[data-command="UPDATE"]')
       ?.click();
-    expect(text(".replay-target-status")).toContain("live captured listener");
+    expect(text(".replay-target-status")).toContain("live Subscription");
 
     panel.appendCaptureMessage(
       semanticCapture(
@@ -465,7 +465,7 @@ describe("topology inspector", () => {
     document
       .querySelector<HTMLButtonElement>('.event-row[data-command="UPDATE"]')
       ?.click();
-    expect(text(".replay-target-status")).toContain("stale captured listener");
+    expect(text(".replay-target-status")).toContain("stale Subscription");
 
     panel.appendCaptureMessage(
       semanticCapture(
@@ -480,7 +480,7 @@ describe("topology inspector", () => {
       document.querySelectorAll<HTMLButtonElement>('.event-row[data-command="UPDATE"]')
     ).find((row) => row.textContent?.includes("late-page-a"));
     staleRow?.click();
-    expect(text(".replay-target-status")).toContain("stale captured listener");
+    expect(text(".replay-target-status")).toContain("stale Subscription");
   });
 
   it("hydrates listener attachments with a consistent subscription and overview count", () => {
@@ -1262,7 +1262,7 @@ describe("topology inspector", () => {
     );
     sourceUpdate?.click();
     document.querySelector<HTMLButtonElement>(".mutate-inject-button")?.click();
-    expect(text(".replay-target-status")).toContain("live captured listener");
+    expect(text(".replay-target-status")).toContain("live Subscription");
     expect(document.querySelector(".draft-controls")).not.toBeNull();
     const retainedBeforeReset = text(".event-count");
 
@@ -1277,7 +1277,7 @@ describe("topology inspector", () => {
 
     clickView("Timeline");
     expect(document.querySelector(".draft-controls")).not.toBeNull();
-    expect(text(".replay-target-status")).toContain("live captured listener");
+    expect(text(".replay-target-status")).toContain("live Subscription");
     expect(
       document.querySelector<HTMLButtonElement>(".inject-edited-button")?.disabled
     ).toBe(false);
@@ -1525,7 +1525,7 @@ describe("topology inspector", () => {
         '.event-row[data-kind="item-update"][data-command="UPDATE"]'
       )
       ?.click();
-    expect(text(".replay-target-status")).toContain("stale captured listener");
+    expect(text(".replay-target-status")).toContain("stale Subscription");
     expect(
       document.querySelector<HTMLButtonElement>(".reinject-button")?.disabled
     ).toBe(true);

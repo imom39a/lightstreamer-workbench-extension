@@ -1968,7 +1968,7 @@ describe("panel shell", () => {
 
     expect(text(".event-count")).toBe("2");
     expect(text(".reinjection-message")).toBe(
-      "Edited update delivered to the original app listener. The inspected page was reached."
+      "Edited update delivered to every current listener on the target Subscription. The inspected page was reached."
     );
   });
 
@@ -2234,7 +2234,7 @@ describe("panel shell", () => {
     expect(receivedDrafts[0]?.changedFields).toEqual({ command: "ADD", key: "alpha" });
     expect(receivedDrafts[0]?.isSnapshot).toBe(true);
     expect(text(".reinjection-message")).toBe(
-      "Source update delivered to the original app listener. The inspected page was reached."
+      "Source update delivered to every current listener on the target Subscription. The inspected page was reached."
     );
   });
 
@@ -2292,7 +2292,7 @@ describe("panel shell", () => {
     expect(receivedDraft?.changedFields.qty).toBe(12);
     expect(receivedDraft?.isSnapshot).toBe(false);
     expect(text(".reinjection-message")).toBe(
-      "Edited update delivered to the original app listener. The inspected page was reached."
+      "Edited update delivered to every current listener on the target Subscription. The inspected page was reached."
     );
     expect(text(".event-count")).toBe("2");
     expect(Array.from(document.querySelectorAll(".event-marker")).map((marker) => marker.textContent)).toContain(

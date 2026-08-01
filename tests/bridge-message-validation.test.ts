@@ -309,7 +309,7 @@ describe("bridge reinjection message validation", () => {
     ).toBe(false);
   });
 
-  it("rejects reinjection requests missing the target listener id", () => {
+  it("rejects malformed source listener provenance", () => {
     const draft = createValidReinjectionDraftPayload();
     draft.target.listenerId = "";
 
@@ -320,6 +320,19 @@ describe("bridge reinjection message validation", () => {
         draft
       })
     ).toBe(false);
+  });
+
+  it("accepts Subscription-scoped listener delivery without source listener provenance", () => {
+    const draft = createValidReinjectionDraftPayload();
+    draft.target.listenerId = null;
+
+    expect(
+      isPanelReinjectRequestMessage({
+        type: PANEL_REINJECT_REQUEST,
+        requestId: "request-subscription",
+        draft
+      })
+    ).toBe(true);
   });
 
   it("accepts a listenerless captured-wire request with explicit page delivery", () => {

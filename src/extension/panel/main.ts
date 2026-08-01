@@ -4,21 +4,20 @@ import {
   type CaptureMessage,
   type CaptureStatus,
   type ReinjectionResult,
-  type TopologyCoverage,
-  type TopologyObservation,
   type TopologySyncFrame,
-  TOPOLOGY_SYNC_BEGIN,
-  TOPOLOGY_SYNC_CHUNK,
   isPanelVisibilityMessage
 } from "../../bridge/messages";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
   type EventStore,
-  type EventStoreStats,
-  type MaybePromise,
-  createEventStore,
-  createIndexedDbEventStore
+  type EventStoreStats
 } from "../../core/event-store";
+import {
+  createEventHistory,
+  createInMemoryEventHistory,
+  createIndexedDbEventHistory,
+  type EventHistory
+} from "../../core/event-history";
 import {
   type LightstreamerEventEnvelope,
   toPersistableEventEnvelope
@@ -29,7 +28,7 @@ import {
   type EventFilterState
 } from "../../core/event-filter";
 import {
-  createCommandStateIndex,
+  createCommandStateProjections,
   resolveCommandItemIdentity,
   type CommandDiagnostic,
   type CommandItemGroup,
@@ -37,6 +36,7 @@ import {
   type CommandProvenance,
   type CommandRow,
   type CommandState,
+  type CommandStateProjection,
   type CommandSubscriptionGroup,
   type DeletedCommandKey
 } from "../../core/command-state";
@@ -61,7 +61,6 @@ import {
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
 import {
-  createTopologyStateIndex,
   type TopologyClient,
   type TopologyCommandGeneration,
   type TopologyInferredChild,
@@ -69,10 +68,8 @@ import {
   type TopologyListener,
   type TopologySession,
   type TopologyState,
-  type TopologyStateIndex,
   type TopologySubscription
 } from "../../core/topology-state";
-import { createTopologySyncCoordinator } from "../../core/topology-sync";
 import {
   createDisabledAnalytics,
   createGoogleAnalytics,
@@ -86,11 +83,7 @@ import {
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
 import { createThemeManager, type ThemePreference } from "./theme";
 import { createTopologyInspector } from "./topology-inspector";
-import {
-  createPanelTopologySyncAdapter,
-  resetPanelTopologyObservations,
-  snapshotPanelTopologyState
-} from "./topology-sync-adapter";
+import { createTopologyProjection } from "./topology-projection";
 import {
   createTopologyTreeViewModel,
   findTopologySelection,
@@ -127,6 +120,8 @@ export type PanelController = {
 };
 
 export type RenderPanelOptions = {
+  history?: EventHistory;
+  /** @deprecated Prefer the storage-independent history seam. */
   store?: EventStore;
   normalizer?: EventNormalizer;
   bridge?: PanelReinjectBridge;
@@ -719,18 +714,8 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function resolveMaybe<T>(
-  value: MaybePromise<T>,
-  onValue: (value: T) => void,
-  onError: (error: unknown) => void = (error) => {
-    console.error("Lightstreamer Workbench async operation failed", error);
-  }
-): void {
-  if (value instanceof Promise) {
-    void value.then(onValue, onError);
-    return;
-  }
-  onValue(value);
+function reportHistoryError(error: unknown): void {
+  console.error("Lightstreamer Workbench history operation failed", error);
 }
 
 export function renderPanel(
@@ -739,7 +724,11 @@ export function renderPanel(
   options: RenderPanelOptions = {}
 ): PanelController {
   const panelState = { ...state };
-  const store = options.store ?? createEventStore();
+  const history =
+    options.history ??
+    (options.store
+      ? createEventHistory(options.store)
+      : createInMemoryEventHistory());
   const normalizer = options.normalizer ?? createEventNormalizer();
   const analytics = options.analytics ?? createDisabledAnalytics();
   let selectedEventId: string | null = null;
@@ -779,25 +768,9 @@ export function renderPanel(
   const commandContextEvents: LightstreamerEventEnvelope[] = [];
   const commandContextEventIds = new Set<string>();
   const commandContextSubscriptionIds = new Set<string>();
-  const commandStateIndex = createCommandStateIndex();
-  const topologyStateIndex = createTopologyStateIndex();
-  const semanticTopologyEvents = new Map<string, LightstreamerEventEnvelope>();
-  const topologySyncAdapter = createPanelTopologySyncAdapter((observation) => {
-    const key = semanticTopologyEventKey(observation);
-    const event = semanticTopologyEvents.get(key);
-    semanticTopologyEvents.delete(key);
-    return event;
-  });
-  let topologySyncCoordinator = createTopologySyncCoordinator(
-    "panel:legacy",
-    topologySyncAdapter
-  );
-  let semanticTopologyActive = false;
-  let semanticTopologyCoverage: TopologyCoverage | null = null;
-  let semanticTopologyGeneration = 0;
-  const retiredSemanticPageEpochs = new Set<string>();
-  const preservedSemanticHistory = new Map<string, TopologyClient>();
-  const staleSemanticEventIds = new Set<string>();
+  const commandStateProjections = createCommandStateProjections();
+  let commandStateProjection: CommandStateProjection = "local-effective";
+  const topologyProjection = createTopologyProjection();
   const liveReinjectionTargets = new Map<string, LiveReinjectionTarget>();
   const liveClientConnections = new Map<string, LiveClientConnection>();
   const sourceEventConnectionEpochs = new Map<string, number>();
@@ -914,7 +887,7 @@ export function renderPanel(
   keepEventsButton.title = "Dismiss this warning and keep captured events for this DevTools session.";
   keepEventsButton.addEventListener("click", () => {
     highVolumeNoticeDismissed = true;
-    resolveMaybe(store.stats(), renderEventVolumeNotice);
+    history.stats().receive(renderEventVolumeNotice, reportHistoryError);
   });
   retentionNotice.append(eventVolumeText, keepEventsButton);
 
@@ -1080,7 +1053,30 @@ export function renderPanel(
     setCommandFilter("query", commandSearchInput.value);
   });
 
-  commandFilterStrip.append(commandSearchInput);
+  const commandProjectionLabel = document.createElement("label");
+  commandProjectionLabel.className = "command-projection-control";
+  commandProjectionLabel.append(
+    createTextElement("span", "command-projection-label", "Projection")
+  );
+  const commandProjectionSelect = document.createElement("select");
+  commandProjectionSelect.className = "filter-control command-projection-select";
+  commandProjectionSelect.setAttribute("aria-label", "COMMAND state projection");
+  commandProjectionSelect.append(
+    createOption("local-effective", "Local Effective"),
+    createOption("observed-server", "Observed Server")
+  );
+  commandProjectionSelect.value = commandStateProjection;
+  commandProjectionSelect.addEventListener("change", () => {
+    commandStateProjection =
+      commandProjectionSelect.value === "observed-server"
+        ? "observed-server"
+        : "local-effective";
+    resetCommandListWindows();
+    renderCommandState();
+  });
+  commandProjectionLabel.append(commandProjectionSelect);
+
+  commandFilterStrip.append(commandSearchInput, commandProjectionLabel);
 
   const workspace = document.createElement("section");
   workspace.className = "workspace";
@@ -1686,21 +1682,20 @@ export function renderPanel(
   function renderFeed(options: RenderOptions = {}, onRendered?: () => void): void {
     helpTooltips.hide();
     const queryVersion = ++timelineQueryVersion;
-    resolveMaybe(
-      store.queryEvents({
+    history
+      .queryEvents({
         filters: filterState,
         order: "asc",
         limit: TIMELINE_WINDOW_SIZE,
         offset: timelineWindowOffset
-      }),
-      (result) => {
+      })
+      .receive((result) => {
         if (!panelVisible || queryVersion !== timelineQueryVersion) {
           return;
         }
         renderFeedResult(result.events, result.total, options);
         onRendered?.();
-      }
-    );
+      }, reportHistoryError);
   }
 
   function renderFeedResult(
@@ -1936,13 +1931,16 @@ export function renderPanel(
     }
 
     const requestedEventId = selectedEventId;
-    resolveMaybe(store.getEventById(requestedEventId), (event) => {
-      if (selectedEventId !== requestedEventId || !timelineDetailOpen || !panelVisible) {
-        return;
-      }
-      selectedTimelineEvent = event;
-      renderDetail(event, options);
-    });
+    history.getEventById(requestedEventId).receive(
+      (event) => {
+        if (selectedEventId !== requestedEventId || !timelineDetailOpen || !panelVisible) {
+          return;
+        }
+        selectedTimelineEvent = event;
+        renderDetail(event, options);
+      },
+      reportHistoryError
+    );
   }
 
   function renderDetail(
@@ -2193,7 +2191,7 @@ export function renderPanel(
       ? capturePaneState(commandCurrentTable)
       : null;
     const updatePaneState = options.preservePaneState ? capturePaneState(commandUpdatePane) : null;
-    const commandState = commandStateIndex.snapshot();
+    const commandState = commandStateProjections.snapshot(commandStateProjection);
     const allItems = flattenCommandItems(commandState);
     const filterEvaluation = createCommandFilterEvaluation(
       commandFilterState,
@@ -3306,7 +3304,7 @@ export function renderPanel(
     const section = document.createElement("section");
     section.className = "new-command-editor";
     section.setAttribute("aria-label", "New synthetic COMMAND key editor");
-    section.append(createCommandDraftContext(context));
+    section.append(createCommandDraftContext(context, draft.target.listenerId));
     section.append(createCommandDraftControls(draft, context, item, commandState));
     parent.append(section);
     return true;
@@ -3508,7 +3506,7 @@ export function renderPanel(
 
     controls.querySelector<HTMLElement>(".reinjection-message")?.remove();
 
-    const currentState = commandStateIndex.snapshot();
+    const currentState = commandStateProjections.snapshot("local-effective");
     const validation = validateNewCommandDraft(
       nextDraft,
       currentState,
@@ -3621,7 +3619,7 @@ export function renderPanel(
           "p",
           "command-draft-diagnostic info",
           executionTarget === "captured-listener"
-            ? "Draft is ready for local listener-path injection."
+            ? "Draft is ready for Subscription-scoped Local Injection."
             : "Draft is ready for local replay through the captured page WebSocket. No server request will be sent."
         )
       );
@@ -3648,7 +3646,7 @@ export function renderPanel(
     const executionTarget = draftExecutionTarget;
     const validation = validateNewCommandDraft(
       currentDraft,
-      commandStateIndex.snapshot(),
+      commandStateProjections.snapshot("local-effective"),
       context,
       executionTarget
     );
@@ -3683,7 +3681,7 @@ export function renderPanel(
         kind: "success",
         text:
           executionTarget === "captured-listener"
-            ? "Synthetic COMMAND update injected through the captured listener."
+            ? "Synthetic COMMAND update delivered to every current listener on the target Subscription."
             : "Synthetic COMMAND update delivered locally through the captured page WebSocket. No server was contacted."
       };
       if (currentDraft.key) {
@@ -3695,12 +3693,11 @@ export function renderPanel(
         };
         selectedCommandUpdateEventId = null;
       }
-      resolveMaybe(
-        store.append(createSyntheticEventFromDraft(currentDraft, result, executionTarget)),
-        () => {
+      history
+        .append(createSyntheticEventFromDraft(currentDraft, result, executionTarget))
+        .receive(() => {
           renderCommandState({ preservePaneState: true });
-        }
-      );
+        }, reportHistoryError);
       return;
     }
 
@@ -3708,197 +3705,12 @@ export function renderPanel(
     renderCommandState();
   }
 
-  function semanticTopologyEventKey(
-    observation: Pick<TopologyObservation, "pageEpoch" | "captureSequence">
-  ): string {
-    return `${observation.pageEpoch}:${observation.captureSequence}`;
-  }
-
-  function activateSemanticPage(pageEpoch: string): boolean {
-    if (retiredSemanticPageEpochs.has(pageEpoch)) {
-      return false;
-    }
-    if (
-      !semanticTopologyActive ||
-      topologySyncCoordinator.pageEpoch() !== pageEpoch
-    ) {
-      if (semanticTopologyActive) {
-        rememberSemanticHistory(
-          snapshotPanelTopologyState(topologySyncCoordinator.snapshot())
-        );
-        retiredSemanticPageEpochs.add(topologySyncCoordinator.pageEpoch());
-        while (retiredSemanticPageEpochs.size > 16) {
-          const oldest = retiredSemanticPageEpochs.values().next().value as
-            | string
-            | undefined;
-          if (!oldest) break;
-          retiredSemanticPageEpochs.delete(oldest);
-        }
-      }
-      topologySyncCoordinator.retirePageEpoch(pageEpoch);
-      semanticTopologyEvents.clear();
-      liveReinjectionTargets.clear();
-      liveClientConnections.clear();
-      sourceEventConnectionEpochs.clear();
-      topologySelection = { key: "page", kind: "page" };
-      topologyExpandAllItems = false;
-      renderedTopologyStructureKey = null;
-      topologyRenderedNodes.clear();
-      topologyNodeSelections.clear();
-      topologyCollapsedKeys.clear();
-    }
-    semanticTopologyActive = true;
-    return true;
-  }
-
-  function ingestSemanticTopology(event: LightstreamerEventEnvelope): boolean {
-    const observation = event.topology;
-    if (!observation) {
-      return true;
-    }
-    if (!activateSemanticPage(observation.pageEpoch)) {
-      return false;
-    }
-    semanticTopologyCoverage = observation.coverage;
-    semanticTopologyEvents.set(semanticTopologyEventKey(observation), event);
-    while (semanticTopologyEvents.size > 4_096) {
-      const oldest = semanticTopologyEvents.keys().next().value as
-        | string
-        | undefined;
-      if (!oldest) break;
-      semanticTopologyEvents.delete(oldest);
-    }
-    topologySyncCoordinator.applyLive(observation);
-    return true;
-  }
-
-  function acceptTopologySyncFrame(frame: TopologySyncFrame): void {
-    if (!activateSemanticPage(frame.pageEpoch)) {
-      return;
-    }
-    semanticTopologyCoverage = frame.coverage;
-    if (frame.type === TOPOLOGY_SYNC_BEGIN) {
-      rememberSemanticHistory(
-        snapshotPanelTopologyState(topologySyncCoordinator.snapshot())
-      );
-      topologySyncCoordinator.begin(frame);
-    } else if (frame.type === TOPOLOGY_SYNC_CHUNK) {
-      topologySyncCoordinator.acceptChunk(frame);
-    } else {
-      topologySyncCoordinator.complete(frame);
-      if (topologySyncCoordinator.status().state !== "partial") {
-        for (const [key, event] of semanticTopologyEvents) {
-          if (
-            event.topology?.pageEpoch === frame.pageEpoch &&
-            event.topology.captureSequence <= frame.cutoffCaptureSequence
-          ) {
-            semanticTopologyEvents.delete(key);
-          }
-        }
-      }
-    }
-    if (topologySyncCoordinator.status().state === "partial") {
-      replayRetainedSemanticEvents(frame.pageEpoch);
-    }
-    if (panelVisible && activeView === "topology") {
-      renderTopology();
-    }
-  }
-
-  function replayRetainedSemanticEvents(pageEpoch: string): void {
-    const retained = [...semanticTopologyEvents.values()]
-      .filter((event) => event.topology?.pageEpoch === pageEpoch)
-      .sort(
-        (left, right) =>
-          (left.topology?.captureSequence ?? 0) -
-          (right.topology?.captureSequence ?? 0)
-      );
-    for (const event of retained) {
-      if (event.topology) {
-        topologySyncCoordinator.applyLive(event.topology);
-      }
-    }
-  }
-
-  function activeTopologyStateIndex(): TopologyStateIndex {
-    return semanticTopologyActive
-      ? topologySyncCoordinator.snapshot()
-      : topologyStateIndex;
-  }
-
-  function rememberSemanticHistory(state: TopologyState): void {
-    for (const client of state.clients) {
-      const historicalSessions = client.sessions.filter(
-        (session) => session.historical
-      );
-      if (historicalSessions.length === 0) continue;
-      const previous = preservedSemanticHistory.get(client.id);
-      const sessions = new Map(
-        previous?.sessions.map((session) => [session.key, session]) ?? []
-      );
-      for (const session of historicalSessions) {
-        sessions.set(session.key, session);
-      }
-      preservedSemanticHistory.set(client.id, {
-        ...client,
-        waitingSubscriptions: [],
-        sessions: [...sessions.values()]
-          .sort((left, right) => right.lastSeenAt - left.lastSeenAt)
-          .slice(0, 5)
-      });
-    }
-  }
-
-  function withPreservedSemanticHistory(state: TopologyState): TopologyState {
-    if (!semanticTopologyActive || preservedSemanticHistory.size === 0) {
-      return state;
-    }
-    const clients = new Map(state.clients.map((client) => [client.id, client]));
-    for (const [clientId, historicalClient] of preservedSemanticHistory) {
-      const current = clients.get(clientId);
-      if (!current) {
-        clients.set(clientId, historicalClient);
-        continue;
-      }
-      const sessions = new Map(current.sessions.map((session) => [session.key, session]));
-      for (const session of historicalClient.sessions) {
-        if (!sessions.has(session.key)) sessions.set(session.key, session);
-      }
-      clients.set(clientId, { ...current, sessions: [...sessions.values()] });
-    }
-    const mergedClients = [...clients.values()];
-    return {
-      ...state,
-      clients: mergedClients,
-      clientCount: mergedClients.length,
-      historicalSessionCount: mergedClients
-        .flatMap((client) => client.sessions)
-        .filter((session) => session.historical).length
-    };
-  }
-
-  function resetSemanticTopology(): void {
-    semanticTopologyGeneration += 1;
-    topologySyncCoordinator = createTopologySyncCoordinator(
-      `panel:legacy:${semanticTopologyGeneration}`,
-      topologySyncAdapter
-    );
-    semanticTopologyActive = false;
-    semanticTopologyCoverage = null;
-    semanticTopologyEvents.clear();
-    retiredSemanticPageEpochs.clear();
-    preservedSemanticHistory.clear();
-    staleSemanticEventIds.clear();
-  }
-
   function renderTopology(): void {
     const renderStartedAt = performance.now();
     const treeHadFocus = topologyTreePane.contains(document.activeElement);
     const treeScrollTop = topologyTreePane.scrollTop;
     const detailScrollTop = topologyDetailPane.scrollTop;
-    const state = withPreservedSemanticHistory(
-      snapshotPanelTopologyState(activeTopologyStateIndex())
-    );
+    const state = topologyProjection.snapshot();
     renderTopologyOverview(state);
 
     let target = findTopologySelection(state, topologySelection.key);
@@ -3948,12 +3760,22 @@ export function renderPanel(
     topologyInspector.update({
       selectedKey: topologySelection.key,
       restoreFocus: treeHadFocus,
-      syncState: semanticTopologyActive
-        ? topologySyncCoordinator.status().state
-        : "legacy",
-      coverageStatus: semanticTopologyCoverage?.status ?? "legacy"
+      syncState: topologyProjection.status().syncState,
+      coverageStatus: topologyProjection.status().coverage?.status ?? "legacy"
     });
     reportTopologyRenderPerformance(renderStartedAt, state);
+  }
+
+  function resetTopologyProjectionConsumerState(): void {
+    liveReinjectionTargets.clear();
+    liveClientConnections.clear();
+    sourceEventConnectionEpochs.clear();
+    topologySelection = { key: "page", kind: "page" };
+    topologyExpandAllItems = false;
+    renderedTopologyStructureKey = null;
+    topologyRenderedNodes.clear();
+    topologyNodeSelections.clear();
+    topologyCollapsedKeys.clear();
   }
 
   function reportTopologyRenderPerformance(
@@ -3996,11 +3818,12 @@ export function renderPanel(
   }
 
   function renderTopologyOverview(state: TopologyState): void {
+    const projectionStatus = topologyProjection.status();
     const limitedClients = state.clients.filter(
       (client) => client.coverageStatus === "limited"
     ).length;
-    const coverageLabel = semanticTopologyActive
-      ? semanticTopologyCoverage?.status === "partial"
+    const coverageLabel = projectionStatus.semanticActive
+      ? projectionStatus.coverage?.status === "partial"
         ? "Partial semantic coverage"
         : "Complete semantic coverage"
       : state.clientCount === 0
@@ -4010,8 +3833,8 @@ export function renderPanel(
           : limitedClients === state.clientCount
             ? "Limited wire coverage"
             : "Mixed coverage";
-    const coverageTone = semanticTopologyActive
-      ? semanticTopologyCoverage?.status === "partial"
+    const coverageTone = projectionStatus.semanticActive
+      ? projectionStatus.coverage?.status === "partial"
         ? "warning"
         : "active"
       : state.clientCount === 0
@@ -4043,19 +3866,19 @@ export function renderPanel(
   }
 
   function topologySyncLabel(): string {
-    if (!semanticTopologyActive) return "Legacy event projection";
-    const status = topologySyncCoordinator.status();
-    if (status.state === "staging") return "Synchronizing";
-    if (status.state === "complete") return "Synchronized";
-    if (status.state === "partial") return "Partial · retry needed";
+    const status = topologyProjection.status();
+    if (!status.semanticActive) return "Legacy event projection";
+    if (status.syncState === "staging") return "Synchronizing";
+    if (status.syncState === "complete") return "Synchronized";
+    if (status.syncState === "partial") return "Partial · retry needed";
     return "Live semantic capture";
   }
 
   function topologySyncTone(): string {
-    if (!semanticTopologyActive) return "neutral";
-    const status = topologySyncCoordinator.status().state;
-    if (status === "partial") return "warning";
-    if (status === "staging") return "pending";
+    const status = topologyProjection.status();
+    if (!status.semanticActive) return "neutral";
+    if (status.syncState === "partial") return "warning";
+    if (status.syncState === "staging") return "pending";
     return "active";
   }
 
@@ -4071,7 +3894,7 @@ export function renderPanel(
       "Reset current-session topology counters and timestamps without removing captured events, COMMAND state, drafts, or reinjection targets.";
     resetCurrent.disabled = state.clientCount === 0;
     resetCurrent.addEventListener("click", () => {
-      resetPanelTopologyObservations(activeTopologyStateIndex());
+      topologyProjection.resetCurrentObservations();
       renderTopology();
     });
 
@@ -4083,8 +3906,7 @@ export function renderPanel(
       "Delete frozen historical topology snapshots only. Captured timeline events remain available.";
     clearHistory.disabled = state.historicalSessionCount === 0;
     clearHistory.addEventListener("click", () => {
-      activeTopologyStateIndex().clearHistory();
-      preservedSemanticHistory.clear();
+      topologyProjection.clearHistory();
       renderTopology();
     });
 
@@ -4781,7 +4603,8 @@ export function renderPanel(
         client.id,
         [
           client.libraryVersion ? `Lightstreamer Web Client ${client.libraryVersion}` : "Version unavailable",
-          semanticTopologyActive && semanticTopologyCoverage?.status === "partial"
+          topologyProjection.status().semanticActive &&
+            topologyProjection.status().coverage?.status === "partial"
             ? "Partial semantic coverage"
             : client.coverageStatus === "limited"
               ? "Limited coverage"
@@ -5513,13 +5336,9 @@ export function renderPanel(
     const listenerId = currentDraft?.target.listenerId ?? null;
     const staleError =
       executionTarget === "captured-listener"
-        ? "Original listener target is stale."
+        ? "Local Injection Target is stale."
         : "Captured wire target is stale.";
-    if (
-      !currentDraft ||
-      !subscriptionId ||
-      (executionTarget === "captured-listener" && !listenerId)
-    ) {
+    if (!currentDraft || !subscriptionId) {
       return {
         live: false,
         state: "stale",
@@ -5528,16 +5347,19 @@ export function renderPanel(
       };
     }
 
-    const target = liveReinjectionTargets.get(
-      reinjectionTargetKey(executionTarget, subscriptionId, listenerId)
-    );
+    const target =
+      executionTarget === "captured-listener"
+        ? liveSubscriptionInjectionTarget(subscriptionId, listenerId)
+        : liveReinjectionTargets.get(
+            reinjectionTargetKey(executionTarget, subscriptionId, listenerId)
+          );
     if (!target?.available) {
       return {
         live: false,
         state: "stale",
         summary:
           executionTarget === "captured-listener"
-            ? "Target: stale captured listener"
+            ? "Target: stale Subscription"
             : "Target: stale captured page stream",
         error: staleError
       };
@@ -5607,8 +5429,8 @@ export function renderPanel(
         state: "session-mismatch",
         summary:
           currentSessionId === null
-            ? "Target: live listener · source session has ended"
-            : `Target: live listener · current session ${shortTopologyId(currentSessionId)} differs from source`,
+            ? "Target: live Subscription · source session has ended"
+            : `Target: live Subscription · current session ${shortTopologyId(currentSessionId)} differs from source`,
         error: null
       };
     }
@@ -5618,10 +5440,36 @@ export function renderPanel(
       state: "live",
       summary:
         executionTarget === "captured-listener"
-          ? "Target: live captured listener"
+          ? "Target: live Subscription"
           : "Target: live captured page stream",
       error: null
     };
+  }
+
+  function liveSubscriptionInjectionTarget(
+    subscriptionId: string,
+    preferredListenerId: string | null
+  ): LiveReinjectionTarget | undefined {
+    const preferred = preferredListenerId
+      ? liveReinjectionTargets.get(
+          reinjectionTargetKey(
+            "captured-listener",
+            subscriptionId,
+            preferredListenerId
+          )
+        )
+      : undefined;
+    if (preferred?.available) {
+      return preferred;
+    }
+    return [...liveReinjectionTargets.values()]
+      .filter(
+        (target) =>
+          target.executionTarget === "captured-listener" &&
+          target.subscriptionId === subscriptionId &&
+          target.available
+      )
+      .sort((left, right) => right.confirmedAt - left.confirmedAt)[0];
   }
 
   function validatePanelDraftTarget(
@@ -5728,14 +5576,14 @@ export function renderPanel(
     }
     commandContextEventIds.add(event.id);
     commandContextEvents.push(event);
-    commandStateIndex.apply(event);
+    commandStateProjections.apply(event);
   }
 
   function clearCommandContext(): void {
     commandContextEvents.length = 0;
     commandContextEventIds.clear();
     commandContextSubscriptionIds.clear();
-    commandStateIndex.clear();
+    commandStateProjections.clear();
   }
 
   function closeStore(): void {
@@ -5743,11 +5591,8 @@ export function renderPanel(
     if (storeCloseStarted) {
       return;
     }
-    if (!store.close) {
-      return;
-    }
     storeCloseStarted = true;
-    resolveMaybe(store.close(), () => undefined);
+    history.close().receive(() => undefined, reportHistoryError);
   }
 
   function renderEventVolumeNotice(stats: EventStoreStats): void {
@@ -5793,26 +5638,24 @@ export function renderPanel(
         }
       }
       const event = normalizer.normalize(message);
-      const semanticAccepted = ingestSemanticTopology(event);
-      if (event.topology && !semanticAccepted) {
-        staleSemanticEventIds.add(event.id);
-        while (staleSemanticEventIds.size > 4_096) {
-          const oldest = staleSemanticEventIds.values().next().value as
-            | string
-            | undefined;
-          if (!oldest) break;
-          staleSemanticEventIds.delete(oldest);
-        }
+      const topologyResult = topologyProjection.ingestCapture(event);
+      if (topologyResult.resetConsumerState) {
+        resetTopologyProjectionConsumerState();
       }
-      resolveMaybe(
-        store.append(toPersistableEventEnvelope(event)),
-        () => undefined
-      );
+      history
+        .append(toPersistableEventEnvelope(event))
+        .receive(() => undefined, reportHistoryError);
       controller.setStatus("capturing");
     },
 
     applyTopologySyncFrame(frame) {
-      acceptTopologySyncFrame(frame);
+      const topologyResult = topologyProjection.applySyncFrame(frame);
+      if (topologyResult.resetConsumerState) {
+        resetTopologyProjectionConsumerState();
+      }
+      if (topologyResult.accepted && panelVisible && activeView === "topology") {
+        renderTopology();
+      }
     },
 
     clearEvents() {
@@ -5830,8 +5673,7 @@ export function renderPanel(
       topologyRenderedNodes.clear();
       topologyNodeSelections.clear();
       topologyCollapsedKeys.clear();
-      topologyStateIndex.clear();
-      resetSemanticTopology();
+      topologyProjection.clear();
       liveReinjectionTargets.clear();
       liveClientConnections.clear();
       sourceEventConnectionEpochs.clear();
@@ -5845,7 +5687,7 @@ export function renderPanel(
       resetTimelineRenderLimit();
       resetCommandListWindows();
       forceNextStoreRender = true;
-      resolveMaybe(store.clear(), () => undefined);
+      history.clear().receive(() => undefined, reportHistoryError);
     },
 
     setBridge(nextBridge) {
@@ -5906,33 +5748,34 @@ export function renderPanel(
     }
   };
 
-  store.subscribe((change, stats) => {
+  history.subscribe((change, stats) => {
     currentStoreStats = stats;
 
     if (change.type === "init") {
-      resolveMaybe(store.queryEvents(), (result) => {
-        clearCommandContext();
-        topologyStateIndex.clear();
-        liveReinjectionTargets.clear();
-        liveClientConnections.clear();
-        sourceEventConnectionEpochs.clear();
-        for (const event of result.events) {
-          rememberCommandContextEvent(event);
-          rememberLiveReinjectionTarget(event);
-          topologyStateIndex.ingest(event);
-        }
-        renderActiveViewFromStoreUpdate({
-          preservePaneState: true,
-          passiveStoreUpdate: true
-        });
-      });
+      history.queryEvents().receive(
+        (result) => {
+          clearCommandContext();
+          topologyProjection.replaceHistory(result.events);
+          liveReinjectionTargets.clear();
+          liveClientConnections.clear();
+          sourceEventConnectionEpochs.clear();
+          for (const event of result.events) {
+            rememberCommandContextEvent(event);
+            rememberLiveReinjectionTarget(event);
+          }
+          renderActiveViewFromStoreUpdate({
+            preservePaneState: true,
+            passiveStoreUpdate: true
+          });
+        },
+        reportHistoryError
+      );
     } else if (change.type === "append") {
       rememberCommandContextEvent(change.event);
-      const staleSemanticEvent = staleSemanticEventIds.delete(change.event.id);
-      if (!staleSemanticEvent) {
+      const currentTopologyPage = topologyProjection.ingestHistory(change.event);
+      if (currentTopologyPage) {
         rememberLiveReinjectionTarget(change.event);
       }
-      topologyStateIndex.ingest(change.event);
       const shouldAnchorTimelineWindow =
         timelineWindowOffset > 0 ||
         (!timelineFollowLatest && timelineEvents.length >= TIMELINE_WINDOW_SIZE);
@@ -5947,7 +5790,7 @@ export function renderPanel(
       immediateAppendRenderCount = 0;
       timelineEvents = [];
       clearCommandContext();
-      topologyStateIndex.clear();
+      topologyProjection.replaceHistory([]);
       liveReinjectionTargets.clear();
       liveClientConnections.clear();
       sourceEventConnectionEpochs.clear();
@@ -6079,7 +5922,7 @@ export function renderPanel(
         "p",
         "reinjection-message pending",
         executionTarget === "captured-listener"
-          ? "Delivering locally to the original app listener…"
+          ? "Delivering locally to every current Subscription listener…"
           : "Replaying locally through the captured page WebSocket…"
       );
       pending.setAttribute("role", "status");
@@ -6843,7 +6686,7 @@ export function renderPanel(
         text:
           executionTarget === "captured-wire"
             ? `${actionMode === "source" ? "Source update" : "Edited update"} delivered locally through the captured page WebSocket. No server was contacted.`
-            : `${actionMode === "source" ? "Source update" : "Edited update"} delivered to the original app listener. The inspected page was reached.`
+            : `${actionMode === "source" ? "Source update" : "Edited update"} delivered to every current listener on the target Subscription. The inspected page was reached.`
       };
       renderDraftSurface(currentDraft, true);
       appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
@@ -6864,30 +6707,33 @@ export function renderPanel(
       result,
       executionTarget
     );
-    resolveMaybe(store.append(syntheticEvent), (appendedEvent) => {
-      draftResultEventId = appendedEvent.id;
-      if (draftSurface === "command-replay") {
-        selectedCommandKey = commandSelectionForSyntheticDraft(currentDraft);
-        selectedCommandUpdateEventId = appendedEvent.id;
-        commandDetailOpen = true;
-        renderCommandState({ preservePaneState: true });
-        return;
-      }
-      selectedEventId = appendedEvent.id;
-      selectedTimelineEvent = appendedEvent;
-      selectedPinned = true;
-      timelineDetailOpen = true;
-      timelineWindowOffset = 0;
-      timelineHistoryAnchor = 0;
-      timelineSelectionNeedsFilterReconciliation = false;
-      // Reveal the explicit action result once, then pin it against passive live traffic.
-      timelineFollowLatest = true;
-      renderFeed({}, () => {
-        if (selectedEventId === appendedEvent.id) {
-          timelineFollowLatest = false;
+    history.append(syntheticEvent).receive(
+      (appendedEvent) => {
+        draftResultEventId = appendedEvent.id;
+        if (draftSurface === "command-replay") {
+          selectedCommandKey = commandSelectionForSyntheticDraft(currentDraft);
+          selectedCommandUpdateEventId = appendedEvent.id;
+          commandDetailOpen = true;
+          renderCommandState({ preservePaneState: true });
+          return;
         }
-      });
-    });
+        selectedEventId = appendedEvent.id;
+        selectedTimelineEvent = appendedEvent;
+        selectedPinned = true;
+        timelineDetailOpen = true;
+        timelineWindowOffset = 0;
+        timelineHistoryAnchor = 0;
+        timelineSelectionNeedsFilterReconciliation = false;
+        // Reveal the explicit action result once, then pin it against passive live traffic.
+        timelineFollowLatest = true;
+        renderFeed({}, () => {
+          if (selectedEventId === appendedEvent.id) {
+            timelineFollowLatest = false;
+          }
+        });
+      },
+      reportHistoryError
+    );
   }
 
   function commandSelectionForSyntheticDraft(currentDraft: ReinjectionDraft): CommandRowSelection {
@@ -6900,7 +6746,9 @@ export function renderPanel(
   }
 
   function commandDraftItemId(currentDraft: ReinjectionDraft): string {
-    const matchingItem = flattenCommandItems(commandStateIndex.snapshot()).find(
+    const matchingItem = flattenCommandItems(
+      commandStateProjections.snapshot("local-effective")
+    ).find(
       ({ subscription, item }) =>
         subscription.subscriptionId === currentDraft.target.subscriptionId &&
         item.itemName === (currentDraft.item.name ?? null) &&
@@ -6923,7 +6771,7 @@ export function renderPanel(
       selectedEventId === draftResultEventId && draftResultEventId
         ? draftResultEventId
         : currentDraft.sourceEventId;
-    resolveMaybe(selectedEventForDraft(detailEventId), (event) => {
+    const renderSelectedDraftEvent = (event: LightstreamerEventEnvelope | null) => {
       if (
         renderVersion !== draftRenderVersion ||
         !event ||
@@ -6936,18 +6784,18 @@ export function renderPanel(
       }
       selectedTimelineEvent = event;
       renderDetail(event, { preservePaneState });
-    });
-  }
-
-  function selectedEventForDraft(eventId: string): MaybePromise<LightstreamerEventEnvelope | null> {
+    };
     const cached =
-      (selectedTimelineEvent?.id === eventId ? selectedTimelineEvent : null) ??
-      timelineEvents.find((event) => event.id === eventId) ??
+      (selectedTimelineEvent?.id === detailEventId ? selectedTimelineEvent : null) ??
+      timelineEvents.find((event) => event.id === detailEventId) ??
       null;
     if (cached) {
-      return cached;
+      renderSelectedDraftEvent(cached);
+      return;
     }
-    return store.getEventById(eventId);
+    history
+      .getEventById(detailEventId)
+      .receive(renderSelectedDraftEvent, reportHistoryError);
   }
 
   function clearDraftForSelection(nextEventId: string | null): void {
@@ -7503,19 +7351,20 @@ function createCommandItemContext(
   };
 }
 
-function createCommandDraftContext(context: CommandItemContext): HTMLElement {
+function createCommandDraftContext(
+  context: CommandItemContext,
+  sourceListenerId: string | null
+): HTMLElement {
   const element = document.createElement("div");
   element.className = "command-draft-context";
   const rows: Array<[string, string]> = [
     ["Subscription", context.subscriptionId ?? "-"],
-    ["Listener", context.listenerId ?? "-"],
+    ["Source listener", sourceListenerId ?? "-"],
     [
       "Execution",
-      context.listenerId
-        ? "Original app listener"
-        : context.captureSource === "wire"
-          ? "Inspected page stream"
-          : "No live page target"
+      context.captureSource === "wire"
+        ? "Inspected page stream"
+        : "Subscription listeners"
     ],
     ["Item", context.itemName ?? String(context.itemPosition ?? "-")],
     ["Schema", context.fields?.join(", ") ?? "-"]
@@ -7530,7 +7379,6 @@ function createCommandDraftContext(context: CommandItemContext): HTMLElement {
 function commandDraftMatchesContext(draft: ReinjectionDraft, context: CommandItemContext): boolean {
   return (
     draft.target.subscriptionId === (context.subscriptionId ?? null) &&
-    draft.target.listenerId === (context.listenerId ?? null) &&
     (draft.item.name ?? null) === (context.itemName ?? null) &&
     (draft.item.position ?? null) === (context.itemPosition ?? null)
   );
@@ -8484,6 +8332,13 @@ function createFilterInput(label: string, className: string, placeholder: string
   return input;
 }
 
+function createOption(value: string, label: string): HTMLOptionElement {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label;
+  return option;
+}
+
 type DetailSectionOptions = {
   open?: boolean;
   summary?: string | number | null;
@@ -8865,7 +8720,7 @@ function timelineSourceTitle(event: LightstreamerEventEnvelope): string {
   if (event.synthetic || event.source === "synthetic") {
     return event.raw?.executionTarget === "captured-wire"
       ? "Synthetic update replayed locally through the captured page WebSocket"
-      : "Synthetic update replayed through the captured listener";
+      : "Synthetic update delivered to the target Subscription";
   }
   return event.captureSource === "wire"
     ? "Captured from the Lightstreamer wire protocol"
@@ -8911,17 +8766,14 @@ function formatMarker(event: LightstreamerEventEnvelope): string {
 }
 
 function validationMessage(errors: string[]): string {
-  if (errors.includes("Original listener target is stale.")) {
-    return "The original listener target is stale. Capture a fresh listener update before reinjecting.";
+  if (errors.includes("Local Injection Target is stale.")) {
+    return "The target Subscription has no current Item Update listeners. Capture a fresh update after a listener is attached.";
   }
   if (errors.includes("Captured wire target is stale.")) {
     return "The captured page stream belongs to a stale connection epoch. Capture a fresh wire update before replaying.";
   }
-  if (errors.includes("Missing original listener target.")) {
-    return "This capture has no live listener target. Capture a fresh listener update before reinjecting.";
-  }
-  if (errors.includes("Original listener bridge is unavailable.")) {
-    return "The original listener bridge is unavailable. Reconnect or reload the inspected page, then capture a fresh update.";
+  if (errors.includes("Subscription listener bridge is unavailable.")) {
+    return "The Subscription listener bridge is unavailable. Reconnect or reload the inspected page, then capture a fresh update.";
   }
   if (errors.includes("Captured wire bridge is unavailable.")) {
     return "The captured page WebSocket bridge is unavailable. Reconnect or reload the inspected page, then capture a fresh update.";
@@ -8946,7 +8798,7 @@ function createSyntheticProvenance(event: LightstreamerEventEnvelope): Record<st
     synthetic: event.synthetic,
     sourceEventId: event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? null,
     targetSubscriptionId: event.subscription?.id ?? null,
-    targetListenerId: event.listener?.id ?? null,
+    sourceListenerId: event.raw?.sourceListenerId ?? null,
     executionTarget: event.raw?.executionTarget ?? "captured-listener",
     deliveryPath: event.raw?.deliveryPath ?? "captured-listener",
     deliveredToPage: event.raw?.deliveredToPage ?? true,
@@ -8982,9 +8834,9 @@ async function bootPanel(): Promise<void> {
       panel?.setVisible(visible);
     });
     root.textContent = "Initializing event storage...";
-    const store = await createPanelEventStore();
+    const history = await createPanelEventHistory();
     panel = renderPanel(root, undefined, {
-      store,
+      history,
       visible,
       analytics: createPanelAnalytics()
     });
@@ -8997,16 +8849,16 @@ async function bootPanel(): Promise<void> {
   }
 }
 
-async function createPanelEventStore(): Promise<EventStore> {
+async function createPanelEventHistory(): Promise<EventHistory> {
   try {
-    return await createIndexedDbEventStore({
+    return await createIndexedDbEventHistory({
       sessionId: chrome.devtools?.inspectedWindow?.tabId ?? Date.now(),
       reset: true,
       clearOnClose: true
     });
   } catch (error) {
     console.error("Falling back to in-memory event storage.", error);
-    return createEventStore();
+    return createInMemoryEventHistory();
   }
 }
 

@@ -1540,7 +1540,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     ).toBe(false);
   });
 
-  it("reinjects a synthetic update into the exact captured subscription listener", () => {
+  it("fans one synthetic Logical Update out to every current Subscription listener", () => {
     const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
     const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
     const subscription = new target.Subscription("COMMAND", ["scenario"], ["command", "key", "price"]);
@@ -1548,6 +1548,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     const receivedChangedFields: Record<string, unknown> = {};
     const listener = {
       receivedCount: 0,
+      receivedUpdate: null as unknown,
       receivedItem: null as null | { name: string | null; position: number | null; snapshot: boolean },
       onItemUpdate(update: {
         forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void): void;
@@ -1562,6 +1563,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         getValueAsJSONPatchIfAvailable(fieldName: string): unknown;
       }) {
         this.receivedCount += 1;
+        this.receivedUpdate = update;
         update.forEachField((fieldName, _fieldPos, value) => {
           receivedFields[fieldName] = value;
         });
@@ -1578,9 +1580,18 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         receivedFields.patch = update.getValueAsJSONPatchIfAvailable("price");
       }
     };
+    const secondListener = {
+      receivedCount: 0,
+      receivedUpdate: null as unknown,
+      onItemUpdate(update: unknown) {
+        this.receivedCount += 1;
+        this.receivedUpdate = update;
+      }
+    };
 
     client.subscribe(subscription);
     subscription.addListener(listener);
+    subscription.addListener(secondListener);
 
     const responsePort = {
       postMessage: vi.fn(),
@@ -1597,6 +1608,8 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     } as unknown as MessageEvent);
 
     expect(listener.receivedCount).toBe(1);
+    expect(secondListener.receivedCount).toBe(1);
+    expect(secondListener.receivedUpdate).toBe(listener.receivedUpdate);
     expect(listener.receivedItem).toEqual({ name: "portfolio", position: 2, snapshot: false });
     expect(receivedFields).toEqual({
       command: "UPDATE",
@@ -1626,7 +1639,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     expect(responsePort.close).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves subscription field positions for listener-path reinjection", () => {
+  it("preserves subscription field positions for Subscription-scoped injection", () => {
     const { target, messageListeners } = createInstrumentedTargetWithPageMessages();
     const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
     const subscription = new target.Subscription(
@@ -1764,6 +1777,43 @@ describe("Lightstreamer lifecycle instrumentation", () => {
           isRuntimeReinjectResultMessage(message) &&
           message.result.requestId === "request-2" &&
           message.result.status === "stale-target"
+      )
+    ).toBe(true);
+  });
+
+  it("keeps the Subscription target live when the source listener is removed", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["scenario"],
+      ["command", "key", "price"]
+    );
+    const sourceListener = { onItemUpdate: vi.fn() };
+    const remainingListener = { onItemUpdate: vi.fn() };
+
+    client.subscribe(subscription);
+    subscription.addListener(sourceListener);
+    subscription.addListener(remainingListener);
+    subscription.removeListener(sourceListener);
+
+    messageListeners[0]({
+      source: target,
+      data: {
+        type: PAGE_REINJECT_REQUEST,
+        requestId: "request-subscription-target",
+        draft: createValidPageDraft()
+      }
+    } as unknown as MessageEvent);
+
+    expect(sourceListener.onItemUpdate).not.toHaveBeenCalled();
+    expect(remainingListener.onItemUpdate).toHaveBeenCalledTimes(1);
+    expect(
+      messages.some(
+        (message) =>
+          isRuntimeReinjectResultMessage(message) &&
+          message.result.requestId === "request-subscription-target" &&
+          message.result.status === "success"
       )
     ).toBe(true);
   });
