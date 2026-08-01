@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   createCommandStateIndex,
+  createCommandStateProjections,
   reduceCommandState,
   validateCommandDraftAgainstState
 } from "../src/core/command-state";
@@ -81,6 +82,53 @@ function firstItem(state: ReturnType<typeof reduceCommandState>) {
 }
 
 describe("COMMAND state reducer", () => {
+  it("keeps observed server and local effective COMMAND projections distinct", () => {
+    const projections = createCommandStateProjections();
+    projections.apply(
+      commandEvent("event-1", {
+        key: "alpha",
+        fields: { command: "ADD", key: "alpha", name: "Alpha", qty: "1", status: "open" }
+      })
+    );
+    projections.apply(
+      commandEvent("event-2", {
+        command: "UPDATE",
+        key: "alpha",
+        fields: { command: "UPDATE", key: "alpha", name: "Alpha", qty: "9", status: "local" },
+        changedFields: { qty: "9", status: "local" },
+        source: "synthetic",
+        synthetic: true
+      })
+    );
+
+    expect(
+      firstItem(projections.snapshot("observed-server")).activeRows[0].fields
+    ).toMatchObject({ qty: "1", status: "open" });
+    expect(
+      firstItem(projections.snapshot("local-effective")).activeRows[0].fields
+    ).toMatchObject({ qty: "9", status: "local" });
+
+    projections.apply(
+      commandEvent("event-3", {
+        command: "UPDATE",
+        key: "alpha",
+        fields: { command: "UPDATE", key: "alpha", name: "Alpha", qty: "2", status: "server" },
+        changedFields: { qty: "2", status: "server" }
+      })
+    );
+
+    for (const projection of ["observed-server", "local-effective"] as const) {
+      expect(firstItem(projections.snapshot(projection)).activeRows[0].fields).toMatchObject({
+        qty: "2",
+        status: "server"
+      });
+    }
+
+    projections.clear();
+    expect(projections.snapshot("observed-server").subscriptions).toEqual([]);
+    expect(projections.snapshot("local-effective").subscriptions).toEqual([]);
+  });
+
   it("matches incremental COMMAND indexing with full reduction", () => {
     const events = [
       commandEvent("event-1", { key: "alpha", snapshot: true }),

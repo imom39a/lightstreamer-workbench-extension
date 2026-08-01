@@ -478,7 +478,7 @@ async function runBrowserProof(): Promise<void> {
       `
       document.querySelector(".replay-card")?.getAttribute("aria-busy") === "false" &&
       document.querySelector(".reinjection-message")?.textContent?.includes(
-        "Edited update delivered to the original app listener"
+        "Edited update delivered to every current listener on the target Subscription"
       ) &&
       ![...document.querySelectorAll('[role="alert"]')].some((alert) => !alert.hidden)
       `,
@@ -582,7 +582,7 @@ async function showWorkbenchPanel(cdp: CdpClient): Promise<PanelSelectionProof> 
       const tabbedPane = UI.InspectorView.InspectorView.instance().tabbedPane;
       const availableTabIds = tabbedPane.tabIds();
       const panelId =
-        availableTabIds.find((id) => id.includes("LightstreamerEventWorkbench")) ?? null;
+        availableTabIds.find((id) => id.includes("LightstreamerWorkbench")) ?? null;
       if (panelId) {
         await tabbedPane.selectTab(panelId, true);
       }

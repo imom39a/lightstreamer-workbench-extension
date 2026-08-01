@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Lightstreamer Event Workbench title icon">
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Lightstreamer Workbench title icon">
   <defs>
     <linearGradient id="title-icon-bar" x1="22" y1="22" x2="106" y2="44" gradientUnits="userSpaceOnUse">
       <stop stop-color="#2563eb"/>

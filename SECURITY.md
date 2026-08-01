@@ -1,6 +1,6 @@
 # Security Policy
 
-Lightstreamer Event Workbench is a developer tool that observes inspected-page runtime data. Security and privacy reports are taken seriously because captured Lightstreamer payloads can contain proprietary or user-sensitive application data.
+Lightstreamer Workbench is a developer tool that observes inspected-page runtime data. Security and privacy reports are taken seriously because captured Lightstreamer payloads can contain proprietary or user-sensitive application data.
 
 ## Supported Versions
 

@@ -119,6 +119,7 @@ function event(
     raw?: LightstreamerEventEnvelope["raw"];
     subscriptionItems?: string[];
     subscriptionItemGroup?: string | null;
+    listenerId?: string;
   } = {}
 ): LightstreamerEventEnvelope {
   const command: string | null = Object.prototype.hasOwnProperty.call(overrides, "command")
@@ -148,7 +149,7 @@ function event(
       itemGroup: overrides.subscriptionItemGroup,
       fields: ["command", "key", "name", "qty", "html", "status"]
     },
-    listener: { id: "listener-1" },
+    listener: { id: overrides.listenerId ?? "listener-1" },
     item: {
       name: itemName,
       position: itemPosition
@@ -379,6 +380,29 @@ describe("COMMAND State panel workbench", () => {
     expect(commandWorkspace?.style.getPropertyValue("--command-keys-width")).toBe("384px");
     expect(keysResizeHandle?.getAttribute("aria-valuenow")).toBe("384");
     expect(document.querySelector(".command-filter-key")).toBeNull();
+  });
+
+  it("switches between Local Effective and Observed Server COMMAND projections", () => {
+    clickCommandState();
+
+    expect(text(".command-projection-control")).toContain("Projection");
+    expect((control(".command-projection-select") as HTMLSelectElement).value).toBe(
+      "local-effective"
+    );
+    expect(text(".command-update-list")).toContain("event-5");
+    clickRowByText(".command-current-row", "alpha");
+    expect(text(".command-detail-pane")).toContain('"qty": "3"');
+
+    input(".command-projection-select", "observed-server");
+
+    expect(text(".command-update-list")).not.toContain("event-5");
+    expect(text(".command-detail-pane")).toContain('"qty": "2"');
+    expect(text(".command-detail-pane")).toContain("Latest server UPDATE");
+
+    input(".command-projection-select", "local-effective");
+
+    expect(text(".command-update-list")).toContain("event-5");
+    expect(text(".command-detail-pane")).toContain('"qty": "3"');
   });
 
   it("shares compact exact times with Timeline without duplicating selected update time", () => {
@@ -1421,7 +1445,7 @@ describe("COMMAND State panel workbench", () => {
     expect(document.querySelector(".command-detail-pane .replay-source-button")).toBeNull();
   });
 
-  it("re-injects the unchanged selected COMMAND update through its captured listener", async () => {
+  it("re-injects the unchanged selected COMMAND update through its Subscription", async () => {
     reinjectDraft.mockResolvedValue({
       requestId: "command-source-replay",
       ok: true,
@@ -1806,6 +1830,33 @@ describe("COMMAND State panel workbench", () => {
     expect(control(".command-draft-key").value).toBe("");
   });
 
+  it("keeps a Subscription-scoped COMMAND draft when listener provenance changes", () => {
+    clickCommandState();
+    button(".new-command-button").click();
+    input(".command-draft-key", "delta");
+
+    store.append(
+      event("event-listener-2", {
+        command: "UPDATE",
+        key: "alpha",
+        listenerId: "listener-2",
+        fields: {
+          command: "UPDATE",
+          key: "alpha",
+          name: "Alpha",
+          qty: "4",
+          html: "",
+          status: "listener-2"
+        },
+        changedFields: { qty: "4", status: "listener-2" }
+      })
+    );
+
+    expect(document.querySelector(".new-command-editor")).not.toBeNull();
+    expect(control(".command-draft-key").value).toBe("delta");
+    expect(text(".command-draft-context")).toContain("listener-1");
+  });
+
   it("keeps new COMMAND free-text editors mounted and in view while typing", () => {
     clickCommandState();
     button(".new-command-button").click();
@@ -1889,7 +1940,7 @@ describe("COMMAND State panel workbench", () => {
     expect(detailPane.scrollTop).toBe(240);
   });
 
-  it("appends a synthetic COMMAND row only after listener-path success", async () => {
+  it("appends a synthetic COMMAND row only after Subscription delivery succeeds", async () => {
     reinjectDraft.mockResolvedValue({
       requestId: "request-1",
       ok: true,
@@ -1910,7 +1961,7 @@ describe("COMMAND State panel workbench", () => {
     expect(reinjectDraft).toHaveBeenCalledTimes(1);
     expect(store.list().filter((entry) => entry.synthetic)).toHaveLength(2);
     expect(text(".reinjection-message")).toContain(
-      "Synthetic COMMAND update injected through the captured listener."
+      "Synthetic COMMAND update delivered to every current listener on the target Subscription."
     );
     expect(text(".command-current-rows")).toContain("bravo");
     clickRowByText(".command-current-row", "bravo");

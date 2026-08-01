@@ -4,24 +4,31 @@ import {
   type CaptureMessage,
   type CaptureStatus,
   type ReinjectionResult,
+  type TopologySyncFrame,
   isPanelVisibilityMessage
 } from "../../bridge/messages";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
   type EventStore,
-  type EventStoreStats,
-  type MaybePromise,
-  createEventStore,
-  createIndexedDbEventStore
+  type EventStoreStats
 } from "../../core/event-store";
-import { type LightstreamerEventEnvelope } from "../../core/event-envelope";
+import {
+  createEventHistory,
+  createInMemoryEventHistory,
+  createIndexedDbEventHistory,
+  type EventHistory
+} from "../../core/event-history";
+import {
+  type LightstreamerEventEnvelope,
+  toPersistableEventEnvelope
+} from "../../core/event-envelope";
 import {
   hasActiveFilters,
   matchesEventFilters,
   type EventFilterState
 } from "../../core/event-filter";
 import {
-  createCommandStateIndex,
+  createCommandStateProjections,
   resolveCommandItemIdentity,
   type CommandDiagnostic,
   type CommandItemGroup,
@@ -29,6 +36,7 @@ import {
   type CommandProvenance,
   type CommandRow,
   type CommandState,
+  type CommandStateProjection,
   type CommandSubscriptionGroup,
   type DeletedCommandKey
 } from "../../core/command-state";
@@ -53,6 +61,16 @@ import {
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
 import {
+  type TopologyClient,
+  type TopologyCommandGeneration,
+  type TopologyInferredChild,
+  type TopologyItem,
+  type TopologyListener,
+  type TopologySession,
+  type TopologyState,
+  type TopologySubscription
+} from "../../core/topology-state";
+import {
   createDisabledAnalytics,
   createGoogleAnalytics,
   eventCountBucket,
@@ -64,6 +82,28 @@ import {
 } from "../analytics";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
 import { createThemeManager, type ThemePreference } from "./theme";
+import { createTopologyInspector } from "./topology-inspector";
+import { createTopologyProjection } from "./topology-projection";
+import {
+  createTopologyTreeViewModel,
+  findTopologySelection,
+  topologyClientNodePresentation,
+  topologyCommandGenerationNodePresentation,
+  topologyInferredChildNodePresentation,
+  topologyItemLabel,
+  topologyItemNodePresentation,
+  topologyItemTone,
+  topologyListenerNodePresentation,
+  topologyPageNodePresentation,
+  topologySessionNodePresentation,
+  topologySessionTone,
+  topologySubscriptionNodePresentation,
+  topologySubscriptionTone,
+  topologyToneLabel,
+  type TopologyNodePresentation,
+  type TopologySelection,
+  type TopologySelectionTarget
+} from "./topology-view-model";
 
 type PanelState = {
   status: CaptureStatus;
@@ -72,6 +112,7 @@ type PanelState = {
 export type PanelController = {
   setStatus(status: CaptureStatus): void;
   appendCaptureMessage(message: CaptureMessage): void;
+  applyTopologySyncFrame(frame: TopologySyncFrame): void;
   clearEvents(): void;
   setBridge(bridge: PanelReinjectBridge): void;
   setVisible(visible: boolean): void;
@@ -79,6 +120,8 @@ export type PanelController = {
 };
 
 export type RenderPanelOptions = {
+  history?: EventHistory;
+  /** @deprecated Prefer the storage-independent history seam. */
   store?: EventStore;
   normalizer?: EventNormalizer;
   bridge?: PanelReinjectBridge;
@@ -96,7 +139,51 @@ type DraftJsonParseResult = {
   draft: ReinjectionDraft | null;
   error: string | null;
 };
-type ActiveView = "timeline" | "command";
+type ActiveView = "timeline" | "topology" | "command";
+type LiveReinjectionTarget = {
+  executionTarget: ReinjectionExecutionTarget;
+  subscriptionId: string;
+  listenerId: string | null;
+  clientId: string | null;
+  sessionId: string | null;
+  connectionEpoch: number | null;
+  available: boolean;
+  confirmedAt: number;
+};
+type LiveClientConnection = {
+  sessionId: string | null;
+  status: string | null;
+  transport: string | null;
+  epoch: number;
+};
+type DraftTargetStatus = {
+  live: boolean;
+  state: "live" | "session-mismatch" | "stale";
+  summary: string;
+  error: string | null;
+};
+type TopologyRenderPerformanceSample = {
+  durationMs: number;
+  logicalUpdateCount: number;
+  deliveryCount: number;
+  visibleNodeCount: number;
+};
+type RenderedTopologyNode = {
+  button: HTMLButtonElement;
+  kind: HTMLElement;
+  label: HTMLElement;
+  meta: HTMLElement;
+  status: HTMLElement | null;
+};
+type TopologyTreeNode = {
+  item: HTMLLIElement;
+  button: HTMLButtonElement;
+  collapseSlot: HTMLElement;
+};
+type DeferredTopologyItemRender = {
+  group: HTMLUListElement;
+  render(): HTMLElement;
+};
 type DraftSurface = "timeline" | "command-replay" | "new-command";
 type CommandRowSelection = {
   subscriptionId: string;
@@ -112,6 +199,14 @@ type CommandDiagnosticSelection = {
   diagnosticCode: CommandDiagnostic["code"];
   eventId: string | null;
 };
+
+const TOPOLOGY_INLINE_ITEM_LIMIT = 20;
+const TOPOLOGY_SELECTED_ITEM_LIMIT = 200;
+const TOPOLOGY_FULL_ITEM_LIMIT = 1_000;
+const TOPOLOGY_DEFERRED_ITEM_THRESHOLD = 200;
+const TOPOLOGY_ITEM_RENDER_CHUNK = 50;
+const HISTORICAL_TOPOLOGY_NOTE =
+  "Frozen record only. The Workbench does not maintain or reconnect this session. Historical topology is read-only; matching captured events remain available subject to event retention.";
 type CommandSelection = CommandRowSelection | CommandDiagnosticSelection | null;
 type CommandFilterState = {
   query?: string;
@@ -293,6 +388,12 @@ const TIMELINE_CODE_DEFINITIONS: readonly TimelineCodeDefinition[] = [
     family: "workbench"
   },
   {
+    code: "SF",
+    label: "Real max frequency",
+    description: "Workbench captured the max update frequency accepted by the server.",
+    family: "workbench"
+  },
+  {
     code: "S!",
     label: "Subscription error",
     description: "Workbench captured a subscription error callback.",
@@ -338,7 +439,7 @@ function createProductLabel(): HTMLHeadingElement {
   icon.alt = "";
   icon.setAttribute("aria-hidden", "true");
   icon.decoding = "async";
-  const text = createTextElement("span", "product-label-text", "Lightstreamer Event Workbench");
+  const text = createTextElement("span", "product-label-text", "Lightstreamer Workbench");
   title.append(icon, text);
   return title;
 }
@@ -613,18 +714,8 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function resolveMaybe<T>(
-  value: MaybePromise<T>,
-  onValue: (value: T) => void,
-  onError: (error: unknown) => void = (error) => {
-    console.error("Lightstreamer Event Workbench async operation failed", error);
-  }
-): void {
-  if (value instanceof Promise) {
-    void value.then(onValue, onError);
-    return;
-  }
-  onValue(value);
+function reportHistoryError(error: unknown): void {
+  console.error("Lightstreamer Workbench history operation failed", error);
 }
 
 export function renderPanel(
@@ -633,7 +724,11 @@ export function renderPanel(
   options: RenderPanelOptions = {}
 ): PanelController {
   const panelState = { ...state };
-  const store = options.store ?? createEventStore();
+  const history =
+    options.history ??
+    (options.store
+      ? createEventHistory(options.store)
+      : createInMemoryEventHistory());
   const normalizer = options.normalizer ?? createEventNormalizer();
   const analytics = options.analytics ?? createDisabledAnalytics();
   let selectedEventId: string | null = null;
@@ -665,12 +760,30 @@ export function renderPanel(
   let timelineWindowOffset = 0;
   let timelineHistoryAnchor = 0;
   let timelineFollowLatest = true;
+  let timelineVisibleTotal = 0;
+  let timelineLastScrollTop = 0;
+  let timelineScrollNavigationPending: "older" | "newer" | null = null;
   let timelineSelectionNeedsFilterReconciliation = false;
   let commandDetailOpen = true;
   const commandContextEvents: LightstreamerEventEnvelope[] = [];
   const commandContextEventIds = new Set<string>();
   const commandContextSubscriptionIds = new Set<string>();
-  const commandStateIndex = createCommandStateIndex();
+  const commandStateProjections = createCommandStateProjections();
+  let commandStateProjection: CommandStateProjection = "local-effective";
+  const topologyProjection = createTopologyProjection();
+  const liveReinjectionTargets = new Map<string, LiveReinjectionTarget>();
+  const liveClientConnections = new Map<string, LiveClientConnection>();
+  const sourceEventConnectionEpochs = new Map<string, number>();
+  let topologySelection: TopologySelection = { key: "page", kind: "page" };
+  let topologyExpandAllItems = false;
+  let topologyTreeItemBudget = 0;
+  let topologyDeferredItemCollector: DeferredTopologyItemRender[] | null = null;
+  let pendingTopologyItemRenders: DeferredTopologyItemRender[] = [];
+  let scheduledTopologyItemRender: ScheduledRender | null = null;
+  let renderedTopologyStructureKey: string | null = null;
+  const topologyRenderedNodes = new Map<string, RenderedTopologyNode>();
+  const topologyNodeSelections = new Map<string, TopologySelection>();
+  const topologyCollapsedKeys = new Set<string>();
   let highVolumeNoticeDismissed = false;
   let selectedCommandItem: { subscriptionId: string; itemId: string } | null = null;
   let selectedCommandKey: CommandSelection = null;
@@ -746,6 +859,22 @@ export function renderPanel(
 
   const filteredCount = createTextElement("span", "filtered-count", "");
   filteredCount.hidden = true;
+  const clearTimelineFilters = document.createElement("button");
+  clearTimelineFilters.className = "timeline-filter-clear";
+  clearTimelineFilters.type = "button";
+  clearTimelineFilters.textContent = "Clear Timeline filters";
+  clearTimelineFilters.hidden = true;
+  clearTimelineFilters.addEventListener("click", () => {
+    for (const key of Object.keys(filterState) as Array<
+      keyof EventFilterState
+    >) {
+      delete filterState[key];
+    }
+    searchInput.value = "";
+    resetTimelineRenderLimit();
+    timelineSelectionNeedsFilterReconciliation = true;
+    renderFeed();
+  });
 
   const retentionNotice = document.createElement("span");
   retentionNotice.className = "retention-notice";
@@ -758,7 +887,7 @@ export function renderPanel(
   keepEventsButton.title = "Dismiss this warning and keep captured events for this DevTools session.";
   keepEventsButton.addEventListener("click", () => {
     highVolumeNoticeDismissed = true;
-    resolveMaybe(store.stats(), renderEventVolumeNotice);
+    history.stats().receive(renderEventVolumeNotice, reportHistoryError);
   });
   retentionNotice.append(eventVolumeText, keepEventsButton);
 
@@ -814,6 +943,7 @@ export function renderPanel(
     status,
     eventCount,
     filteredCount,
+    clearTimelineFilters,
     retentionNotice,
     themeControl,
     analyticsControlButton,
@@ -887,8 +1017,9 @@ export function renderPanel(
   viewSelector.setAttribute("aria-label", "Workbench view");
 
   const timelineViewButton = createViewButton("Timeline", "timeline");
+  const topologyViewButton = createViewButton("Topology", "topology");
   const commandViewButton = createViewButton("COMMAND State", "command");
-  viewSelector.append(timelineViewButton, commandViewButton);
+  viewSelector.append(timelineViewButton, topologyViewButton, commandViewButton);
 
   const filterStrip = document.createElement("section");
   filterStrip.className = "filter-strip";
@@ -922,7 +1053,30 @@ export function renderPanel(
     setCommandFilter("query", commandSearchInput.value);
   });
 
-  commandFilterStrip.append(commandSearchInput);
+  const commandProjectionLabel = document.createElement("label");
+  commandProjectionLabel.className = "command-projection-control";
+  commandProjectionLabel.append(
+    createTextElement("span", "command-projection-label", "Projection")
+  );
+  const commandProjectionSelect = document.createElement("select");
+  commandProjectionSelect.className = "filter-control command-projection-select";
+  commandProjectionSelect.setAttribute("aria-label", "COMMAND state projection");
+  commandProjectionSelect.append(
+    createOption("local-effective", "Local Effective"),
+    createOption("observed-server", "Observed Server")
+  );
+  commandProjectionSelect.value = commandStateProjection;
+  commandProjectionSelect.addEventListener("change", () => {
+    commandStateProjection =
+      commandProjectionSelect.value === "observed-server"
+        ? "observed-server"
+        : "local-effective";
+    resetCommandListWindows();
+    renderCommandState();
+  });
+  commandProjectionLabel.append(commandProjectionSelect);
+
+  commandFilterStrip.append(commandSearchInput, commandProjectionLabel);
 
   const workspace = document.createElement("section");
   workspace.className = "workspace";
@@ -941,6 +1095,28 @@ export function renderPanel(
 
   workspace.append(feed, timelineDetailResizeHandle, detail);
   applyTimelineDetailWidth();
+
+  const topologyInspector = createTopologyInspector({
+    onSelect(key) {
+      const selection = topologyNodeSelections.get(key);
+      if (!selection) {
+        return;
+      }
+      topologySelection = selection;
+      renderTopology();
+    },
+    onToggle(key, collapsed) {
+      if (collapsed) {
+        topologyCollapsedKeys.add(key);
+      } else {
+        topologyCollapsedKeys.delete(key);
+      }
+    }
+  });
+  const topologyWorkspace = topologyInspector.element;
+  const topologyOverview = topologyInspector.overview;
+  const topologyTreePane = topologyInspector.treePane;
+  const topologyDetailPane = topologyInspector.detailPane;
 
   const commandWorkspace = document.createElement("section");
   commandWorkspace.className = "command-workspace";
@@ -986,6 +1162,7 @@ export function renderPanel(
     filterStrip,
     commandFilterStrip,
     workspace,
+    topologyWorkspace,
     commandWorkspace
   );
   const helpTooltips = installHelpTooltipOverlay(root);
@@ -1186,7 +1363,12 @@ export function renderPanel(
         analyticsCommandViewUsed ||= view === "command";
         trackAnalytics({
           name: "view_changed",
-          view: view === "command" ? "command_state" : "timeline"
+          view:
+            view === "command"
+              ? "command_state"
+              : view === "topology"
+                ? "topology"
+                : "timeline"
         });
       }
       updateActiveViewChrome();
@@ -1197,11 +1379,17 @@ export function renderPanel(
 
   function updateActiveViewChrome(): void {
     timelineViewButton.dataset.active = String(activeView === "timeline");
+    topologyViewButton.dataset.active = String(activeView === "topology");
     commandViewButton.dataset.active = String(activeView === "command");
     timelineViewButton.setAttribute("aria-current", activeView === "timeline" ? "page" : "false");
+    topologyViewButton.setAttribute(
+      "aria-current",
+      activeView === "topology" ? "page" : "false"
+    );
     commandViewButton.setAttribute("aria-current", activeView === "command" ? "page" : "false");
     filterStrip.hidden = activeView !== "timeline";
     workspace.hidden = activeView !== "timeline";
+    topologyInspector.setActive(activeView === "topology");
     commandFilterStrip.hidden = activeView !== "command";
     commandWorkspace.hidden = activeView !== "command";
   }
@@ -1212,6 +1400,10 @@ export function renderPanel(
     }
     if (activeView === "command") {
       renderCommandState(options);
+      return;
+    }
+    if (activeView === "topology") {
+      renderTopology();
       return;
     }
     renderFeed(options);
@@ -1412,10 +1604,37 @@ export function renderPanel(
     timelineWindowOffset = 0;
     timelineHistoryAnchor = 0;
     timelineFollowLatest = true;
+    timelineVisibleTotal = 0;
+    timelineLastScrollTop = 0;
+    timelineScrollNavigationPending = null;
   }
 
   function handleTimelineScroll(): void {
-    timelineFollowLatest = timelineWindowOffset === 0 && isTimelineNearBottom();
+    const previousScrollTop = timelineLastScrollTop;
+    const currentScrollTop = feed.scrollTop;
+    timelineLastScrollTop = currentScrollTop;
+    const scrollingUp = currentScrollTop < previousScrollTop;
+    const scrollingDown = currentScrollTop > previousScrollTop;
+    const nearBottom = isTimelineNearBottom();
+    timelineFollowLatest = timelineWindowOffset === 0 && nearBottom;
+
+    if (
+      activeView !== "timeline" ||
+      timelineScrollNavigationPending !== null
+    ) {
+      return;
+    }
+    if (scrollingUp && isTimelineNearTop()) {
+      showOlderTimelineWindow(true);
+      return;
+    }
+    if (scrollingDown && nearBottom && timelineWindowOffset > 0) {
+      showNewerTimelineWindow(true);
+    }
+  }
+
+  function isTimelineNearTop(): boolean {
+    return feed.scrollTop <= TIMELINE_LOAD_MORE_THRESHOLD;
   }
 
   function isTimelineNearBottom(): boolean {
@@ -1424,7 +1643,12 @@ export function renderPanel(
   }
 
   function scrollTimelineToLatest(): void {
-    feed.scrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight);
+    const latestScrollTop = Math.max(
+      0,
+      feed.scrollHeight - feed.clientHeight
+    );
+    feed.scrollTop = latestScrollTop;
+    timelineLastScrollTop = latestScrollTop;
   }
 
   function renderEmptyState(): void {
@@ -1458,21 +1682,20 @@ export function renderPanel(
   function renderFeed(options: RenderOptions = {}, onRendered?: () => void): void {
     helpTooltips.hide();
     const queryVersion = ++timelineQueryVersion;
-    resolveMaybe(
-      store.queryEvents({
+    history
+      .queryEvents({
         filters: filterState,
         order: "asc",
         limit: TIMELINE_WINDOW_SIZE,
         offset: timelineWindowOffset
-      }),
-      (result) => {
+      })
+      .receive((result) => {
         if (!panelVisible || queryVersion !== timelineQueryVersion) {
           return;
         }
         renderFeedResult(result.events, result.total, options);
         onRendered?.();
-      }
-    );
+      }, reportHistoryError);
   }
 
   function renderFeedResult(
@@ -1482,10 +1705,12 @@ export function renderPanel(
   ): void {
     const filtersActive = hasActiveFilters(filterState);
     timelineEvents = renderedEvents;
+    timelineVisibleTotal = totalVisible;
 
     filteredCount.hidden = !filtersActive;
     filteredCount.textContent = filtersActive ? `${totalVisible} shown` : "";
     filteredCount.setAttribute("aria-label", `${totalVisible} events shown`);
+    clearTimelineFilters.hidden = !filtersActive;
 
     if (currentStoreStats.retained === 0) {
       selectedEventId = null;
@@ -1586,7 +1811,16 @@ export function renderPanel(
         : null;
     feed.replaceChildren(...(navigation ? [navigation, list] : [list]));
     restorePaneState(feed, feedState);
-    if (shouldFollowLatest) {
+    if (timelineScrollNavigationPending === "older") {
+      scrollTimelineToLatest();
+      timelineFollowLatest = false;
+      timelineScrollNavigationPending = null;
+    } else if (timelineScrollNavigationPending === "newer") {
+      feed.scrollTop = 0;
+      timelineLastScrollTop = 0;
+      timelineFollowLatest = false;
+      timelineScrollNavigationPending = null;
+    } else if (shouldFollowLatest) {
       scrollTimelineToLatest();
     }
     const selectedDetailIsCurrent =
@@ -1597,6 +1831,46 @@ export function renderPanel(
     if (!options.passiveStoreUpdate || !selectedDetailIsCurrent) {
       renderSelectedTimelineDetail(options);
     }
+  }
+
+  function showOlderTimelineWindow(fromScroll: boolean): void {
+    const rendered = timelineEvents.length;
+    if (
+      rendered === 0 ||
+      timelineWindowOffset + rendered >= timelineVisibleTotal
+    ) {
+      return;
+    }
+    const nextOffset =
+      timelineWindowOffset === 0 && timelineHistoryAnchor > 0
+        ? timelineHistoryAnchor
+        : timelineWindowOffset + TIMELINE_WINDOW_SIZE;
+    timelineWindowOffset = Math.min(
+      nextOffset,
+      oldestWindowOffset(
+        timelineVisibleTotal,
+        timelineHistoryAnchor,
+        TIMELINE_WINDOW_SIZE
+      )
+    );
+    timelineFollowLatest = false;
+    timelineScrollNavigationPending = fromScroll ? "older" : null;
+    renderFeed({ preservePaneState: true });
+  }
+
+  function showNewerTimelineWindow(fromScroll: boolean): void {
+    if (timelineWindowOffset <= 0) {
+      return;
+    }
+    timelineWindowOffset = Math.max(
+      0,
+      timelineWindowOffset - TIMELINE_WINDOW_SIZE
+    );
+    timelineFollowLatest = fromScroll
+      ? false
+      : timelineWindowOffset === 0;
+    timelineScrollNavigationPending = fromScroll ? "newer" : null;
+    renderFeed({ preservePaneState: true });
   }
 
   function createTimelineWindowNavigation(total: number, rendered: number): HTMLElement {
@@ -1616,23 +1890,20 @@ export function renderPanel(
 
     const actions = document.createElement("span");
     actions.className = "window-navigation-actions";
-    const older = createWindowNavigationButton("Older", timelineWindowOffset + rendered < total, () => {
-      const nextOffset =
-        timelineWindowOffset === 0 && timelineHistoryAnchor > 0
-          ? timelineHistoryAnchor
-          : timelineWindowOffset + TIMELINE_WINDOW_SIZE;
-      timelineWindowOffset = Math.min(
-        nextOffset,
-        oldestWindowOffset(total, timelineHistoryAnchor, TIMELINE_WINDOW_SIZE)
-      );
-      timelineFollowLatest = false;
-      renderFeed({ preservePaneState: true });
-    });
-    const newer = createWindowNavigationButton("Newer", timelineWindowOffset > 0, () => {
-      timelineWindowOffset = Math.max(0, timelineWindowOffset - TIMELINE_WINDOW_SIZE);
-      timelineFollowLatest = timelineWindowOffset === 0;
-      renderFeed({ preservePaneState: true });
-    });
+    const older = createWindowNavigationButton(
+      "Older",
+      timelineWindowOffset + rendered < total,
+      () => {
+        showOlderTimelineWindow(false);
+      }
+    );
+    const newer = createWindowNavigationButton(
+      "Newer",
+      timelineWindowOffset > 0,
+      () => {
+        showNewerTimelineWindow(false);
+      }
+    );
     const latest = createWindowNavigationButton("Latest", timelineWindowOffset > 0, () => {
       timelineWindowOffset = 0;
       timelineFollowLatest = true;
@@ -1660,13 +1931,16 @@ export function renderPanel(
     }
 
     const requestedEventId = selectedEventId;
-    resolveMaybe(store.getEventById(requestedEventId), (event) => {
-      if (selectedEventId !== requestedEventId || !timelineDetailOpen || !panelVisible) {
-        return;
-      }
-      selectedTimelineEvent = event;
-      renderDetail(event, options);
-    });
+    history.getEventById(requestedEventId).receive(
+      (event) => {
+        if (selectedEventId !== requestedEventId || !timelineDetailOpen || !panelVisible) {
+          return;
+        }
+        selectedTimelineEvent = event;
+        renderDetail(event, options);
+      },
+      reportHistoryError
+    );
   }
 
   function renderDetail(
@@ -1917,7 +2191,7 @@ export function renderPanel(
       ? capturePaneState(commandCurrentTable)
       : null;
     const updatePaneState = options.preservePaneState ? capturePaneState(commandUpdatePane) : null;
-    const commandState = commandStateIndex.snapshot();
+    const commandState = commandStateProjections.snapshot(commandStateProjection);
     const allItems = flattenCommandItems(commandState);
     const filterEvaluation = createCommandFilterEvaluation(
       commandFilterState,
@@ -3030,7 +3304,7 @@ export function renderPanel(
     const section = document.createElement("section");
     section.className = "new-command-editor";
     section.setAttribute("aria-label", "New synthetic COMMAND key editor");
-    section.append(createCommandDraftContext(context));
+    section.append(createCommandDraftContext(context, draft.target.listenerId));
     section.append(createCommandDraftControls(draft, context, item, commandState));
     parent.append(section);
     return true;
@@ -3049,6 +3323,10 @@ export function renderPanel(
       currentDraft,
       commandState,
       context,
+      draftExecutionTarget
+    );
+    const targetStatus = draftTargetStatus(
+      currentDraft,
       draftExecutionTarget
     );
 
@@ -3117,7 +3395,8 @@ export function renderPanel(
     const fieldTable = createCommandDraftFieldTable(currentDraft, context, item);
     const diagnostics = createCommandDraftDiagnostics(
       validation.diagnostics,
-      draftExecutionTarget
+      draftExecutionTarget,
+      currentDraft
     );
 
     const injectButton = document.createElement("button");
@@ -3128,6 +3407,7 @@ export function renderPanel(
       : "Inject COMMAND update";
     injectButton.disabled =
       !validation.valid ||
+      !targetStatus.live ||
       !bridgeReady ||
       reinjectionPending;
     injectButton.addEventListener("click", () => {
@@ -3147,6 +3427,7 @@ export function renderPanel(
       keyLabel,
       snapshotLabel,
       fieldTable,
+      createDraftTargetStatus(currentDraft, draftExecutionTarget),
       diagnostics,
       injectButton
     );
@@ -3225,13 +3506,14 @@ export function renderPanel(
 
     controls.querySelector<HTMLElement>(".reinjection-message")?.remove();
 
-    const currentState = commandStateIndex.snapshot();
+    const currentState = commandStateProjections.snapshot("local-effective");
     const validation = validateNewCommandDraft(
       nextDraft,
       currentState,
       context,
       draftExecutionTarget
     );
+    const targetStatus = draftTargetStatus(nextDraft, draftExecutionTarget);
     const latestItem =
       flattenCommandItems(currentState).find(
         (entry) =>
@@ -3292,14 +3574,22 @@ export function renderPanel(
     controls
       .querySelector<HTMLElement>(".command-draft-diagnostics")
       ?.replaceWith(
-        createCommandDraftDiagnostics(validation.diagnostics, draftExecutionTarget)
+        createCommandDraftDiagnostics(
+          validation.diagnostics,
+          draftExecutionTarget,
+          nextDraft
+        )
       );
+    controls
+      .querySelector<HTMLElement>(".replay-target-status")
+      ?.replaceWith(createDraftTargetStatus(nextDraft, draftExecutionTarget));
     const injectButton = controls.querySelector<HTMLButtonElement>(
       ".inject-command-button"
     );
     if (injectButton) {
       injectButton.disabled =
         !validation.valid ||
+        !targetStatus.live ||
         !bridgeReady ||
         reinjectionPending;
     }
@@ -3307,18 +3597,29 @@ export function renderPanel(
 
   function createCommandDraftDiagnostics(
     diagnostics: readonly NewCommandDraftDiagnostic[],
-    executionTarget: ReinjectionExecutionTarget
+    executionTarget: ReinjectionExecutionTarget,
+    currentDraft: ReinjectionDraft
   ): HTMLElement {
     const section = document.createElement("section");
     section.className = "command-draft-diagnostics";
     section.append(createTextElement("h4", "draft-source-heading", "Diagnostics"));
-    if (diagnostics.length === 0) {
+    const targetStatus = draftTargetStatus(currentDraft, executionTarget);
+    if (!targetStatus.live) {
+      section.append(
+        createTextElement(
+          "p",
+          "command-draft-diagnostic error",
+          validationMessage(targetStatus.error ? [targetStatus.error] : [])
+        )
+      );
+    }
+    if (diagnostics.length === 0 && targetStatus.live) {
       section.append(
         createTextElement(
           "p",
           "command-draft-diagnostic info",
           executionTarget === "captured-listener"
-            ? "Draft is ready for local listener-path injection."
+            ? "Draft is ready for Subscription-scoped Local Injection."
             : "Draft is ready for local replay through the captured page WebSocket. No server request will be sent."
         )
       );
@@ -3345,11 +3646,12 @@ export function renderPanel(
     const executionTarget = draftExecutionTarget;
     const validation = validateNewCommandDraft(
       currentDraft,
-      commandStateIndex.snapshot(),
+      commandStateProjections.snapshot("local-effective"),
       context,
       executionTarget
     );
-    if (!validation.valid || !activeBridge) {
+    const targetStatus = draftTargetStatus(currentDraft, executionTarget);
+    if (!validation.valid || !targetStatus.live || !activeBridge) {
       return;
     }
 
@@ -3379,7 +3681,7 @@ export function renderPanel(
         kind: "success",
         text:
           executionTarget === "captured-listener"
-            ? "Synthetic COMMAND update injected through the captured listener."
+            ? "Synthetic COMMAND update delivered to every current listener on the target Subscription."
             : "Synthetic COMMAND update delivered locally through the captured page WebSocket. No server was contacted."
       };
       if (currentDraft.key) {
@@ -3391,17 +3693,1873 @@ export function renderPanel(
         };
         selectedCommandUpdateEventId = null;
       }
-      resolveMaybe(
-        store.append(createSyntheticEventFromDraft(currentDraft, result, executionTarget)),
-        () => {
+      history
+        .append(createSyntheticEventFromDraft(currentDraft, result, executionTarget))
+        .receive(() => {
           renderCommandState({ preservePaneState: true });
-        }
-      );
+        }, reportHistoryError);
       return;
     }
 
     reinjectionMessage = createCommandFailureMessage(result);
     renderCommandState();
+  }
+
+  function renderTopology(): void {
+    const renderStartedAt = performance.now();
+    const treeHadFocus = topologyTreePane.contains(document.activeElement);
+    const treeScrollTop = topologyTreePane.scrollTop;
+    const detailScrollTop = topologyDetailPane.scrollTop;
+    const state = topologyProjection.snapshot();
+    renderTopologyOverview(state);
+
+    let target = findTopologySelection(state, topologySelection.key);
+    if (!target) {
+      topologySelection = { key: "page", kind: "page" };
+      topologyExpandAllItems = false;
+      target = { kind: "page", state };
+    }
+    const treeModel = createTopologyTreeViewModel(state, {
+      selection: topologySelection,
+      expandAllItems: topologyExpandAllItems,
+      inlineItemLimit: TOPOLOGY_INLINE_ITEM_LIMIT,
+      selectedItemLimit: TOPOLOGY_SELECTED_ITEM_LIMIT,
+      fullItemLimit: TOPOLOGY_FULL_ITEM_LIMIT
+    });
+    const visibleTopologyKeys = new Set(
+      treeModel.presentations.map(({ selection }) => selection.key)
+    );
+    for (const key of topologyCollapsedKeys) {
+      if (!visibleTopologyKeys.has(key)) {
+        topologyCollapsedKeys.delete(key);
+      }
+    }
+    if (treeModel.structureKey !== renderedTopologyStructureKey) {
+      cancelDeferredTopologyItemRendering();
+      topologyRenderedNodes.clear();
+      topologyNodeSelections.clear();
+      const deferItems =
+        topologyExpandAllItems &&
+        state.itemCount > TOPOLOGY_DEFERRED_ITEM_THRESHOLD;
+      const deferredItems: DeferredTopologyItemRender[] = [];
+      topologyTreePane.replaceChildren(
+        createTopologyTree(state, deferItems ? deferredItems : null)
+      );
+      renderedTopologyStructureKey = treeModel.structureKey;
+      if (deferredItems.length > 0) {
+        pendingTopologyItemRenders = deferredItems;
+        topologyTreePane.setAttribute("aria-busy", "true");
+        scheduleDeferredTopologyItemRendering();
+      }
+    } else {
+      refreshTopologyTreeNodes(treeModel.presentations);
+    }
+    topologyDetailPane.replaceChildren(createTopologyDetail(target));
+    topologyTreePane.scrollTop = treeScrollTop;
+    topologyDetailPane.scrollTop = detailScrollTop;
+    topologyInspector.update({
+      selectedKey: topologySelection.key,
+      restoreFocus: treeHadFocus,
+      syncState: topologyProjection.status().syncState,
+      coverageStatus: topologyProjection.status().coverage?.status ?? "legacy"
+    });
+    reportTopologyRenderPerformance(renderStartedAt, state);
+  }
+
+  function resetTopologyProjectionConsumerState(): void {
+    liveReinjectionTargets.clear();
+    liveClientConnections.clear();
+    sourceEventConnectionEpochs.clear();
+    topologySelection = { key: "page", kind: "page" };
+    topologyExpandAllItems = false;
+    renderedTopologyStructureKey = null;
+    topologyRenderedNodes.clear();
+    topologyNodeSelections.clear();
+    topologyCollapsedKeys.clear();
+  }
+
+  function reportTopologyRenderPerformance(
+    renderStartedAt: number,
+    state: TopologyState
+  ): void {
+    const hook = (
+      globalThis as typeof globalThis & {
+        __LSEW_TOPOLOGY_RENDER_SAMPLE__?: (
+          sample: TopologyRenderPerformanceSample
+        ) => void;
+      }
+    ).__LSEW_TOPOLOGY_RENDER_SAMPLE__;
+    if (typeof hook !== "function") {
+      return;
+    }
+
+    const currentSubscriptions = [
+      ...state.unassignedSubscriptions,
+      ...state.clients.flatMap((client) => [
+        ...client.waitingSubscriptions,
+        ...client.sessions
+          .filter((session) => !session.historical)
+          .flatMap((session) => session.subscriptions)
+      ])
+    ];
+    hook({
+      durationMs: performance.now() - renderStartedAt,
+      logicalUpdateCount: currentSubscriptions.reduce(
+        (total, subscription) => total + subscription.updateCount,
+        0
+      ),
+      deliveryCount: currentSubscriptions.reduce(
+        (total, subscription) => total + subscription.deliveryCount,
+        0
+      ),
+      visibleNodeCount:
+        topologyTreePane.querySelectorAll(".topology-node").length
+    });
+  }
+
+  function renderTopologyOverview(state: TopologyState): void {
+    const projectionStatus = topologyProjection.status();
+    const limitedClients = state.clients.filter(
+      (client) => client.coverageStatus === "limited"
+    ).length;
+    const coverageLabel = projectionStatus.semanticActive
+      ? projectionStatus.coverage?.status === "partial"
+        ? "Partial semantic coverage"
+        : "Complete semantic coverage"
+      : state.clientCount === 0
+        ? "Awaiting capture"
+        : limitedClients === 0
+          ? "Full API coverage"
+          : limitedClients === state.clientCount
+            ? "Limited wire coverage"
+            : "Mixed coverage";
+    const coverageTone = projectionStatus.semanticActive
+      ? projectionStatus.coverage?.status === "partial"
+        ? "warning"
+        : "active"
+      : state.clientCount === 0
+        ? "idle"
+        : limitedClients === 0
+          ? "active"
+          : "pending";
+
+    topologyOverview.replaceChildren(
+      createTopologyMetric("Clients", state.clientCount),
+      createTopologyMetric(
+        "Sessions",
+        `${state.activeSessionCount} active · ${state.historicalSessionCount} historical`
+      ),
+      createTopologyMetric(
+        "Subscriptions",
+        `${state.serverEstablishedSubscriptionCount}/${state.activeSubscriptionCount} established`
+      ),
+      createTopologyMetric("Items", state.itemCount),
+      createTopologyMetric("Listeners", state.listenerCount),
+      createTopologyMetric("Coverage", coverageLabel, coverageTone),
+      createTopologyMetric(
+        "Sync",
+        topologySyncLabel(),
+        topologySyncTone()
+      ),
+      createTopologyActions(state)
+    );
+  }
+
+  function topologySyncLabel(): string {
+    const status = topologyProjection.status();
+    if (!status.semanticActive) return "Legacy event projection";
+    if (status.syncState === "staging") return "Synchronizing";
+    if (status.syncState === "complete") return "Synchronized";
+    if (status.syncState === "partial") return "Partial · retry needed";
+    return "Live semantic capture";
+  }
+
+  function topologySyncTone(): string {
+    const status = topologyProjection.status();
+    if (!status.semanticActive) return "neutral";
+    if (status.syncState === "partial") return "warning";
+    if (status.syncState === "staging") return "pending";
+    return "active";
+  }
+
+  function createTopologyActions(state: TopologyState): HTMLElement {
+    const actions = document.createElement("div");
+    actions.className = "topology-actions";
+
+    const resetCurrent = document.createElement("button");
+    resetCurrent.className = "topology-action topology-reset-current";
+    resetCurrent.type = "button";
+    resetCurrent.textContent = "Reset current";
+    resetCurrent.title =
+      "Reset current-session topology counters and timestamps without removing captured events, COMMAND state, drafts, or reinjection targets.";
+    resetCurrent.disabled = state.clientCount === 0;
+    resetCurrent.addEventListener("click", () => {
+      topologyProjection.resetCurrentObservations();
+      renderTopology();
+    });
+
+    const clearHistory = document.createElement("button");
+    clearHistory.className = "topology-action topology-clear-history";
+    clearHistory.type = "button";
+    clearHistory.textContent = "Clear history";
+    clearHistory.title =
+      "Delete frozen historical topology snapshots only. Captured timeline events remain available.";
+    clearHistory.disabled = state.historicalSessionCount === 0;
+    clearHistory.addEventListener("click", () => {
+      topologyProjection.clearHistory();
+      renderTopology();
+    });
+
+    const expandItems = document.createElement("button");
+    expandItems.className = "topology-action topology-expand-items";
+    expandItems.type = "button";
+    expandItems.textContent = topologyExpandAllItems
+      ? "Collapse items"
+      : state.itemCount > TOPOLOGY_FULL_ITEM_LIMIT
+        ? `Expand first ${TOPOLOGY_FULL_ITEM_LIMIT.toLocaleString()} items`
+        : "Expand all items";
+    expandItems.title = topologyExpandAllItems
+      ? "Return large subscriptions to lazy item rendering."
+      : `Render item nodes across the topology, bounded to ${TOPOLOGY_FULL_ITEM_LIMIT.toLocaleString()} items. Listener identities remain available in item detail for large subscriptions.`;
+    expandItems.disabled = state.itemCount === 0;
+    expandItems.setAttribute("aria-pressed", String(topologyExpandAllItems));
+    expandItems.addEventListener("click", () => {
+      topologyExpandAllItems = !topologyExpandAllItems;
+      renderTopology();
+    });
+
+    actions.append(resetCurrent, clearHistory, expandItems);
+    return actions;
+  }
+
+  function createTopologyMetric(
+    label: string,
+    value: string | number,
+    tone = "neutral"
+  ): HTMLElement {
+    const metric = document.createElement("div");
+    metric.className = "topology-metric";
+    metric.dataset.tone = tone;
+    metric.append(
+      createTextElement("span", "topology-metric-label", label),
+      createTextElement("strong", "topology-metric-value", String(value))
+    );
+    return metric;
+  }
+
+  function createTopologyTree(
+    state: TopologyState,
+    deferredItems: DeferredTopologyItemRender[] | null = null
+  ): HTMLElement {
+    topologyTreeItemBudget = topologyExpandAllItems
+      ? TOPOLOGY_FULL_ITEM_LIMIT
+      : 0;
+    topologyDeferredItemCollector = deferredItems;
+    const tree = document.createElement("ul");
+    tree.className = "topology-tree";
+    tree.setAttribute("role", "tree");
+    tree.setAttribute("aria-label", "Current Lightstreamer topology");
+
+    const pagePresentation = topologyPageNodePresentation(state);
+    const page = createTopologyTreeNode(
+      pagePresentation.selection,
+      pagePresentation.kind,
+      pagePresentation.label,
+      pagePresentation.meta,
+      pagePresentation.tone
+    );
+    const pageChildren = createTopologyTreeGroup();
+
+    for (const client of state.clients) {
+      pageChildren.append(createClientTopologyTreeNode(client));
+    }
+
+    if (state.unassignedSubscriptions.length > 0) {
+      const orphanGroup = document.createElement("li");
+      orphanGroup.className = "topology-orphan-group";
+      orphanGroup.append(
+        createTextElement(
+          "div",
+          "topology-orphan-heading",
+          `Unassigned subscriptions (${state.unassignedSubscriptions.length})`
+        )
+      );
+      const orphanChildren = createTopologyTreeGroup();
+      for (const subscription of state.unassignedSubscriptions) {
+        orphanChildren.append(
+          createSubscriptionTopologyTreeNode(null, null, subscription)
+        );
+      }
+      orphanGroup.append(orphanChildren);
+      pageChildren.append(orphanGroup);
+    }
+
+    attachTopologyTreeChildren(page, pageChildren);
+    tree.append(page.item);
+    topologyDeferredItemCollector = null;
+    return tree;
+  }
+
+  function scheduleDeferredTopologyItemRendering(): void {
+    if (scheduledTopologyItemRender || pendingTopologyItemRenders.length === 0) {
+      return;
+    }
+    scheduledTopologyItemRender = schedulePanelFrame(() => {
+      scheduledTopologyItemRender = null;
+      if (!panelVisible || !topologyExpandAllItems || activeView !== "topology") {
+        cancelDeferredTopologyItemRendering();
+        return;
+      }
+      const fragments = new Map<HTMLUListElement, DocumentFragment>();
+      for (const task of pendingTopologyItemRenders.splice(
+        0,
+        TOPOLOGY_ITEM_RENDER_CHUNK
+      )) {
+        const fragment =
+          fragments.get(task.group) ?? document.createDocumentFragment();
+        fragment.append(task.render());
+        fragments.set(task.group, fragment);
+      }
+      for (const [group, fragment] of fragments) {
+        group.append(fragment);
+      }
+      if (pendingTopologyItemRenders.length > 0) {
+        scheduleDeferredTopologyItemRendering();
+        return;
+      }
+      topologyTreePane.removeAttribute("aria-busy");
+      renderTopology();
+    });
+  }
+
+  function cancelDeferredTopologyItemRendering(): void {
+    const incomplete =
+      Boolean(scheduledTopologyItemRender) ||
+      pendingTopologyItemRenders.length > 0;
+    if (scheduledTopologyItemRender) {
+      cancelPanelFrame(scheduledTopologyItemRender);
+      scheduledTopologyItemRender = null;
+    }
+    pendingTopologyItemRenders = [];
+    topologyDeferredItemCollector = null;
+    topologyTreePane.removeAttribute("aria-busy");
+    if (incomplete) {
+      renderedTopologyStructureKey = null;
+    }
+  }
+
+  function refreshTopologyTreeNodes(
+    presentations: readonly TopologyNodePresentation[]
+  ): void {
+    for (const presentation of presentations) {
+      const rendered = topologyRenderedNodes.get(presentation.selection.key);
+      if (rendered) {
+        applyTopologyNodePresentation(rendered, presentation);
+      }
+    }
+  }
+
+  function createClientTopologyTreeNode(client: TopologyClient): HTMLElement {
+    const presentation = topologyClientNodePresentation(client);
+    const node = createTopologyTreeNode(
+      presentation.selection,
+      presentation.kind,
+      presentation.label,
+      presentation.meta,
+      presentation.tone
+    );
+    const children = createTopologyTreeGroup();
+
+    if (client.waitingSubscriptions.length > 0) {
+      const waitingGroup = document.createElement("li");
+      waitingGroup.className = "topology-orphan-group topology-waiting-group";
+      waitingGroup.append(
+        createTextElement(
+          "div",
+          "topology-orphan-heading",
+          `Waiting for session (${client.waitingSubscriptions.length})`
+        )
+      );
+      const waitingChildren = createTopologyTreeGroup();
+      for (const subscription of client.waitingSubscriptions) {
+        waitingChildren.append(
+          createSubscriptionTopologyTreeNode(client, null, subscription)
+        );
+      }
+      waitingGroup.append(waitingChildren);
+      children.append(waitingGroup);
+    }
+
+    for (const session of client.sessions) {
+      children.append(createSessionTopologyTreeNode(client, session));
+    }
+    attachTopologyTreeChildren(node, children);
+    return node.item;
+  }
+
+  function createSessionTopologyTreeNode(
+    client: TopologyClient,
+    session: TopologySession
+  ): HTMLElement {
+    const presentation = topologySessionNodePresentation(client, session);
+    const node = createTopologyTreeNode(
+      presentation.selection,
+      presentation.kind,
+      presentation.label,
+      presentation.meta,
+      presentation.tone
+    );
+    const children = createTopologyTreeGroup();
+    for (const subscription of session.subscriptions) {
+      children.append(
+        createSubscriptionTopologyTreeNode(client, session, subscription)
+      );
+    }
+    attachTopologyTreeChildren(node, children);
+    return node.item;
+  }
+
+  function createSubscriptionTopologyTreeNode(
+    client: TopologyClient | null,
+    session: TopologySession | null,
+    subscription: TopologySubscription
+  ): HTMLElement {
+    const presentation = topologySubscriptionNodePresentation(
+      client,
+      session,
+      subscription
+    );
+    const selectionKey = presentation.selection.key;
+    const node = createTopologyTreeNode(
+      presentation.selection,
+      presentation.kind,
+      presentation.label,
+      presentation.meta,
+      presentation.tone
+    );
+    const children = createTopologyTreeGroup();
+
+    for (const generation of subscription.commandGenerations) {
+      children.append(
+        createCommandGenerationTopologyTreeNode(
+          client,
+          session,
+          subscription,
+          generation
+        )
+      );
+    }
+
+    const selectedBranch = topologySelection.ownerKey === selectionKey;
+    const itemLimit = topologyExpandAllItems
+      ? Math.min(subscription.items.length, topologyTreeItemBudget)
+      : subscription.items.length <= TOPOLOGY_INLINE_ITEM_LIMIT
+        ? subscription.items.length
+        : selectedBranch
+          ? TOPOLOGY_SELECTED_ITEM_LIMIT
+          : 0;
+    if (topologyExpandAllItems) {
+      topologyTreeItemBudget -= itemLimit;
+    }
+    for (const item of subscription.items.slice(0, itemLimit)) {
+      if (topologyDeferredItemCollector) {
+        topologyDeferredItemCollector.push({
+          group: children,
+          render: () =>
+            createItemTopologyTreeNode(client, session, subscription, item)
+        });
+      } else {
+        children.append(
+          createItemTopologyTreeNode(client, session, subscription, item)
+        );
+      }
+    }
+    if (subscription.items.length > itemLimit) {
+      const label =
+        itemLimit === 0
+          ? `Select subscription to inspect ${subscription.items.length.toLocaleString()} items`
+          : `${(subscription.items.length - itemLimit).toLocaleString()} more items omitted from the tree`;
+      if (topologyDeferredItemCollector && itemLimit > 0) {
+        topologyDeferredItemCollector.push({
+          group: children,
+          render: () => createTopologyPlaceholderNode(label)
+        });
+      } else {
+        children.append(createTopologyPlaceholderNode(label));
+      }
+    }
+    if (subscription.items.length === 0 && subscription.itemGroup) {
+      children.append(
+        createTopologyPlaceholderNode(
+          `Item group ${subscription.itemGroup} · resolves from updates`
+        )
+      );
+    }
+    if (subscription.items.length === 0) {
+      for (const listenerId of subscription.listenerIds) {
+        children.append(
+          createListenerTopologyTreeNode(
+            client,
+            session,
+            subscription,
+            null,
+            listenerId
+          )
+        );
+      }
+    }
+    attachTopologyTreeChildren(
+      node,
+      children,
+      Boolean(topologyDeferredItemCollector && itemLimit > 0)
+    );
+    return node.item;
+  }
+
+  function createTopologyPlaceholderNode(label: string): HTMLLIElement {
+    const item = document.createElement("li");
+    item.setAttribute("role", "none");
+    const row = createTextElement("div", "topology-placeholder-node", label);
+    row.setAttribute("role", "treeitem");
+    row.setAttribute("aria-disabled", "true");
+    row.tabIndex = -1;
+    item.append(row);
+    return item;
+  }
+
+  function createCommandGenerationTopologyTreeNode(
+    client: TopologyClient | null,
+    session: TopologySession | null,
+    subscription: TopologySubscription,
+    generation: TopologyCommandGeneration
+  ): HTMLElement {
+    const presentation = topologyCommandGenerationNodePresentation(
+      client,
+      session,
+      subscription,
+      generation
+    );
+    const node = createTopologyTreeNode(
+      presentation.selection,
+      presentation.kind,
+      presentation.label,
+      presentation.meta,
+      presentation.tone
+    );
+    const children = createTopologyTreeGroup();
+    for (const child of generation.inferredChildren) {
+      children.append(
+        createInferredChildTopologyTreeNode(
+          client,
+          session,
+          subscription,
+          generation,
+          child
+        )
+      );
+    }
+    attachTopologyTreeChildren(node, children);
+    return node.item;
+  }
+
+  function createInferredChildTopologyTreeNode(
+    client: TopologyClient | null,
+    session: TopologySession | null,
+    subscription: TopologySubscription,
+    generation: TopologyCommandGeneration,
+    child: TopologyInferredChild
+  ): HTMLElement {
+    const presentation = topologyInferredChildNodePresentation(
+      client,
+      session,
+      subscription,
+      generation,
+      child
+    );
+    return createTopologyTreeNode(
+      presentation.selection,
+      presentation.kind,
+      presentation.label,
+      presentation.meta,
+      presentation.tone
+    ).item;
+  }
+
+  function createItemTopologyTreeNode(
+    client: TopologyClient | null,
+    session: TopologySession | null,
+    subscription: TopologySubscription,
+    item: TopologyItem
+  ): HTMLElement {
+    const presentation = topologyItemNodePresentation(
+      client,
+      session,
+      subscription,
+      item
+    );
+    const node = createTopologyTreeNode(
+      presentation.selection,
+      presentation.kind,
+      presentation.label,
+      presentation.meta,
+      presentation.tone
+    );
+    const children = createTopologyTreeGroup();
+    const renderListeners =
+      !topologyExpandAllItems ||
+      subscription.items.length <= TOPOLOGY_INLINE_ITEM_LIMIT;
+    if (renderListeners) {
+      for (const listenerId of item.listenerIds) {
+        children.append(
+          createListenerTopologyTreeNode(
+            client,
+            session,
+            subscription,
+            item,
+            listenerId
+          )
+        );
+      }
+    }
+    if (children.childElementCount > 0) {
+      attachTopologyTreeChildren(node, children);
+    }
+    return node.item;
+  }
+
+  function createListenerTopologyTreeNode(
+    _client: TopologyClient | null,
+    _session: TopologySession | null,
+    subscription: TopologySubscription,
+    item: TopologyItem | null,
+    listenerId: string
+  ): HTMLElement {
+    const presentation = topologyListenerNodePresentation(
+      _client,
+      _session,
+      subscription,
+      item,
+      listenerId
+    );
+    return createTopologyTreeNode(
+      presentation.selection,
+      presentation.kind,
+      presentation.label,
+      presentation.meta,
+      presentation.tone
+    ).item;
+  }
+
+  function createTopologyTreeNode(
+    selection: TopologySelection,
+    kind: string,
+    label: string,
+    meta: string,
+    tone: string
+  ): TopologyTreeNode {
+    const item = document.createElement("li");
+    item.className = "topology-tree-item";
+    item.setAttribute("role", "none");
+
+    const row = document.createElement("div");
+    row.className = "topology-node-row";
+    const collapseSlot = createTextElement(
+      "span",
+      "topology-collapse-spacer",
+      ""
+    );
+    collapseSlot.setAttribute("aria-hidden", "true");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "topology-node";
+    button.setAttribute("role", "treeitem");
+    button.dataset.topologyKey = selection.key;
+    button.tabIndex = -1;
+    const rendered: RenderedTopologyNode = {
+      button,
+      kind: createTextElement("span", "topology-node-kind", ""),
+      label: createTextElement("span", "topology-node-label", ""),
+      meta: createTextElement("span", "topology-node-meta", ""),
+      status:
+        topologyExpandAllItems && kind === "ITEM"
+          ? null
+          : createTextElement("span", "topology-node-status", "")
+    };
+    button.append(rendered.kind, rendered.label, rendered.meta);
+    if (rendered.status) {
+      button.append(rendered.status);
+    }
+    applyTopologyNodePresentation(rendered, {
+      selection,
+      kind,
+      label,
+      meta,
+      tone
+    });
+    topologyRenderedNodes.set(selection.key, rendered);
+    topologyNodeSelections.set(selection.key, selection);
+    row.append(collapseSlot, button);
+    item.append(row);
+    return { item, button, collapseSlot };
+  }
+
+  function attachTopologyTreeChildren(
+    node: TopologyTreeNode,
+    children: HTMLUListElement,
+    force = false
+  ): void {
+    if (!force && children.childElementCount === 0) {
+      return;
+    }
+    const key = node.button.dataset.topologyKey;
+    if (!key) {
+      return;
+    }
+    const collapsed = topologyCollapsedKeys.has(key);
+    const label =
+      node.button.querySelector(".topology-node-label")?.textContent ??
+      "topology branch";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "topology-collapse-toggle";
+    toggle.tabIndex = -1;
+    toggle.setAttribute("aria-hidden", "true");
+    toggle.dataset.topologyCollapseKey = key;
+    toggle.dataset.topologyBranchLabel = label;
+    node.collapseSlot.replaceWith(toggle);
+    node.item.append(children);
+    setTopologyBranchCollapsed(node.item, toggle, collapsed);
+  }
+
+  function setTopologyBranchCollapsed(
+    item: HTMLLIElement,
+    toggle: HTMLButtonElement,
+    collapsed: boolean
+  ): void {
+    const children = Array.from(item.children).find(
+      (child): child is HTMLUListElement =>
+        child.classList.contains("topology-tree-group")
+    );
+    if (!children) {
+      return;
+    }
+    const label = toggle.dataset.topologyBranchLabel ?? "topology branch";
+    children.hidden = collapsed;
+    const node = item.querySelector<HTMLButtonElement>(
+      ":scope > .topology-node-row > .topology-node"
+    );
+    node?.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute(
+      "aria-label",
+      `${collapsed ? "Expand" : "Collapse"} ${label}`
+    );
+    toggle.title = `${collapsed ? "Expand" : "Collapse"} ${label}`;
+    toggle.textContent = collapsed ? "▸" : "▾";
+  }
+
+  function applyTopologyNodePresentation(
+    rendered: RenderedTopologyNode,
+    presentation: TopologyNodePresentation
+  ): void {
+    const selected = topologySelection.key === presentation.selection.key;
+    const status = topologyToneLabel(presentation.tone);
+    setTextIfChanged(rendered.kind, presentation.kind);
+    setTextIfChanged(rendered.label, presentation.label);
+    setTextIfChanged(rendered.meta, presentation.meta);
+    if (rendered.status) {
+      setTextIfChanged(rendered.status, status);
+    }
+    if (rendered.button.dataset.selected !== String(selected)) {
+      rendered.button.dataset.selected = String(selected);
+    }
+    if (rendered.button.dataset.tone !== presentation.tone) {
+      rendered.button.dataset.tone = presentation.tone;
+    }
+    const ariaCurrent = selected ? "true" : "false";
+    if (rendered.button.getAttribute("aria-current") !== ariaCurrent) {
+      rendered.button.setAttribute("aria-current", ariaCurrent);
+    }
+    rendered.button.setAttribute("aria-selected", String(selected));
+  }
+
+  function setTextIfChanged(element: HTMLElement, value: string): void {
+    if (element.textContent !== value) {
+      element.textContent = value;
+    }
+  }
+
+  function createTopologyTreeGroup(): HTMLUListElement {
+    const group = document.createElement("ul");
+    group.className = "topology-tree-group";
+    group.setAttribute("role", "group");
+    return group;
+  }
+
+  function createTopologyDetail(target: TopologySelectionTarget): HTMLElement {
+    const content = document.createElement("div");
+    content.className = "topology-detail-content";
+
+    switch (target.kind) {
+      case "page":
+        renderTopologyPageDetail(content, target.state);
+        break;
+      case "client":
+        renderTopologyClientDetail(content, target.client);
+        break;
+      case "session":
+        renderTopologySessionDetail(content, target.client, target.session);
+        break;
+      case "subscription":
+        renderTopologySubscriptionDetail(content, target.subscription);
+        break;
+      case "generation":
+        renderTopologyCommandGenerationDetail(
+          content,
+          target.subscription,
+          target.generation
+        );
+        break;
+      case "inferred-child":
+        renderTopologyInferredChildDetail(
+          content,
+          target.subscription,
+          target.generation,
+          target.child
+        );
+        break;
+      case "item":
+        renderTopologyItemDetail(content, target.subscription, target.item);
+        break;
+      case "listener":
+        renderTopologyListenerDetail(
+          content,
+          target.subscription,
+          target.item,
+          target.listener
+        );
+        break;
+    }
+    return content;
+  }
+
+  function renderTopologyPageDetail(
+    content: HTMLElement,
+    state: TopologyState
+  ): void {
+    content.append(
+      createTopologyDetailHeader(
+        "Inspected page topology",
+        state.clientCount > 0 ? "Capture coverage and runtime ownership" : "Waiting for activity",
+        state.clientCount > 0 ? "active" : "idle"
+      ),
+      createTopologyDetailSection("Capture summary", [
+        ["Clients", state.clientCount],
+        ["Active sessions", state.activeSessionCount],
+        ["Historical sessions retained", state.historicalSessionCount],
+        ["Subscriptions", state.subscriptionCount],
+        ["Active subscriptions", state.activeSubscriptionCount],
+        ["Server-established subscriptions", state.serverEstablishedSubscriptionCount],
+        ["Resolved items", state.itemCount],
+        ["Unique listeners", state.listenerCount],
+        ["Unassigned subscriptions", state.unassignedSubscriptions.length],
+        ["Observing since", topologyTime(state.observingSince)]
+      ])
+    );
+    if (state.clientCount === 0) {
+      content.append(
+        createTextElement(
+          "p",
+          "topology-detail-note",
+          "Refresh the inspected application or create a Lightstreamer client. Topology appears as soon as constructor or wire activity is captured."
+        )
+      );
+    } else {
+      content.append(
+        createTextElement(
+          "p",
+          "topology-detail-note",
+          "Full coverage uses the official Lightstreamer public API. Limited coverage is reconstructed from captured WebSocket TLCP and may omit options, listeners, and server-provided session details."
+        )
+      );
+    }
+    content.append(
+      createTextElement(
+        "p",
+        "topology-detail-note",
+        "The Workbench only observes Lightstreamer clients and WebSockets owned by the inspected page. It does not create a client, call connect or subscribe, or open a server session."
+      )
+    );
+  }
+
+  function renderTopologyClientDetail(
+    content: HTMLElement,
+    client: TopologyClient
+  ): void {
+    const activeSession = client.sessions.find((session) => session.active);
+    content.append(
+      createTopologyDetailHeader(
+        client.id,
+        [
+          client.libraryVersion ? `Lightstreamer Web Client ${client.libraryVersion}` : "Version unavailable",
+          topologyProjection.status().semanticActive &&
+            topologyProjection.status().coverage?.status === "partial"
+            ? "Partial semantic coverage"
+            : client.coverageStatus === "limited"
+              ? "Limited coverage"
+              : "Full API coverage"
+        ].join(" · "),
+        activeSession ? "active" : "inactive"
+      ),
+      createTopologyDetailSection("Client identity", [
+        ["Client ID", client.id],
+        ["Library version", client.libraryVersion],
+        ["Instrumentation source", client.instrumentationSource],
+        ["Coverage", client.coverageStatus],
+        ["Connection state", client.normalizedStatus],
+        ["Exact client status", semanticClientValue(client, "status", client.status)],
+        ["Server address", semanticClientValue(client, "serverAddress", client.serverAddress)],
+        ["Adapter Set", semanticClientValue(client, "adapterSet", client.adapterSet)],
+        ["Client listeners", client.clientListenerIds.length],
+        ["First seen", topologyTime(client.firstSeenAt)],
+        ["Last seen", topologyTime(client.lastSeenAt)]
+      ]),
+      createTopologyDetailSection("Connection options", connectionOptionRows(client))
+    );
+  }
+
+  function renderTopologySessionDetail(
+    content: HTMLElement,
+    client: TopologyClient,
+    session: TopologySession
+  ): void {
+    content.append(
+      createTopologyDetailHeader(
+        session.id ?? "No established session",
+        session.active
+          ? "Current session"
+          : session.historical
+            ? "Frozen record from an ended page session"
+            : "Awaiting server session",
+        topologySessionTone(session)
+      ),
+      createTopologyDetailSection("Session", [
+        ["Session ID", session.id],
+        ["Client", client.id],
+        [
+          session.historical
+            ? "Connection state when frozen"
+            : "Connection state",
+          session.normalizedStatus
+        ],
+        [
+          session.historical
+            ? "Exact client status when frozen"
+            : "Exact client status",
+          session.status
+        ],
+        [session.historical ? "Last transport" : "Transport", session.transport],
+        ["Server instance", session.serverInstanceAddress],
+        ["Server socket name", session.serverSocketName],
+        ["Client IP", semanticClientValue(client, "clientIp", session.clientIp)],
+        [
+          "IP disclosure",
+          client.semanticValueStates?.clientIp?.state === "redacted"
+            ? "Redacted at capture boundary · exact unavailable"
+            : session.clientIp
+              ? "Masked at capture · exact unavailable"
+              : semanticClientValue(client, "clientIp", null)
+        ],
+        [
+          session.historical
+            ? "Subscriptions active when frozen"
+            : "Active subscriptions",
+          session.subscriptions.filter((entry) => entry.active).length
+        ],
+        [
+          session.historical
+            ? "Server-established when frozen"
+            : "Server-established",
+          session.subscriptions.filter((entry) => entry.serverEstablished).length
+        ],
+        ["First seen", topologyTime(session.firstSeenAt)],
+        ["Last seen", topologyTime(session.lastSeenAt)],
+        ["Ended", topologyTime(session.endedAt)],
+        ["Observing since", topologyTime(session.observingSince)],
+        ["Connection epochs", session.connectionEpochCount],
+        ["Recoveries", session.recoveryCount]
+      ]),
+      createTopologyDetailSection("Connection policy", connectionOptionRows(client))
+    );
+    if (session.historical) {
+      content.append(
+        createTextElement(
+          "p",
+          "topology-detail-note",
+          `${HISTORICAL_TOPOLOGY_NOTE} Transport and connection values are the last values observed before the page session ended.`
+        )
+      );
+    }
+  }
+
+  function renderTopologySubscriptionDetail(
+    content: HTMLElement,
+    subscription: TopologySubscription
+  ): void {
+    content.append(
+      createTopologyDetailHeader(
+        subscription.id,
+        subscription.historical
+          ? `${subscription.mode ?? "Unknown mode"} · frozen record`
+          : `${subscription.mode ?? "Unknown mode"} · ${subscription.statusLabel}`,
+        topologySubscriptionTone(subscription)
+      ),
+      createTopologyDetailSection("Subscription lifecycle", [
+        ["Subscription ID", subscription.id],
+        [
+          subscription.historical
+            ? "Derived status when frozen"
+            : "Derived status",
+          subscription.statusLabel
+        ],
+        [
+          subscription.historical ? "Active when frozen" : "Active on client",
+          topologyBoolean(subscription.active)
+        ],
+        [
+          subscription.historical
+            ? "Established when frozen"
+            : "Established by server",
+          topologyBoolean(subscription.serverEstablished)
+        ],
+        ["Last session", subscription.lastSessionId],
+        ["Pending since", topologyTime(subscription.pendingSince)],
+        ["Pending duration", topologyDurationSince(subscription.pendingSince)],
+        [
+          "Exact duplicate signal",
+          subscription.exactDuplicateCount > 1
+            ? `${subscription.exactDuplicateCount} active copies`
+            : "No"
+        ],
+        [
+          "Overlapping stream signal",
+          subscription.overlapCount > 1
+            ? `${subscription.overlapCount} active subscriptions`
+            : "No"
+        ],
+        ["Capture source", subscription.captureSource],
+        ["Historical snapshot", topologyBoolean(subscription.historical)],
+        ["Created", topologyTime(subscription.createdAt)],
+        ["Started", topologyTime(subscription.startedAt)],
+        ["Ended", topologyTime(subscription.endedAt)]
+      ]),
+      createTopologyDetailSection("Requested configuration", [
+        ["Mode", semanticSubscriptionValue(subscription, "mode", subscription.mode)],
+        [
+          "Items / group",
+          subscription.configuredItems
+            ? semanticSubscriptionValue(
+                subscription,
+                "items",
+                subscription.configuredItems.join(", ")
+              )
+            : semanticSubscriptionValue(
+                subscription,
+                "itemGroup",
+                subscription.itemGroup
+              )
+        ],
+        [
+          "Fields / schema",
+          subscription.fields
+            ? semanticSubscriptionValue(
+                subscription,
+                "fields",
+                subscription.fields.join(", ")
+              )
+            : semanticSubscriptionValue(
+                subscription,
+                "fieldSchema",
+                subscription.fieldSchema
+              )
+        ],
+        [
+          "Data Adapter",
+          semanticSubscriptionValue(subscription, "dataAdapter", subscription.dataAdapter)
+        ],
+        ["Selector", semanticSubscriptionValue(subscription, "selector", subscription.selector)],
+        [
+          "Snapshot",
+          semanticSubscriptionValue(
+            subscription,
+            "requestedSnapshot",
+            subscription.requestedSnapshot
+          )
+        ],
+        [
+          "Buffer size",
+          semanticSubscriptionValue(
+            subscription,
+            "requestedBufferSize",
+            subscription.requestedBufferSize
+          )
+        ],
+        [
+          "Requested max frequency",
+          semanticSubscriptionValue(
+            subscription,
+            "requestedMaxFrequency",
+            subscription.requestedMaxFrequency,
+            formatFrequency
+          )
+        ],
+        [
+          "Second-level Data Adapter",
+          semanticSubscriptionValue(
+            subscription,
+            "commandSecondLevelDataAdapter",
+            subscription.commandSecondLevelDataAdapter
+          )
+        ],
+        [
+          "Second-level fields / schema",
+          subscription.commandSecondLevelFields?.join(", ") ??
+            subscription.commandSecondLevelFieldSchema
+        ]
+      ]),
+      createTopologyDetailSection("Observed runtime", [
+        [
+          "Real max frequency",
+          semanticSubscriptionValue(
+            subscription,
+            "realMaxFrequency",
+            subscription.realMaxFrequency,
+            formatFrequency
+          )
+        ],
+        ["Listeners", subscription.listenerCount],
+        ["Resolved items", subscription.items.length],
+        ["Logical real updates", subscription.updateCount],
+        ["Synthetic updates", subscription.syntheticUpdateCount],
+        ["Listener callback deliveries", subscription.deliveryCount],
+        ["First update", topologyTime(subscription.firstUpdateAt)],
+        ["Last update", topologyTime(subscription.lastUpdateAt)],
+        ["Last synthetic update", topologyTime(subscription.lastSyntheticUpdateAt)],
+        ["Lost updates", subscription.lostUpdateCount],
+        ["Subscription errors", subscription.errorCount]
+      ]),
+      createTopologyDetailSection("Semantic lifecycle evidence", [
+        ["Establishment epochs", subscription.establishments.length],
+        [
+          "Establishment identities",
+          subscription.establishments.map(({ id }) => id)
+        ],
+        ["COMMAND generations", subscription.commandGenerations.length],
+        [
+          "COMMAND generation identities",
+          subscription.commandGenerations.map(({ id }) => id)
+        ],
+        [
+          "COMMAND keys",
+          subscription.commandGenerations.flatMap(({ key }) => key ? [key] : [])
+        ],
+        [
+          "Inferred second-level children",
+          subscription.commandGenerations.flatMap(({ inferredChildren }) =>
+            inferredChildren.map(({ label }) => label)
+          )
+        ],
+        [
+          "Second-level provenance",
+          subscription.commandGenerations.flatMap(({ inferredChildren }) =>
+            inferredChildren.map(({ provenance }) => provenance)
+          )
+        ]
+      ])
+    );
+    if (subscription.historical) {
+      content.append(
+        createTextElement(
+          "p",
+          "topology-detail-note",
+          HISTORICAL_TOPOLOGY_NOTE
+        )
+      );
+    }
+  }
+
+  function renderTopologyItemDetail(
+    content: HTMLElement,
+    subscription: TopologySubscription,
+    item: TopologyItem
+  ): void {
+    content.append(
+      createTopologyDetailHeader(
+        topologyItemLabel(item),
+        `${item.snapshotPhase}${subscription.historical ? " when frozen" : ""} · ${item.updateCount} updates`,
+        topologyItemTone(subscription, item)
+      ),
+      createTopologyDetailSection("Item", [
+        ["Name", item.name],
+        ["Position", item.position],
+        ["Identity resolution", item.resolution],
+        ["Subscription", subscription.id],
+        [
+          subscription.historical
+            ? "Snapshot phase when frozen"
+            : "Snapshot phase",
+          item.snapshotPhase
+        ],
+        ["Logical real updates", item.updateCount],
+        ["Synthetic updates", item.syntheticUpdateCount],
+        ["Listener callback deliveries", item.deliveryCount],
+        ["First update", topologyTime(item.firstUpdateAt)],
+        ["Last update", topologyTime(item.lastUpdateAt)],
+        ["Last synthetic update", topologyTime(item.lastSyntheticUpdateAt)],
+        ["Lost updates", item.lostUpdateCount],
+        ["Listeners", item.listenerIds.length],
+        ["Listener identities", item.listenerIds],
+        ["Active COMMAND keys", item.activeCommandKeyCount],
+        ["Deleted COMMAND keys", item.deletedCommandKeyCount],
+        ["Last real command", item.lastCommand]
+      ])
+    );
+    if (subscription.historical) {
+      content.append(createHistoricalItemEventsAction(subscription, item));
+    }
+  }
+
+  function renderTopologyCommandGenerationDetail(
+    content: HTMLElement,
+    subscription: TopologySubscription,
+    generation: TopologyCommandGeneration
+  ): void {
+    content.append(
+      createTopologyDetailHeader(
+        generation.key ?? generation.id,
+        "COMMAND generation",
+        "active"
+      ),
+      createTopologyDetailSection("COMMAND generation", [
+        ["Generation ID", generation.id],
+        ["Subscription", subscription.id],
+        ["Item identity", generation.itemId],
+        ["Key", generation.key],
+        ["Command", generation.command],
+        ["Captured sequence", generation.captureSequence],
+        ["Inferred children", generation.inferredChildren.length]
+      ])
+    );
+  }
+
+  function renderTopologyInferredChildDetail(
+    content: HTMLElement,
+    subscription: TopologySubscription,
+    generation: TopologyCommandGeneration,
+    child: TopologyInferredChild
+  ): void {
+    content.append(
+      createTopologyDetailHeader(
+        child.label,
+        "Inferred child evidence",
+        "warning"
+      ),
+      createTopologyDetailSection("Inferred child evidence", [
+        ["Child ID", child.id],
+        ["Generation", generation.id],
+        ["Subscription", subscription.id],
+        ["Key", child.key],
+        ["Capture kind", child.captureKind],
+        ["Callback", child.callback],
+        ["Provenance", child.provenance],
+        ["Captured sequence", child.captureSequence]
+      ])
+    );
+  }
+
+  function createHistoricalItemEventsAction(
+    subscription: TopologySubscription,
+    item: TopologyItem
+  ): HTMLElement {
+    const section = document.createElement("section");
+    section.className = "topology-detail-actions";
+    const button = document.createElement("button");
+    button.className = "topology-action topology-view-matching-events";
+    button.type = "button";
+    button.textContent = "View matching timeline events";
+    button.addEventListener("click", () => {
+      for (const key of Object.keys(filterState) as Array<keyof EventFilterState>) {
+        delete filterState[key];
+      }
+      filterState.subscriptionId = subscription.id;
+      if (item.name) {
+        filterState.item = item.name;
+      } else if (item.position !== null) {
+        filterState.itemPosition = item.position;
+      }
+      searchInput.value = "";
+      activeView = "timeline";
+      updateActiveViewChrome();
+      resetTimelineRenderLimit();
+      timelineSelectionNeedsFilterReconciliation = true;
+      renderFeed();
+    });
+    section.append(
+      button,
+      createTextElement(
+        "p",
+        "topology-detail-action-note",
+        HISTORICAL_TOPOLOGY_NOTE
+      )
+    );
+    return section;
+  }
+
+  function renderTopologyListenerDetail(
+    content: HTMLElement,
+    subscription: TopologySubscription,
+    item: TopologyItem | null,
+    listener: TopologyListener
+  ): void {
+    content.append(
+      createTopologyDetailHeader(
+        listener.id,
+        "Subscription listener",
+        "neutral"
+      ),
+      createTopologyDetailSection("Listener attachment", [
+        ["Listener ID", listener.id],
+        ["Attachment IDs", listener.attachmentIds],
+        ["Implemented callbacks", listener.callbacks],
+        ["Registration attempts", listener.registrationCount],
+        ["Active registration", topologyBoolean(listener.active)],
+        ["Logical metric owner", topologyBoolean(listener.metricOwner)],
+        ["Callback deliveries", listener.deliveryCount],
+        ["First delivery", topologyTime(listener.firstDeliveryAt)],
+        ["Last delivery", topologyTime(listener.lastDeliveryAt)],
+        ["Subscription", subscription.id],
+        ["Item", item ? topologyItemLabel(item) : "All subscription items"],
+        ["Subscription mode", subscription.mode],
+        ["Subscription active", topologyBoolean(subscription.active)],
+        ["Server-established", topologyBoolean(subscription.serverEstablished)]
+      ]),
+      createTextElement(
+        "p",
+        "topology-detail-note",
+        "Lightstreamer subscription listeners receive callbacks for every configured item, so the same listener appears beneath each resolved item."
+      )
+    );
+  }
+
+  function createTopologyDetailHeader(
+    title: string,
+    subtitle: string,
+    tone: string
+  ): HTMLElement {
+    const header = document.createElement("header");
+    header.className = "topology-detail-header";
+    header.dataset.tone = tone;
+    const copy = document.createElement("div");
+    copy.className = "topology-detail-title-group";
+    copy.append(
+      createTextElement("h2", "topology-detail-heading", title),
+      createTextElement("p", "topology-detail-subtitle", subtitle)
+    );
+    header.append(
+      copy,
+      createTextElement("span", "topology-detail-status", topologyToneLabel(tone))
+    );
+    return header;
+  }
+
+  function createTopologyDetailSection(
+    heading: string,
+    rows: ReadonlyArray<readonly [string, unknown]>
+  ): HTMLElement {
+    const section = document.createElement("section");
+    section.className = "topology-detail-section";
+    section.append(
+      createTextElement("h3", "topology-detail-section-heading", heading)
+    );
+    const properties = document.createElement("dl");
+    properties.className = "topology-properties";
+    for (const [label, value] of rows) {
+      properties.append(
+        createTextElement("dt", "topology-property-label", label),
+        createTextElement("dd", "topology-property-value", topologyValue(value))
+      );
+    }
+    section.append(properties);
+    return section;
+  }
+
+  function connectionOptionRows(
+    client: TopologyClient
+  ): ReadonlyArray<readonly [string, unknown]> {
+    return [
+      ["Requested max bandwidth", semanticClientValue(client, "requestedMaxBandwidth", client.requestedMaxBandwidth, formatBandwidth)],
+      ["Real max bandwidth", semanticClientValue(client, "realMaxBandwidth", client.realMaxBandwidth, formatBandwidth)],
+      ["Keepalive interval", semanticClientValue(client, "keepaliveInterval", client.keepaliveInterval, formatTopologyMilliseconds)],
+      ["Reverse heartbeat interval", semanticClientValue(client, "reverseHeartbeatInterval", client.reverseHeartbeatInterval, formatTopologyMilliseconds)],
+      ["Polling interval", semanticClientValue(client, "pollingInterval", client.pollingInterval, formatTopologyMilliseconds)],
+      ["Idle timeout", semanticClientValue(client, "idleTimeout", client.idleTimeout, formatTopologyMilliseconds)],
+      ["Retry delay", semanticClientValue(client, "retryDelay", client.retryDelay, formatTopologyMilliseconds)],
+      ["First retry max delay", semanticClientValue(client, "firstRetryMaxDelay", client.firstRetryMaxDelay, formatTopologyMilliseconds)],
+      ["Stalled timeout", semanticClientValue(client, "stalledTimeout", client.stalledTimeout, formatTopologyMilliseconds)],
+      ["Reconnect timeout", semanticClientValue(client, "reconnectTimeout", client.reconnectTimeout, formatTopologyMilliseconds)],
+      [
+        "Session recovery timeout",
+        semanticClientValue(client, "sessionRecoveryTimeout", client.sessionRecoveryTimeout, formatTopologyMilliseconds)
+      ],
+      [
+        "Forced transport",
+        client.forcedTransport === null || client.forcedTransport === undefined
+          ? client.semanticValueStates?.forcedTransport
+            ? semanticClientValue(client, "forcedTransport", client.forcedTransport)
+            : "Automatic"
+          : client.forcedTransport
+      ]
+    ];
+  }
+
+  function semanticClientValue<T>(
+    client: TopologyClient,
+    key: string,
+    value: T | null | undefined,
+    format: (value: T) => string = (candidate) => String(candidate)
+  ): unknown {
+    if (value !== null && value !== undefined && value !== "") {
+      return format(value);
+    }
+    switch (client.semanticValueStates?.[key]?.state) {
+      case "unknown":
+        return "Unknown";
+      case "unavailable":
+        return "Unavailable";
+      case "redacted":
+        return "Redacted";
+      case "not-applicable":
+        return "Not applicable";
+      default:
+        return value;
+    }
+  }
+
+  function semanticSubscriptionValue<T>(
+    subscription: TopologySubscription,
+    key: string,
+    value: T | null | undefined,
+    format: (value: T) => string = (candidate) => String(candidate)
+  ): unknown {
+    const state = subscription.semanticValueStates?.[key]?.state;
+    if (value !== null && value !== undefined && value !== "") {
+      const formatted = format(value);
+      switch (state) {
+        case "requested":
+          return `${formatted} · Requested`;
+        case "real":
+          return `${formatted} · Real`;
+        case "inferred":
+          return `${formatted} · Inferred`;
+        default:
+          return formatted;
+      }
+    }
+    switch (state) {
+      case "requested":
+        return "Requested";
+      case "real":
+        return "Real";
+      case "inferred":
+        return "Inferred";
+      case "unknown":
+        return "Unknown";
+      case "unavailable":
+        return "Unavailable";
+      case "redacted":
+        return "Redacted";
+      case "not-applicable":
+        return "Not applicable";
+      default:
+        return value;
+    }
+  }
+
+  function topologyValue(value: unknown): string {
+    if (value === null || value === undefined || value === "") {
+      return "Unavailable";
+    }
+    if (typeof value === "number") {
+      return value.toLocaleString();
+    }
+    if (Array.isArray(value)) {
+      return value.length > 0 ? value.join(", ") : "Unavailable";
+    }
+    return String(value);
+  }
+
+  function rememberLiveReinjectionTarget(
+    event: LightstreamerEventEnvelope
+  ): void {
+    if (event.synthetic || event.source === "synthetic") {
+      return;
+    }
+
+    const clientId = event.client?.id ?? null;
+    const clientConnection = rememberLiveClientConnection(event);
+    const targetSessionId =
+      event.client?.sessionId !== undefined
+        ? event.client.sessionId
+        : clientConnection?.sessionId ?? null;
+    if (
+      clientConnection &&
+      event.kind === "item-update" &&
+      event.captureSource === "wire"
+    ) {
+      sourceEventConnectionEpochs.set(event.id, clientConnection.epoch);
+    }
+
+    const subscriptionId = event.subscription?.id ?? null;
+    if (!subscriptionId) {
+      return;
+    }
+
+    const listenerId = event.listener?.id ?? null;
+    if (listenerId) {
+      const explicitAvailability =
+        typeof event.raw?.targetAvailable === "boolean"
+          ? event.raw.targetAvailable
+          : null;
+      const confirmsListenerTarget =
+        explicitAvailability !== null ||
+        event.kind === "item-update" ||
+        (event.kind === "listener-added" &&
+          Boolean(event.listener?.callbacks?.includes("onItemUpdate")));
+      if (event.kind === "listener-removed" || confirmsListenerTarget) {
+        liveReinjectionTargets.set(
+          reinjectionTargetKey("captured-listener", subscriptionId, listenerId),
+          {
+            executionTarget: "captured-listener",
+            subscriptionId,
+            listenerId,
+            clientId,
+            sessionId: targetSessionId,
+            connectionEpoch: clientConnection?.epoch ?? null,
+            available:
+              event.kind !== "listener-removed" &&
+              explicitAvailability !== false,
+            confirmedAt: event.timestamp
+          }
+        );
+      }
+    }
+
+    if (event.captureSource !== "wire") {
+      return;
+    }
+    liveReinjectionTargets.set(
+      reinjectionTargetKey("captured-wire", subscriptionId, null),
+      {
+        executionTarget: "captured-wire",
+        subscriptionId,
+        listenerId: null,
+        clientId,
+        sessionId: targetSessionId,
+        connectionEpoch: clientConnection?.epoch ?? null,
+        available:
+          event.kind !== "subscription-ended" &&
+          event.kind !== "subscription-error",
+        confirmedAt: event.timestamp
+      }
+    );
+  }
+
+  function rememberLiveClientConnection(
+    event: LightstreamerEventEnvelope
+  ): LiveClientConnection | null {
+    const client = event.client;
+    if (!client?.id) {
+      return null;
+    }
+
+    const previous = liveClientConnections.get(client.id);
+    const sessionId =
+      client.sessionId !== undefined
+        ? client.sessionId
+        : previous?.sessionId ?? null;
+    const status =
+      client.status !== undefined ? client.status : previous?.status ?? null;
+    const transport =
+      client.transport !== undefined
+        ? client.transport
+        : previous?.transport ?? null;
+    const connectionChanged =
+      Boolean(previous) &&
+      ((client.sessionId !== undefined &&
+        sessionId !== previous?.sessionId) ||
+        (client.transport !== undefined &&
+          transport !== previous?.transport) ||
+        (isLiveRecoveryStatus(status) &&
+          !isLiveRecoveryStatus(previous?.status ?? null)));
+    const connection: LiveClientConnection = {
+      sessionId,
+      status,
+      transport,
+      epoch: previous ? previous.epoch + Number(connectionChanged) : 1
+    };
+    liveClientConnections.set(client.id, connection);
+    return connection;
+  }
+
+  function isLiveRecoveryStatus(status: string | null): boolean {
+    const normalized = status?.toUpperCase() ?? "";
+    return (
+      normalized.includes("WILL-RETRY") ||
+      normalized.includes("TRYING-RECOVERY")
+    );
+  }
+
+  function reinjectionTargetKey(
+    executionTarget: ReinjectionExecutionTarget,
+    subscriptionId: string,
+    listenerId: string | null
+  ): string {
+    return JSON.stringify([executionTarget, subscriptionId, listenerId]);
+  }
+
+  function draftTargetStatus(
+    currentDraft: ReinjectionDraft | null,
+    executionTarget: ReinjectionExecutionTarget
+  ): DraftTargetStatus {
+    const subscriptionId = currentDraft?.target.subscriptionId ?? null;
+    const listenerId = currentDraft?.target.listenerId ?? null;
+    const staleError =
+      executionTarget === "captured-listener"
+        ? "Local Injection Target is stale."
+        : "Captured wire target is stale.";
+    if (!currentDraft || !subscriptionId) {
+      return {
+        live: false,
+        state: "stale",
+        summary: "Target: unavailable",
+        error: staleError
+      };
+    }
+
+    const target =
+      executionTarget === "captured-listener"
+        ? liveSubscriptionInjectionTarget(subscriptionId, listenerId)
+        : liveReinjectionTargets.get(
+            reinjectionTargetKey(executionTarget, subscriptionId, listenerId)
+          );
+    if (!target?.available) {
+      return {
+        live: false,
+        state: "stale",
+        summary:
+          executionTarget === "captured-listener"
+            ? "Target: stale Subscription"
+            : "Target: stale captured page stream",
+        error: staleError
+      };
+    }
+
+    const sourceClientId = currentDraft.sourceClient?.id ?? null;
+    const sourceSessionId = currentDraft.sourceClient?.sessionId ?? null;
+    if (
+      executionTarget === "captured-wire" &&
+      ((sourceClientId && target.clientId && sourceClientId !== target.clientId) ||
+        (sourceSessionId && target.sessionId !== sourceSessionId))
+    ) {
+      return {
+        live: false,
+        state: "stale",
+        summary: "Target: stale captured page stream · connection epoch changed",
+        error: staleError
+      };
+    }
+
+    const currentConnection = target.clientId
+      ? liveClientConnections.get(target.clientId)
+      : undefined;
+    const currentSessionId = currentConnection?.sessionId;
+    if (
+      executionTarget === "captured-wire" &&
+      target.sessionId &&
+      currentSessionId !== undefined &&
+      currentSessionId !== target.sessionId
+    ) {
+      return {
+        live: false,
+        state: "stale",
+        summary: "Target: stale captured page stream · session changed",
+        error: staleError
+      };
+    }
+
+    const sourceConnectionEpoch = sourceEventConnectionEpochs.get(
+      currentDraft.sourceEventId
+    );
+    if (
+      executionTarget === "captured-wire" &&
+      ((sourceConnectionEpoch !== undefined &&
+        target.connectionEpoch !== null &&
+        sourceConnectionEpoch !== target.connectionEpoch) ||
+        (currentConnection &&
+          target.connectionEpoch !== null &&
+          currentConnection.epoch !== target.connectionEpoch))
+    ) {
+      return {
+        live: false,
+        state: "stale",
+        summary: "Target: stale captured page stream · connection epoch changed",
+        error: staleError
+      };
+    }
+
+    if (
+      executionTarget === "captured-listener" &&
+      sourceSessionId &&
+      currentSessionId !== undefined &&
+      currentSessionId !== sourceSessionId
+    ) {
+      return {
+        live: true,
+        state: "session-mismatch",
+        summary:
+          currentSessionId === null
+            ? "Target: live Subscription · source session has ended"
+            : `Target: live Subscription · current session ${shortTopologyId(currentSessionId)} differs from source`,
+        error: null
+      };
+    }
+
+    return {
+      live: true,
+      state: "live",
+      summary:
+        executionTarget === "captured-listener"
+          ? "Target: live Subscription"
+          : "Target: live captured page stream",
+      error: null
+    };
+  }
+
+  function liveSubscriptionInjectionTarget(
+    subscriptionId: string,
+    preferredListenerId: string | null
+  ): LiveReinjectionTarget | undefined {
+    const preferred = preferredListenerId
+      ? liveReinjectionTargets.get(
+          reinjectionTargetKey(
+            "captured-listener",
+            subscriptionId,
+            preferredListenerId
+          )
+        )
+      : undefined;
+    if (preferred?.available) {
+      return preferred;
+    }
+    return [...liveReinjectionTargets.values()]
+      .filter(
+        (target) =>
+          target.executionTarget === "captured-listener" &&
+          target.subscriptionId === subscriptionId &&
+          target.available
+      )
+      .sort((left, right) => right.confirmedAt - left.confirmedAt)[0];
+  }
+
+  function validatePanelDraftTarget(
+    currentDraft: ReinjectionDraft | null,
+    executionTarget: ReinjectionExecutionTarget
+  ): { valid: boolean; errors: string[] } {
+    const validation = validateDraftForExecutionTarget(
+      currentDraft,
+      executionTarget,
+      { bridgeAvailable: bridgeReady }
+    );
+    const target = draftTargetStatus(currentDraft, executionTarget);
+    const errors = target.error
+      ? [...validation.errors, target.error]
+      : validation.errors;
+    return {
+      valid: errors.length === 0,
+      errors
+    };
+  }
+
+  function createDraftTargetStatus(
+    currentDraft: ReinjectionDraft | null,
+    executionTarget: ReinjectionExecutionTarget
+  ): HTMLElement {
+    const target = draftTargetStatus(currentDraft, executionTarget);
+    const element = createTextElement(
+      "p",
+      "replay-target-status",
+      target.summary
+    );
+    element.dataset.state = target.state;
+    return element;
+  }
+
+  function topologyBoolean(value: boolean): string {
+    return value ? "Yes" : "No";
+  }
+
+  function topologyTime(value: number | null): string {
+    return value === null ? "Unavailable" : formatExactLocalTime(value);
+  }
+
+  function topologyDurationSince(value: number | null): string {
+    if (value === null) {
+      return "Unavailable";
+    }
+    const elapsed = Math.max(0, Date.now() - value);
+    if (elapsed < 1_000) {
+      return "< 1 s";
+    }
+    if (elapsed < 60_000) {
+      return `${Math.floor(elapsed / 1_000).toLocaleString()} s`;
+    }
+    if (elapsed < 3_600_000) {
+      return `${Math.floor(elapsed / 60_000).toLocaleString()} min`;
+    }
+    return `${(elapsed / 3_600_000).toLocaleString(undefined, {
+      maximumFractionDigits: 1
+    })} h`;
+  }
+
+  function formatTopologyMilliseconds(value: number | null | undefined): string {
+    if (value === null || value === undefined) {
+      return "Unavailable";
+    }
+    return value >= 1_000
+      ? `${(value / 1_000).toLocaleString(undefined, { maximumFractionDigits: 3 })} s`
+      : `${value.toLocaleString()} ms`;
+  }
+
+  function formatBandwidth(value: string | number | null | undefined): string {
+    if (value === null || value === undefined) {
+      return "Unavailable";
+    }
+    return typeof value === "number" ? `${value.toLocaleString()} kbps` : value;
+  }
+
+  function formatFrequency(value: string | number | null | undefined): string {
+    if (value === null || value === undefined) {
+      return "Unavailable";
+    }
+    if (typeof value === "number" || /^\d+(?:\.\d+)?$/.test(value)) {
+      return `${value} updates/s`;
+    }
+    return String(value);
+  }
+
+  function shortTopologyId(value: string): string {
+    return value.length > 28 ? `${value.slice(0, 12)}…${value.slice(-10)}` : value;
   }
 
   function rememberCommandContextEvent(event: LightstreamerEventEnvelope): void {
@@ -3418,14 +5576,14 @@ export function renderPanel(
     }
     commandContextEventIds.add(event.id);
     commandContextEvents.push(event);
-    commandStateIndex.apply(event);
+    commandStateProjections.apply(event);
   }
 
   function clearCommandContext(): void {
     commandContextEvents.length = 0;
     commandContextEventIds.clear();
     commandContextSubscriptionIds.clear();
-    commandStateIndex.clear();
+    commandStateProjections.clear();
   }
 
   function closeStore(): void {
@@ -3433,11 +5591,8 @@ export function renderPanel(
     if (storeCloseStarted) {
       return;
     }
-    if (!store.close) {
-      return;
-    }
     storeCloseStarted = true;
-    resolveMaybe(store.close(), () => undefined);
+    history.close().receive(() => undefined, reportHistoryError);
   }
 
   function renderEventVolumeNotice(stats: EventStoreStats): void {
@@ -3482,11 +5637,29 @@ export function renderPanel(
           trackAnalytics({ name: "lightstreamer_detected" });
         }
       }
-      resolveMaybe(store.append(normalizer.normalize(message)), () => undefined);
+      const event = normalizer.normalize(message);
+      const topologyResult = topologyProjection.ingestCapture(event);
+      if (topologyResult.resetConsumerState) {
+        resetTopologyProjectionConsumerState();
+      }
+      history
+        .append(toPersistableEventEnvelope(event))
+        .receive(() => undefined, reportHistoryError);
       controller.setStatus("capturing");
     },
 
+    applyTopologySyncFrame(frame) {
+      const topologyResult = topologyProjection.applySyncFrame(frame);
+      if (topologyResult.resetConsumerState) {
+        resetTopologyProjectionConsumerState();
+      }
+      if (topologyResult.accepted && panelVisible && activeView === "topology") {
+        renderTopology();
+      }
+    },
+
     clearEvents() {
+      cancelDeferredTopologyItemRendering();
       selectedPinned = false;
       selectedEventId = null;
       selectedTimelineEvent = null;
@@ -3494,6 +5667,16 @@ export function renderPanel(
       draftRenderVersion += 1;
       resetCommandLifecycleWindow();
       commandSearchTextCache.keys.clear();
+      topologySelection = { key: "page", kind: "page" };
+      topologyExpandAllItems = false;
+      renderedTopologyStructureKey = null;
+      topologyRenderedNodes.clear();
+      topologyNodeSelections.clear();
+      topologyCollapsedKeys.clear();
+      topologyProjection.clear();
+      liveReinjectionTargets.clear();
+      liveClientConnections.clear();
+      sourceEventConnectionEpochs.clear();
       draft = null;
       draftSurface = null;
       draftEditing = false;
@@ -3504,7 +5687,7 @@ export function renderPanel(
       resetTimelineRenderLimit();
       resetCommandListWindows();
       forceNextStoreRender = true;
-      resolveMaybe(store.clear(), () => undefined);
+      history.clear().receive(() => undefined, reportHistoryError);
     },
 
     setBridge(nextBridge) {
@@ -3519,6 +5702,7 @@ export function renderPanel(
       }
       panelVisible = visible;
       if (!visible) {
+        cancelDeferredTopologyItemRendering();
         timelineQueryVersion += 1;
         cancelScheduledStoreRender();
         cancelAppendRenderBudgetReset();
@@ -3543,9 +5727,11 @@ export function renderPanel(
     },
 
     dispose() {
+      cancelDeferredTopologyItemRendering();
       cancelScheduledStoreRender();
       cancelAppendRenderBudgetReset();
       feed.removeEventListener("scroll", handleTimelineScroll);
+      topologyInspector.dispose();
       root.removeEventListener("pointerdown", beginPointerInteraction, true);
       root.removeEventListener("pointerup", endPointerInteraction, true);
       root.removeEventListener("pointercancel", endPointerInteraction, true);
@@ -3562,22 +5748,34 @@ export function renderPanel(
     }
   };
 
-  store.subscribe((change, stats) => {
+  history.subscribe((change, stats) => {
     currentStoreStats = stats;
 
     if (change.type === "init") {
-      resolveMaybe(store.queryEvents(), (result) => {
-        clearCommandContext();
-        for (const event of result.events) {
-          rememberCommandContextEvent(event);
-        }
-        renderActiveViewFromStoreUpdate({
-          preservePaneState: true,
-          passiveStoreUpdate: true
-        });
-      });
+      history.queryEvents().receive(
+        (result) => {
+          clearCommandContext();
+          topologyProjection.replaceHistory(result.events);
+          liveReinjectionTargets.clear();
+          liveClientConnections.clear();
+          sourceEventConnectionEpochs.clear();
+          for (const event of result.events) {
+            rememberCommandContextEvent(event);
+            rememberLiveReinjectionTarget(event);
+          }
+          renderActiveViewFromStoreUpdate({
+            preservePaneState: true,
+            passiveStoreUpdate: true
+          });
+        },
+        reportHistoryError
+      );
     } else if (change.type === "append") {
       rememberCommandContextEvent(change.event);
+      const currentTopologyPage = topologyProjection.ingestHistory(change.event);
+      if (currentTopologyPage) {
+        rememberLiveReinjectionTarget(change.event);
+      }
       const shouldAnchorTimelineWindow =
         timelineWindowOffset > 0 ||
         (!timelineFollowLatest && timelineEvents.length >= TIMELINE_WINDOW_SIZE);
@@ -3592,6 +5790,10 @@ export function renderPanel(
       immediateAppendRenderCount = 0;
       timelineEvents = [];
       clearCommandContext();
+      topologyProjection.replaceHistory([]);
+      liveReinjectionTargets.clear();
+      liveClientConnections.clear();
+      sourceEventConnectionEpochs.clear();
     }
 
     if (!panelVisible) {
@@ -3630,10 +5832,9 @@ export function renderPanel(
       ? preferredDraftExecutionTarget(availableDraft)
       : "captured-listener";
     const sourceReplay = availableDraft ? createSourceReplayDraft(availableDraft) : null;
-    const sourceValidation = validateDraftForExecutionTarget(sourceReplay, executionTarget, {
-      bridgeAvailable: bridgeReady
-    });
+    const sourceValidation = validatePanelDraftTarget(sourceReplay, executionTarget);
     const editValidation = validateEditableDraft(availableDraft);
+    const targetStatus = draftTargetStatus(availableDraft, executionTarget);
 
     const activateDraft = (editing: boolean): ReinjectionDraft | null => {
       if (!availableDraft) {
@@ -3685,10 +5886,14 @@ export function renderPanel(
     mutateButton.className = "mutate-inject-button";
     mutateButton.type = "button";
     mutateButton.textContent = "Mutate & re-inject…";
-    mutateButton.disabled = !editValidation.valid || reinjectionPending;
+    mutateButton.disabled =
+      !editValidation.valid || !targetStatus.live || reinjectionPending;
     mutateButton.setAttribute("aria-expanded", String(draftEditing));
-    if (!editValidation.valid) {
-      mutateButton.title = validationMessage(editValidation.errors);
+    if (!editValidation.valid || !targetStatus.live) {
+      mutateButton.title = validationMessage([
+        ...editValidation.errors,
+        ...(targetStatus.error ? [targetStatus.error] : [])
+      ]);
     }
     mutateButton.addEventListener("click", () => {
       const activeDraft = activateDraft(true);
@@ -3702,7 +5907,10 @@ export function renderPanel(
       renderDraftSurface(activeDraft, true);
     });
     actionBar.append(reinjectButton, mutateButton);
-    section.append(actionBar);
+    section.append(
+      createDraftTargetStatus(availableDraft, executionTarget),
+      actionBar
+    );
 
     if (currentDraft) {
       draftExecutionTarget = executionTarget;
@@ -3714,7 +5922,7 @@ export function renderPanel(
         "p",
         "reinjection-message pending",
         executionTarget === "captured-listener"
-          ? "Delivering locally to the original app listener…"
+          ? "Delivering locally to every current Subscription listener…"
           : "Replaying locally through the captured page WebSocket…"
       );
       pending.setAttribute("role", "status");
@@ -3735,9 +5943,10 @@ export function renderPanel(
     controls.className = "draft-controls";
     controls.setAttribute("aria-label", "Edit staged replay draft");
 
-    const validation = validateDraftForExecutionTarget(currentDraft, draftExecutionTarget, {
-      bridgeAvailable: bridgeReady
-    });
+    const validation = validatePanelDraftTarget(
+      currentDraft,
+      draftExecutionTarget
+    );
     const editorHeader = document.createElement("div");
     editorHeader.className = "draft-editor-header";
     editorHeader.append(
@@ -3886,9 +6095,10 @@ export function renderPanel(
       draft = result.draft;
       draftJsonError = null;
       reinjectionMessage = null;
-      const nextValidation = validateDraftForExecutionTarget(result.draft, draftExecutionTarget, {
-        bridgeAvailable: bridgeReady
-      });
+      const nextValidation = validatePanelDraftTarget(
+        result.draft,
+        draftExecutionTarget
+      );
       jsonError.textContent = nextValidation.valid
         ? ""
         : validationMessage(nextValidation.errors);
@@ -4307,9 +6517,10 @@ export function renderPanel(
       ?.querySelector<HTMLElement>(".reinjection-message")
       ?.remove();
 
-    const validation = validateDraftForExecutionTarget(nextDraft, draftExecutionTarget, {
-      bridgeAvailable: bridgeReady
-    });
+    const validation = validatePanelDraftTarget(
+      nextDraft,
+      draftExecutionTarget
+    );
     injectButton.disabled = !validation.valid || reinjectionPending;
     injectButton.dataset.validationValid = String(validation.valid);
     structuredError.textContent = "";
@@ -4445,9 +6656,10 @@ export function renderPanel(
     actionMode: "source" | "edited"
   ): Promise<void> {
     const activeBridge = bridgeReady ? bridge : null;
-    const validation = validateDraftForExecutionTarget(currentDraft, executionTarget, {
-      bridgeAvailable: bridgeReady
-    });
+    const validation = validatePanelDraftTarget(
+      currentDraft,
+      executionTarget
+    );
     if (!validation.valid || !activeBridge) {
       return;
     }
@@ -4474,7 +6686,7 @@ export function renderPanel(
         text:
           executionTarget === "captured-wire"
             ? `${actionMode === "source" ? "Source update" : "Edited update"} delivered locally through the captured page WebSocket. No server was contacted.`
-            : `${actionMode === "source" ? "Source update" : "Edited update"} delivered to the original app listener. The inspected page was reached.`
+            : `${actionMode === "source" ? "Source update" : "Edited update"} delivered to every current listener on the target Subscription. The inspected page was reached.`
       };
       renderDraftSurface(currentDraft, true);
       appendAndSelectSyntheticDraftResult(currentDraft, result, executionTarget);
@@ -4495,30 +6707,33 @@ export function renderPanel(
       result,
       executionTarget
     );
-    resolveMaybe(store.append(syntheticEvent), (appendedEvent) => {
-      draftResultEventId = appendedEvent.id;
-      if (draftSurface === "command-replay") {
-        selectedCommandKey = commandSelectionForSyntheticDraft(currentDraft);
-        selectedCommandUpdateEventId = appendedEvent.id;
-        commandDetailOpen = true;
-        renderCommandState({ preservePaneState: true });
-        return;
-      }
-      selectedEventId = appendedEvent.id;
-      selectedTimelineEvent = appendedEvent;
-      selectedPinned = true;
-      timelineDetailOpen = true;
-      timelineWindowOffset = 0;
-      timelineHistoryAnchor = 0;
-      timelineSelectionNeedsFilterReconciliation = false;
-      // Reveal the explicit action result once, then pin it against passive live traffic.
-      timelineFollowLatest = true;
-      renderFeed({}, () => {
-        if (selectedEventId === appendedEvent.id) {
-          timelineFollowLatest = false;
+    history.append(syntheticEvent).receive(
+      (appendedEvent) => {
+        draftResultEventId = appendedEvent.id;
+        if (draftSurface === "command-replay") {
+          selectedCommandKey = commandSelectionForSyntheticDraft(currentDraft);
+          selectedCommandUpdateEventId = appendedEvent.id;
+          commandDetailOpen = true;
+          renderCommandState({ preservePaneState: true });
+          return;
         }
-      });
-    });
+        selectedEventId = appendedEvent.id;
+        selectedTimelineEvent = appendedEvent;
+        selectedPinned = true;
+        timelineDetailOpen = true;
+        timelineWindowOffset = 0;
+        timelineHistoryAnchor = 0;
+        timelineSelectionNeedsFilterReconciliation = false;
+        // Reveal the explicit action result once, then pin it against passive live traffic.
+        timelineFollowLatest = true;
+        renderFeed({}, () => {
+          if (selectedEventId === appendedEvent.id) {
+            timelineFollowLatest = false;
+          }
+        });
+      },
+      reportHistoryError
+    );
   }
 
   function commandSelectionForSyntheticDraft(currentDraft: ReinjectionDraft): CommandRowSelection {
@@ -4531,7 +6746,9 @@ export function renderPanel(
   }
 
   function commandDraftItemId(currentDraft: ReinjectionDraft): string {
-    const matchingItem = flattenCommandItems(commandStateIndex.snapshot()).find(
+    const matchingItem = flattenCommandItems(
+      commandStateProjections.snapshot("local-effective")
+    ).find(
       ({ subscription, item }) =>
         subscription.subscriptionId === currentDraft.target.subscriptionId &&
         item.itemName === (currentDraft.item.name ?? null) &&
@@ -4554,7 +6771,7 @@ export function renderPanel(
       selectedEventId === draftResultEventId && draftResultEventId
         ? draftResultEventId
         : currentDraft.sourceEventId;
-    resolveMaybe(selectedEventForDraft(detailEventId), (event) => {
+    const renderSelectedDraftEvent = (event: LightstreamerEventEnvelope | null) => {
       if (
         renderVersion !== draftRenderVersion ||
         !event ||
@@ -4567,18 +6784,18 @@ export function renderPanel(
       }
       selectedTimelineEvent = event;
       renderDetail(event, { preservePaneState });
-    });
-  }
-
-  function selectedEventForDraft(eventId: string): MaybePromise<LightstreamerEventEnvelope | null> {
+    };
     const cached =
-      (selectedTimelineEvent?.id === eventId ? selectedTimelineEvent : null) ??
-      timelineEvents.find((event) => event.id === eventId) ??
+      (selectedTimelineEvent?.id === detailEventId ? selectedTimelineEvent : null) ??
+      timelineEvents.find((event) => event.id === detailEventId) ??
       null;
     if (cached) {
-      return cached;
+      renderSelectedDraftEvent(cached);
+      return;
     }
-    return store.getEventById(eventId);
+    history
+      .getEventById(detailEventId)
+      .receive(renderSelectedDraftEvent, reportHistoryError);
   }
 
   function clearDraftForSelection(nextEventId: string | null): void {
@@ -5134,19 +7351,20 @@ function createCommandItemContext(
   };
 }
 
-function createCommandDraftContext(context: CommandItemContext): HTMLElement {
+function createCommandDraftContext(
+  context: CommandItemContext,
+  sourceListenerId: string | null
+): HTMLElement {
   const element = document.createElement("div");
   element.className = "command-draft-context";
   const rows: Array<[string, string]> = [
     ["Subscription", context.subscriptionId ?? "-"],
-    ["Listener", context.listenerId ?? "-"],
+    ["Source listener", sourceListenerId ?? "-"],
     [
       "Execution",
-      context.listenerId
-        ? "Original app listener"
-        : context.captureSource === "wire"
-          ? "Inspected page stream"
-          : "No live page target"
+      context.captureSource === "wire"
+        ? "Inspected page stream"
+        : "Subscription listeners"
     ],
     ["Item", context.itemName ?? String(context.itemPosition ?? "-")],
     ["Schema", context.fields?.join(", ") ?? "-"]
@@ -5161,7 +7379,6 @@ function createCommandDraftContext(context: CommandItemContext): HTMLElement {
 function commandDraftMatchesContext(draft: ReinjectionDraft, context: CommandItemContext): boolean {
   return (
     draft.target.subscriptionId === (context.subscriptionId ?? null) &&
-    draft.target.listenerId === (context.listenerId ?? null) &&
     (draft.item.name ?? null) === (context.itemName ?? null) &&
     (draft.item.position ?? null) === (context.itemPosition ?? null)
   );
@@ -6115,6 +8332,13 @@ function createFilterInput(label: string, className: string, placeholder: string
   return input;
 }
 
+function createOption(value: string, label: string): HTMLOptionElement {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label;
+  return option;
+}
+
 type DetailSectionOptions = {
   open?: boolean;
   summary?: string | number | null;
@@ -6366,6 +8590,9 @@ function timelineCodeDefinition(event: LightstreamerEventEnvelope): TimelineCode
     case "subscription-snapshot":
       code = "S~";
       break;
+    case "subscription-frequency":
+      code = "SF";
+      break;
     case "subscription-error":
       code = "S!";
       break;
@@ -6493,7 +8720,7 @@ function timelineSourceTitle(event: LightstreamerEventEnvelope): string {
   if (event.synthetic || event.source === "synthetic") {
     return event.raw?.executionTarget === "captured-wire"
       ? "Synthetic update replayed locally through the captured page WebSocket"
-      : "Synthetic update replayed through the captured listener";
+      : "Synthetic update delivered to the target Subscription";
   }
   return event.captureSource === "wire"
     ? "Captured from the Lightstreamer wire protocol"
@@ -6539,11 +8766,14 @@ function formatMarker(event: LightstreamerEventEnvelope): string {
 }
 
 function validationMessage(errors: string[]): string {
-  if (errors.includes("Missing original listener target.")) {
-    return "This capture has no live listener target. Capture a fresh listener update before reinjecting.";
+  if (errors.includes("Local Injection Target is stale.")) {
+    return "The target Subscription has no current Item Update listeners. Capture a fresh update after a listener is attached.";
   }
-  if (errors.includes("Original listener bridge is unavailable.")) {
-    return "The original listener bridge is unavailable. Reconnect or reload the inspected page, then capture a fresh update.";
+  if (errors.includes("Captured wire target is stale.")) {
+    return "The captured page stream belongs to a stale connection epoch. Capture a fresh wire update before replaying.";
+  }
+  if (errors.includes("Subscription listener bridge is unavailable.")) {
+    return "The Subscription listener bridge is unavailable. Reconnect or reload the inspected page, then capture a fresh update.";
   }
   if (errors.includes("Captured wire bridge is unavailable.")) {
     return "The captured page WebSocket bridge is unavailable. Reconnect or reload the inspected page, then capture a fresh update.";
@@ -6568,7 +8798,7 @@ function createSyntheticProvenance(event: LightstreamerEventEnvelope): Record<st
     synthetic: event.synthetic,
     sourceEventId: event.raw?.sourceEventId ?? event.raw?.clonedSourceEventId ?? null,
     targetSubscriptionId: event.subscription?.id ?? null,
-    targetListenerId: event.listener?.id ?? null,
+    sourceListenerId: event.raw?.sourceListenerId ?? null,
     executionTarget: event.raw?.executionTarget ?? "captured-listener",
     deliveryPath: event.raw?.deliveryPath ?? "captured-listener",
     deliveredToPage: event.raw?.deliveredToPage ?? true,
@@ -6604,30 +8834,31 @@ async function bootPanel(): Promise<void> {
       panel?.setVisible(visible);
     });
     root.textContent = "Initializing event storage...";
-    const store = await createPanelEventStore();
+    const history = await createPanelEventHistory();
     panel = renderPanel(root, undefined, {
-      store,
+      history,
       visible,
       analytics: createPanelAnalytics()
     });
     const bridge = connectPanelBridge({
       onStatusChange: panel.setStatus,
-      onCaptureMessage: panel.appendCaptureMessage
+      onCaptureMessage: panel.appendCaptureMessage,
+      onTopologySyncFrame: panel.applyTopologySyncFrame
     });
     panel.setBridge(bridge);
   }
 }
 
-async function createPanelEventStore(): Promise<EventStore> {
+async function createPanelEventHistory(): Promise<EventHistory> {
   try {
-    return await createIndexedDbEventStore({
+    return await createIndexedDbEventHistory({
       sessionId: chrome.devtools?.inspectedWindow?.tabId ?? Date.now(),
       reset: true,
       clearOnClose: true
     });
   } catch (error) {
     console.error("Falling back to in-memory event storage.", error);
-    return createEventStore();
+    return createInMemoryEventHistory();
   }
 }
 

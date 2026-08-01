@@ -18,13 +18,14 @@ describe("synthetic reinjection event", () => {
     expect(event.raw).toMatchObject({
       sourceEventId: "event-1",
       targetSubscriptionId: "subscription-1",
-      targetListenerId: "listener-1",
+      sourceListenerId: "listener-1",
       requestId: "request-1",
       status: "success",
       executionTarget: "captured-listener",
       deliveredToPage: true,
       serverContacted: false
     });
+    expect(event.listener).toBeUndefined();
   });
 
   it("creates a listener-free wire replay with derived edits and source semantics", () => {

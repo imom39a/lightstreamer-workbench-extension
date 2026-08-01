@@ -3,7 +3,7 @@ const CLIENT_ID_STORAGE_KEY = "lsew.analytics.client-id.v1";
 const DEFAULT_COLLECTION_ENDPOINT = "https://www.google-analytics.com/mp/collect";
 
 export type AnalyticsConsent = "unknown" | "granted" | "denied";
-export type AnalyticsView = "timeline" | "command_state";
+export type AnalyticsView = "timeline" | "topology" | "command_state";
 export type AnalyticsReplaySurface = "timeline" | "command_state" | "new_command";
 export type AnalyticsReplayTarget = "listener" | "wire";
 export type AnalyticsReplayOutcome =
@@ -71,7 +71,7 @@ type GoogleAnalyticsEvent = {
   params: Record<string, string | number>;
 };
 
-const analyticsViews = new Set<AnalyticsView>(["timeline", "command_state"]);
+const analyticsViews = new Set<AnalyticsView>(["timeline", "topology", "command_state"]);
 const replaySurfaces = new Set<AnalyticsReplaySurface>([
   "timeline",
   "command_state",

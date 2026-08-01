@@ -1,5 +1,8 @@
 import { type EventFilterState, filterEvents } from "./event-filter";
-import { type LightstreamerEventEnvelope } from "./event-envelope";
+import {
+  type LightstreamerEventEnvelope,
+  toPersistableEventEnvelope
+} from "./event-envelope";
 import {
   type EventQuery,
   type EventQueryResult,
@@ -189,9 +192,9 @@ export function createRepositoryEventStore(
 
   return {
     async append(event) {
-      const appended = await repository.appendEvent(event);
+      const appended = await repository.appendEvent(toPersistableEventEnvelope(event));
       totalAppended += 1;
-      await notify({ type: "append", event: appended });
+      await notify({ type: "append", event });
       return appended;
     },
 

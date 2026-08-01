@@ -46,7 +46,7 @@ const metadataAdapter = await readLocalText(
   "../fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureMetadataAdapter.java"
 );
 
-assert.match(html, /Lightstreamer Event Workbench Fixture/);
+assert.match(html, /Lightstreamer Workbench Fixture/);
 assert.match(clientScript, /scenario\.snapshot-basic/);
 assert.match(clientScript, /scenario\.add-update-delete/);
 assert.match(clientScript, /issue-16/);

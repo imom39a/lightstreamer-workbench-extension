@@ -1,7 +1,7 @@
 import { PANEL_VISIBILITY_MESSAGE } from "../bridge/messages";
 
 chrome.devtools.panels.create(
-  "Lightstreamer Event Workbench",
+  "Lightstreamer Workbench",
   "",
   "extension/panel/index.html",
   (panel) => {

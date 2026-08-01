@@ -1,6 +1,6 @@
 # Usage Analytics
 
-Lightstreamer Event Workbench uses an optional, consent-based GA4 stream to answer coarse product questions without transmitting inspected-page data. This document is the analytics data dictionary and reporting guide. [PRIVACY.md](../PRIVACY.md) is the user-facing policy and remains authoritative for data handling.
+Lightstreamer Workbench uses an optional, consent-based GA4 stream to answer coarse product questions without transmitting inspected-page data. This document is the analytics data dictionary and reporting guide. [PRIVACY.md](../PRIVACY.md) is the user-facing policy and remains authoritative for data handling.
 
 ## Product Questions
 

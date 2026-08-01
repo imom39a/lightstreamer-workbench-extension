@@ -95,4 +95,17 @@ describe("panel CSS", () => {
     expect(devtoolsSource).toContain("panel.onShown.addListener");
     expect(devtoolsSource).toContain("panel.onHidden.addListener");
   });
+
+  it("keeps the topology splitter operable in side-by-side and stacked layouts", () => {
+    expect(panelCss).toMatch(
+      /\.topology-body\s*{[\s\S]*?--topology-tree-size[\s\S]*?\.topology-resize-handle/
+    );
+    expect(panelCss).toContain('.topology-body[data-orientation="stacked"]');
+    expect(panelCss).toMatch(
+      /\.topology-resize-handle:focus-visible[\s\S]*?outline:/
+    );
+    expect(panelCss).toMatch(
+      /@media \(max-width: 759px\)[\s\S]*?\.topology-resize-handle/
+    );
+  });
 });

@@ -317,7 +317,7 @@ describe("curated mutate-and-reinject contract", () => {
     expect(selectedTimelineEventId()).toBe("synthetic-high-volume-json-mutation");
     expect(document.querySelector(".draft-controls")).not.toBeNull();
     expect(text(".reinjection-message")).toContain(
-      "Edited update delivered to the original app listener"
+      "Edited update delivered to every current listener on the target Subscription"
     );
     expect(
       document.querySelector<HTMLTextAreaElement>(

@@ -5,7 +5,7 @@
 Name:
 
 ```text
-Lightstreamer Event Workbench
+Lightstreamer Workbench
 ```
 
 Summary, 87 characters:
@@ -29,7 +29,7 @@ English (United States)
 ## Detailed Description
 
 ```text
-Lightstreamer Event Workbench adds a Chrome DevTools panel for developers debugging web applications that use the official Lightstreamer Web Client.
+Lightstreamer Workbench adds a Chrome DevTools panel for developers debugging web applications that use the official Lightstreamer Web Client.
 
 It captures client, subscription, listener, item update, snapshot, and COMMAND-mode key lifecycle activity from the inspected page, then shows it in a searchable in-memory workbench with explicit retention status. Developers can inspect normalized Lightstreamer event envelopes, reconstruct current COMMAND state, review key lifecycles, and locally reinject captured or edited synthetic updates through captured listener or Lightstreamer WebSocket paths without backend access.
 
@@ -102,7 +102,7 @@ Reinjection workflow, reliability, and opt-in analytics release.
 ## Privacy Practices Draft
 
 ```text
-Lightstreamer Event Workbench processes inspected-page Lightstreamer event data locally inside the browser DevTools session. Captured events are kept in temporary storage for the current tab/session and are not transmitted to the developer, this extension's authors, Google Analytics, or any other external service by the extension.
+Lightstreamer Workbench processes inspected-page Lightstreamer event data locally inside the browser DevTools session. Captured events are kept in temporary storage for the current tab/session and are not transmitted to the developer, this extension's authors, Google Analytics, or any other external service by the extension.
 
 The extension offers optional coarse product-usage analytics through a dedicated Google Analytics 4 property. Analytics remains off until the user accepts a prominent disclosure in the DevTools panel. When enabled, events are limited to workbench panel/view use, whether Lightstreamer was detected, whether search or local replay was used, replay target/result categories, a bucketed captured-event count, extension version, session timing, and a random installation identifier. It never sends inspected URLs, Lightstreamer addresses, captured values or identifiers, item/field/key names, search text, replay drafts, raw errors, or stack traces. Advertising consent is denied and analytics is used only to improve the extension. Turning analytics off deletes the identifier and blocks future requests. The analytics integration adds no Chrome permission.
 
@@ -120,7 +120,7 @@ Declare the extension's opt-in collection of coarse product interaction/user-act
 ```text
 No account or login is required.
 
-This is a Chrome DevTools extension. After installing it, open Chrome DevTools on a page that uses the official Lightstreamer Web Client and select the "Lightstreamer Event Workbench" panel. The panel stays idle until the inspected page creates Lightstreamer clients/subscriptions. Captured updates appear in the Timeline view; COMMAND subscriptions can be inspected in the COMMAND State view.
+This is a Chrome DevTools extension. After installing it, open Chrome DevTools on a page that uses the official Lightstreamer Web Client and select the "Lightstreamer Workbench" panel. The panel stays idle until the inspected page creates Lightstreamer clients/subscriptions. Captured updates appear in the Timeline view; COMMAND subscriptions can be inspected in the COMMAND State view.
 
 On the first panel open in an analytics-configured official build, a disclosure explains the exact coarse metrics and excluded inspected data. **Not now** keeps analytics disabled. **Allow analytics** begins the documented coarse collection; the toolbar control can turn analytics off again, delete the random identifier, and block later requests.
 
@@ -136,7 +136,7 @@ For deterministic local verification from the repository:
 
 - [ ] Confirm `public/manifest.json` version matches `package.json`.
 - [ ] Run `npm run release:package`.
-- [ ] Upload `release/lightstreamer-event-workbench-v0.1.5.zip`.
+- [ ] Upload `release/lightstreamer-workbench-v0.1.5.zip`.
 - [ ] Upload `public/icons/icon-128.png` as the store icon.
 - [ ] Upload all three screenshots in the order listed above.
 - [ ] Upload `store-listing/promo/small-promo-tile.png`.

@@ -9,7 +9,15 @@ import {
   PANEL_REINJECT_REQUEST,
   PANEL_VISIBILITY_MESSAGE,
   RUNTIME_REINJECT_RESULT,
+  TOPOLOGY_LIMITS,
+  TOPOLOGY_OBSERVATION_VERSION,
+  TOPOLOGY_SYNC_BEGIN,
+  TOPOLOGY_SYNC_CHUNK,
+  TOPOLOGY_SYNC_LIMITS,
+  TOPOLOGY_SYNC_VERSION,
   type ReinjectionDraftPayload,
+  type JsonValue,
+  type TopologyObservation,
   createCaptureMessage,
   isCaptureMessage,
   isContentCaptureSyncRequestMessage,
@@ -17,7 +25,9 @@ import {
   isPageCaptureSyncRequestMessage,
   isPanelReinjectRequestMessage,
   isPanelVisibilityMessage,
-  isRuntimeReinjectResultMessage
+  isRuntimeReinjectResultMessage,
+  isTopologyObservation,
+  isTopologySyncFrame
 } from "../src/bridge/messages";
 import { createStableIdAllocator } from "../src/core/ids";
 
@@ -60,6 +70,175 @@ describe("bridge capture message validation", () => {
         kind: "client-created",
         timestamp: Date.now(),
         payload: { client: { id: "client-1" }, callback: () => null }
+      })
+    ).toBe(false);
+  });
+});
+
+describe("semantic topology trust-boundary validation", () => {
+  it("preserves all seven evidence states without collapsing unavailable facts", () => {
+    const states = [
+      { state: "requested", value: "MERGE" },
+      { state: "real", value: "MERGE" },
+      { state: "inferred", value: "MERGE" },
+      { state: "unknown" },
+      { state: "unavailable", reason: "getter-missing" },
+      { state: "redacted" },
+      { state: "not-applicable" }
+    ] as const;
+
+    for (const fact of states) {
+      expect(isTopologyObservation(observation({ values: { mode: fact } }))).toBe(true);
+    }
+  });
+
+  it("accepts semantic topology on compatible legacy captures and rejects mismatches", () => {
+    const topology = observation({ kind: "subscription-active" });
+    expect(
+      isCaptureMessage(
+        createCaptureMessage("subscription-started", { subscription: { id: "sub-a" } }, 1, topology)
+      )
+    ).toBe(true);
+    expect(
+      isCaptureMessage({
+        ...createCaptureMessage("client-created", { client: { id: "client-a" } }),
+        topology
+      })
+    ).toBe(false);
+  });
+
+  it("rejects hostile semantic evidence at string, nesting, and credential bounds", () => {
+    expect(
+      isTopologyObservation(
+        observation({ values: { label: { state: "real", value: "x".repeat(TOPOLOGY_LIMITS.valueString + 1) } } })
+      )
+    ).toBe(false);
+    expect(
+      isTopologyObservation(
+        observation({ values: { nested: { state: "real", value: nested(TOPOLOGY_LIMITS.depth + 1) } } })
+      )
+    ).toBe(false);
+    expect(
+      isTopologyObservation({ ...observation(), client: { id: "client-a", authorization: "secret" } })
+    ).toBe(false);
+  });
+
+  it("rejects malformed topology facts nested inside semantic evidence and checkpoints", () => {
+    const malformedFacts = [
+      { state: "real" },
+      { state: "unavailable", value: "must-not-exist" },
+      { state: "not-a-topology-state", value: "invalid" }
+    ];
+
+    for (const malformedFact of malformedFacts) {
+      expect(
+        isTopologyObservation(
+          observation({
+            client: {
+              id: "client-a",
+              nested: { connection: malformedFact }
+            } as TopologyObservation["client"]
+          })
+        )
+      ).toBe(false);
+
+      expect(
+        isTopologySyncFrame({
+          type: TOPOLOGY_SYNC_CHUNK,
+          version: TOPOLOGY_SYNC_VERSION,
+          syncId: "malformed-fact",
+          pageEpoch: "page-a",
+          cutoffCaptureSequence: 20,
+          chunkCount: 1,
+          recordCount: 1,
+          coverage: { status: "complete", getters: {} },
+          chunkIndex: 0,
+          records: [
+            {
+              kind: "page",
+              id: "page-a",
+              pageEpoch: "page-a",
+              captureSequence: 20,
+              values: { nested: { connection: malformedFact } }
+            }
+          ]
+        })
+      ).toBe(false);
+    }
+  });
+
+  it("validates bounded checkpoint frames and their absolute records", () => {
+    const metadata = {
+      version: TOPOLOGY_SYNC_VERSION,
+      syncId: "sync-a",
+      pageEpoch: "page-a",
+      cutoffCaptureSequence: 20,
+      chunkCount: 1,
+      recordCount: 1,
+      coverage: { status: "complete" as const, getters: {} }
+    };
+    expect(isTopologySyncFrame({ type: TOPOLOGY_SYNC_BEGIN, ...metadata })).toBe(true);
+    expect(
+      isTopologySyncFrame({
+        type: TOPOLOGY_SYNC_CHUNK,
+        ...metadata,
+        chunkIndex: 0,
+        records: [{ kind: "page", id: "page-a", pageEpoch: "page-a", captureSequence: 20 }]
+      })
+    ).toBe(true);
+    expect(
+      isTopologySyncFrame({ ...metadata, type: TOPOLOGY_SYNC_BEGIN, chunkCount: TOPOLOGY_SYNC_LIMITS.maxChunks + 1 })
+    ).toBe(false);
+  });
+
+  it("accepts cutoff zero only as a nonnegative empty-checkpoint boundary", () => {
+    const emptyMetadata = {
+      version: TOPOLOGY_SYNC_VERSION,
+      syncId: "empty-sync",
+      pageEpoch: "page-a",
+      cutoffCaptureSequence: 0,
+      chunkCount: 0,
+      recordCount: 0,
+      coverage: { status: "complete" as const, getters: {} }
+    };
+
+    expect(isTopologySyncFrame({ type: TOPOLOGY_SYNC_BEGIN, ...emptyMetadata })).toBe(true);
+    expect(
+      isTopologySyncFrame({
+        type: "lsew:topology-sync-complete",
+        ...emptyMetadata
+      })
+    ).toBe(true);
+    expect(
+      isTopologySyncFrame({
+        type: TOPOLOGY_SYNC_BEGIN,
+        ...emptyMetadata,
+        cutoffCaptureSequence: -1
+      })
+    ).toBe(false);
+    expect(
+      isTopologySyncFrame({
+        type: TOPOLOGY_SYNC_BEGIN,
+        ...emptyMetadata,
+        chunkCount: 1,
+        recordCount: 1
+      })
+    ).toBe(false);
+    expect(
+      isTopologySyncFrame({
+        type: TOPOLOGY_SYNC_CHUNK,
+        ...emptyMetadata,
+        chunkCount: 1,
+        recordCount: 1,
+        chunkIndex: 0,
+        records: [
+          {
+            kind: "page",
+            id: "page-a",
+            pageEpoch: "page-a",
+            captureSequence: 0
+          }
+        ]
       })
     ).toBe(false);
   });
@@ -130,7 +309,7 @@ describe("bridge reinjection message validation", () => {
     ).toBe(false);
   });
 
-  it("rejects reinjection requests missing the target listener id", () => {
+  it("rejects malformed source listener provenance", () => {
     const draft = createValidReinjectionDraftPayload();
     draft.target.listenerId = "";
 
@@ -141,6 +320,19 @@ describe("bridge reinjection message validation", () => {
         draft
       })
     ).toBe(false);
+  });
+
+  it("accepts Subscription-scoped listener delivery without source listener provenance", () => {
+    const draft = createValidReinjectionDraftPayload();
+    draft.target.listenerId = null;
+
+    expect(
+      isPanelReinjectRequestMessage({
+        type: PANEL_REINJECT_REQUEST,
+        requestId: "request-subscription",
+        draft
+      })
+    ).toBe(true);
   });
 
   it("accepts a listenerless captured-wire request with explicit page delivery", () => {
@@ -251,4 +443,26 @@ function createValidReinjectionDraftPayload(): ReinjectionDraftPayload {
       sourceSynthetic: false
     }
   };
+}
+
+function observation(overrides: Partial<TopologyObservation> = {}): TopologyObservation {
+  return {
+    version: TOPOLOGY_OBSERVATION_VERSION,
+    kind: "subscription-active",
+    pageEpoch: "page-a",
+    captureSequence: 1,
+    provenance: { instrumentationSource: "official-public-api" },
+    coverage: { status: "complete", getters: {} },
+    client: { id: "client-a" },
+    subscription: { id: "sub-a" },
+    ...overrides
+  } as TopologyObservation;
+}
+
+function nested(depth: number): JsonValue {
+  let value: JsonValue = "leaf";
+  for (let index = 0; index < depth; index += 1) {
+    value = { child: value };
+  }
+  return value;
 }

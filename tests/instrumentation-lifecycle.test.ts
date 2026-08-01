@@ -105,6 +105,78 @@ class FakeSubscriptionWithPendingCommandPositions extends FakeSubscription {
   }
 }
 
+class TopologyFakeLightstreamerClient extends FakeLightstreamerClient {
+  static readonly LIB_VERSION = "9.2.3";
+
+  status = "DISCONNECTED";
+  sessionId: string | null = null;
+  clientIp: string | null = null;
+  readonly connectionDetails = {
+    getServerAddress: () => this.serverAddress,
+    getAdapterSet: () => this.adapterSet,
+    getSessionId: () => this.sessionId,
+    getServerInstanceAddress: () =>
+      this.sessionId ? "https://node-a.example.test/lightstreamer" : null,
+    getServerSocketName: () => (this.sessionId ? "node-a" : null),
+    getClientIp: () => this.clientIp
+  };
+  readonly connectionOptions = {
+    getRequestedMaxBandwidth: () => "unlimited",
+    getRealMaxBandwidth: () => (this.sessionId ? 25 : null),
+    getKeepaliveInterval: () => 5_000,
+    getRetryDelay: () => 4_000,
+    getFirstRetryMaxDelay: () => 100,
+    getStalledTimeout: () => 2_000,
+    getReconnectTimeout: () => 3_000,
+    getSessionRecoveryTimeout: () => 15_000,
+    getForcedTransport: () => null
+  };
+
+  override getStatus() {
+    return this.status;
+  }
+
+  override subscribe(subscription: unknown) {
+    if (subscription instanceof TopologyFakeSubscription) {
+      subscription.active = true;
+    }
+    return super.subscribe(subscription);
+  }
+}
+
+class TopologyFakeSubscription extends FakeSubscription {
+  active = false;
+  subscribed = false;
+
+  getDataAdapter() {
+    return "QUOTE";
+  }
+
+  getSelector() {
+    return "desk-a";
+  }
+
+  getRequestedBufferSize() {
+    return "10";
+  }
+
+  getRequestedMaxFrequency() {
+    return "2";
+  }
+
+  getListeners() {
+    return this.listeners;
+  }
+
+  isActive() {
+    return this.active;
+  }
+
+  isSubscribed() {
+    return this.subscribed;
+  }
+}
+
 class FakeItemGroupSubscription {
   listeners: unknown[] = [];
 
@@ -231,6 +303,162 @@ function createInstrumentedTargetWithPageMessages() {
 }
 
 describe("Lightstreamer lifecycle instrumentation", () => {
+  it("installs passively without creating a client, socket, or connection", () => {
+    let clientConstructionCount = 0;
+    let socketConstructionCount = 0;
+    class PageOwnedClient extends FakeLightstreamerClient {
+      constructor(serverAddress: string, adapterSet: string) {
+        super(serverAddress, adapterSet);
+        clientConstructionCount += 1;
+      }
+    }
+    class PageOwnedWebSocket {
+      constructor() {
+        socketConstructionCount += 1;
+      }
+    }
+    const messages: CaptureMessage[] = [];
+    const target = {
+      LightstreamerClient: PageOwnedClient,
+      Subscription: FakeSubscription,
+      WebSocket: PageOwnedWebSocket as unknown as typeof WebSocket
+    };
+
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    expect(clientConstructionCount).toBe(0);
+    expect(socketConstructionCount).toBe(0);
+    expect(messages).toEqual([]);
+
+    const client = new target.LightstreamerClient(
+      "https://push.example.test/lightstreamer",
+      "DEMO"
+    );
+    expect(clientConstructionCount).toBe(1);
+    expect(client.connectCalls).toBe(0);
+    expect(messages.map(({ kind }) => kind)).toEqual(["client-created"]);
+  });
+
+  it("captures public client, session, option, and subscription topology metadata", () => {
+    const messages: CaptureMessage[] = [];
+    const target = {
+      LightstreamerClient: TopologyFakeLightstreamerClient,
+      Subscription: TopologyFakeSubscription
+    };
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const client = new target.LightstreamerClient(
+      "https://push.example.test/lightstreamer",
+      "DEMO"
+    );
+    const clientListener = {
+      onStatusChange: vi.fn(),
+      onPropertyChange: vi.fn()
+    };
+    client.addListener(clientListener);
+
+    const created = messages.find((message) => message.kind === "client-created");
+    expect(created?.payload.client).toMatchObject({
+      libraryVersion: "9.2.3",
+      instrumentationSource: "public-api",
+      coverageStatus: "full",
+      requestedMaxBandwidth: "unlimited",
+      keepaliveInterval: 5_000,
+      retryDelay: 4_000,
+      stalledTimeout: 2_000,
+      reconnectTimeout: 3_000,
+      sessionRecoveryTimeout: 15_000
+    });
+
+    client.status = "CONNECTED:WS-STREAMING";
+    client.sessionId = "session-A";
+    client.clientIp = "203.0.113.42";
+    clientListener.onPropertyChange("sessionId");
+
+    const propertyChange = messages.find(
+      (message) =>
+        message.kind === "client-status" &&
+        (message.payload.raw as { callback?: string } | undefined)?.callback ===
+          "onPropertyChange"
+    );
+    expect(propertyChange?.payload.client).toMatchObject({
+      status: "CONNECTED:WS-STREAMING",
+      sessionId: "session-A",
+      transport: "ws-streaming",
+      serverSocketName: "node-a",
+      clientIp: "203.0.113.0/24",
+      realMaxBandwidth: 25
+    });
+
+    client.clientIp = "::ffff:203.0.113.42";
+    clientListener.onPropertyChange("clientIp");
+    const latestPropertyChange = messages
+      .filter(
+        (message) =>
+          message.kind === "client-status" &&
+          (message.payload.raw as { callback?: string } | undefined)?.callback ===
+            "onPropertyChange"
+      )
+      .at(-1);
+    expect(latestPropertyChange?.payload.client).toMatchObject({
+      clientIp: "203.0.113.0/24"
+    });
+
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["portfolio"],
+      ["command", "key", "price"]
+    );
+    const subscriptionListener = {
+      onSubscription: vi.fn(),
+      onRealMaxFrequency: vi.fn(),
+      onItemLostUpdates: vi.fn()
+    };
+    subscription.addListener(subscriptionListener);
+    client.subscribe(subscription);
+    subscription.subscribed = true;
+    (
+      subscription.listeners[0] as {
+        onSubscription(): void;
+        onRealMaxFrequency(frequency: string): void;
+        onItemLostUpdates(name: string, position: number, lost: number): void;
+      }
+    ).onSubscription();
+    (
+      subscription.listeners[0] as {
+        onRealMaxFrequency(frequency: string): void;
+      }
+    ).onRealMaxFrequency("1.5");
+    (
+      subscription.listeners[0] as {
+        onItemLostUpdates(name: string, position: number, lost: number): void;
+      }
+    ).onItemLostUpdates("portfolio", 1, 3);
+
+    expect(
+      messages.find((message) => message.kind === "subscription-frequency")?.payload
+        .subscription
+    ).toMatchObject({
+      selector: "desk-a",
+      requestedBufferSize: "10",
+      requestedMaxFrequency: "2",
+      realMaxFrequency: "1.5",
+      active: true,
+      subscribed: true,
+      listenerCount: 1
+    });
+    expect(
+      messages.find((message) => message.kind === "lost-updates")?.payload
+    ).toMatchObject({
+      item: { name: "portfolio", position: 1 },
+      update: { lostUpdates: 3 }
+    });
+  });
+
   it("instruments constructors assigned after document_start installation", () => {
     const messages: CaptureMessage[] = [];
     const target: Record<string, unknown> = {};
@@ -396,6 +624,60 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         key: "alpha"
       }
     });
+  });
+
+  it("assigns one logical update id across listener deliveries and identifies the metric owner", () => {
+    const { target, messages } = createInstrumentedTarget();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["scenario"],
+      ["command", "key", "qty"]
+    );
+    const firstListener = { onItemUpdate: vi.fn() };
+    const secondListener = { onItemUpdate: vi.fn() };
+
+    client.subscribe(subscription);
+    subscription.addListener(firstListener);
+    subscription.addListener(secondListener);
+
+    const update = createFakeItemUpdate("scenario", "alpha", "10");
+    (
+      subscription.listeners[0] as {
+        onItemUpdate(itemUpdate: unknown): void;
+      }
+    ).onItemUpdate(update);
+    (
+      subscription.listeners[1] as {
+        onItemUpdate(itemUpdate: unknown): void;
+      }
+    ).onItemUpdate(update);
+
+    const deliveries = messages.filter((message) => message.kind === "item-update");
+    expect(deliveries).toHaveLength(2);
+    expect(
+      deliveries.map((message) => ({
+        logicalEventId: (message.payload.raw as { logicalEventId?: string }).logicalEventId,
+        listener: message.payload.listener
+      }))
+    ).toEqual([
+      {
+        logicalEventId: "update-1",
+        listener: expect.objectContaining({
+          id: "listener-1",
+          metricOwner: true,
+          callbacks: ["onItemUpdate"]
+        })
+      },
+      {
+        logicalEventId: "update-1",
+        listener: expect.objectContaining({
+          id: "listener-2",
+          metricOwner: false,
+          callbacks: ["onItemUpdate"]
+        })
+      }
+    ]);
   });
 
   it("keeps subscription context when the same listener object is reused", () => {
@@ -999,7 +1281,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       messages
         .filter((message) => message.kind === "subscription-snapshot")
         .map((message) => (message.payload.subscription as { id: string }).id)
-    ).toEqual(["subscription-2", "subscription-3"]);
+    ).toEqual([]);
   });
 
   it("does not retire an ambiguous fallback identity shared by multiple connections", () => {
@@ -1126,8 +1408,8 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     expect(created?.payload.subscription).not.toHaveProperty("commandPosition");
     expect(created?.payload.raw).toMatchObject({
       subscriptionMetadataErrors: [
-        "getKeyPosition:The position of the key field is currently unknown",
-        "getCommandPosition:The position of the command field is currently unknown"
+        "getKeyPosition:capture-failed",
+        "getCommandPosition:capture-failed"
       ]
     });
   });
@@ -1158,20 +1440,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       } as unknown as MessageEvent);
     }
 
-    expect(messages).toEqual([
-      expect.objectContaining({
-        kind: "subscription-snapshot",
-        payload: expect.objectContaining({
-          client: expect.objectContaining({ id: "client-1" }),
-          subscription: expect.objectContaining({
-            id: "subscription-1",
-            mode: "COMMAND",
-            items: ["quiet.orders"]
-          }),
-          raw: expect.objectContaining({ captureSync: true })
-        })
-      })
-    ]);
+    expect(messages).toEqual([]);
   });
 
   it("replays current COMMAND rows when the panel bridge connects late", () => {
@@ -1271,7 +1540,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     ).toBe(false);
   });
 
-  it("reinjects a synthetic update into the exact captured subscription listener", () => {
+  it("fans one synthetic Logical Update out to every current Subscription listener", () => {
     const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
     const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
     const subscription = new target.Subscription("COMMAND", ["scenario"], ["command", "key", "price"]);
@@ -1279,6 +1548,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     const receivedChangedFields: Record<string, unknown> = {};
     const listener = {
       receivedCount: 0,
+      receivedUpdate: null as unknown,
       receivedItem: null as null | { name: string | null; position: number | null; snapshot: boolean },
       onItemUpdate(update: {
         forEachField(iterator: (fieldName: string, fieldPos: number, value: unknown) => void): void;
@@ -1293,6 +1563,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         getValueAsJSONPatchIfAvailable(fieldName: string): unknown;
       }) {
         this.receivedCount += 1;
+        this.receivedUpdate = update;
         update.forEachField((fieldName, _fieldPos, value) => {
           receivedFields[fieldName] = value;
         });
@@ -1309,9 +1580,18 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         receivedFields.patch = update.getValueAsJSONPatchIfAvailable("price");
       }
     };
+    const secondListener = {
+      receivedCount: 0,
+      receivedUpdate: null as unknown,
+      onItemUpdate(update: unknown) {
+        this.receivedCount += 1;
+        this.receivedUpdate = update;
+      }
+    };
 
     client.subscribe(subscription);
     subscription.addListener(listener);
+    subscription.addListener(secondListener);
 
     const responsePort = {
       postMessage: vi.fn(),
@@ -1328,6 +1608,8 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     } as unknown as MessageEvent);
 
     expect(listener.receivedCount).toBe(1);
+    expect(secondListener.receivedCount).toBe(1);
+    expect(secondListener.receivedUpdate).toBe(listener.receivedUpdate);
     expect(listener.receivedItem).toEqual({ name: "portfolio", position: 2, snapshot: false });
     expect(receivedFields).toEqual({
       command: "UPDATE",
@@ -1357,7 +1639,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     expect(responsePort.close).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves subscription field positions for listener-path reinjection", () => {
+  it("preserves subscription field positions for Subscription-scoped injection", () => {
     const { target, messageListeners } = createInstrumentedTargetWithPageMessages();
     const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
     const subscription = new target.Subscription(
@@ -1495,6 +1777,43 @@ describe("Lightstreamer lifecycle instrumentation", () => {
           isRuntimeReinjectResultMessage(message) &&
           message.result.requestId === "request-2" &&
           message.result.status === "stale-target"
+      )
+    ).toBe(true);
+  });
+
+  it("keeps the Subscription target live when the source listener is removed", () => {
+    const { target, messages, messageListeners } = createInstrumentedTargetWithPageMessages();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription(
+      "COMMAND",
+      ["scenario"],
+      ["command", "key", "price"]
+    );
+    const sourceListener = { onItemUpdate: vi.fn() };
+    const remainingListener = { onItemUpdate: vi.fn() };
+
+    client.subscribe(subscription);
+    subscription.addListener(sourceListener);
+    subscription.addListener(remainingListener);
+    subscription.removeListener(sourceListener);
+
+    messageListeners[0]({
+      source: target,
+      data: {
+        type: PAGE_REINJECT_REQUEST,
+        requestId: "request-subscription-target",
+        draft: createValidPageDraft()
+      }
+    } as unknown as MessageEvent);
+
+    expect(sourceListener.onItemUpdate).not.toHaveBeenCalled();
+    expect(remainingListener.onItemUpdate).toHaveBeenCalledTimes(1);
+    expect(
+      messages.some(
+        (message) =>
+          isRuntimeReinjectResultMessage(message) &&
+          message.result.requestId === "request-subscription-target" &&
+          message.result.status === "success"
       )
     ).toBe(true);
   });

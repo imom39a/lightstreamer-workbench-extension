@@ -1,5 +1,5 @@
 {
-  "name": "lightstreamer-event-workbench",
+  "name": "lightstreamer-workbench",
   "version": "0.1.5",
   "private": true,
   "license": "Apache-2.0",
@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "benchmark:panel": "vitest bench --run",
+    "benchmark:topology": "node scripts/topology-performance.mjs",
     "release:package": "node scripts/package-extension.mjs",
     "release:zip": "node scripts/package-extension.mjs --format zip",
     "release:crx": "node scripts/package-extension.mjs --format crx",

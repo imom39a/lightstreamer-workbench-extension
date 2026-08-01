@@ -5,12 +5,14 @@ import {
   PANEL_PORT_NAME,
   PANEL_REINJECT_RESULT,
   PANEL_STATUS_MESSAGE,
+  PANEL_TOPOLOGY_SYNC_FRAME,
   type ReinjectionResult,
   isContentReinjectResultMessage,
   isPanelRegisterMessage,
   isPanelReinjectRequestMessage,
   isPanelReinjectResultMessage,
-  isRuntimeCaptureMessage
+  isRuntimeCaptureMessage,
+  isRuntimeTopologySyncFrameMessage
 } from "../bridge/messages";
 
 const panelPortsByTab = new Map<number, chrome.runtime.Port>();
@@ -115,6 +117,18 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       return false;
     }
     deliverReinjectionResult(tabId, message.result);
+    return false;
+  }
+
+  if (isRuntimeTopologySyncFrameMessage(message)) {
+    const tabId = sender.tab?.id;
+    if (tabId === undefined) {
+      return false;
+    }
+    panelPortsByTab.get(tabId)?.postMessage({
+      type: PANEL_TOPOLOGY_SYNC_FRAME,
+      frame: message.frame
+    });
     return false;
   }
 

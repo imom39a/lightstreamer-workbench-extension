@@ -1,5 +1,8 @@
 import { type EventFilterState, createEventSearchText, matchesEventFilters } from "./event-filter";
-import { type LightstreamerEventEnvelope } from "./event-envelope";
+import {
+  type LightstreamerEventEnvelope,
+  toPersistableEventEnvelope
+} from "./event-envelope";
 import {
   EVENT_STORE_NAMES,
   type EventDatabase,
@@ -95,6 +98,7 @@ class IndexedDbEventRepository implements EventRepository {
   constructor(private readonly database: EventDatabase) {}
 
   async appendEvent(event: LightstreamerEventEnvelope): Promise<LightstreamerEventEnvelope> {
+    const persistable = toPersistableEventEnvelope(event);
     const transaction = this.database.db.transaction(
       [
         EVENT_STORE_NAMES.events,
@@ -109,17 +113,17 @@ class IndexedDbEventRepository implements EventRepository {
 
     const seq = await requestToPromise<IDBValidKey>(
       events.add({
-        id: event.id,
-        envelope: event
+        id: persistable.id,
+        envelope: persistable
       } satisfies EventRecord)
     );
     const numericSeq = Number(seq);
-    eventMeta.put(createEventMetaRecord(numericSeq, event));
-    for (const token of eventSearchTokens(event)) {
+    eventMeta.put(createEventMetaRecord(numericSeq, persistable));
+    for (const token of eventSearchTokens(persistable)) {
       searchTokens.put({ token, seq: numericSeq } satisfies EventSearchTokenRecord);
     }
     await transactionDone(transaction);
-    return event;
+    return persistable;
   }
 
   async queryEvents(query: EventQuery = {}): Promise<EventQueryResult> {

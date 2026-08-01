@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for helping improve Lightstreamer Event Workbench. This project is a Chrome DevTools extension for developers who need to inspect and locally replay Lightstreamer Web Client behavior, especially COMMAND subscription lifecycles.
+Thank you for helping improve Lightstreamer Workbench. This project is a Chrome DevTools extension for developers who need to inspect and locally replay Lightstreamer Web Client behavior, especially COMMAND subscription lifecycles.
 
 ## Ground Rules
 
@@ -87,7 +87,7 @@ Then load the extension:
 3. Select `Load unpacked`.
 4. Choose the generated `dist/` directory from this repository.
 5. Open a page that uses the official Lightstreamer Web Client.
-6. Open Chrome DevTools and select the `Lightstreamer Event Workbench` panel.
+6. Open Chrome DevTools and select the `Lightstreamer Workbench` panel.
 
 If the target page created Lightstreamer clients before the extension was loaded, refresh the page with DevTools open so instrumentation can attach early.
 

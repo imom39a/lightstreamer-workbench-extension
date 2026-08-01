@@ -1,4 +1,11 @@
 import {
+  TOPOLOGY_OBSERVATION_VERSION,
+  TOPOLOGY_LIMITS,
+  TOPOLOGY_SYNC_BEGIN,
+  TOPOLOGY_SYNC_CHUNK,
+  TOPOLOGY_SYNC_COMPLETE,
+  TOPOLOGY_SYNC_LIMITS,
+  TOPOLOGY_SYNC_VERSION,
   type CaptureKind,
   type CapturePayload,
   PAGE_REINJECTION_BRIDGE_GLOBAL,
@@ -7,9 +14,18 @@ import {
   RUNTIME_REINJECT_RESULT,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
+  type TopologyEvidenceRecord,
+  type TopologyCoverage,
+  type TopologyAbsoluteRecord,
+  type TopologyObservation,
+  type TopologySyncFrame,
+  type TopologyValue,
   createCaptureMessage,
+  isTopologyObservationForCapture,
+  isTopologySyncFrame,
   isPageCaptureSyncRequestMessage,
-  isPageReinjectRequestMessage
+  isPageReinjectRequestMessage,
+  topologySyncUtf8Bytes
 } from "../bridge/messages";
 import { createStableIdAllocator, type StableIdAllocator } from "../core/ids";
 import {
@@ -18,33 +34,51 @@ import {
   type LightstreamerListenerLike,
   type LightstreamerSubscriptionLike
 } from "../core/lightstreamer-types";
+import {
+  createSubscriptionLocalInjectionRegistry,
+  type SubscriptionLocalInjectionRegistry
+} from "./subscription-local-injection";
 
 type InstrumentationState = {
+  pageEpoch: string;
+  captureSequence: number;
+  topologyRecords: Map<string, TopologyAbsoluteRecord>;
+  topologyCounters: Map<string, { updateCount: number; lostUpdates: number }>;
+  topologyObservedDispatches: Set<string>;
+  topologyEstablishmentEpochs: Map<string, number>;
+  topologyCommandEpochs: Map<string, number>;
+  topologyCommandGenerations: Map<string, string>;
+  topologyCoverage: "complete" | "partial";
+  clientTopologyCoverages: Map<string, TopologyCoverage>;
   clientIds: StableIdAllocator;
   subscriptionIds: StableIdAllocator;
   listenerIds: StableIdAllocator;
+  updateIds: StableIdAllocator;
   wrappedClients: WeakSet<object>;
   wrappedSubscriptions: WeakSet<object>;
   wrappedClientListeners: WeakSet<object>;
   subscriptionListenerProxies: WeakMap<object, WeakMap<object, LightstreamerListenerLike>>;
+  listenerProxyOriginals: WeakMap<object, LightstreamerListenerLike>;
   subscriptionClients: WeakMap<object, object>;
   clientMetadata: WeakMap<object, CapturePayload>;
   activeSubscriptions: Map<string, CapturePayload>;
   commandReplayRows: Map<string, Map<string, CapturePayload>>;
   retiredFallbackSubscriptionIds: Set<string>;
-  listenerTargets: Map<string, ReinjectionListenerTarget>;
+  localInjectionTargets: SubscriptionLocalInjectionRegistry<SyntheticItemUpdate>;
+  listenerRegistrations: Map<string, ListenerRegistrationState>;
+  subscriptionListenerIds: Map<string, Set<string>>;
   wireTargets: Map<string, WireReinjectionTarget>;
   syntheticWireEvents: WeakSet<object>;
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
+  emitLegacy(kind: CaptureKind, payload: CapturePayload): void;
 };
 
 type MethodOwner = Record<string, unknown>;
-type ReinjectionListenerTarget = {
-  subscriptionId: string;
-  listenerId: string;
-  fieldNames: string[];
-  callback(update: SyntheticItemUpdate): unknown;
+type ListenerRegistrationState = {
+  addCount: number;
+  active: boolean;
+  callbacks: string[];
 };
 
 type WireReinjectionTarget = {
@@ -70,6 +104,7 @@ type WireConnectionState = {
   socket: WebSocket;
   clientId: string;
   url: string;
+  status: string;
   sessionId: string | null;
   adapterSet: string | null;
   subscriptions: Map<string, WireSubscriptionState>;
@@ -107,9 +142,12 @@ const CALLBACKS_TO_CAPTURE = [
   "onItemLostUpdates",
   "onClearSnapshot",
   "onItemUpdate",
+  "onRealMaxFrequency",
   "onSubscription",
   "onUnsubscription",
-  "onSubscriptionError"
+  "onSubscriptionError",
+  "onCommandSecondLevelItemLostUpdates",
+  "onCommandSecondLevelSubscriptionError"
 ] as const;
 
 export function installLightstreamerInstrumentation(
@@ -124,29 +162,77 @@ export function installLightstreamerInstrumentation(
   const commandReplayRows = new Map<string, Map<string, CapturePayload>>();
   const retiredFallbackSubscriptionIds = new Set<string>();
   const state: InstrumentationState = {
+    pageEpoch: createPageEpoch(),
+    captureSequence: 0,
+    topologyRecords: new Map<string, TopologyAbsoluteRecord>(),
+    topologyCounters: new Map<string, { updateCount: number; lostUpdates: number }>(),
+    topologyObservedDispatches: new Set<string>(),
+    topologyEstablishmentEpochs: new Map<string, number>(),
+    topologyCommandEpochs: new Map<string, number>(),
+    topologyCommandGenerations: new Map<string, string>(),
+    topologyCoverage: "complete",
+    clientTopologyCoverages: new Map<string, TopologyCoverage>(),
     clientIds: createStableIdAllocator("client"),
     subscriptionIds: createStableIdAllocator("subscription"),
     listenerIds: createStableIdAllocator("listener"),
+    updateIds: createStableIdAllocator("update"),
     wrappedClients: new WeakSet<object>(),
     wrappedSubscriptions: new WeakSet<object>(),
     wrappedClientListeners: new WeakSet<object>(),
     subscriptionListenerProxies: new WeakMap<object, WeakMap<object, LightstreamerListenerLike>>(),
+    listenerProxyOriginals: new WeakMap<object, LightstreamerListenerLike>(),
     subscriptionClients: new WeakMap<object, object>(),
     clientMetadata: new WeakMap<object, CapturePayload>(),
     activeSubscriptions,
     commandReplayRows,
     retiredFallbackSubscriptionIds,
-    listenerTargets: new Map<string, ReinjectionListenerTarget>(),
+    localInjectionTargets: createSubscriptionLocalInjectionRegistry<SyntheticItemUpdate>(),
+    listenerRegistrations: new Map<string, ListenerRegistrationState>(),
+    subscriptionListenerIds: new Map<string, Set<string>>(),
     wireTargets: new Map<string, WireReinjectionTarget>(),
     syntheticWireEvents: new WeakSet<object>(),
     originalItemUpdateCallbacks: new WeakMap<object, (update: SyntheticItemUpdate) => unknown>(),
     emit(kind, payload) {
-      if (isRetiredFallbackCapture(retiredFallbackSubscriptionIds, payload)) {
-        return;
+      try {
+        const sanitizedPayload = sanitizeCapturePayload(payload);
+        if (isRetiredFallbackCapture(retiredFallbackSubscriptionIds, sanitizedPayload)) {
+          return;
+        }
+        trackActiveSubscription(activeSubscriptions, kind, sanitizedPayload);
+        trackCommandReplayRows(commandReplayRows, kind, sanitizedPayload);
+        let topology = createTopologyObservation(kind, sanitizedPayload, state);
+        const topologySequence = topology?.captureSequence;
+        if (topology && !isTopologyObservationForCapture(kind, topology)) {
+          state.topologyCoverage = "partial";
+          const aggregateCoverage = aggregateTopologyCoverage(state);
+          topology = {
+            version: TOPOLOGY_OBSERVATION_VERSION,
+            kind,
+            pageEpoch: state.pageEpoch,
+            captureSequence: topologySequence ?? state.captureSequence,
+            provenance: { instrumentationSource: "official-public-api" },
+            coverage: {
+              ...aggregateCoverage,
+              status: "partial",
+              reason: "limit-exceeded"
+            }
+          };
+        }
+        if (topology) {
+          updateTopologyShadow(kind, sanitizedPayload, topology, state);
+        }
+        postMessage(createCaptureMessage(kind, sanitizedPayload, Date.now(), topology));
+      } catch (_error) {
+        // Capture and its transport are best-effort and must never affect the page.
       }
-      trackActiveSubscription(activeSubscriptions, kind, payload);
-      trackCommandReplayRows(commandReplayRows, kind, payload);
-      postMessage(createCaptureMessage(kind, payload));
+    },
+    emitLegacy(kind, payload) {
+      try {
+        const sanitizedPayload = sanitizeCapturePayload(payload);
+        postMessage(createCaptureMessage(kind, sanitizedPayload));
+      } catch (_error) {
+        // Compatibility replay is optional and must remain fail-open.
+      }
     }
   };
   installReinjectionHandler(host, postMessage, state);
@@ -154,37 +240,58 @@ export function installLightstreamerInstrumentation(
   installWebSocketFallback(host, state);
 
   let installed = false;
+  const clientConstructorWrappers = new WeakMap<Function, Function>();
+  const subscriptionConstructorWrappers = new WeakMap<Function, Function>();
 
   const wrapClientConstructor = (OriginalClient: NonNullable<LightstreamerHost["LightstreamerClient"]>) => {
+    const cached = clientConstructorWrappers.get(OriginalClient);
+    if (cached) {
+      return cached as typeof OriginalClient;
+    }
     function InstrumentedLightstreamerClient(
       this: LightstreamerClientLike,
       ...args: unknown[]
-    ): LightstreamerClientLike {
+    ): unknown {
+      if (!new.target) {
+        return Reflect.apply(
+          OriginalClient as unknown as (...constructorArgs: unknown[]) => unknown,
+          this,
+          args
+        );
+      }
       const instance = Reflect.construct(
         OriginalClient,
         args,
-        new.target ?? InstrumentedLightstreamerClient
+        new.target === InstrumentedLightstreamerClient ? OriginalClient : new.target
       ) as LightstreamerClientLike;
-      const clientId = state.clientIds.getId(instance);
-      const clientMetadata = compactJsonObject({
-        id: clientId,
-        serverAddress: toJsonValue(args[0]),
-        adapterSet: toJsonValue(args[1]),
-        status: readGetter(instance, "getStatus")
-      });
+      try {
+        const clientId = state.clientIds.getId(instance);
+        const clientMetadata = readClientMetadata(instance, compactJsonObject({
+          id: clientId,
+          serverAddress: toJsonValue(args[0]),
+          adapterSet: toJsonValue(args[1]),
+          libraryVersion: readConstructorString(OriginalClient, "LIB_VERSION"),
+          instrumentationSource: "public-api",
+          coverageStatus: "full"
+        }), state);
 
-      activatePrimaryInstrumentation(host);
-      wrapClient(instance, state);
-      state.clientMetadata.set(instance, clientMetadata);
-      state.emit("client-created", {
-        client: clientMetadata
-      });
+        activatePrimaryInstrumentation(host);
+        wrapClient(instance, state);
+        state.clientMetadata.set(instance, clientMetadata);
+        state.emit("client-created", {
+          client: clientMetadata
+        });
+      } catch (_error) {
+        // Instrumentation is best-effort; the page owns constructor behavior.
+      }
 
       return instance;
     }
 
     InstrumentedLightstreamerClient.prototype = OriginalClient.prototype;
     Object.setPrototypeOf(InstrumentedLightstreamerClient, OriginalClient);
+    clientConstructorWrappers.set(OriginalClient, InstrumentedLightstreamerClient);
+    clientConstructorWrappers.set(InstrumentedLightstreamerClient, InstrumentedLightstreamerClient);
     return InstrumentedLightstreamerClient as unknown as typeof OriginalClient;
   };
 
@@ -194,42 +301,59 @@ export function installLightstreamerInstrumentation(
   const wrapSubscriptionConstructor = (
     OriginalSubscription: NonNullable<LightstreamerHost["Subscription"]>
   ) => {
+    const cached = subscriptionConstructorWrappers.get(OriginalSubscription);
+    if (cached) {
+      return cached as typeof OriginalSubscription;
+    }
     function InstrumentedSubscription(
       this: LightstreamerSubscriptionLike,
       ...args: unknown[]
-    ): LightstreamerSubscriptionLike {
+    ): unknown {
+      if (!new.target) {
+        return Reflect.apply(
+          OriginalSubscription as unknown as (...constructorArgs: unknown[]) => unknown,
+          this,
+          args
+        );
+      }
       const instance = Reflect.construct(
         OriginalSubscription,
         args,
-        new.target ?? InstrumentedSubscription
+        new.target === InstrumentedSubscription ? OriginalSubscription : new.target
       ) as LightstreamerSubscriptionLike;
-      const subscriptionId = state.subscriptionIds.getId(instance);
+      try {
+        const subscriptionId = state.subscriptionIds.getId(instance);
 
-      activatePrimaryInstrumentation(host);
-      const subscriptionMetadataErrors: string[] = [];
-      const subscriptionMetadata = readSubscriptionMetadata(
-        instance,
-        args,
-        subscriptionMetadataErrors
-      );
+        activatePrimaryInstrumentation(host);
+        const subscriptionMetadataErrors: string[] = [];
+        const subscriptionMetadata = readSubscriptionMetadata(
+          instance,
+          args,
+          subscriptionMetadataErrors
+        );
 
-      wrapSubscription(instance, state);
-      state.emit("subscription-created", compactJsonObject({
-        subscription: {
-          id: subscriptionId,
-          ...subscriptionMetadata
-        },
-        raw:
-          subscriptionMetadataErrors.length > 0
-            ? { subscriptionMetadataErrors }
-            : undefined
-      }));
+        wrapSubscription(instance, state);
+        state.emit("subscription-created", compactJsonObject({
+          subscription: {
+            id: subscriptionId,
+            ...subscriptionMetadata
+          },
+          raw:
+            subscriptionMetadataErrors.length > 0
+              ? { subscriptionMetadataErrors }
+              : undefined
+        }));
+      } catch (_error) {
+        // Instrumentation is best-effort; the page owns constructor behavior.
+      }
 
       return instance;
     }
 
     InstrumentedSubscription.prototype = OriginalSubscription.prototype;
     Object.setPrototypeOf(InstrumentedSubscription, OriginalSubscription);
+    subscriptionConstructorWrappers.set(OriginalSubscription, InstrumentedSubscription);
+    subscriptionConstructorWrappers.set(InstrumentedSubscription, InstrumentedSubscription);
     return InstrumentedSubscription as unknown as typeof OriginalSubscription;
   };
 
@@ -238,9 +362,935 @@ export function installLightstreamerInstrumentation(
   installed =
     installNamespaceHook(host, wrapClientConstructor, wrapSubscriptionConstructor) || installed;
 
-  host.__LSEW_INSTRUMENTED__ = installed;
+  try {
+    host.__LSEW_INSTRUMENTED__ = installed;
+  } catch (_error) {
+    // A frozen page host remains authoritative even when it cannot be marked.
+  }
   return installed;
 }
+
+let nextPageEpoch = 1;
+
+function createPageEpoch(): string {
+  const epoch = nextPageEpoch;
+  nextPageEpoch += 1;
+  return `page-${Date.now().toString(36)}-${epoch}`;
+}
+
+function createTopologyObservation(
+  kind: CaptureKind,
+  payload: CapturePayload,
+  state: InstrumentationState
+): TopologyObservation | undefined {
+  const raw = captureObject(payload.raw);
+  if (raw?.captureSource === "websocket-tlcp") {
+    return undefined;
+  }
+  state.captureSequence += 1;
+  const clientSource = captureObject(payload.client);
+  const clientId = topologyString(clientSource?.id);
+  const clientCoverage = clientId ? state.clientTopologyCoverages.get(clientId) : undefined;
+  const client = topologyEvidence(clientSource, "client", clientCoverage);
+  const subscriptionSource = captureObject(payload.subscription);
+  const subscription = topologyEvidence(subscriptionSource, "subscription");
+  const item = topologyEvidence(captureObject(payload.item), "item");
+  const listener = topologyEvidence(captureObject(payload.listener), "listener");
+  const listenerAttachment = createListenerAttachmentEvidence(subscription, listener);
+  const dispatchAndDelivery = createDispatchAndDeliveryEvidence(
+    kind,
+    raw,
+    subscription,
+    listener,
+    state.captureSequence
+  );
+  const topologyValues = subscriptionSource
+    ? createSubscriptionActivityFacts(kind, subscriptionSource, raw)
+    : undefined;
+  const observationKind = specializedTopologyObservationKind(kind, payload, topologyValues);
+  const specializedValues = specializedTopologyValues(
+    observationKind,
+    payload,
+    dispatchAndDelivery,
+    state
+  );
+  const values = topologyValues || specializedValues
+    ? { ...topologyValues, ...specializedValues }
+    : undefined;
+  return {
+    version: TOPOLOGY_OBSERVATION_VERSION,
+    kind: observationKind,
+    pageEpoch: state.pageEpoch,
+    captureSequence: state.captureSequence,
+    provenance: { instrumentationSource: "official-public-api" },
+    coverage: aggregateTopologyCoverage(state),
+    ...(client ? { client } : {}),
+    ...(subscription ? { subscription } : {}),
+    ...(item ? { item } : {}),
+    ...(listener ? { listener } : {}),
+    ...(listenerAttachment ? { listenerAttachment } : {}),
+    ...dispatchAndDelivery,
+    ...(values ? { values } : {})
+  };
+}
+
+function aggregateTopologyCoverage(state: InstrumentationState): TopologyCoverage {
+  let aggregate: TopologyCoverage = { status: "complete", getters: {} };
+  for (const coverage of state.clientTopologyCoverages.values()) {
+    aggregate = mergeTopologyCoverage(aggregate, coverage);
+  }
+  if (state.topologyCoverage === "partial") {
+    return {
+      ...aggregate,
+      status: "partial",
+      reason: "limit-exceeded"
+    };
+  }
+  return aggregate;
+}
+
+function mergeTopologyCoverage(
+  current: TopologyCoverage,
+  incoming: TopologyCoverage
+): TopologyCoverage {
+  const getters = { ...current.getters };
+  const rank = { available: 0, missing: 1, threw: 2 } as const;
+  for (const [getter, status] of Object.entries(incoming.getters)) {
+    const previous = getters[getter];
+    if (!previous || rank[status] > rank[previous]) {
+      getters[getter] = status;
+    }
+  }
+  const statuses = Object.values(getters);
+  const reason = statuses.includes("threw")
+    ? "getter-threw" as const
+    : statuses.includes("missing")
+      ? "getter-missing" as const
+      : current.status === "partial"
+        ? current.reason
+        : incoming.status === "partial"
+          ? incoming.reason
+          : undefined;
+  return {
+    status: current.status === "partial" || incoming.status === "partial" || reason
+      ? "partial"
+      : "complete",
+    getters,
+    ...(reason ? { reason } : {})
+  };
+}
+
+function specializedTopologyObservationKind(
+  kind: CaptureKind,
+  payload: CapturePayload,
+  values: Record<string, TopologyValue> | undefined
+): TopologyObservation["kind"] {
+  const raw = captureObject(payload.raw);
+  if (
+    raw?.callback === "onCommandSecondLevelItemLostUpdates" ||
+    raw?.callback === "onCommandSecondLevelSubscriptionError"
+  ) {
+    return "second-level-observed";
+  }
+  if (
+    kind === "subscription-started" &&
+    topologyFactPrimitive(values?.serverEstablished) === true
+  ) {
+    return "subscription-established";
+  }
+  const subscription = captureObject(payload.subscription);
+  const update = captureObject(payload.update);
+  const fields = captureObject(update?.fields);
+  const command = normalizedString(update?.command ?? fields?.command);
+  const key = nonEmptyString(update?.key ?? fields?.key);
+  if (
+    kind === "item-update" &&
+    normalizedString(subscription?.mode) === "COMMAND" &&
+    command !== null &&
+    ["ADD", "UPDATE", "DELETE"].includes(command) &&
+    key
+  ) {
+    return "command-key-generation";
+  }
+  return kind;
+}
+
+function specializedTopologyValues(
+  kind: TopologyObservation["kind"],
+  payload: CapturePayload,
+  dispatchAndDelivery: Pick<TopologyObservation, "dispatch" | "delivery">,
+  state: InstrumentationState
+): Record<string, TopologyValue> | undefined {
+  const subscription = captureObject(payload.subscription);
+  const subscriptionId = nonEmptyString(subscription?.id);
+  if (kind === "subscription-established" && subscriptionId) {
+    const active = Array.from(state.topologyRecords.values()).find(
+      (record) => record.kind === "establishment" && record.subscriptionId === subscriptionId
+    );
+    const epoch = active
+      ? state.topologyEstablishmentEpochs.get(subscriptionId) ?? topologyEpochFromId(active.id) ?? 1
+      : (state.topologyEstablishmentEpochs.get(subscriptionId) ?? 0) + 1;
+    const id = active?.id ?? `establishment:${subscriptionId}:${epoch}`;
+    return {
+      establishmentEpoch: { state: "real", value: epoch },
+      establishmentId: { state: "real", value: id }
+    };
+  }
+  if (kind !== "command-key-generation" || !subscriptionId) {
+    return undefined;
+  }
+  const update = captureObject(payload.update);
+  const fields = captureObject(update?.fields);
+  const command = normalizedString(update?.command ?? fields?.command);
+  const key = nonEmptyString(update?.key ?? fields?.key);
+  const itemId = itemTopologyIdentity(subscriptionId, captureObject(payload.item));
+  if (!command || !key || !itemId) {
+    return undefined;
+  }
+  const generationKey = commandGenerationKey(subscriptionId, itemId, key);
+  const activeId = state.topologyCommandGenerations.get(generationKey);
+  const activeRecord = activeId
+    ? state.topologyRecords.get(topologyRecordKey("command-generation", activeId))
+    : undefined;
+  const dispatchId = topologyString(dispatchAndDelivery.dispatch?.id);
+  let generationId = activeId;
+  let generationEpoch = activeId
+    ? state.topologyCommandEpochs.get(generationKey) ?? topologyEpochFromId(activeId)
+    : undefined;
+  if (
+    command !== "DELETE" &&
+    (!generationId || (command === "ADD" && activeRecord?.values?.dispatchId !== dispatchId))
+  ) {
+    generationEpoch = (state.topologyCommandEpochs.get(generationKey) ?? 0) + 1;
+    generationId = `command-generation:${subscriptionId}:${itemId}:${key}:${generationEpoch}`;
+  }
+  return {
+    command: { state: "real", value: command },
+    commandKey: { state: "real", value: key },
+    ...(generationEpoch !== undefined && generationId
+      ? {
+          generationEpoch: { state: "real", value: generationEpoch } as TopologyValue,
+          generationId: { state: "real", value: generationId } as TopologyValue
+        }
+      : {})
+  };
+}
+
+function topologyEpochFromId(id: string): number | undefined {
+  const suffix = Number(id.slice(id.lastIndexOf(":") + 1));
+  return Number.isSafeInteger(suffix) && suffix > 0 ? suffix : undefined;
+}
+
+function topologyEvidence(
+  source: CapturePayload | null,
+  domain: "client" | "subscription" | "item" | "listener",
+  coverage?: TopologyCoverage
+): TopologyEvidenceRecord | undefined {
+  if (!source) {
+    return undefined;
+  }
+  const evidence: TopologyEvidenceRecord = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (isSensitiveCaptureKey(key)) {
+      continue;
+    }
+    if (key === "id") {
+      evidence.id = value;
+      continue;
+    }
+    if (key === "clientIp") {
+      const getterCoverage = coverage?.getters["ConnectionDetails.getClientIp"];
+      evidence.clientIp =
+        value === null && (getterCoverage === "missing" || getterCoverage === "threw")
+          ? {
+              state: "unknown",
+              reason: getterCoverage === "threw" ? "getter-threw" : "getter-missing"
+            }
+          : { state: "redacted", context: "masked-client-ip" };
+      if (typeof value === "string" && value !== "[redacted]") {
+        evidence.clientIpMasked = value;
+      }
+      continue;
+    }
+    if (value === "[redacted]") {
+      evidence[key] = { state: "redacted", reason: "sanitization-failed" };
+      continue;
+    }
+    const factState = topologyFactState(domain, key);
+    evidence[key] = { state: factState, value } as TopologyValue;
+  }
+  if (domain === "client") {
+    for (const { key, getter } of CLIENT_TOPOLOGY_GETTERS) {
+      if (!(key in source)) {
+        evidence[key] = {
+          state: "unknown",
+          reason: coverage?.getters[getter] === "threw" ? "getter-threw" : "getter-missing"
+        };
+      } else if (source[key] === null && key !== "clientIp") {
+        evidence[key] = key === "forcedTransport"
+          ? { state: "not-applicable" }
+          : { state: "unavailable" };
+      }
+    }
+  }
+  return Object.keys(evidence).length > 0 ? evidence : undefined;
+}
+
+function createSubscriptionActivityFacts(
+  kind: CaptureKind,
+  subscription: CapturePayload,
+  raw: CapturePayload | null
+): Record<string, TopologyValue> {
+  const activeEvidence = [
+    "subscription-started",
+    "subscription-frequency",
+    "listener-added",
+    "item-update"
+  ].includes(kind);
+  const establishedEvidence =
+    raw?.callback === "onSubscription" ||
+    ["subscription-frequency", "item-update", "end-of-snapshot", "lost-updates", "clear-snapshot"].includes(kind);
+  const secondLevelCallback = nonEmptyString(raw?.callback);
+  const secondLevelArgs = Array.isArray(raw?.args) ? raw.args : [];
+  const secondLevelKey = nonEmptyString(
+    secondLevelCallback === "onCommandSecondLevelItemLostUpdates"
+      ? secondLevelArgs[1]
+      : secondLevelCallback === "onCommandSecondLevelSubscriptionError"
+        ? secondLevelArgs[2]
+        : undefined
+  );
+  return {
+    clientActive:
+      subscription.active === true
+        ? { state: "real", value: true }
+        : activeEvidence
+          ? { state: "inferred", value: true }
+          : subscription.active === false
+            ? { state: "real", value: false }
+            : { state: "unknown", reason: "getter-missing" },
+    serverEstablished:
+      typeof subscription.subscribed === "boolean" && subscription.subscribed
+        ? { state: "real", value: true }
+        : establishedEvidence
+          ? { state: "inferred", value: true }
+          : { state: "unknown", reason: "getter-missing" },
+    ...(secondLevelKey
+      ? {
+          secondLevelKey: { state: "inferred", value: secondLevelKey } as TopologyValue,
+          secondLevelProvenance: {
+            state: "inferred",
+            value: "inferred-second-level"
+          } as TopologyValue
+        }
+      : {})
+  };
+}
+
+const CLIENT_TOPOLOGY_GETTERS = [
+  { key: "serverAddress", getter: "ConnectionDetails.getServerAddress" },
+  { key: "adapterSet", getter: "ConnectionDetails.getAdapterSet" },
+  { key: "sessionId", getter: "ConnectionDetails.getSessionId" },
+  { key: "serverInstanceAddress", getter: "ConnectionDetails.getServerInstanceAddress" },
+  { key: "serverSocketName", getter: "ConnectionDetails.getServerSocketName" },
+  { key: "clientIp", getter: "ConnectionDetails.getClientIp" },
+  { key: "status", getter: "LightstreamerClient.getStatus" },
+  { key: "requestedMaxBandwidth", getter: "ConnectionOptions.getRequestedMaxBandwidth" },
+  { key: "realMaxBandwidth", getter: "ConnectionOptions.getRealMaxBandwidth" },
+  { key: "keepaliveInterval", getter: "ConnectionOptions.getKeepaliveInterval" },
+  { key: "retryDelay", getter: "ConnectionOptions.getRetryDelay" },
+  { key: "firstRetryMaxDelay", getter: "ConnectionOptions.getFirstRetryMaxDelay" },
+  { key: "stalledTimeout", getter: "ConnectionOptions.getStalledTimeout" },
+  { key: "reconnectTimeout", getter: "ConnectionOptions.getReconnectTimeout" },
+  { key: "sessionRecoveryTimeout", getter: "ConnectionOptions.getSessionRecoveryTimeout" },
+  { key: "forcedTransport", getter: "ConnectionOptions.getForcedTransport" },
+  { key: "reverseHeartbeatInterval", getter: "ConnectionOptions.getReverseHeartbeatInterval" },
+  { key: "pollingInterval", getter: "ConnectionOptions.getPollingInterval" },
+  { key: "idleTimeout", getter: "ConnectionOptions.getIdleTimeout" }
+] as const;
+
+function topologyFactState(
+  domain: "client" | "subscription" | "item" | "listener",
+  key: string
+): "requested" | "real" | "inferred" {
+  if (
+    key === "status" ||
+    key === "sessionId" ||
+    key === "transport" ||
+    key.startsWith("real") ||
+    key === "active" ||
+    key === "subscribed" ||
+    key === "listenerCount"
+  ) {
+    return "real";
+  }
+  if (domain === "item" || domain === "listener") {
+    return "real";
+  }
+  return "requested";
+}
+
+function createListenerAttachmentEvidence(
+  subscription: TopologyEvidenceRecord | undefined,
+  listener: TopologyEvidenceRecord | undefined
+): TopologyEvidenceRecord | undefined {
+  const subscriptionId = typeof subscription?.id === "string" ? subscription.id : null;
+  const listenerId = typeof listener?.id === "string" ? listener.id : null;
+  const registration = topologyFactPrimitive(listener?.registrationCount) ?? 1;
+  if (!subscriptionId || !listenerId) {
+    return undefined;
+  }
+  return {
+    id: `listener-attachment:${subscriptionId}:${listenerId}:${registration}`,
+    subscriptionId,
+    listenerId,
+    registrationCount: registration
+  };
+}
+
+function createDispatchAndDeliveryEvidence(
+  kind: CaptureKind,
+  raw: CapturePayload | null,
+  subscription: TopologyEvidenceRecord | undefined,
+  listener: TopologyEvidenceRecord | undefined,
+  sequence: number
+): Pick<TopologyObservation, "dispatch" | "delivery"> {
+  if (kind !== "item-update" && !raw?.callback) {
+    return {};
+  }
+  const logicalEventId = typeof raw?.logicalEventId === "string" ? raw.logicalEventId : null;
+  const subscriptionId = typeof subscription?.id === "string" ? subscription.id : "unknown";
+  const listenerId = typeof listener?.id === "string" ? listener.id : "unowned";
+  const dispatchId = logicalEventId
+    ? `dispatch:${logicalEventId}`
+    : `dispatch:${subscriptionId}:${sequence}`;
+  return {
+    dispatch: { id: dispatchId, subscriptionId },
+    delivery: { id: `${dispatchId}:${listenerId}`, dispatchId, listenerId }
+  };
+}
+
+function topologyFactPrimitive(value: unknown): string | number | boolean | null | undefined {
+  if (!isObject(value) || !("value" in value)) {
+    return undefined;
+  }
+  const primitive = value.value;
+  return primitive === null ||
+    typeof primitive === "string" ||
+    typeof primitive === "number" ||
+    typeof primitive === "boolean"
+    ? primitive
+    : undefined;
+}
+
+function updateTopologyShadow(
+  kind: CaptureKind,
+  payload: CapturePayload,
+  topology: TopologyObservation,
+  state: InstrumentationState
+): void {
+  const sequence = topology.captureSequence;
+  putTopologyRecord(state, {
+    kind: "page",
+    id: state.pageEpoch,
+    pageEpoch: state.pageEpoch,
+    captureSequence: sequence
+  });
+
+  const clientId = topologyString(topology.client?.id);
+  const clientPayload = captureObject(payload.client);
+  const clientEvidence = captureObject(topology.client) ?? clientPayload ?? { id: clientId ?? "unknown" };
+  if (clientId) {
+    putTopologyRecord(state, {
+      kind: "client",
+      id: clientId,
+      parentId: state.pageEpoch,
+      pageEpoch: state.pageEpoch,
+      captureSequence: sequence,
+      values: { client: clientEvidence }
+    });
+    const sessionId = topologyFactString(topology.client?.sessionId);
+    const clientStatus = nonEmptyString(clientPayload?.status);
+    const sessionAbsent =
+      clientStatus?.startsWith("DISCONNECTED") === true || clientPayload?.sessionId === null;
+    if (sessionAbsent) {
+      retireClientSessionTopology(state, clientId, sequence);
+    } else if (sessionId) {
+      for (const [key, record] of state.topologyRecords) {
+        if (record.kind === "session" && record.clientId === clientId) {
+          state.topologyRecords.delete(key);
+        }
+      }
+      putTopologyRecord(state, {
+        kind: "session",
+        id: `session:${clientId}:${sessionId}`,
+        parentId: clientId,
+        clientId,
+        pageEpoch: state.pageEpoch,
+        captureSequence: sequence,
+        values: {
+          client: clientEvidence,
+          sessionId: topology.client?.sessionId ?? { state: "real", value: sessionId }
+        }
+      });
+    }
+  }
+
+  const subscriptionId = topologyString(topology.subscription?.id);
+  if (!subscriptionId) {
+    return;
+  }
+  if (kind === "subscription-ended" || kind === "subscription-error") {
+    deleteSubscriptionTopology(state, subscriptionId);
+    return;
+  }
+  if (!clientId) {
+    return;
+  }
+
+  const recordKey = topologyRecordKey("subscription", subscriptionId);
+  const previous = state.topologyRecords.get(recordKey);
+  const subscriptionPayload = captureObject(payload.subscription);
+  const subscriptionEvidence = captureObject(topology.subscription) ??
+    subscriptionPayload ?? { id: subscriptionId };
+  const raw = captureObject(payload.raw);
+  const activeEvidence = [
+    "subscription-started",
+    "subscription-frequency",
+    "listener-added",
+    "item-update"
+  ].includes(kind);
+  const clientActive =
+    activeEvidence
+      ? true
+      : typeof subscriptionPayload?.active === "boolean"
+      ? subscriptionPayload.active
+      : previous?.clientActive ?? false;
+  const establishmentEvidence =
+    raw?.callback === "onSubscription" ||
+    ["subscription-frequency", "item-update", "end-of-snapshot", "lost-updates", "clear-snapshot"].includes(kind);
+  const serverEstablished =
+    establishmentEvidence
+      ? true
+      : typeof subscriptionPayload?.subscribed === "boolean"
+        ? subscriptionPayload.subscribed
+        : previous?.serverEstablished ?? false;
+  putTopologyRecord(state, {
+    kind: "subscription",
+    id: subscriptionId,
+    parentId: clientId,
+    clientId,
+    subscriptionId,
+    pageEpoch: state.pageEpoch,
+    captureSequence: sequence,
+    clientActive,
+    serverEstablished,
+    values: {
+      client: clientEvidence,
+      subscription: subscriptionEvidence,
+      ...(topology.values ? { facts: topology.values } : {})
+    }
+  });
+
+  updateEstablishmentRecord(state, subscriptionId, serverEstablished, sequence);
+
+  updateListenerAttachmentRecord(kind, payload, topology, subscriptionId, state);
+  updateItemAndCounterRecords(kind, payload, topology, subscriptionId, state);
+  updateAggregateRecord(subscriptionId, sequence, state);
+}
+
+function retireClientSessionTopology(
+  state: InstrumentationState,
+  clientId: string,
+  sequence: number
+): void {
+  const subscriptions: string[] = [];
+  for (const [key, record] of state.topologyRecords) {
+    if (record.kind === "session" && record.clientId === clientId) {
+      state.topologyRecords.delete(key);
+    } else if (record.kind === "subscription" && record.clientId === clientId) {
+      subscriptions.push(record.id);
+      state.topologyRecords.set(key, {
+        ...record,
+        captureSequence: sequence,
+        serverEstablished: false
+      });
+    }
+  }
+  for (const subscriptionId of subscriptions) {
+    updateEstablishmentRecord(state, subscriptionId, false, sequence);
+  }
+}
+
+function updateEstablishmentRecord(
+  state: InstrumentationState,
+  subscriptionId: string,
+  established: boolean,
+  sequence: number
+): void {
+  const current = Array.from(state.topologyRecords.entries()).find(
+    ([, record]) => record.kind === "establishment" && record.subscriptionId === subscriptionId
+  );
+  if (!established) {
+    if (current) {
+      state.topologyRecords.delete(current[0]);
+    }
+    return;
+  }
+  if (current) {
+    state.topologyRecords.set(current[0], {
+      ...current[1],
+      captureSequence: sequence,
+      values: { established: true }
+    });
+    return;
+  }
+  const epoch = (state.topologyEstablishmentEpochs.get(subscriptionId) ?? 0) + 1;
+  state.topologyEstablishmentEpochs.set(subscriptionId, epoch);
+  putTopologyRecord(state, {
+    kind: "establishment",
+    id: `establishment:${subscriptionId}:${epoch}`,
+    parentId: subscriptionId,
+    subscriptionId,
+    pageEpoch: state.pageEpoch,
+    captureSequence: sequence,
+    values: { established: true, epoch }
+  });
+}
+
+function updateListenerAttachmentRecord(
+  kind: CaptureKind,
+  payload: CapturePayload,
+  topology: TopologyObservation,
+  subscriptionId: string,
+  state: InstrumentationState
+): void {
+  const attachmentId = topologyString(topology.listenerAttachment?.id);
+  if (!attachmentId || (kind !== "listener-added" && kind !== "listener-removed")) {
+    return;
+  }
+  if (kind === "listener-removed") {
+    state.topologyRecords.delete(topologyRecordKey("listener-attachment", attachmentId));
+    synchronizeAttachmentCounts(state, subscriptionId, topology.captureSequence);
+    return;
+  }
+  const listenerPayload = captureObject(payload.listener);
+  const clientPayload = captureObject(payload.client);
+  const subscriptionPayload = captureObject(payload.subscription);
+  const listenerId = topologyString(topology.listener?.id);
+  for (const [recordKey, record] of state.topologyRecords) {
+    if (
+      record.kind === "listener-attachment" &&
+      record.subscriptionId === subscriptionId &&
+      record.id !== attachmentId &&
+      record.values?.listenerId === listenerId
+    ) {
+      state.topologyRecords.delete(recordKey);
+    }
+  }
+  const listenerCount = countListenerAttachments(state, subscriptionId) +
+    (state.topologyRecords.has(topologyRecordKey("listener-attachment", attachmentId)) ? 0 : 1);
+  putTopologyRecord(state, {
+    kind: "listener-attachment",
+    id: attachmentId,
+    parentId: subscriptionId,
+    subscriptionId,
+    pageEpoch: state.pageEpoch,
+    captureSequence: topology.captureSequence,
+    values: compactJsonObject({
+      listenerId,
+      callbacks: listenerPayload?.callbacks,
+      registrationCount: listenerPayload?.registrationCount,
+      listenerCount,
+      active: true,
+      client: clientPayload,
+      subscription: subscriptionPayload,
+      listener: listenerPayload
+    })
+  });
+  synchronizeAttachmentCounts(state, subscriptionId, topology.captureSequence);
+}
+
+function synchronizeAttachmentCounts(
+  state: InstrumentationState,
+  subscriptionId: string,
+  sequence: number
+): void {
+  const listenerCount = countListenerAttachments(state, subscriptionId);
+  for (const [key, record] of state.topologyRecords) {
+    if (record.kind !== "listener-attachment" || record.subscriptionId !== subscriptionId) {
+      continue;
+    }
+    state.topologyRecords.set(key, {
+      ...record,
+      captureSequence: sequence,
+      values: { ...record.values, listenerCount }
+    });
+  }
+}
+
+function updateItemAndCounterRecords(
+  kind: CaptureKind,
+  payload: CapturePayload,
+  topology: TopologyObservation,
+  subscriptionId: string,
+  state: InstrumentationState
+): void {
+  const itemPayload = captureObject(payload.item);
+  const clientPayload = captureObject(payload.client);
+  const subscriptionPayload = captureObject(payload.subscription);
+  const updatePayload = captureObject(payload.update);
+  const itemIdentity = itemTopologyIdentity(subscriptionId, itemPayload);
+  if (itemIdentity && ["item-update", "end-of-snapshot", "lost-updates", "clear-snapshot"].includes(kind)) {
+    putTopologyRecord(state, {
+      kind: "item",
+      id: itemIdentity,
+      parentId: subscriptionId,
+      subscriptionId,
+      pageEpoch: state.pageEpoch,
+      captureSequence: topology.captureSequence,
+      values: compactJsonObject({
+        captureKind: kind,
+        client: clientPayload,
+        subscription: subscriptionPayload,
+        item: itemPayload,
+        update: updatePayload
+      })
+    });
+  }
+
+  const counters = state.topologyCounters.get(subscriptionId) ?? { updateCount: 0, lostUpdates: 0 };
+  if (kind === "item-update" && topology.kind !== "second-level-observed") {
+    const dispatchId = topologyString(topology.dispatch?.id);
+    if (!dispatchId || !state.topologyObservedDispatches.has(dispatchId)) {
+      counters.updateCount += 1;
+      if (dispatchId) {
+        state.topologyObservedDispatches.add(dispatchId);
+        while (state.topologyObservedDispatches.size > TOPOLOGY_SYNC_LIMITS.maxBufferedLive) {
+          state.topologyObservedDispatches.delete(
+            state.topologyObservedDispatches.values().next().value as string
+          );
+        }
+      }
+    }
+  } else if (kind === "lost-updates") {
+    const update = captureObject(payload.update);
+    const listener = captureObject(payload.listener);
+    if (listener?.metricOwner !== false) {
+      counters.lostUpdates +=
+        typeof update?.lostUpdates === "number" && Number.isFinite(update.lostUpdates)
+          ? update.lostUpdates
+          : 0;
+    }
+  }
+  state.topologyCounters.set(subscriptionId, counters);
+
+  updateInferredSecondLevelRecord(kind, payload, topology, subscriptionId, state);
+
+  if (kind !== "item-update" || topology.kind === "second-level-observed" || !itemIdentity) {
+    return;
+  }
+  const update = updatePayload;
+  const fields = captureObject(update?.fields);
+  const command = normalizedString(update?.command ?? fields?.command);
+  const key = nonEmptyString(update?.key ?? fields?.key);
+  if (!command || !key || !["ADD", "UPDATE", "DELETE"].includes(command)) {
+    return;
+  }
+  const generationKey = commandGenerationKey(subscriptionId, itemIdentity, key);
+  const currentGenerationId = state.topologyCommandGenerations.get(generationKey);
+  if (command === "DELETE") {
+    if (currentGenerationId) {
+      retireCommandGeneration(state, generationKey, currentGenerationId);
+    }
+    return;
+  }
+  const dispatchId = topologyString(topology.dispatch?.id);
+  let generationId = currentGenerationId;
+  const currentRecord = generationId
+    ? state.topologyRecords.get(topologyRecordKey("command-generation", generationId))
+    : undefined;
+  if (
+    !generationId ||
+    (command === "ADD" && currentRecord?.values?.dispatchId !== dispatchId)
+  ) {
+    if (generationId) {
+      retireCommandGeneration(state, generationKey, generationId);
+    }
+    const epoch = (state.topologyCommandEpochs.get(generationKey) ?? 0) + 1;
+    state.topologyCommandEpochs.set(generationKey, epoch);
+    generationId = `command-generation:${subscriptionId}:${itemIdentity}:${key}:${epoch}`;
+    state.topologyCommandGenerations.set(generationKey, generationId);
+  }
+  putTopologyRecord(state, {
+    kind: "command-generation",
+    id: generationId,
+    parentId: subscriptionId,
+    subscriptionId,
+    pageEpoch: state.pageEpoch,
+    captureSequence: topology.captureSequence,
+    values: compactJsonObject({
+      itemId: itemIdentity,
+      key,
+      command,
+      dispatchId,
+      client: clientPayload,
+      subscription: subscriptionPayload,
+      item: itemPayload,
+      update: updatePayload
+    })
+  });
+}
+
+function commandGenerationKey(subscriptionId: string, itemId: string, key: string): string {
+  return `${subscriptionId}\u0000${itemId}\u0000${key}`;
+}
+
+function retireCommandGeneration(
+  state: InstrumentationState,
+  generationKey: string,
+  generationId: string
+): void {
+  state.topologyRecords.delete(topologyRecordKey("command-generation", generationId));
+  for (const [recordKey, record] of state.topologyRecords) {
+    if (record.kind === "inferred-child" && record.parentId === generationId) {
+      state.topologyRecords.delete(recordKey);
+    }
+  }
+  state.topologyCommandGenerations.delete(generationKey);
+}
+
+function updateInferredSecondLevelRecord(
+  kind: CaptureKind,
+  payload: CapturePayload,
+  topology: TopologyObservation,
+  subscriptionId: string,
+  state: InstrumentationState
+): void {
+  const raw = captureObject(payload.raw);
+  const callback = nonEmptyString(raw?.callback);
+  if (
+    callback !== "onCommandSecondLevelItemLostUpdates" &&
+    callback !== "onCommandSecondLevelSubscriptionError"
+  ) {
+    return;
+  }
+  const args = Array.isArray(raw?.args) ? raw.args : [];
+  const key = nonEmptyString(
+    callback === "onCommandSecondLevelItemLostUpdates" ? args[1] : args[2]
+  );
+  if (!key) {
+    return;
+  }
+  const generationEntry = Array.from(state.topologyCommandGenerations.entries()).find(
+    ([generationKey]) =>
+      generationKey.startsWith(`${subscriptionId}\u0000`) && generationKey.endsWith(`\u0000${key}`)
+  );
+  if (!generationEntry) {
+    return;
+  }
+  const generationId = generationEntry[1];
+  putTopologyRecord(state, {
+    kind: "inferred-child",
+    id: `inferred-child:${generationId}:${callback}`,
+    parentId: generationId,
+    subscriptionId,
+    pageEpoch: state.pageEpoch,
+    captureSequence: topology.captureSequence,
+    values: compactJsonObject({
+      generationId,
+      key,
+      captureKind: kind,
+      callback,
+      label:
+        callback === "onCommandSecondLevelItemLostUpdates"
+          ? "Second-level lost updates"
+          : "Second-level subscription error",
+      provenance: "inferred-second-level",
+      client: payload.client,
+      subscription: payload.subscription,
+      update: payload.update
+    })
+  });
+}
+
+function updateAggregateRecord(
+  subscriptionId: string,
+  sequence: number,
+  state: InstrumentationState
+): void {
+  const counters = state.topologyCounters.get(subscriptionId) ?? { updateCount: 0, lostUpdates: 0 };
+  putTopologyRecord(state, {
+    kind: "aggregate",
+    id: `aggregate:${subscriptionId}`,
+    parentId: subscriptionId,
+    subscriptionId,
+    pageEpoch: state.pageEpoch,
+    captureSequence: sequence,
+    values: {
+      listenerCount: countListenerAttachments(state, subscriptionId),
+      updateCount: counters.updateCount,
+      lostUpdates: counters.lostUpdates
+    }
+  });
+}
+
+function putTopologyRecord(state: InstrumentationState, record: TopologyAbsoluteRecord): void {
+  const key = topologyRecordKey(record.kind, record.id);
+  if (!state.topologyRecords.has(key) && state.topologyRecords.size >= TOPOLOGY_SYNC_LIMITS.maxRecords) {
+    state.topologyCoverage = "partial";
+    return;
+  }
+  state.topologyRecords.set(key, record);
+}
+
+function deleteSubscriptionTopology(state: InstrumentationState, subscriptionId: string): void {
+  for (const [key, record] of state.topologyRecords) {
+    if (record.id === subscriptionId || record.subscriptionId === subscriptionId) {
+      state.topologyRecords.delete(key);
+    }
+  }
+  state.topologyCounters.delete(subscriptionId);
+  for (const [generationKey, generationId] of state.topologyCommandGenerations) {
+    if (generationKey.startsWith(`${subscriptionId}\u0000`)) {
+      retireCommandGeneration(state, generationKey, generationId);
+    }
+  }
+}
+
+function countListenerAttachments(state: InstrumentationState, subscriptionId: string): number {
+  let count = 0;
+  for (const record of state.topologyRecords.values()) {
+    if (record.kind === "listener-attachment" && record.subscriptionId === subscriptionId) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function itemTopologyIdentity(subscriptionId: string, item: CapturePayload | null): string | null {
+  if (!item) {
+    return null;
+  }
+  const position = typeof item.position === "number" && Number.isSafeInteger(item.position)
+    ? String(item.position)
+    : null;
+  const name = nonEmptyString(item.name);
+  return position || name ? `item:${subscriptionId}:${position ?? name}` : null;
+}
+
+function topologyRecordKey(kind: TopologyAbsoluteRecord["kind"], id: string): string {
+  return `${kind}:${id}`;
+}
+
+function topologyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function topologyFactString(value: unknown): string | null {
+  const primitive = topologyFactPrimitive(value);
+  return typeof primitive === "string" && primitive.trim() ? primitive : null;
+}
+
 
 function activatePrimaryInstrumentation(host: LightstreamerHost): void {
   if (host.__LSEW_PRIMARY_ACTIVE__) {
@@ -417,24 +1467,41 @@ function installNamespaceHook(
     return namespaceInstalled;
   };
 
-  let installed = hookNamespace(host.Lightstreamer);
-
   try {
-    let current = host.Lightstreamer;
+    const locatedDescriptor = findPropertyDescriptor(host, "Lightstreamer");
+    if (locatedDescriptor && locatedDescriptor.owner !== host) {
+      return false;
+    }
+    const descriptor = locatedDescriptor?.descriptor;
+    if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      return false;
+    }
+    if (descriptor?.writable === false) {
+      return false;
+    }
+    const current = host.Lightstreamer;
+    if (isObject(current)) {
+      return hookNamespace(current);
+    }
+    if (current !== undefined || descriptor?.configurable === false) {
+      return false;
+    }
+
+    let assignedNamespace: LightstreamerHost["Lightstreamer"];
     Object.defineProperty(host, "Lightstreamer", {
       configurable: true,
-      enumerable: true,
+      enumerable: descriptor?.enumerable ?? true,
       get() {
-        return current;
+        return assignedNamespace;
       },
       set(value) {
-        current = value;
-        hookNamespace(current);
+        assignedNamespace = value;
+        hookNamespace(assignedNamespace);
       }
     });
     return true;
   } catch (_error) {
-    return installed;
+    return false;
   }
 }
 
@@ -443,27 +1510,74 @@ function installConstructorHook<K extends "LightstreamerClient" | "Subscription"
   property: K,
   wrap: (constructor: NonNullable<LightstreamerHost[K]>) => NonNullable<LightstreamerHost[K]>
 ): boolean {
-  if (typeof host[property] === "function") {
-    host[property] = wrap(host[property] as NonNullable<LightstreamerHost[K]>);
-    return true;
-  }
-
   try {
-    let current = host[property];
+    const locatedDescriptor = findPropertyDescriptor(host, property);
+    if (locatedDescriptor && locatedDescriptor.owner !== host) {
+      return false;
+    }
+    const descriptor = locatedDescriptor?.descriptor;
+    if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      return false;
+    }
+    const current = host[property];
+    if (typeof current === "function") {
+      if (descriptor?.writable === false) {
+        return false;
+      }
+      return Reflect.set(
+        host,
+        property,
+        wrap(current as NonNullable<LightstreamerHost[K]>)
+      );
+    }
+    if (
+      current !== undefined ||
+      descriptor?.configurable === false ||
+      descriptor?.writable === false
+    ) {
+      return false;
+    }
+
+    let assigned = current;
     Object.defineProperty(host, property, {
       configurable: true,
-      enumerable: true,
+      enumerable: descriptor?.enumerable ?? true,
       get() {
-        return current;
+        return assigned;
       },
       set(value) {
-        current = typeof value === "function" ? wrap(value as NonNullable<LightstreamerHost[K]>) : value;
+        if (typeof value !== "function") {
+          assigned = value;
+          return;
+        }
+        try {
+          assigned = wrap(value as NonNullable<LightstreamerHost[K]>);
+        } catch (_error) {
+          assigned = value;
+        }
       }
     });
     return true;
   } catch (_error) {
     return false;
   }
+}
+
+function findPropertyDescriptor(
+  target: object,
+  property: PropertyKey
+): { owner: object; descriptor: PropertyDescriptor } | undefined {
+  for (
+    let current: object | null = target;
+    current !== null;
+    current = Object.getPrototypeOf(current)
+  ) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, property);
+    if (descriptor) {
+      return { owner: current, descriptor };
+    }
+  }
+  return undefined;
 }
 
 function installWebSocketFallback(host: LightstreamerHost, state: InstrumentationState): boolean {
@@ -505,6 +1619,7 @@ function installWireCaptureForSocket(
     socket,
     clientId: state.clientIds.getId(socket),
     url,
+    status: "CONNECTING",
     sessionId: null,
     adapterSet: null,
     subscriptions: new Map<string, WireSubscriptionState>()
@@ -513,7 +1628,11 @@ function installWireCaptureForSocket(
   state.emit("client-created", {
     client: {
       id: wire.clientId,
-      serverAddress: url
+      serverAddress: url,
+      status: "CONNECTING",
+      transport: "websocket",
+      instrumentationSource: "websocket-tlcp",
+      coverageStatus: "limited"
     },
     raw: wireRaw({
       frameDirection: "constructor",
@@ -547,6 +1666,7 @@ function handleWireClose(
   wire: WireConnectionState,
   state: InstrumentationState
 ): void {
+  wire.status = "DISCONNECTED";
   for (const subscription of wire.subscriptions.values()) {
     if (subscription.ended) {
       continue;
@@ -566,6 +1686,15 @@ function handleWireClose(
     });
   }
   wire.subscriptions.clear();
+  state.emit("client-status", {
+    client: wireClientPayload(wire),
+    raw: wireRaw({
+      frameDirection: "close",
+      code: event.code,
+      reason: event.reason,
+      wasClean: event.wasClean
+    })
+  });
 }
 
 function wrapWireSend(
@@ -691,12 +1820,9 @@ function handleWireConok(
 ): void {
   const parts = line.split(",");
   wire.sessionId = parts[1] ?? wire.sessionId;
+  wire.status = "CONNECTED:WS-STREAMING";
   state.emit("client-status", {
-    client: {
-      id: wire.clientId,
-      status: "CONNECTED:WS-STREAMING",
-      adapterSet: wire.adapterSet
-    },
+    client: wireClientPayload(wire),
     raw: wireRaw({
       frameDirection: "inbound",
       frameTag: "CONOK",
@@ -1109,7 +2235,12 @@ function wireClientPayload(wire: WireConnectionState): CapturePayload {
   return compactJsonObject({
     id: wire.clientId,
     serverAddress: wire.url,
-    adapterSet: wire.adapterSet
+    adapterSet: wire.adapterSet,
+    status: wire.status,
+    sessionId: wire.sessionId,
+    transport: "websocket",
+    instrumentationSource: "websocket-tlcp",
+    coverageStatus: "limited"
   });
 }
 
@@ -1288,19 +2419,21 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
 
   wrapMethod(client, "connect", function afterConnect(target) {
     state.emit("client-status", {
-      client: {
-        id: state.clientIds.getId(target),
+      client: compactJsonObject({
+        ...clientPayload(target, state),
         status: readGetter(target, "getStatus") ?? "connect-called"
-      }
+      }),
+      raw: { callback: "connect" }
     });
   });
 
   wrapMethod(client, "disconnect", function afterDisconnect(target) {
     state.emit("client-status", {
-      client: {
-        id: state.clientIds.getId(target),
+      client: compactJsonObject({
+        ...clientPayload(target, state),
         status: readGetter(target, "getStatus") ?? "disconnect-called"
-      }
+      }),
+      raw: { callback: "disconnect" }
     });
   });
 
@@ -1350,9 +2483,12 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
   wrapMethod(client, "unsubscribe", function afterUnsubscribe(target, args) {
     const subscription = args[0];
     state.emit("subscription-ended", {
-      client: { id: state.clientIds.getId(target) },
+      client: clientPayload(target, state),
       subscription: isObject(subscription)
-        ? { id: state.subscriptionIds.getId(subscription) }
+        ? {
+            id: state.subscriptionIds.getId(subscription),
+            ...readSubscriptionMetadata(subscription as LightstreamerSubscriptionLike)
+          }
         : { id: "unknown" }
     });
   });
@@ -1364,7 +2500,7 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
     }
     wrapClientListener(target, listener as LightstreamerListenerLike, state);
     state.emit("listener-added", {
-      client: { id: state.clientIds.getId(target) },
+      client: clientPayload(target, state),
       listener: { id: state.listenerIds.getId(listener) }
     });
   });
@@ -1372,7 +2508,7 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
   wrapMethod(client, "removeListener", function afterRemoveListener(target, args) {
     const listener = args[0];
     state.emit("listener-removed", {
-      client: { id: state.clientIds.getId(target) },
+      client: clientPayload(target, state),
       listener: isObject(listener) ? { id: state.listenerIds.getId(listener) } : { id: "unknown" }
     });
   });
@@ -1402,11 +2538,29 @@ function wrapClientListener(
 
   wrapCallback(listener, "onStatusChange", function beforeStatusChange(args) {
     state.emit("client-status", {
-      client: {
-        id: state.clientIds.getId(client),
+      client: compactJsonObject({
+        ...clientPayload(client, state),
         status: toJsonValue(args[0])
-      },
-      listener: { id: state.listenerIds.getId(listener) }
+      }),
+      listener: { id: state.listenerIds.getId(listener) },
+      raw: {
+        callback: "onStatusChange",
+        args: args.map((entry) => toJsonValue(entry))
+      }
+    });
+  });
+
+  wrapCallback(listener, "onPropertyChange", function beforePropertyChange(args) {
+    state.emit("client-status", {
+      // Read every public value synchronously inside the notification. Lightstreamer
+      // settings are asynchronous and a later read can observe a different value.
+      client: clientPayload(client, state),
+      listener: { id: state.listenerIds.getId(listener) },
+      raw: {
+        callback: "onPropertyChange",
+        property: toJsonValue(args[0]),
+        args: args.map((entry) => toJsonValue(entry))
+      }
     });
   });
 }
@@ -1424,18 +2578,35 @@ function wrapSubscriptionListenerMethods(
       }
 
       const actualSubscription = isObject(this) ? this : subscription;
-      const proxy = getOrCreateSubscriptionListenerProxy(
-        actualSubscription,
-        listener as LightstreamerListenerLike,
-        state
-      );
-      const result = originalAddListener.apply(this, [proxy, ...args.slice(1)]);
+      let forwardedListener: unknown = listener;
+      try {
+        forwardedListener = getOrCreateSubscriptionListenerProxy(
+          actualSubscription,
+          listener as LightstreamerListenerLike,
+          state
+        );
+      } catch (_error) {
+        // Proxy creation is optional; the original listener stays authoritative.
+      }
+      const result = originalAddListener.apply(this, [forwardedListener, ...args.slice(1)]);
 
-      registerReinjectionTarget(actualSubscription, listener as LightstreamerListenerLike, state);
-      state.emit("listener-added", {
-        subscription: { id: state.subscriptionIds.getId(actualSubscription) },
-        listener: { id: state.listenerIds.getId(listener) }
-      });
+      try {
+        const effective = isSubscriptionListenerEffective(
+          actualSubscription,
+          listener,
+          forwardedListener
+        );
+        if (effective !== false) {
+          acknowledgeSubscriptionListenerLifecycle(
+            actualSubscription,
+            listener as LightstreamerListenerLike,
+            "start",
+            state
+          );
+        }
+      } catch (_error) {
+        // Post-registration capture cannot replace the page-owned return.
+      }
 
       return result;
     };
@@ -1446,24 +2617,60 @@ function wrapSubscriptionListenerMethods(
     subscription.removeListener = function wrappedSubscriptionRemoveListener(this: object, ...args: unknown[]) {
       const listener = args[0];
       const actualSubscription = isObject(this) ? this : subscription;
-      const proxy = isObject(listener)
-        ? getSubscriptionListenerProxy(actualSubscription, listener as LightstreamerListenerLike, state)
-        : null;
+      let proxy: LightstreamerListenerLike | null = null;
+      try {
+        proxy = isObject(listener)
+          ? getSubscriptionListenerProxy(actualSubscription, listener as LightstreamerListenerLike, state)
+          : null;
+      } catch (_error) {
+        // Removal falls back to the page-provided listener identity.
+      }
       const result = originalRemoveListener.apply(this, [
         proxy ?? listener,
         ...args.slice(1)
       ]);
 
-      if (isObject(listener)) {
-        unregisterReinjectionTarget(actualSubscription, listener, state);
-        deleteSubscriptionListenerProxy(actualSubscription, listener, state);
+      try {
+        if (isObject(listener)) {
+          const effective = isSubscriptionListenerEffective(
+            actualSubscription,
+            listener,
+            proxy ?? listener
+          );
+          if (effective !== true) {
+            acknowledgeSubscriptionListenerLifecycle(
+              actualSubscription,
+              listener as LightstreamerListenerLike,
+              "end",
+              state
+            );
+          }
+        }
+      } catch (_error) {
+        // Post-removal capture cannot replace the page-owned return.
       }
-      state.emit("listener-removed", {
-        subscription: { id: state.subscriptionIds.getId(actualSubscription) },
-        listener: isObject(listener) ? { id: state.listenerIds.getId(listener) } : { id: "unknown" }
-      });
 
       return result;
+    };
+  }
+
+  const originalGetListeners = subscription.getListeners;
+  if (typeof originalGetListeners === "function") {
+    subscription.getListeners = function wrappedSubscriptionGetListeners(
+      this: object,
+      ...args: unknown[]
+    ) {
+      const result = Reflect.apply(
+        originalGetListeners as unknown as (...getListenerArgs: unknown[]) => unknown,
+        this,
+        args
+      );
+      if (!Array.isArray(result)) {
+        return result;
+      }
+      return result.map((entry) =>
+        isObject(entry) ? state.listenerProxyOriginals.get(entry) ?? entry : entry
+      );
     };
   }
 }
@@ -1495,6 +2702,28 @@ function getOrCreateSubscriptionListenerProxy(
   const capturedCallbacks = new Map<PropertyKey, (...args: unknown[]) => unknown>();
   const proxy = new Proxy(listener, {
     get(target, property, receiver) {
+      if (property === "onListenStart" || property === "onListenEnd") {
+        const existingCallback = capturedCallbacks.get(property);
+        if (existingCallback) {
+          return existingCallback;
+        }
+        const wrappedLifecycleCallback = (...args: unknown[]) => {
+          try {
+            acknowledgeSubscriptionListenerLifecycle(
+              subscription,
+              listener,
+              property === "onListenStart" ? "start" : "end",
+              state
+            );
+          } catch (_error) {
+            // Lifecycle evidence is best-effort and cannot replace the page callback.
+          }
+          const callback = target[property];
+          return typeof callback === "function" ? callback.apply(listener, args) : undefined;
+        };
+        capturedCallbacks.set(property, wrappedLifecycleCallback);
+        return wrappedLifecycleCallback;
+      }
       if (typeof property === "string" && isCapturedSubscriptionCallback(property)) {
         const callback = target[property];
         if (typeof callback !== "function") {
@@ -1507,7 +2736,11 @@ function getOrCreateSubscriptionListenerProxy(
         }
 
         const wrappedCallback = (...args: unknown[]) => {
-          emitSubscriptionListenerCallback(subscription, listener, property, args, state);
+          try {
+            emitSubscriptionListenerCallback(subscription, listener, property, args, state);
+          } catch (_error) {
+            // Capture extraction cannot suppress or replace the page callback.
+          }
           return callback.apply(listener, args);
         };
         capturedCallbacks.set(property, wrappedCallback);
@@ -1519,6 +2752,7 @@ function getOrCreateSubscriptionListenerProxy(
   });
 
   proxies.set(listener, proxy);
+  state.listenerProxyOriginals.set(proxy, listener);
   return proxy;
 }
 
@@ -1549,8 +2783,11 @@ function emitSubscriptionListenerCallback(
   if (!kind) {
     return;
   }
-  const itemPayload = kind === "item-update" ? readItemUpdatePayload(args[0]) : {};
-  const itemRaw = isObject(itemPayload.raw) ? itemPayload.raw : {};
+  const callbackPayload =
+    callback === "onItemUpdate"
+      ? readItemUpdatePayload(args[0])
+      : readSubscriptionCallbackPayload(callback, args);
+  const itemRaw = isObject(callbackPayload.raw) ? callbackPayload.raw : {};
   const subscriptionMetadataErrors: string[] = [];
   const subscriptionMetadata = readSubscriptionMetadata(
     subscription as LightstreamerSubscriptionLike,
@@ -1558,18 +2795,38 @@ function emitSubscriptionListenerCallback(
     subscriptionMetadataErrors
   );
 
+  const frequencyMetadata =
+    callback === "onRealMaxFrequency"
+      ? { realMaxFrequency: toJsonValue(args[0]) }
+      : {};
+
   state.emit(kind, compactJsonObject({
     client: readSubscriptionClient(subscription, state),
     subscription: {
       id: state.subscriptionIds.getId(subscription),
-      ...subscriptionMetadata
+      ...subscriptionMetadata,
+      ...frequencyMetadata
     },
-    listener: { id: state.listenerIds.getId(listener) },
-    ...itemPayload,
+    listener: subscriptionListenerPayload(subscription, listener, state),
+    ...callbackPayload,
     raw: {
       ...itemRaw,
       callback,
-      args: kind === "item-update" ? ["[ItemUpdate]"] : args.map((entry) => toJsonValue(entry)),
+      logicalEventId:
+        callback === "onItemUpdate" && isObject(args[0])
+          ? state.updateIds.getId(args[0])
+          : undefined,
+      targetAvailable: state.localInjectionTargets.hasTarget(
+        state.subscriptionIds.getId(subscription)
+      ),
+      args:
+        callback === "onItemUpdate"
+          ? ["[ItemUpdate]"]
+          : callback === "onSubscriptionError"
+            ? args.map((entry, index) => index === 0 ? toJsonValue(entry) : "[redacted]")
+            : callback === "onCommandSecondLevelSubscriptionError"
+              ? args.map((entry, index) => index === 1 ? "[redacted]" : toJsonValue(entry))
+            : args.map((entry) => toJsonValue(entry)),
       ...(subscriptionMetadataErrors.length > 0 ? { subscriptionMetadataErrors } : {})
     }
   }));
@@ -1593,12 +2850,134 @@ function registerReinjectionTarget(
 
   const subscriptionId = state.subscriptionIds.getId(subscription);
   const listenerId = state.listenerIds.getId(listener);
-  state.listenerTargets.set(targetKey(subscriptionId, listenerId), {
-    subscriptionId,
+  state.localInjectionTargets.register(subscriptionId, {
     listenerId,
     fieldNames: readSubscriptionFieldNames(subscription),
-    callback
+    deliver: callback
   });
+}
+
+function registerSubscriptionListener(
+  subscription: object,
+  listener: LightstreamerListenerLike,
+  state: InstrumentationState
+): boolean {
+  const subscriptionId = state.subscriptionIds.getId(subscription);
+  const listenerId = state.listenerIds.getId(listener);
+  const key = targetKey(subscriptionId, listenerId);
+  const existing = state.listenerRegistrations.get(key);
+  if (existing?.active) {
+    existing.callbacks = subscriptionListenerCallbacks(listener);
+    return false;
+  }
+  state.listenerRegistrations.set(key, {
+    addCount: (existing?.addCount ?? 0) + 1,
+    active: true,
+    callbacks: subscriptionListenerCallbacks(listener)
+  });
+  const listenerIds = state.subscriptionListenerIds.get(subscriptionId) ?? new Set<string>();
+  listenerIds.add(listenerId);
+  state.subscriptionListenerIds.set(subscriptionId, listenerIds);
+  return true;
+}
+
+function unregisterSubscriptionListener(
+  subscription: object,
+  listener: object,
+  state: InstrumentationState
+): boolean {
+  const subscriptionId = state.subscriptionIds.getId(subscription);
+  const listenerId = state.listenerIds.getId(listener);
+  const key = targetKey(subscriptionId, listenerId);
+  const registration = state.listenerRegistrations.get(key);
+  if (!registration?.active) {
+    return false;
+  }
+  registration.active = false;
+  const listenerIds = state.subscriptionListenerIds.get(subscriptionId);
+  listenerIds?.delete(listenerId);
+  if (listenerIds?.size === 0) {
+    state.subscriptionListenerIds.delete(subscriptionId);
+  }
+  return true;
+}
+
+function acknowledgeSubscriptionListenerLifecycle(
+  subscription: object,
+  listener: LightstreamerListenerLike,
+  lifecycle: "start" | "end",
+  state: InstrumentationState
+): void {
+  const transitioned = lifecycle === "start"
+    ? registerSubscriptionListener(subscription, listener, state)
+    : unregisterSubscriptionListener(subscription, listener, state);
+  if (!transitioned) {
+    return;
+  }
+  if (lifecycle === "start") {
+    registerReinjectionTarget(subscription, listener, state);
+  } else {
+    unregisterReinjectionTarget(subscription, listener, state);
+    deleteSubscriptionListenerProxy(subscription, listener, state);
+  }
+  const subscriptionId = state.subscriptionIds.getId(subscription);
+  state.emit(lifecycle === "start" ? "listener-added" : "listener-removed", compactJsonObject({
+    client: readSubscriptionClient(subscription, state),
+    subscription: {
+      id: subscriptionId,
+      ...readSubscriptionMetadata(subscription as LightstreamerSubscriptionLike)
+    },
+    listener: subscriptionListenerPayload(subscription, listener, state),
+    raw: {
+      targetAvailable: state.localInjectionTargets.hasTarget(subscriptionId)
+    }
+  }));
+}
+
+function isSubscriptionListenerEffective(
+  subscription: object,
+  listener: object,
+  forwardedListener: unknown
+): boolean | undefined {
+  const getListeners = (subscription as LightstreamerSubscriptionLike).getListeners;
+  if (typeof getListeners !== "function") {
+    return undefined;
+  }
+  try {
+    const listeners = Reflect.apply(getListeners, subscription, []);
+    return Array.isArray(listeners)
+      ? listeners.some((entry) => entry === listener || entry === forwardedListener)
+      : undefined;
+  } catch (_error) {
+    return undefined;
+  }
+}
+
+function subscriptionListenerPayload(
+  subscription: object,
+  listener: LightstreamerListenerLike,
+  state: InstrumentationState
+): CapturePayload {
+  const subscriptionId = state.subscriptionIds.getId(subscription);
+  const listenerId = state.listenerIds.getId(listener);
+  const registration = state.listenerRegistrations.get(targetKey(subscriptionId, listenerId));
+  return compactJsonObject({
+    id: listenerId,
+    callbacks: registration?.callbacks ?? subscriptionListenerCallbacks(listener),
+    registrationCount: registration?.addCount ?? 1,
+    metricOwner: metricOwnerId(subscriptionId, state) === listenerId
+  });
+}
+
+function subscriptionListenerCallbacks(listener: LightstreamerListenerLike): string[] {
+  return CALLBACKS_TO_CAPTURE.filter((callback) => typeof listener[callback] === "function");
+}
+
+function metricOwnerId(
+  subscriptionId: string,
+  state: InstrumentationState
+): string | null {
+  return Array.from(state.subscriptionListenerIds.get(subscriptionId) ?? []).sort()[0] ?? null;
 }
 
 function readSubscriptionFieldNames(subscription: object): string[] {
@@ -1613,8 +2992,9 @@ function unregisterReinjectionTarget(
   listener: object,
   state: InstrumentationState
 ): void {
-  state.listenerTargets.delete(
-    targetKey(state.subscriptionIds.getId(subscription), state.listenerIds.getId(listener))
+  state.localInjectionTargets.unregister(
+    state.subscriptionIds.getId(subscription),
+    state.listenerIds.getId(listener)
   );
 }
 
@@ -1775,7 +3155,11 @@ function trackActiveSubscription(
     return;
   }
 
-  if (kind !== "subscription-started" && kind !== "item-update") {
+  if (
+    kind !== "subscription-started" &&
+    kind !== "subscription-frequency" &&
+    kind !== "item-update"
+  ) {
     return;
   }
 
@@ -1813,16 +3197,7 @@ function installCaptureSyncHandler(host: LightstreamerHost, state: Instrumentati
       return;
     }
 
-    for (const payload of state.activeSubscriptions.values()) {
-      const raw = captureObject(payload.raw);
-      state.emit("subscription-snapshot", {
-        ...payload,
-        raw: compactJsonObject({
-          ...raw,
-          captureSync: true
-        })
-      });
-    }
+    emitAbsoluteTopologyCheckpoint(host, state);
 
     for (const [subscriptionId, rows] of state.commandReplayRows.entries()) {
       const activeSubscription = state.activeSubscriptions.get(subscriptionId);
@@ -1830,10 +3205,153 @@ function installCaptureSyncHandler(host: LightstreamerHost, state: Instrumentati
         continue;
       }
       for (const row of Array.from(rows.values())) {
-        state.emit("item-update", commandReplayPayload(row, activeSubscription));
+        state.emitLegacy("item-update", commandReplayPayload(row, activeSubscription));
       }
     }
   });
+}
+
+function emitAbsoluteTopologyCheckpoint(host: LightstreamerHost, state: InstrumentationState): void {
+  try {
+    const cutoffCaptureSequence = state.captureSequence;
+    const records = Array.from(state.topologyRecords.values()).sort(topologyRecordSort);
+    const syncId = `sync:${state.pageEpoch}:${cutoffCaptureSequence}`;
+    const frames = packAbsoluteTopologyCheckpoint(
+      records,
+      syncId,
+      state.pageEpoch,
+      cutoffCaptureSequence,
+      aggregateTopologyCoverage(state),
+      state.topologyCoverage === "partial"
+    );
+    for (const frame of frames) {
+      host.postMessage?.(frame, "*");
+    }
+  } catch (_error) {
+    emitPartialTopologyCheckpoint(host, state, "serialization-failed");
+  }
+}
+
+function packAbsoluteTopologyCheckpoint(
+  records: readonly TopologyAbsoluteRecord[],
+  syncId: string,
+  pageEpoch: string,
+  cutoffCaptureSequence: number,
+  coverage: TopologyCoverage,
+  structuralPartial: boolean
+): TopologySyncFrame[] {
+  if (structuralPartial || records.length > TOPOLOGY_SYNC_LIMITS.maxRecords) {
+    return partialTopologyFrames(
+      syncId,
+      pageEpoch,
+      cutoffCaptureSequence,
+      "limit-exceeded",
+      coverage
+    );
+  }
+  const recordChunks: TopologyAbsoluteRecord[][] = [];
+  for (let offset = 0; offset < records.length; offset += 128) {
+    recordChunks.push(records.slice(offset, offset + 128));
+  }
+  const metadata = {
+    version: TOPOLOGY_SYNC_VERSION,
+    syncId,
+    pageEpoch,
+    cutoffCaptureSequence,
+    chunkCount: recordChunks.length,
+    recordCount: records.length,
+    coverage
+  };
+  const frames: TopologySyncFrame[] = [
+    { type: TOPOLOGY_SYNC_BEGIN, ...metadata },
+    ...recordChunks.map((chunk, chunkIndex) => ({
+      type: TOPOLOGY_SYNC_CHUNK,
+      ...metadata,
+      chunkIndex,
+      records: chunk
+    }) as TopologySyncFrame),
+    { type: TOPOLOGY_SYNC_COMPLETE, ...metadata }
+  ];
+  const totalBytes = frames.reduce((total, frame) => total + topologySyncUtf8Bytes(frame), 0);
+  if (
+    frames.length - 2 > TOPOLOGY_SYNC_LIMITS.maxChunks ||
+    totalBytes > TOPOLOGY_SYNC_LIMITS.maxStagedBytes ||
+    frames.some(
+      (frame) => !isTopologySyncFrame(frame) || topologySyncUtf8Bytes(frame) > TOPOLOGY_LIMITS.utf8Bytes
+    )
+  ) {
+    return partialTopologyFrames(
+      syncId,
+      pageEpoch,
+      cutoffCaptureSequence,
+      "limit-exceeded",
+      coverage
+    );
+  }
+  return frames;
+}
+
+function partialTopologyFrames(
+  syncId: string,
+  pageEpoch: string,
+  cutoffCaptureSequence: number,
+  reason: "limit-exceeded" | "serialization-failed",
+  aggregateCoverage: TopologyCoverage
+): TopologySyncFrame[] {
+  const metadata = {
+    version: TOPOLOGY_SYNC_VERSION,
+    syncId,
+    pageEpoch,
+    cutoffCaptureSequence,
+    chunkCount: 0,
+    recordCount: 0,
+    coverage: {
+      ...aggregateCoverage,
+      status: "partial" as const,
+      reason: reason === "limit-exceeded" ? "limit-exceeded" as const : "sanitization-failed" as const
+    }
+  };
+  return [
+    { type: TOPOLOGY_SYNC_BEGIN, ...metadata },
+    { type: TOPOLOGY_SYNC_COMPLETE, ...metadata, reason }
+  ];
+}
+
+function emitPartialTopologyCheckpoint(
+  host: LightstreamerHost,
+  state: InstrumentationState,
+  reason: "limit-exceeded" | "serialization-failed"
+): void {
+  try {
+    const cutoff = state.captureSequence;
+    for (const frame of partialTopologyFrames(
+      `sync:${state.pageEpoch}:${cutoff}`,
+      state.pageEpoch,
+      cutoff,
+      reason,
+      aggregateTopologyCoverage(state)
+    )) {
+      host.postMessage?.(frame, "*");
+    }
+  } catch (_error) {
+    // A broken page transport remains outside instrumentation authority.
+  }
+}
+
+function topologyRecordSort(left: TopologyAbsoluteRecord, right: TopologyAbsoluteRecord): number {
+  const order: Record<TopologyAbsoluteRecord["kind"], number> = {
+    page: 0,
+    client: 1,
+    session: 2,
+    subscription: 3,
+    establishment: 4,
+    "listener-attachment": 5,
+    item: 6,
+    "command-generation": 7,
+    "inferred-child": 8,
+    aggregate: 9
+  };
+  return order[left.kind] - order[right.kind] || left.id.localeCompare(right.id);
 }
 
 function installReinjectionHandler(
@@ -1866,7 +3384,11 @@ function installReinjectionHandler(
       value: bridge
     });
   } catch (_error) {
-    (host as LightstreamerHost & Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] = bridge;
+    try {
+      (host as LightstreamerHost & Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] = bridge;
+    } catch (_assignmentError) {
+      // Frozen/non-extensible hosts simply do not expose the optional direct bridge.
+    }
   }
 
   if (typeof host.addEventListener !== "function") {
@@ -1915,38 +3437,34 @@ function reinjectDraft(
     return reinjectWireDraft(requestId, draft, state);
   }
 
-  const listenerId = draft.target.listenerId;
-  const target = listenerId
-    ? state.listenerTargets.get(targetKey(draft.target.subscriptionId, listenerId))
-    : undefined;
-
-  if (!target) {
+  const delivery = state.localInjectionTargets.deliver(
+    draft.target.subscriptionId,
+    (fieldNames) => createSyntheticItemUpdate(draft, fieldNames)
+  );
+  if (!delivery.ok && delivery.reason === "stale-target") {
     return {
       requestId,
       ok: false,
       status: "stale-target",
       timestamp: Date.now(),
-      error: "Original subscription listener is no longer available."
+      error: "The target Subscription has no current Item Update listeners."
     };
   }
-
-  try {
-    target.callback(createSyntheticItemUpdate(draft, target.fieldNames));
-    return {
-      requestId,
-      ok: true,
-      status: "success",
-      timestamp: Date.now()
-    };
-  } catch (error) {
+  if (!delivery.ok) {
     return {
       requestId,
       ok: false,
       status: "listener-error",
       timestamp: Date.now(),
-      error: error instanceof Error ? error.message.slice(0, 500) : "Listener callback failed."
+      error: delivery.error
     };
   }
+  return {
+    requestId,
+    ok: true,
+    status: "success",
+    timestamp: Date.now()
+  };
 }
 
 function reinjectWireDraft(
@@ -2162,7 +3680,11 @@ function wrapMethod<T extends MethodOwner>(
 
   (target as MethodOwner)[name] = function wrappedMethod(this: T, ...args: unknown[]) {
     const result = original.apply(this, args);
-    after(this, args, result);
+    try {
+      after(this, args, result);
+    } catch (_error) {
+      // Capture is best-effort and cannot replace a page-owned return value.
+    }
     return result;
   };
 }
@@ -2178,7 +3700,11 @@ function wrapCallback(
   }
 
   listener[name] = function wrappedCallback(this: LightstreamerListenerLike, ...args: unknown[]) {
-    before(args);
+    try {
+      before(args);
+    } catch (_error) {
+      // Capture is best-effort and cannot suppress a page-owned callback.
+    }
     return original.apply(this, args);
   };
 }
@@ -2189,19 +3715,53 @@ function callbackToKind(callback: string): CaptureKind | null {
       return "end-of-snapshot";
     case "onItemLostUpdates":
       return "lost-updates";
+    case "onCommandSecondLevelItemLostUpdates":
+      return "item-update";
     case "onClearSnapshot":
       return "clear-snapshot";
     case "onItemUpdate":
       return "item-update";
+    case "onRealMaxFrequency":
+      return "subscription-frequency";
     case "onSubscription":
       return "subscription-started";
     case "onUnsubscription":
       return "subscription-ended";
     case "onSubscriptionError":
       return "subscription-error";
+    case "onCommandSecondLevelSubscriptionError":
+      return "item-update";
     default:
       return null;
   }
+}
+
+function readSubscriptionCallbackPayload(
+  callback: (typeof CALLBACKS_TO_CAPTURE)[number],
+  args: readonly unknown[]
+): CapturePayload {
+  if (callback === "onCommandSecondLevelItemLostUpdates") {
+    return {
+      update: compactJsonObject({ lostUpdates: toJsonValue(args[0]) })
+    };
+  }
+  if (
+    callback === "onEndOfSnapshot" ||
+    callback === "onItemLostUpdates" ||
+    callback === "onClearSnapshot"
+  ) {
+    return compactJsonObject({
+      item: compactJsonObject({
+        name: toJsonValue(args[0]),
+        position: toJsonValue(args[1])
+      }),
+      update:
+        callback === "onItemLostUpdates"
+          ? compactJsonObject({ lostUpdates: toJsonValue(args[2]) })
+          : undefined
+    });
+  }
+  return {};
 }
 
 function readSubscriptionClient(subscription: object, state: InstrumentationState): CapturePayload | undefined {
@@ -2210,7 +3770,13 @@ function readSubscriptionClient(subscription: object, state: InstrumentationStat
 }
 
 function clientPayload(client: object, state: InstrumentationState): CapturePayload {
-  return state.clientMetadata.get(client) ?? { id: state.clientIds.getId(client) };
+  const metadata = readClientMetadata(
+    client as LightstreamerClientLike,
+    state.clientMetadata.get(client) ?? { id: state.clientIds.getId(client) },
+    state
+  );
+  state.clientMetadata.set(client, metadata);
+  return metadata;
 }
 
 function readItemUpdatePayload(update: unknown): CapturePayload {
@@ -2272,7 +3838,7 @@ function readUpdateFields(
       }
     });
   } catch (error) {
-    extractionErrors.push(`${methodName}:${error instanceof Error ? error.message : "unknown"}`);
+    extractionErrors.push(`${methodName}:capture-failed`);
   }
 
   return fields;
@@ -2296,11 +3862,9 @@ function readJsonPatches(
       if (patch !== null && patch !== undefined) {
         patches[fieldName] = toJsonValue(patch);
       }
-    } catch (error) {
+    } catch (_error) {
       extractionErrors.push(
-        `getValueAsJSONPatchIfAvailable:${fieldName}:${
-          error instanceof Error ? error.message : "unknown"
-        }`
+        `getValueAsJSONPatchIfAvailable:${fieldName}:capture-failed`
       );
     }
   }
@@ -2320,8 +3884,8 @@ function readUpdateGetter(
 
   try {
     return toJsonValue(getter.call(update));
-  } catch (error) {
-    extractionErrors.push(`${methodName}:${error instanceof Error ? error.message : "unknown"}`);
+  } catch (_error) {
+    extractionErrors.push(`${methodName}:capture-failed`);
     return undefined;
   }
 }
@@ -2363,22 +3927,203 @@ function readSubscriptionMetadata(
       readGetter(subscription, "getFieldSchema", metadataErrors) ??
       (typeof fieldDescriptor === "string" ? fieldDescriptor : undefined),
     dataAdapter: readGetter(subscription, "getDataAdapter", metadataErrors),
+    selector: readGetter(subscription, "getSelector", metadataErrors),
     requestedSnapshot: readGetter(subscription, "getRequestedSnapshot", metadataErrors),
+    requestedBufferSize: readGetter(subscription, "getRequestedBufferSize", metadataErrors),
+    requestedMaxFrequency: readGetter(
+      subscription,
+      "getRequestedMaxFrequency",
+      metadataErrors
+    ),
+    active: readGetter(subscription, "isActive", metadataErrors),
+    subscribed: readGetter(subscription, "isSubscribed", metadataErrors),
+    listenerCount: readListenerCount(subscription, metadataErrors),
+    commandSecondLevelDataAdapter: readGetter(
+      subscription,
+      "getCommandSecondLevelDataAdapter",
+      metadataErrors
+    ),
+    commandSecondLevelFields: readGetter(
+      subscription,
+      "getCommandSecondLevelFields",
+      metadataErrors
+    ),
+    commandSecondLevelFieldSchema: readGetter(
+      subscription,
+      "getCommandSecondLevelFieldSchema",
+      metadataErrors
+    ),
     keyPosition: readGetter(subscription, "getKeyPosition", metadataErrors),
     commandPosition: readGetter(subscription, "getCommandPosition", metadataErrors)
   });
 }
 
-function readGetter(target: object, name: string, extractionErrors?: string[]) {
-  const getter = (target as Record<string, unknown>)[name];
+function readClientMetadata(
+  client: LightstreamerClientLike,
+  baseline: CapturePayload,
+  state?: InstrumentationState
+): CapturePayload {
+  const getters: Record<string, "available" | "missing" | "threw"> = {};
+  const detailsSurface = readClientSurface(client, "connectionDetails");
+  const optionsSurface = readClientSurface(client, "connectionOptions");
+  const detail = (name: string) => readTopologyGetter(
+    detailsSurface.value,
+    name,
+    `ConnectionDetails.${name}`,
+    getters,
+    detailsSurface.threw
+  );
+  const option = (name: string) => readTopologyGetter(
+    optionsSurface.value,
+    name,
+    `ConnectionOptions.${name}`,
+    getters,
+    optionsSurface.threw
+  );
+  const status = readTopologyGetter(
+    client,
+    "getStatus",
+    "LightstreamerClient.getStatus",
+    getters,
+    false
+  );
+  const clientIp = detail("getClientIp");
+
+  const metadata = compactJsonObject({
+    ...baseline,
+    status,
+    serverAddress: detail("getServerAddress") ?? baseline.serverAddress,
+    adapterSet: detail("getAdapterSet") ?? baseline.adapterSet,
+    sessionId: detail("getSessionId"),
+    serverInstanceAddress: detail("getServerInstanceAddress"),
+    serverSocketName: detail("getServerSocketName"),
+    clientIp: toJsonValue(clientIp),
+    transport: transportFromStatus(status),
+    requestedMaxBandwidth: option("getRequestedMaxBandwidth"),
+    realMaxBandwidth: option("getRealMaxBandwidth"),
+    keepaliveInterval: option("getKeepaliveInterval"),
+    retryDelay: option("getRetryDelay"),
+    firstRetryMaxDelay: option("getFirstRetryMaxDelay"),
+    stalledTimeout: option("getStalledTimeout"),
+    reconnectTimeout: option("getReconnectTimeout"),
+    sessionRecoveryTimeout: option("getSessionRecoveryTimeout"),
+    forcedTransport: option("getForcedTransport"),
+    reverseHeartbeatInterval: option("getReverseHeartbeatInterval"),
+    pollingInterval: option("getPollingInterval"),
+    idleTimeout: option("getIdleTimeout")
+  });
+  const clientId = nonEmptyString(metadata.id);
+  if (state && clientId) {
+    const statuses = Object.values(getters);
+    const threw = statuses.includes("threw");
+    const missing = statuses.includes("missing");
+    const coverage: TopologyCoverage = {
+      status: threw || missing ? "partial" : "complete",
+      getters,
+      ...(threw
+        ? { reason: "getter-threw" as const }
+        : missing
+          ? { reason: "getter-missing" as const }
+          : {})
+    };
+    state.clientTopologyCoverages.set(
+      clientId,
+      mergeTopologyCoverage(
+        state.clientTopologyCoverages.get(clientId) ?? { status: "complete", getters: {} },
+        coverage
+      )
+    );
+  }
+  return metadata;
+}
+
+function readClientSurface(
+  client: LightstreamerClientLike,
+  property: "connectionDetails" | "connectionOptions"
+): { value: object | null; threw: boolean } {
+  try {
+    const value = client[property];
+    return { value: isObject(value) ? value : null, threw: false };
+  } catch (_error) {
+    return { value: null, threw: true };
+  }
+}
+
+function readTopologyGetter(
+  target: object | null,
+  name: string,
+  coverageKey: string,
+  coverage: Record<string, "available" | "missing" | "threw">,
+  surfaceThrew: boolean
+): CapturePayload[string] | undefined {
+  if (surfaceThrew) {
+    coverage[coverageKey] = "threw";
+    return undefined;
+  }
+  if (!target) {
+    coverage[coverageKey] = "missing";
+    return undefined;
+  }
+  try {
+    const getter = (target as Record<string, unknown>)[name];
+    if (typeof getter !== "function") {
+      coverage[coverageKey] = "missing";
+      return undefined;
+    }
+    const value = toJsonValue(getter.call(target));
+    coverage[coverageKey] = "available";
+    return value;
+  } catch (_error) {
+    coverage[coverageKey] = "threw";
+    return undefined;
+  }
+}
+
+function readListenerCount(
+  subscription: LightstreamerSubscriptionLike,
+  metadataErrors?: string[]
+): number | undefined {
+  const getter = subscription.getListeners;
   if (typeof getter !== "function") {
     return undefined;
   }
-
   try {
+    const listeners = getter.call(subscription);
+    return Array.isArray(listeners) ? listeners.length : undefined;
+  } catch (_error) {
+    metadataErrors?.push(
+      "getListeners:capture-failed"
+    );
+    return undefined;
+  }
+}
+
+function readConstructorString(constructor: object, property: string): string | undefined {
+  const value = (constructor as Record<string, unknown>)[property];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function transportFromStatus(status: CapturePayload[string] | undefined): string | undefined {
+  if (typeof status !== "string") {
+    return undefined;
+  }
+  const separator = status.indexOf(":");
+  if (separator < 0) {
+    return undefined;
+  }
+  const transport = status.slice(separator + 1).toLowerCase();
+  return transport || undefined;
+}
+
+function readGetter(target: object, name: string, extractionErrors?: string[]) {
+  try {
+    const getter = (target as Record<string, unknown>)[name];
+    if (typeof getter !== "function") {
+      return undefined;
+    }
     return toJsonValue(getter.call(target));
-  } catch (error) {
-    extractionErrors?.push(`${name}:${error instanceof Error ? error.message : "unknown"}`);
+  } catch (_error) {
+    extractionErrors?.push(`${name}:capture-failed`);
     return undefined;
   }
 }
@@ -2420,6 +4165,154 @@ function compactJsonObject(source: Record<string, unknown>): CapturePayload {
     }
   }
   return result;
+}
+
+function sanitizeCapturePayload(payload: CapturePayload): CapturePayload {
+  return sanitizeCaptureObject(payload);
+}
+
+function sanitizeCaptureObject(source: CapturePayload): CapturePayload {
+  const sanitized: CapturePayload = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (isSensitiveCaptureKey(key) || key === "reason" || key === "error") {
+      sanitized[key] = value === null ? null : "[redacted]";
+      continue;
+    }
+    if (key === "clientIp") {
+      sanitized[key] =
+        typeof value === "string" ? maskClientIp(value) ?? "[redacted]" : null;
+      continue;
+    }
+    if (
+      (key === "serverAddress" || key === "serverInstanceAddress" || key === "url") &&
+      typeof value === "string"
+    ) {
+      sanitized[key] = sanitizeServerUrl(value);
+      continue;
+    }
+    if (Array.isArray(value)) {
+      sanitized[key] = value.map(sanitizeCaptureValue);
+      continue;
+    }
+    sanitized[key] =
+      isObject(value) && !Array.isArray(value)
+        ? sanitizeCaptureObject(value as CapturePayload)
+        : value;
+  }
+  return sanitized;
+}
+
+function sanitizeCaptureValue(value: CapturePayload[string]): CapturePayload[string] {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeCaptureValue);
+  }
+  return isObject(value) ? sanitizeCaptureObject(value as CapturePayload) : value;
+}
+
+function isSensitiveCaptureKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    normalized === "authorization" ||
+    normalized === "proxyauthorization" ||
+    normalized === "password" ||
+    normalized === "cookie" ||
+    normalized === "setcookie" ||
+    normalized === "token" ||
+    normalized === "accesstoken" ||
+    normalized === "refreshtoken" ||
+    normalized === "idtoken" ||
+    normalized === "headers" ||
+    normalized === "httpextraheaders" ||
+    normalized.endsWith("password") ||
+    normalized.endsWith("token")
+  );
+}
+
+function sanitizeServerUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (!parsed.protocol || !parsed.hostname) {
+      return "[redacted]";
+    }
+    const authority = parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
+    return `${parsed.protocol}//${authority}${parsed.pathname || "/"}`;
+  } catch (_error) {
+    return "[redacted]";
+  }
+}
+
+function maskClientIp(value: string): string | null {
+  const normalized = value.trim().replace(/^\[|\]$/g, "");
+  const ipv4 = parseIpv4(normalized);
+  if (ipv4) {
+    return `${ipv4[0]}.${ipv4[1]}.${ipv4[2]}.0/24`;
+  }
+
+  const hextets = parseIpv6(normalized);
+  if (!hextets) {
+    return null;
+  }
+  if (
+    hextets.slice(0, 5).every((hextet) => hextet === 0) &&
+    hextets[5] === 0xffff
+  ) {
+    return `${hextets[6] >> 8}.${hextets[6] & 0xff}.${hextets[7] >> 8}.0/24`;
+  }
+  return `${hextets[0].toString(16)}:${hextets[1].toString(16)}:${hextets[2].toString(
+    16
+  )}:0:0:0:0:0/48`;
+}
+
+function parseIpv4(value: string): [number, number, number, number] | null {
+  const parts = value.split(".");
+  if (parts.length !== 4) {
+    return null;
+  }
+  const octets = parts.map((part) => (/^\d{1,3}$/.test(part) ? Number(part) : Number.NaN));
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return null;
+  }
+  return octets as [number, number, number, number];
+}
+
+function parseIpv6(value: string): number[] | null {
+  if (!value || value.includes("%") || value.split("::").length > 2) {
+    return null;
+  }
+  const [leftText, rightText] = value.toLowerCase().split("::");
+  const left = parseIpv6Side(leftText ?? "");
+  const right = parseIpv6Side(rightText ?? "");
+  if (!left || !right) {
+    return null;
+  }
+  if (!value.includes("::")) {
+    return left.length === 8 ? left : null;
+  }
+  const zeroCount = 8 - left.length - right.length;
+  return zeroCount > 0 ? [...left, ...Array<number>(zeroCount).fill(0), ...right] : null;
+}
+
+function parseIpv6Side(value: string): number[] | null {
+  if (!value) {
+    return [];
+  }
+  const parts = value.split(":");
+  const hextets: number[] = [];
+  for (const [index, part] of parts.entries()) {
+    const ipv4 = parseIpv4(part);
+    if (ipv4) {
+      if (index !== parts.length - 1) {
+        return null;
+      }
+      hextets.push((ipv4[0] << 8) | ipv4[1], (ipv4[2] << 8) | ipv4[3]);
+      continue;
+    }
+    if (!/^[0-9a-f]{1,4}$/.test(part)) {
+      return null;
+    }
+    hextets.push(Number.parseInt(part, 16));
+  }
+  return hextets;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

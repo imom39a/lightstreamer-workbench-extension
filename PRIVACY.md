@@ -1,10 +1,12 @@
 # Privacy Policy
 
-Lightstreamer Event Workbench is a Chrome DevTools extension for inspecting Lightstreamer Web Client behavior in the currently inspected browser tab.
+Lightstreamer Workbench is a Chrome DevTools extension for inspecting Lightstreamer Web Client behavior in the currently inspected browser tab.
 
 ## Data Collection
 
 Captured Lightstreamer clients, subscriptions, item updates, field values, COMMAND keys, diagnostics, and synthetic replay drafts are processed locally in the browser extension context for the current inspected tab/session.
+
+When the Lightstreamer Web Client exposes a client IP address, page-world instrumentation irreversibly masks it before constructing the capture message. The exact address never crosses the inspected-page capture boundary, is never available to the Topology inspector, and cannot be restored with a UI toggle. Client IP addresses are never included in analytics; any future export feature must preserve this pre-boundary masking rule.
 
 The extension offers optional usage analytics to help the maintainers understand which workbench features are useful and where coarse failures occur. Analytics is off until the user accepts the prominent disclosure inside the DevTools panel.
 

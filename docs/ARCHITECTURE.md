@@ -1,6 +1,6 @@
 # Architecture
 
-Lightstreamer Event Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs COMMAND-mode state, and lets developers locally replay synthetic updates through captured listener callbacks or captured Lightstreamer WebSocket paths.
+Lightstreamer Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs client/session/subscription topology and COMMAND-mode state, and lets developers locally replay synthetic updates through captured listener callbacks or captured Lightstreamer WebSocket paths.
 
 The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, capture messages cross the isolated content-script boundary, the service worker routes captures by inspected tab, and the DevTools panel owns storage, filtering, UI state, COMMAND reduction, and local synthetic event display. Reinjection prefers a versioned MAIN-world capability invoked directly with `chrome.devtools.inspectedWindow.eval`. If that global capability is absent after an extension refresh, the panel reuses the page's request-scoped message handler directly; version-skewed or otherwise unavailable page contexts retain the compatibility runtime relay.
 
@@ -14,6 +14,7 @@ The architecture is event-driven and split across Chrome extension execution con
 - [Message Contracts](#message-contracts)
 - [Event Model](#event-model)
 - [Storage Architecture](#storage-architecture)
+- [Topology State Architecture](#topology-state-architecture)
 - [COMMAND State Architecture](#command-state-architecture)
 - [Synthetic Reinjection Architecture](#synthetic-reinjection-architecture)
 - [Panel UI Architecture](#panel-ui-architecture)
@@ -44,8 +45,8 @@ The extension runs in four active JavaScript contexts plus optional test fixture
 | Page `MAIN` world instrumentation | `src/injected/lightstreamer-instrumentation.ts` | `dist/injected/lightstreamer-instrumentation.js` | Wrap Lightstreamer constructors, client/subscription methods, subscription listeners, WebSocket fallback, and page-side reinjection handling. |
 | Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` capture events to the extension runtime and retain a compatibility reinjection relay for older DevTools environments. |
 | Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by tab and route capture messages from content scripts to the right panel; retain compatibility routing for reinjection when direct inspected-page evaluation is unavailable. |
-| DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Event Workbench` DevTools panel. |
-| DevTools panel UI | `src/extension/panel/main.ts`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/panel.css`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Render timeline and COMMAND views, own event storage, build state indexes, edit drafts, call the bridge for reinjection, and gate optional coarse analytics behind in-product consent. |
+| DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Workbench` DevTools panel. |
+| DevTools panel UI | `src/extension/panel/main.ts`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/panel.css`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Render Timeline, Topology, and COMMAND views, own event storage, build state indexes, edit drafts, call the bridge for reinjection, and gate optional coarse analytics behind in-product consent. |
 
 ```mermaid
 flowchart LR
@@ -222,6 +223,7 @@ Captured subscription callbacks are listed in `CALLBACKS_TO_CAPTURE`:
 - `onItemLostUpdates`
 - `onClearSnapshot`
 - `onItemUpdate`
+- `onRealMaxFrequency`
 - `onSubscription`
 - `onUnsubscription`
 - `onSubscriptionError`
@@ -314,6 +316,8 @@ client-created
 client-status
 subscription-created
 subscription-started
+subscription-snapshot
+subscription-frequency
 subscription-ended
 subscription-error
 listener-added
@@ -510,6 +514,35 @@ Both store implementations track:
 - warning active flag
 
 `DEFAULT_EVENT_WARNING_THRESHOLD` is `10_000`. The panel does not prune retained events when the warning is active. It shows a high-volume notice with `Keep events` and `Clear events` actions.
+
+## Topology State Architecture
+
+`src/core/topology-state.ts` incrementally reduces normalized events into the current inspected-page hierarchy:
+
+```text
+page
+  client
+    session
+      subscription
+        item
+          listener
+```
+
+The reducer keeps constructor-only subscriptions visible until client ownership is observed. A Lightstreamer session ID is the authoritative session identity: recovery with the same ID creates a new connection epoch on the same session, while a different ID freezes the prior session and creates a new one. After session loss, locally active subscriptions move to the client-level **Waiting for session** group and attach to the replacement session only after a server-confirmed subscription callback. The extension never creates a Lightstreamer client or session and never calls `connect()` or `subscribe()`; it observes constructors, methods, listeners, and WebSockets owned by the inspected page.
+
+Each client retains at most five compact, immutable historical session snapshots. History keeps topology, configuration, item identities, final observed lifecycle phases, counters, timestamps, and the last observed transport, but not captured payload values or listener objects. Every historical session, subscription, and item is presented as **Frozen**, so a value such as `ws-streaming` cannot be mistaken for a connection maintained by the extension. Historical nodes are read-only reference data and are never reinjection targets.
+
+Logical updates and callback deliveries are separate counters. Primary instrumentation gives every observed `ItemUpdate` object a stable weakly held logical ID; delivery callbacks share that ID, and one callback is marked as the metric owner when object identity is unavailable. Synthetic updates have independent counts and never change server/logical update, snapshot, lost-update, or error totals.
+
+Snapshot phase follows the observed protocol: requested snapshots can move through waiting, snapshot, complete, and live; no-snapshot subscriptions become live after server establishment; clear produces cleared; a new session resets the phase; and fallback wire capture reports unknown when it cannot prove the state. COMMAND subscriptions expose only an aggregate key summary in Topology—active/deleted counts, snapshot state, and last command—while full key lifecycle remains in COMMAND State.
+
+Exact duplicate diagnostics compare mode, item and field descriptors, snapshot, requested frequency, requested buffer size, and second-level COMMAND settings. Partially overlapping active subscriptions remain separate and receive an overlap diagnostic. Only captured errors and lost updates are warning health states; duplicate and overlap findings remain informational diagnostics.
+
+Primary API instrumentation reads documented `connectionDetails` and `connectionOptions` values synchronously from client callbacks. Passwords and HTTP headers are never read. When Lightstreamer exposes a client IP, page-world instrumentation irreversibly masks it before constructing any capture message; the exact address never crosses the inspected-page boundary, and the panel has no exact/masked presentation toggle. Public API clients are marked as full coverage, while WebSocket/TLCP fallback clients are marked as limited coverage so missing options or listener nodes are not mistaken for actual absence. Semantic values retain their evidence state, allowing the panel to distinguish **Unknown**, **Unavailable**, **Redacted**, and **Not applicable** instead of conflating valueless facts.
+
+The panel owns one `TopologyStateIndex` beside the COMMAND index. It rebuilds both indexes from storage on initialization, ingests appended events incrementally, and snapshots only on a scheduled render. **Reset current** clears topology observations only; it preserves captured events, COMMAND state, replay drafts, selections, and the independent live-target registry. **Clear history** removes only frozen session snapshots. The existing **Clear events** action remains the destructive current-session reset.
+
+The live-target registry tracks listener and wire targets independently from topology history. Listener targets can remain valid across a session change, with a warning, if the page bridge confirms the original listener is still registered. Wire targets must still belong to the same session and connection epoch. The panel disables stale replay controls proactively, and the page bridge remains authoritative at execution time.
 
 ## COMMAND State Architecture
 
@@ -761,10 +794,11 @@ The panel owns these major state categories:
 - current timeline query version and render limit
 - event store stats and high-volume notice state
 - active reinjection draft and reinjection status message
-- active view: `timeline` or `command`
+- active view: `timeline`, `topology`, or `command`
 - timeline detail pane open/width state
 - COMMAND detail pane open state
 - COMMAND context events and incremental COMMAND index
+- incremental topology index and selected topology node
 - selected COMMAND subscription item, key, and update event
 - resizable COMMAND pane widths
 - timeline filters and COMMAND filters
@@ -785,11 +819,26 @@ The Timeline view renders:
 store.queryEvents({
   filters: filterState,
   order: "asc",
-  limit: timelineRenderLimit
+  limit: TIMELINE_WINDOW_SIZE,
+  offset: timelineWindowOffset
 })
 ```
 
-The first render limit is `500`. Scrolling near the top or bottom increases the limit by another `500` until all matching retained events are shown.
+`TIMELINE_WINDOW_SIZE` is `60`. The Timeline keeps that fixed DOM bound while all matching events remain retained in the store. Scrolling upward at the top boundary loads the preceding window; scrolling downward at the bottom boundary loads the next window. **Older**, **Newer**, and **Latest** buttons provide the same navigation explicitly and remain available when the current window is shorter than the viewport.
+
+### Topology View
+
+The Topology view renders:
+
+- overview counts for clients, active sessions, active/server-established subscriptions, items, listeners, and capture coverage
+- a page → client → session → subscription → item → listener tree with per-branch collapse controls and bounded, lazy item/listener expansion
+- at most five compact historical sessions per client, waiting subscriptions, and constructor-only unassigned subscriptions
+- requested client/subscription settings beside server-observed bandwidth and real max frequency
+- separate logical-update, callback-delivery, synthetic, snapshot-phase, loss, error, listener, exact-duplicate, and overlap metrics
+- explicit full, mixed, or limited capture coverage
+- current listener/wire replay-target availability and provenance
+
+Selection and collapsed branches are keyed by stable captured IDs plus current/historical session context and survive passive append renders. Tree and detail scroll positions are restored around live updates. High-volume renders retain the existing tree DOM when its structure is unchanged, update only mutable text/status fields, and use one delegated tree interaction handler.
 
 ### COMMAND State View
 
@@ -891,17 +940,19 @@ Coverage is organized by architectural boundary:
 | Test File | Boundary Covered |
 | --- | --- |
 | `tests/bridge-message-validation.test.ts` | Capture and reinjection message validators plus stable ID allocation. |
-| `tests/instrumentation-lifecycle.test.ts` | Constructor hooks, namespace hooks, lifecycle wrappers, stable IDs, listener proxies, WebSocket fallback, and page-side reinjection result behavior. |
+| `tests/instrumentation-lifecycle.test.ts` | Constructor hooks, namespace hooks, lifecycle wrappers, stable logical update IDs, listener registration/delivery metadata, connection details, WebSocket fallback, and page-side reinjection result behavior. |
 | `tests/event-normalizer.test.ts` | Capture-to-envelope normalization, COMMAND key/command preservation, current vs changed fields, snapshot status, and wire source mapping. |
 | `tests/event-filter.test.ts` | Event search text and structured filters. |
 | `tests/event-store.test.ts` | In-memory store behavior, high-volume stats, IndexedDB-backed queries, substring search parity, cursor paging, reset, and close cleanup behavior. |
 | `tests/command-state.test.ts` | Full and incremental COMMAND reduction, grouping, metadata carry-forward, item identity, lifecycle, provenance, diagnostics, and draft validation against state. |
+| `tests/topology-state.test.ts` | Session authority and recovery epochs, waiting ownership, logical/delivery/synthetic counters, snapshots, compact five-session history, duplicate/overlap diagnostics, reset semantics, and unassigned subscriptions. |
 | `tests/reinjection-draft.test.ts` | Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
 | `tests/command-draft.test.ts` | Context-bound new COMMAND drafts, schema validation, and synthetic event conversion. |
 | `tests/synthetic-event.test.ts` | Synthetic envelope creation from successful reinjection results. |
 | `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, direct reinjection, request-scoped missing-global recovery, version-skew relay fallback, and timeout/error behavior. |
-| `tests/panel-shell.test.ts` | Timeline shell rendering, event detail, filtering, high-volume notices, lazy row rendering, and direct replay UI. |
+| `tests/panel-shell.test.ts` | Timeline shell rendering, event detail, filtering, high-volume scroll paging, live-history anchoring, Promise/IndexedDB window races, bounded DOM rendering, and direct replay UI. |
 | `tests/panel-command-state.test.ts` | COMMAND State workbench rendering, selection, filtering, panes, draft editor, and synthetic append behavior. |
+| `tests/panel-topology.test.ts` | Topology tree/detail rendering, sensitive IP presentation, bounded expansion, DOM retention, historical filtering/clearing, non-destructive reset, duplicate/overlap diagnostics, and proactive listener/wire target validity. |
 | `tests/panel-css.test.ts` | CSS constraints for the panel. |
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |
@@ -913,6 +964,14 @@ Other quality commands:
 npm run typecheck
 npm run build
 ```
+
+Topology performance is a manual merge gate rather than part of every CI run:
+
+```bash
+npm run benchmark:topology
+```
+
+`.github/workflows/topology-performance.yml` exposes the same gate only through `workflow_dispatch`. It drives the real panel in Chrome for 60 seconds at 1,000 logical updates per second across 20 subscriptions × 50 items with three listener deliveries per update. The run covers collapsed and fully expanded item states, opens a lazy listener branch, and fails on incorrect logical/delivery totals, more than 500 ms of ingestion backlog or UI lag, p95 render time above 16 ms, any task longer than 50 ms, or interaction latency above 100 ms.
 
 Release packaging uses `scripts/package-extension.mjs`, which by default runs typecheck, tests, build verification, extension build validation, and deterministic ZIP creation.
 
