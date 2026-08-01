@@ -67,6 +67,15 @@ async function flushPanel(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
+function readBlobText(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsText(blob);
+  });
+}
+
 async function waitForTopologyIdle(timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (
@@ -1759,6 +1768,85 @@ describe("topology inspector", () => {
     expect(document.querySelector<HTMLElement>(".topology-export-preview-content")?.hidden).toBe(true);
     expect(document.querySelector<HTMLButtonElement>(".topology-export-json")?.disabled).toBe(true);
     expect(document.querySelector<HTMLButtonElement>(".topology-export-html")?.disabled).toBe(true);
+  });
+
+  it("downloads the approved Topology snapshot as JSON and HTML", async () => {
+    appendTopologyFixture(panel);
+    await flushPanel();
+    clickView("Topology");
+
+    const objectUrls = new Map<string, Blob>();
+    const downloads: Array<{ filename: string; blob: Blob }> = [];
+    let nextObjectUrl = 1;
+    const originalCreateObjectUrl = URL.createObjectURL;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      const url = `blob:test-${nextObjectUrl++}`;
+      objectUrls.set(url, blob);
+      return url;
+    });
+    URL.revokeObjectURL = vi.fn((url: string) => {
+      objectUrls.delete(url);
+    });
+    HTMLAnchorElement.prototype.click = function clickDownload(): void {
+      if (!this.isConnected) return;
+      const filename = this.download;
+      const url = this.href;
+      queueMicrotask(() => {
+        const blob = objectUrls.get(url);
+        if (blob) downloads.push({ filename, blob });
+      });
+    };
+
+    try {
+      document.querySelector<HTMLButtonElement>(".topology-export-preview")?.click();
+      const approved = text(".topology-export-preview-content");
+      document.querySelector<HTMLButtonElement>(".topology-export-json")?.click();
+      document.querySelector<HTMLButtonElement>(".topology-export-html")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const snapshot = JSON.parse(approved) as {
+        generatedAt: string;
+        schema: { id: string };
+      };
+      const jsonDownload = downloads[0];
+      const htmlDownload = downloads[1];
+      const htmlContent = htmlDownload ? await readBlobText(htmlDownload.blob) : "";
+      expect({
+        json: jsonDownload
+          ? {
+              filename: jsonDownload.filename,
+              type: jsonDownload.blob.type,
+              content: await readBlobText(jsonDownload.blob)
+            }
+          : null,
+        html: htmlDownload
+          ? {
+              filename: htmlDownload.filename,
+              type: htmlDownload.blob.type,
+              includesSchema: htmlContent.includes(snapshot.schema.id),
+              includesGenerationTime: htmlContent.includes(snapshot.generatedAt)
+            }
+          : null
+      }).toEqual({
+        json: {
+          filename: "lightstreamer-topology.json",
+          type: "application/json",
+          content: approved
+        },
+        html: {
+          filename: "lightstreamer-topology.html",
+          type: "text/html",
+          includesSchema: true,
+          includesGenerationTime: true
+        }
+      });
+    } finally {
+      URL.createObjectURL = originalCreateObjectUrl;
+      URL.revokeObjectURL = originalRevokeObjectUrl;
+      HTMLAnchorElement.prototype.click = originalAnchorClick;
+    }
   });
 
   it("expands a bounded large tree once and updates it without rebuilding the DOM", async () => {
