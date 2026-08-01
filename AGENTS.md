@@ -1,8 +1,8 @@
 ## Project
 
-**Lightstreamer Event Workbench**
+**Lightstreamer Workbench**
 
-Lightstreamer Event Workbench is a Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures Lightstreamer clients, sessions, subscriptions, item updates, snapshots, and COMMAND-mode key lifecycles, then lets developers inspect, search, mutate, and locally reinject those updates into the running page.
+Lightstreamer Workbench is a Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures Lightstreamer clients, sessions, subscriptions, item updates, snapshots, and COMMAND-mode key lifecycles, then lets developers inspect, search, mutate, and locally reinject those updates into the running page.
 
 The tool is generic developer infrastructure, not an application-specific debugger. Application teams can later add optional interpretation rules, but the core product models Lightstreamer primitives: client, session, subscription, mode, item, field, key, command, update, snapshot, and synthetic replay.
 

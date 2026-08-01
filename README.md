@@ -1,26 +1,27 @@
-# Lightstreamer Event Workbench
+# Lightstreamer Workbench
 
-Lightstreamer Event Workbench is an open-source Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures clients, subscriptions, item updates, snapshots, COMMAND-mode key lifecycles, and synthetic local replays so developers can inspect and reproduce streaming behavior without backend access.
+Lightstreamer Workbench is an open-source Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures clients, subscriptions, item updates, snapshots, COMMAND-mode key lifecycles, and synthetic local replays so developers can inspect and reproduce streaming behavior without backend access.
 
-[Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) | [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf) | [Source](https://github.com/imom39a/lightstreamer-workbench-extension/) | [Contributing](CONTRIBUTING.md) | [Privacy](PRIVACY.md) | [Security](SECURITY.md) | [Release notes and publishing](RELEASE.md)
+[Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) | [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf) | [Source](https://github.com/imom39a/lightstreamer-workbench-extension/) | [Contributing](CONTRIBUTING.md) | [Privacy](PRIVACY.md) | [Security](SECURITY.md) | [Release notes and publishing](RELEASE.md)
 
 <p align="center">
-  <img src="docs/assets/mascot.png" alt="Lightstreamer Event Workbench mascot" width="180">
+  <img src="docs/assets/mascot.png" alt="Lightstreamer Workbench mascot" width="180">
 </p>
 
 ![COMMAND State view showing active keys and selected key lifecycle](store-listing/screenshots/01-command-state-active-keys.png)
 
 ## Project Status
 
-Version `0.1.5` is the current release. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf), or build from source and load the generated `dist/` directory as an unpacked extension.
+Version `0.1.5` is the current release. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf), or build from source and load the generated `dist/` directory as an unpacked extension.
 
 The first release focuses on local, current-session debugging for the inspected tab. The UI and internal event envelope may evolve as more Lightstreamer workflows are validated.
 
 ## What The Extension Does
 
-- Adds a `Lightstreamer Event Workbench` panel to Chrome DevTools.
+- Adds a `Lightstreamer Workbench` panel to Chrome DevTools.
 - Instruments the inspected page at `document_start` to observe official Lightstreamer Web Client constructors and listeners.
 - Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into a temporary local event store for the current DevTools session.
+- Shows a collapsible client → session → subscription → item → listener Topology inspector with live state and compact frozen historical sessions, connection policy, server-accepted settings, coverage, logical/delivery activity, snapshot, error, loss, duplicate, and overlap diagnostics.
 - Shows a searchable Timeline with normalized event envelopes and raw diagnostic payloads.
 - Reconstructs COMMAND state by subscription, item, key, command, snapshot state, provenance, and diagnostics.
 - Lets developers directly re-inject compatible captured updates or edit and re-inject them through a captured listener or captured Lightstreamer WebSocket path.
@@ -32,6 +33,7 @@ The first release focuses on local, current-session debugging for the inspected 
 - It does not send inspected URLs, Lightstreamer addresses, captured values, identifiers, search text, replay drafts, or error details to this project, the maintainers, analytics services, or any external backend.
 - It does not intentionally retain captured events after the current DevTools/tab session; temporary local storage is reset on panel startup and cleared on normal panel teardown.
 - It does not inject data into the real Lightstreamer server stream.
+- It does not create a Lightstreamer client, call `connect()` or `subscribe()`, or establish a server session; capture only observes clients and WebSockets owned by the inspected page.
 - It does not provide app-specific interpretation rules in the core product.
 - It does not treat arbitrary WebSocket protocols as first-class Lightstreamer domain models.
 - It does not enable optional product analytics unless the user accepts the in-panel disclosure.
@@ -66,7 +68,7 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 ## Documentation
 
 - [Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) - public GitHub Pages site and product overview.
-- [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-event-workb/kfpgbhfphbhkebglopimjhfnnmbifocf) - official extension listing.
+- [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf) - official extension listing.
 - [Source repository](https://github.com/imom39a/lightstreamer-workbench-extension/) - source code, issues, and pull requests.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - contributor workflow, local setup, architecture, tests, and pull request process.
 - [RELEASE.md](RELEASE.md) - release packaging, Chrome Web Store publishing, GitHub Pages deployment, and maintainer-only release flow.
@@ -78,7 +80,7 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 
 ## Privacy And Safety
 
-Lightstreamer Event Workbench keeps captured event data in temporary local storage for the current DevTools/tab session; that data is not transmitted off-device by the extension.
+Lightstreamer Workbench keeps captured event data in temporary local storage for the current DevTools/tab session; that data is not transmitted off-device by the extension. Lightstreamer-provided client IP addresses are irreversibly masked before they cross the inspected-page capture boundary, so the Topology inspector never receives or offers a toggle for the exact address. Retained historical topology is frozen reference data only.
 
 Official builds may offer optional, opt-in Google Analytics for coarse product usage such as views used, whether search or local replay was used, replay result category, and a bucketed event count. The extension creates a random analytics installation ID and sends requests only after the user accepts the prominent panel disclosure. Opt-out deletes that ID and blocks future analytics requests. Analytics adds no Chrome permission and never receives inspected-page URLs or captured Lightstreamer content; see [PRIVACY.md](PRIVACY.md) for the exact allowlist.
 
@@ -101,4 +103,4 @@ Maintainer release rules are documented in [RELEASE.md](RELEASE.md) and [MAINTAI
 
 ## License
 
-Lightstreamer Event Workbench is licensed under the [Apache License 2.0](LICENSE).
+Lightstreamer Workbench is licensed under the [Apache License 2.0](LICENSE).

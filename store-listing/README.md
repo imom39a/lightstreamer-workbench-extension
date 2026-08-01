@@ -1,6 +1,6 @@
 # Chrome Web Store Listing Assets
 
-This folder contains source-controlled Chrome Web Store release materials for Lightstreamer Event Workbench.
+This folder contains source-controlled Chrome Web Store release materials for Lightstreamer Workbench.
 
 ## Generated Assets
 

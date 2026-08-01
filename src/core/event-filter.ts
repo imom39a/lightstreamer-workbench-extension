@@ -6,6 +6,7 @@ export type EventFilterState = {
   subscriptionId?: string;
   mode?: string;
   item?: string;
+  itemPosition?: number;
   key?: string;
   command?: string;
   snapshot?: boolean;
@@ -24,6 +25,16 @@ export function createEventSearchText(event: LightstreamerEventEnvelope): string
     event.client?.status,
     event.client?.serverAddress,
     event.client?.adapterSet,
+    event.client?.libraryVersion,
+    event.client?.instrumentationSource,
+    event.client?.coverageStatus,
+    event.client?.sessionId,
+    event.client?.serverInstanceAddress,
+    event.client?.serverSocketName,
+    event.client?.clientIp,
+    event.client?.transport,
+    event.client?.requestedMaxBandwidth,
+    event.client?.realMaxBandwidth,
     event.subscription?.id,
     event.subscription?.mode,
     event.subscription?.itemGroup,
@@ -31,6 +42,10 @@ export function createEventSearchText(event: LightstreamerEventEnvelope): string
     event.subscription?.fieldSchema,
     event.subscription?.fields?.join(" "),
     event.subscription?.dataAdapter,
+    event.subscription?.selector,
+    event.subscription?.requestedBufferSize,
+    event.subscription?.requestedMaxFrequency,
+    event.subscription?.realMaxFrequency,
     event.listener?.id,
     event.item?.name,
     event.item?.position,
@@ -64,6 +79,13 @@ export function matchesEventFilters(
   }
 
   if (filters.item && event.item?.name !== filters.item) {
+    return false;
+  }
+
+  if (
+    filters.itemPosition !== undefined &&
+    event.item?.position !== filters.itemPosition
+  ) {
     return false;
   }
 

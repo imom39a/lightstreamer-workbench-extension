@@ -582,7 +582,7 @@ async function showWorkbenchPanel(cdp: CdpClient): Promise<PanelSelectionProof> 
       const tabbedPane = UI.InspectorView.InspectorView.instance().tabbedPane;
       const availableTabIds = tabbedPane.tabIds();
       const panelId =
-        availableTabIds.find((id) => id.includes("LightstreamerEventWorkbench")) ?? null;
+        availableTabIds.find((id) => id.includes("LightstreamerWorkbench")) ?? null;
       if (panelId) {
         await tabbedPane.selectTab(panelId, true);
       }

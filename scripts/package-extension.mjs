@@ -458,7 +458,7 @@ Examples:
   npm run release:package
   npm run release:package -- --skip-typecheck
   npm run release:package -- --skip-tests
-  npm run release:package:all -- --crx-key private/lightstreamer-event-workbench.pem
+  npm run release:package:all -- --crx-key private/lightstreamer-workbench.pem
 `);
 }
 

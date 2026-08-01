@@ -3,18 +3,20 @@ import {
   PAGE_CAPTURE_SYNC_REQUEST,
   PAGE_REINJECT_REQUEST,
   RUNTIME_CAPTURE_MESSAGE,
+  RUNTIME_TOPOLOGY_SYNC_FRAME,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
   isCaptureMessage,
   isContentCaptureSyncRequestMessage,
   isContentReinjectRequestMessage,
-  isRuntimeReinjectResultMessage
+  isRuntimeReinjectResultMessage,
+  isTopologySyncFrame
 } from "../bridge/messages";
 
 const PAGE_REINJECT_TIMEOUT_MS = 5000;
 
 window.addEventListener("message", (event) => {
-  if (event.source !== window || !isCaptureMessage(event.data)) {
+  if (event.source !== window) {
     return;
   }
 
@@ -22,10 +24,20 @@ window.addEventListener("message", (event) => {
     return;
   }
 
-  chrome.runtime.sendMessage({
-    type: RUNTIME_CAPTURE_MESSAGE,
-    message: event.data
-  });
+  if (isCaptureMessage(event.data)) {
+    chrome.runtime.sendMessage({
+      type: RUNTIME_CAPTURE_MESSAGE,
+      message: event.data
+    });
+    return;
+  }
+
+  if (isTopologySyncFrame(event.data)) {
+    chrome.runtime.sendMessage({
+      type: RUNTIME_TOPOLOGY_SYNC_FRAME,
+      frame: event.data
+    });
+  }
 });
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {

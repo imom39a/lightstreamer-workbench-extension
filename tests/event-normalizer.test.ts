@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { createCaptureMessage } from "../src/bridge/messages";
+import {
+  TOPOLOGY_OBSERVATION_VERSION,
+  createCaptureMessage,
+  type TopologyObservation
+} from "../src/bridge/messages";
+import { toPersistableEventEnvelope } from "../src/core/event-envelope";
 import { normalizeCaptureMessage } from "../src/core/event-normalizer";
 
 describe("event normalizer", () => {
@@ -103,5 +108,138 @@ describe("event normalizer", () => {
 
     expect(event.source).toBe("server");
     expect(event.captureSource).toBe("wire");
+  });
+
+  it("keeps semantic topology in memory and removes it from persistence projections", () => {
+    const topology: TopologyObservation = {
+      version: TOPOLOGY_OBSERVATION_VERSION,
+      kind: "item-update",
+      pageEpoch: "page-a",
+      captureSequence: 42,
+      provenance: { instrumentationSource: "official-public-api" },
+      coverage: { status: "complete", getters: {} },
+      subscription: { id: "sub-a" }
+    };
+    const event = normalizeCaptureMessage(
+      createCaptureMessage("item-update", { subscription: { id: "sub-a" } }, 10, topology)
+    );
+
+    expect(event.topology).toEqual(topology);
+    expect(toPersistableEventEnvelope(event)).not.toHaveProperty("topology");
+    expect(event.topology).toEqual(topology);
+  });
+
+  it("keeps all connection intervals and valueless semantic states", () => {
+    const topology: TopologyObservation = {
+      version: TOPOLOGY_OBSERVATION_VERSION,
+      kind: "client-created",
+      pageEpoch: "page-a",
+      captureSequence: 1,
+      provenance: { instrumentationSource: "official-public-api" },
+      coverage: { status: "partial", getters: {} },
+      client: {
+        id: { state: "inferred", value: "client-1" },
+        retryDelay: { state: "unknown", reason: "getter-missing" },
+        clientIp: { state: "redacted", context: "masked-client-ip" },
+        realMaxBandwidth: { state: "unavailable" },
+        forcedTransport: { state: "not-applicable" }
+      }
+    };
+    const event = normalizeCaptureMessage(
+      createCaptureMessage(
+        "client-created",
+        {
+          client: {
+            id: "client-1",
+            reverseHeartbeatInterval: 1_000,
+            pollingInterval: 2_000,
+            idleTimeout: 3_000
+          }
+        },
+        10,
+        topology
+      )
+    );
+
+    expect(event.client).toMatchObject({
+      reverseHeartbeatInterval: 1_000,
+      pollingInterval: 2_000,
+      idleTimeout: 3_000,
+      semanticValueStates: {
+        retryDelay: { state: "unknown", reason: "getter-missing" },
+        clientIp: { state: "redacted", context: "masked-client-ip" },
+        realMaxBandwidth: { state: "unavailable" },
+        forcedTransport: { state: "not-applicable" }
+      }
+    });
+  });
+
+  it("keeps subscription semantic states live but strips all semantic metadata when persisted", () => {
+    const topology: TopologyObservation = {
+      version: TOPOLOGY_OBSERVATION_VERSION,
+      kind: "item-update",
+      pageEpoch: "page-a",
+      captureSequence: 7,
+      provenance: { instrumentationSource: "official-public-api" },
+      coverage: { status: "partial", getters: {} },
+      client: {
+        id: "client-1",
+        status: { state: "real", value: "CONNECTED:WS-STREAMING" }
+      },
+      subscription: {
+        id: "subscription-1",
+        mode: { state: "requested", value: "COMMAND" },
+        active: { state: "real", value: true },
+        subscribed: { state: "inferred", value: true },
+        listenerCount: { state: "unknown", reason: "getter-missing" },
+        dataAdapter: { state: "unavailable" },
+        selector: { state: "redacted", context: "capture-boundary" },
+        commandSecondLevelDataAdapter: { state: "not-applicable" }
+      }
+    };
+    const event = normalizeCaptureMessage(
+      createCaptureMessage(
+        "item-update",
+        {
+          client: { id: "client-1", status: "CONNECTED:WS-STREAMING" },
+          subscription: {
+            id: "subscription-1",
+            mode: "COMMAND",
+            active: true,
+            semanticValueStates: {
+              requestedSnapshot: { state: "requested" }
+            }
+          },
+          item: { name: "orders", position: 1 },
+          update: { command: "ADD", key: "order-1", fields: { qty: "10" } }
+        },
+        10,
+        topology
+      )
+    );
+
+    expect(event.subscription?.semanticValueStates).toEqual({
+      requestedSnapshot: { state: "requested" },
+      mode: { state: "requested" },
+      active: { state: "real" },
+      subscribed: { state: "inferred" },
+      listenerCount: { state: "unknown", reason: "getter-missing" },
+      dataAdapter: { state: "unavailable" },
+      selector: { state: "redacted", context: "capture-boundary" },
+      commandSecondLevelDataAdapter: { state: "not-applicable" }
+    });
+
+    const persisted = toPersistableEventEnvelope(event);
+    expect(persisted).not.toHaveProperty("topology");
+    expect(persisted.client).not.toHaveProperty("semanticValueStates");
+    expect(persisted.subscription).not.toHaveProperty("semanticValueStates");
+    expect(persisted).toMatchObject({
+      client: { id: "client-1", status: "CONNECTED:WS-STREAMING" },
+      subscription: { id: "subscription-1", mode: "COMMAND", active: true },
+      item: { name: "orders", position: 1 },
+      update: { command: "ADD", key: "order-1", fields: { qty: "10" } }
+    });
+    expect(event.client).toHaveProperty("semanticValueStates");
+    expect(event.subscription).toHaveProperty("semanticValueStates");
   });
 });

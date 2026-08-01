@@ -1,6 +1,6 @@
 # Release Process
 
-This is the local prerelease pipeline for packaging and uploading Lightstreamer Event Workbench. The Chrome Web Store upload artifact is a ZIP file with `manifest.json` at the archive root. CRX output is optional and intended for local/internal distribution, not normal Web Store submission.
+This is the local prerelease pipeline for packaging and uploading Lightstreamer Workbench. The Chrome Web Store upload artifact is a ZIP file with `manifest.json` at the archive root. CRX output is optional and intended for local/internal distribution, not normal Web Store submission.
 
 ## Release Authority
 
@@ -25,7 +25,7 @@ npm run release:package
 `release:package` runs `npm run typecheck`, runs `npm test`, runs the extension build, validates the built manifest, and writes:
 
 ```text
-release/lightstreamer-event-workbench-v<version>.zip
+release/lightstreamer-workbench-v<version>.zip
 ```
 
 Useful variants:
@@ -92,8 +92,8 @@ Chrome creates a private key the first time it packs a CRX without `--crx-key`. 
 
 ```bash
 mkdir -p private
-mv release/lightstreamer-event-workbench-v<version>.pem private/lightstreamer-event-workbench.pem
-CRX_KEY_PATH=private/lightstreamer-event-workbench.pem npm run release:crx
+mv release/lightstreamer-workbench-v<version>.pem private/lightstreamer-workbench.pem
+CRX_KEY_PATH=private/lightstreamer-workbench.pem npm run release:crx
 ```
 
 Set `CHROME_PATH` if Chrome is not at a standard macOS/Linux path.
@@ -104,7 +104,7 @@ For the first item creation or a manual update:
 
 1. Build the ZIP with `npm run release:package`.
 2. Open the [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole).
-3. Choose the generated `release/lightstreamer-event-workbench-v<version>.zip`.
+3. Choose the generated `release/lightstreamer-workbench-v<version>.zip`.
 4. Complete listing, privacy, distribution, and test-instructions fields before submission.
 
 The Chrome Web Store docs call for selecting a ZIP package from the dashboard, and their package size limit is 2 GB.
@@ -143,7 +143,7 @@ export CWS_ACCESS_TOKEN="$(gcloud auth print-access-token --impersonate-service-
 Upload a selected ZIP:
 
 ```bash
-npm run release:upload -- --zip release/lightstreamer-event-workbench-v<version>.zip
+npm run release:upload -- --zip release/lightstreamer-workbench-v<version>.zip
 ```
 
 If `--zip` is omitted, the CLI uses the latest `release/*.zip` matching `package.json` version.

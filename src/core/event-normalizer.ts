@@ -2,6 +2,7 @@ import { type CaptureMessage, type JsonObject, type JsonValue } from "../bridge/
 import {
   type EventCaptureSource,
   type EventClient,
+  type EventSemanticValueState,
   type EventItem,
   type EventListener,
   type EventSubscription,
@@ -31,6 +32,7 @@ export function normalizeCaptureMessage(
 ): LightstreamerEventEnvelope {
   const payload = message.payload;
   const update = toEventUpdate(payload.update);
+  const raw = toRaw(payload.raw);
 
   return {
     id,
@@ -40,37 +42,104 @@ export function normalizeCaptureMessage(
     captureSource: toCaptureSource(payload.raw),
     synthetic: false,
     kind: message.kind,
-    client: toClient(payload.client),
-    subscription: toSubscription(payload.subscription),
+    logicalEventId: asString(raw?.logicalEventId),
+    client: toClient(payload.client, message.topology?.client),
+    subscription: toSubscription(payload.subscription, message.topology?.subscription),
     listener: toListener(payload.listener),
     item: toItem(payload.item),
     update,
-    raw: toRaw(payload.raw)
+    raw,
+    ...(message.topology ? { topology: message.topology } : {})
   };
 }
 
-function toClient(value: JsonValue | undefined): EventClient | undefined {
+function toClient(
+  value: JsonValue | undefined,
+  semanticEvidence?: Record<string, unknown>
+): EventClient | undefined {
   const record = asRecord(value);
   const id = asString(record?.id);
   if (!record || !id) {
     return undefined;
   }
 
+  const semanticValueStates = {
+    ...toSemanticValueStates(asRecord(record.semanticValueStates)),
+    ...toSemanticValueStates(semanticEvidence)
+  };
   return {
     id,
     status: asString(record.status),
     serverAddress: asNullableString(record.serverAddress),
-    adapterSet: asNullableString(record.adapterSet)
+    adapterSet: asNullableString(record.adapterSet),
+    libraryVersion: asNullableString(record.libraryVersion),
+    instrumentationSource: asNullableString(record.instrumentationSource),
+    coverageStatus: asNullableString(record.coverageStatus),
+    sessionId: asNullableString(record.sessionId),
+    serverInstanceAddress: asNullableString(record.serverInstanceAddress),
+    serverSocketName: asNullableString(record.serverSocketName),
+    clientIp: asNullableString(record.clientIp),
+    transport: asNullableString(record.transport),
+    requestedMaxBandwidth: asNumberOrString(record.requestedMaxBandwidth),
+    realMaxBandwidth: asNumberOrString(record.realMaxBandwidth),
+    keepaliveInterval: asNullableNumber(record.keepaliveInterval),
+    reverseHeartbeatInterval: asNullableNumber(record.reverseHeartbeatInterval),
+    pollingInterval: asNullableNumber(record.pollingInterval),
+    idleTimeout: asNullableNumber(record.idleTimeout),
+    retryDelay: asNullableNumber(record.retryDelay),
+    firstRetryMaxDelay: asNullableNumber(record.firstRetryMaxDelay),
+    stalledTimeout: asNullableNumber(record.stalledTimeout),
+    reconnectTimeout: asNullableNumber(record.reconnectTimeout),
+    sessionRecoveryTimeout: asNullableNumber(record.sessionRecoveryTimeout),
+    forcedTransport: asNullableString(record.forcedTransport),
+    ...(Object.keys(semanticValueStates).length > 0 ? { semanticValueStates } : {})
   };
 }
 
-function toSubscription(value: JsonValue | undefined): EventSubscription | undefined {
+function toSemanticValueStates(
+  evidence: Record<string, unknown> | undefined
+): Record<string, EventSemanticValueState> | undefined {
+  if (!evidence) return undefined;
+  const states = Object.entries(evidence).flatMap(([key, value]) => {
+    const record = asRecord(value as JsonValue);
+    const state = record?.state;
+    if (
+      state !== "requested" &&
+      state !== "real" &&
+      state !== "inferred" &&
+      state !== "unknown" &&
+      state !== "unavailable" &&
+      state !== "redacted" &&
+      state !== "not-applicable"
+    ) {
+      return [];
+    }
+    const semanticState: EventSemanticValueState = { state };
+    const reason = asString(record?.reason);
+    const context = asString(record?.context);
+    if (reason) {
+      semanticState.reason = reason as EventSemanticValueState["reason"];
+    }
+    if (context) semanticState.context = context;
+    return [[key, semanticState] as const];
+  });
+  return states.length > 0 ? Object.fromEntries(states) : undefined;
+}
+
+function toSubscription(
+  value: JsonValue | undefined,
+  semanticEvidence?: Record<string, unknown>
+): EventSubscription | undefined {
   const record = asRecord(value);
   const id = asString(record?.id);
   if (!record || !id) {
     return undefined;
   }
 
+  const semanticValueStates = {
+    ...toSemanticValueStates(asRecord(record.semanticValueStates)),
+    ...toSemanticValueStates(semanticEvidence)
+  };
   return {
     id,
     mode: asNullableString(record.mode),
@@ -79,16 +148,34 @@ function toSubscription(value: JsonValue | undefined): EventSubscription | undef
     fields: asStringArray(record.fields),
     fieldSchema: asNullableString(record.fieldSchema),
     dataAdapter: asNullableString(record.dataAdapter),
+    selector: asNullableString(record.selector),
     requestedSnapshot: asSnapshotRequest(record.requestedSnapshot),
+    requestedBufferSize: asNumberOrString(record.requestedBufferSize),
+    requestedMaxFrequency: asNumberOrString(record.requestedMaxFrequency),
+    realMaxFrequency: asNumberOrString(record.realMaxFrequency),
+    active: asBoolean(record.active),
+    subscribed: asBoolean(record.subscribed),
+    listenerCount: asNullableNumber(record.listenerCount),
+    commandSecondLevelDataAdapter: asNullableString(record.commandSecondLevelDataAdapter),
+    commandSecondLevelFields: asStringArray(record.commandSecondLevelFields),
+    commandSecondLevelFieldSchema: asNullableString(record.commandSecondLevelFieldSchema),
     keyPosition: asNumberOrString(record.keyPosition),
-    commandPosition: asNumberOrString(record.commandPosition)
+    commandPosition: asNumberOrString(record.commandPosition),
+    ...(Object.keys(semanticValueStates).length > 0 ? { semanticValueStates } : {})
   };
 }
 
 function toListener(value: JsonValue | undefined): EventListener | undefined {
   const record = asRecord(value);
   const id = asString(record?.id);
-  return id ? { id } : undefined;
+  return id
+    ? {
+        id,
+        callbacks: asStringArray(record?.callbacks),
+        registrationCount: asNullableNumber(record?.registrationCount) ?? undefined,
+        metricOwner: asBoolean(record?.metricOwner)
+      }
+    : undefined;
 }
 
 function toItem(value: JsonValue | undefined): EventItem | undefined {
@@ -126,7 +213,8 @@ function toEventUpdate(value: JsonValue | undefined): EventUpdate | undefined {
     changedFields,
     jsonPatches: asObjectRecord(record.jsonPatches),
     command,
-    key
+    key,
+    lostUpdates: asNullableNumber(record.lostUpdates)
   };
 }
 
@@ -176,6 +264,13 @@ function asStringArray(value: JsonValue | undefined): string[] | undefined {
 
 function asNumber(value: JsonValue | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function asNullableNumber(value: JsonValue | undefined): number | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  return asNumber(value);
 }
 
 function asNumberOrString(value: JsonValue | undefined): number | string | null | undefined {

@@ -4,6 +4,7 @@ import {
   type PageReinjectionExecutionTarget,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
+  type TopologySyncFrame,
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
   PAGE_REINJECT_REQUEST,
@@ -13,6 +14,7 @@ import {
   PANEL_REINJECT_RESULT,
   RUNTIME_REINJECT_RESULT,
   isPanelCaptureMessage,
+  isPanelTopologySyncFrameMessage,
   isPanelReinjectResultMessage,
   isPanelStatusMessage
 } from "../../bridge/messages";
@@ -25,6 +27,7 @@ import {
 export type PanelBridgeHandlers = {
   onStatusChange(status: CaptureStatus): void;
   onCaptureMessage(message: CaptureMessage): void;
+  onTopologySyncFrame?(frame: TopologySyncFrame): void;
 };
 
 export type PanelBridgeConnection = {
@@ -84,6 +87,12 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
 
       if (isPanelCaptureMessage(message)) {
         handlers.onCaptureMessage(message.message);
+        return;
+      }
+
+
+      if (isPanelTopologySyncFrameMessage(message)) {
+        handlers.onTopologySyncFrame?.(message.frame);
         return;
       }
 

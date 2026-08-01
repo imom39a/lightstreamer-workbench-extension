@@ -2,7 +2,7 @@ export type ThemePreference = "auto" | "dark" | "light";
 export type EffectiveTheme = Exclude<ThemePreference, "auto">;
 export type DevToolsThemeName = "default" | "dark";
 
-export const THEME_STORAGE_KEY = "lightstreamer-event-workbench.theme";
+export const THEME_STORAGE_KEY = "lightstreamer-workbench.theme";
 
 export type ThemeStorage = Pick<Storage, "getItem" | "setItem">;
 

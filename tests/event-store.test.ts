@@ -1,7 +1,12 @@
 import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  TOPOLOGY_OBSERVATION_VERSION,
+  type TopologyObservation
+} from "../src/bridge/messages";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import { createIndexedDbEventRepository } from "../src/core/event-repository";
 import { createEventStore, createIndexedDbEventStore } from "../src/core/event-store";
 import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
 
@@ -171,6 +176,116 @@ describe("event store", () => {
     await expect(store.count()).resolves.toBe(0);
     store.close?.();
     await deleteEventDatabase(eventDatabaseName(sessionId));
+  });
+
+  it("keeps topology in subscriber memory but never crosses the repository boundary", async () => {
+    const sessionId = "event-store-topology-boundary-test";
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const store = await createIndexedDbEventStore({ sessionId });
+    const topology: TopologyObservation = {
+      version: TOPOLOGY_OBSERVATION_VERSION,
+      kind: "item-update",
+      pageEpoch: "page-a",
+      captureSequence: 42,
+      provenance: { instrumentationSource: "official-public-api" },
+      coverage: { status: "complete", getters: {} },
+      subscription: { id: "sub-a" }
+    };
+    const original: LightstreamerEventEnvelope = {
+      ...event("event-with-topology"),
+      client: {
+        id: "client-a",
+        status: "CONNECTED:WS-STREAMING",
+        semanticValueStates: { status: { state: "real" } }
+      },
+      subscription: {
+        id: "sub-a",
+        mode: "COMMAND",
+        semanticValueStates: { mode: { state: "requested" } }
+      },
+      update: { command: "ADD", key: "alpha" },
+      topology
+    };
+    const appendedNotifications: LightstreamerEventEnvelope[] = [];
+    store.subscribe((change) => {
+      if (change.type === "append") {
+        appendedNotifications.push(change.event);
+      }
+    });
+
+    try {
+      const appended = await store.append(original);
+
+      expect(appended).not.toHaveProperty("topology");
+      expect(appended.client).not.toHaveProperty("semanticValueStates");
+      expect(appended.subscription).not.toHaveProperty("semanticValueStates");
+      expect(appended).toMatchObject({
+        client: { id: "client-a", status: "CONNECTED:WS-STREAMING" },
+        subscription: { id: "sub-a", mode: "COMMAND" },
+        update: { command: "ADD", key: "alpha" }
+      });
+      expect(appendedNotifications).toEqual([original]);
+      expect(appendedNotifications[0]?.topology).toBe(topology);
+      expect(original.topology).toBe(topology);
+      await expect(store.getEventById(original.id)).resolves.not.toHaveProperty("topology");
+      const listed = await store.list();
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).not.toHaveProperty("topology");
+      expect(listed[0]?.client).not.toHaveProperty("semanticValueStates");
+      expect(listed[0]?.subscription).not.toHaveProperty("semanticValueStates");
+      const queried = await store.queryEvents();
+      expect(queried.total).toBe(1);
+      expect(queried.events).toHaveLength(1);
+      expect(queried.events[0]).not.toHaveProperty("topology");
+    } finally {
+      await store.close?.();
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+    }
+  });
+
+  it("sanitizes semantic evidence at the direct IndexedDB repository boundary", async () => {
+    const sessionId = "event-repository-semantic-boundary-test";
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const repository = await createIndexedDbEventRepository(sessionId);
+    const original: LightstreamerEventEnvelope = {
+      ...event("direct-repository-event"),
+      client: {
+        id: "client-a",
+        adapterSet: "DEMO",
+        semanticValueStates: { adapterSet: { state: "requested" } }
+      },
+      subscription: {
+        id: "sub-a",
+        mode: "MERGE",
+        semanticValueStates: { mode: { state: "requested" } }
+      },
+      topology: {
+        version: TOPOLOGY_OBSERVATION_VERSION,
+        kind: "item-update",
+        pageEpoch: "page-a",
+        captureSequence: 1,
+        provenance: { instrumentationSource: "official-public-api" },
+        coverage: { status: "complete", getters: {} }
+      }
+    };
+
+    try {
+      const appended = await repository.appendEvent(original);
+      expect(appended).not.toHaveProperty("topology");
+      expect(appended.client).not.toHaveProperty("semanticValueStates");
+      expect(appended.subscription).not.toHaveProperty("semanticValueStates");
+      expect(appended).toMatchObject({
+        client: { id: "client-a", adapterSet: "DEMO" },
+        subscription: { id: "sub-a", mode: "MERGE" }
+      });
+      const stored = await repository.getEventById(original.id);
+      expect(stored).not.toHaveProperty("topology");
+      expect(stored?.client).not.toHaveProperty("semanticValueStates");
+      expect(stored?.subscription).not.toHaveProperty("semanticValueStates");
+    } finally {
+      repository.close();
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+    }
   });
 
   it("can reset an IndexedDB-backed session on startup", async () => {

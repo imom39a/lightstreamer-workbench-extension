@@ -1,6 +1,8 @@
 export type Constructor<T> = new (...args: never[]) => T;
 
 export type LightstreamerClientLike = {
+  connectionDetails?: LightstreamerConnectionDetailsLike;
+  connectionOptions?: LightstreamerConnectionOptionsLike;
   connect?: (...args: unknown[]) => unknown;
   disconnect?: (...args: unknown[]) => unknown;
   subscribe?: (...args: unknown[]) => unknown;
@@ -9,6 +11,27 @@ export type LightstreamerClientLike = {
   removeListener?: (...args: unknown[]) => unknown;
   getStatus?: () => unknown;
   getSubscriptions?: () => unknown;
+};
+
+export type LightstreamerConnectionDetailsLike = {
+  getAdapterSet?: () => unknown;
+  getClientIp?: () => unknown;
+  getServerAddress?: () => unknown;
+  getServerInstanceAddress?: () => unknown;
+  getServerSocketName?: () => unknown;
+  getSessionId?: () => unknown;
+};
+
+export type LightstreamerConnectionOptionsLike = {
+  getFirstRetryMaxDelay?: () => unknown;
+  getForcedTransport?: () => unknown;
+  getKeepaliveInterval?: () => unknown;
+  getRealMaxBandwidth?: () => unknown;
+  getReconnectTimeout?: () => unknown;
+  getRequestedMaxBandwidth?: () => unknown;
+  getRetryDelay?: () => unknown;
+  getSessionRecoveryTimeout?: () => unknown;
+  getStalledTimeout?: () => unknown;
 };
 
 export type LightstreamerSubscriptionLike = {
@@ -21,8 +44,17 @@ export type LightstreamerSubscriptionLike = {
   getFieldSchema?: () => unknown;
   getDataAdapter?: () => unknown;
   getRequestedSnapshot?: () => unknown;
+  getRequestedBufferSize?: () => unknown;
+  getRequestedMaxFrequency?: () => unknown;
+  getSelector?: () => unknown;
+  getListeners?: () => unknown;
+  getCommandSecondLevelDataAdapter?: () => unknown;
+  getCommandSecondLevelFields?: () => unknown;
+  getCommandSecondLevelFieldSchema?: () => unknown;
   getKeyPosition?: () => unknown;
   getCommandPosition?: () => unknown;
+  isActive?: () => unknown;
+  isSubscribed?: () => unknown;
 };
 
 export type LightstreamerListenerLike = Record<string, unknown>;

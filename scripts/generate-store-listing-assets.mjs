@@ -321,7 +321,7 @@ function htmlSource() {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Lightstreamer Event Workbench Store Listing Screenshot</title>
+    <title>Lightstreamer Workbench Store Listing Screenshot</title>
     <link rel="stylesheet" href="/entry.css">
     <style>
       html, body, #app {
@@ -529,7 +529,7 @@ function smallPromoOverlaySvg() {
 function marqueePromoOverlaySvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560">
   <text x="82" y="258" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Lightstreamer</text>
-  <text x="82" y="330" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Event Workbench</text>
+  <text x="82" y="330" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Workbench</text>
   <text x="86" y="394" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">Inspect COMMAND streams, changed fields,</text>
   <text x="86" y="436" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">snapshots, and local synthetic replay.</text>
   <rect x="86" y="482" width="158" height="42" rx="8" fill="#2563eb"/>
@@ -569,7 +569,7 @@ function realAppGalleryOverlaySvg() {
 
 function githubSocialPreviewOverlaySvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
-  <text x="210" y="148" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800">Lightstreamer Event Workbench</text>
+  <text x="210" y="148" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800">Lightstreamer Workbench</text>
   <text x="212" y="186" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="22">Chrome DevTools extension</text>
   <text x="96" y="298" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">Inspect COMMAND</text>
   <text x="96" y="365" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">streams in DevTools</text>

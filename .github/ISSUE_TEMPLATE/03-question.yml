@@ -1,5 +1,5 @@
 name: Usage question
-description: Ask a question about using or contributing to Lightstreamer Event Workbench.
+description: Ask a question about using or contributing to Lightstreamer Workbench.
 title: "[Question]: "
 labels: ["question"]
 body:
