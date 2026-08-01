@@ -474,6 +474,8 @@ There are two concrete storage paths:
 
 Both stores retain accepted events in capture order and coalesce burst work into bounded batches. IndexedDB commits one transaction per batch, while retained counts are maintained from successful batch completions instead of issuing a count request for every event. Subscriber append notifications carry either one event or an `append-batch`; `clear()` waits behind accepted writes, and `close()` drains accepted writes before closing the backend. This keeps one-off events observable while allowing sustained capture to continue while persistence drains.
 
+The panel overlays a bounded 60-event live tail on the latest durable page so current activity remains visible while an IndexedDB batch is committing. Latest-page reconciliation is single-flight: activity during an active query marks it dirty and causes one follow-up query, rather than invalidating every completed query. The overlay is presentation-only; every accepted event still follows the ordered durable history path.
+
 `bootPanel()` calls `createPanelEventStore()`, which attempts:
 
 ```ts
@@ -536,7 +538,7 @@ Each client retains at most five compact, immutable historical session snapshots
 
 Logical updates and callback deliveries are separate counters. Primary instrumentation gives every observed `ItemUpdate` object a stable weakly held logical ID; delivery callbacks share that ID, and one callback is marked as the metric owner when object identity is unavailable. Synthetic updates have independent counts and never change server/logical update, snapshot, lost-update, or error totals.
 
-Snapshot phase follows the observed protocol: requested snapshots can move through waiting, snapshot, complete, and live; no-snapshot subscriptions become live after server establishment; clear produces cleared; a new session resets the phase; and fallback wire capture reports unknown when it cannot prove the state. COMMAND subscriptions expose only an aggregate key summary in Topology—active/deleted counts, snapshot state, and last command—while full key lifecycle remains in COMMAND State.
+Snapshot phase follows the observed protocol: requested snapshots can move through waiting, snapshot, complete, and live; no-snapshot subscriptions become live after server establishment; clear produces cleared; a new session resets the phase; and fallback wire capture reports unknown when it cannot prove the state. COMMAND subscriptions expose only aggregate generation/key summaries in the structural Topology tree. Raw generation evidence starts as a bounded 25-entry detail collection, expands incrementally, can be copied completely without rendering every identity, and links to full key lifecycle in COMMAND State.
 
 Exact duplicate diagnostics compare mode, item and field descriptors, snapshot, requested frequency, requested buffer size, and second-level COMMAND settings. Partially overlapping active subscriptions remain separate and receive an overlap diagnostic. Only captured errors and lost updates are warning health states; duplicate and overlap findings remain informational diagnostics.
 
@@ -826,7 +828,7 @@ store.queryEvents({
 })
 ```
 
-`TIMELINE_WINDOW_SIZE` is `60`. The Timeline keeps that fixed DOM bound while all matching events remain retained in the store. Scrolling upward at the top boundary loads the preceding window; scrolling downward at the bottom boundary loads the next window. **Older**, **Newer**, and **Latest** buttons provide the same navigation explicitly and remain available when the current window is shorter than the viewport.
+`TIMELINE_WINDOW_SIZE` is `60`. The Timeline keeps that fixed DOM bound while all matching events remain retained in the store. **Live** follows the bounded current tail independently from Capture status. Scrolling away from current activity or choosing **Freeze view** anchors the visible matching window, counts newer matching events, and leaves Capture running. **Older** and **Newer** browse the frozen history; **Follow live** returns to the newest window. Event detail selection is independently pinned and never changes Live/Frozen state.
 
 ### Topology View
 
@@ -839,8 +841,12 @@ The Topology view renders:
 - separate logical-update, callback-delivery, synthetic, snapshot-phase, loss, error, listener, exact-duplicate, and overlap metrics
 - explicit full, mixed, or limited capture coverage
 - current listener/wire replay-target availability and provenance
+- bounded COMMAND generation summaries with complete copy access and a route to COMMAND State
+- a privacy-review export menu for a deterministic v1 JSON snapshot and a self-contained offline HTML report
 
 Selection and collapsed branches are keyed by stable captured IDs plus current/historical session context and survive passive append renders. Tree and detail scroll positions are restored around live updates. High-volume renders retain the existing tree DOM when its structure is unchanged, update only mutable text/status fields, and use one delegated tree interaction handler.
+
+`topology-export.ts` maps one immutable `TopologyState` snapshot into the shared versioned export schema. Compact evidence collections declare total, included, omitted, truncation, and latest-sampling metadata; complete evidence is opt-in. Server addresses, client IPs, item names, COMMAND keys, configured fields/schemas, and captured identifiers are independently redactable, while credential-like fields and URL credentials are always excluded. `topology-html-report.ts` renders the approved structured snapshot into offline HTML with inline CSS/search only, escaped application-controlled values, collapsible hierarchy, and the same bounded evidence metadata.
 
 ### COMMAND State View
 

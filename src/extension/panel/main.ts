@@ -83,13 +83,20 @@ import {
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
 import { createThemeManager, type ThemePreference } from "./theme";
 import { createTopologyInspector } from "./topology-inspector";
+import { renderTopologyHtmlReport } from "./topology-html-report";
+import {
+  TOPOLOGY_SENSITIVE_CATEGORIES,
+  createTopologyStructuredSnapshot,
+  serializeTopologySnapshot,
+  topologySensitiveCategoryCounts,
+  type TopologySensitiveCategory,
+  type TopologyStructuredSnapshot
+} from "./topology-export";
 import { createTopologyProjection } from "./topology-projection";
 import {
   createTopologyTreeViewModel,
   findTopologySelection,
   topologyClientNodePresentation,
-  topologyCommandGenerationNodePresentation,
-  topologyInferredChildNodePresentation,
   topologyItemLabel,
   topologyItemNodePresentation,
   topologyItemTone,
@@ -140,6 +147,7 @@ type DraftJsonParseResult = {
   error: string | null;
 };
 type ActiveView = "timeline" | "topology" | "command";
+type TimelineViewMode = "live" | "frozen";
 type LiveReinjectionTarget = {
   executionTarget: ReinjectionExecutionTarget;
   subscriptionId: string;
@@ -205,6 +213,8 @@ const TOPOLOGY_SELECTED_ITEM_LIMIT = 200;
 const TOPOLOGY_FULL_ITEM_LIMIT = 1_000;
 const TOPOLOGY_DEFERRED_ITEM_THRESHOLD = 200;
 const TOPOLOGY_ITEM_RENDER_CHUNK = 50;
+const TOPOLOGY_EVIDENCE_INITIAL_LIMIT = 25;
+const TOPOLOGY_EVIDENCE_CHUNK = 25;
 const HISTORICAL_TOPOLOGY_NOTE =
   "Frozen record only. The Workbench does not maintain or reconnect this session. Historical topology is read-only; matching captured events remain available subject to event retention.";
 type CommandSelection = CommandRowSelection | CommandDiagnosticSelection | null;
@@ -718,6 +728,15 @@ function reportHistoryError(error: unknown): void {
   console.error("Lightstreamer Workbench history operation failed", error);
 }
 
+function downloadTextFile(filename: string, content: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export function renderPanel(
   root: HTMLElement,
   state: PanelState = initialState,
@@ -735,7 +754,14 @@ export function renderPanel(
   let selectedTimelineEvent: LightstreamerEventEnvelope | null = null;
   let selectedPinned = false;
   let timelineEvents: readonly LightstreamerEventEnvelope[] = [];
+  let timelineReconciledEvents: readonly LightstreamerEventEnvelope[] = [];
+  let timelineReconciledTotal = 0;
+  let timelineLiveTail: LightstreamerEventEnvelope[] = [];
+  const timelinePendingCommitVisibility = new Map<string, boolean>();
   let timelineQueryVersion = 0;
+  let timelineLatestQueryGeneration = 0;
+  let timelineLatestQueryInFlight = false;
+  let timelineLatestQueryDirty = false;
   let currentStoreStats: EventStoreStats = storeStatsSnapshot();
   let draft: ReinjectionDraft | null = null;
   let draftExecutionTarget: ReinjectionExecutionTarget = "captured-listener";
@@ -759,6 +785,8 @@ export function renderPanel(
   let timelineDetailWidth = TIMELINE_DEFAULT_DETAIL_WIDTH;
   let timelineWindowOffset = 0;
   let timelineHistoryAnchor = 0;
+  let timelineViewMode: TimelineViewMode = "live";
+  let timelineNewerEventCount = 0;
   let timelineFollowLatest = true;
   let timelineVisibleTotal = 0;
   let timelineLastScrollTop = 0;
@@ -784,6 +812,13 @@ export function renderPanel(
   const topologyRenderedNodes = new Map<string, RenderedTopologyNode>();
   const topologyNodeSelections = new Map<string, TopologySelection>();
   const topologyCollapsedKeys = new Set<string>();
+  const topologyExpandedEvidence = new Set<string>();
+  const topologyEvidenceLimits = new Map<string, number>();
+  const topologyExportRedactions = new Set<TopologySensitiveCategory>(
+    TOPOLOGY_SENSITIVE_CATEGORIES
+  );
+  let topologyExportCompleteEvidence = false;
+  let topologyApprovedSnapshot: TopologyStructuredSnapshot | null = null;
   let highVolumeNoticeDismissed = false;
   let selectedCommandItem: { subscriptionId: string; itemId: string } | null = null;
   let selectedCommandKey: CommandSelection = null;
@@ -1036,7 +1071,38 @@ export function renderPanel(
     setFilter("query", searchInput.value);
   });
 
-  filterStrip.append(searchInput, createTimelineCodeLegend());
+  const timelineDisplayState = document.createElement("div");
+  timelineDisplayState.className = "timeline-display-state";
+  timelineDisplayState.setAttribute("aria-label", "Timeline view state");
+  const timelineDisplayBadge = createTextElement(
+    "strong",
+    "timeline-display-badge",
+    "Live"
+  );
+  const timelineDisplaySummary = createTextElement(
+    "span",
+    "timeline-display-summary",
+    "Following current activity"
+  );
+  const timelineDisplayAction = document.createElement("button");
+  timelineDisplayAction.className = "timeline-display-action";
+  timelineDisplayAction.type = "button";
+  timelineDisplayAction.textContent = "Freeze view";
+  timelineDisplayAction.addEventListener("click", () => {
+    if (timelineViewMode === "live") {
+      setTimelineViewMode("frozen");
+      renderFeed({ preservePaneState: true });
+      return;
+    }
+    followLiveTimeline();
+  });
+  timelineDisplayState.append(
+    timelineDisplayBadge,
+    timelineDisplaySummary,
+    timelineDisplayAction
+  );
+
+  filterStrip.append(searchInput, createTimelineCodeLegend(), timelineDisplayState);
 
   const commandFilterStrip = document.createElement("section");
   commandFilterStrip.className = "command-filter-strip";
@@ -1603,10 +1669,83 @@ export function renderPanel(
   function resetTimelineRenderLimit(): void {
     timelineWindowOffset = 0;
     timelineHistoryAnchor = 0;
+    timelineViewMode = "live";
+    timelineNewerEventCount = 0;
     timelineFollowLatest = true;
     timelineVisibleTotal = 0;
     timelineLastScrollTop = 0;
     timelineScrollNavigationPending = null;
+    resetTimelineLiveReconciliation();
+    renderTimelineDisplayState();
+  }
+
+  function setTimelineViewMode(mode: TimelineViewMode): void {
+    if (timelineViewMode !== mode) {
+      timelineViewMode = mode;
+      timelineNewerEventCount = mode === "frozen" ? timelineWindowOffset : 0;
+    }
+    timelineFollowLatest = mode === "live" && timelineWindowOffset === 0;
+    renderTimelineDisplayState();
+  }
+
+  function followLiveTimeline(): void {
+    timelineWindowOffset = 0;
+    timelineScrollNavigationPending = null;
+    setTimelineViewMode("live");
+    renderFeed({ preservePaneState: true });
+  }
+
+  function renderTimelineDisplayState(): void {
+    if (!timelineDisplayBadge) {
+      return;
+    }
+    const live = timelineViewMode === "live";
+    timelineDisplayState.dataset.mode = timelineViewMode;
+    timelineDisplayBadge.textContent = live ? "Live" : "Frozen";
+    timelineDisplaySummary.textContent = live
+      ? `${currentStoreStats.retained.toLocaleString()} retained · following current activity`
+      : `${timelineNewerEventCount.toLocaleString()} newer · ${currentStoreStats.retained.toLocaleString()} retained`;
+    timelineDisplayAction.textContent = live ? "Freeze view" : "Follow live";
+    timelineDisplayAction.setAttribute(
+      "aria-label",
+      live ? "Freeze Timeline view" : `Follow live Timeline, ${timelineNewerEventCount} newer events`
+    );
+  }
+
+  function resetTimelineLiveReconciliation(): void {
+    timelineLatestQueryGeneration += 1;
+    timelineLatestQueryDirty = timelineLatestQueryInFlight;
+    timelineReconciledEvents = [];
+    timelineReconciledTotal = 0;
+    timelineLiveTail = [];
+  }
+
+  function rememberTimelineLiveEvent(event: LightstreamerEventEnvelope): void {
+    if (!matchesEventFilters(event, filterState)) {
+      return;
+    }
+    const existing = timelineLiveTail.findIndex(({ id }) => id === event.id);
+    if (existing >= 0) {
+      timelineLiveTail.splice(existing, 1);
+    }
+    timelineLiveTail.push(event);
+    if (timelineLiveTail.length > TIMELINE_WINDOW_SIZE) {
+      timelineLiveTail.splice(0, timelineLiveTail.length - TIMELINE_WINDOW_SIZE);
+    }
+    if (timelineLatestQueryInFlight) {
+      timelineLatestQueryDirty = true;
+    }
+  }
+
+  function noteTimelineNewerEvent(event: LightstreamerEventEnvelope): void {
+    if (
+      timelineViewMode !== "frozen" ||
+      !matchesEventFilters(event, filterState)
+    ) {
+      return;
+    }
+    timelineNewerEventCount += 1;
+    renderTimelineDisplayState();
   }
 
   function handleTimelineScroll(): void {
@@ -1616,7 +1755,9 @@ export function renderPanel(
     const scrollingUp = currentScrollTop < previousScrollTop;
     const scrollingDown = currentScrollTop > previousScrollTop;
     const nearBottom = isTimelineNearBottom();
-    timelineFollowLatest = timelineWindowOffset === 0 && nearBottom;
+    if (timelineViewMode === "live" && !(timelineWindowOffset === 0 && nearBottom)) {
+      setTimelineViewMode("frozen");
+    }
 
     if (
       activeView !== "timeline" ||
@@ -1681,6 +1822,11 @@ export function renderPanel(
 
   function renderFeed(options: RenderOptions = {}, onRendered?: () => void): void {
     helpTooltips.hide();
+    if (timelineWindowOffset === 0 && timelineFollowLatest) {
+      renderLatestTimelineOverlay(options);
+      reconcileLatestTimeline(options, onRendered);
+      return;
+    }
     const queryVersion = ++timelineQueryVersion;
     history
       .queryEvents({
@@ -1698,6 +1844,93 @@ export function renderPanel(
       }, reportHistoryError);
   }
 
+  function reconcileLatestTimeline(
+    options: RenderOptions = {},
+    onRendered?: () => void
+  ): void {
+    if (timelineLatestQueryInFlight) {
+      timelineLatestQueryDirty = true;
+      return;
+    }
+
+    timelineLatestQueryInFlight = true;
+    timelineLatestQueryDirty = false;
+    const generation = timelineLatestQueryGeneration;
+    const filters = { ...filterState };
+    history
+      .queryEvents({
+        filters,
+        order: "asc",
+        limit: TIMELINE_WINDOW_SIZE,
+        offset: 0
+      })
+      .receive(
+        (result) => {
+          timelineLatestQueryInFlight = false;
+          if (
+            panelVisible &&
+            generation === timelineLatestQueryGeneration &&
+            timelineWindowOffset === 0 &&
+            timelineFollowLatest
+          ) {
+            timelineReconciledEvents = result.events;
+            timelineReconciledTotal = result.total;
+            const reconciledIds = new Set(result.events.map(({ id }) => id));
+            timelineLiveTail = timelineLiveTail.filter(({ id }) => !reconciledIds.has(id));
+            renderLatestTimelineOverlay(options);
+            onRendered?.();
+          }
+          if (timelineLatestQueryDirty) {
+            timelineLatestQueryDirty = false;
+            if (panelVisible && timelineWindowOffset === 0 && timelineFollowLatest) {
+              reconcileLatestTimeline({
+                preservePaneState: true,
+                passiveStoreUpdate: true
+              });
+            }
+          }
+        },
+        (error) => {
+          timelineLatestQueryInFlight = false;
+          reportHistoryError(error);
+          if (timelineLatestQueryDirty) {
+            timelineLatestQueryDirty = false;
+            if (panelVisible && timelineWindowOffset === 0 && timelineFollowLatest) {
+              reconcileLatestTimeline({
+                preservePaneState: true,
+                passiveStoreUpdate: true
+              });
+            }
+          }
+        }
+      );
+  }
+
+  function renderLatestTimelineOverlay(options: RenderOptions = {}): void {
+    const combined = new Map<string, LightstreamerEventEnvelope>();
+    for (const event of timelineReconciledEvents) {
+      combined.set(event.id, event);
+    }
+    for (const event of timelineLiveTail) {
+      combined.set(event.id, event);
+    }
+    const renderedEvents = Array.from(combined.values()).slice(-TIMELINE_WINDOW_SIZE);
+    const reconciledIds = new Set(timelineReconciledEvents.map(({ id }) => id));
+    const pendingCount = timelineLiveTail.reduce(
+      (total, { id }) => total + (reconciledIds.has(id) ? 0 : 1),
+      0
+    );
+    renderFeedResult(
+      renderedEvents,
+      Math.max(
+        renderedEvents.length,
+        timelineReconciledTotal + pendingCount,
+        hasActiveFilters(filterState) ? 0 : currentStoreStats.retained
+      ),
+      options
+    );
+  }
+
   function renderFeedResult(
     renderedEvents: readonly LightstreamerEventEnvelope[],
     totalVisible: number,
@@ -1706,6 +1939,7 @@ export function renderPanel(
     const filtersActive = hasActiveFilters(filterState);
     timelineEvents = renderedEvents;
     timelineVisibleTotal = totalVisible;
+    renderTimelineDisplayState();
 
     filteredCount.hidden = !filtersActive;
     filteredCount.textContent = filtersActive ? `${totalVisible} shown` : "";
@@ -1777,7 +2011,6 @@ export function renderPanel(
         selectedTimelineEvent = event;
         selectedPinned = true;
         timelineDetailOpen = true;
-        timelineFollowLatest = false;
         clearDraftForSelection(event.id);
         renderFeed();
         renderDetail(event);
@@ -1845,6 +2078,8 @@ export function renderPanel(
       timelineWindowOffset === 0 && timelineHistoryAnchor > 0
         ? timelineHistoryAnchor
         : timelineWindowOffset + TIMELINE_WINDOW_SIZE;
+    const previousOffset = timelineWindowOffset;
+    const wasFrozen = timelineViewMode === "frozen";
     timelineWindowOffset = Math.min(
       nextOffset,
       oldestWindowOffset(
@@ -1853,7 +2088,11 @@ export function renderPanel(
         TIMELINE_WINDOW_SIZE
       )
     );
-    timelineFollowLatest = false;
+    setTimelineViewMode("frozen");
+    if (wasFrozen) {
+      timelineNewerEventCount += timelineWindowOffset - previousOffset;
+      renderTimelineDisplayState();
+    }
     timelineScrollNavigationPending = fromScroll ? "older" : null;
     renderFeed({ preservePaneState: true });
   }
@@ -1862,13 +2101,17 @@ export function renderPanel(
     if (timelineWindowOffset <= 0) {
       return;
     }
+    const previousOffset = timelineWindowOffset;
     timelineWindowOffset = Math.max(
       0,
       timelineWindowOffset - TIMELINE_WINDOW_SIZE
     );
-    timelineFollowLatest = fromScroll
-      ? false
-      : timelineWindowOffset === 0;
+    setTimelineViewMode("frozen");
+    timelineNewerEventCount = Math.max(
+      0,
+      timelineNewerEventCount - (previousOffset - timelineWindowOffset)
+    );
+    renderTimelineDisplayState();
     timelineScrollNavigationPending = fromScroll ? "newer" : null;
     renderFeed({ preservePaneState: true });
   }
@@ -1876,17 +2119,29 @@ export function renderPanel(
   function createTimelineWindowNavigation(total: number, rendered: number): HTMLElement {
     const navigation = document.createElement("nav");
     navigation.className = "event-window-navigation";
+    navigation.dataset.mode = timelineViewMode;
     navigation.setAttribute("aria-label", "Timeline history window");
 
     const start = Math.max(1, total - timelineWindowOffset - rendered + 1);
     const end = Math.max(0, total - timelineWindowOffset);
-    navigation.append(
-      createTextElement(
-        "span",
-        "event-render-limit",
-        `Showing ${start.toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()} retained events.`
-      )
+    const range = createTextElement(
+      "span",
+      "event-render-limit",
+      `Showing ${start.toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()} retained events.`
     );
+    if (timelineViewMode === "live") {
+      range.hidden = true;
+      navigation.append(
+        createTextElement(
+          "span",
+          "event-live-summary",
+          `${total.toLocaleString()} retained events · following current activity`
+        ),
+        range
+      );
+    } else {
+      navigation.append(range);
+    }
 
     const actions = document.createElement("span");
     actions.className = "window-navigation-actions";
@@ -1904,12 +2159,11 @@ export function renderPanel(
         showNewerTimelineWindow(false);
       }
     );
-    const latest = createWindowNavigationButton("Latest", timelineWindowOffset > 0, () => {
-      timelineWindowOffset = 0;
-      timelineFollowLatest = true;
-      renderFeed({ preservePaneState: true });
-    });
-    actions.append(older, newer, latest);
+    const latest = createWindowNavigationButton("Follow live", true, followLiveTimeline);
+    actions.append(older);
+    if (timelineViewMode === "frozen") {
+      actions.append(newer, latest);
+    }
     navigation.append(actions);
     return navigation;
   }
@@ -3928,8 +4182,157 @@ export function renderPanel(
       renderTopology();
     });
 
-    actions.append(resetCurrent, clearHistory, expandItems);
+    actions.append(
+      resetCurrent,
+      clearHistory,
+      expandItems,
+      createTopologyExportMenu(state)
+    );
     return actions;
+  }
+
+  function createTopologyExportMenu(state: TopologyState): HTMLDetailsElement {
+    const menu = document.createElement("details");
+    menu.className = "topology-export-menu";
+    const summary = document.createElement("summary");
+    summary.className = "topology-action topology-export-toggle";
+    summary.textContent = "Export";
+    menu.append(summary);
+
+    const panel = document.createElement("div");
+    panel.className = "topology-export-panel";
+    panel.append(
+      createTextElement(
+        "p",
+        "topology-export-intro",
+        "Review captured identifiers before creating an immutable export snapshot. Credential-like fields are always excluded."
+      )
+    );
+    const counts = topologySensitiveCategoryCounts(state);
+    const categories = document.createElement("fieldset");
+    categories.className = "topology-export-categories";
+    categories.append(
+      createTextElement("legend", "topology-export-heading", "Redact sensitive categories")
+    );
+    for (const category of TOPOLOGY_SENSITIVE_CATEGORIES) {
+      const label = document.createElement("label");
+      label.className = "topology-export-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = topologyExportRedactions.has(category);
+      checkbox.dataset.category = category;
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          topologyExportRedactions.add(category);
+        } else {
+          topologyExportRedactions.delete(category);
+        }
+        topologyApprovedSnapshot = null;
+        downloadJson.disabled = true;
+        downloadHtml.disabled = true;
+        preview.hidden = true;
+      });
+      label.append(
+        checkbox,
+        createTextElement(
+          "span",
+          "topology-export-option-label",
+          `${topologySensitiveCategoryLabel(category)} (${counts[category].toLocaleString()})`
+        )
+      );
+      categories.append(label);
+    }
+
+    const completeLabel = document.createElement("label");
+    completeLabel.className = "topology-export-option topology-export-complete";
+    const complete = document.createElement("input");
+    complete.type = "checkbox";
+    complete.checked = topologyExportCompleteEvidence;
+    complete.addEventListener("change", () => {
+      topologyExportCompleteEvidence = complete.checked;
+      topologyApprovedSnapshot = null;
+      downloadJson.disabled = true;
+      downloadHtml.disabled = true;
+      preview.hidden = true;
+    });
+    completeLabel.append(
+      complete,
+      createTextElement(
+        "span",
+        "topology-export-option-label",
+        "Include complete establishment and COMMAND generation evidence"
+      )
+    );
+
+    const actions = document.createElement("div");
+    actions.className = "topology-export-actions";
+    const previewButton = document.createElement("button");
+    previewButton.className = "topology-action topology-export-preview";
+    previewButton.type = "button";
+    previewButton.textContent = "Preview JSON";
+    const downloadJson = document.createElement("button");
+    downloadJson.className = "topology-action topology-export-json";
+    downloadJson.type = "button";
+    downloadJson.textContent = "Download JSON";
+    downloadJson.disabled = topologyApprovedSnapshot === null;
+    const downloadHtml = document.createElement("button");
+    downloadHtml.className = "topology-action topology-export-html";
+    downloadHtml.type = "button";
+    downloadHtml.textContent = "Download HTML";
+    downloadHtml.disabled = topologyApprovedSnapshot === null;
+    const preview = document.createElement("pre");
+    preview.className = "topology-export-preview-content";
+    preview.hidden = topologyApprovedSnapshot === null;
+    if (topologyApprovedSnapshot) {
+      preview.textContent = serializeTopologySnapshot(topologyApprovedSnapshot);
+    }
+
+    previewButton.addEventListener("click", () => {
+      topologyApprovedSnapshot = createTopologyStructuredSnapshot(
+        state,
+        topologyProjection.status(),
+        {
+          retainedEventCount: currentStoreStats.retained,
+          completeEvidence: topologyExportCompleteEvidence,
+          redact: topologyExportRedactions
+        }
+      );
+      preview.textContent = serializeTopologySnapshot(topologyApprovedSnapshot);
+      preview.hidden = false;
+      downloadJson.disabled = false;
+      downloadHtml.disabled = false;
+    });
+    downloadJson.addEventListener("click", () => {
+      if (!topologyApprovedSnapshot) return;
+      downloadTextFile(
+        "lightstreamer-topology.json",
+        serializeTopologySnapshot(topologyApprovedSnapshot),
+        "application/json"
+      );
+    });
+    downloadHtml.addEventListener("click", () => {
+      if (!topologyApprovedSnapshot) return;
+      downloadTextFile(
+        "lightstreamer-topology.html",
+        renderTopologyHtmlReport(topologyApprovedSnapshot),
+        "text/html"
+      );
+    });
+    actions.append(previewButton, downloadJson, downloadHtml);
+    panel.append(categories, completeLabel, actions, preview);
+    menu.append(panel);
+    return menu;
+  }
+
+  function topologySensitiveCategoryLabel(category: TopologySensitiveCategory): string {
+    switch (category) {
+      case "server-addresses": return "Server addresses and URLs";
+      case "client-ips": return "Client IPs";
+      case "item-names": return "Item names and groups";
+      case "command-keys": return "COMMAND keys";
+      case "field-names": return "Configured fields and schemas";
+      case "identifiers": return "Captured identifiers";
+    }
   }
 
   function createTopologyMetric(
@@ -4139,17 +4542,6 @@ export function renderPanel(
     );
     const children = createTopologyTreeGroup();
 
-    for (const generation of subscription.commandGenerations) {
-      children.append(
-        createCommandGenerationTopologyTreeNode(
-          client,
-          session,
-          subscription,
-          generation
-        )
-      );
-    }
-
     const selectedBranch = topologySelection.ownerKey === selectionKey;
     const itemLimit = topologyExpandAllItems
       ? Math.min(subscription.items.length, topologyTreeItemBudget)
@@ -4225,64 +4617,6 @@ export function renderPanel(
     row.tabIndex = -1;
     item.append(row);
     return item;
-  }
-
-  function createCommandGenerationTopologyTreeNode(
-    client: TopologyClient | null,
-    session: TopologySession | null,
-    subscription: TopologySubscription,
-    generation: TopologyCommandGeneration
-  ): HTMLElement {
-    const presentation = topologyCommandGenerationNodePresentation(
-      client,
-      session,
-      subscription,
-      generation
-    );
-    const node = createTopologyTreeNode(
-      presentation.selection,
-      presentation.kind,
-      presentation.label,
-      presentation.meta,
-      presentation.tone
-    );
-    const children = createTopologyTreeGroup();
-    for (const child of generation.inferredChildren) {
-      children.append(
-        createInferredChildTopologyTreeNode(
-          client,
-          session,
-          subscription,
-          generation,
-          child
-        )
-      );
-    }
-    attachTopologyTreeChildren(node, children);
-    return node.item;
-  }
-
-  function createInferredChildTopologyTreeNode(
-    client: TopologyClient | null,
-    session: TopologySession | null,
-    subscription: TopologySubscription,
-    generation: TopologyCommandGeneration,
-    child: TopologyInferredChild
-  ): HTMLElement {
-    const presentation = topologyInferredChildNodePresentation(
-      client,
-      session,
-      subscription,
-      generation,
-      child
-    );
-    return createTopologyTreeNode(
-      presentation.selection,
-      presentation.kind,
-      presentation.label,
-      presentation.meta,
-      presentation.tone
-    ).item;
   }
 
   function createItemTopologyTreeNode(
@@ -4852,32 +5186,50 @@ export function renderPanel(
       createTopologyDetailSection("Semantic lifecycle evidence", [
         ["Establishment epochs", subscription.establishments.length],
         [
-          "Establishment identities",
-          subscription.establishments.map(({ id }) => id)
-        ],
-        ["COMMAND generations", subscription.commandGenerations.length],
-        [
-          "COMMAND generation identities",
-          subscription.commandGenerations.map(({ id }) => id)
+          "Latest establishment",
+          subscription.establishments.at(-1)?.id ?? null
         ],
         [
-          "COMMAND keys",
-          subscription.commandGenerations.flatMap(({ key }) => key ? [key] : [])
+          "COMMAND generations",
+          subscription.commandGenerations.length
+        ],
+        [
+          "Active COMMAND keys",
+          subscription.items.reduce(
+            (total, item) => total + item.activeCommandKeyCount,
+            0
+          )
+        ],
+        [
+          "Deleted COMMAND keys",
+          subscription.items.reduce(
+            (total, item) => total + item.deletedCommandKeyCount,
+            0
+          )
+        ],
+        [
+          "Latest COMMAND generation",
+          topologyLatestGenerationSummary(subscription.commandGenerations.at(-1) ?? null)
         ],
         [
           "Inferred second-level children",
-          subscription.commandGenerations.flatMap(({ inferredChildren }) =>
-            inferredChildren.map(({ label }) => label)
+          subscription.commandGenerations.reduce(
+            (total, generation) => total + generation.inferredChildren.length,
+            0
           )
         ],
         [
-          "Second-level provenance",
-          subscription.commandGenerations.flatMap(({ inferredChildren }) =>
-            inferredChildren.map(({ provenance }) => provenance)
-          )
+          "Latest second-level evidence",
+          topologyLatestInferredChildSummary(subscription.commandGenerations)
         ]
       ])
     );
+    if (subscription.mode === "COMMAND" || subscription.commandGenerations.length > 0) {
+      content.append(
+        createTopologyCommandEvidence(subscription),
+        createOpenCommandStateAction(subscription)
+      );
+    }
     if (subscription.historical) {
       content.append(
         createTextElement(
@@ -4887,6 +5239,159 @@ export function renderPanel(
         )
       );
     }
+  }
+
+  function topologyLatestGenerationSummary(
+    generation: TopologyCommandGeneration | null
+  ): string | null {
+    if (!generation) {
+      return null;
+    }
+    return [
+      generation.command,
+      generation.key,
+      generation.itemId,
+      `sequence ${generation.captureSequence.toLocaleString()}`
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function topologyLatestInferredChildSummary(
+    generations: readonly TopologyCommandGeneration[]
+  ): string | null {
+    const child = generations
+      .flatMap(({ inferredChildren }) => inferredChildren)
+      .at(-1);
+    return child
+      ? [child.label, child.provenance, `sequence ${child.captureSequence.toLocaleString()}`]
+          .filter(Boolean)
+          .join(" · ")
+      : null;
+  }
+
+  function createTopologyCommandEvidence(
+    subscription: TopologySubscription
+  ): HTMLDetailsElement {
+    const evidence = document.createElement("details");
+    evidence.className = "topology-command-evidence";
+    evidence.open = topologyExpandedEvidence.has(subscription.id);
+    evidence.addEventListener("toggle", () => {
+      if (evidence.open) {
+        topologyExpandedEvidence.add(subscription.id);
+      } else {
+        topologyExpandedEvidence.delete(subscription.id);
+      }
+    });
+
+    const total = subscription.commandGenerations.length;
+    const requested = topologyEvidenceLimits.get(subscription.id) ??
+      TOPOLOGY_EVIDENCE_INITIAL_LIMIT;
+    const included = Math.min(total, requested);
+    const summary = document.createElement("summary");
+    summary.className = "topology-command-evidence-summary";
+    summary.textContent = `Raw COMMAND evidence · ${included.toLocaleString()} of ${total.toLocaleString()} shown`;
+    evidence.append(summary);
+
+    const controls = document.createElement("div");
+    controls.className = "topology-command-evidence-controls";
+    const copy = document.createElement("button");
+    copy.className = "topology-action topology-copy-command-evidence";
+    copy.type = "button";
+    copy.textContent = "Copy complete evidence";
+    copy.addEventListener("click", async () => {
+      try {
+        if (!navigator.clipboard?.writeText) {
+          throw new Error("Clipboard access is unavailable.");
+        }
+        await navigator.clipboard.writeText(
+          JSON.stringify(subscription.commandGenerations, null, 2)
+        );
+        copy.textContent = `Copied ${total.toLocaleString()} entries`;
+      } catch (error) {
+        copy.textContent = "Copy failed";
+        copy.title = error instanceof Error ? error.message : "Clipboard write failed.";
+      }
+    });
+    controls.append(copy);
+
+    if (included < total) {
+      const showMore = document.createElement("button");
+      showMore.className = "topology-action topology-show-more-command-evidence";
+      showMore.type = "button";
+      showMore.textContent = `Show ${Math.min(
+        TOPOLOGY_EVIDENCE_CHUNK,
+        total - included
+      ).toLocaleString()} more`;
+      showMore.addEventListener("click", () => {
+        topologyExpandedEvidence.add(subscription.id);
+        topologyEvidenceLimits.set(
+          subscription.id,
+          included + TOPOLOGY_EVIDENCE_CHUNK
+        );
+        renderTopology();
+      });
+      controls.append(showMore);
+    }
+    evidence.append(controls);
+
+    const list = document.createElement("ol");
+    list.className = "topology-command-evidence-list";
+    const visibleGenerations = included === 0
+      ? []
+      : subscription.commandGenerations.slice(-included);
+    for (const generation of visibleGenerations) {
+      const entry = document.createElement("li");
+      entry.className = "topology-command-evidence-entry";
+      entry.append(
+        createTextElement(
+          "code",
+          "topology-command-evidence-identity",
+          generation.id
+        ),
+        createTextElement(
+          "span",
+          "topology-command-evidence-meta",
+          topologyLatestGenerationSummary(generation) ?? "Generation evidence"
+        )
+      );
+      list.append(entry);
+    }
+    evidence.append(list);
+    return evidence;
+  }
+
+  function createOpenCommandStateAction(
+    subscription: TopologySubscription,
+    item: TopologyItem | null = subscription.items[0] ?? null
+  ): HTMLElement {
+    const actions = document.createElement("section");
+    actions.className = "topology-detail-actions";
+    const button = document.createElement("button");
+    button.className = "topology-action topology-open-command-state";
+    button.type = "button";
+    button.textContent = item
+      ? "Open item in COMMAND State"
+      : "Open Subscription in COMMAND State";
+    button.addEventListener("click", () => {
+      selectedCommandItem = item
+        ? {
+            subscriptionId: subscription.id,
+            itemId: resolveCommandItemIdentity(
+              { ...subscription, items: subscription.configuredItems },
+              item
+            ).itemId
+          }
+        : null;
+      selectedCommandKey = null;
+      selectedCommandUpdateEventId = null;
+      resetCommandListWindows();
+      activeView = "command";
+      updateActiveViewChrome();
+      renderCommandState();
+    });
+    actions.append(button);
+    return actions;
   }
 
   function renderTopologyItemDetail(
@@ -4927,6 +5432,9 @@ export function renderPanel(
     );
     if (subscription.historical) {
       content.append(createHistoricalItemEventsAction(subscription, item));
+    }
+    if (subscription.mode === "COMMAND") {
+      content.append(createOpenCommandStateAction(subscription, item));
     }
   }
 
@@ -5638,6 +6146,12 @@ export function renderPanel(
         }
       }
       const event = normalizer.normalize(message);
+      rememberTimelineLiveEvent(event);
+      timelinePendingCommitVisibility.set(
+        event.id,
+        timelineWindowOffset === 0 && timelineFollowLatest
+      );
+      noteTimelineNewerEvent(event);
       const topologyResult = topologyProjection.ingestCapture(event);
       if (topologyResult.resetConsumerState) {
         resetTopologyProjectionConsumerState();
@@ -5659,11 +6173,13 @@ export function renderPanel(
             `${currentStoreStats.retained} captured events`
           );
           renderEventVolumeNotice(currentStoreStats);
+          renderTimelineDisplayState();
         }
       }
       appendOperation.receive(
         () => undefined,
         (error) => {
+          timelinePendingCommitVisibility.delete(event.id);
           reportHistoryError(error);
           history.stats().receive(
             (stats) => {
@@ -5679,6 +6195,14 @@ export function renderPanel(
         }
       );
       controller.setStatus("capturing");
+      if (
+        panelVisible &&
+        activeView === "timeline" &&
+        timelineWindowOffset === 0 &&
+        timelineFollowLatest
+      ) {
+        renderActiveViewFromAppend({ preservePaneState: true, passiveStoreUpdate: true });
+      }
     },
 
     applyTopologySyncFrame(frame) {
@@ -5706,6 +6230,9 @@ export function renderPanel(
       topologyRenderedNodes.clear();
       topologyNodeSelections.clear();
       topologyCollapsedKeys.clear();
+      topologyExpandedEvidence.clear();
+      topologyEvidenceLimits.clear();
+      topologyApprovedSnapshot = null;
       topologyProjection.clear();
       liveReinjectionTargets.clear();
       liveClientConnections.clear();
@@ -5718,6 +6245,7 @@ export function renderPanel(
       draftResultEventId = null;
       reinjectionMessage = null;
       resetTimelineRenderLimit();
+      timelinePendingCommitVisibility.clear();
       resetCommandListWindows();
       forceNextStoreRender = true;
       history.clear().receive(() => undefined, reportHistoryError);
@@ -5737,6 +6265,8 @@ export function renderPanel(
       if (!visible) {
         cancelDeferredTopologyItemRendering();
         timelineQueryVersion += 1;
+        timelineLatestQueryGeneration += 1;
+        timelineLatestQueryDirty = timelineLatestQueryInFlight;
         cancelScheduledStoreRender();
         cancelAppendRenderBudgetReset();
         clearInteractionFlushTimer();
@@ -5806,6 +6336,14 @@ export function renderPanel(
     } else if (change.type === "append" || change.type === "append-batch") {
       const appendedEvents = change.type === "append" ? [change.event] : change.events;
       for (const event of appendedEvents) {
+        const wasCapturedBeforeCommit = timelinePendingCommitVisibility.has(event.id);
+        const wasVisibleBeforeCommit =
+          timelinePendingCommitVisibility.get(event.id) === true;
+        timelinePendingCommitVisibility.delete(event.id);
+        if (!wasCapturedBeforeCommit) {
+          noteTimelineNewerEvent(event);
+        }
+        rememberTimelineLiveEvent(event);
         rememberCommandContextEvent(event);
         const currentTopologyPage = topologyProjection.ingestHistory(event);
         if (currentTopologyPage) {
@@ -5813,8 +6351,12 @@ export function renderPanel(
         }
         const shouldAnchorTimelineWindow =
           timelineWindowOffset > 0 ||
-          (!timelineFollowLatest && timelineEvents.length >= TIMELINE_WINDOW_SIZE);
-        if (shouldAnchorTimelineWindow && matchesEventFilters(event, filterState)) {
+          timelineViewMode === "frozen";
+        if (
+          shouldAnchorTimelineWindow &&
+          !wasVisibleBeforeCommit &&
+          matchesEventFilters(event, filterState)
+        ) {
           timelineWindowOffset += 1;
           timelineHistoryAnchor = timelineWindowOffset % TIMELINE_WINDOW_SIZE;
         } else if (timelineWindowOffset === 0) {
@@ -5839,6 +6381,7 @@ export function renderPanel(
     eventCount.textContent = String(stats.retained);
     eventCount.setAttribute("aria-label", `${stats.retained} captured events`);
     renderEventVolumeNotice(stats);
+    renderTimelineDisplayState();
 
     if (change.type === "init") {
       return;

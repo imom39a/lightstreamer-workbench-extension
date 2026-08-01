@@ -442,6 +442,23 @@ describe("panel shell", () => {
   });
 
   describe("high-volume Timeline history navigation", () => {
+    it("counts retained matching events newer than each Frozen history window", async () => {
+      for (let index = 1; index <= 130; index += 1) {
+        appendCommandUpdate(panel, `newer-count-${index}`, { qty: index });
+      }
+      await flushPanelRender();
+
+      clickButtonByText(".event-window-navigation button", "Older");
+      expect(text(".timeline-display-badge")).toBe("Frozen");
+      expect(text(".timeline-display-summary")).toContain("60 newer");
+
+      clickButtonByText(".event-window-navigation button", "Older");
+      expect(text(".timeline-display-summary")).toContain("120 newer");
+
+      clickButtonByText(".event-window-navigation button", "Newer");
+      expect(text(".timeline-display-summary")).toContain("60 newer");
+    });
+
     it("surfaces one retention clear action and pages Timeline history reversibly within a fixed DOM bound", () => {
       document.body.innerHTML = '<main id="app"></main>';
       const root = document.querySelector<HTMLElement>("#app");
@@ -921,7 +938,7 @@ describe("panel shell", () => {
     const anchoredFirstId = document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId;
     expect(anchoredFirstId).toBe("timeline-roundtrip-6");
 
-    clickButtonByText(".event-window-navigation button", "Latest");
+    clickButtonByText(".event-window-navigation button", "Follow live");
     clickButtonByText(".event-window-navigation button", "Older");
     expect(document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId).toBe(
       anchoredFirstId
@@ -972,7 +989,6 @@ describe("panel shell", () => {
       kind: "item-update",
       update: { command: "ADD", key: "key-62" }
     });
-    clickButtonByText(".event-window-navigation button", "Latest");
     document.querySelector<HTMLButtonElement>('.event-row[data-event-id="detail-race-62"]')?.click();
     expect(text(".detail-pane")).toContain("detail-race-62");
 
@@ -1267,6 +1283,73 @@ describe("panel shell", () => {
     }
   });
 
+  it("keeps a bounded live tail moving while one latest reconciliation is in flight", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const memoryStore = createEventStore();
+    if (!root) {
+      throw new Error("missing test root");
+    }
+
+    const pendingLatest: Array<{
+      resolve: () => void;
+    }> = [];
+    let latestQueriesInFlight = 0;
+    let maximumLatestQueriesInFlight = 0;
+    const store: EventStore = {
+      ...memoryStore,
+      queryEvents(query) {
+        if (query?.limit !== 60 || query.offset !== 0) {
+          return memoryStore.queryEvents(query);
+        }
+        latestQueriesInFlight += 1;
+        maximumLatestQueriesInFlight = Math.max(
+          maximumLatestQueriesInFlight,
+          latestQueriesInFlight
+        );
+        return new Promise((resolve) => {
+          pendingLatest.push({
+            resolve: () => {
+              latestQueriesInFlight -= 1;
+              resolve(memoryStore.queryEvents(query));
+            }
+          });
+        });
+      }
+    };
+
+    const controller = renderPanel(root, undefined, { store });
+    expect(pendingLatest).toHaveLength(1);
+    pendingLatest.shift()?.resolve();
+    await flushPromises();
+
+    for (let index = 1; index <= 1_000; index += 1) {
+      appendCommandUpdate(controller, `live-tail-${index}`, { qty: index });
+    }
+
+    await waitForCondition(
+      () =>
+        Array.from(document.querySelectorAll(".event-command")).at(-1)?.textContent ===
+        "ADD/live-tail-1000",
+      250
+    );
+    expect(document.querySelectorAll(".event-row")).toHaveLength(60);
+    expect(pendingLatest).toHaveLength(1);
+    expect(maximumLatestQueriesInFlight).toBe(1);
+
+    pendingLatest.shift()?.resolve();
+    await flushPromises();
+    expect(pendingLatest).toHaveLength(1);
+    expect(maximumLatestQueriesInFlight).toBe(1);
+
+    pendingLatest.shift()?.resolve();
+    await flushPromises();
+    expect(Array.from(document.querySelectorAll(".event-command")).at(-1)?.textContent).toBe(
+      "ADD/live-tail-1000"
+    );
+    controller.dispose();
+  });
+
   it("keeps scroll-paged Timeline history stable during concurrent IndexedDB capture", async () => {
     const previousIndexedDb = globalThis.indexedDB;
     const sessionId = "panel-concurrent-capture-test";
@@ -1328,7 +1411,7 @@ describe("panel shell", () => {
       );
       expect(text(".event-render-limit")).toBe("Showing 541–600 of 601 retained events.");
 
-      clickButtonByText(".event-window-navigation button", "Latest");
+      clickButtonByText(".event-window-navigation button", "Follow live");
       await waitForCondition(
         () => document.querySelector<HTMLButtonElement>(".event-row")?.dataset.eventId === "event-542"
       );
@@ -2070,7 +2153,7 @@ describe("panel shell", () => {
     expect(document.activeElement?.textContent).toContain("alpha");
   });
 
-  it("anchors a selected full Timeline window while live events continue", async () => {
+  it("keeps a selected detail pinned while the Live Timeline continues", async () => {
     for (let index = 0; index < 60; index += 1) {
       appendCommandUpdate(panel, `anchor-${index}`, { qty: index });
     }
@@ -2087,20 +2170,53 @@ describe("panel shell", () => {
     appendCommandUpdate(panel, "live-62", { qty: 62 });
     await flushPanelRender();
 
-    expect(
-      Array.from(document.querySelectorAll<HTMLButtonElement>(".event-row")).map(
-        (row) => row.dataset.eventId
-      )
-    ).toEqual(initialEventIds);
+    const updatedEventIds = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".event-row")
+    ).map((row) => row.dataset.eventId);
+    expect(updatedEventIds).not.toEqual(initialEventIds);
+    expect(updatedEventIds.at(-1)).toBe("event-63");
     expect(
       document.querySelector<HTMLButtonElement>('.event-row[data-selected="true"]')?.dataset.eventId
     ).toBe(selectedEventId);
     expect(text(".selected-event-id")).toBe(selectedEventId);
+    expect(text(".timeline-display-badge")).toBe("Live");
+  });
+
+  it("separates Capture from a filtered Frozen Timeline and follows live on request", async () => {
+    appendCommandUpdate(panel, "alpha-1", { qty: 1 });
+    appendCommandUpdate(panel, "alpha-2", { qty: 2 });
+    await flushPanelRender();
+    input(".search-input", "alpha");
+    await flushPromises();
+
+    const frozenIds = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".event-row")
+    ).map(({ dataset }) => dataset.eventId);
+    clickButtonByText(".timeline-display-state button", "Freeze view");
+    document.querySelector<HTMLButtonElement>(".event-row")?.click();
+    appendCommandUpdate(panel, "beta-ignored", { qty: 3 });
+    appendCommandUpdate(panel, "alpha-3", { qty: 4 });
+    appendCommandUpdate(panel, "alpha-4", { qty: 5 });
+    await flushPanelRender();
+
+    expect(text(".status-badge")).toBe("capturing");
+    expect(text(".timeline-display-badge")).toBe("Frozen");
+    expect(text(".timeline-display-summary")).toContain("2 newer");
     expect(
-      Array.from(document.querySelectorAll<HTMLButtonElement>(".event-window-navigation button")).find(
-        (button) => button.textContent === "Latest"
-      )?.disabled
-    ).toBe(false);
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".event-row")).map(
+        ({ dataset }) => dataset.eventId
+      )
+    ).toEqual(frozenIds);
+    expect(text(".selected-event-id")).toBe(frozenIds[0]);
+
+    clickButtonByText(".timeline-display-state button", "Follow live");
+    await flushPromises();
+    expect(text(".timeline-display-badge")).toBe("Live");
+    expect(text(".timeline-display-summary")).not.toContain("newer");
+    expect(Array.from(document.querySelectorAll(".event-command")).at(-1)?.textContent).toBe(
+      "ADD/alpha-4"
+    );
+    expect(text(".selected-event-id")).toBe(frozenIds[0]);
   });
 
   it("follows events captured while COMMAND State is active until the user scrolls into history", async () => {
@@ -2136,8 +2252,10 @@ describe("panel shell", () => {
     appendCommandUpdate(panel, "echo", { qty: 5 });
     await flushPanelRender();
 
-    expect(document.querySelectorAll(".event-row")).toHaveLength(5);
+    expect(document.querySelectorAll(".event-row")).toHaveLength(4);
     expect(feed.scrollTop).toBe(0);
+    expect(text(".timeline-display-badge")).toBe("Frozen");
+    expect(text(".timeline-display-summary")).toContain("1 newer");
   });
 
   it("keeps Timeline event detail sections expanded or collapsed when new events arrive", async () => {

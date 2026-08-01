@@ -392,11 +392,95 @@ button {
   display: grid;
   min-height: 44px;
   align-items: center;
-  grid-template-columns: minmax(240px, 720px) auto;
+  grid-template-columns: minmax(240px, 720px) auto minmax(260px, 1fr);
   gap: 8px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
   padding: 8px 12px;
+}
+
+.timeline-display-state {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-self: end;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.timeline-display-badge {
+  border: 1px solid var(--color-success);
+  border-radius: 999px;
+  color: var(--color-success);
+  padding: 3px 8px;
+}
+
+.timeline-display-state[data-mode="frozen"] .timeline-display-badge {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+.timeline-display-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-display-action {
+  min-height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-control);
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.topology-command-evidence {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  padding: 8px 10px;
+}
+
+.topology-command-evidence-summary {
+  cursor: pointer;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.topology-command-evidence-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.topology-command-evidence-list {
+  display: grid;
+  gap: 6px;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.topology-command-evidence-entry {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.topology-command-evidence-identity,
+.topology-command-evidence-meta {
+  overflow-wrap: anywhere;
+}
+
+.topology-command-evidence-meta {
+  color: var(--color-muted);
+  font-size: 12px;
 }
 
 .timeline-code-legend {
@@ -693,6 +777,89 @@ button {
 .topology-action:disabled {
   cursor: default;
   opacity: 0.45;
+}
+
+.topology-export-menu {
+  position: relative;
+}
+
+.topology-export-toggle {
+  display: flex;
+  align-items: center;
+  list-style-position: inside;
+}
+
+.topology-export-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  width: min(560px, calc(100vw - 24px));
+  max-height: min(76vh, 720px);
+  overflow: auto;
+  gap: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 20%);
+  background: var(--color-surface);
+  padding: 12px;
+  white-space: normal;
+}
+
+.topology-export-intro {
+  margin: 0;
+  color: var(--color-muted);
+}
+
+.topology-export-categories {
+  display: grid;
+  gap: 6px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.topology-export-heading {
+  color: var(--color-text);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.topology-export-option {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+  color: var(--color-text);
+}
+
+.topology-export-option input {
+  margin-top: 2px;
+}
+
+.topology-export-complete {
+  border-top: 1px solid var(--color-border);
+  padding-top: 10px;
+}
+
+.topology-export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.topology-export-preview-content {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .topology-body {
@@ -1584,6 +1751,11 @@ button {
   color: var(--color-warning);
   font-size: 12px;
   padding: 6px 12px;
+}
+
+.event-window-navigation[data-mode="live"] {
+  background: var(--color-surface);
+  color: var(--color-muted);
 }
 
 .event-render-limit,
@@ -2615,6 +2787,12 @@ button {
 
   .filter-strip {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .timeline-display-state {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-self: stretch;
   }
 
   .command-filter-strip {

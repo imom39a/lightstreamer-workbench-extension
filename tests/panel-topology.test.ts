@@ -1,5 +1,5 @@
 import { IDBFactory } from "fake-indexeddb";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   PAGE_CAPTURE_SYNC_REQUEST,
@@ -601,20 +601,9 @@ describe("topology inspector", () => {
 
     const generation = findNode("Generation order-1");
     const inferredChild = findNode("Second-level lost updates");
-    expect(generation?.getAttribute("role")).toBe("treeitem");
-    expect(generation?.getAttribute("aria-expanded")).toBe("true");
-    generation?.focus();
-    expect(pressKey(generation!, "ArrowRight")).toBe(false);
-    expect(document.activeElement).toBe(inferredChild);
-    expect(pressKey(inferredChild!, "ArrowLeft")).toBe(false);
-    expect(document.activeElement).toBe(generation);
-
-    generation?.click();
-    expect(text(".topology-detail-pane")).toContain("COMMAND generation");
-    expect(text(".topology-detail-pane")).toContain("order-1");
-    inferredChild?.click();
-    expect(text(".topology-detail-pane")).toContain("Inferred child evidence");
-    expect(text(".topology-detail-pane")).toContain("inferred-second-level");
+    expect(generation).toBeUndefined();
+    expect(inferredChild).toBeUndefined();
+    expect(document.querySelectorAll(".topology-command-evidence-entry")).toHaveLength(1);
 
     clickNode("checkpoint-listener");
     expect(text(".topology-detail-pane")).toContain("Attachment IDsattachment-1");
@@ -710,12 +699,12 @@ describe("topology inspector", () => {
       Array.from(document.querySelectorAll(".topology-node-label")).filter(
         ({ textContent }) => textContent === "Generation live-key"
       )
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       Array.from(document.querySelectorAll(".topology-node-label")).filter(
         ({ textContent }) => textContent === "Second-level lost updates"
       )
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       Array.from(document.querySelectorAll(".topology-node-label")).filter(
         ({ textContent }) => textContent === listenerId
@@ -1648,6 +1637,128 @@ describe("topology inspector", () => {
     expect(
       document.querySelector<HTMLButtonElement>(".mutate-inject-button")?.disabled
     ).toBe(true);
+  });
+
+  it("summarizes 1,000 COMMAND generations behind bounded, copyable evidence", async () => {
+    const sync = topologyCheckpoint(
+      "generation-page",
+      "generation-volume",
+      "generation-subscription",
+      2_000
+    );
+    const records = (
+      sync.chunk as Extract<TopologySyncFrame, { records: unknown }>
+    ).records as TopologyAbsoluteRecord[];
+    const subscriptionRecord = records.find(({ kind }) => kind === "subscription");
+    const subscriptionValues = subscriptionRecord?.values;
+    const subscriptionValue = subscriptionValues?.subscription;
+    if (!subscriptionValues || !subscriptionValue || typeof subscriptionValue !== "object") {
+      throw new Error("missing subscription fixture");
+    }
+    subscriptionValues.subscription = {
+      ...subscriptionValue,
+      mode: "COMMAND",
+      fields: ["command", "key", "value"]
+    };
+    for (let index = 1; index <= 1_000; index += 1) {
+      records.push({
+        kind: "command-generation",
+        id: `generation-${index}`,
+        parentId: "generation-subscription",
+        subscriptionId: "generation-subscription",
+        pageEpoch: "generation-page",
+        captureSequence: 10 + index,
+        values: {
+          itemId: "item-1",
+          key: `key-${index}`,
+          command: index % 2 === 0 ? "UPDATE" : "ADD"
+        }
+      });
+    }
+    for (const frame of [sync.begin, sync.chunk, sync.complete]) {
+      frame.recordCount = records.length;
+    }
+    panel.applyTopologySyncFrame(sync.begin);
+    panel.applyTopologySyncFrame(sync.chunk);
+    panel.applyTopologySyncFrame(sync.complete);
+    clickView("Topology");
+    clickNode("generation-subscription");
+
+    expect(text(".topology-detail-pane")).toContain("COMMAND generations1,000");
+    expect(text(".topology-detail-pane")).toContain("key-1000");
+    expect(document.querySelectorAll(".topology-command-evidence-entry")).toHaveLength(25);
+    expect(text(".topology-command-evidence-summary")).toContain("25 of 1,000 shown");
+    expect(text(".topology-tree-pane")).not.toContain("generation-1000");
+    expect(document.querySelectorAll(".topology-node").length).toBeLessThan(20);
+
+    const detail = document.querySelector<HTMLElement>(".topology-detail-pane");
+    if (!detail) throw new Error("missing topology detail");
+    detail.scrollTop = 120;
+    document.querySelector<HTMLDetailsElement>(".topology-command-evidence")!.open = true;
+    document
+      .querySelector<HTMLDetailsElement>(".topology-command-evidence")!
+      .dispatchEvent(new Event("toggle"));
+    document
+      .querySelector<HTMLButtonElement>(".topology-show-more-command-evidence")
+      ?.click();
+    expect(document.querySelectorAll(".topology-command-evidence-entry")).toHaveLength(50);
+    expect(detail.scrollTop).toBe(120);
+    expect(
+      findNode("generation-subscription")?.dataset.selected
+    ).toBe("true");
+
+    const writes: string[] = [];
+    const writeText = vi.fn(async (value: string) => {
+      writes.push(value);
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    document.querySelector<HTMLButtonElement>(".topology-copy-command-evidence")?.click();
+    await Promise.resolve();
+    expect(JSON.parse(writes[0] ?? "[]")).toHaveLength(1_000);
+
+    document.querySelector<HTMLButtonElement>(".topology-open-command-state")?.click();
+    expect(
+      document.querySelector<HTMLButtonElement>('.view-selector button[data-active="true"]')
+        ?.textContent
+    ).toBe("COMMAND State");
+  });
+
+  it("previews and approves an immutable privacy-reviewed JSON snapshot", async () => {
+    appendTopologyFixture(panel);
+    await flushPanel();
+    clickView("Topology");
+    const menu = document.querySelector<HTMLDetailsElement>(".topology-export-menu");
+    if (!menu) throw new Error("missing Topology export menu");
+    menu.open = true;
+    expect(text(".topology-export-panel")).toContain("Server addresses and URLs");
+    expect(text(".topology-export-panel")).toContain("Credential-like fields are always excluded");
+    document.querySelector<HTMLButtonElement>(".topology-export-preview")?.click();
+
+    const preview = document.querySelector<HTMLElement>(".topology-export-preview-content");
+    const approved = preview?.textContent ?? "";
+    expect(JSON.parse(approved).schema.version).toBe(1);
+    expect(approved).toContain("[REDACTED:identifiers]");
+    expect(document.querySelector<HTMLButtonElement>(".topology-export-json")?.disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>(".topology-export-html")?.disabled).toBe(false);
+
+    append(panel, "client-status", {
+      client: { id: "client-after-preview", status: "CONNECTED:WS-STREAMING" }
+    });
+    await flushPanel();
+    expect(text(".topology-export-preview-content")).toBe(approved);
+
+    const complete = document.querySelector<HTMLInputElement>(
+      ".topology-export-complete input"
+    );
+    if (!complete) throw new Error("missing complete evidence option");
+    complete.checked = true;
+    complete.dispatchEvent(new Event("change"));
+    expect(document.querySelector<HTMLElement>(".topology-export-preview-content")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>(".topology-export-json")?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>(".topology-export-html")?.disabled).toBe(true);
   });
 
   it("expands a bounded large tree once and updates it without rebuilding the DOM", async () => {
