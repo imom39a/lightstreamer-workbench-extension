@@ -5642,9 +5642,42 @@ export function renderPanel(
       if (topologyResult.resetConsumerState) {
         resetTopologyProjectionConsumerState();
       }
-      history
-        .append(toPersistableEventEnvelope(event))
-        .receive(() => undefined, reportHistoryError);
+      const retainedBeforeAppend = currentStoreStats.retained;
+      const appendOperation = history.append(toPersistableEventEnvelope(event));
+      if (currentStoreStats.retained === retainedBeforeAppend) {
+        currentStoreStats = {
+          ...currentStoreStats,
+          retained: retainedBeforeAppend + 1,
+          totalAppended: currentStoreStats.totalAppended + 1,
+          warningActive:
+            retainedBeforeAppend + 1 > currentStoreStats.warningThreshold
+        };
+        if (panelVisible) {
+          eventCount.textContent = String(currentStoreStats.retained);
+          eventCount.setAttribute(
+            "aria-label",
+            `${currentStoreStats.retained} captured events`
+          );
+          renderEventVolumeNotice(currentStoreStats);
+        }
+      }
+      appendOperation.receive(
+        () => undefined,
+        (error) => {
+          reportHistoryError(error);
+          history.stats().receive(
+            (stats) => {
+              currentStoreStats = stats;
+              if (panelVisible) {
+                eventCount.textContent = String(stats.retained);
+                eventCount.setAttribute("aria-label", `${stats.retained} captured events`);
+                renderEventVolumeNotice(stats);
+              }
+            },
+            reportHistoryError
+          );
+        }
+      );
       controller.setStatus("capturing");
     },
 
@@ -5770,20 +5803,23 @@ export function renderPanel(
         },
         reportHistoryError
       );
-    } else if (change.type === "append") {
-      rememberCommandContextEvent(change.event);
-      const currentTopologyPage = topologyProjection.ingestHistory(change.event);
-      if (currentTopologyPage) {
-        rememberLiveReinjectionTarget(change.event);
-      }
-      const shouldAnchorTimelineWindow =
-        timelineWindowOffset > 0 ||
-        (!timelineFollowLatest && timelineEvents.length >= TIMELINE_WINDOW_SIZE);
-      if (shouldAnchorTimelineWindow && matchesEventFilters(change.event, filterState)) {
-        timelineWindowOffset += 1;
-        timelineHistoryAnchor = timelineWindowOffset % TIMELINE_WINDOW_SIZE;
-      } else if (timelineWindowOffset === 0) {
-        timelineHistoryAnchor = 0;
+    } else if (change.type === "append" || change.type === "append-batch") {
+      const appendedEvents = change.type === "append" ? [change.event] : change.events;
+      for (const event of appendedEvents) {
+        rememberCommandContextEvent(event);
+        const currentTopologyPage = topologyProjection.ingestHistory(event);
+        if (currentTopologyPage) {
+          rememberLiveReinjectionTarget(event);
+        }
+        const shouldAnchorTimelineWindow =
+          timelineWindowOffset > 0 ||
+          (!timelineFollowLatest && timelineEvents.length >= TIMELINE_WINDOW_SIZE);
+        if (shouldAnchorTimelineWindow && matchesEventFilters(event, filterState)) {
+          timelineWindowOffset += 1;
+          timelineHistoryAnchor = timelineWindowOffset % TIMELINE_WINDOW_SIZE;
+        } else if (timelineWindowOffset === 0) {
+          timelineHistoryAnchor = 0;
+        }
       }
     } else {
       cancelScheduledStoreRender();
@@ -5807,7 +5843,7 @@ export function renderPanel(
     if (change.type === "init") {
       return;
     }
-    if (change.type === "append") {
+    if (change.type === "append" || change.type === "append-batch") {
       renderActiveViewFromAppend({ preservePaneState: true, passiveStoreUpdate: true });
       return;
     }

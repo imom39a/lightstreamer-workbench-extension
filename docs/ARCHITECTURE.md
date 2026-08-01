@@ -469,8 +469,10 @@ There are two concrete storage paths:
 
 | Store | Factory | Backing Storage | Notes |
 | --- | --- | --- | --- |
-| In-memory store | `createEventStore()` | Array in panel runtime memory | Synchronous, test-friendly, returns immutable list snapshots. |
-| IndexedDB store | `createIndexedDbEventStore()` | IndexedDB via `EventRepository` | Async, stores event envelopes plus derived metadata and search tokens. |
+| In-memory store | `createEventStore()` | Array in panel runtime memory | Synchronous, test-friendly, returns immutable list snapshots; burst notifications are bounded. |
+| IndexedDB store | `createIndexedDbEventStore()` | IndexedDB via `EventRepository` | Async, stores event envelopes plus derived metadata and search tokens in ordered batches. |
+
+Both stores retain accepted events in capture order and coalesce burst work into bounded batches. IndexedDB commits one transaction per batch, while retained counts are maintained from successful batch completions instead of issuing a count request for every event. Subscriber append notifications carry either one event or an `append-batch`; `clear()` waits behind accepted writes, and `close()` drains accepted writes before closing the backend. This keeps one-off events observable while allowing sustained capture to continue while persistence drains.
 
 `bootPanel()` calls `createPanelEventStore()`, which attempts:
 

@@ -25,6 +25,9 @@ export type EventQueryResult = {
 
 export type EventRepository = {
   appendEvent(event: LightstreamerEventEnvelope): Promise<LightstreamerEventEnvelope>;
+  appendEvents?(
+    events: readonly LightstreamerEventEnvelope[]
+  ): Promise<LightstreamerEventEnvelope[]>;
   queryEvents(query?: EventQuery): Promise<EventQueryResult>;
   getEventById(id: string): Promise<LightstreamerEventEnvelope | null>;
   countEvents(): Promise<number>;
@@ -98,7 +101,20 @@ class IndexedDbEventRepository implements EventRepository {
   constructor(private readonly database: EventDatabase) {}
 
   async appendEvent(event: LightstreamerEventEnvelope): Promise<LightstreamerEventEnvelope> {
-    const persistable = toPersistableEventEnvelope(event);
+    const [appended] = await this.appendEvents([event]);
+    if (!appended) {
+      throw new Error("IndexedDB did not append the requested event.");
+    }
+    return appended;
+  }
+
+  async appendEvents(
+    eventsToAppend: readonly LightstreamerEventEnvelope[]
+  ): Promise<LightstreamerEventEnvelope[]> {
+    if (eventsToAppend.length === 0) {
+      return [];
+    }
+    const persistableEvents = eventsToAppend.map(toPersistableEventEnvelope);
     const transaction = this.database.db.transaction(
       [
         EVENT_STORE_NAMES.events,
@@ -110,20 +126,23 @@ class IndexedDbEventRepository implements EventRepository {
     const events = transaction.objectStore(EVENT_STORE_NAMES.events);
     const eventMeta = transaction.objectStore(EVENT_STORE_NAMES.eventMeta);
     const searchTokens = transaction.objectStore(EVENT_STORE_NAMES.eventSearchTokens);
+    const completed = transactionDone(transaction);
 
-    const seq = await requestToPromise<IDBValidKey>(
-      events.add({
+    for (const persistable of persistableEvents) {
+      const request = events.add({
         id: persistable.id,
         envelope: persistable
-      } satisfies EventRecord)
-    );
-    const numericSeq = Number(seq);
-    eventMeta.put(createEventMetaRecord(numericSeq, persistable));
-    for (const token of eventSearchTokens(persistable)) {
-      searchTokens.put({ token, seq: numericSeq } satisfies EventSearchTokenRecord);
+      } satisfies EventRecord);
+      request.onsuccess = () => {
+        const numericSeq = Number(request.result);
+        eventMeta.put(createEventMetaRecord(numericSeq, persistable));
+        for (const token of eventSearchTokens(persistable)) {
+          searchTokens.put({ token, seq: numericSeq } satisfies EventSearchTokenRecord);
+        }
+      };
     }
-    await transactionDone(transaction);
-    return persistable;
+    await completed;
+    return persistableEvents;
   }
 
   async queryEvents(query: EventQuery = {}): Promise<EventQueryResult> {
