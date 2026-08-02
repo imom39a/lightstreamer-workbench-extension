@@ -76,6 +76,20 @@ function readBlobText(blob: Blob): Promise<string> {
   });
 }
 
+function rect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({})
+  } as DOMRect;
+}
+
 async function waitForTopologyIdle(timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (
@@ -1768,6 +1782,72 @@ describe("topology inspector", () => {
     expect(document.querySelector<HTMLElement>(".topology-export-preview-content")?.hidden).toBe(true);
     expect(document.querySelector<HTMLButtonElement>(".topology-export-json")?.disabled).toBe(true);
     expect(document.querySelector<HTMLButtonElement>(".topology-export-html")?.disabled).toBe(true);
+  });
+
+  it("keeps the Topology export controls reachable in a compact panel", async () => {
+    appendTopologyFixture(panel);
+    await flushPanel();
+    clickView("Topology");
+
+    const menu = document.querySelector<HTMLDetailsElement>(".topology-export-menu");
+    const toggle = document.querySelector<HTMLElement>(".topology-export-toggle");
+    const exportPanel = document.querySelector<HTMLElement>(".topology-export-panel");
+    if (!menu || !toggle || !exportPanel) {
+      throw new Error("missing Topology export controls");
+    }
+
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 563 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 137 });
+    const toggleRect = vi
+      .spyOn(toggle, "getBoundingClientRect")
+      .mockReturnValue(rect(514, 47, 41, 24));
+    const panelRect = vi
+      .spyOn(exportPanel, "getBoundingClientRect")
+      .mockImplementation(() => {
+        const left = Number.parseFloat(exportPanel.style.left);
+        const top = Number.parseFloat(exportPanel.style.top);
+        return exportPanel.style.position === "fixed" && Number.isFinite(left) && Number.isFinite(top)
+          ? rect(left, top, 539, 104)
+          : rect(16, 77, 539, 104);
+      });
+
+    try {
+      menu.open = true;
+      menu.dispatchEvent(new Event("toggle"));
+      const bounds = exportPanel.getBoundingClientRect();
+      const downloads = exportPanel.querySelectorAll(
+        ".topology-export-json, .topology-export-html"
+      );
+
+      expect({
+        open: menu.open,
+        leftInsideViewport: bounds.left >= 8,
+        rightInsideViewport: bounds.right <= window.innerWidth - 8,
+        topInsideViewport: bounds.top >= 8,
+        bottomInsideViewport: bounds.bottom <= window.innerHeight - 8,
+        downloadControlsReachable: downloads.length === 2
+      }).toEqual({
+        open: true,
+        leftInsideViewport: true,
+        rightInsideViewport: true,
+        topInsideViewport: true,
+        bottomInsideViewport: true,
+        downloadControlsReachable: true
+      });
+    } finally {
+      toggleRect.mockRestore();
+      panelRect.mockRestore();
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth
+      });
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: originalInnerHeight
+      });
+    }
   });
 
   it("downloads the approved Topology snapshot as JSON and HTML", async () => {

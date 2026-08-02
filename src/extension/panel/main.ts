@@ -4320,6 +4320,39 @@ export function renderPanel(
         "text/html"
       );
     });
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) return;
+      const viewportWidth =
+        window.innerWidth || document.documentElement.clientWidth || root.clientWidth || 320;
+      const viewportHeight =
+        window.innerHeight || document.documentElement.clientHeight || root.clientHeight || 320;
+      const margin = 8;
+      const gap = 6;
+      const availableWidth = Math.max(0, viewportWidth - margin * 2);
+      const availableHeight = Math.max(0, viewportHeight - margin * 2);
+      panel.style.position = "fixed";
+      panel.style.maxWidth = `${availableWidth}px`;
+      panel.style.maxHeight = `${availableHeight}px`;
+      panel.style.left = "0px";
+      panel.style.top = "0px";
+
+      const toggleRect = summary.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      const panelWidth = Math.min(panelRect.width, availableWidth);
+      const panelHeight = Math.min(panelRect.height, availableHeight);
+      const left = clampNumber(
+        toggleRect.right - panelWidth,
+        margin,
+        Math.max(margin, viewportWidth - margin - panelWidth)
+      );
+      const top = clampNumber(
+        toggleRect.bottom + gap,
+        margin,
+        Math.max(margin, viewportHeight - margin - panelHeight)
+      );
+      panel.style.left = `${Math.round(left)}px`;
+      panel.style.top = `${Math.round(top)}px`;
+    });
     actions.append(previewButton, downloadJson, downloadHtml);
     panel.append(categories, completeLabel, actions, preview);
     menu.append(panel);
