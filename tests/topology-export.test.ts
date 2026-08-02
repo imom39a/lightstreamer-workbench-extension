@@ -79,7 +79,8 @@ describe("Topology structured export", () => {
       redact: []
     });
     const redacted = createTopologyStructuredSnapshot(state, projectionStatus(), {
-      generatedAt: 1_700_000_000_000
+      generatedAt: 1_700_000_000_000,
+      redact: ["identifiers"]
     });
 
     expect({
@@ -91,29 +92,38 @@ describe("Topology structured export", () => {
     });
   });
 
-  it("redacts selected categories and always excludes credential-like data", () => {
+  it("exports context by default, redacts only selected categories, and always excludes credentials", () => {
     const state = topologyFixture();
-    const redacted = createTopologyStructuredSnapshot(state, projectionStatus(), {
+    state.clients[0]!.serverAddress =
+      "https://user:password@example.test/path?token=secret-token&mode=streaming";
+    const unredacted = createTopologyStructuredSnapshot(state, projectionStatus(), {
       generatedAt: 1
+    });
+    const unredactedJson = serializeTopologySnapshot(unredacted);
+    expect(unredactedJson).toContain("orders/private");
+    expect(unredactedJson).toContain("key-6");
+    expect(unredactedJson).toContain("10.0.0.5");
+    expect(unredacted.privacy.redactedCategories).toEqual([]);
+    expect(unredactedJson).not.toContain("user:password");
+    expect(unredactedJson).not.toContain("authorization");
+    expect(unredactedJson).not.toContain("secret-token");
+    expect(unredactedJson).toContain("mode=streaming");
+    expect(unredacted.privacy.credentialsExcluded).toBe(true);
+
+    const redacted = createTopologyStructuredSnapshot(state, projectionStatus(), {
+      generatedAt: 1,
+      redact: ["item-names", "command-keys", "client-ips"]
     });
     const redactedJson = serializeTopologySnapshot(redacted);
     expect(redactedJson).not.toContain("orders/private");
-    expect(redactedJson).not.toContain("customer-1");
+    expect(redactedJson).not.toContain("key-6");
     expect(redactedJson).not.toContain("10.0.0.5");
     expect(redactedJson).toContain("[REDACTED:item-names]");
-
-    state.clients[0]!.serverAddress = "node/path?token=secret-token&mode=streaming";
-    const reviewed = createTopologyStructuredSnapshot(state, projectionStatus(), {
-      generatedAt: 1,
-      redact: []
-    });
-    const reviewedJson = serializeTopologySnapshot(reviewed);
-    expect(reviewedJson).toContain("orders/private");
-    expect(reviewedJson).not.toContain("user:password");
-    expect(reviewedJson).not.toContain("authorization");
-    expect(reviewedJson).not.toContain("secret-token");
-    expect(reviewedJson).toContain("mode=streaming");
-    expect(reviewed.privacy.credentialsExcluded).toBe(true);
+    expect(redacted.privacy.redactedCategories).toEqual([
+      "client-ips",
+      "item-names",
+      "command-keys"
+    ]);
   });
 
   it("captures an immutable document while the source Topology continues changing", () => {

@@ -817,11 +817,8 @@ export function renderPanel(
   const topologyCollapsedKeys = new Set<string>();
   const topologyExpandedEvidence = new Set<string>();
   const topologyEvidenceLimits = new Map<string, number>();
-  const topologyExportRedactions = new Set<TopologySensitiveCategory>(
-    TOPOLOGY_SENSITIVE_CATEGORIES
-  );
+  const topologyExportRedactions = new Set<TopologySensitiveCategory>();
   let topologyExportCompleteEvidence = false;
-  let topologyApprovedSnapshot: TopologyStructuredSnapshot | null = null;
   let highVolumeNoticeDismissed = false;
   let selectedCommandItem: { subscriptionId: string; itemId: string } | null = null;
   let selectedCommandKey: CommandSelection = null;
@@ -4208,9 +4205,21 @@ export function renderPanel(
       createTextElement(
         "p",
         "topology-export-intro",
-        "Review captured identifiers before creating an immutable export snapshot. Credential-like fields are always excluded."
+        "Download the current Topology as JSON or HTML. No redaction is applied by default; credential-like fields are always excluded."
       )
     );
+    const advanced = document.createElement("details");
+    advanced.className = "topology-export-advanced";
+    const advancedSummary = document.createElement("summary");
+    advancedSummary.className = "topology-export-advanced-toggle";
+    const updateAdvancedSummary = (): void => {
+      const count = topologyExportRedactions.size;
+      advancedSummary.textContent = count === 0
+        ? "Advanced options"
+        : `Advanced options · ${count} redaction${count === 1 ? "" : "s"} selected`;
+    };
+    updateAdvancedSummary();
+    advanced.append(advancedSummary);
     const counts = topologySensitiveCategoryCounts(state);
     const categories = document.createElement("fieldset");
     categories.className = "topology-export-categories";
@@ -4230,10 +4239,7 @@ export function renderPanel(
         } else {
           topologyExportRedactions.delete(category);
         }
-        topologyApprovedSnapshot = null;
-        downloadJson.disabled = true;
-        downloadHtml.disabled = true;
-        preview.hidden = true;
+        updateAdvancedSummary();
       });
       label.append(
         checkbox,
@@ -4253,10 +4259,6 @@ export function renderPanel(
     complete.checked = topologyExportCompleteEvidence;
     complete.addEventListener("change", () => {
       topologyExportCompleteEvidence = complete.checked;
-      topologyApprovedSnapshot = null;
-      downloadJson.disabled = true;
-      downloadHtml.disabled = true;
-      preview.hidden = true;
     });
     completeLabel.append(
       complete,
@@ -4269,29 +4271,16 @@ export function renderPanel(
 
     const actions = document.createElement("div");
     actions.className = "topology-export-actions";
-    const previewButton = document.createElement("button");
-    previewButton.className = "topology-action topology-export-preview";
-    previewButton.type = "button";
-    previewButton.textContent = "Preview JSON";
     const downloadJson = document.createElement("button");
     downloadJson.className = "topology-action topology-export-json";
     downloadJson.type = "button";
     downloadJson.textContent = "Download JSON";
-    downloadJson.disabled = topologyApprovedSnapshot === null;
     const downloadHtml = document.createElement("button");
     downloadHtml.className = "topology-action topology-export-html";
     downloadHtml.type = "button";
     downloadHtml.textContent = "Download HTML";
-    downloadHtml.disabled = topologyApprovedSnapshot === null;
-    const preview = document.createElement("pre");
-    preview.className = "topology-export-preview-content";
-    preview.hidden = topologyApprovedSnapshot === null;
-    if (topologyApprovedSnapshot) {
-      preview.textContent = serializeTopologySnapshot(topologyApprovedSnapshot);
-    }
-
-    previewButton.addEventListener("click", () => {
-      topologyApprovedSnapshot = createTopologyStructuredSnapshot(
+    const createExportSnapshot = (): TopologyStructuredSnapshot =>
+      createTopologyStructuredSnapshot(
         state,
         topologyProjection.status(),
         {
@@ -4300,24 +4289,19 @@ export function renderPanel(
           redact: topologyExportRedactions
         }
       );
-      preview.textContent = serializeTopologySnapshot(topologyApprovedSnapshot);
-      preview.hidden = false;
-      downloadJson.disabled = false;
-      downloadHtml.disabled = false;
-    });
     downloadJson.addEventListener("click", () => {
-      if (!topologyApprovedSnapshot) return;
+      const snapshot = createExportSnapshot();
       downloadTextFile(
-        topologySnapshotFilename(topologyApprovedSnapshot, "json"),
-        serializeTopologySnapshot(topologyApprovedSnapshot),
+        topologySnapshotFilename(snapshot, "json"),
+        serializeTopologySnapshot(snapshot),
         "application/json"
       );
     });
     downloadHtml.addEventListener("click", () => {
-      if (!topologyApprovedSnapshot) return;
+      const snapshot = createExportSnapshot();
       downloadTextFile(
-        topologySnapshotFilename(topologyApprovedSnapshot, "html"),
-        renderTopologyHtmlReport(topologyApprovedSnapshot),
+        topologySnapshotFilename(snapshot, "html"),
+        renderTopologyHtmlReport(snapshot),
         "text/html"
       );
     });
@@ -4354,8 +4338,9 @@ export function renderPanel(
       panel.style.left = `${Math.round(left)}px`;
       panel.style.top = `${Math.round(top)}px`;
     });
-    actions.append(previewButton, downloadJson, downloadHtml);
-    panel.append(categories, completeLabel, actions, preview);
+    actions.append(downloadJson, downloadHtml);
+    advanced.append(categories, completeLabel);
+    panel.append(actions, advanced);
     menu.append(panel);
     return menu;
   }
@@ -6268,7 +6253,6 @@ export function renderPanel(
       topologyCollapsedKeys.clear();
       topologyExpandedEvidence.clear();
       topologyEvidenceLimits.clear();
-      topologyApprovedSnapshot = null;
       topologyProjection.clear();
       liveReinjectionTargets.clear();
       liveClientConnections.clear();

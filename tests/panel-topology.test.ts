@@ -1749,39 +1749,84 @@ describe("topology inspector", () => {
     ).toBe("COMMAND State");
   });
 
-  it("previews and approves an immutable privacy-reviewed JSON snapshot", async () => {
+  it("offers direct unredacted downloads with opt-in redaction under Advanced options", async () => {
     appendTopologyFixture(panel);
     await flushPanel();
     clickView("Topology");
     const menu = document.querySelector<HTMLDetailsElement>(".topology-export-menu");
     if (!menu) throw new Error("missing Topology export menu");
     menu.open = true;
-    expect(text(".topology-export-panel")).toContain("Server addresses and URLs");
-    expect(text(".topology-export-panel")).toContain("Credential-like fields are always excluded");
-    document.querySelector<HTMLButtonElement>(".topology-export-preview")?.click();
+    const advanced = document.querySelector<HTMLDetailsElement>(
+      ".topology-export-advanced"
+    );
+    const categoryCheckboxes = Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        ".topology-export-categories input[data-category]"
+      )
+    );
 
-    const preview = document.querySelector<HTMLElement>(".topology-export-preview-content");
-    const approved = preview?.textContent ?? "";
-    expect(JSON.parse(approved).schema.version).toBe(1);
-    expect(approved).toContain("[REDACTED:identifiers]");
+    expect(text(".topology-export-panel")).toContain("No redaction is applied by default");
+    expect(document.querySelector(".topology-export-preview")).toBeNull();
+    expect(document.querySelector(".topology-export-preview-content")).toBeNull();
     expect(document.querySelector<HTMLButtonElement>(".topology-export-json")?.disabled).toBe(false);
     expect(document.querySelector<HTMLButtonElement>(".topology-export-html")?.disabled).toBe(false);
+    expect(advanced?.open).toBe(false);
+    expect(advanced?.contains(document.querySelector(".topology-export-categories"))).toBe(true);
+    expect(categoryCheckboxes).toHaveLength(6);
+    expect(categoryCheckboxes.every((checkbox) => !checkbox.checked)).toBe(true);
+  });
 
-    append(panel, "client-status", {
-      client: { id: "client-after-preview", status: "CONNECTED:WS-STREAMING" }
-    });
+  it("applies selected Advanced redactions to the next direct download", async () => {
+    appendTopologyFixture(panel);
     await flushPanel();
-    expect(text(".topology-export-preview-content")).toBe(approved);
+    clickView("Topology");
 
-    const complete = document.querySelector<HTMLInputElement>(
-      ".topology-export-complete input"
+    const identifierRedaction = document.querySelector<HTMLInputElement>(
+      '.topology-export-categories input[data-category="identifiers"]'
     );
-    if (!complete) throw new Error("missing complete evidence option");
-    complete.checked = true;
-    complete.dispatchEvent(new Event("change"));
-    expect(document.querySelector<HTMLElement>(".topology-export-preview-content")?.hidden).toBe(true);
-    expect(document.querySelector<HTMLButtonElement>(".topology-export-json")?.disabled).toBe(true);
-    expect(document.querySelector<HTMLButtonElement>(".topology-export-html")?.disabled).toBe(true);
+    if (!identifierRedaction) throw new Error("missing identifier redaction option");
+    identifierRedaction.checked = true;
+    identifierRedaction.dispatchEvent(new Event("change"));
+    expect(text(".topology-export-advanced-toggle")).toBe(
+      "Advanced options · 1 redaction selected"
+    );
+
+    const objectUrls = new Map<string, Blob>();
+    let downloaded: Blob | null = null;
+    const originalCreateObjectUrl = URL.createObjectURL;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      objectUrls.set("blob:redacted-export", blob);
+      return "blob:redacted-export";
+    });
+    URL.revokeObjectURL = vi.fn();
+    HTMLAnchorElement.prototype.click = function clickDownload(): void {
+      downloaded = objectUrls.get(this.href) ?? null;
+    };
+
+    try {
+      document.querySelector<HTMLButtonElement>(".topology-export-json")?.click();
+      const content = downloaded ? await readBlobText(downloaded) : "";
+      const snapshot = JSON.parse(content || "{}") as {
+        privacy?: { redactedCategories?: string[] };
+      };
+      expect({
+        redactedCategories: snapshot.privacy?.redactedCategories,
+        containsIdentifier: content.includes("client-1"),
+        containsIdentifierMarker: content.includes("[REDACTED:identifiers]"),
+        containsUnselectedItemName: content.includes("portfolio")
+      }).toEqual({
+        redactedCategories: ["identifiers"],
+        containsIdentifier: false,
+        containsIdentifierMarker: true,
+        containsUnselectedItemName: true
+      });
+    } finally {
+      URL.createObjectURL = originalCreateObjectUrl;
+      URL.revokeObjectURL = originalRevokeObjectUrl;
+      HTMLAnchorElement.prototype.click = originalAnchorClick;
+    }
   });
 
   it("keeps the Topology export controls reachable in a compact panel", async () => {
@@ -1850,8 +1895,17 @@ describe("topology inspector", () => {
     }
   });
 
-  it("downloads the approved Topology snapshot as JSON and HTML", async () => {
+  it("downloads unredacted JSON and HTML directly while always excluding credentials", async () => {
     appendTopologyFixture(panel);
+    append(panel, "client-status", {
+      client: {
+        id: "client-1",
+        status: "CONNECTED:WS-STREAMING",
+        sessionId: "session-A",
+        serverAddress:
+          "https://user:password@push.example.test/lightstreamer?token=secret-token"
+      }
+    });
     await flushPanel();
     clickView("Topology");
 
@@ -1880,55 +1934,71 @@ describe("topology inspector", () => {
     };
 
     try {
-      document.querySelector<HTMLButtonElement>(".topology-export-preview")?.click();
-      const approved = text(".topology-export-preview-content");
       document.querySelector<HTMLButtonElement>(".topology-export-json")?.click();
       document.querySelector<HTMLButtonElement>(".topology-export-html")?.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      const snapshot = JSON.parse(approved) as {
-        generatedAt: string;
-        schema: { id: string };
-      };
       const jsonDownload = downloads[0];
       const htmlDownload = downloads[1];
+      const jsonContent = jsonDownload ? await readBlobText(jsonDownload.blob) : "";
       const htmlContent = htmlDownload ? await readBlobText(htmlDownload.blob) : "";
-      const jsonStem = jsonDownload?.filename.replace(/\.json$/, "");
-      const htmlStem = htmlDownload?.filename.replace(/\.html$/, "");
+      const snapshot = JSON.parse(jsonContent || "{}") as {
+        generatedAt: string;
+        privacy: {
+          redactedCategories: string[];
+          completeEvidenceIncluded: boolean;
+          credentialsExcluded: boolean;
+        };
+        schema: { id: string };
+      };
       expect({
         json: jsonDownload
           ? {
-              contextualFilename: /^lightstreamer-topology-1-client-1-session-\d{8}T\d{9}Z\.json$/.test(
+              contextualFilename: /^lightstreamer-topology-session-A-\d{8}T\d{9}Z\.json$/.test(
                 jsonDownload.filename
               ),
               type: jsonDownload.blob.type,
-              content: await readBlobText(jsonDownload.blob)
+              containsClientId: jsonContent.includes("client-1"),
+              containsItemName: jsonContent.includes("portfolio"),
+              containsCredentials:
+                jsonContent.includes("user:password") ||
+                jsonContent.includes("secret-token")
             }
           : null,
         html: htmlDownload
           ? {
-              contextualFilename: /^lightstreamer-topology-1-client-1-session-\d{8}T\d{9}Z\.html$/.test(
+              contextualFilename: /^lightstreamer-topology-session-A-\d{8}T\d{9}Z\.html$/.test(
                 htmlDownload.filename
               ),
               type: htmlDownload.blob.type,
               includesSchema: htmlContent.includes(snapshot.schema.id),
-              includesGenerationTime: htmlContent.includes(snapshot.generatedAt)
+              containsClientId: htmlContent.includes("client-1"),
+              containsCredentials:
+                htmlContent.includes("user:password") ||
+                htmlContent.includes("secret-token")
             }
           : null,
-        sharedStem: jsonStem === htmlStem
+        privacy: snapshot.privacy
       }).toEqual({
         json: {
           contextualFilename: true,
           type: "application/json",
-          content: approved
+          containsClientId: true,
+          containsItemName: true,
+          containsCredentials: false
         },
         html: {
           contextualFilename: true,
           type: "text/html",
           includesSchema: true,
-          includesGenerationTime: true
+          containsClientId: true,
+          containsCredentials: false
         },
-        sharedStem: true
+        privacy: {
+          redactedCategories: [],
+          completeEvidenceIncluded: false,
+          credentialsExcluded: true
+        }
       });
     } finally {
       URL.createObjectURL = originalCreateObjectUrl;

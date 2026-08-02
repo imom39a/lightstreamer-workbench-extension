@@ -145,7 +145,7 @@ export function createTopologyStructuredSnapshot(
   status: TopologyProjectionStatus,
   options: TopologySnapshotOptions = {}
 ): TopologyStructuredSnapshot {
-  const redacted = new Set(options.redact ?? TOPOLOGY_SENSITIVE_CATEGORIES);
+  const redacted = new Set(options.redact ?? []);
   const context: SnapshotContext = {
     redacted,
     completeEvidence: Boolean(options.completeEvidence),
