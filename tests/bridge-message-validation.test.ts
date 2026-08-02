@@ -51,6 +51,20 @@ describe("bridge capture message validation", () => {
     ).toBe(true);
   });
 
+  it("accepts client diagnostic capture messages", () => {
+    for (const kind of ["client-error", "client-keepalive"] as const) {
+      expect(
+        isCaptureMessage(
+          createCaptureMessage(kind, {
+            client: { id: "client-1" },
+            listener: { id: "listener-1" },
+            diagnostic: { scope: "client", code: 61, message: "server response" }
+          })
+        )
+      ).toBe(true);
+    }
+  });
+
   it("rejects wrong namespace, unknown kind, missing payload, and non-object payload", () => {
     const valid = createCaptureMessage("client-created", {
       client: { id: "client-1" }

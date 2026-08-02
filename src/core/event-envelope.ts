@@ -96,6 +96,25 @@ export type EventUpdate = {
   lostUpdates?: number | null;
 };
 
+export type EventErrorScope = "client" | "subscription" | "second-level";
+
+export type EventError = {
+  scope: EventErrorScope;
+  code?: number | null;
+  message?: string | null;
+  key?: string | null;
+};
+
+export type EventDiagnostic = {
+  code: string;
+  scope: EventErrorScope;
+  severity: "error" | "warning";
+  title: string;
+  explanation: string;
+  suggestion: string;
+  serverMessage?: string | null;
+};
+
 export type LightstreamerEventEnvelope = {
   id: string;
   timestamp: number;
@@ -110,6 +129,8 @@ export type LightstreamerEventEnvelope = {
   listener?: EventListener;
   item?: EventItem;
   update?: EventUpdate;
+  error?: EventError;
+  diagnostics?: EventDiagnostic[];
   raw?: JsonObject;
   /** Ephemeral semantic evidence for topology reconstruction; never persisted. */
   topology?: TopologyObservation;

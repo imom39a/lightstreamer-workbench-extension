@@ -274,6 +274,7 @@ function subscriptionFixture(): TopologySubscription {
   return {
     id: "subscription-private",
     mode: "COMMAND",
+    semanticDiagnostics: [],
     configuredItems: ["orders/private"],
     fields: ["command", "key", "value", "authorization"],
     fieldSchema: null,

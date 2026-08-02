@@ -4,6 +4,10 @@ import {
   type EventSubscription,
   type LightstreamerEventEnvelope
 } from "./event-envelope";
+import {
+  lintSubscriptionSemantics,
+  type SubscriptionSemanticDiagnostic
+} from "./subscription-semantics";
 
 const HISTORICAL_SESSION_LIMIT = 5;
 const APPLIED_EVENT_DEDUP_LIMIT = 4_096;
@@ -86,6 +90,7 @@ export type TopologyItem = {
 
 export type TopologySubscription = Omit<EventSubscription, "items"> & {
   configuredItems?: string[];
+  semanticDiagnostics: SubscriptionSemanticDiagnostic[];
   clientId: string | null;
   sessionKey: string | null;
   lastSessionId: string | null;
@@ -1205,6 +1210,7 @@ function snapshotSubscription(
   return {
     ...subscription.metadata,
     configuredItems: subscription.metadata.items,
+    semanticDiagnostics: lintSubscriptionSemantics(subscription.metadata),
     clientId: subscription.clientId,
     sessionKey: subscription.sessionKey,
     lastSessionId: subscription.lastSessionId,

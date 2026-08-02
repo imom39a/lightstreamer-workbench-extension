@@ -339,6 +339,24 @@ describe("panel shell", () => {
     expect(document.querySelector<HTMLElement>(".detail-pane")?.hidden).toBe(true);
   });
 
+  it("renders captured diagnostic context in selected event details", async () => {
+    panel.appendCaptureMessage(
+      createCaptureMessage("client-error", {
+        client: { id: "client-1" },
+        listener: { id: "listener-1" },
+        diagnostic: { scope: "client", code: 61, message: "parse failed" }
+      })
+    );
+    await flushPanelRender();
+
+    clickFirstEventRow();
+    openDetailSection("Context");
+
+    expect(text(".detail-pane")).toContain('"scope": "client"');
+    expect(text(".detail-pane")).toContain('"code": "LS-CLIENT-61"');
+    expect(text(".detail-pane")).toContain('"serverMessage": "parse failed"');
+  });
+
   it("uses compact exact semantic times across repeated seconds and local day boundaries", async () => {
     const timestamps = [
       new Date(2026, 0, 1, 23, 59, 59, 1).getTime(),

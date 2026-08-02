@@ -167,6 +167,33 @@ describe("topology inspector", () => {
     expect(document.querySelector(".topology-mask-sensitive")).toBeNull();
   });
 
+  it("shows conservative subscription semantic diagnostics in the detail surface", async () => {
+    append(panel, "client-created", {
+      client: { id: "semantic-client", status: "DISCONNECTED" }
+    });
+    append(panel, "subscription-started", {
+      client: { id: "semantic-client", status: "DISCONNECTED" },
+      subscription: {
+        id: "semantic-subscription",
+        mode: "RAW",
+        items: ["raw-items"],
+        fields: ["value"],
+        requestedSnapshot: "yes",
+        requestedBufferSize: "10",
+        active: true
+      }
+    });
+
+    await flushPanel();
+    clickView("Topology");
+    clickNode("semantic-subscription");
+
+    const detail = text(".topology-detail-pane");
+    expect(detail).toContain("Configuration diagnostics");
+    expect(detail).toContain("RAW subscriptions do not provide snapshots");
+    expect(detail).toContain("Buffer request is not valid for this mode");
+  });
+
   it("exposes a single-select nested tree with roving keyboard navigation", async () => {
     appendTopologyFixture(panel);
     await flushPanel();

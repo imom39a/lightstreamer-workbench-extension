@@ -28,7 +28,7 @@ The extension already provides a strong foundation:
 
 The most important current gaps are:
 
-- Client diagnostics capture only `onStatusChange`; the extension does not capture `onServerError`, `onPropertyChange`, or `onServerKeepalive`.
+- Client and subscription diagnostic callbacks are now captured and explained, but the panel does not yet provide a dedicated cross-client diagnostics center or contextual error navigation.
 - Subscription capture omits requested and real max frequency, buffer size, selector, active/subscribed state, and two-level COMMAND configuration and callbacks.
 - Only COMMAND has a dedicated state model; MERGE, DISTINCT, and RAW are Timeline-only.
 - Outbound `sendMessage` operations and their outcomes are not represented as first-class events.

@@ -459,6 +459,85 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     });
   });
 
+  it("captures client errors and keepalives without changing callback behavior", () => {
+    const { target, messages } = createInstrumentedTarget();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const clientListener = {
+      onServerError: vi.fn((_code: number, _message: string) => "server-error-result"),
+      onServerKeepalive: vi.fn(() => "keepalive-result")
+    };
+
+    client.addListener(clientListener);
+
+    expect(client.listeners[0]).toBe(clientListener);
+    expect(clientListener.onServerError(21, "routing failed")).toBe("server-error-result");
+    expect(clientListener.onServerKeepalive()).toBe("keepalive-result");
+
+    expect(messages.find((message) => message.kind === "client-error")?.payload).toMatchObject({
+      client: { id: "client-1" },
+      listener: { id: "listener-1" },
+      diagnostic: { scope: "client", code: 21, message: "routing failed" },
+      raw: { callback: "onServerError", args: [21, "[redacted]"] }
+    });
+    expect(messages.find((message) => message.kind === "client-error")?.topology?.kind).toBe(
+      "client-error"
+    );
+    expect(messages.find((message) => message.kind === "client-keepalive")?.payload).toMatchObject({
+      client: { id: "client-1" },
+      listener: { id: "listener-1" },
+      raw: { callback: "onServerKeepalive", args: [] }
+    });
+  });
+
+  it("captures subscription error code, message, and second-level key", () => {
+    const { target, messages } = createInstrumentedTarget();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const subscription = new target.Subscription("COMMAND", ["orders"], ["command", "key"]);
+    const listener = {
+      onSubscriptionError: vi.fn((_code: number, _message: string) => "subscription-error-result"),
+      onCommandSecondLevelSubscriptionError: vi.fn(
+        (_code: number, _message: string, _key: string) => "second-level-error-result"
+      )
+    };
+
+    client.subscribe(subscription);
+    subscription.addListener(listener);
+    const installed = subscription.listeners[0] as typeof listener;
+
+    expect(installed.onSubscriptionError(15, "missing key")).toBe("subscription-error-result");
+    expect(
+      installed.onCommandSecondLevelSubscriptionError(17, "bad adapter", "order-1")
+    ).toBe("second-level-error-result");
+
+    expect(messages.find((message) => message.kind === "subscription-error")?.payload).toMatchObject({
+      diagnostic: { scope: "subscription", code: 15, message: "missing key" },
+      raw: { callback: "onSubscriptionError", args: [15, "[redacted]"] }
+    });
+    expect(messages.find((message) => message.kind === "item-update")?.payload).toMatchObject({
+      diagnostic: { scope: "second-level", code: 17, message: "bad adapter", key: "order-1" },
+      raw: { callback: "onCommandSecondLevelSubscriptionError", args: [17, "[redacted]", "order-1"] }
+    });
+  });
+
+  it("normalizes malformed diagnostic arguments without throwing or leaking them", () => {
+    const { target, messages } = createInstrumentedTarget();
+    const client = new target.LightstreamerClient("http://localhost:8080", "LSEW_FIXTURE");
+    const clientListener = {
+      onServerError: vi.fn((_code: number, _message: string) => undefined)
+    };
+    client.addListener(clientListener);
+
+    clientListener.onServerError(
+      "not-a-number" as unknown as number,
+      "secret-token=abc123" as unknown as string
+    );
+
+    expect(messages.find((message) => message.kind === "client-error")?.payload).toMatchObject({
+      diagnostic: { scope: "client", code: null, message: "[redacted]" }
+    });
+    expect(JSON.stringify(messages)).not.toContain("abc123");
+  });
+
   it("instruments constructors assigned after document_start installation", () => {
     const messages: CaptureMessage[] = [];
     const target: Record<string, unknown> = {};

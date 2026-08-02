@@ -2,6 +2,7 @@ import { type CaptureMessage, type JsonObject, type JsonValue } from "../bridge/
 import {
   type EventCaptureSource,
   type EventClient,
+  type EventError,
   type EventSemanticValueState,
   type EventItem,
   type EventListener,
@@ -9,6 +10,7 @@ import {
   type EventUpdate,
   type LightstreamerEventEnvelope
 } from "./event-envelope";
+import { diagnosticsForEvent } from "./lightstreamer-diagnostics";
 
 export type EventNormalizer = {
   normalize(message: CaptureMessage): LightstreamerEventEnvelope;
@@ -32,6 +34,8 @@ export function normalizeCaptureMessage(
 ): LightstreamerEventEnvelope {
   const payload = message.payload;
   const update = toEventUpdate(payload.update);
+  const error = toEventError(payload.diagnostic);
+  const diagnostics = diagnosticsForEvent(error);
   const raw = toRaw(payload.raw);
 
   return {
@@ -48,8 +52,28 @@ export function normalizeCaptureMessage(
     listener: toListener(payload.listener),
     item: toItem(payload.item),
     update,
+    ...(error ? { error } : {}),
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
     raw,
     ...(message.topology ? { topology: message.topology } : {})
+  };
+}
+
+function toEventError(value: JsonValue | undefined): EventError | undefined {
+  const record = asRecord(value);
+  const scope = record?.scope;
+  if (
+    !record ||
+    (scope !== "client" && scope !== "subscription" && scope !== "second-level")
+  ) {
+    return undefined;
+  }
+
+  return {
+    scope,
+    code: asNullableNumber(record.code),
+    message: asNullableString(record.message),
+    key: asNullableString(record.key)
   };
 }
 

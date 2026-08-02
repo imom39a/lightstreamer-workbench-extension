@@ -387,6 +387,18 @@ const TIMELINE_CODE_DEFINITIONS: readonly TimelineCodeDefinition[] = [
     family: "workbench"
   },
   {
+    code: "C!",
+    label: "Client server error",
+    description: "Workbench captured an error reported by the Lightstreamer Server for the client session.",
+    family: "workbench"
+  },
+  {
+    code: "KA",
+    label: "Server keepalive",
+    description: "Workbench captured a server keepalive callback.",
+    family: "workbench"
+  },
+  {
     code: "S+",
     label: "Subscription observed",
     description: "Workbench captured subscription configuration before activation.",
@@ -2248,6 +2260,8 @@ export function renderPanel(
         subscription: event.subscription ?? null,
         listener: event.listener ?? null,
         item: event.item ?? null,
+        error: event.error ?? null,
+        diagnostics: event.diagnostics ?? [],
         update: {
           command: event.update?.command ?? null,
           key: event.update?.key ?? null,
@@ -5234,6 +5248,19 @@ export function renderPanel(
           "Second-level fields / schema",
           subscription.commandSecondLevelFields?.join(", ") ??
             subscription.commandSecondLevelFieldSchema
+        ]
+      ]),
+      createTopologyDetailSection("Configuration diagnostics", [
+        [
+          "Semantic checks",
+          subscription.semanticDiagnostics.length > 0
+            ? subscription.semanticDiagnostics
+                .map(
+                  (diagnostic) =>
+                    `${diagnostic.severity}: ${diagnostic.title} — ${diagnostic.explanation} ${diagnostic.suggestion}`
+                )
+                .join("\n")
+            : "No configuration conflicts detected"
         ]
       ]),
       createTopologyDetailSection("Observed runtime", [
@@ -9235,6 +9262,12 @@ function timelineCodeDefinition(event: LightstreamerEventEnvelope): TimelineCode
       break;
     case "client-status":
       code = "C~";
+      break;
+    case "client-error":
+      code = "C!";
+      break;
+    case "client-keepalive":
+      code = "KA";
       break;
     case "subscription-created":
       code = "S+";

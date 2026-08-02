@@ -2612,6 +2612,33 @@ function wrapClientListener(
       }
     });
   });
+
+  wrapCallback(listener, "onServerError", function beforeServerError(args) {
+    state.emit("client-error", {
+      client: clientPayload(client, state),
+      listener: { id: state.listenerIds.getId(listener) },
+      diagnostic: {
+        scope: "client",
+        code: normalizedErrorCode(args[0]),
+        message: normalizedErrorMessage(args[1])
+      },
+      raw: {
+        callback: "onServerError",
+        args: [toJsonValue(args[0]), "[redacted]"]
+      }
+    });
+  });
+
+  wrapCallback(listener, "onServerKeepalive", function beforeServerKeepalive() {
+    state.emit("client-keepalive", {
+      client: clientPayload(client, state),
+      listener: { id: state.listenerIds.getId(listener) },
+      raw: {
+        callback: "onServerKeepalive",
+        args: []
+      }
+    });
+  });
 }
 
 function wrapSubscriptionListenerMethods(
@@ -3789,6 +3816,25 @@ function readSubscriptionCallbackPayload(
   callback: (typeof CALLBACKS_TO_CAPTURE)[number],
   args: readonly unknown[]
 ): CapturePayload {
+  if (callback === "onSubscriptionError") {
+    return {
+      diagnostic: {
+        scope: "subscription",
+        code: normalizedErrorCode(args[0]),
+        message: normalizedErrorMessage(args[1])
+      }
+    };
+  }
+  if (callback === "onCommandSecondLevelSubscriptionError") {
+    return {
+      diagnostic: {
+        scope: "second-level",
+        code: normalizedErrorCode(args[0]),
+        message: normalizedErrorMessage(args[1]),
+        key: normalizedErrorMessage(args[2])
+      }
+    };
+  }
   if (callback === "onCommandSecondLevelItemLostUpdates") {
     return {
       update: compactJsonObject({ lostUpdates: toJsonValue(args[0]) })
@@ -3811,6 +3857,21 @@ function readSubscriptionCallbackPayload(
     });
   }
   return {};
+}
+
+function normalizedErrorCode(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizedErrorMessage(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const message = typeof value === "string" ? value : String(value);
+  return message.replace(
+    /\b(?:authorization|cookie|password|secret|token)\b[-_:=]?[^\s,;]*/gi,
+    "[redacted]"
+  );
 }
 
 function readSubscriptionClient(subscription: object, state: InstrumentationState): CapturePayload | undefined {

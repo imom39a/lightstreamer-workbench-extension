@@ -217,6 +217,12 @@ Wrapped subscription behavior:
 - `removeListener(listener)` removes the matching proxy and unregisters reinjection target state.
 - The original listener object remains the public identity used for stable listener IDs.
 
+Client listener callbacks are captured through the original listener object:
+
+- `onStatusChange` and `onPropertyChange` emit `client-status` with the latest client metadata.
+- `onServerError` emits `client-error` with a structured, redaction-safe diagnostic payload.
+- `onServerKeepalive` emits `client-keepalive` without inventing a status change.
+
 Captured subscription callbacks are listed in `CALLBACKS_TO_CAPTURE`:
 
 - `onEndOfSnapshot`
@@ -227,6 +233,8 @@ Captured subscription callbacks are listed in `CALLBACKS_TO_CAPTURE`:
 - `onSubscription`
 - `onUnsubscription`
 - `onSubscriptionError`
+- `onCommandSecondLevelItemLostUpdates`
+- `onCommandSecondLevelSubscriptionError`
 
 Callback names are mapped to capture kinds by `callbackToKind()`. For `onItemUpdate`, `readItemUpdatePayload()` extracts:
 
@@ -314,6 +322,8 @@ Known capture kinds are:
 ```text
 client-created
 client-status
+client-error
+client-keepalive
 subscription-created
 subscription-started
 subscription-snapshot
