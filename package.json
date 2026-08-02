@@ -31,7 +31,8 @@
     "fixture:browser:install": "browsers install chrome@stable --path .cache/lsew-browsers",
     "fixture:test": "node scripts/lightstreamer/fixture.mjs test",
     "fixture:test:browser": "node scripts/lightstreamer/fixture.mjs browser-test",
-    "fixture:test:dry-run": "node scripts/lightstreamer/fixture.mjs test --dry-run"
+    "fixture:test:dry-run": "node scripts/lightstreamer/fixture.mjs test --dry-run",
+    "test:ui:extension": "npm run build && node scripts/test-ui-extension.mjs"
   },
   "devDependencies": {
     "@puppeteer/browsers": "^2.10.10",

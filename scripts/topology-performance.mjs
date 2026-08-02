@@ -279,12 +279,12 @@ async function resolveChromeExecutable() {
     .map((entry) => entry.executablePath);
   const candidates = [
     configured,
-    ...installed,
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/usr/bin/google-chrome",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
+    ...installed,
     ...commandCandidatesFromPath()
   ].filter(Boolean);
 

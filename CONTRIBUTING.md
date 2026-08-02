@@ -109,6 +109,16 @@ This command builds the extension and fixture adapter, starts a local Lightstrea
 
 To run only the real-browser proof, use `npm run fixture:test:browser`. Set `LSEW_BROWSER_HEADLESS=false` when a visible Chrome for Testing window is useful for debugging.
 
+## Shipped Extension Panel Smoke
+
+Run the independent DevTools-panel smoke proof with:
+
+```bash
+npm run test:ui:extension
+```
+
+This command builds the extension, loads the generated `dist/` directory into Chrome through CDP, selects the real **Lightstreamer Workbench** DevTools panel, and switches from Timeline to Topology. It does not start the Lightstreamer fixture; keep `npm run fixture:test:browser` for the real Mutate & re-inject proof. Set `LSEW_BROWSER_HEADLESS=false` to use a visible Chrome window while diagnosing a failure. Headless failures include the available DevTools targets and a Chrome log tail.
+
 To validate the complete orchestration without starting Docker or Maven, run `npm run fixture:test:dry-run`.
 
 The `fixture:*` npm commands use a cross-platform Node runner and work from Windows PowerShell/cmd as well as macOS and Linux shells. Individual lifecycle commands are also available:

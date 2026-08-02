@@ -80,12 +80,28 @@ try {
 function screenshotHarnessSource() {
   const mainPath = JSON.stringify(resolve(projectRoot, "src/extension/panel/main.ts"));
   const storePath = JSON.stringify(resolve(projectRoot, "src/core/event-store.ts"));
+  const scenarioPath = JSON.stringify(resolve(projectRoot, "tests/support/panel-scenarios.ts"));
+  const scenarioDomPath = JSON.stringify(
+    resolve(projectRoot, "tests/support/panel-scenario-dom.ts")
+  );
   return `
 import { renderPanel } from ${mainPath};
 import { createEventStore } from ${storePath};
+import { getPanelScenario, type StoreListingScenarioId } from ${scenarioPath};
+import { applyPanelScenario } from ${scenarioDomPath};
 
 const scene = new URLSearchParams(window.location.search).get("scene") ?? "command-state";
 const root = document.querySelector("#app");
+if (!(root instanceof HTMLElement)) {
+  throw new Error("Store-listing scenario requires #app.");
+}
+if (![
+  "command-state",
+  "timeline-detail",
+  "new-command"
+].includes(scene)) {
+  throw new Error("Unknown store-listing scenario: " + scene);
+}
 const store = createEventStore();
 const bridge = {
   reinjectDraft() {
@@ -98,220 +114,15 @@ const bridge = {
   }
 };
 const panel = renderPanel(root, undefined, { store, bridge });
-panel.setStatus("bridge connected");
-seedEvents(store);
+applyPanelScenario(root, panel, store, getPanelScenario(scene as StoreListingScenarioId));
 
-if (scene === "command-state") {
-  clickView("COMMAND State");
-  clickRow(".command-current-row", "alpha");
-} else if (scene === "timeline-detail") {
-  clickView("Timeline");
-  clickRow(".event-row", "UPDATE/alpha");
-} else if (scene === "new-command") {
-  clickView("COMMAND State");
-  clickRow(".command-current-row", "alpha");
-  clickButton(".new-command-button");
+if (scene === "new-command") {
   if (!document.querySelector(".command-draft-controls")) {
     throw new Error("New COMMAND editor did not open for the store listing screenshot.");
-  }
-  setValue(".command-draft-command", "UPDATE");
-  setValue(".command-draft-key", "alpha");
-  setValue('.command-draft-field-input[data-field-name="qty"]', "42");
-  setValue('.command-draft-field-input[data-field-name="status"]', "review");
-  const detail = document.querySelector(".command-detail-pane");
-  const editor = document.querySelector(".new-command-editor");
-  if (detail && editor instanceof HTMLElement) {
-    detail.scrollTop = Math.max(0, editor.offsetTop - 72);
   }
 }
 
 document.documentElement.dataset.sceneReady = "true";
-
-function seedEvents(targetStore) {
-  const base = 1780872000000;
-  targetStore.append(event("event-1", base + 1, {
-    command: "ADD",
-    key: "alpha",
-    snapshot: true,
-    fields: {
-      command: "ADD",
-      key: "alpha",
-      name: "Alpha",
-      qty: "10",
-      status: "snapshot",
-      version: "1"
-    },
-    changedFields: {
-      command: "ADD",
-      key: "alpha",
-      name: "Alpha",
-      qty: "10",
-      status: "snapshot",
-      version: "1"
-    }
-  }));
-  targetStore.append(event("event-2", base + 2, {
-    command: "ADD",
-    key: "beta",
-    snapshot: true,
-    fields: {
-      command: "ADD",
-      key: "beta",
-      name: "Beta",
-      qty: "5",
-      status: "snapshot",
-      version: "1"
-    },
-    changedFields: {
-      command: "ADD",
-      key: "beta",
-      name: "Beta",
-      qty: "5",
-      status: "snapshot",
-      version: "1"
-    }
-  }));
-  targetStore.append(event("event-3", base + 3, {
-    command: "UPDATE",
-    key: "alpha",
-    fields: {
-      command: "UPDATE",
-      key: "alpha",
-      name: "Alpha",
-      qty: "15",
-      status: "live",
-      version: "2"
-    },
-    changedFields: {
-      qty: "15",
-      status: "live",
-      version: "2"
-    }
-  }));
-  targetStore.append(event("event-4", base + 4, {
-    command: "DELETE",
-    key: "beta",
-    fields: {
-      command: "DELETE",
-      key: "beta",
-      name: "Beta",
-      qty: "0",
-      status: "deleted",
-      version: "2"
-    },
-    changedFields: {
-      status: "deleted",
-      version: "2"
-    }
-  }));
-  targetStore.append(event("event-5", base + 5, {
-    command: "UPDATE",
-    key: "alpha",
-    source: "synthetic",
-    synthetic: true,
-    fields: {
-      command: "UPDATE",
-      key: "alpha",
-      name: "Alpha",
-      qty: "18",
-      status: "synthetic replay",
-      version: "3"
-    },
-    changedFields: {
-      qty: "18",
-      status: "synthetic replay",
-      version: "3"
-    },
-    raw: {
-      sourceEventId: "event-3",
-      targetSubscriptionId: "subscription-1",
-      targetListenerId: "listener-1"
-    }
-  }));
-  targetStore.append(event("event-6", base + 6, {
-    command: "UPDATE",
-    key: "ghost",
-    fields: {
-      command: "UPDATE",
-      key: "ghost",
-      name: "Ghost",
-      qty: "1",
-      status: "diagnostic",
-      version: "1"
-    },
-    changedFields: {
-      status: "diagnostic"
-    },
-    raw: {
-      diagnostic: "unknown-key-update"
-    }
-  }));
-}
-
-function event(id, timestamp, options) {
-  return {
-    id,
-    timestamp,
-    direction: "inbound",
-    source: options.source ?? "server",
-    captureSource: "listener",
-    synthetic: options.synthetic ?? false,
-    kind: "item-update",
-    client: {
-      id: "client-1",
-      status: "CONNECTED:WS-STREAMING",
-      serverAddress: "https://push.example.test/lightstreamer"
-    },
-    subscription: {
-      id: "subscription-1",
-      mode: "COMMAND",
-      items: ["scenario.snapshot-basic"],
-      fields: ["command", "key", "name", "qty", "status", "version"],
-      requestedSnapshot: "yes"
-    },
-    listener: { id: "listener-1" },
-    item: { name: "scenario.snapshot-basic", position: 1 },
-    update: {
-      isSnapshot: options.snapshot ?? false,
-      command: options.command,
-      key: options.key,
-      fields: options.fields,
-      changedFields: options.changedFields
-    },
-    raw: {
-      callback: "onItemUpdate",
-      sample: true,
-      ...(options.raw ?? {})
-    }
-  };
-}
-
-function clickView(label) {
-  const button = Array.from(document.querySelectorAll(".view-selector button"))
-    .find((candidate) => candidate.textContent === label);
-  button?.click();
-}
-
-function clickRow(selector, text) {
-  const row = Array.from(document.querySelectorAll(selector))
-    .find((candidate) => (candidate.textContent ?? "").includes(text));
-  row?.click();
-}
-
-function clickButton(selector) {
-  document.querySelector(selector)?.click();
-}
-
-function setValue(selector, value) {
-  const element = document.querySelector(selector);
-  if (!element) {
-    return;
-  }
-  element.value = value;
-  element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? "change" : "input", {
-    bubbles: true
-  }));
-}
 `;
 }
 
