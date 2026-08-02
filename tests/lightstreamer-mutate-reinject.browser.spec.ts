@@ -92,6 +92,7 @@ async function runBrowserProof(): Promise<void> {
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
+    "--use-mock-keychain",
     "--auto-open-devtools-for-tabs",
     "--remote-debugging-port=0",
     `--user-data-dir=${profileDir}`,

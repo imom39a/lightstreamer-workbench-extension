@@ -1,5 +1,8 @@
-import { createCaptureMessage } from "../src/bridge/messages";
 import { renderPanel } from "../src/extension/panel/main";
+import {
+  createTopologyPerformanceCaptureMessages,
+  createTopologyPerformanceLogicalUpdateMessages
+} from "../tests/support/panel-scenarios";
 
 type TopologyPerformanceConfig = {
   durationMs: number;
@@ -58,7 +61,6 @@ if (!root) {
 }
 
 const panel = renderPanel(root);
-clickView("Topology");
 
 window.__LSEW_TOPOLOGY_PERFORMANCE__ = {
   async run(overrides = {}) {
@@ -250,169 +252,18 @@ window.__LSEW_TOPOLOGY_PERFORMANCE__ = {
 };
 
 function appendTopology(config: TopologyPerformanceConfig): void {
-  const timestamp = Date.now();
-  panel.appendCaptureMessage(
-    createCaptureMessage(
-      "client-created",
-      {
-        client: {
-          id: "performance-client",
-          status: "DISCONNECTED",
-          serverAddress: "https://performance.example/lightstreamer",
-          adapterSet: "PERFORMANCE",
-          libraryVersion: "9.2.3",
-          instrumentationSource: "public-api",
-          coverageStatus: "full"
-        }
-      },
-      timestamp
-    )
-  );
-  panel.appendCaptureMessage(
-    createCaptureMessage(
-      "client-status",
-      {
-        client: {
-          id: "performance-client",
-          status: "CONNECTED:WS-STREAMING",
-          sessionId: "performance-session",
-          transport: "ws-streaming"
-        }
-      },
-      timestamp + 1
-    )
-  );
-
-  for (
-    let subscriptionIndex = 0;
-    subscriptionIndex < config.subscriptionCount;
-    subscriptionIndex += 1
-  ) {
-    const subscriptionId = `subscription-${subscriptionIndex + 1}`;
-    const items = Array.from(
-      { length: config.itemsPerSubscription },
-      (_, itemIndex) =>
-        `item-${subscriptionIndex + 1}-${itemIndex + 1}`
-    );
-    panel.appendCaptureMessage(
-      createCaptureMessage(
-        "subscription-started",
-        {
-          client: {
-            id: "performance-client",
-            status: "CONNECTED:WS-STREAMING",
-            sessionId: "performance-session"
-          },
-          subscription: {
-            id: subscriptionId,
-            mode: "MERGE",
-            items,
-            fields: ["value", "sequence"],
-            requestedSnapshot: "no",
-            requestedMaxFrequency: "unlimited",
-            active: true,
-            subscribed: true,
-            listenerCount: config.listenersPerSubscription
-          },
-          raw: { callback: "onSubscription" }
-        },
-        timestamp + 2 + subscriptionIndex
-      )
-    );
-
-    for (
-      let listenerIndex = 0;
-      listenerIndex < config.listenersPerSubscription;
-      listenerIndex += 1
-    ) {
-      panel.appendCaptureMessage(
-        createCaptureMessage(
-          "listener-added",
-          {
-            client: {
-              id: "performance-client",
-              sessionId: "performance-session"
-            },
-            subscription: {
-              id: subscriptionId,
-              mode: "MERGE",
-              listenerCount: config.listenersPerSubscription
-            },
-            listener: {
-              id: `${subscriptionId}-listener-${listenerIndex + 1}`,
-              callbacks: ["onItemUpdate"],
-              registrationCount: 1,
-              metricOwner: listenerIndex === 0
-            },
-            raw: { targetAvailable: true }
-          },
-          timestamp + 100 + subscriptionIndex * 10 + listenerIndex
-        )
-      );
-    }
+  for (const message of createTopologyPerformanceCaptureMessages(config)) {
+    panel.appendCaptureMessage(message);
   }
+  clickView("Topology");
 }
 
 function appendLogicalUpdate(
   config: TopologyPerformanceConfig,
   logicalIndex: number
 ): void {
-  const zeroBased = logicalIndex - 1;
-  const subscriptionIndex = zeroBased % config.subscriptionCount;
-  const itemIndex =
-    Math.floor(zeroBased / config.subscriptionCount) %
-    config.itemsPerSubscription;
-  const subscriptionId = `subscription-${subscriptionIndex + 1}`;
-  const itemName = `item-${subscriptionIndex + 1}-${itemIndex + 1}`;
-  const logicalEventId = `logical-update-${logicalIndex}`;
-  const timestamp = Date.now();
-
-  for (
-    let listenerIndex = 0;
-    listenerIndex < config.listenersPerSubscription;
-    listenerIndex += 1
-  ) {
-    panel.appendCaptureMessage(
-      createCaptureMessage(
-        "item-update",
-        {
-          client: {
-            id: "performance-client",
-            sessionId: "performance-session"
-          },
-          subscription: {
-            id: subscriptionId,
-            mode: "MERGE"
-          },
-          listener: {
-            id: `${subscriptionId}-listener-${listenerIndex + 1}`,
-            callbacks: ["onItemUpdate"],
-            metricOwner: listenerIndex === 0
-          },
-          item: {
-            name: itemName,
-            position: itemIndex + 1
-          },
-          update: {
-            isSnapshot: false,
-            fields: {
-              value: logicalIndex,
-              sequence: logicalIndex
-            },
-            changedFields: {
-              value: logicalIndex,
-              sequence: logicalIndex
-            }
-          },
-          raw: {
-            callback: "onItemUpdate",
-            logicalEventId,
-            targetAvailable: true
-          }
-        },
-        timestamp
-      )
-    );
+  for (const message of createTopologyPerformanceLogicalUpdateMessages(config, logicalIndex)) {
+    panel.appendCaptureMessage(message);
   }
 }
 
