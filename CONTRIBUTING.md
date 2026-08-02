@@ -121,6 +121,28 @@ This command builds the extension, loads the generated `dist/` directory into Ch
 
 To validate the complete orchestration without starting Docker or Maven, run `npm run fixture:test:dry-run`.
 
+## Playwright UI Scenarios
+
+Run the deterministic Workbench panel scenarios in Chromium with:
+
+```bash
+npm run test:ui
+```
+
+The runner covers the shared `command-state`, `timeline-detail`, and `new-command` scenarios, waits for their `data-scene-ready` signal, and retains screenshots, traces, videos, page HTML, and browser console output when a check fails. Select one scenario, viewport, or theme when diagnosing a case:
+
+```bash
+npm run test:ui -- --scenario=new-command --viewport=900x700 --theme=dark
+```
+
+`Auto`, `Dark`, and `Light` are supported themes. Normal verification never changes visual baselines. Update them deliberately with:
+
+```bash
+npm run test:ui:update
+```
+
+The update command accepts the same scenario, viewport, and theme options. The runner uses `CHROME_PATH` when set, then the Chrome for Testing browser installed by `npm run fixture:browser:install`, then a system Chrome installation.
+
 The `fixture:*` npm commands use a cross-platform Node runner and work from Windows PowerShell/cmd as well as macOS and Linux shells. Individual lifecycle commands are also available:
 
 ```bash

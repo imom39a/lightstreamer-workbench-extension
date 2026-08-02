@@ -32,6 +32,8 @@
     "fixture:test": "node scripts/lightstreamer/fixture.mjs test",
     "fixture:test:browser": "node scripts/lightstreamer/fixture.mjs browser-test",
     "fixture:test:dry-run": "node scripts/lightstreamer/fixture.mjs test --dry-run",
+    "test:ui": "node scripts/test-ui.mjs",
+    "test:ui:update": "node scripts/test-ui-update.mjs",
     "test:ui:extension": "npm run build && node scripts/test-ui-extension.mjs"
   },
   "devDependencies": {
@@ -44,6 +46,7 @@
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^27.2.0",
     "lightstreamer-client-web": "^9.2.3",
+    "@playwright/test": "^1.55.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "vitest": "^4.0.14",
