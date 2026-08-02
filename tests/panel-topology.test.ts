@@ -1514,6 +1514,42 @@ describe("topology inspector", () => {
     expect(clientChildren?.hidden).toBe(false);
   });
 
+  it("collapses and expands every Topology branch from the overview action", async () => {
+    appendTopologyFixture(panel);
+    await flushPanel();
+    clickView("Topology");
+
+    const action = (): HTMLButtonElement | null =>
+      document.querySelector<HTMLButtonElement>(".topology-expand-items");
+    const pageChildren = (): HTMLUListElement | null | undefined =>
+      findNode("Inspected page")
+        ?.closest<HTMLLIElement>(".topology-tree-item")
+        ?.querySelector<HTMLUListElement>(":scope > .topology-tree-group");
+    if (!action() || !pageChildren()) {
+      throw new Error("missing Topology expand/collapse controls");
+    }
+
+    expect(action()?.textContent).toBe("Collapse all");
+    action()?.click();
+
+    expect(action()?.textContent).toBe("Expand all");
+    expect(pageChildren()?.hidden).toBe(true);
+    expect(findNode("Inspected page")?.getAttribute("aria-expanded")).toBe(
+      "false"
+    );
+
+    action()?.click();
+
+    expect(action()?.textContent).toBe("Collapse all");
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLUListElement>(".topology-tree-group")
+      ).every((group) => !group.hidden)
+    ).toBe(true);
+    expect(text(".topology-tree-pane")).toContain("portfolio");
+    expect(text(".topology-tree-pane")).toContain("listener-1");
+  });
+
   it("disables stale replay targets but permits a registered listener across sessions", async () => {
     panel.setBridge({
       reinjectDraft: async () => ({

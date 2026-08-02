@@ -4136,6 +4136,46 @@ export function renderPanel(
     return "active";
   }
 
+  function topologyHasOmittedItemNodes(state: TopologyState): boolean {
+    if (topologyExpandAllItems) {
+      return false;
+    }
+    const subscriptionOmitsItems = (
+      client: TopologyClient | null,
+      session: TopologySession | null,
+      subscription: TopologySubscription
+    ): boolean => {
+      if (subscription.items.length <= TOPOLOGY_INLINE_ITEM_LIMIT) {
+        return false;
+      }
+      const subscriptionKey = topologySubscriptionNodePresentation(
+        client,
+        session,
+        subscription
+      ).selection.key;
+      const visibleLimit =
+        topologySelection.ownerKey === subscriptionKey
+          ? TOPOLOGY_SELECTED_ITEM_LIMIT
+          : 0;
+      return subscription.items.length > visibleLimit;
+    };
+    return (
+      state.clients.some((client) =>
+        client.waitingSubscriptions.some((subscription) =>
+          subscriptionOmitsItems(client, null, subscription)
+        ) ||
+        client.sessions.some((session) =>
+          session.subscriptions.some((subscription) =>
+            subscriptionOmitsItems(client, session, subscription)
+          )
+        )
+      ) ||
+      state.unassignedSubscriptions.some((subscription) =>
+        subscriptionOmitsItems(null, null, subscription)
+      )
+    );
+  }
+
   function createTopologyActions(state: TopologyState): HTMLElement {
     const actions = document.createElement("div");
     actions.className = "topology-actions";
@@ -4167,18 +4207,31 @@ export function renderPanel(
     const expandItems = document.createElement("button");
     expandItems.className = "topology-action topology-expand-items";
     expandItems.type = "button";
-    expandItems.textContent = topologyExpandAllItems
-      ? "Collapse items"
-      : state.itemCount > TOPOLOGY_FULL_ITEM_LIMIT
-        ? `Expand first ${TOPOLOGY_FULL_ITEM_LIMIT.toLocaleString()} items`
-        : "Expand all items";
-    expandItems.title = topologyExpandAllItems
-      ? "Return large subscriptions to lazy item rendering."
-      : `Render item nodes across the topology, bounded to ${TOPOLOGY_FULL_ITEM_LIMIT.toLocaleString()} items. Listener identities remain available in item detail for large subscriptions.`;
-    expandItems.disabled = state.itemCount === 0;
-    expandItems.setAttribute("aria-pressed", String(topologyExpandAllItems));
+    const canExpandAll =
+      topologyCollapsedKeys.size > 0 || topologyHasOmittedItemNodes(state);
+    expandItems.textContent = canExpandAll ? "Expand all" : "Collapse all";
+    expandItems.title = canExpandAll
+      ? `Expand every branch and render item nodes across the topology, bounded to ${TOPOLOGY_FULL_ITEM_LIMIT.toLocaleString()} items. Listener identities remain available in item detail for large subscriptions.`
+      : "Collapse every branch in the Topology tree.";
+    expandItems.disabled =
+      state.clientCount === 0 && state.unassignedSubscriptions.length === 0;
+    expandItems.setAttribute("aria-pressed", String(!canExpandAll));
     expandItems.addEventListener("click", () => {
-      topologyExpandAllItems = !topologyExpandAllItems;
+      if (!canExpandAll) {
+        for (const toggle of topologyTreePane.querySelectorAll<HTMLElement>(
+          "[data-topology-collapse-key]"
+        )) {
+          const key = toggle.dataset.topologyCollapseKey;
+          if (key) {
+            topologyCollapsedKeys.add(key);
+          }
+        }
+        topologyExpandAllItems = false;
+      } else {
+        topologyCollapsedKeys.clear();
+        topologyExpandAllItems = true;
+      }
+      renderedTopologyStructureKey = null;
       renderTopology();
     });
 
