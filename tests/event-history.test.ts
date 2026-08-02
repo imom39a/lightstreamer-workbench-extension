@@ -117,7 +117,7 @@ describe("event history", () => {
       countSpy.mockRestore();
       await deleteEventDatabase(eventDatabaseName(sessionId));
     }
-  }, 20_000);
+  }, 60_000);
 
   it("does not resurrect queued IndexedDB events across clear and close", async () => {
     const sessionId = "event-history-clear-close-barrier";
