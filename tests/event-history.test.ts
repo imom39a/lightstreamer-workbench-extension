@@ -8,6 +8,7 @@ import {
 } from "../src/core/event-history";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { createEventStore, type EventStore } from "../src/core/event-store";
+import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
 
 function event(id: string): LightstreamerEventEnvelope {
   return {
@@ -21,6 +22,91 @@ function event(id: string): LightstreamerEventEnvelope {
 }
 
 describe("event history", () => {
+  it("retains a high-volume capture in order with bounded subscriber work", async () => {
+    const history = createInMemoryEventHistory({ batchSize: 256 });
+    const notificationSizes: number[] = [];
+    history.subscribe((change) => {
+      if (change.type === "append") {
+        notificationSizes.push(1);
+      } else if (change.type === "append-batch") {
+        notificationSizes.push(change.events.length);
+      }
+    });
+
+    const accepted = Array.from({ length: 10_000 }, (_, index) =>
+      history.append(event(`capture-${index}`)).toPromise()
+    );
+    await Promise.all(accepted);
+    const stats = await history.stats().toPromise();
+
+    expect((await history.list().toPromise()).map((entry) => entry.id)).toEqual(
+      Array.from({ length: 10_000 }, (_, index) => `capture-${index}`)
+    );
+    expect(stats).toMatchObject({ retained: 10_000, totalAppended: 10_000 });
+    expect(notificationSizes.reduce((total, size) => total + size, 0)).toBe(10_000);
+    expect(notificationSizes.length).toBeLessThan(100);
+
+    await history.close().toPromise();
+  });
+
+  it("settles queued events before clear and close without allowing them to reappear", async () => {
+    const history = createInMemoryEventHistory({ batchSize: 2 });
+    const first = history.append(event("queued-before-clear"));
+    const clear = history.clear();
+
+    await expect(first.toPromise()).resolves.toMatchObject({ id: "queued-before-clear" });
+    await expect(clear.toPromise()).resolves.toBeUndefined();
+    await expect(history.count().toPromise()).resolves.toBe(0);
+
+    const final = history.append({
+      ...event("successful-local-injection"),
+      source: "synthetic",
+      synthetic: true
+    });
+    const close = history.close();
+
+    await expect(final.toPromise()).resolves.toMatchObject({
+      id: "successful-local-injection"
+    });
+    await expect(close.toPromise()).resolves.toBeUndefined();
+  });
+
+  it("does not resurrect queued IndexedDB events across clear and close", async () => {
+    const sessionId = "event-history-clear-close-barrier";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const history = await createIndexedDbEventHistory({
+      sessionId,
+      reset: true,
+      batchSize: 2
+    });
+
+    try {
+      const queued = history.append(event("queued-indexed-event"));
+      const cleared = history.clear();
+      await expect(queued.toPromise()).resolves.toMatchObject({ id: "queued-indexed-event" });
+      await expect(cleared.toPromise()).resolves.toBeUndefined();
+      await expect(history.count().toPromise()).resolves.toBe(0);
+
+      const retained = history.append({
+        ...event("retained-before-close"),
+        source: "synthetic",
+        synthetic: true
+      });
+      const closed = history.close();
+      await expect(retained.toPromise()).resolves.toMatchObject({ id: "retained-before-close" });
+      await expect(closed.toPromise()).resolves.toBeUndefined();
+
+      const reopened = await createIndexedDbEventHistory({ sessionId });
+      await expect(reopened.list().toPromise()).resolves.toMatchObject([
+        expect.objectContaining({ id: "retained-before-close" })
+      ]);
+      await reopened.close().toPromise();
+    } finally {
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+    }
+  });
+
   it("presents one completion contract over the in-memory implementation", async () => {
     const history = createInMemoryEventHistory();
     const notifications: string[] = [];

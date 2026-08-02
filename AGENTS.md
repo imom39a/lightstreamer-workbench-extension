@@ -15,7 +15,7 @@ The tool is generic developer infrastructure, not an application-specific debugg
 - **Injection boundary**: v1 supports backend-free Local Injection. Planned Server Injection sends a Client Message through the inspected Lightstreamer client's normal `sendMessage` path in the context of its current Session; it does not directly introduce an inbound update into the server stream.
 - **Capture semantics**: Capture is observational - Workbench never alters or suppresses the application's original Item Update or Client Message. Mutation applies to a separate Injection Draft.
 - **COMMAND state projections**: Observed Server COMMAND State uses captured Server Updates only. Local Effective COMMAND State additionally applies successful Local Injected Updates for the Subscription.
-- **Storage**: In-memory session state for v1 - keeps the first build small and avoids IndexedDB/export complexity until capture and reinjection are validated.
+- **Storage**: Current-DevTools-session history uses ordered IndexedDB batches with an in-memory fallback and is cleared on session teardown. Versioned Topology exports are deliberate user downloads, not persistent application state.
 - **Domain model**: Lightstreamer-native primitives first - app-specific adapters must not constrain the generic core.
 - **Security posture**: Developer-controlled tool for inspected pages - Local Injected Updates must be marked, but v1 does not require an explicit injection-mode safety toggle. Server Updates can be attributed to Workbench only when the application supports attribution metadata.
 
@@ -55,7 +55,7 @@ The tool is generic developer infrastructure, not an application-specific debugg
 |-------|-----|-------------|
 | App-specific domain models in the core | Would make the tool a single-app debugger rather than Lightstreamer developer tooling | Generic Lightstreamer event envelope and optional adapters |
 | Raw frame capture as the only source of truth | Loses high-level concepts such as subscription mode, snapshot status, changed fields, key, and command | Capture through Lightstreamer Web Client APIs and listener callbacks |
-| Persistent storage in v1 | Adds privacy, export, pruning, and schema migration concerns before core value is validated | Current-tab in-memory capture |
+| Cross-session persistent capture | Adds privacy, pruning, retention, and schema-migration concerns beyond the current debugging session | Session-scoped IndexedDB with in-memory fallback; explicit privacy-reviewed exports |
 | Implying that Server Injection directly creates inbound updates | A browser extension can send a real Client Message, but it cannot inject an arbitrary Item Update into the server stream | Local Injection for Item Updates; normal client `sendMessage` flow for Server Injection |
 ## Sources
 - https://lightstreamer.com/ls-server/latest/docs/General%20Concepts.pdf - subscription modes, COMMAND-mode semantics, snapshot behavior

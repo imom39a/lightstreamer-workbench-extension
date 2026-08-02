@@ -122,37 +122,9 @@ export function createTopologyTreeViewModel(
         presentation.selection.key,
         subscription.itemGroup ?? "",
         subscription.items.length,
-        itemLimit,
-        subscription.commandGenerations
-          .map(
-            (generation) =>
-              `${generation.id}[${generation.inferredChildren.map(({ id }) => id).join(",")}]`
-          )
-          .join(";")
+        itemLimit
       ].join(":")
     );
-
-    for (const generation of subscription.commandGenerations) {
-      presentations.push(
-        topologyCommandGenerationNodePresentation(
-          client,
-          session,
-          subscription,
-          generation
-        )
-      );
-      for (const child of generation.inferredChildren) {
-        presentations.push(
-          topologyInferredChildNodePresentation(
-            client,
-            session,
-            subscription,
-            generation,
-            child
-          )
-        );
-      }
-    }
 
     for (const item of subscription.items.slice(0, itemLimit)) {
       const itemPresentation = topologyItemNodePresentation(

@@ -63,6 +63,7 @@ export function createPanelTopologySyncAdapter(
     },
     hydrate(pageEpoch, records) {
       const index = createTopologyStateIndex();
+      const hydratedAt = Date.now();
       const aggregates = new Map<string, CheckpointAggregate>();
       const evidence = checkpointEvidence(records);
       const subscriptionRecords = new Map(
@@ -83,7 +84,8 @@ export function createPanelTopologySyncAdapter(
         const event = eventFromAbsoluteRecord(
           pageEpoch,
           record,
-          subscriptionRecords
+          subscriptionRecords,
+          hydratedAt
         );
         if (event) {
           index.ingest(event);
@@ -577,7 +579,8 @@ export function resetPanelTopologyObservations(
 function eventFromAbsoluteRecord(
   pageEpoch: string,
   record: TopologyAbsoluteRecord,
-  subscriptionRecords: ReadonlyMap<string, TopologyAbsoluteRecord>
+  subscriptionRecords: ReadonlyMap<string, TopologyAbsoluteRecord>,
+  hydratedAt: number
 ): LightstreamerEventEnvelope | null {
   if (record.kind === "page" || record.kind === "aggregate") {
     return null;
@@ -694,7 +697,7 @@ function eventFromAbsoluteRecord(
     createCaptureMessage(
       kind,
       payload,
-      numberValue(values.timestamp) ?? record.captureSequence
+      record.timestamp ?? numberValue(values.timestamp) ?? hydratedAt
     ),
     `topology-sync:${pageEpoch}:${record.kind}:${record.id}`
   );
@@ -726,7 +729,7 @@ function eventFromObservation(
     }
   }
   return normalizeCaptureMessage(
-    createCaptureMessage(kind, payload, observation.captureSequence),
+    createCaptureMessage(kind, payload, observation.timestamp ?? Date.now()),
     `topology-live:${observation.pageEpoch}:${observation.captureSequence}`
   );
 }

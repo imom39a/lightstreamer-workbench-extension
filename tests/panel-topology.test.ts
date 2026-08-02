@@ -1,5 +1,5 @@
 import { IDBFactory } from "fake-indexeddb";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   PAGE_CAPTURE_SYNC_REQUEST,
@@ -65,6 +65,29 @@ function pressKey(target: Element, key: string): boolean {
 
 async function flushPanel(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+function readBlobText(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsText(blob);
+  });
+}
+
+function rect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({})
+  } as DOMRect;
 }
 
 async function waitForTopologyIdle(timeoutMs = 1_000): Promise<void> {
@@ -601,20 +624,9 @@ describe("topology inspector", () => {
 
     const generation = findNode("Generation order-1");
     const inferredChild = findNode("Second-level lost updates");
-    expect(generation?.getAttribute("role")).toBe("treeitem");
-    expect(generation?.getAttribute("aria-expanded")).toBe("true");
-    generation?.focus();
-    expect(pressKey(generation!, "ArrowRight")).toBe(false);
-    expect(document.activeElement).toBe(inferredChild);
-    expect(pressKey(inferredChild!, "ArrowLeft")).toBe(false);
-    expect(document.activeElement).toBe(generation);
-
-    generation?.click();
-    expect(text(".topology-detail-pane")).toContain("COMMAND generation");
-    expect(text(".topology-detail-pane")).toContain("order-1");
-    inferredChild?.click();
-    expect(text(".topology-detail-pane")).toContain("Inferred child evidence");
-    expect(text(".topology-detail-pane")).toContain("inferred-second-level");
+    expect(generation).toBeUndefined();
+    expect(inferredChild).toBeUndefined();
+    expect(document.querySelectorAll(".topology-command-evidence-entry")).toHaveLength(1);
 
     clickNode("checkpoint-listener");
     expect(text(".topology-detail-pane")).toContain("Attachment IDsattachment-1");
@@ -710,12 +722,12 @@ describe("topology inspector", () => {
       Array.from(document.querySelectorAll(".topology-node-label")).filter(
         ({ textContent }) => textContent === "Generation live-key"
       )
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       Array.from(document.querySelectorAll(".topology-node-label")).filter(
         ({ textContent }) => textContent === "Second-level lost updates"
       )
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       Array.from(document.querySelectorAll(".topology-node-label")).filter(
         ({ textContent }) => textContent === listenerId
@@ -1502,6 +1514,42 @@ describe("topology inspector", () => {
     expect(clientChildren?.hidden).toBe(false);
   });
 
+  it("collapses and expands every Topology branch from the overview action", async () => {
+    appendTopologyFixture(panel);
+    await flushPanel();
+    clickView("Topology");
+
+    const action = (): HTMLButtonElement | null =>
+      document.querySelector<HTMLButtonElement>(".topology-expand-items");
+    const pageChildren = (): HTMLUListElement | null | undefined =>
+      findNode("Inspected page")
+        ?.closest<HTMLLIElement>(".topology-tree-item")
+        ?.querySelector<HTMLUListElement>(":scope > .topology-tree-group");
+    if (!action() || !pageChildren()) {
+      throw new Error("missing Topology expand/collapse controls");
+    }
+
+    expect(action()?.textContent).toBe("Collapse all");
+    action()?.click();
+
+    expect(action()?.textContent).toBe("Expand all");
+    expect(pageChildren()?.hidden).toBe(true);
+    expect(findNode("Inspected page")?.getAttribute("aria-expanded")).toBe(
+      "false"
+    );
+
+    action()?.click();
+
+    expect(action()?.textContent).toBe("Collapse all");
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLUListElement>(".topology-tree-group")
+      ).every((group) => !group.hidden)
+    ).toBe(true);
+    expect(text(".topology-tree-pane")).toContain("portfolio");
+    expect(text(".topology-tree-pane")).toContain("listener-1");
+  });
+
   it("disables stale replay targets but permits a registered listener across sessions", async () => {
     panel.setBridge({
       reinjectDraft: async () => ({
@@ -1648,6 +1696,351 @@ describe("topology inspector", () => {
     expect(
       document.querySelector<HTMLButtonElement>(".mutate-inject-button")?.disabled
     ).toBe(true);
+  });
+
+  it("summarizes 1,000 COMMAND generations behind bounded, copyable evidence", async () => {
+    const sync = topologyCheckpoint(
+      "generation-page",
+      "generation-volume",
+      "generation-subscription",
+      2_000
+    );
+    const records = (
+      sync.chunk as Extract<TopologySyncFrame, { records: unknown }>
+    ).records as TopologyAbsoluteRecord[];
+    const subscriptionRecord = records.find(({ kind }) => kind === "subscription");
+    const subscriptionValues = subscriptionRecord?.values;
+    const subscriptionValue = subscriptionValues?.subscription;
+    if (!subscriptionValues || !subscriptionValue || typeof subscriptionValue !== "object") {
+      throw new Error("missing subscription fixture");
+    }
+    subscriptionValues.subscription = {
+      ...subscriptionValue,
+      mode: "COMMAND",
+      fields: ["command", "key", "value"]
+    };
+    for (let index = 1; index <= 1_000; index += 1) {
+      records.push({
+        kind: "command-generation",
+        id: `generation-${index}`,
+        parentId: "generation-subscription",
+        subscriptionId: "generation-subscription",
+        pageEpoch: "generation-page",
+        captureSequence: 10 + index,
+        values: {
+          itemId: "item-1",
+          key: `key-${index}`,
+          command: index % 2 === 0 ? "UPDATE" : "ADD"
+        }
+      });
+    }
+    for (const frame of [sync.begin, sync.chunk, sync.complete]) {
+      frame.recordCount = records.length;
+    }
+    panel.applyTopologySyncFrame(sync.begin);
+    panel.applyTopologySyncFrame(sync.chunk);
+    panel.applyTopologySyncFrame(sync.complete);
+    clickView("Topology");
+    clickNode("generation-subscription");
+
+    expect(text(".topology-detail-pane")).toContain("COMMAND generations1,000");
+    expect(text(".topology-detail-pane")).toContain("key-1000");
+    expect(document.querySelectorAll(".topology-command-evidence-entry")).toHaveLength(25);
+    expect(text(".topology-command-evidence-summary")).toContain("25 of 1,000 shown");
+    expect(text(".topology-tree-pane")).not.toContain("generation-1000");
+    expect(document.querySelectorAll(".topology-node").length).toBeLessThan(20);
+
+    const detail = document.querySelector<HTMLElement>(".topology-detail-pane");
+    if (!detail) throw new Error("missing topology detail");
+    detail.scrollTop = 120;
+    document.querySelector<HTMLDetailsElement>(".topology-command-evidence")!.open = true;
+    document
+      .querySelector<HTMLDetailsElement>(".topology-command-evidence")!
+      .dispatchEvent(new Event("toggle"));
+    document
+      .querySelector<HTMLButtonElement>(".topology-show-more-command-evidence")
+      ?.click();
+    expect(document.querySelectorAll(".topology-command-evidence-entry")).toHaveLength(50);
+    expect(detail.scrollTop).toBe(120);
+    expect(
+      findNode("generation-subscription")?.dataset.selected
+    ).toBe("true");
+
+    const writes: string[] = [];
+    const writeText = vi.fn(async (value: string) => {
+      writes.push(value);
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    document.querySelector<HTMLButtonElement>(".topology-copy-command-evidence")?.click();
+    await Promise.resolve();
+    expect(JSON.parse(writes[0] ?? "[]")).toHaveLength(1_000);
+
+    document.querySelector<HTMLButtonElement>(".topology-open-command-state")?.click();
+    expect(
+      document.querySelector<HTMLButtonElement>('.view-selector button[data-active="true"]')
+        ?.textContent
+    ).toBe("COMMAND State");
+  });
+
+  it("offers direct unredacted downloads with opt-in redaction under Advanced options", async () => {
+    appendTopologyFixture(panel);
+    await flushPanel();
+    clickView("Topology");
+    const menu = document.querySelector<HTMLDetailsElement>(".topology-export-menu");
+    if (!menu) throw new Error("missing Topology export menu");
+    menu.open = true;
+    const advanced = document.querySelector<HTMLDetailsElement>(
+      ".topology-export-advanced"
+    );
+    const categoryCheckboxes = Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        ".topology-export-categories input[data-category]"
+      )
+    );
+
+    expect(text(".topology-export-panel")).toContain("No redaction is applied by default");
+    expect(document.querySelector(".topology-export-preview")).toBeNull();
+    expect(document.querySelector(".topology-export-preview-content")).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>(".topology-export-json")?.disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>(".topology-export-html")?.disabled).toBe(false);
+    expect(advanced?.open).toBe(false);
+    expect(advanced?.contains(document.querySelector(".topology-export-categories"))).toBe(true);
+    expect(categoryCheckboxes).toHaveLength(6);
+    expect(categoryCheckboxes.every((checkbox) => !checkbox.checked)).toBe(true);
+  });
+
+  it("applies selected Advanced redactions to the next direct download", async () => {
+    appendTopologyFixture(panel);
+    await flushPanel();
+    clickView("Topology");
+
+    const identifierRedaction = document.querySelector<HTMLInputElement>(
+      '.topology-export-categories input[data-category="identifiers"]'
+    );
+    if (!identifierRedaction) throw new Error("missing identifier redaction option");
+    identifierRedaction.checked = true;
+    identifierRedaction.dispatchEvent(new Event("change"));
+    expect(text(".topology-export-advanced-toggle")).toBe(
+      "Advanced options · 1 redaction selected"
+    );
+
+    const objectUrls = new Map<string, Blob>();
+    let downloaded: Blob | null = null;
+    const originalCreateObjectUrl = URL.createObjectURL;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      objectUrls.set("blob:redacted-export", blob);
+      return "blob:redacted-export";
+    });
+    URL.revokeObjectURL = vi.fn();
+    HTMLAnchorElement.prototype.click = function clickDownload(): void {
+      downloaded = objectUrls.get(this.href) ?? null;
+    };
+
+    try {
+      document.querySelector<HTMLButtonElement>(".topology-export-json")?.click();
+      const content = downloaded ? await readBlobText(downloaded) : "";
+      const snapshot = JSON.parse(content || "{}") as {
+        privacy?: { redactedCategories?: string[] };
+      };
+      expect({
+        redactedCategories: snapshot.privacy?.redactedCategories,
+        containsIdentifier: content.includes("client-1"),
+        containsIdentifierMarker: content.includes("[REDACTED:identifiers]"),
+        containsUnselectedItemName: content.includes("portfolio")
+      }).toEqual({
+        redactedCategories: ["identifiers"],
+        containsIdentifier: false,
+        containsIdentifierMarker: true,
+        containsUnselectedItemName: true
+      });
+    } finally {
+      URL.createObjectURL = originalCreateObjectUrl;
+      URL.revokeObjectURL = originalRevokeObjectUrl;
+      HTMLAnchorElement.prototype.click = originalAnchorClick;
+    }
+  });
+
+  it("keeps the Topology export controls reachable in a compact panel", async () => {
+    appendTopologyFixture(panel);
+    await flushPanel();
+    clickView("Topology");
+
+    const menu = document.querySelector<HTMLDetailsElement>(".topology-export-menu");
+    const toggle = document.querySelector<HTMLElement>(".topology-export-toggle");
+    const exportPanel = document.querySelector<HTMLElement>(".topology-export-panel");
+    if (!menu || !toggle || !exportPanel) {
+      throw new Error("missing Topology export controls");
+    }
+
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 563 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 137 });
+    const toggleRect = vi
+      .spyOn(toggle, "getBoundingClientRect")
+      .mockReturnValue(rect(514, 47, 41, 24));
+    const panelRect = vi
+      .spyOn(exportPanel, "getBoundingClientRect")
+      .mockImplementation(() => {
+        const left = Number.parseFloat(exportPanel.style.left);
+        const top = Number.parseFloat(exportPanel.style.top);
+        return exportPanel.style.position === "fixed" && Number.isFinite(left) && Number.isFinite(top)
+          ? rect(left, top, 539, 104)
+          : rect(16, 77, 539, 104);
+      });
+
+    try {
+      menu.open = true;
+      menu.dispatchEvent(new Event("toggle"));
+      const bounds = exportPanel.getBoundingClientRect();
+      const downloads = exportPanel.querySelectorAll(
+        ".topology-export-json, .topology-export-html"
+      );
+
+      expect({
+        open: menu.open,
+        leftInsideViewport: bounds.left >= 8,
+        rightInsideViewport: bounds.right <= window.innerWidth - 8,
+        topInsideViewport: bounds.top >= 8,
+        bottomInsideViewport: bounds.bottom <= window.innerHeight - 8,
+        downloadControlsReachable: downloads.length === 2
+      }).toEqual({
+        open: true,
+        leftInsideViewport: true,
+        rightInsideViewport: true,
+        topInsideViewport: true,
+        bottomInsideViewport: true,
+        downloadControlsReachable: true
+      });
+    } finally {
+      toggleRect.mockRestore();
+      panelRect.mockRestore();
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth
+      });
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: originalInnerHeight
+      });
+    }
+  });
+
+  it("downloads unredacted JSON and HTML directly while always excluding credentials", async () => {
+    appendTopologyFixture(panel);
+    append(panel, "client-status", {
+      client: {
+        id: "client-1",
+        status: "CONNECTED:WS-STREAMING",
+        sessionId: "session-A",
+        serverAddress:
+          "https://user:password@push.example.test/lightstreamer?token=secret-token"
+      }
+    });
+    await flushPanel();
+    clickView("Topology");
+
+    const objectUrls = new Map<string, Blob>();
+    const downloads: Array<{ filename: string; blob: Blob }> = [];
+    let nextObjectUrl = 1;
+    const originalCreateObjectUrl = URL.createObjectURL;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      const url = `blob:test-${nextObjectUrl++}`;
+      objectUrls.set(url, blob);
+      return url;
+    });
+    URL.revokeObjectURL = vi.fn((url: string) => {
+      objectUrls.delete(url);
+    });
+    HTMLAnchorElement.prototype.click = function clickDownload(): void {
+      if (!this.isConnected) return;
+      const filename = this.download;
+      const url = this.href;
+      queueMicrotask(() => {
+        const blob = objectUrls.get(url);
+        if (blob) downloads.push({ filename, blob });
+      });
+    };
+
+    try {
+      document.querySelector<HTMLButtonElement>(".topology-export-json")?.click();
+      document.querySelector<HTMLButtonElement>(".topology-export-html")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const jsonDownload = downloads[0];
+      const htmlDownload = downloads[1];
+      const jsonContent = jsonDownload ? await readBlobText(jsonDownload.blob) : "";
+      const htmlContent = htmlDownload ? await readBlobText(htmlDownload.blob) : "";
+      const snapshot = JSON.parse(jsonContent || "{}") as {
+        generatedAt: string;
+        privacy: {
+          redactedCategories: string[];
+          completeEvidenceIncluded: boolean;
+          credentialsExcluded: boolean;
+        };
+        schema: { id: string };
+      };
+      expect({
+        json: jsonDownload
+          ? {
+              contextualFilename: /^lightstreamer-topology-session-A-\d{8}T\d{9}Z\.json$/.test(
+                jsonDownload.filename
+              ),
+              type: jsonDownload.blob.type,
+              containsClientId: jsonContent.includes("client-1"),
+              containsItemName: jsonContent.includes("portfolio"),
+              containsCredentials:
+                jsonContent.includes("user:password") ||
+                jsonContent.includes("secret-token")
+            }
+          : null,
+        html: htmlDownload
+          ? {
+              contextualFilename: /^lightstreamer-topology-session-A-\d{8}T\d{9}Z\.html$/.test(
+                htmlDownload.filename
+              ),
+              type: htmlDownload.blob.type,
+              includesSchema: htmlContent.includes(snapshot.schema.id),
+              containsClientId: htmlContent.includes("client-1"),
+              containsCredentials:
+                htmlContent.includes("user:password") ||
+                htmlContent.includes("secret-token")
+            }
+          : null,
+        privacy: snapshot.privacy
+      }).toEqual({
+        json: {
+          contextualFilename: true,
+          type: "application/json",
+          containsClientId: true,
+          containsItemName: true,
+          containsCredentials: false
+        },
+        html: {
+          contextualFilename: true,
+          type: "text/html",
+          includesSchema: true,
+          containsClientId: true,
+          containsCredentials: false
+        },
+        privacy: {
+          redactedCategories: [],
+          completeEvidenceIncluded: false,
+          credentialsExcluded: true
+        }
+      });
+    } finally {
+      URL.createObjectURL = originalCreateObjectUrl;
+      URL.revokeObjectURL = originalRevokeObjectUrl;
+      HTMLAnchorElement.prototype.click = originalAnchorClick;
+    }
   });
 
   it("expands a bounded large tree once and updates it without rebuilding the DOM", async () => {

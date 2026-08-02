@@ -14,8 +14,9 @@ import {
 /**
  * The storage-independent history seam used by the panel. Every operation has
  * one completion contract, regardless of whether the underlying history is
- * held in memory or IndexedDB. Synchronous in-memory delivery remains
- * synchronous, while callers never branch on the backend's return type.
+ * held in memory or IndexedDB. Appends retain capture order while storage and
+ * subscriber work may complete in bounded batches; callers never branch on
+ * the backend's return type.
  */
 export type EventHistory = {
   append(event: LightstreamerEventEnvelope): HistoryOperation<LightstreamerEventEnvelope>;

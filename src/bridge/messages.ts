@@ -169,6 +169,7 @@ export type TopologyObservation = {
   kind: TopologyObservationKind;
   pageEpoch: string;
   captureSequence: number;
+  timestamp?: number;
   provenance: TopologyProvenance;
   coverage: TopologyCoverage;
   client?: TopologyEvidenceRecord;
@@ -198,6 +199,7 @@ export type TopologyAbsoluteRecord = {
   id: string;
   pageEpoch: string;
   captureSequence: number;
+  timestamp?: number;
   parentId?: string;
   clientId?: string;
   subscriptionId?: string;
@@ -417,6 +419,8 @@ export function isTopologyObservation(value: unknown): value is TopologyObservat
     (TOPOLOGY_OBSERVATION_KINDS as readonly string[]).includes(value.kind) &&
     isNonEmptyString(value.pageEpoch) &&
     isSafePositiveInteger(value.captureSequence) &&
+    (value.timestamp === undefined ||
+      (typeof value.timestamp === "number" && Number.isFinite(value.timestamp))) &&
     isTopologyProvenance(value.provenance) &&
     isTopologyCoverage(value.coverage) &&
     [
@@ -631,6 +635,8 @@ export function isTopologyAbsoluteRecord(value: unknown): value is TopologyAbsol
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.pageEpoch) &&
     isSafePositiveInteger(value.captureSequence) &&
+    (value.timestamp === undefined ||
+      (typeof value.timestamp === "number" && Number.isFinite(value.timestamp))) &&
     (value.parentId === undefined || isNonEmptyString(value.parentId)) &&
     (value.clientId === undefined || isNonEmptyString(value.clientId)) &&
     (value.subscriptionId === undefined || isNonEmptyString(value.subscriptionId)) &&

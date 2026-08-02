@@ -42,6 +42,7 @@ import {
 type InstrumentationState = {
   pageEpoch: string;
   captureSequence: number;
+  currentCaptureTimestamp: number;
   topologyRecords: Map<string, TopologyAbsoluteRecord>;
   topologyCounters: Map<string, { updateCount: number; lostUpdates: number }>;
   topologyObservedDispatches: Set<string>;
@@ -164,6 +165,7 @@ export function installLightstreamerInstrumentation(
   const state: InstrumentationState = {
     pageEpoch: createPageEpoch(),
     captureSequence: 0,
+    currentCaptureTimestamp: 0,
     topologyRecords: new Map<string, TopologyAbsoluteRecord>(),
     topologyCounters: new Map<string, { updateCount: number; lostUpdates: number }>(),
     topologyObservedDispatches: new Set<string>(),
@@ -195,12 +197,17 @@ export function installLightstreamerInstrumentation(
     emit(kind, payload) {
       try {
         const sanitizedPayload = sanitizeCapturePayload(payload);
+        const timestamp = Date.now();
+        state.currentCaptureTimestamp = timestamp;
         if (isRetiredFallbackCapture(retiredFallbackSubscriptionIds, sanitizedPayload)) {
           return;
         }
         trackActiveSubscription(activeSubscriptions, kind, sanitizedPayload);
         trackCommandReplayRows(commandReplayRows, kind, sanitizedPayload);
         let topology = createTopologyObservation(kind, sanitizedPayload, state);
+        if (topology) {
+          topology = { ...topology, timestamp };
+        }
         const topologySequence = topology?.captureSequence;
         if (topology && !isTopologyObservationForCapture(kind, topology)) {
           state.topologyCoverage = "partial";
@@ -210,6 +217,7 @@ export function installLightstreamerInstrumentation(
             kind,
             pageEpoch: state.pageEpoch,
             captureSequence: topologySequence ?? state.captureSequence,
+            timestamp,
             provenance: { instrumentationSource: "official-public-api" },
             coverage: {
               ...aggregateCoverage,
@@ -221,7 +229,7 @@ export function installLightstreamerInstrumentation(
         if (topology) {
           updateTopologyShadow(kind, sanitizedPayload, topology, state);
         }
-        postMessage(createCaptureMessage(kind, sanitizedPayload, Date.now(), topology));
+        postMessage(createCaptureMessage(kind, sanitizedPayload, timestamp, topology));
       } catch (_error) {
         // Capture and its transport are best-effort and must never affect the page.
       }
@@ -833,6 +841,7 @@ function updateTopologyShadow(
         }
       });
     }
+    updateClientListenerRecord(kind, topology, clientId, state);
   }
 
   const subscriptionId = topologyString(topology.subscription?.id);
@@ -843,6 +852,7 @@ function updateTopologyShadow(
     deleteSubscriptionTopology(state, subscriptionId);
     return;
   }
+  updateListenerAttachmentRecord(kind, payload, topology, subscriptionId, state);
   if (!clientId) {
     return;
   }
@@ -893,9 +903,45 @@ function updateTopologyShadow(
 
   updateEstablishmentRecord(state, subscriptionId, serverEstablished, sequence);
 
-  updateListenerAttachmentRecord(kind, payload, topology, subscriptionId, state);
   updateItemAndCounterRecords(kind, payload, topology, subscriptionId, state);
   updateAggregateRecord(subscriptionId, sequence, state);
+}
+
+function updateClientListenerRecord(
+  kind: CaptureKind,
+  topology: TopologyObservation,
+  clientId: string,
+  state: InstrumentationState
+): void {
+  if (
+    (kind !== "listener-added" && kind !== "listener-removed") ||
+    topology.subscription
+  ) {
+    return;
+  }
+  const listenerId = topologyString(topology.listener?.id);
+  if (!listenerId) {
+    return;
+  }
+  const id = `listener-attachment:${clientId}:${listenerId}`;
+  if (kind === "listener-removed") {
+    state.topologyRecords.delete(topologyRecordKey("listener-attachment", id));
+    return;
+  }
+  putTopologyRecord(state, {
+    kind: "listener-attachment",
+    id,
+    parentId: clientId,
+    clientId,
+    pageEpoch: state.pageEpoch,
+    captureSequence: topology.captureSequence,
+    values: {
+      listenerId,
+      active: true,
+      client: topology.client ?? { id: clientId },
+      listener: topology.listener ?? { id: listenerId }
+    }
+  });
 }
 
 function retireClientSessionTopology(
@@ -909,7 +955,7 @@ function retireClientSessionTopology(
       state.topologyRecords.delete(key);
     } else if (record.kind === "subscription" && record.clientId === clientId) {
       subscriptions.push(record.id);
-      state.topologyRecords.set(key, {
+      putTopologyRecord(state, {
         ...record,
         captureSequence: sequence,
         serverEstablished: false
@@ -937,7 +983,7 @@ function updateEstablishmentRecord(
     return;
   }
   if (current) {
-    state.topologyRecords.set(current[0], {
+    putTopologyRecord(state, {
       ...current[1],
       captureSequence: sequence,
       values: { established: true }
@@ -1016,11 +1062,11 @@ function synchronizeAttachmentCounts(
   sequence: number
 ): void {
   const listenerCount = countListenerAttachments(state, subscriptionId);
-  for (const [key, record] of state.topologyRecords) {
+  for (const [, record] of state.topologyRecords) {
     if (record.kind !== "listener-attachment" || record.subscriptionId !== subscriptionId) {
       continue;
     }
-    state.topologyRecords.set(key, {
+    putTopologyRecord(state, {
       ...record,
       captureSequence: sequence,
       values: { ...record.values, listenerCount }
@@ -1240,7 +1286,10 @@ function putTopologyRecord(state: InstrumentationState, record: TopologyAbsolute
     state.topologyCoverage = "partial";
     return;
   }
-  state.topologyRecords.set(key, record);
+  state.topologyRecords.set(key, {
+    ...record,
+    timestamp: record.timestamp ?? state.currentCaptureTimestamp
+  });
 }
 
 function deleteSubscriptionTopology(state: InstrumentationState, subscriptionId: string): void {
