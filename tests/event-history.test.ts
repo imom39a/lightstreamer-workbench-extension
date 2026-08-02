@@ -1,5 +1,5 @@
-import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
-import { describe, expect, it, vi } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
+import { describe, expect, it } from "vitest";
 
 import {
   createEventHistory,
@@ -70,54 +70,6 @@ describe("event history", () => {
     });
     await expect(close.toPromise()).resolves.toBeUndefined();
   });
-
-  it("retains a high-volume IndexedDB capture in order without per-event count work", async () => {
-    const sessionId = "event-history-high-volume";
-    Reflect.set(globalThis, "indexedDB", new IDBFactory());
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const history = await createIndexedDbEventHistory({
-      sessionId,
-      reset: true,
-      batchSize: 256
-    });
-    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
-    const countSpy = vi.spyOn(IDBObjectStore.prototype, "count");
-    const notificationSizes: number[] = [];
-    history.subscribe((change) => {
-      if (change.type === "append") {
-        notificationSizes.push(1);
-      } else if (change.type === "append-batch") {
-        notificationSizes.push(change.events.length);
-      }
-    });
-    transactionSpy.mockClear();
-    countSpy.mockClear();
-
-    try {
-      const accepted = Array.from({ length: 10_000 }, (_, index) =>
-        history.append(event(`indexed-capture-${index}`)).toPromise()
-      );
-      expect(transactionSpy).not.toHaveBeenCalled();
-      await Promise.all(accepted);
-      const stats = await history.stats().toPromise();
-
-      expect(stats).toMatchObject({ retained: 10_000, totalAppended: 10_000 });
-      expect(notificationSizes.reduce((total, size) => total + size, 0)).toBe(10_000);
-      expect(notificationSizes.length).toBeLessThan(100);
-      expect(transactionSpy.mock.calls.length).toBeLessThanOrEqual(40);
-      expect(countSpy).not.toHaveBeenCalled();
-
-      const retained = await history.list().toPromise();
-      expect(retained).toHaveLength(10_000);
-      expect(retained[0]?.id).toBe("indexed-capture-0");
-      expect(retained.at(-1)?.id).toBe("indexed-capture-9999");
-    } finally {
-      await history.close().toPromise();
-      transactionSpy.mockRestore();
-      countSpy.mockRestore();
-      await deleteEventDatabase(eventDatabaseName(sessionId));
-    }
-  }, 60_000);
 
   it("does not resurrect queued IndexedDB events across clear and close", async () => {
     const sessionId = "event-history-clear-close-barrier";

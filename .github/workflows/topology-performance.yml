@@ -1,4 +1,4 @@
-name: Topology performance gate
+name: Performance gates
 
 on:
   workflow_dispatch:
@@ -7,6 +7,31 @@ permissions:
   contents: read
 
 jobs:
+  event-history-performance:
+    name: 10,000-event IndexedDB capture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the IndexedDB event-history benchmark
+        run: npm run benchmark:event-history
+
   topology-performance:
     name: 1,000 logical updates/sec for 60 seconds
     runs-on: ubuntu-latest

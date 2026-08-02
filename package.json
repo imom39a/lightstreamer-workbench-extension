@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "benchmark:panel": "vitest bench --run",
+    "benchmark:event-history": "vitest bench --run benchmarks/event-history-indexeddb.bench.ts",
     "benchmark:topology": "node scripts/topology-performance.mjs",
     "release:package": "node scripts/package-extension.mjs",
     "release:zip": "node scripts/package-extension.mjs --format zip",
