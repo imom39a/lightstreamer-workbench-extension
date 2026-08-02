@@ -199,6 +199,64 @@ export function serializeTopologySnapshot(snapshot: TopologyStructuredSnapshot):
   return JSON.stringify(sortObjectKeys(snapshot), null, 2);
 }
 
+export function topologySnapshotFilename(
+  snapshot: TopologyStructuredSnapshot,
+  extension: "json" | "html"
+): string {
+  const context = topologySnapshotFilenameContext(snapshot);
+  const generatedAt = compactFilenameTimestamp(snapshot.generatedAt);
+  return `lightstreamer-topology-${context}-${generatedAt}.${extension}`;
+}
+
+function topologySnapshotFilenameContext(snapshot: TopologyStructuredSnapshot): string {
+  if (!snapshot.privacy.redactedCategories.includes("identifiers")) {
+    const activeSessions = snapshot.clients.flatMap((client) =>
+      client.sessions.filter((session) => session.active && !session.historical)
+    );
+    if (activeSessions.length === 1) {
+      const sessionId = safeFilenamePart(activeSessions[0]?.id);
+      if (sessionId) {
+        return sessionId.toLowerCase().startsWith("session-")
+          ? sessionId
+          : `session-${sessionId}`;
+      }
+    }
+
+    if (snapshot.clients.length === 1) {
+      const clientId = safeFilenamePart(snapshot.clients[0]?.id);
+      if (clientId) {
+        return clientId.toLowerCase().startsWith("client-")
+          ? clientId
+          : `client-${clientId}`;
+      }
+    }
+  }
+
+  const clientCount = snapshot.overview.clientCount;
+  const sessionCount = snapshot.overview.activeSessionCount;
+  const clients = `${clientCount}-${clientCount === 1 ? "client" : "clients"}`;
+  const sessions = `${sessionCount}-${sessionCount === 1 ? "session" : "sessions"}`;
+  return `${clients}-${sessions}`;
+}
+
+function safeFilenamePart(value: string | null | undefined): string | null {
+  if (!value || value.startsWith("[REDACTED:")) return null;
+  const sanitized = value
+    .normalize("NFKC")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 64)
+    .replace(/[._-]+$/g, "");
+  return sanitized || null;
+}
+
+function compactFilenameTimestamp(value: string): string {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return "unknown-time";
+  return timestamp.toISOString().replace(/[-:.]/g, "");
+}
+
 export function topologySensitiveCategoryCounts(
   state: TopologyState
 ): Record<TopologySensitiveCategory, number> {

@@ -1893,34 +1893,42 @@ describe("topology inspector", () => {
       const jsonDownload = downloads[0];
       const htmlDownload = downloads[1];
       const htmlContent = htmlDownload ? await readBlobText(htmlDownload.blob) : "";
+      const jsonStem = jsonDownload?.filename.replace(/\.json$/, "");
+      const htmlStem = htmlDownload?.filename.replace(/\.html$/, "");
       expect({
         json: jsonDownload
           ? {
-              filename: jsonDownload.filename,
+              contextualFilename: /^lightstreamer-topology-1-client-1-session-\d{8}T\d{9}Z\.json$/.test(
+                jsonDownload.filename
+              ),
               type: jsonDownload.blob.type,
               content: await readBlobText(jsonDownload.blob)
             }
           : null,
         html: htmlDownload
           ? {
-              filename: htmlDownload.filename,
+              contextualFilename: /^lightstreamer-topology-1-client-1-session-\d{8}T\d{9}Z\.html$/.test(
+                htmlDownload.filename
+              ),
               type: htmlDownload.blob.type,
               includesSchema: htmlContent.includes(snapshot.schema.id),
               includesGenerationTime: htmlContent.includes(snapshot.generatedAt)
             }
-          : null
+          : null,
+        sharedStem: jsonStem === htmlStem
       }).toEqual({
         json: {
-          filename: "lightstreamer-topology.json",
+          contextualFilename: true,
           type: "application/json",
           content: approved
         },
         html: {
-          filename: "lightstreamer-topology.html",
+          contextualFilename: true,
           type: "text/html",
           includesSchema: true,
           includesGenerationTime: true
-        }
+        },
+        sharedStem: true
       });
     } finally {
       URL.createObjectURL = originalCreateObjectUrl;

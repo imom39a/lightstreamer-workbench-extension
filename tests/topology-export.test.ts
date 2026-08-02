@@ -4,6 +4,7 @@ import {
   createTopologyStructuredSnapshot,
   serializeTopologySnapshot,
   TOPOLOGY_SNAPSHOT_SCHEMA,
+  topologySnapshotFilename,
   topologySensitiveCategoryCounts,
   type TopologySnapshotSubscription
 } from "../src/extension/panel/topology-export";
@@ -68,6 +69,26 @@ describe("Topology structured export", () => {
       samplingStrategy: "complete"
     });
     expect(snapshot.privacy.completeEvidenceIncluded).toBe(true);
+  });
+
+  it("names exports for their approved Session context without leaking redacted identifiers", () => {
+    const state = topologyFixture();
+    state.clients[0]!.sessions[0]!.id = "session/desk A?";
+    const reviewed = createTopologyStructuredSnapshot(state, projectionStatus(), {
+      generatedAt: 1_700_000_000_000,
+      redact: []
+    });
+    const redacted = createTopologyStructuredSnapshot(state, projectionStatus(), {
+      generatedAt: 1_700_000_000_000
+    });
+
+    expect({
+      reviewed: topologySnapshotFilename(reviewed, "json"),
+      redacted: topologySnapshotFilename(redacted, "html")
+    }).toEqual({
+      reviewed: "lightstreamer-topology-session-desk-A-20231114T221320000Z.json",
+      redacted: "lightstreamer-topology-1-client-1-session-20231114T221320000Z.html"
+    });
   });
 
   it("redacts selected categories and always excludes credential-like data", () => {

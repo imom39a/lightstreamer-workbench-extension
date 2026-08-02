@@ -88,6 +88,7 @@ import {
   TOPOLOGY_SENSITIVE_CATEGORIES,
   createTopologyStructuredSnapshot,
   serializeTopologySnapshot,
+  topologySnapshotFilename,
   topologySensitiveCategoryCounts,
   type TopologySensitiveCategory,
   type TopologyStructuredSnapshot
@@ -4307,7 +4308,7 @@ export function renderPanel(
     downloadJson.addEventListener("click", () => {
       if (!topologyApprovedSnapshot) return;
       downloadTextFile(
-        "lightstreamer-topology.json",
+        topologySnapshotFilename(topologyApprovedSnapshot, "json"),
         serializeTopologySnapshot(topologyApprovedSnapshot),
         "application/json"
       );
@@ -4315,7 +4316,7 @@ export function renderPanel(
     downloadHtml.addEventListener("click", () => {
       if (!topologyApprovedSnapshot) return;
       downloadTextFile(
-        "lightstreamer-topology.html",
+        topologySnapshotFilename(topologyApprovedSnapshot, "html"),
         renderTopologyHtmlReport(topologyApprovedSnapshot),
         "text/html"
       );
