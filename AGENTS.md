@@ -77,13 +77,15 @@ No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skill
 
 ## Agent skills
 
-### Issue tracker
+### Work tracking
 
-Issues and PRDs live in GitHub Issues; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Internal tickets, PRDs, and agent findings live as draft items in [Lightstreamer Workbench Project #2](https://github.com/users/imom39a/projects/2); do not create repository issues for them. See `docs/agents/ticket-tracker.md`.
+
+GitHub Issues and pull requests remain the intake and triage surface for repository-facing reports. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Use the default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+For repository issues and pull requests, use the default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. These labels do not apply to draft Project items. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 

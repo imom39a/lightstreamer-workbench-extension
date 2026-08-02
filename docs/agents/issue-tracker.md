@@ -1,6 +1,8 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+This tracker is the repository-facing intake and triage surface for issues and pull requests. Internal tickets, PRDs, and agent findings do **not** live here; publish those as draft GitHub Project items according to `docs/agents/ticket-tracker.md`.
+
+Use the `gh` CLI for issue and pull-request operations.
 
 ## Conventions
 
@@ -25,11 +27,11 @@ When set to `yes`, PRs run through the same labels and states as issues, using t
 
 GitHub shares one number space across issues and PRs, so a bare `#42` may be either — resolve with `gh pr view 42` and fall back to `gh issue view 42`.
 
-## When a skill says "publish to the issue tracker"
+## When an issue-oriented skill says "publish to the issue tracker"
 
-Create a GitHub issue.
+Create a GitHub issue. `/to-tickets` is not issue-oriented: it publishes internal work to the configured GitHub Project and must not create an issue.
 
-## When a skill says "fetch the relevant ticket"
+## When an issue-oriented skill says "fetch the relevant issue"
 
 Run `gh issue view <number> --comments`.
 
