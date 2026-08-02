@@ -167,9 +167,7 @@ export function createTopologyStructuredSnapshot(
       credentialsExcluded: true
     },
     capture: {
-      observingSince: state.observingSince === null
-        ? null
-        : new Date(state.observingSince).toISOString(),
+      observingSince: isoTime(state.observingSince),
       retainedEventCount: Math.max(0, Math.floor(options.retainedEventCount ?? 0)),
       semanticCapture: status.semanticActive,
       syncState: status.syncState,
@@ -704,7 +702,10 @@ function isCredentialKey(key: string): boolean {
 }
 
 function isoTime(value: number | null): string | null {
-  return value === null ? null : new Date(value).toISOString();
+  if (value === null || !Number.isFinite(value) || value < Date.UTC(2000, 0, 1)) {
+    return null;
+  }
+  return new Date(value).toISOString();
 }
 
 function sortObjectKeys(value: unknown): unknown {

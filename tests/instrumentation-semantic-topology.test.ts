@@ -12,6 +12,12 @@ import {
   type TopologySyncFrame
 } from "../src/bridge/messages";
 import type { LightstreamerHost } from "../src/core/lightstreamer-types";
+import {
+  createPanelTopologySyncAdapter,
+  snapshotPanelTopologyState
+} from "../src/extension/panel/topology-sync-adapter";
+import { createTopologyStructuredSnapshot } from "../src/extension/panel/topology-export";
+import { renderTopologyHtmlReport } from "../src/extension/panel/topology-html-report";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
 class SemanticClient {
@@ -380,6 +386,31 @@ describe("semantic topology instrumentation", () => {
     expect(JSON.stringify(frames)).not.toMatch(/user:secret|\?token=secret|198\.51\.100\.77/);
   });
 
+  it("preserves client and subscription listeners registered before subscribe in a late-open checkpoint", () => {
+    const { host, listeners, frames } = createSemanticHarness();
+    const client = new host.LightstreamerClient();
+    const subscription = new host.Subscription(
+      "COMMAND",
+      ["orders"],
+      ["command", "key", "qty"]
+    );
+
+    subscription.addListener({ onItemUpdate: () => undefined });
+    client.addListener({ onStatusChange: () => undefined });
+    client.subscribe(subscription);
+
+    const records = syncRecords(host, listeners, frames);
+    const adapter = createPanelTopologySyncAdapter(() => undefined);
+    const index = adapter.hydrate(records[0]?.pageEpoch ?? "page-test", records);
+    const state = snapshotPanelTopologyState(index);
+    const hydratedClient = state.clients[0];
+    const hydratedSubscription = hydratedClient?.sessions[0]?.subscriptions[0];
+
+    expect(hydratedClient?.clientListenerIds).toHaveLength(1);
+    expect(hydratedSubscription?.listenerCount).toBe(1);
+    expect(hydratedSubscription?.listeners).toHaveLength(1);
+  });
+
   it("retains seven-state semantic evidence in late-open client, session, and subscription records", () => {
     const { host, listeners, frames } = createSemanticHarness();
     const client = new host.LightstreamerClient();
@@ -545,6 +576,42 @@ describe("semantic topology instrumentation", () => {
     for (const listener of listeners) listener(request);
 
     expect(JSON.stringify(frames)).toBe(first);
+  });
+
+  it("preserves wall-clock timestamps from a late-open checkpoint in the HTML report", () => {
+    const capturedAt = 1_700_000_000_040;
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(capturedAt);
+    try {
+      const { host, listeners, frames } = createSemanticHarness();
+      new host.LightstreamerClient();
+      const records = syncRecords(host, listeners, frames);
+      const pageEpoch = records[0]?.pageEpoch;
+      if (!pageEpoch) throw new Error("missing checkpoint page epoch");
+
+      const adapter = createPanelTopologySyncAdapter(() => undefined);
+      const state = snapshotPanelTopologyState(adapter.hydrate(pageEpoch, records));
+      const snapshot = createTopologyStructuredSnapshot(
+        state,
+        {
+          semanticActive: true,
+          syncState: "complete",
+          coverage: { status: "complete", getters: {} }
+        },
+        { generatedAt: capturedAt, redact: [] }
+      );
+      const html = renderTopologyHtmlReport(snapshot);
+      const expectedTimestamp = "2023-11-14T22:13:20.040Z";
+
+      expect({
+        expectedTimestampCount: html.match(new RegExp(expectedTimestamp, "g"))?.length ?? 0,
+        containsSequenceAsEpochTime: html.includes("1970-01-01T00:00:00.")
+      }).toEqual({
+        expectedTimestampCount: 7,
+        containsSequenceAsEpochTime: false
+      });
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it("keeps listener attachment counts and callback delivery identities consistent", () => {
