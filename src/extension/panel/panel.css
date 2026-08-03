@@ -401,6 +401,7 @@ button {
 
 .timeline-display-state {
   display: inline-flex;
+  max-width: 100%;
   min-width: 0;
   align-items: center;
   justify-self: end;
@@ -422,6 +423,7 @@ button {
 }
 
 .timeline-display-summary {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -721,13 +723,13 @@ button {
 }
 
 .topology-metric-value {
-  overflow: hidden;
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--color-text);
   font-family: var(--font-code);
   font-size: 12px;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .topology-metric[data-tone="active"] .topology-metric-value {
@@ -3090,6 +3092,18 @@ textarea {
   border-color: var(--color-selected-border);
   background: var(--color-selected);
   color: var(--color-accent);
+}
+
+/* Keep selected navigation and selected-tree metadata readable on the light
+   selected surface as well as on the dark DevTools surface. */
+[data-theme="light"] .view-selector button[data-active="true"] {
+  color: var(--color-info);
+}
+
+[data-theme="light"] .topology-node[data-selected="true"] .topology-node-kind,
+[data-theme="light"] .topology-node[data-selected="true"] .topology-node-meta,
+[data-theme="light"] .topology-detail-note {
+  color: var(--color-text);
 }
 
 .event-window-navigation,

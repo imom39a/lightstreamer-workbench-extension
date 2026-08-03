@@ -36,7 +36,14 @@ export type PanelScenarioSetupAction =
       containerSelector: string;
       targetSelector: string;
       offset: number;
-    };
+  };
+
+export type PanelScenarioStream = {
+  /** The interval is intentionally part of the contract so sustained behavior is repeatable. */
+  intervalMs: number;
+  initialDelayMs?: number;
+  messages: readonly CaptureMessage[];
+};
 
 export type PanelScenario = {
   id: string;
@@ -46,6 +53,8 @@ export type PanelScenario = {
   captureMessages?: readonly CaptureMessage[];
   topologySyncFrames?: readonly TopologySyncFrame[];
   setupActions: readonly PanelScenarioSetupAction[];
+  postRenderSetupActions?: readonly PanelScenarioSetupAction[];
+  stream?: PanelScenarioStream;
 };
 
 export const PANEL_SCENARIO_IDS = [
@@ -56,7 +65,10 @@ export const PANEL_SCENARIO_IDS = [
 
 export const PANEL_INTERACTION_SCENARIO_IDS = [
   "topology-small",
-  "topology-large"
+  "topology-large",
+  "export-open",
+  "timeline-live",
+  "timeline-frozen"
 ] as const;
 
 export const ALL_PANEL_SCENARIO_IDS = [
@@ -135,7 +147,86 @@ export function getPanelScenario(id: PanelScenarioId): PanelScenario {
       return createTopologySmallScenario();
     case "topology-large":
       return createTopologyLargeScenario();
+    case "export-open":
+      return createExportOpenScenario();
+    case "timeline-live":
+      return createTimelineScenario("timeline-live");
+    case "timeline-frozen":
+      return createTimelineScenario("timeline-frozen");
   }
+}
+
+export function createExportOpenScenario(): PanelScenario {
+  const topology = createTopologySmallScenario();
+  return {
+    ...topology,
+    id: "export-open",
+    setupActions: [
+      {
+        type: "select-row",
+        selector: ".topology-node",
+        text: "topology-small-subscription"
+      },
+    ],
+    postRenderSetupActions: [{ type: "click", selector: ".topology-export-toggle" }]
+  };
+}
+
+export function createTimelineScenario(
+  id: "timeline-live" | "timeline-frozen"
+): PanelScenario {
+  const streamMessages = Array.from({ length: 90 }, (_, index) => {
+    const sequence = index + 1;
+    const matching = sequence % 3 !== 0;
+    return createCaptureMessage("item-update", {
+      client: { id: "timeline-client", sessionId: "timeline-session" },
+      subscription: { id: "timeline-subscription", mode: "MERGE" },
+      item: { name: matching ? "timeline-match" : "timeline-other", position: 1 },
+      update: {
+        isSnapshot: false,
+        fields: { value: sequence, stream: matching ? "match" : "other" },
+        changedFields: { value: sequence, stream: matching ? "match" : "other" }
+      },
+      raw: { callback: "onItemUpdate", sustained: true, sequence }
+    }, FIXED_SCENARIO_TIMESTAMP + 100 + sequence);
+  });
+
+  return {
+    id,
+    status: "capturing",
+    initialView: "Timeline",
+    capturedEvents: [],
+    captureMessages: [
+      createCaptureMessage("item-update", {
+        client: { id: "timeline-client", sessionId: "timeline-session" },
+        subscription: { id: "timeline-subscription", mode: "MERGE" },
+        item: { name: "timeline-match", position: 1 },
+        update: {
+          isSnapshot: false,
+          fields: { value: 0, stream: "match" },
+          changedFields: { value: 0, stream: "match" }
+        },
+        raw: { callback: "onItemUpdate", sustained: true, sequence: 0 }
+      }, FIXED_SCENARIO_TIMESTAMP + 100),
+      createCaptureMessage("item-update", {
+        client: { id: "timeline-client", sessionId: "timeline-session" },
+        subscription: { id: "timeline-subscription", mode: "MERGE" },
+        item: { name: "timeline-other", position: 1 },
+        update: {
+          isSnapshot: false,
+          fields: { value: 0, stream: "other" },
+          changedFields: { value: 0, stream: "other" }
+        },
+        raw: { callback: "onItemUpdate", sustained: true, sequence: -1 }
+      }, FIXED_SCENARIO_TIMESTAMP + 101)
+    ],
+    stream: {
+      intervalMs: 20,
+      initialDelayMs: id === "timeline-frozen" ? 600 : undefined,
+      messages: streamMessages
+    },
+    setupActions: []
+  };
 }
 
 export function createTopologySmallScenario(): PanelScenario {
@@ -234,7 +325,8 @@ function topologyGuardrailCaptureEvents(
   const client = {
     id: options.clientId,
     status: "CONNECTED:WS-STREAMING",
-    sessionId: options.sessionId
+    sessionId: options.sessionId,
+    serverAddress: "https://user:password@push.example.test/lightstreamer?token=secret-token"
   };
   const subscription = {
     id: options.subscriptionId,
@@ -316,7 +408,8 @@ function createTopologyGuardrailSyncFrames(
   const client = {
     id: options.clientId,
     status: "CONNECTED:WS-STREAMING",
-    sessionId: options.sessionId
+    sessionId: options.sessionId,
+    serverAddress: "https://user:password@push.example.test/lightstreamer?token=secret-token"
   };
   const subscription = {
     id: options.subscriptionId,

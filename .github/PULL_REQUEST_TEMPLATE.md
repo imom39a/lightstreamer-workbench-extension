@@ -19,15 +19,27 @@
 
 - [ ] `npm run typecheck`
 - [ ] `npm test`
+- [ ] `npm run test:ui`
+- [ ] `npm run test:ui:extension`
 - [ ] `npm run build`
 - [ ] `npm run fixture:test`
-- [ ] Manual Chrome DevTools verification
 - [ ] Documentation-only review
+
+### Panel browser evidence (when applicable)
+
+- [ ] Changed workflows and user-facing acceptance criteria recorded
+- [ ] Scenarios and browser tests recorded
+- [ ] Compact and normal viewports recorded
+- [ ] Representative Dark and Light themes recorded
+- [ ] Relevant expected/actual/diff screenshots inspected
+- [ ] Accessibility and keyboard/focus results recorded
+- [ ] Independent visual QA outcome recorded
+- [ ] Intentional baseline changes include an explanation and inspected artifact
 
 Commands run:
 
 ```text
-
+# Record the exact commands used for this change, including browser and baseline commands.
 ```
 
 ## Extension Safety Checklist

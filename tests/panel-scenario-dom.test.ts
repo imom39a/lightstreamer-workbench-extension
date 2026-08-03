@@ -29,7 +29,7 @@ describe("panel scenario DOM adapter", () => {
       }
     });
 
-    applyPanelScenario(root, panel, store, getPanelScenario("new-command"));
+    const runtime = applyPanelScenario(root, panel, store, getPanelScenario("new-command"));
 
     expect(document.querySelector(".command-draft-controls")).not.toBeNull();
     expect(document.querySelector<HTMLInputElement>(".command-draft-command")?.value).toBe(
@@ -41,5 +41,6 @@ describe("panel scenario DOM adapter", () => {
         '.command-draft-field-input[data-field-name="qty"]'
       )?.value
     ).toBe("42");
+    runtime.stop();
   });
 });

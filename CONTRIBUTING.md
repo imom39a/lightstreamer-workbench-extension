@@ -143,6 +143,17 @@ npm run test:ui:update
 
 The update command accepts the same scenario, viewport, and theme options. The runner uses `CHROME_PATH` when set, then the Chrome for Testing browser installed by `npm run fixture:browser:install`, then a system Chrome installation.
 
+## UI Definition of Done
+
+Material Workbench panel changes follow the browser evidence process in
+[`docs/agents/ui-verification.md`](docs/agents/ui-verification.md). Add a
+failing user-facing test before changing UI behavior, exercise compact and
+normal viewports with representative themes, inspect the relevant screenshots,
+and record the tested workflows, accessibility results, and visual artifacts
+in the pull request or internal Project ticket. `npm test` alone is not enough
+for browser-visible behavior; normal verification must include `npm run
+test:ui` and `npm run build`.
+
 The `fixture:*` npm commands use a cross-platform Node runner and work from Windows PowerShell/cmd as well as macOS and Linux shells. Individual lifecycle commands are also available:
 
 ```bash

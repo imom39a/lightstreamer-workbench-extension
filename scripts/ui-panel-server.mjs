@@ -60,6 +60,7 @@ function scenarioHarnessSource() {
   return `
 import { renderPanel } from ${mainPath};
 import { createEventStore } from ${storePath};
+import { createIndexedDbEventHistory } from ${JSON.stringify(resolve(projectRoot, "src/core/event-history.ts"))};
 import {
   getPanelScenario,
   isPanelScenarioId
@@ -76,7 +77,19 @@ if (!(root instanceof HTMLElement)) {
   throw new Error("Workbench UI scenario requires #app.");
 }
 
+// Keep scenario-generated topology hydration and export timestamps stable.
+const scenarioNow = 1780872000000;
+Date.now = () => scenarioNow;
+
 const store = createEventStore();
+const storage = new URLSearchParams(window.location.search).get("storage") ?? "memory";
+const history = storage === "indexeddb"
+  ? await createIndexedDbEventHistory({
+      sessionId: "ui-scenario-" + scenarioId,
+      reset: true,
+      clearOnClose: true
+    })
+  : undefined;
 const bridge = {
   reinjectDraft() {
     return Promise.resolve({
@@ -87,14 +100,21 @@ const bridge = {
     });
   }
 };
-const panel = renderPanel(root, undefined, { store, bridge });
-applyPanelScenario(root, panel, store, getPanelScenario(scenarioId));
+const panel = renderPanel(root, undefined, history ? { history, bridge } : { store, bridge });
+const runtime = applyPanelScenario(root, panel, store, getPanelScenario(scenarioId));
+window.addEventListener("beforeunload", () => {
+  runtime.stop();
+  panel.dispose();
+}, { once: true });
 
 await new Promise((resolve) => {
   requestAnimationFrame(() => requestAnimationFrame(resolve));
 });
 document.documentElement.dataset.scenario = scenarioId;
 document.documentElement.dataset.sceneReady = "true";
+runtime.streamComplete.then(() => {
+  document.documentElement.dataset.streamReady = "true";
+});
 `;
 }
 
@@ -150,6 +170,8 @@ function contentType(path) {
       return "text/html; charset=utf-8";
     case ".js":
       return "text/javascript; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
     default:
       return "application/octet-stream";
   }

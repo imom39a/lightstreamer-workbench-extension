@@ -37,16 +37,17 @@
     "test:ui:extension": "npm run build && node scripts/test-ui-extension.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@puppeteer/browsers": "^2.10.10",
     "@types/chrome": "^0.0.316",
     "@types/node": "^25.0.0",
     "@types/ws": "^8.18.1",
+    "axe-core": "^4.12.1",
     "cross-spawn": "^7.0.6",
     "esbuild": "^0.28.1",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^27.2.0",
     "lightstreamer-client-web": "^9.2.3",
-    "@playwright/test": "^1.55.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "vitest": "^4.0.14",

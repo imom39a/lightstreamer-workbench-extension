@@ -11,7 +11,7 @@ export function applyPanelScenario(
   panel: PanelController,
   store: EventStore,
   scenario: PanelScenario
-): void {
+): PanelScenarioRuntime {
   panel.setStatus(scenario.status);
   if (scenario.captureMessages) {
     for (const message of scenario.captureMessages) {
@@ -29,7 +29,68 @@ export function applyPanelScenario(
   for (const action of scenario.setupActions) {
     applySetupAction(root, action);
   }
+
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let postRenderTimer: ReturnType<typeof setTimeout> | null = null;
+  let nextIndex = 0;
+  let resolveComplete: () => void = () => undefined;
+  const streamComplete = new Promise<void>((resolve) => {
+    resolveComplete = resolve;
+  });
+  const stream = scenario.stream;
+  if (scenario.postRenderSetupActions && scenario.postRenderSetupActions.length > 0) {
+    postRenderTimer = setTimeout(() => {
+      postRenderTimer = null;
+      if (stopped) {
+        return;
+      }
+      for (const action of scenario.postRenderSetupActions ?? []) {
+        applySetupAction(root, action);
+      }
+    }, 0);
+  }
+  if (!stream || stream.messages.length === 0) {
+    resolveComplete();
+  } else {
+    const appendNext = (): void => {
+      if (stopped) {
+        resolveComplete();
+        return;
+      }
+      const message = stream.messages[nextIndex++];
+      if (!message) {
+        resolveComplete();
+        return;
+      }
+      panel.appendCaptureMessage(message);
+      root.ownerDocument.documentElement.dataset.streamSequence = String(nextIndex);
+      timer = setTimeout(appendNext, stream.intervalMs);
+    };
+    timer = setTimeout(appendNext, stream.initialDelayMs ?? stream.intervalMs);
+  }
+
+  return {
+    streamComplete,
+    stop(): void {
+      stopped = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (postRenderTimer) {
+        clearTimeout(postRenderTimer);
+        postRenderTimer = null;
+      }
+      resolveComplete();
+    }
+  };
 }
+
+export type PanelScenarioRuntime = {
+  streamComplete: Promise<void>;
+  stop(): void;
+};
 
 function selectView(root: HTMLElement, label: PanelScenario["initialView"]): void {
   const button = Array.from(root.querySelectorAll<HTMLButtonElement>(".view-selector button")).find(

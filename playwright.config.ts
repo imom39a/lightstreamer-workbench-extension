@@ -38,6 +38,7 @@ export default defineConfig({
     trace: "retain-on-failure",
     video: "retain-on-failure",
     timezoneId: "America/New_York",
+    deviceScaleFactor: 1,
     viewport,
     ...(chromeExecutable
       ? { launchOptions: { executablePath: chromeExecutable } }
