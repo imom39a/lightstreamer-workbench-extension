@@ -1531,6 +1531,14 @@ export function renderPanel(
     return pointerInteractionActive || keyboardInteractionActive;
   }
 
+  function deferTimelineRenderDuringInteraction(options: RenderOptions): boolean {
+    if (!isUserInteractionActive()) {
+      return false;
+    }
+    deferredInteractionRender = mergeRenderOptions(deferredInteractionRender, options);
+    return true;
+  }
+
   function mergeRenderOptions(left: RenderOptions | null, right: RenderOptions): RenderOptions {
     return {
       preservePaneState: Boolean(left?.preservePaneState || right.preservePaneState),
@@ -1735,6 +1743,9 @@ export function renderPanel(
         if (!panelVisible || queryVersion !== timelineState.queryVersion) {
           return;
         }
+        if (deferTimelineRenderDuringInteraction(options)) {
+          return;
+        }
         renderFeedResult(result.events, result.total, options);
         onRendered?.();
       }, reportHistoryError);
@@ -1773,8 +1784,10 @@ export function renderPanel(
             timelineState.reconciledTotal = result.total;
             const reconciledIds = new Set(result.events.map(({ id }) => id));
             timelineState.liveTail = timelineState.liveTail.filter(({ id }) => !reconciledIds.has(id));
-            renderLatestTimelineOverlay(options);
-            onRendered?.();
+            if (!deferTimelineRenderDuringInteraction(options)) {
+              renderLatestTimelineOverlay(options);
+              onRendered?.();
+            }
           }
           if (timelineState.latestQueryDirty) {
             timelineState.latestQueryDirty = false;

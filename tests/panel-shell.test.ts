@@ -2229,6 +2229,52 @@ describe("panel shell", () => {
     expect(text(".timeline-display-badge")).toBe("Live");
   });
 
+  it("keeps an activating Timeline row mounted while a high-volume query resolves", async () => {
+    panel.dispose();
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    const memoryStore = createEventStore();
+    if (!root) throw new Error("missing test root");
+
+    let queryCount = 0;
+    const flowQuery = { resolve: null as (() => void) | null };
+    const store: EventStore = {
+      ...memoryStore,
+      queryEvents(query) {
+        queryCount += 1;
+        if (queryCount === 1) {
+          return memoryStore.queryEvents(query);
+        }
+        return new Promise((resolve) => {
+          flowQuery.resolve = () => resolve(memoryStore.queryEvents(query));
+        });
+      }
+    };
+    const controller = renderPanel(root, undefined, { store });
+    try {
+      appendCommandUpdate(controller, "large-flow-target", { qty: 1 });
+      await waitForCondition(() => flowQuery.resolve !== null);
+      const selectedRow = document.querySelector<HTMLButtonElement>(".event-row");
+      if (!selectedRow) throw new Error("missing large-flow target row");
+
+      selectedRow.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      flowQuery.resolve?.();
+      await flushPromises();
+
+      const remainedConnectedThroughPointer = selectedRow.isConnected;
+      if (remainedConnectedThroughPointer) {
+        selectedRow.dispatchEvent(new Event("pointerup", { bubbles: true }));
+        selectedRow.click();
+      }
+
+      expect(remainedConnectedThroughPointer).toBe(true);
+      expect(text(".selected-event-command")).toBe("ADD/large-flow-target");
+      expect(text(".detail-pane")).toContain('"qty": 1');
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("separates Capture from a filtered Frozen Timeline and follows live on request", async () => {
     appendCommandUpdate(panel, "alpha-1", { qty: 1 });
     appendCommandUpdate(panel, "alpha-2", { qty: 2 });
