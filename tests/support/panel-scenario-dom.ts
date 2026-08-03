@@ -13,8 +13,17 @@ export function applyPanelScenario(
   scenario: PanelScenario
 ): void {
   panel.setStatus(scenario.status);
-  for (const event of scenario.capturedEvents) {
-    store.append(event);
+  if (scenario.captureMessages) {
+    for (const message of scenario.captureMessages) {
+      panel.appendCaptureMessage(message);
+    }
+  } else {
+    for (const event of scenario.capturedEvents) {
+      store.append(event);
+    }
+  }
+  for (const frame of scenario.topologySyncFrames ?? []) {
+    panel.applyTopologySyncFrame(frame);
   }
   selectView(root, scenario.initialView);
   for (const action of scenario.setupActions) {

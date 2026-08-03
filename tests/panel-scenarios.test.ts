@@ -4,6 +4,8 @@ import {
   FIXED_SCENARIO_TIMESTAMP,
   createTopologyPerformanceLogicalUpdate,
   createTopologyPerformanceScenario,
+  createTopologyLargeScenario,
+  createTopologySmallScenario,
   getExtensionPanelSmokeScenario,
   getPanelScenario
 } from "./support/panel-scenarios";
@@ -109,5 +111,38 @@ describe("deterministic panel scenarios", () => {
       "performance-logical-update-5-listener-1",
       "performance-logical-update-5-listener-2"
     ]);
+  });
+
+  it("describes the deterministic small Topology interaction scenario", () => {
+    const scenario = createTopologySmallScenario();
+
+    expect(scenario.initialView).toBe("Topology");
+    expect(scenario.capturedEvents.map((event) => event.kind)).toEqual([
+      "client-created",
+      "client-status",
+      "subscription-started",
+      "listener-added",
+      "item-update"
+    ]);
+    expect(scenario.topologySyncFrames).toHaveLength(3);
+    expect(scenario.topologySyncFrames?.[1]).toMatchObject({
+      type: "lsew:topology-sync-chunk",
+      recordCount: 6
+    });
+  });
+
+  it("keeps the high-cardinality COMMAND scenario bounded at the source seam", () => {
+    const first = createTopologyLargeScenario();
+    const second = createTopologyLargeScenario();
+    const records = first.topologySyncFrames?.[1];
+
+    expect(first).toEqual(second);
+    expect(records?.type).toBe("lsew:topology-sync-chunk");
+    if (records?.type !== "lsew:topology-sync-chunk") {
+      throw new Error("missing large topology checkpoint records");
+    }
+    expect(records.records.filter((record) => record.kind === "command-generation")).toHaveLength(
+      1_000
+    );
   });
 });

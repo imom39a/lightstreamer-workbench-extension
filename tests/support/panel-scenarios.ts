@@ -1,8 +1,14 @@
 import {
   createCaptureMessage,
+  TOPOLOGY_SYNC_BEGIN,
+  TOPOLOGY_SYNC_CHUNK,
+  TOPOLOGY_SYNC_COMPLETE,
+  TOPOLOGY_SYNC_VERSION,
   type CaptureMessage,
   type CaptureStatus,
-  type JsonObject
+  type JsonObject,
+  type TopologyAbsoluteRecord,
+  type TopologySyncFrame
 } from "../../src/bridge/messages";
 import { type LightstreamerEventEnvelope } from "../../src/core/event-envelope";
 
@@ -37,6 +43,8 @@ export type PanelScenario = {
   status: CaptureStatus;
   initialView: PanelScenarioView;
   capturedEvents: readonly LightstreamerEventEnvelope[];
+  captureMessages?: readonly CaptureMessage[];
+  topologySyncFrames?: readonly TopologySyncFrame[];
   setupActions: readonly PanelScenarioSetupAction[];
 };
 
@@ -46,13 +54,23 @@ export const PANEL_SCENARIO_IDS = [
   "new-command"
 ] as const;
 
-export type PanelScenarioId = (typeof PANEL_SCENARIO_IDS)[number];
+export const PANEL_INTERACTION_SCENARIO_IDS = [
+  "topology-small",
+  "topology-large"
+] as const;
+
+export const ALL_PANEL_SCENARIO_IDS = [
+  ...PANEL_SCENARIO_IDS,
+  ...PANEL_INTERACTION_SCENARIO_IDS
+] as const;
+
+export type PanelScenarioId = (typeof ALL_PANEL_SCENARIO_IDS)[number];
 
 /** @deprecated Use PanelScenarioId for browser and panel scenario tooling. */
 export type StoreListingScenarioId = PanelScenarioId;
 
 export function isPanelScenarioId(value: string): value is PanelScenarioId {
-  return (PANEL_SCENARIO_IDS as readonly string[]).includes(value);
+  return (ALL_PANEL_SCENARIO_IDS as readonly string[]).includes(value);
 }
 
 export type TopologyPerformanceScenarioConfig = {
@@ -113,7 +131,303 @@ export function getPanelScenario(id: PanelScenarioId): PanelScenario {
           }
         ]
       };
+    case "topology-small":
+      return createTopologySmallScenario();
+    case "topology-large":
+      return createTopologyLargeScenario();
   }
+}
+
+export function createTopologySmallScenario(): PanelScenario {
+  const pageEpoch = "topology-small-page";
+  const clientId = "topology-small-client";
+  const sessionId = "topology-small-session";
+  const subscriptionId = "topology-small-subscription";
+  const itemName = "topology-small-item";
+  const listenerId = "topology-small-listener";
+
+  const capturedEvents = topologyGuardrailCaptureEvents({
+    clientId,
+    sessionId,
+    subscriptionId,
+    itemName,
+    listenerId,
+    key: "small-alpha"
+  });
+  return {
+    id: "topology-small",
+    status: "bridge connected",
+    initialView: "Topology",
+    capturedEvents,
+    captureMessages: capturedEvents.map(toCaptureMessage),
+    topologySyncFrames: createTopologyGuardrailSyncFrames({
+      pageEpoch,
+      syncId: "topology-small-sync",
+      clientId,
+      sessionId,
+      subscriptionId,
+      itemName,
+      listenerId,
+      generationCount: 1,
+      generationKeyPrefix: "small"
+    }),
+    setupActions: []
+  };
+}
+
+export function createTopologyLargeScenario(): PanelScenario {
+  const pageEpoch = "topology-large-page";
+  const clientId = "topology-large-client";
+  const sessionId = "topology-large-session";
+  const subscriptionId = "topology-large-subscription";
+  const itemName = "topology-large-item";
+  const listenerId = "topology-large-listener";
+
+  const capturedEvents = topologyGuardrailCaptureEvents({
+    clientId,
+    sessionId,
+    subscriptionId,
+    itemName,
+    listenerId,
+    key: "large-0001"
+  });
+  return {
+    id: "topology-large",
+    status: "bridge connected",
+    initialView: "Topology",
+    capturedEvents,
+    captureMessages: capturedEvents.map(toCaptureMessage),
+    topologySyncFrames: createTopologyGuardrailSyncFrames({
+      pageEpoch,
+      syncId: "topology-large-sync",
+      clientId,
+      sessionId,
+      subscriptionId,
+      itemName,
+      listenerId,
+      generationCount: 1_000,
+      generationKeyPrefix: "large"
+    }),
+    setupActions: []
+  };
+}
+
+type TopologyGuardrailScenarioOptions = {
+  pageEpoch: string;
+  syncId: string;
+  clientId: string;
+  sessionId: string;
+  subscriptionId: string;
+  itemName: string;
+  listenerId: string;
+  generationCount: number;
+  generationKeyPrefix: string;
+};
+
+function topologyGuardrailCaptureEvents(
+  options: Pick<
+    TopologyGuardrailScenarioOptions,
+    "clientId" | "sessionId" | "subscriptionId" | "itemName" | "listenerId"
+  > & { key: string }
+): readonly LightstreamerEventEnvelope[] {
+  const timestamp = FIXED_SCENARIO_TIMESTAMP + 100;
+  const client = {
+    id: options.clientId,
+    status: "CONNECTED:WS-STREAMING",
+    sessionId: options.sessionId
+  };
+  const subscription = {
+    id: options.subscriptionId,
+    mode: "COMMAND",
+    items: [options.itemName],
+    fields: ["command", "key", "value"],
+    requestedSnapshot: "yes",
+    active: true,
+    subscribed: true,
+    listenerCount: 1
+  };
+
+  return [
+    topologyGuardrailEvent("client-created", timestamp, "client-created", {
+      client: { id: options.clientId, status: "DISCONNECTED" }
+    }),
+    topologyGuardrailEvent("client-status", timestamp + 1, "client-status", {
+      client
+    }),
+    topologyGuardrailEvent("subscription-started", timestamp + 2, "subscription-started", {
+      client,
+      subscription,
+      raw: { callback: "onSubscription" }
+    }),
+    topologyGuardrailEvent("listener-added", timestamp + 3, "listener-added", {
+      client,
+      subscription: {
+        id: options.subscriptionId,
+        mode: "COMMAND",
+        listenerCount: 1
+      },
+      listener: {
+        id: options.listenerId,
+        callbacks: ["onItemUpdate"],
+        registrationCount: 1
+      }
+    }),
+    topologyGuardrailEvent("item-update", timestamp + 4, "item-update", {
+      client,
+      subscription: { id: options.subscriptionId, mode: "COMMAND" },
+      listener: { id: options.listenerId },
+      item: { name: options.itemName, position: 1 },
+      update: {
+        isSnapshot: false,
+        command: "ADD",
+        key: options.key,
+        fields: { command: "ADD", key: options.key, value: "1" },
+        changedFields: { command: "ADD", key: options.key, value: "1" }
+      },
+      raw: { callback: "onItemUpdate", targetAvailable: true }
+    })
+  ];
+}
+
+function topologyGuardrailEvent(
+  id: string,
+  timestamp: number,
+  kind: LightstreamerEventEnvelope["kind"],
+  payload: Pick<
+    LightstreamerEventEnvelope,
+    "client" | "subscription" | "listener" | "item" | "update" | "raw"
+  >
+): LightstreamerEventEnvelope {
+  return {
+    id: `guardrail-${id}`,
+    timestamp,
+    direction: "inbound",
+    source: "server",
+    captureSource: "listener",
+    synthetic: false,
+    kind,
+    ...payload
+  };
+}
+
+function createTopologyGuardrailSyncFrames(
+  options: TopologyGuardrailScenarioOptions
+): readonly TopologySyncFrame[] {
+  const client = {
+    id: options.clientId,
+    status: "CONNECTED:WS-STREAMING",
+    sessionId: options.sessionId
+  };
+  const subscription = {
+    id: options.subscriptionId,
+    mode: "COMMAND",
+    items: [options.itemName],
+    fields: ["command", "key", "value"],
+    active: true,
+    subscribed: true,
+    listenerCount: 1
+  };
+  const records: TopologyAbsoluteRecord[] = [
+    {
+      kind: "page",
+      id: options.pageEpoch,
+      pageEpoch: options.pageEpoch,
+      captureSequence: 1
+    },
+    {
+      kind: "client",
+      id: options.clientId,
+      parentId: options.pageEpoch,
+      clientId: options.clientId,
+      pageEpoch: options.pageEpoch,
+      captureSequence: 2,
+      values: { client }
+    },
+    {
+      kind: "subscription",
+      id: options.subscriptionId,
+      parentId: options.clientId,
+      clientId: options.clientId,
+      subscriptionId: options.subscriptionId,
+      pageEpoch: options.pageEpoch,
+      captureSequence: 3,
+      clientActive: true,
+      serverEstablished: true,
+      values: { client, subscription }
+    },
+    {
+      kind: "listener-attachment",
+      id: `${options.listenerId}-attachment`,
+      parentId: options.subscriptionId,
+      subscriptionId: options.subscriptionId,
+      pageEpoch: options.pageEpoch,
+      captureSequence: 4,
+      values: {
+        clientId: options.clientId,
+        sessionId: options.sessionId,
+        listenerId: options.listenerId,
+        callbacks: ["onItemUpdate"],
+        registrationCount: 1,
+        active: true
+      }
+    },
+    {
+      kind: "item",
+      id: `item:${options.subscriptionId}:1`,
+      parentId: options.subscriptionId,
+      subscriptionId: options.subscriptionId,
+      pageEpoch: options.pageEpoch,
+      captureSequence: 5,
+      values: {
+        captureKind: "item-update",
+        itemName: options.itemName,
+        item: { name: options.itemName, position: 1 },
+        update: {
+          isSnapshot: false,
+          command: "ADD",
+          key: `${options.generationKeyPrefix}-0001`,
+          fields: {
+            command: "ADD",
+            key: `${options.generationKeyPrefix}-0001`,
+            value: "1"
+          },
+          changedFields: { command: "ADD", key: `${options.generationKeyPrefix}-0001` }
+        }
+      }
+    }
+  ];
+
+  for (let index = 1; index <= options.generationCount; index += 1) {
+    const key = `${options.generationKeyPrefix}-${String(index).padStart(4, "0")}`;
+    records.push({
+      kind: "command-generation",
+      id: `generation:${options.subscriptionId}:${index}`,
+      parentId: options.subscriptionId,
+      subscriptionId: options.subscriptionId,
+      pageEpoch: options.pageEpoch,
+      captureSequence: 5 + index,
+      values: {
+        itemId: `item:${options.subscriptionId}:1`,
+        key,
+        command: index === 1 ? "ADD" : "UPDATE"
+      }
+    });
+  }
+
+  const metadata = {
+    version: TOPOLOGY_SYNC_VERSION,
+    syncId: options.syncId,
+    pageEpoch: options.pageEpoch,
+    cutoffCaptureSequence: records.at(-1)?.captureSequence ?? 0,
+    chunkCount: 1,
+    recordCount: records.length,
+    coverage: { status: "complete" as const, getters: {} }
+  };
+  return [
+    { type: TOPOLOGY_SYNC_BEGIN, ...metadata },
+    { type: TOPOLOGY_SYNC_CHUNK, ...metadata, chunkIndex: 0, records },
+    { type: TOPOLOGY_SYNC_COMPLETE, ...metadata }
+  ];
 }
 
 export function getExtensionPanelSmokeScenario(): PanelScenario {

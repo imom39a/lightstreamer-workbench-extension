@@ -1,0 +1,63 @@
+name: Panel UI browser gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/panel-ui.yml"
+      - "playwright.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/test-ui.mjs"
+      - "scripts/test-ui-update.mjs"
+      - "scripts/ui-panel-server.mjs"
+      - "src/bridge/**"
+      - "src/core/**"
+      - "src/extension/panel/**"
+      - "tests/panel-*.test.ts"
+      - "tests/extension-panel.browser.spec.ts"
+      - "tests/support/panel-scenario-dom.ts"
+      - "tests/support/panel-scenarios.ts"
+      - "tests/ui/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel-ui:
+    name: Panel UI browser gate
+    runs-on: ubuntu-24.04
+    container: mcr.microsoft.com/playwright:v1.62.1-noble
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify pinned Playwright browser environment
+        run: npx playwright --version
+
+      - name: Run panel UI browser gate
+        env:
+          CI: true
+          LSEW_UI_UPDATE: "0"
+        run: npm run test:ui
+
+      - name: Upload panel UI diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: panel-ui-browser-diagnostics
+          path: |
+            test-results/ui/
+            test-results/ui-report/
+          if-no-files-found: warn
