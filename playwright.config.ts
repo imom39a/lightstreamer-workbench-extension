@@ -9,6 +9,7 @@ const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const selectedTheme = parseTheme(process.env.LSEW_UI_THEME ?? "auto");
 const viewport = parseViewport(process.env.LSEW_UI_VIEWPORT ?? "1280x800");
 const chromeExecutable = resolveChromeExecutable();
+const snapshotSuffix = process.platform === "linux" ? "-linux" : "";
 
 export default defineConfig({
   testDir: "./tests/ui",
@@ -26,7 +27,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: 1,
   outputDir: "test-results/ui",
-  snapshotPathTemplate: "{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}{ext}",
+  snapshotPathTemplate: `{snapshotDir}/{testFileDir}/{testFileName}-snapshots${snapshotSuffix}/{arg}{ext}`,
   updateSnapshots: process.env.LSEW_UI_UPDATE === "1" ? "all" : "none",
   reporter: [["list"], ["html", { outputFolder: "test-results/ui-report", open: "never" }]],
   use: {
@@ -36,6 +37,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
     video: "retain-on-failure",
+    timezoneId: "America/New_York",
     viewport,
     ...(chromeExecutable
       ? { launchOptions: { executablePath: chromeExecutable } }
