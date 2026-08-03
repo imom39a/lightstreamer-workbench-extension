@@ -18,6 +18,7 @@ The architecture is event-driven and split across Chrome extension execution con
 - [COMMAND State Architecture](#command-state-architecture)
 - [Synthetic Reinjection Architecture](#synthetic-reinjection-architecture)
 - [Panel UI Architecture](#panel-ui-architecture)
+- [Panel Presentation Seams](#panel-presentation-seams)
 - [Optional Usage Analytics](#optional-usage-analytics)
 - [Lightstreamer Fixture](#lightstreamer-fixture)
 - [Testing Architecture](#testing-architecture)
@@ -865,6 +866,22 @@ Pane widths are stored in CSS custom properties:
 
 Resize handles are accessible separators with keyboard support for left/right arrow adjustments.
 
+## Panel Presentation Seams
+
+`main.ts` remains the panel shell and owns domain state, storage subscriptions, query/reconciliation, and cross-view selection. Material presentation surfaces are extracted into small DOM modules so their interfaces can be tested and reviewed independently without moving Lightstreamer semantics into UI code:
+
+| Module | Owns | Shell-provided boundary |
+| --- | --- | --- |
+| `topology-export-view.ts` | Export menu, redaction controls, compact placement, JSON/HTML download, Escape focus return | Immutable snapshot factory and redaction/session state |
+| `topology-actions-view.ts` | Topology actions, bounded COMMAND evidence, complete-copy action, COMMAND State route | Topology state, collapse state, render/reset/history callbacks |
+| `topology-tree-view.ts` | Structural node construction, roving-node presentation updates, branch attachment/collapse, and stable rendered-node maps | Selection and collapse maps plus topology presentation values |
+| `timeline-view.ts` | Timeline header, code legend, and window navigation controls | History queries, filters, and event/detail rendering |
+| `timeline-view.ts` state seam | Live/Frozen window state, bounded live-tail/reconciliation bookkeeping, newer-event count, selection/detail state, and view sizing | History queries, filter matching, and render scheduling |
+| `command-view.ts` | COMMAND view state, update header, summary rows, and selection/window bookkeeping | Command indexes, draft validation, timestamp formatting, and DOM pane composition |
+| `panel-dom.ts` | Shared text-node creation and numeric layout clamping | View-specific DOM composition |
+
+`topology-inspector.ts` remains the focused tree controller: it owns stable node identity, roving focus, typeahead, Arrow/Home/End navigation, and branch expand/collapse behavior. These seams deliberately preserve the shell's existing state transitions and DOM contracts, so extracting presentation does not change capture, storage, COMMAND reduction, or reinjection behavior.
+
 ### Render Scheduling
 
 The panel avoids rerendering aggressively during high-volume append bursts:
@@ -961,6 +978,7 @@ Coverage is organized by architectural boundary:
 | `tests/panel-shell.test.ts` | Timeline shell rendering, event detail, filtering, high-volume scroll paging, live-history anchoring, Promise/IndexedDB window races, bounded DOM rendering, and direct replay UI. |
 | `tests/panel-command-state.test.ts` | COMMAND State workbench rendering, selection, filtering, panes, draft editor, and synthetic append behavior. |
 | `tests/panel-topology.test.ts` | Topology tree/detail rendering, sensitive IP presentation, bounded expansion, DOM retention, historical filtering/clearing, non-destructive reset, duplicate/overlap diagnostics, and proactive listener/wire target validity. |
+| `tests/panel-scenarios.test.ts`, `tests/ui/*.spec.ts` | Deterministic export, sustained Live/Frozen memory and IndexedDB streams, compact viewport, keyboard/focus, serious/critical axe checks, and representative visual baselines. |
 | `tests/panel-css.test.ts` | CSS constraints for the panel. |
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |

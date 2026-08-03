@@ -6,6 +6,8 @@ import {
   createTopologyPerformanceScenario,
   createTopologyLargeScenario,
   createTopologySmallScenario,
+  createExportOpenScenario,
+  createTimelineScenario,
   getExtensionPanelSmokeScenario,
   getPanelScenario
 } from "./support/panel-scenarios";
@@ -144,5 +146,36 @@ describe("deterministic panel scenarios", () => {
     expect(records.records.filter((record) => record.kind === "command-generation")).toHaveLength(
       1_000
     );
+  });
+
+  it("describes the compact export scenario as a real interaction sequence", () => {
+    const scenario = createExportOpenScenario();
+
+    expect(scenario.initialView).toBe("Topology");
+    expect(scenario.setupActions).toEqual([
+      {
+        type: "select-row",
+        selector: ".topology-node",
+        text: "topology-small-subscription"
+      }
+    ]);
+    expect(scenario.postRenderSetupActions).toEqual([
+      { type: "click", selector: ".topology-export-toggle" }
+    ]);
+  });
+
+  it("describes sustained Timeline scenarios with deterministic matching and non-matching events", () => {
+    const live = createTimelineScenario("timeline-live");
+    const frozen = createTimelineScenario("timeline-frozen");
+
+    expect(live.captureMessages).toEqual(frozen.captureMessages);
+    expect(live.stream?.messages).toEqual(frozen.stream?.messages);
+    expect(live.status).toBe("capturing");
+    expect(live.captureMessages).toHaveLength(2);
+    expect(live.stream?.intervalMs).toBe(20);
+    expect(live.stream?.messages).toHaveLength(90);
+    const payloads = live.stream?.messages.map((message) => JSON.stringify(message.payload)) ?? [];
+    expect(payloads.some((payload) => payload.includes("timeline-match"))).toBe(true);
+    expect(payloads.some((payload) => payload.includes("timeline-other"))).toBe(true);
   });
 });

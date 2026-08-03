@@ -481,7 +481,7 @@ function snapshotGeneration(
 ): Record<string, unknown> {
   return {
     id: sensitive(generation.id, "identifiers", context),
-    itemId: sensitive(generation.itemId, "identifiers", context),
+    itemId: itemIdentity(generation.itemId, context),
     key: sensitive(generation.key, "command-keys", context),
     command: generation.command,
     captureSequence: generation.captureSequence,
@@ -502,7 +502,7 @@ function snapshotItem(
   context: SnapshotContext
 ): TopologySnapshotItem {
   return {
-    id: sensitive(item.id, "identifiers", context),
+    id: itemIdentity(item.id, context),
     name: sensitive(item.name, "item-names", context),
     position: item.position,
     resolution: item.resolution,
@@ -521,6 +521,22 @@ function snapshotItem(
     },
     listenerIds: item.listenerIds.map((id) => sensitive(id, "identifiers", context))
   };
+}
+
+function itemIdentity(
+  value: string | null,
+  context: SnapshotContext
+): string | null {
+  if (context.redacted.has("identifiers")) {
+    return sensitive(value, "identifiers", context);
+  }
+  if (context.redacted.has("item-names") && value) {
+    // The public item identity is derived from the item name in some capture
+    // paths (for example `[position, itemName]`). Keep item-name redaction
+    // from leaking that name through an otherwise opaque identity field.
+    return "[REDACTED:item-names]";
+  }
+  return value;
 }
 
 function snapshotListener(

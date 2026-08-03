@@ -82,17 +82,44 @@ import {
 } from "../analytics";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
 import { createThemeManager, type ThemePreference } from "./theme";
-import { createTopologyInspector } from "./topology-inspector";
-import { renderTopologyHtmlReport } from "./topology-html-report";
 import {
-  TOPOLOGY_SENSITIVE_CATEGORIES,
-  createTopologyStructuredSnapshot,
-  serializeTopologySnapshot,
-  topologySnapshotFilename,
-  topologySensitiveCategoryCounts,
-  type TopologySensitiveCategory,
-  type TopologyStructuredSnapshot
-} from "./topology-export";
+  createCommandSummaryRow,
+  createCommandSummaryTimeRow,
+  createCommandUpdateHeader,
+  createCommandViewState,
+  type CommandDiagnosticSelection,
+  type CommandRowSelection,
+  type CommandSelection,
+  type CommandViewState
+} from "./command-view";
+import { createTopologyInspector } from "./topology-inspector";
+import {
+  createTimelineCodeLegend,
+  createTimelineHeader,
+  createWindowNavigationButton,
+  createTimelineViewState,
+  type TimelineViewMode,
+  type TimelineViewState
+} from "./timeline-view";
+import { createTopologyExportMenu } from "./topology-export-view";
+import {
+  createOpenCommandStateAction,
+  createTopologyActions,
+  createTopologyCommandEvidence,
+  topologyLatestGenerationSummary,
+  topologyLatestInferredChildSummary
+} from "./topology-actions-view";
+import { createTopologyStructuredSnapshot, type TopologySensitiveCategory } from "./topology-export";
+import { clampNumber, createTextElement } from "./panel-dom";
+import {
+  applyTopologyNodePresentation,
+  attachTopologyTreeChildren,
+  createTopologyTreeGroup,
+  createTopologyTreeNode,
+  type RenderedTopologyNode,
+  type TopologyTreeNode,
+  type TopologyTreeViewOptions
+} from "./topology-tree-view";
 import { createTopologyProjection } from "./topology-projection";
 import {
   createTopologyTreeViewModel,
@@ -148,7 +175,6 @@ type DraftJsonParseResult = {
   error: string | null;
 };
 type ActiveView = "timeline" | "topology" | "command";
-type TimelineViewMode = "live" | "frozen";
 type LiveReinjectionTarget = {
   executionTarget: ReinjectionExecutionTarget;
   subscriptionId: string;
@@ -177,38 +203,11 @@ type TopologyRenderPerformanceSample = {
   deliveryCount: number;
   visibleNodeCount: number;
 };
-type RenderedTopologyNode = {
-  button: HTMLButtonElement;
-  kind: HTMLElement;
-  label: HTMLElement;
-  meta: HTMLElement;
-  status: HTMLElement | null;
-};
-type TopologyTreeNode = {
-  item: HTMLLIElement;
-  button: HTMLButtonElement;
-  collapseSlot: HTMLElement;
-};
 type DeferredTopologyItemRender = {
   group: HTMLUListElement;
   render(): HTMLElement;
 };
 type DraftSurface = "timeline" | "command-replay" | "new-command";
-type CommandRowSelection = {
-  subscriptionId: string;
-  itemId: string;
-  key: string;
-  status: "active" | "deleted";
-};
-type CommandDiagnosticSelection = {
-  subscriptionId: string;
-  itemId: string;
-  key: string | null;
-  status: "diagnostic";
-  diagnosticCode: CommandDiagnostic["code"];
-  eventId: string | null;
-};
-
 const TOPOLOGY_INLINE_ITEM_LIMIT = 20;
 const TOPOLOGY_SELECTED_ITEM_LIMIT = 200;
 const TOPOLOGY_FULL_ITEM_LIMIT = 1_000;
@@ -218,7 +217,6 @@ const TOPOLOGY_EVIDENCE_INITIAL_LIMIT = 25;
 const TOPOLOGY_EVIDENCE_CHUNK = 25;
 const HISTORICAL_TOPOLOGY_NOTE =
   "Frozen record only. The Workbench does not maintain or reconnect this session. Historical topology is read-only; matching captured events remain available subject to event retention.";
-type CommandSelection = CommandRowSelection | CommandDiagnosticSelection | null;
 type CommandFilterState = {
   query?: string;
   subscription?: string;
@@ -430,17 +428,6 @@ function isBridgeReadyStatus(status: CaptureStatus): boolean {
   return status === "bridge connected" || status === "capturing";
 }
 
-function createTextElement<K extends keyof HTMLElementTagNameMap>(
-  tagName: K,
-  className: string,
-  text: string
-): HTMLElementTagNameMap[K] {
-  const element = document.createElement(tagName);
-  element.className = className;
-  element.textContent = text;
-  return element;
-}
-
 function createProductLabel(): HTMLHeadingElement {
   const title = document.createElement("h1");
   title.className = "product-label";
@@ -453,54 +440,6 @@ function createProductLabel(): HTMLHeadingElement {
   const text = createTextElement("span", "product-label-text", "Lightstreamer Workbench");
   title.append(icon, text);
   return title;
-}
-
-function createTimelineCodeLegend(): HTMLDetailsElement {
-  const legend = document.createElement("details");
-  legend.className = "timeline-code-legend";
-  const summary = document.createElement("summary");
-  summary.className = "timeline-code-legend-toggle";
-  summary.textContent = "Codes";
-  summary.setAttribute("aria-label", "Timeline code legend");
-
-  const popover = document.createElement("div");
-  popover.className = "timeline-code-legend-popover";
-  popover.append(
-    createTextElement(
-      "p",
-      "timeline-code-legend-intro",
-      "Protocol tags stay aligned with Lightstreamer TLCP. Local capture lifecycle events use compact codes."
-    )
-  );
-
-  for (const [family, heading] of [
-    ["tlcp", "Lightstreamer TLCP"],
-    ["workbench", "Local capture lifecycle"]
-  ] as const) {
-    const group = document.createElement("section");
-    group.className = "timeline-code-legend-group";
-    group.dataset.family = family;
-    group.append(createTextElement("h3", "timeline-code-legend-heading", heading));
-    const definitions = document.createElement("dl");
-    definitions.className = "timeline-code-legend-list";
-    for (const definition of TIMELINE_CODE_DEFINITIONS.filter(
-      (candidate) => candidate.family === family
-    )) {
-      definitions.append(
-        createTextElement("dt", `timeline-legend-code code-${family}`, definition.code),
-        createTextElement(
-          "dd",
-          "timeline-code-legend-description",
-          `${definition.label} — ${definition.description}`
-        )
-      );
-    }
-    group.append(definitions);
-    popover.append(group);
-  }
-
-  legend.append(summary, popover);
-  return legend;
 }
 
 function extensionAssetUrl(path: string): string {
@@ -718,26 +657,8 @@ function findHelpTooltipTrigger(target: EventTarget | null): HTMLButtonElement |
   return target.closest<HTMLButtonElement>(".command-help-icon");
 }
 
-function clampNumber(value: number, min: number, max: number): number {
-  if (max < min) {
-    return min;
-  }
-  return Math.min(Math.max(value, min), max);
-}
-
 function reportHistoryError(error: unknown): void {
   console.error("Lightstreamer Workbench history operation failed", error);
-}
-
-function downloadTextFile(filename: string, content: string, type: string): void {
-  const url = URL.createObjectURL(new Blob([content], { type }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function renderPanel(
@@ -756,15 +677,9 @@ export function renderPanel(
   let selectedEventId: string | null = null;
   let selectedTimelineEvent: LightstreamerEventEnvelope | null = null;
   let selectedPinned = false;
-  let timelineEvents: readonly LightstreamerEventEnvelope[] = [];
-  let timelineReconciledEvents: readonly LightstreamerEventEnvelope[] = [];
-  let timelineReconciledTotal = 0;
-  let timelineLiveTail: LightstreamerEventEnvelope[] = [];
-  const timelinePendingCommitVisibility = new Map<string, boolean>();
-  let timelineQueryVersion = 0;
-  let timelineLatestQueryGeneration = 0;
-  let timelineLatestQueryInFlight = false;
-  let timelineLatestQueryDirty = false;
+  const timelineState: TimelineViewState = createTimelineViewState(
+    TIMELINE_DEFAULT_DETAIL_WIDTH
+  );
   let currentStoreStats: EventStoreStats = storeStatsSnapshot();
   let draft: ReinjectionDraft | null = null;
   let draftExecutionTarget: ReinjectionExecutionTarget = "captured-listener";
@@ -784,18 +699,7 @@ export function renderPanel(
   let reinjectionPending = false;
   let reinjectionMessage: ReinjectionMessage | null = null;
   let activeView: ActiveView = "timeline";
-  let timelineDetailOpen = false;
-  let timelineDetailWidth = TIMELINE_DEFAULT_DETAIL_WIDTH;
-  let timelineWindowOffset = 0;
-  let timelineHistoryAnchor = 0;
-  let timelineViewMode: TimelineViewMode = "live";
-  let timelineNewerEventCount = 0;
-  let timelineFollowLatest = true;
-  let timelineVisibleTotal = 0;
-  let timelineLastScrollTop = 0;
-  let timelineScrollNavigationPending: "older" | "newer" | null = null;
-  let timelineSelectionNeedsFilterReconciliation = false;
-  let commandDetailOpen = true;
+  const commandStateView: CommandViewState = createCommandViewState();
   const commandContextEvents: LightstreamerEventEnvelope[] = [];
   const commandContextEventIds = new Set<string>();
   const commandContextSubscriptionIds = new Set<string>();
@@ -820,18 +724,6 @@ export function renderPanel(
   const topologyExportRedactions = new Set<TopologySensitiveCategory>();
   let topologyExportCompleteEvidence = false;
   let highVolumeNoticeDismissed = false;
-  let selectedCommandItem: { subscriptionId: string; itemId: string } | null = null;
-  let selectedCommandKey: CommandSelection = null;
-  let selectedCommandUpdateEventId: string | null = null;
-  let commandItemWindowOffset = 0;
-  let commandKeyWindowOffset = 0;
-  let commandDiagnosticWindowOffset = 0;
-  let commandUpdateWindowOffset = 0;
-  let commandUpdateHistoryAnchor = 0;
-  let commandLifecycleExpanded = false;
-  let commandWindowSelectionIdentity: string | null = null;
-  let commandWindowLifecycleLength = 0;
-  let visibleCommandUpdateEventIds = new Set<string>();
   const commandPaneWidths: CommandPaneWidths = { ...COMMAND_DEFAULT_PANE_WIDTHS };
   const filterState: EventFilterState = {};
   const commandFilterState: CommandFilterState = {};
@@ -907,7 +799,7 @@ export function renderPanel(
     }
     searchInput.value = "";
     resetTimelineRenderLimit();
-    timelineSelectionNeedsFilterReconciliation = true;
+    timelineState.selectionNeedsFilterReconciliation = true;
     renderFeed();
   });
 
@@ -1089,7 +981,7 @@ export function renderPanel(
   timelineDisplayAction.type = "button";
   timelineDisplayAction.textContent = "Freeze view";
   timelineDisplayAction.addEventListener("click", () => {
-    if (timelineViewMode === "live") {
+    if (timelineState.viewMode === "live") {
       setTimelineViewMode("frozen");
       renderFeed({ preservePaneState: true });
       return;
@@ -1102,7 +994,11 @@ export function renderPanel(
     timelineDisplayAction
   );
 
-  filterStrip.append(searchInput, createTimelineCodeLegend(), timelineDisplayState);
+  filterStrip.append(
+    searchInput,
+    createTimelineCodeLegend(TIMELINE_CODE_DEFINITIONS),
+    timelineDisplayState
+  );
 
   const commandFilterStrip = document.createElement("section");
   commandFilterStrip.className = "command-filter-strip";
@@ -1390,7 +1286,7 @@ export function renderPanel(
       filterState[key] = value as EventFilterState[K];
     }
     resetTimelineRenderLimit();
-    timelineSelectionNeedsFilterReconciliation = true;
+    timelineState.selectionNeedsFilterReconciliation = true;
     renderFeed();
   }
 
@@ -1667,30 +1563,30 @@ export function renderPanel(
   }
 
   function resetTimelineRenderLimit(): void {
-    timelineWindowOffset = 0;
-    timelineHistoryAnchor = 0;
-    timelineViewMode = "live";
-    timelineNewerEventCount = 0;
-    timelineFollowLatest = true;
-    timelineVisibleTotal = 0;
-    timelineLastScrollTop = 0;
-    timelineScrollNavigationPending = null;
+    timelineState.windowOffset = 0;
+    timelineState.historyAnchor = 0;
+    timelineState.viewMode = "live";
+    timelineState.newerEventCount = 0;
+    timelineState.followLatest = true;
+    timelineState.visibleTotal = 0;
+    timelineState.lastScrollTop = 0;
+    timelineState.scrollNavigationPending = null;
     resetTimelineLiveReconciliation();
     renderTimelineDisplayState();
   }
 
   function setTimelineViewMode(mode: TimelineViewMode): void {
-    if (timelineViewMode !== mode) {
-      timelineViewMode = mode;
-      timelineNewerEventCount = mode === "frozen" ? timelineWindowOffset : 0;
+    if (timelineState.viewMode !== mode) {
+      timelineState.viewMode = mode;
+      timelineState.newerEventCount = mode === "frozen" ? timelineState.windowOffset : 0;
     }
-    timelineFollowLatest = mode === "live" && timelineWindowOffset === 0;
+    timelineState.followLatest = mode === "live" && timelineState.windowOffset === 0;
     renderTimelineDisplayState();
   }
 
   function followLiveTimeline(): void {
-    timelineWindowOffset = 0;
-    timelineScrollNavigationPending = null;
+    timelineState.windowOffset = 0;
+    timelineState.scrollNavigationPending = null;
     setTimelineViewMode("live");
     renderFeed({ preservePaneState: true });
   }
@@ -1699,69 +1595,69 @@ export function renderPanel(
     if (!timelineDisplayBadge) {
       return;
     }
-    const live = timelineViewMode === "live";
-    timelineDisplayState.dataset.mode = timelineViewMode;
+    const live = timelineState.viewMode === "live";
+    timelineDisplayState.dataset.mode = timelineState.viewMode;
     timelineDisplayBadge.textContent = live ? "Live" : "Frozen";
     timelineDisplaySummary.textContent = live
       ? `${currentStoreStats.retained.toLocaleString()} retained · following current activity`
-      : `${timelineNewerEventCount.toLocaleString()} newer · ${currentStoreStats.retained.toLocaleString()} retained`;
+      : `${timelineState.newerEventCount.toLocaleString()} newer · ${currentStoreStats.retained.toLocaleString()} retained`;
     timelineDisplayAction.textContent = live ? "Freeze view" : "Follow live";
     timelineDisplayAction.setAttribute(
       "aria-label",
-      live ? "Freeze Timeline view" : `Follow live Timeline, ${timelineNewerEventCount} newer events`
+      live ? "Freeze Timeline view" : `Follow live Timeline, ${timelineState.newerEventCount} newer events`
     );
   }
 
   function resetTimelineLiveReconciliation(): void {
-    timelineLatestQueryGeneration += 1;
-    timelineLatestQueryDirty = timelineLatestQueryInFlight;
-    timelineReconciledEvents = [];
-    timelineReconciledTotal = 0;
-    timelineLiveTail = [];
+    timelineState.latestQueryGeneration += 1;
+    timelineState.latestQueryDirty = timelineState.latestQueryInFlight;
+    timelineState.reconciledEvents = [];
+    timelineState.reconciledTotal = 0;
+    timelineState.liveTail = [];
   }
 
   function rememberTimelineLiveEvent(event: LightstreamerEventEnvelope): void {
     if (!matchesEventFilters(event, filterState)) {
       return;
     }
-    const existing = timelineLiveTail.findIndex(({ id }) => id === event.id);
+    const existing = timelineState.liveTail.findIndex(({ id }) => id === event.id);
     if (existing >= 0) {
-      timelineLiveTail.splice(existing, 1);
+      timelineState.liveTail.splice(existing, 1);
     }
-    timelineLiveTail.push(event);
-    if (timelineLiveTail.length > TIMELINE_WINDOW_SIZE) {
-      timelineLiveTail.splice(0, timelineLiveTail.length - TIMELINE_WINDOW_SIZE);
+    timelineState.liveTail.push(event);
+    if (timelineState.liveTail.length > TIMELINE_WINDOW_SIZE) {
+      timelineState.liveTail.splice(0, timelineState.liveTail.length - TIMELINE_WINDOW_SIZE);
     }
-    if (timelineLatestQueryInFlight) {
-      timelineLatestQueryDirty = true;
+    if (timelineState.latestQueryInFlight) {
+      timelineState.latestQueryDirty = true;
     }
   }
 
   function noteTimelineNewerEvent(event: LightstreamerEventEnvelope): void {
     if (
-      timelineViewMode !== "frozen" ||
+      timelineState.viewMode !== "frozen" ||
       !matchesEventFilters(event, filterState)
     ) {
       return;
     }
-    timelineNewerEventCount += 1;
+    timelineState.newerEventCount += 1;
     renderTimelineDisplayState();
   }
 
   function handleTimelineScroll(): void {
-    const previousScrollTop = timelineLastScrollTop;
+    const previousScrollTop = timelineState.lastScrollTop;
     const currentScrollTop = feed.scrollTop;
-    timelineLastScrollTop = currentScrollTop;
+    timelineState.lastScrollTop = currentScrollTop;
     const scrollingUp = currentScrollTop < previousScrollTop;
     const scrollingDown = currentScrollTop > previousScrollTop;
     const nearBottom = isTimelineNearBottom();
-    if (timelineViewMode === "live" && !(timelineWindowOffset === 0 && nearBottom)) {
+    if (timelineState.viewMode === "live" && !(timelineState.windowOffset === 0 && nearBottom)) {
       setTimelineViewMode("frozen");
     }
 
     if (
       activeView !== "timeline" ||
-      timelineScrollNavigationPending !== null
+      timelineState.scrollNavigationPending !== null
     ) {
       return;
     }
@@ -1769,7 +1665,7 @@ export function renderPanel(
       showOlderTimelineWindow(true);
       return;
     }
-    if (scrollingDown && nearBottom && timelineWindowOffset > 0) {
+    if (scrollingDown && nearBottom && timelineState.windowOffset > 0) {
       showNewerTimelineWindow(true);
     }
   }
@@ -1789,7 +1685,7 @@ export function renderPanel(
       feed.scrollHeight - feed.clientHeight
     );
     feed.scrollTop = latestScrollTop;
-    timelineLastScrollTop = latestScrollTop;
+    timelineState.lastScrollTop = latestScrollTop;
   }
 
   function renderEmptyState(): void {
@@ -1822,21 +1718,21 @@ export function renderPanel(
 
   function renderFeed(options: RenderOptions = {}, onRendered?: () => void): void {
     helpTooltips.hide();
-    if (timelineWindowOffset === 0 && timelineFollowLatest) {
+    if (timelineState.windowOffset === 0 && timelineState.followLatest) {
       renderLatestTimelineOverlay(options);
       reconcileLatestTimeline(options, onRendered);
       return;
     }
-    const queryVersion = ++timelineQueryVersion;
+    const queryVersion = ++timelineState.queryVersion;
     history
       .queryEvents({
         filters: filterState,
         order: "asc",
         limit: TIMELINE_WINDOW_SIZE,
-        offset: timelineWindowOffset
+        offset: timelineState.windowOffset
       })
       .receive((result) => {
-        if (!panelVisible || queryVersion !== timelineQueryVersion) {
+        if (!panelVisible || queryVersion !== timelineState.queryVersion) {
           return;
         }
         renderFeedResult(result.events, result.total, options);
@@ -1848,14 +1744,14 @@ export function renderPanel(
     options: RenderOptions = {},
     onRendered?: () => void
   ): void {
-    if (timelineLatestQueryInFlight) {
-      timelineLatestQueryDirty = true;
+    if (timelineState.latestQueryInFlight) {
+      timelineState.latestQueryDirty = true;
       return;
     }
 
-    timelineLatestQueryInFlight = true;
-    timelineLatestQueryDirty = false;
-    const generation = timelineLatestQueryGeneration;
+    timelineState.latestQueryInFlight = true;
+    timelineState.latestQueryDirty = false;
+    const generation = timelineState.latestQueryGeneration;
     const filters = { ...filterState };
     history
       .queryEvents({
@@ -1866,23 +1762,23 @@ export function renderPanel(
       })
       .receive(
         (result) => {
-          timelineLatestQueryInFlight = false;
+          timelineState.latestQueryInFlight = false;
           if (
             panelVisible &&
-            generation === timelineLatestQueryGeneration &&
-            timelineWindowOffset === 0 &&
-            timelineFollowLatest
+            generation === timelineState.latestQueryGeneration &&
+            timelineState.windowOffset === 0 &&
+            timelineState.followLatest
           ) {
-            timelineReconciledEvents = result.events;
-            timelineReconciledTotal = result.total;
+            timelineState.reconciledEvents = result.events;
+            timelineState.reconciledTotal = result.total;
             const reconciledIds = new Set(result.events.map(({ id }) => id));
-            timelineLiveTail = timelineLiveTail.filter(({ id }) => !reconciledIds.has(id));
+            timelineState.liveTail = timelineState.liveTail.filter(({ id }) => !reconciledIds.has(id));
             renderLatestTimelineOverlay(options);
             onRendered?.();
           }
-          if (timelineLatestQueryDirty) {
-            timelineLatestQueryDirty = false;
-            if (panelVisible && timelineWindowOffset === 0 && timelineFollowLatest) {
+          if (timelineState.latestQueryDirty) {
+            timelineState.latestQueryDirty = false;
+            if (panelVisible && timelineState.windowOffset === 0 && timelineState.followLatest) {
               reconcileLatestTimeline({
                 preservePaneState: true,
                 passiveStoreUpdate: true
@@ -1891,11 +1787,11 @@ export function renderPanel(
           }
         },
         (error) => {
-          timelineLatestQueryInFlight = false;
+          timelineState.latestQueryInFlight = false;
           reportHistoryError(error);
-          if (timelineLatestQueryDirty) {
-            timelineLatestQueryDirty = false;
-            if (panelVisible && timelineWindowOffset === 0 && timelineFollowLatest) {
+          if (timelineState.latestQueryDirty) {
+            timelineState.latestQueryDirty = false;
+            if (panelVisible && timelineState.windowOffset === 0 && timelineState.followLatest) {
               reconcileLatestTimeline({
                 preservePaneState: true,
                 passiveStoreUpdate: true
@@ -1908,15 +1804,15 @@ export function renderPanel(
 
   function renderLatestTimelineOverlay(options: RenderOptions = {}): void {
     const combined = new Map<string, LightstreamerEventEnvelope>();
-    for (const event of timelineReconciledEvents) {
+    for (const event of timelineState.reconciledEvents) {
       combined.set(event.id, event);
     }
-    for (const event of timelineLiveTail) {
+    for (const event of timelineState.liveTail) {
       combined.set(event.id, event);
     }
     const renderedEvents = Array.from(combined.values()).slice(-TIMELINE_WINDOW_SIZE);
-    const reconciledIds = new Set(timelineReconciledEvents.map(({ id }) => id));
-    const pendingCount = timelineLiveTail.reduce(
+    const reconciledIds = new Set(timelineState.reconciledEvents.map(({ id }) => id));
+    const pendingCount = timelineState.liveTail.reduce(
       (total, { id }) => total + (reconciledIds.has(id) ? 0 : 1),
       0
     );
@@ -1924,7 +1820,7 @@ export function renderPanel(
       renderedEvents,
       Math.max(
         renderedEvents.length,
-        timelineReconciledTotal + pendingCount,
+        timelineState.reconciledTotal + pendingCount,
         hasActiveFilters(filterState) ? 0 : currentStoreStats.retained
       ),
       options
@@ -1937,8 +1833,8 @@ export function renderPanel(
     options: RenderOptions = {}
   ): void {
     const filtersActive = hasActiveFilters(filterState);
-    timelineEvents = renderedEvents;
-    timelineVisibleTotal = totalVisible;
+    timelineState.events = renderedEvents;
+    timelineState.visibleTotal = totalVisible;
     renderTimelineDisplayState();
 
     filteredCount.hidden = !filtersActive;
@@ -1967,24 +1863,24 @@ export function renderPanel(
       return;
     }
 
-    const shouldFollowLatest = timelineFollowLatest;
+    const shouldFollowLatest = timelineState.followLatest;
     const feedState =
       options.preservePaneState || !shouldFollowLatest ? capturePaneState(feed) : null;
 
     const visibleSelectedEvent = renderedEvents.find((event) => event.id === selectedEventId) ?? null;
     if (!selectedPinned) {
-      selectedEventId = timelineDetailOpen ? renderedEvents[renderedEvents.length - 1]?.id ?? null : null;
+      selectedEventId = timelineState.detailOpen ? renderedEvents[renderedEvents.length - 1]?.id ?? null : null;
       selectedTimelineEvent =
         renderedEvents.find((event) => event.id === selectedEventId) ?? null;
-    } else if (!visibleSelectedEvent && timelineSelectionNeedsFilterReconciliation) {
+    } else if (!visibleSelectedEvent && timelineState.selectionNeedsFilterReconciliation) {
       selectedEventId = renderedEvents[renderedEvents.length - 1]?.id ?? null;
       selectedTimelineEvent =
         renderedEvents.find((event) => event.id === selectedEventId) ?? null;
-      timelineDetailOpen = Boolean(selectedEventId);
+      timelineState.detailOpen = Boolean(selectedEventId);
     } else if (visibleSelectedEvent) {
       selectedTimelineEvent = visibleSelectedEvent;
     }
-    timelineSelectionNeedsFilterReconciliation = false;
+    timelineState.selectionNeedsFilterReconciliation = false;
     clearDraftForSelection(selectedEventId);
 
     const list = document.createElement("div");
@@ -2010,7 +1906,7 @@ export function renderPanel(
         selectedEventId = event.id;
         selectedTimelineEvent = event;
         selectedPinned = true;
-        timelineDetailOpen = true;
+        timelineState.detailOpen = true;
         clearDraftForSelection(event.id);
         renderFeed();
         renderDetail(event);
@@ -2039,25 +1935,25 @@ export function renderPanel(
     }
 
     const navigation =
-      totalVisible > renderedEvents.length || timelineWindowOffset > 0
+      totalVisible > renderedEvents.length || timelineState.windowOffset > 0
         ? createTimelineWindowNavigation(totalVisible, renderedEvents.length)
         : null;
     feed.replaceChildren(...(navigation ? [navigation, list] : [list]));
     restorePaneState(feed, feedState);
-    if (timelineScrollNavigationPending === "older") {
+    if (timelineState.scrollNavigationPending === "older") {
       scrollTimelineToLatest();
-      timelineFollowLatest = false;
-      timelineScrollNavigationPending = null;
-    } else if (timelineScrollNavigationPending === "newer") {
+      timelineState.followLatest = false;
+      timelineState.scrollNavigationPending = null;
+    } else if (timelineState.scrollNavigationPending === "newer") {
       feed.scrollTop = 0;
-      timelineLastScrollTop = 0;
-      timelineFollowLatest = false;
-      timelineScrollNavigationPending = null;
+      timelineState.lastScrollTop = 0;
+      timelineState.followLatest = false;
+      timelineState.scrollNavigationPending = null;
     } else if (shouldFollowLatest) {
       scrollTimelineToLatest();
     }
     const selectedDetailIsCurrent =
-      timelineDetailOpen &&
+      timelineState.detailOpen &&
       selectedPinned &&
       detail.dataset.eventId === selectedEventId &&
       !detail.hidden;
@@ -2067,69 +1963,69 @@ export function renderPanel(
   }
 
   function showOlderTimelineWindow(fromScroll: boolean): void {
-    const rendered = timelineEvents.length;
+    const rendered = timelineState.events.length;
     if (
       rendered === 0 ||
-      timelineWindowOffset + rendered >= timelineVisibleTotal
+      timelineState.windowOffset + rendered >= timelineState.visibleTotal
     ) {
       return;
     }
     const nextOffset =
-      timelineWindowOffset === 0 && timelineHistoryAnchor > 0
-        ? timelineHistoryAnchor
-        : timelineWindowOffset + TIMELINE_WINDOW_SIZE;
-    const previousOffset = timelineWindowOffset;
-    const wasFrozen = timelineViewMode === "frozen";
-    timelineWindowOffset = Math.min(
+      timelineState.windowOffset === 0 && timelineState.historyAnchor > 0
+        ? timelineState.historyAnchor
+        : timelineState.windowOffset + TIMELINE_WINDOW_SIZE;
+    const previousOffset = timelineState.windowOffset;
+    const wasFrozen = timelineState.viewMode === "frozen";
+    timelineState.windowOffset = Math.min(
       nextOffset,
       oldestWindowOffset(
-        timelineVisibleTotal,
-        timelineHistoryAnchor,
+        timelineState.visibleTotal,
+        timelineState.historyAnchor,
         TIMELINE_WINDOW_SIZE
       )
     );
     setTimelineViewMode("frozen");
     if (wasFrozen) {
-      timelineNewerEventCount += timelineWindowOffset - previousOffset;
+      timelineState.newerEventCount += timelineState.windowOffset - previousOffset;
       renderTimelineDisplayState();
     }
-    timelineScrollNavigationPending = fromScroll ? "older" : null;
+    timelineState.scrollNavigationPending = fromScroll ? "older" : null;
     renderFeed({ preservePaneState: true });
   }
 
   function showNewerTimelineWindow(fromScroll: boolean): void {
-    if (timelineWindowOffset <= 0) {
+    if (timelineState.windowOffset <= 0) {
       return;
     }
-    const previousOffset = timelineWindowOffset;
-    timelineWindowOffset = Math.max(
+    const previousOffset = timelineState.windowOffset;
+    timelineState.windowOffset = Math.max(
       0,
-      timelineWindowOffset - TIMELINE_WINDOW_SIZE
+      timelineState.windowOffset - TIMELINE_WINDOW_SIZE
     );
     setTimelineViewMode("frozen");
-    timelineNewerEventCount = Math.max(
+    timelineState.newerEventCount = Math.max(
       0,
-      timelineNewerEventCount - (previousOffset - timelineWindowOffset)
+      timelineState.newerEventCount - (previousOffset - timelineState.windowOffset)
     );
     renderTimelineDisplayState();
-    timelineScrollNavigationPending = fromScroll ? "newer" : null;
+    timelineState.scrollNavigationPending = fromScroll ? "newer" : null;
     renderFeed({ preservePaneState: true });
   }
 
   function createTimelineWindowNavigation(total: number, rendered: number): HTMLElement {
     const navigation = document.createElement("nav");
     navigation.className = "event-window-navigation";
-    navigation.dataset.mode = timelineViewMode;
+    navigation.dataset.mode = timelineState.viewMode;
     navigation.setAttribute("aria-label", "Timeline history window");
 
-    const start = Math.max(1, total - timelineWindowOffset - rendered + 1);
-    const end = Math.max(0, total - timelineWindowOffset);
+    const start = Math.max(1, total - timelineState.windowOffset - rendered + 1);
+    const end = Math.max(0, total - timelineState.windowOffset);
     const range = createTextElement(
       "span",
       "event-render-limit",
       `Showing ${start.toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()} retained events.`
     );
-    if (timelineViewMode === "live") {
+    if (timelineState.viewMode === "live") {
       range.hidden = true;
       navigation.append(
         createTextElement(
@@ -2147,21 +2043,21 @@ export function renderPanel(
     actions.className = "window-navigation-actions";
     const older = createWindowNavigationButton(
       "Older",
-      timelineWindowOffset + rendered < total,
+      timelineState.windowOffset + rendered < total,
       () => {
         showOlderTimelineWindow(false);
       }
     );
     const newer = createWindowNavigationButton(
       "Newer",
-      timelineWindowOffset > 0,
+      timelineState.windowOffset > 0,
       () => {
         showNewerTimelineWindow(false);
       }
     );
     const latest = createWindowNavigationButton("Follow live", true, followLiveTimeline);
     actions.append(older);
-    if (timelineViewMode === "frozen") {
+    if (timelineState.viewMode === "frozen") {
       actions.append(newer, latest);
     }
     navigation.append(actions);
@@ -2177,7 +2073,7 @@ export function renderPanel(
     const cached =
       selectedTimelineEvent?.id === selectedEventId
         ? selectedTimelineEvent
-        : timelineEvents.find((event) => event.id === selectedEventId);
+        : timelineState.events.find((event) => event.id === selectedEventId);
     if (cached) {
       selectedTimelineEvent = cached;
       renderDetail(cached, options);
@@ -2187,7 +2083,7 @@ export function renderPanel(
     const requestedEventId = selectedEventId;
     history.getEventById(requestedEventId).receive(
       (event) => {
-        if (selectedEventId !== requestedEventId || !timelineDetailOpen || !panelVisible) {
+        if (selectedEventId !== requestedEventId || !timelineState.detailOpen || !panelVisible) {
           return;
         }
         selectedTimelineEvent = event;
@@ -2204,7 +2100,7 @@ export function renderPanel(
     const paneState = options.preservePaneState ? capturePaneState(detail) : null;
     detail.replaceChildren();
 
-    if (!event || !timelineDetailOpen) {
+    if (!event || !timelineState.detailOpen) {
       delete detail.dataset.eventId;
       detail.hidden = true;
       workspace.dataset.detailOpen = "false";
@@ -2302,7 +2198,7 @@ export function renderPanel(
       closeButton.textContent = "Close";
       closeButton.setAttribute("aria-label", "Close selected event detail");
       closeButton.addEventListener("click", () => {
-        timelineDetailOpen = false;
+        timelineState.detailOpen = false;
         renderFeed();
       });
       actions.append(copyButton, closeButton);
@@ -2366,7 +2262,7 @@ export function renderPanel(
     handle.setAttribute("aria-orientation", "vertical");
     handle.setAttribute("aria-valuemin", String(TIMELINE_MIN_DETAIL_WIDTH));
     handle.setAttribute("aria-valuemax", String(TIMELINE_MAX_DETAIL_WIDTH));
-    handle.setAttribute("aria-valuenow", String(timelineDetailWidth));
+    handle.setAttribute("aria-valuenow", String(timelineState.detailWidth));
     handle.title = "Drag to resize Event detail pane. Use Left and Right arrow keys for keyboard resizing.";
     handle.tabIndex = 0;
     handle.addEventListener("pointerdown", (event) => {
@@ -2392,7 +2288,7 @@ export function renderPanel(
 
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = timelineDetailWidth;
+    const startWidth = timelineState.detailWidth;
     workspace.dataset.resizing = "true";
     handle.dataset.resizing = "true";
     try {
@@ -2423,19 +2319,19 @@ export function renderPanel(
   }
 
   function adjustTimelineDetailWidth(delta: number): void {
-    setTimelineDetailWidth(timelineDetailWidth + delta);
+    setTimelineDetailWidth(timelineState.detailWidth + delta);
   }
 
   function setTimelineDetailWidth(width: number): void {
-    timelineDetailWidth = Math.round(
+    timelineState.detailWidth = Math.round(
       clampNumber(width, TIMELINE_MIN_DETAIL_WIDTH, TIMELINE_MAX_DETAIL_WIDTH)
     );
     applyTimelineDetailWidth();
   }
 
   function applyTimelineDetailWidth(): void {
-    workspace.style.setProperty("--timeline-detail-width", `${timelineDetailWidth}px`);
-    timelineDetailResizeHandle.setAttribute("aria-valuenow", String(timelineDetailWidth));
+    workspace.style.setProperty("--timeline-detail-width", `${timelineState.detailWidth}px`);
+    timelineDetailResizeHandle.setAttribute("aria-valuenow", String(timelineState.detailWidth));
   }
 
   function renderCommandState(options: RenderOptions = {}): void {
@@ -2453,36 +2349,36 @@ export function renderPanel(
     );
 
     if (allItems.length === 0) {
-      selectedCommandItem = null;
-      selectedCommandKey = null;
+      commandStateView.selectedItem = null;
+      commandStateView.selectedKey = null;
       renderCommandEmptyState();
       return;
     }
 
     const items = filterCommandItems(allItems, filterEvaluation);
     if (items.length === 0) {
-      selectedCommandKey = null;
-      selectedCommandUpdateEventId = null;
+      commandStateView.selectedKey = null;
+      commandStateView.selectedUpdateEventId = null;
       renderCommandNoMatchesState();
       return;
     }
 
-    commandItemWindowOffset = clampStartWindowOffset(
-      commandItemWindowOffset,
+    commandStateView.itemWindowOffset = clampStartWindowOffset(
+      commandStateView.itemWindowOffset,
       items.length,
       COMMAND_ITEM_WINDOW_SIZE
     );
     const visibleItems = windowFromStart(
       items,
-      commandItemWindowOffset,
+      commandStateView.itemWindowOffset,
       COMMAND_ITEM_WINDOW_SIZE
     );
-    selectedCommandItem = validCommandItemSelection(visibleItems, selectedCommandItem) ?? {
+    commandStateView.selectedItem = validCommandItemSelection(visibleItems, commandStateView.selectedItem) ?? {
       subscriptionId: visibleItems[0].subscription.subscriptionId,
       itemId: visibleItems[0].item.itemId
     };
 
-    const selected = findSelectedCommandItem(visibleItems, selectedCommandItem) ?? visibleItems[0];
+    const selected = findSelectedCommandItem(visibleItems, commandStateView.selectedItem) ?? visibleItems[0];
     renderCommandGroups(visibleItems, selected, items.length, allItems.length);
     renderCommandRowsAndResults(selected.subscription, selected.item, filterEvaluation);
     const preserveActiveDraftEditor = shouldPreserveCommandDraftEditor(
@@ -2508,7 +2404,7 @@ export function renderPanel(
       !draft ||
       !commandDetailPane.querySelector(".command-draft-controls, .draft-controls") ||
       commandDetailPane.dataset.detailIdentity !==
-        commandDetailIdentity(subscription, item, selectedCommandKey, selectedCommandUpdateEventId)
+        commandDetailIdentity(subscription, item, commandStateView.selectedKey, commandStateView.selectedUpdateEventId)
     ) {
       return false;
     }
@@ -2522,8 +2418,8 @@ export function renderPanel(
 
     return (
       draftSurface === "command-replay" &&
-      (selectedCommandUpdateEventId === draft.sourceEventId ||
-        selectedCommandUpdateEventId === draftResultEventId)
+      (commandStateView.selectedUpdateEventId === draft.sourceEventId ||
+        commandStateView.selectedUpdateEventId === draftResultEventId)
     );
   }
 
@@ -2599,7 +2495,7 @@ export function renderPanel(
       )
     );
 
-    if (matchingItems > items.length || commandItemWindowOffset > 0) {
+    if (matchingItems > items.length || commandStateView.itemWindowOffset > 0) {
       commandGroupPane.append(
         createCommandCollectionNavigation({
           ariaLabel: "COMMAND subscription item window",
@@ -2607,13 +2503,13 @@ export function renderPanel(
           noun: "items",
           total: matchingItems,
           rendered: items.length,
-          offset: commandItemWindowOffset,
+          offset: commandStateView.itemWindowOffset,
           windowSize: COMMAND_ITEM_WINDOW_SIZE,
           onOffset(nextOffset) {
-            commandItemWindowOffset = nextOffset;
-            selectedCommandItem = null;
-            selectedCommandKey = null;
-            selectedCommandUpdateEventId = null;
+            commandStateView.itemWindowOffset = nextOffset;
+            commandStateView.selectedItem = null;
+            commandStateView.selectedKey = null;
+            commandStateView.selectedUpdateEventId = null;
             resetCommandListWindows({ preserveItems: true });
             renderCommandState({ preservePaneState: true });
           }
@@ -2648,12 +2544,12 @@ export function renderPanel(
       );
       itemButton.addEventListener("click", () => {
         clearCommandDraftForSelection(null);
-        selectedCommandItem = {
+        commandStateView.selectedItem = {
           subscriptionId: entry.subscription.subscriptionId,
           itemId: entry.item.itemId
         };
-        selectedCommandKey = null;
-        selectedCommandUpdateEventId = null;
+        commandStateView.selectedKey = null;
+        commandStateView.selectedUpdateEventId = null;
         resetCommandListWindows({ preserveItems: true });
         resetCommandLifecycleWindow();
         renderCommandState();
@@ -2685,29 +2581,29 @@ export function renderPanel(
       : [];
     const matchingKeys: CommandKeyRow[] = [...matchingRows, ...matchingDeleted];
     const selectedKeyIndex = matchingKeys.findIndex((row) =>
-      commandSelectionMatchesStableKey(selectedCommandKey, row)
+      commandSelectionMatchesStableKey(commandStateView.selectedKey, row)
     );
     if (
       selectedKeyIndex >= 0 &&
-      (selectedKeyIndex < commandKeyWindowOffset ||
-        selectedKeyIndex >= commandKeyWindowOffset + COMMAND_KEY_WINDOW_SIZE)
+      (selectedKeyIndex < commandStateView.keyWindowOffset ||
+        selectedKeyIndex >= commandStateView.keyWindowOffset + COMMAND_KEY_WINDOW_SIZE)
     ) {
-      commandKeyWindowOffset =
+      commandStateView.keyWindowOffset =
         Math.floor(selectedKeyIndex / COMMAND_KEY_WINDOW_SIZE) * COMMAND_KEY_WINDOW_SIZE;
     }
-    commandKeyWindowOffset = clampStartWindowOffset(
-      commandKeyWindowOffset,
+    commandStateView.keyWindowOffset = clampStartWindowOffset(
+      commandStateView.keyWindowOffset,
       matchingKeys.length,
       COMMAND_KEY_WINDOW_SIZE
     );
-    commandDiagnosticWindowOffset = clampStartWindowOffset(
-      commandDiagnosticWindowOffset,
+    commandStateView.diagnosticWindowOffset = clampStartWindowOffset(
+      commandStateView.diagnosticWindowOffset,
       matchingDiagnostics.length,
       COMMAND_DIAGNOSTIC_WINDOW_SIZE
     );
     const visibleKeys = windowFromStart(
       matchingKeys,
-      commandKeyWindowOffset,
+      commandStateView.keyWindowOffset,
       COMMAND_KEY_WINDOW_SIZE
     );
     const visibleRows = visibleKeys.filter((row): row is CommandRow => row.status === "active");
@@ -2716,20 +2612,20 @@ export function renderPanel(
     );
     const visibleDiagnostics = windowFromStart(
       matchingDiagnostics,
-      commandDiagnosticWindowOffset,
+      commandStateView.diagnosticWindowOffset,
       COMMAND_DIAGNOSTIC_WINDOW_SIZE
     );
 
-    const previousSelection = selectedCommandKey;
-    selectedCommandKey = reconcileCommandSelection(
+    const previousSelection = commandStateView.selectedKey;
+    commandStateView.selectedKey = reconcileCommandSelection(
       item,
-      selectedCommandKey,
+      commandStateView.selectedKey,
       visibleRows,
       visibleDeleted,
       visibleDiagnostics
     );
-    if (!commandSelectionsEqual(previousSelection, selectedCommandKey)) {
-      selectedCommandUpdateEventId = null;
+    if (!commandSelectionsEqual(previousSelection, commandStateView.selectedKey)) {
+      commandStateView.selectedUpdateEventId = null;
       resetCommandLifecycleWindow();
     }
 
@@ -2749,7 +2645,7 @@ export function renderPanel(
       button.dataset.itemId = row.itemId;
       button.dataset.key = row.key;
       button.dataset.status = row.status;
-      button.dataset.selected = String(commandSelectionMatchesKey(selectedCommandKey, row));
+      button.dataset.selected = String(commandSelectionMatchesKey(commandStateView.selectedKey, row));
       button.setAttribute(
         "aria-label",
         `${row.key}, ${row.status}, ${row.lifecycle.length} updates, last seen ${formatExactLocalTime(latestKeyProvenance(row).timestamp)}`
@@ -2757,10 +2653,10 @@ export function renderPanel(
       button.addEventListener("click", () => {
         const nextSelection = commandSelectionForKey(row);
         clearCommandDraftForSelection(null);
-        selectedCommandUpdateEventId = null;
-        selectedCommandKey = nextSelection;
+        commandStateView.selectedUpdateEventId = null;
+        commandStateView.selectedKey = nextSelection;
         resetCommandLifecycleWindow();
-        commandDetailOpen = true;
+        commandStateView.detailOpen = true;
         renderCommandState();
       });
       button.append(
@@ -2774,38 +2670,38 @@ export function renderPanel(
       rows.append(button);
     }
 
-    const selectedTarget = selectedCommandKey ? findCommandDetailTarget(item, selectedCommandKey) : null;
+    const selectedTarget = commandStateView.selectedKey ? findCommandDetailTarget(item, commandStateView.selectedKey) : null;
     const selectedLifecycle =
       selectedTarget?.kind === "active" || selectedTarget?.kind === "deleted"
         ? selectedTarget.row.lifecycle
         : [];
     const selectionIdentity = selectedTarget
-      ? commandSelectionIdentity(selectedCommandKey)
+      ? commandSelectionIdentity(commandStateView.selectedKey)
       : null;
     if (
       selectionIdentity &&
-      selectionIdentity === commandWindowSelectionIdentity &&
-      selectedLifecycle.length > commandWindowLifecycleLength
+      selectionIdentity === commandStateView.windowSelectionIdentity &&
+      selectedLifecycle.length > commandStateView.windowLifecycleLength
     ) {
       const selectedWindowWasFull =
-        Boolean(selectedCommandUpdateEventId) &&
-        commandWindowLifecycleLength >= COMMAND_LIFECYCLE_WINDOW_SIZE;
-      if (commandUpdateWindowOffset > 0 || selectedWindowWasFull) {
-        commandUpdateWindowOffset += selectedLifecycle.length - commandWindowLifecycleLength;
-        commandUpdateHistoryAnchor =
-          commandUpdateWindowOffset % COMMAND_LIFECYCLE_WINDOW_SIZE;
+        Boolean(commandStateView.selectedUpdateEventId) &&
+        commandStateView.windowLifecycleLength >= COMMAND_LIFECYCLE_WINDOW_SIZE;
+      if (commandStateView.updateWindowOffset > 0 || selectedWindowWasFull) {
+        commandStateView.updateWindowOffset += selectedLifecycle.length - commandStateView.windowLifecycleLength;
+        commandStateView.updateHistoryAnchor =
+          commandStateView.updateWindowOffset % COMMAND_LIFECYCLE_WINDOW_SIZE;
       } else {
-        commandUpdateHistoryAnchor = 0;
+        commandStateView.updateHistoryAnchor = 0;
       }
     }
-    commandWindowSelectionIdentity = selectionIdentity;
-    commandWindowLifecycleLength = selectedLifecycle.length;
+    commandStateView.windowSelectionIdentity = selectionIdentity;
+    commandStateView.windowLifecycleLength = selectedLifecycle.length;
     if (
-      selectedCommandUpdateEventId &&
-      !selectedLifecycle.some((entry) => entry.eventId === selectedCommandUpdateEventId)
+      commandStateView.selectedUpdateEventId &&
+      !selectedLifecycle.some((entry) => entry.eventId === commandStateView.selectedUpdateEventId)
     ) {
       clearCommandDraftForSelection(null);
-      selectedCommandUpdateEventId = null;
+      commandStateView.selectedUpdateEventId = null;
     }
 
     const updates = document.createElement("section");
@@ -2816,25 +2712,25 @@ export function renderPanel(
         "command-results-heading",
         selectedTarget?.kind === "diagnostic"
           ? "Selected diagnostic · no key lifecycle"
-          : selectedCommandKey
-            ? `Updates · ${selectedCommandKey.key ?? "selected key"} · ${selectedLifecycle.length}`
+          : commandStateView.selectedKey
+            ? `Updates · ${commandStateView.selectedKey.key ?? "selected key"} · ${selectedLifecycle.length}`
             : "Updates"
       )
     );
 
     if (selectedLifecycle.length > 0) {
-      commandUpdateWindowOffset = clampWindowOffset(
-        commandUpdateWindowOffset,
+      commandStateView.updateWindowOffset = clampWindowOffset(
+        commandStateView.updateWindowOffset,
         selectedLifecycle.length,
         COMMAND_LIFECYCLE_WINDOW_SIZE
       );
       const visibleLifecycle = windowFromLatest(
         selectedLifecycle,
-        commandUpdateWindowOffset,
+        commandStateView.updateWindowOffset,
         COMMAND_LIFECYCLE_WINDOW_SIZE
       );
-      visibleCommandUpdateEventIds = new Set(visibleLifecycle.map((entry) => entry.eventId));
-      if (selectedLifecycle.length > visibleLifecycle.length || commandUpdateWindowOffset > 0) {
+      commandStateView.visibleUpdateEventIds = new Set(visibleLifecycle.map((entry) => entry.eventId));
+      if (selectedLifecycle.length > visibleLifecycle.length || commandStateView.updateWindowOffset > 0) {
         updates.append(
           createCommandLifecycleNavigation(selectedLifecycle.length, visibleLifecycle.length)
         );
@@ -2845,11 +2741,11 @@ export function renderPanel(
         updateRow.className = "command-update-row";
         updateRow.type = "button";
         updateRow.dataset.eventId = entry.eventId;
-        updateRow.dataset.selected = String(selectedCommandUpdateEventId === entry.eventId);
+        updateRow.dataset.selected = String(commandStateView.selectedUpdateEventId === entry.eventId);
         updateRow.addEventListener("click", () => {
           clearCommandDraftForSelection(entry.eventId);
-          selectedCommandUpdateEventId = entry.eventId;
-          commandDetailOpen = true;
+          commandStateView.selectedUpdateEventId = entry.eventId;
+          commandStateView.detailOpen = true;
           renderCommandState();
         });
         updateRow.append(
@@ -2863,7 +2759,7 @@ export function renderPanel(
         updates.append(updateRow);
       }
     } else {
-      visibleCommandUpdateEventIds = new Set();
+      commandStateView.visibleUpdateEventIds = new Set();
     }
 
     const emptyRows =
@@ -2889,7 +2785,7 @@ export function renderPanel(
       );
       if (
         matchingDiagnostics.length > visibleDiagnostics.length ||
-        commandDiagnosticWindowOffset > 0
+        commandStateView.diagnosticWindowOffset > 0
       ) {
         diagnosticResults.append(
           createCommandCollectionNavigation({
@@ -2898,12 +2794,12 @@ export function renderPanel(
             noun: "diagnostics",
             total: matchingDiagnostics.length,
             rendered: visibleDiagnostics.length,
-            offset: commandDiagnosticWindowOffset,
+            offset: commandStateView.diagnosticWindowOffset,
             windowSize: COMMAND_DIAGNOSTIC_WINDOW_SIZE,
             onOffset(nextOffset) {
-              commandDiagnosticWindowOffset = nextOffset;
-              selectedCommandKey = null;
-              selectedCommandUpdateEventId = null;
+              commandStateView.diagnosticWindowOffset = nextOffset;
+              commandStateView.selectedKey = null;
+              commandStateView.selectedUpdateEventId = null;
               resetCommandLifecycleWindow();
               renderCommandState({ preservePaneState: true });
             }
@@ -2915,7 +2811,7 @@ export function renderPanel(
         result.className = "command-diagnostic-result";
         result.type = "button";
         result.dataset.selected = String(
-          commandSelectionMatchesDiagnostic(selectedCommandKey, item, diagnostic)
+          commandSelectionMatchesDiagnostic(commandStateView.selectedKey, item, diagnostic)
         );
         result.setAttribute(
           "aria-label",
@@ -2923,10 +2819,10 @@ export function renderPanel(
         );
         result.addEventListener("click", () => {
           clearCommandDraftForSelection(null);
-          selectedCommandUpdateEventId = null;
-          selectedCommandKey = commandSelectionForDiagnostic(item, diagnostic);
+          commandStateView.selectedUpdateEventId = null;
+          commandStateView.selectedKey = commandSelectionForDiagnostic(item, diagnostic);
           resetCommandLifecycleWindow();
-          commandDetailOpen = true;
+          commandStateView.detailOpen = true;
           renderCommandState();
         });
         result.append(
@@ -2939,19 +2835,19 @@ export function renderPanel(
     }
 
     const keyNavigation =
-      matchingKeys.length > visibleKeys.length || commandKeyWindowOffset > 0
+      matchingKeys.length > visibleKeys.length || commandStateView.keyWindowOffset > 0
         ? createCommandCollectionNavigation({
             ariaLabel: "COMMAND key results window",
             statusClass: "command-key-window-status",
             noun: "keys",
             total: matchingKeys.length,
             rendered: visibleKeys.length,
-            offset: commandKeyWindowOffset,
+            offset: commandStateView.keyWindowOffset,
             windowSize: COMMAND_KEY_WINDOW_SIZE,
             onOffset(nextOffset) {
-              commandKeyWindowOffset = nextOffset;
-              selectedCommandKey = null;
-              selectedCommandUpdateEventId = null;
+              commandStateView.keyWindowOffset = nextOffset;
+              commandStateView.selectedKey = null;
+              commandStateView.selectedUpdateEventId = null;
               resetCommandLifecycleWindow();
               renderCommandState({ preservePaneState: true });
             }
@@ -2978,8 +2874,8 @@ export function renderPanel(
     const navigation = document.createElement("nav");
     navigation.className = "command-window-navigation";
     navigation.setAttribute("aria-label", "Selected key update history window");
-    const start = Math.max(1, total - commandUpdateWindowOffset - rendered + 1);
-    const end = Math.max(0, total - commandUpdateWindowOffset);
+    const start = Math.max(1, total - commandStateView.updateWindowOffset - rendered + 1);
+    const end = Math.max(0, total - commandStateView.updateWindowOffset);
     navigation.append(
       createTextElement(
         "span",
@@ -2992,32 +2888,32 @@ export function renderPanel(
     actions.append(
       createWindowNavigationButton(
         "Older",
-        commandUpdateWindowOffset + rendered < total,
+        commandStateView.updateWindowOffset + rendered < total,
         () => {
           const nextOffset =
-            commandUpdateWindowOffset === 0 && commandUpdateHistoryAnchor > 0
-              ? commandUpdateHistoryAnchor
-              : commandUpdateWindowOffset + COMMAND_LIFECYCLE_WINDOW_SIZE;
-          commandUpdateWindowOffset = Math.min(
+            commandStateView.updateWindowOffset === 0 && commandStateView.updateHistoryAnchor > 0
+              ? commandStateView.updateHistoryAnchor
+              : commandStateView.updateWindowOffset + COMMAND_LIFECYCLE_WINDOW_SIZE;
+          commandStateView.updateWindowOffset = Math.min(
             nextOffset,
             oldestWindowOffset(
               total,
-              commandUpdateHistoryAnchor,
+              commandStateView.updateHistoryAnchor,
               COMMAND_LIFECYCLE_WINDOW_SIZE
             )
           );
           renderCommandState({ preservePaneState: true });
         }
       ),
-      createWindowNavigationButton("Newer", commandUpdateWindowOffset > 0, () => {
-        commandUpdateWindowOffset = Math.max(
+      createWindowNavigationButton("Newer", commandStateView.updateWindowOffset > 0, () => {
+        commandStateView.updateWindowOffset = Math.max(
           0,
-          commandUpdateWindowOffset - COMMAND_LIFECYCLE_WINDOW_SIZE
+          commandStateView.updateWindowOffset - COMMAND_LIFECYCLE_WINDOW_SIZE
         );
         renderCommandState({ preservePaneState: true });
       }),
-      createWindowNavigationButton("Latest", commandUpdateWindowOffset > 0, () => {
-        commandUpdateWindowOffset = 0;
+      createWindowNavigationButton("Latest", commandStateView.updateWindowOffset > 0, () => {
+        commandStateView.updateWindowOffset = 0;
         renderCommandState({ preservePaneState: true });
       })
     );
@@ -3072,18 +2968,18 @@ export function renderPanel(
 
   function resetCommandListWindows(options: { preserveItems?: boolean } = {}): void {
     if (!options.preserveItems) {
-      commandItemWindowOffset = 0;
+      commandStateView.itemWindowOffset = 0;
     }
-    commandKeyWindowOffset = 0;
-    commandDiagnosticWindowOffset = 0;
+    commandStateView.keyWindowOffset = 0;
+    commandStateView.diagnosticWindowOffset = 0;
   }
 
   function resetCommandLifecycleWindow(): void {
-    commandUpdateWindowOffset = 0;
-    commandUpdateHistoryAnchor = 0;
-    commandLifecycleExpanded = false;
-    commandWindowSelectionIdentity = null;
-    commandWindowLifecycleLength = 0;
+    commandStateView.updateWindowOffset = 0;
+    commandStateView.updateHistoryAnchor = 0;
+    commandStateView.lifecycleExpanded = false;
+    commandStateView.windowSelectionIdentity = null;
+    commandStateView.windowLifecycleLength = 0;
   }
 
   function clearCommandDraftForSelection(nextEventId: string | null): void {
@@ -3114,7 +3010,7 @@ export function renderPanel(
   ): void {
     const paneState = options.preservePaneState ? capturePaneState(commandDetailPane) : null;
     commandDetailPane.replaceChildren();
-    if (!commandDetailOpen) {
+    if (!commandStateView.detailOpen) {
       delete commandDetailPane.dataset.detailIdentity;
       commandDetailPane.hidden = true;
       commandWorkspace.dataset.detailOpen = "false";
@@ -3125,12 +3021,12 @@ export function renderPanel(
     commandDetailPane.dataset.detailIdentity = commandDetailIdentity(
       subscription,
       item,
-      selectedCommandKey,
-      selectedCommandUpdateEventId
+      commandStateView.selectedKey,
+      commandStateView.selectedUpdateEventId
     );
     commandWorkspace.dataset.detailOpen = "true";
     const collapseCommandDetail = () => {
-      commandDetailOpen = false;
+      commandStateView.detailOpen = false;
       renderCommandState();
     };
     const context = createCommandItemContext(subscription, item, commandContextEvents);
@@ -3140,7 +3036,7 @@ export function renderPanel(
       return;
     }
 
-    if (!selectedCommandKey) {
+    if (!commandStateView.selectedKey) {
       commandDetailPane.append(
         createDetailPaneHeader("COMMAND detail", collapseCommandDetail),
         createTextElement(
@@ -3153,7 +3049,7 @@ export function renderPanel(
       return;
     }
 
-    const target = findCommandDetailTarget(item, selectedCommandKey);
+    const target = findCommandDetailTarget(item, commandStateView.selectedKey);
     if (!target) {
       commandDetailPane.append(
         createDetailPaneHeader("COMMAND detail", collapseCommandDetail),
@@ -3169,8 +3065,8 @@ export function renderPanel(
       return;
     }
 
-    if (selectedCommandUpdateEventId) {
-      const update = target.row.lifecycle.find((entry) => entry.eventId === selectedCommandUpdateEventId);
+    if (commandStateView.selectedUpdateEventId) {
+      const update = target.row.lifecycle.find((entry) => entry.eventId === commandStateView.selectedUpdateEventId);
       if (update) {
         renderCommandUpdateDetail(target, update, collapseCommandDetail);
         restorePaneState(commandDetailPane, paneState);
@@ -3354,8 +3250,10 @@ export function renderPanel(
       createCommandSummaryRow("Command", entry.originalCommand ?? "-"),
       createCommandSummaryRow("Source", provenanceLabel(entry.provenance))
     );
-    if (!visibleCommandUpdateEventIds.has(entry.eventId)) {
-      summary.append(createCommandSummaryTimeRow("Time", entry.timestamp));
+    if (!commandStateView.visibleUpdateEventIds.has(entry.eventId)) {
+      summary.append(
+        createCommandSummaryTimeRow("Time", entry.timestamp, createTimestampElement)
+      );
     }
     commandDetailPane.append(summary);
 
@@ -3422,24 +3320,24 @@ export function renderPanel(
     const toggle = document.createElement("button");
     toggle.className = "command-lifecycle-toggle";
     toggle.type = "button";
-    toggle.textContent = commandLifecycleExpanded
+    toggle.textContent = commandStateView.lifecycleExpanded
       ? `Hide lifecycle payloads (${lifecycle.length})`
       : `Show lifecycle payloads (${lifecycle.length})`;
-    toggle.setAttribute("aria-expanded", String(commandLifecycleExpanded));
+    toggle.setAttribute("aria-expanded", String(commandStateView.lifecycleExpanded));
     toggle.addEventListener("click", () => {
-      commandLifecycleExpanded = !commandLifecycleExpanded;
+      commandStateView.lifecycleExpanded = !commandStateView.lifecycleExpanded;
       renderCommandState({ preservePaneState: true });
     });
     section.append(toggle);
 
-    if (!commandLifecycleExpanded) {
+    if (!commandStateView.lifecycleExpanded) {
       commandDetailPane.append(section);
       return;
     }
 
     const visibleLifecycle = windowFromLatest(
       lifecycle,
-      commandUpdateWindowOffset,
+      commandStateView.updateWindowOffset,
       COMMAND_LIFECYCLE_WINDOW_SIZE
     );
     for (const entry of visibleLifecycle) {
@@ -3520,7 +3418,7 @@ export function renderPanel(
       draftJsonError = null;
       draftExecutionTarget = preferredDraftExecutionTarget(nextDraft);
       reinjectionMessage = null;
-      commandDetailOpen = true;
+      commandStateView.detailOpen = true;
       renderCommandState();
     });
 
@@ -3939,13 +3837,13 @@ export function renderPanel(
             : "Synthetic COMMAND update delivered locally through the captured page WebSocket. No server was contacted."
       };
       if (currentDraft.key) {
-        selectedCommandKey = {
+        commandStateView.selectedKey = {
           subscriptionId: item.subscriptionId,
           itemId: item.itemId,
           key: currentDraft.key,
           status: currentDraft.command === "DELETE" ? "deleted" : "active"
         };
-        selectedCommandUpdateEventId = null;
+        commandStateView.selectedUpdateEventId = null;
       }
       history
         .append(createSyntheticEventFromDraft(currentDraft, result, executionTarget))
@@ -4115,7 +4013,21 @@ export function renderPanel(
         topologySyncLabel(),
         topologySyncTone()
       ),
-      createTopologyActions(state)
+      createTopologyActions({
+        state,
+        treePane: topologyTreePane,
+        collapsedKeys: topologyCollapsedKeys,
+        canExpandAll: (currentState) =>
+          topologyCollapsedKeys.size > 0 || topologyHasOmittedItemNodes(currentState),
+        setExpandAllItems(value) {
+          topologyExpandAllItems = value;
+          renderedTopologyStructureKey = null;
+        },
+        render: renderTopology,
+        resetCurrent: () => topologyProjection.resetCurrentObservations(),
+        clearHistory: () => topologyProjection.clearHistory(),
+        createExportMenu: createTopologyExportForState
+      })
     );
   }
 
@@ -4176,237 +4088,20 @@ export function renderPanel(
     );
   }
 
-  function createTopologyActions(state: TopologyState): HTMLElement {
-    const actions = document.createElement("div");
-    actions.className = "topology-actions";
-
-    const resetCurrent = document.createElement("button");
-    resetCurrent.className = "topology-action topology-reset-current";
-    resetCurrent.type = "button";
-    resetCurrent.textContent = "Reset current";
-    resetCurrent.title =
-      "Reset current-session topology counters and timestamps without removing captured events, COMMAND state, drafts, or reinjection targets.";
-    resetCurrent.disabled = state.clientCount === 0;
-    resetCurrent.addEventListener("click", () => {
-      topologyProjection.resetCurrentObservations();
-      renderTopology();
-    });
-
-    const clearHistory = document.createElement("button");
-    clearHistory.className = "topology-action topology-clear-history";
-    clearHistory.type = "button";
-    clearHistory.textContent = "Clear history";
-    clearHistory.title =
-      "Delete frozen historical topology snapshots only. Captured timeline events remain available.";
-    clearHistory.disabled = state.historicalSessionCount === 0;
-    clearHistory.addEventListener("click", () => {
-      topologyProjection.clearHistory();
-      renderTopology();
-    });
-
-    const expandItems = document.createElement("button");
-    expandItems.className = "topology-action topology-expand-items";
-    expandItems.type = "button";
-    const canExpandAll =
-      topologyCollapsedKeys.size > 0 || topologyHasOmittedItemNodes(state);
-    expandItems.textContent = canExpandAll ? "Expand all" : "Collapse all";
-    expandItems.title = canExpandAll
-      ? `Expand every branch and render item nodes across the topology, bounded to ${TOPOLOGY_FULL_ITEM_LIMIT.toLocaleString()} items. Listener identities remain available in item detail for large subscriptions.`
-      : "Collapse every branch in the Topology tree.";
-    expandItems.disabled =
-      state.clientCount === 0 && state.unassignedSubscriptions.length === 0;
-    expandItems.setAttribute("aria-pressed", String(!canExpandAll));
-    expandItems.addEventListener("click", () => {
-      if (!canExpandAll) {
-        for (const toggle of topologyTreePane.querySelectorAll<HTMLElement>(
-          "[data-topology-collapse-key]"
-        )) {
-          const key = toggle.dataset.topologyCollapseKey;
-          if (key) {
-            topologyCollapsedKeys.add(key);
-          }
-        }
-        topologyExpandAllItems = false;
-      } else {
-        topologyCollapsedKeys.clear();
-        topologyExpandAllItems = true;
+  function createTopologyExportForState(state: TopologyState): HTMLElement {
+    return createTopologyExportMenu({
+      root,
+      state,
+      redactions: topologyExportRedactions,
+      getCompleteEvidence: () => topologyExportCompleteEvidence,
+      setCompleteEvidence(value) {
+        topologyExportCompleteEvidence = value;
+      },
+      retainedEventCount: currentStoreStats.retained,
+      createSnapshot(options) {
+        return createTopologyStructuredSnapshot(state, topologyProjection.status(), options);
       }
-      renderedTopologyStructureKey = null;
-      renderTopology();
     });
-
-    actions.append(
-      resetCurrent,
-      clearHistory,
-      expandItems,
-      createTopologyExportMenu(state)
-    );
-    return actions;
-  }
-
-  function createTopologyExportMenu(state: TopologyState): HTMLDetailsElement {
-    const menu = document.createElement("details");
-    menu.className = "topology-export-menu";
-    const summary = document.createElement("summary");
-    summary.className = "topology-action topology-export-toggle";
-    summary.textContent = "Export";
-    menu.append(summary);
-
-    const panel = document.createElement("div");
-    panel.className = "topology-export-panel";
-    panel.append(
-      createTextElement(
-        "p",
-        "topology-export-intro",
-        "Download the current Topology as JSON or HTML. No redaction is applied by default; credential-like fields are always excluded."
-      )
-    );
-    const advanced = document.createElement("details");
-    advanced.className = "topology-export-advanced";
-    const advancedSummary = document.createElement("summary");
-    advancedSummary.className = "topology-export-advanced-toggle";
-    const updateAdvancedSummary = (): void => {
-      const count = topologyExportRedactions.size;
-      advancedSummary.textContent = count === 0
-        ? "Advanced options"
-        : `Advanced options · ${count} redaction${count === 1 ? "" : "s"} selected`;
-    };
-    updateAdvancedSummary();
-    advanced.append(advancedSummary);
-    const counts = topologySensitiveCategoryCounts(state);
-    const categories = document.createElement("fieldset");
-    categories.className = "topology-export-categories";
-    categories.append(
-      createTextElement("legend", "topology-export-heading", "Redact sensitive categories")
-    );
-    for (const category of TOPOLOGY_SENSITIVE_CATEGORIES) {
-      const label = document.createElement("label");
-      label.className = "topology-export-option";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = topologyExportRedactions.has(category);
-      checkbox.dataset.category = category;
-      checkbox.addEventListener("change", () => {
-        if (checkbox.checked) {
-          topologyExportRedactions.add(category);
-        } else {
-          topologyExportRedactions.delete(category);
-        }
-        updateAdvancedSummary();
-      });
-      label.append(
-        checkbox,
-        createTextElement(
-          "span",
-          "topology-export-option-label",
-          `${topologySensitiveCategoryLabel(category)} (${counts[category].toLocaleString()})`
-        )
-      );
-      categories.append(label);
-    }
-
-    const completeLabel = document.createElement("label");
-    completeLabel.className = "topology-export-option topology-export-complete";
-    const complete = document.createElement("input");
-    complete.type = "checkbox";
-    complete.checked = topologyExportCompleteEvidence;
-    complete.addEventListener("change", () => {
-      topologyExportCompleteEvidence = complete.checked;
-    });
-    completeLabel.append(
-      complete,
-      createTextElement(
-        "span",
-        "topology-export-option-label",
-        "Include complete establishment and COMMAND generation evidence"
-      )
-    );
-
-    const actions = document.createElement("div");
-    actions.className = "topology-export-actions";
-    const downloadJson = document.createElement("button");
-    downloadJson.className = "topology-action topology-export-json";
-    downloadJson.type = "button";
-    downloadJson.textContent = "Download JSON";
-    const downloadHtml = document.createElement("button");
-    downloadHtml.className = "topology-action topology-export-html";
-    downloadHtml.type = "button";
-    downloadHtml.textContent = "Download HTML";
-    const createExportSnapshot = (): TopologyStructuredSnapshot =>
-      createTopologyStructuredSnapshot(
-        state,
-        topologyProjection.status(),
-        {
-          retainedEventCount: currentStoreStats.retained,
-          completeEvidence: topologyExportCompleteEvidence,
-          redact: topologyExportRedactions
-        }
-      );
-    downloadJson.addEventListener("click", () => {
-      const snapshot = createExportSnapshot();
-      downloadTextFile(
-        topologySnapshotFilename(snapshot, "json"),
-        serializeTopologySnapshot(snapshot),
-        "application/json"
-      );
-    });
-    downloadHtml.addEventListener("click", () => {
-      const snapshot = createExportSnapshot();
-      downloadTextFile(
-        topologySnapshotFilename(snapshot, "html"),
-        renderTopologyHtmlReport(snapshot),
-        "text/html"
-      );
-    });
-    menu.addEventListener("toggle", () => {
-      if (!menu.open) return;
-      const viewportWidth =
-        window.innerWidth || document.documentElement.clientWidth || root.clientWidth || 320;
-      const viewportHeight =
-        window.innerHeight || document.documentElement.clientHeight || root.clientHeight || 320;
-      const margin = 8;
-      const gap = 6;
-      const availableWidth = Math.max(0, viewportWidth - margin * 2);
-      const availableHeight = Math.max(0, viewportHeight - margin * 2);
-      panel.style.position = "fixed";
-      panel.style.maxWidth = `${availableWidth}px`;
-      panel.style.maxHeight = `${availableHeight}px`;
-      panel.style.left = "0px";
-      panel.style.top = "0px";
-
-      const toggleRect = summary.getBoundingClientRect();
-      const panelRect = panel.getBoundingClientRect();
-      const panelWidth = Math.min(panelRect.width, availableWidth);
-      const panelHeight = Math.min(panelRect.height, availableHeight);
-      const left = clampNumber(
-        toggleRect.right - panelWidth,
-        margin,
-        Math.max(margin, viewportWidth - margin - panelWidth)
-      );
-      const top = clampNumber(
-        toggleRect.bottom + gap,
-        margin,
-        Math.max(margin, viewportHeight - margin - panelHeight)
-      );
-      panel.style.left = `${Math.round(left)}px`;
-      panel.style.top = `${Math.round(top)}px`;
-    });
-    actions.append(downloadJson, downloadHtml);
-    advanced.append(categories, completeLabel);
-    panel.append(actions, advanced);
-    menu.append(panel);
-    return menu;
-  }
-
-  function topologySensitiveCategoryLabel(category: TopologySensitiveCategory): string {
-    switch (category) {
-      case "server-addresses": return "Server addresses and URLs";
-      case "client-ips": return "Client IPs";
-      case "item-names": return "Item names and groups";
-      case "command-keys": return "COMMAND keys";
-      case "field-names": return "Configured fields and schemas";
-      case "identifiers": return "Captured identifiers";
-    }
   }
 
   function createTopologyMetric(
@@ -4424,6 +4119,16 @@ export function renderPanel(
     return metric;
   }
 
+  function topologyTreeViewOptions(): TopologyTreeViewOptions {
+    return {
+      selectedKey: () => topologySelection.key,
+      showItemStatus: () => topologyExpandAllItems,
+      collapsedKeys: topologyCollapsedKeys,
+      renderedNodes: topologyRenderedNodes,
+      nodeSelections: topologyNodeSelections
+    };
+  }
+
   function createTopologyTree(
     state: TopologyState,
     deferredItems: DeferredTopologyItemRender[] | null = null
@@ -4438,13 +4143,7 @@ export function renderPanel(
     tree.setAttribute("aria-label", "Current Lightstreamer topology");
 
     const pagePresentation = topologyPageNodePresentation(state);
-    const page = createTopologyTreeNode(
-      pagePresentation.selection,
-      pagePresentation.kind,
-      pagePresentation.label,
-      pagePresentation.meta,
-      pagePresentation.tone
-    );
+    const page = createTopologyTreeNode(pagePresentation, topologyTreeViewOptions());
     const pageChildren = createTopologyTreeGroup();
 
     for (const client of state.clients) {
@@ -4471,7 +4170,7 @@ export function renderPanel(
       pageChildren.append(orphanGroup);
     }
 
-    attachTopologyTreeChildren(page, pageChildren);
+    attachTopologyTreeChildren(page, pageChildren, topologyTreeViewOptions());
     tree.append(page.item);
     topologyDeferredItemCollector = null;
     return tree;
@@ -4531,20 +4230,14 @@ export function renderPanel(
     for (const presentation of presentations) {
       const rendered = topologyRenderedNodes.get(presentation.selection.key);
       if (rendered) {
-        applyTopologyNodePresentation(rendered, presentation);
+        applyTopologyNodePresentation(rendered, presentation, topologyTreeViewOptions());
       }
     }
   }
 
   function createClientTopologyTreeNode(client: TopologyClient): HTMLElement {
     const presentation = topologyClientNodePresentation(client);
-    const node = createTopologyTreeNode(
-      presentation.selection,
-      presentation.kind,
-      presentation.label,
-      presentation.meta,
-      presentation.tone
-    );
+    const node = createTopologyTreeNode(presentation, topologyTreeViewOptions());
     const children = createTopologyTreeGroup();
 
     if (client.waitingSubscriptions.length > 0) {
@@ -4570,7 +4263,7 @@ export function renderPanel(
     for (const session of client.sessions) {
       children.append(createSessionTopologyTreeNode(client, session));
     }
-    attachTopologyTreeChildren(node, children);
+    attachTopologyTreeChildren(node, children, topologyTreeViewOptions());
     return node.item;
   }
 
@@ -4579,20 +4272,14 @@ export function renderPanel(
     session: TopologySession
   ): HTMLElement {
     const presentation = topologySessionNodePresentation(client, session);
-    const node = createTopologyTreeNode(
-      presentation.selection,
-      presentation.kind,
-      presentation.label,
-      presentation.meta,
-      presentation.tone
-    );
+    const node = createTopologyTreeNode(presentation, topologyTreeViewOptions());
     const children = createTopologyTreeGroup();
     for (const subscription of session.subscriptions) {
       children.append(
         createSubscriptionTopologyTreeNode(client, session, subscription)
       );
     }
-    attachTopologyTreeChildren(node, children);
+    attachTopologyTreeChildren(node, children, topologyTreeViewOptions());
     return node.item;
   }
 
@@ -4607,13 +4294,7 @@ export function renderPanel(
       subscription
     );
     const selectionKey = presentation.selection.key;
-    const node = createTopologyTreeNode(
-      presentation.selection,
-      presentation.kind,
-      presentation.label,
-      presentation.meta,
-      presentation.tone
-    );
+    const node = createTopologyTreeNode(presentation, topologyTreeViewOptions());
     const children = createTopologyTreeGroup();
 
     const selectedBranch = topologySelection.ownerKey === selectionKey;
@@ -4677,6 +4358,7 @@ export function renderPanel(
     attachTopologyTreeChildren(
       node,
       children,
+      topologyTreeViewOptions(),
       Boolean(topologyDeferredItemCollector && itemLimit > 0)
     );
     return node.item;
@@ -4705,13 +4387,7 @@ export function renderPanel(
       subscription,
       item
     );
-    const node = createTopologyTreeNode(
-      presentation.selection,
-      presentation.kind,
-      presentation.label,
-      presentation.meta,
-      presentation.tone
-    );
+    const node = createTopologyTreeNode(presentation, topologyTreeViewOptions());
     const children = createTopologyTreeGroup();
     const renderListeners =
       !topologyExpandAllItems ||
@@ -4730,7 +4406,7 @@ export function renderPanel(
       }
     }
     if (children.childElementCount > 0) {
-      attachTopologyTreeChildren(node, children);
+      attachTopologyTreeChildren(node, children, topologyTreeViewOptions());
     }
     return node.item;
   }
@@ -4749,160 +4425,7 @@ export function renderPanel(
       item,
       listenerId
     );
-    return createTopologyTreeNode(
-      presentation.selection,
-      presentation.kind,
-      presentation.label,
-      presentation.meta,
-      presentation.tone
-    ).item;
-  }
-
-  function createTopologyTreeNode(
-    selection: TopologySelection,
-    kind: string,
-    label: string,
-    meta: string,
-    tone: string
-  ): TopologyTreeNode {
-    const item = document.createElement("li");
-    item.className = "topology-tree-item";
-    item.setAttribute("role", "none");
-
-    const row = document.createElement("div");
-    row.className = "topology-node-row";
-    const collapseSlot = createTextElement(
-      "span",
-      "topology-collapse-spacer",
-      ""
-    );
-    collapseSlot.setAttribute("aria-hidden", "true");
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "topology-node";
-    button.setAttribute("role", "treeitem");
-    button.dataset.topologyKey = selection.key;
-    button.tabIndex = -1;
-    const rendered: RenderedTopologyNode = {
-      button,
-      kind: createTextElement("span", "topology-node-kind", ""),
-      label: createTextElement("span", "topology-node-label", ""),
-      meta: createTextElement("span", "topology-node-meta", ""),
-      status:
-        topologyExpandAllItems && kind === "ITEM"
-          ? null
-          : createTextElement("span", "topology-node-status", "")
-    };
-    button.append(rendered.kind, rendered.label, rendered.meta);
-    if (rendered.status) {
-      button.append(rendered.status);
-    }
-    applyTopologyNodePresentation(rendered, {
-      selection,
-      kind,
-      label,
-      meta,
-      tone
-    });
-    topologyRenderedNodes.set(selection.key, rendered);
-    topologyNodeSelections.set(selection.key, selection);
-    row.append(collapseSlot, button);
-    item.append(row);
-    return { item, button, collapseSlot };
-  }
-
-  function attachTopologyTreeChildren(
-    node: TopologyTreeNode,
-    children: HTMLUListElement,
-    force = false
-  ): void {
-    if (!force && children.childElementCount === 0) {
-      return;
-    }
-    const key = node.button.dataset.topologyKey;
-    if (!key) {
-      return;
-    }
-    const collapsed = topologyCollapsedKeys.has(key);
-    const label =
-      node.button.querySelector(".topology-node-label")?.textContent ??
-      "topology branch";
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "topology-collapse-toggle";
-    toggle.tabIndex = -1;
-    toggle.setAttribute("aria-hidden", "true");
-    toggle.dataset.topologyCollapseKey = key;
-    toggle.dataset.topologyBranchLabel = label;
-    node.collapseSlot.replaceWith(toggle);
-    node.item.append(children);
-    setTopologyBranchCollapsed(node.item, toggle, collapsed);
-  }
-
-  function setTopologyBranchCollapsed(
-    item: HTMLLIElement,
-    toggle: HTMLButtonElement,
-    collapsed: boolean
-  ): void {
-    const children = Array.from(item.children).find(
-      (child): child is HTMLUListElement =>
-        child.classList.contains("topology-tree-group")
-    );
-    if (!children) {
-      return;
-    }
-    const label = toggle.dataset.topologyBranchLabel ?? "topology branch";
-    children.hidden = collapsed;
-    const node = item.querySelector<HTMLButtonElement>(
-      ":scope > .topology-node-row > .topology-node"
-    );
-    node?.setAttribute("aria-expanded", String(!collapsed));
-    toggle.setAttribute("aria-expanded", String(!collapsed));
-    toggle.setAttribute(
-      "aria-label",
-      `${collapsed ? "Expand" : "Collapse"} ${label}`
-    );
-    toggle.title = `${collapsed ? "Expand" : "Collapse"} ${label}`;
-    toggle.textContent = collapsed ? "▸" : "▾";
-  }
-
-  function applyTopologyNodePresentation(
-    rendered: RenderedTopologyNode,
-    presentation: TopologyNodePresentation
-  ): void {
-    const selected = topologySelection.key === presentation.selection.key;
-    const status = topologyToneLabel(presentation.tone);
-    setTextIfChanged(rendered.kind, presentation.kind);
-    setTextIfChanged(rendered.label, presentation.label);
-    setTextIfChanged(rendered.meta, presentation.meta);
-    if (rendered.status) {
-      setTextIfChanged(rendered.status, status);
-    }
-    if (rendered.button.dataset.selected !== String(selected)) {
-      rendered.button.dataset.selected = String(selected);
-    }
-    if (rendered.button.dataset.tone !== presentation.tone) {
-      rendered.button.dataset.tone = presentation.tone;
-    }
-    const ariaCurrent = selected ? "true" : "false";
-    if (rendered.button.getAttribute("aria-current") !== ariaCurrent) {
-      rendered.button.setAttribute("aria-current", ariaCurrent);
-    }
-    rendered.button.setAttribute("aria-selected", String(selected));
-  }
-
-  function setTextIfChanged(element: HTMLElement, value: string): void {
-    if (element.textContent !== value) {
-      element.textContent = value;
-    }
-  }
-
-  function createTopologyTreeGroup(): HTMLUListElement {
-    const group = document.createElement("ul");
-    group.className = "topology-tree-group";
-    group.setAttribute("role", "group");
-    return group;
+    return createTopologyTreeNode(presentation, topologyTreeViewOptions()).item;
   }
 
   function createTopologyDetail(target: TopologySelectionTarget): HTMLElement {
@@ -5300,8 +4823,17 @@ export function renderPanel(
     );
     if (subscription.mode === "COMMAND" || subscription.commandGenerations.length > 0) {
       content.append(
-        createTopologyCommandEvidence(subscription),
-        createOpenCommandStateAction(subscription)
+        createTopologyCommandEvidence({
+          subscription,
+          expandedEvidence: topologyExpandedEvidence,
+          evidenceLimits: topologyEvidenceLimits,
+          onRender: renderTopology
+        }),
+        createOpenCommandStateAction(
+          subscription,
+          subscription.items[0] ?? null,
+          openTopologyCommandState
+        )
       );
     }
     if (subscription.historical) {
@@ -5315,157 +4847,25 @@ export function renderPanel(
     }
   }
 
-  function topologyLatestGenerationSummary(
-    generation: TopologyCommandGeneration | null
-  ): string | null {
-    if (!generation) {
-      return null;
-    }
-    return [
-      generation.command,
-      generation.key,
-      generation.itemId,
-      `sequence ${generation.captureSequence.toLocaleString()}`
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  }
-
-  function topologyLatestInferredChildSummary(
-    generations: readonly TopologyCommandGeneration[]
-  ): string | null {
-    const child = generations
-      .flatMap(({ inferredChildren }) => inferredChildren)
-      .at(-1);
-    return child
-      ? [child.label, child.provenance, `sequence ${child.captureSequence.toLocaleString()}`]
-          .filter(Boolean)
-          .join(" · ")
-      : null;
-  }
-
-  function createTopologyCommandEvidence(
-    subscription: TopologySubscription
-  ): HTMLDetailsElement {
-    const evidence = document.createElement("details");
-    evidence.className = "topology-command-evidence";
-    evidence.open = topologyExpandedEvidence.has(subscription.id);
-    evidence.addEventListener("toggle", () => {
-      if (evidence.open) {
-        topologyExpandedEvidence.add(subscription.id);
-      } else {
-        topologyExpandedEvidence.delete(subscription.id);
-      }
-    });
-
-    const total = subscription.commandGenerations.length;
-    const requested = topologyEvidenceLimits.get(subscription.id) ??
-      TOPOLOGY_EVIDENCE_INITIAL_LIMIT;
-    const included = Math.min(total, requested);
-    const summary = document.createElement("summary");
-    summary.className = "topology-command-evidence-summary";
-    summary.textContent = `Raw COMMAND evidence · ${included.toLocaleString()} of ${total.toLocaleString()} shown`;
-    evidence.append(summary);
-
-    const controls = document.createElement("div");
-    controls.className = "topology-command-evidence-controls";
-    const copy = document.createElement("button");
-    copy.className = "topology-action topology-copy-command-evidence";
-    copy.type = "button";
-    copy.textContent = "Copy complete evidence";
-    copy.addEventListener("click", async () => {
-      try {
-        if (!navigator.clipboard?.writeText) {
-          throw new Error("Clipboard access is unavailable.");
-        }
-        await navigator.clipboard.writeText(
-          JSON.stringify(subscription.commandGenerations, null, 2)
-        );
-        copy.textContent = `Copied ${total.toLocaleString()} entries`;
-      } catch (error) {
-        copy.textContent = "Copy failed";
-        copy.title = error instanceof Error ? error.message : "Clipboard write failed.";
-      }
-    });
-    controls.append(copy);
-
-    if (included < total) {
-      const showMore = document.createElement("button");
-      showMore.className = "topology-action topology-show-more-command-evidence";
-      showMore.type = "button";
-      showMore.textContent = `Show ${Math.min(
-        TOPOLOGY_EVIDENCE_CHUNK,
-        total - included
-      ).toLocaleString()} more`;
-      showMore.addEventListener("click", () => {
-        topologyExpandedEvidence.add(subscription.id);
-        topologyEvidenceLimits.set(
-          subscription.id,
-          included + TOPOLOGY_EVIDENCE_CHUNK
-        );
-        renderTopology();
-      });
-      controls.append(showMore);
-    }
-    evidence.append(controls);
-
-    const list = document.createElement("ol");
-    list.className = "topology-command-evidence-list";
-    const visibleGenerations = included === 0
-      ? []
-      : subscription.commandGenerations.slice(-included);
-    for (const generation of visibleGenerations) {
-      const entry = document.createElement("li");
-      entry.className = "topology-command-evidence-entry";
-      entry.append(
-        createTextElement(
-          "code",
-          "topology-command-evidence-identity",
-          generation.id
-        ),
-        createTextElement(
-          "span",
-          "topology-command-evidence-meta",
-          topologyLatestGenerationSummary(generation) ?? "Generation evidence"
-        )
-      );
-      list.append(entry);
-    }
-    evidence.append(list);
-    return evidence;
-  }
-
-  function createOpenCommandStateAction(
+  function openTopologyCommandState(
     subscription: TopologySubscription,
-    item: TopologyItem | null = subscription.items[0] ?? null
-  ): HTMLElement {
-    const actions = document.createElement("section");
-    actions.className = "topology-detail-actions";
-    const button = document.createElement("button");
-    button.className = "topology-action topology-open-command-state";
-    button.type = "button";
-    button.textContent = item
-      ? "Open item in COMMAND State"
-      : "Open Subscription in COMMAND State";
-    button.addEventListener("click", () => {
-      selectedCommandItem = item
-        ? {
-            subscriptionId: subscription.id,
-            itemId: resolveCommandItemIdentity(
-              { ...subscription, items: subscription.configuredItems },
-              item
-            ).itemId
-          }
-        : null;
-      selectedCommandKey = null;
-      selectedCommandUpdateEventId = null;
-      resetCommandListWindows();
-      activeView = "command";
-      updateActiveViewChrome();
-      renderCommandState();
-    });
-    actions.append(button);
-    return actions;
+    item: TopologyItem | null
+  ): void {
+    commandStateView.selectedItem = item
+      ? {
+          subscriptionId: subscription.id,
+          itemId: resolveCommandItemIdentity(
+            { ...subscription, items: subscription.configuredItems },
+            item
+          ).itemId
+        }
+      : null;
+    commandStateView.selectedKey = null;
+    commandStateView.selectedUpdateEventId = null;
+    resetCommandListWindows();
+    activeView = "command";
+    updateActiveViewChrome();
+    renderCommandState();
   }
 
   function renderTopologyItemDetail(
@@ -5508,7 +4908,9 @@ export function renderPanel(
       content.append(createHistoricalItemEventsAction(subscription, item));
     }
     if (subscription.mode === "COMMAND") {
-      content.append(createOpenCommandStateAction(subscription, item));
+      content.append(
+        createOpenCommandStateAction(subscription, item, openTopologyCommandState)
+      );
     }
   }
 
@@ -5584,7 +4986,7 @@ export function renderPanel(
       activeView = "timeline";
       updateActiveViewChrome();
       resetTimelineRenderLimit();
-      timelineSelectionNeedsFilterReconciliation = true;
+      timelineState.selectionNeedsFilterReconciliation = true;
       renderFeed();
     });
     section.append(
@@ -6221,9 +5623,9 @@ export function renderPanel(
       }
       const event = normalizer.normalize(message);
       rememberTimelineLiveEvent(event);
-      timelinePendingCommitVisibility.set(
+      timelineState.pendingCommitVisibility.set(
         event.id,
-        timelineWindowOffset === 0 && timelineFollowLatest
+        timelineState.windowOffset === 0 && timelineState.followLatest
       );
       noteTimelineNewerEvent(event);
       const topologyResult = topologyProjection.ingestCapture(event);
@@ -6253,7 +5655,7 @@ export function renderPanel(
       appendOperation.receive(
         () => undefined,
         (error) => {
-          timelinePendingCommitVisibility.delete(event.id);
+          timelineState.pendingCommitVisibility.delete(event.id);
           reportHistoryError(error);
           history.stats().receive(
             (stats) => {
@@ -6272,8 +5674,8 @@ export function renderPanel(
       if (
         panelVisible &&
         activeView === "timeline" &&
-        timelineWindowOffset === 0 &&
-        timelineFollowLatest
+        timelineState.windowOffset === 0 &&
+        timelineState.followLatest
       ) {
         renderActiveViewFromAppend({ preservePaneState: true, passiveStoreUpdate: true });
       }
@@ -6294,7 +5696,7 @@ export function renderPanel(
       selectedPinned = false;
       selectedEventId = null;
       selectedTimelineEvent = null;
-      timelineDetailOpen = false;
+      timelineState.detailOpen = false;
       draftRenderVersion += 1;
       resetCommandLifecycleWindow();
       commandSearchTextCache.keys.clear();
@@ -6318,7 +5720,7 @@ export function renderPanel(
       draftResultEventId = null;
       reinjectionMessage = null;
       resetTimelineRenderLimit();
-      timelinePendingCommitVisibility.clear();
+      timelineState.pendingCommitVisibility.clear();
       resetCommandListWindows();
       forceNextStoreRender = true;
       history.clear().receive(() => undefined, reportHistoryError);
@@ -6337,9 +5739,9 @@ export function renderPanel(
       panelVisible = visible;
       if (!visible) {
         cancelDeferredTopologyItemRendering();
-        timelineQueryVersion += 1;
-        timelineLatestQueryGeneration += 1;
-        timelineLatestQueryDirty = timelineLatestQueryInFlight;
+        timelineState.queryVersion += 1;
+        timelineState.latestQueryGeneration += 1;
+        timelineState.latestQueryDirty = timelineState.latestQueryInFlight;
         cancelScheduledStoreRender();
         cancelAppendRenderBudgetReset();
         clearInteractionFlushTimer();
@@ -6409,10 +5811,10 @@ export function renderPanel(
     } else if (change.type === "append" || change.type === "append-batch") {
       const appendedEvents = change.type === "append" ? [change.event] : change.events;
       for (const event of appendedEvents) {
-        const wasCapturedBeforeCommit = timelinePendingCommitVisibility.has(event.id);
+        const wasCapturedBeforeCommit = timelineState.pendingCommitVisibility.has(event.id);
         const wasVisibleBeforeCommit =
-          timelinePendingCommitVisibility.get(event.id) === true;
-        timelinePendingCommitVisibility.delete(event.id);
+          timelineState.pendingCommitVisibility.get(event.id) === true;
+        timelineState.pendingCommitVisibility.delete(event.id);
         if (!wasCapturedBeforeCommit) {
           noteTimelineNewerEvent(event);
         }
@@ -6423,23 +5825,23 @@ export function renderPanel(
           rememberLiveReinjectionTarget(event);
         }
         const shouldAnchorTimelineWindow =
-          timelineWindowOffset > 0 ||
-          timelineViewMode === "frozen";
+          timelineState.windowOffset > 0 ||
+          timelineState.viewMode === "frozen";
         if (
           shouldAnchorTimelineWindow &&
           !wasVisibleBeforeCommit &&
           matchesEventFilters(event, filterState)
         ) {
-          timelineWindowOffset += 1;
-          timelineHistoryAnchor = timelineWindowOffset % TIMELINE_WINDOW_SIZE;
-        } else if (timelineWindowOffset === 0) {
-          timelineHistoryAnchor = 0;
+          timelineState.windowOffset += 1;
+          timelineState.historyAnchor = timelineState.windowOffset % TIMELINE_WINDOW_SIZE;
+        } else if (timelineState.windowOffset === 0) {
+          timelineState.historyAnchor = 0;
         }
       }
     } else {
       cancelScheduledStoreRender();
       immediateAppendRenderCount = 0;
-      timelineEvents = [];
+      timelineState.events = [];
       clearCommandContext();
       topologyProjection.replaceHistory([]);
       liveReinjectionTargets.clear();
@@ -6501,8 +5903,8 @@ export function renderPanel(
         draftJsonError = null;
         reinjectionMessage = null;
         if (surface === "command") {
-          selectedCommandUpdateEventId = selectedEvent.id;
-          commandDetailOpen = true;
+          commandStateView.selectedUpdateEventId = selectedEvent.id;
+          commandStateView.detailOpen = true;
         } else {
           selectedEventId = selectedEvent.id;
           selectedPinned = true;
@@ -7363,24 +6765,24 @@ export function renderPanel(
       (appendedEvent) => {
         draftResultEventId = appendedEvent.id;
         if (draftSurface === "command-replay") {
-          selectedCommandKey = commandSelectionForSyntheticDraft(currentDraft);
-          selectedCommandUpdateEventId = appendedEvent.id;
-          commandDetailOpen = true;
+          commandStateView.selectedKey = commandSelectionForSyntheticDraft(currentDraft);
+          commandStateView.selectedUpdateEventId = appendedEvent.id;
+          commandStateView.detailOpen = true;
           renderCommandState({ preservePaneState: true });
           return;
         }
         selectedEventId = appendedEvent.id;
         selectedTimelineEvent = appendedEvent;
         selectedPinned = true;
-        timelineDetailOpen = true;
-        timelineWindowOffset = 0;
-        timelineHistoryAnchor = 0;
-        timelineSelectionNeedsFilterReconciliation = false;
+        timelineState.detailOpen = true;
+        timelineState.windowOffset = 0;
+        timelineState.historyAnchor = 0;
+        timelineState.selectionNeedsFilterReconciliation = false;
         // Reveal the explicit action result once, then pin it against passive live traffic.
-        timelineFollowLatest = true;
+        timelineState.followLatest = true;
         renderFeed({}, () => {
           if (selectedEventId === appendedEvent.id) {
-            timelineFollowLatest = false;
+            timelineState.followLatest = false;
           }
         });
       },
@@ -7406,7 +6808,7 @@ export function renderPanel(
         item.itemName === (currentDraft.item.name ?? null) &&
         item.itemPosition === (currentDraft.item.position ?? null)
     );
-    return matchingItem?.item.itemId ?? selectedCommandItem?.itemId ?? "";
+    return matchingItem?.item.itemId ?? commandStateView.selectedItem?.itemId ?? "";
   }
 
   function renderDraftSurface(currentDraft: ReinjectionDraft, preservePaneState = false): void {
@@ -7429,7 +6831,7 @@ export function renderPanel(
         !event ||
         event.id !== detailEventId ||
         selectedEventId !== detailEventId ||
-        !timelineDetailOpen ||
+        !timelineState.detailOpen ||
         !panelVisible
       ) {
         return;
@@ -7439,7 +6841,7 @@ export function renderPanel(
     };
     const cached =
       (selectedTimelineEvent?.id === detailEventId ? selectedTimelineEvent : null) ??
-      timelineEvents.find((event) => event.id === detailEventId) ??
+      timelineState.events.find((event) => event.id === detailEventId) ??
       null;
     if (cached) {
       renderSelectedDraftEvent(cached);
@@ -7853,59 +7255,6 @@ function lifecycleSearchSummary(lifecycle: readonly CommandLifecycleEntry[]): st
         `${entry.eventId} ${entry.originalCommand ?? "-"} ${provenanceLabel(entry.provenance)} ${Object.keys(entry.changedFields).join(" ")}`
     )
     .join(" ");
-}
-
-function createCommandUpdateHeader(): HTMLElement {
-  const header = document.createElement("div");
-  header.className = "command-update-header";
-  for (const heading of ["Time", "Event", "Command"]) {
-    header.append(createTextElement("span", "command-update-cell command-update-header-cell", heading));
-  }
-  return header;
-}
-
-function createCommandSummaryRow(label: string, value: string): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "command-summary-row";
-  row.append(
-    createTextElement("span", "command-summary-label", `${label} `),
-    createTextElement("span", "command-summary-value", value)
-  );
-  return row;
-}
-
-function createCommandSummaryTimeRow(label: string, timestamp: number): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "command-summary-row";
-  row.append(
-    createTextElement("span", "command-summary-label", `${label} `),
-    createTimestampElement(timestamp, "command-summary-value", "precise")
-  );
-  return row;
-}
-
-function createTimelineHeader(): HTMLElement {
-  const header = document.createElement("div");
-  header.className = "event-header";
-  for (const heading of ["Time", "Code", "Item", "Command / Key", "Source"]) {
-    header.append(createTextElement("span", "event-cell event-header-cell", heading));
-  }
-  return header;
-}
-
-function createWindowNavigationButton(
-  label: string,
-  enabled: boolean,
-  onClick: () => void
-): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.className = "window-navigation-button";
-  button.type = "button";
-  button.textContent = label;
-  button.dataset.windowAction = label.toLowerCase();
-  button.disabled = !enabled;
-  button.addEventListener("click", onClick);
-  return button;
 }
 
 function clampWindowOffset(offset: number, total: number, windowSize: number): number {
