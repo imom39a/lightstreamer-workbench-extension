@@ -40,10 +40,20 @@ export type PanelScenario = {
   setupActions: readonly PanelScenarioSetupAction[];
 };
 
-export type StoreListingScenarioId =
-  | "command-state"
-  | "timeline-detail"
-  | "new-command";
+export const PANEL_SCENARIO_IDS = [
+  "command-state",
+  "timeline-detail",
+  "new-command"
+] as const;
+
+export type PanelScenarioId = (typeof PANEL_SCENARIO_IDS)[number];
+
+/** @deprecated Use PanelScenarioId for browser and panel scenario tooling. */
+export type StoreListingScenarioId = PanelScenarioId;
+
+export function isPanelScenarioId(value: string): value is PanelScenarioId {
+  return (PANEL_SCENARIO_IDS as readonly string[]).includes(value);
+}
 
 export type TopologyPerformanceScenarioConfig = {
   subscriptionCount: number;
@@ -51,7 +61,7 @@ export type TopologyPerformanceScenarioConfig = {
   listenersPerSubscription: number;
 };
 
-export function getPanelScenario(id: StoreListingScenarioId): PanelScenario {
+export function getPanelScenario(id: PanelScenarioId): PanelScenario {
   const common = {
     id,
     status: "bridge connected" as const,
