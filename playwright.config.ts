@@ -36,6 +36,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
     video: "retain-on-failure",
+    timezoneId: "America/New_York",
     viewport,
     ...(chromeExecutable
       ? { launchOptions: { executablePath: chromeExecutable } }
