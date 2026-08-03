@@ -304,6 +304,140 @@ describe("topology inspector", () => {
     expect(text(".topology-tree-pane")).toContain("semantic-sub");
   });
 
+  it("prefers a complete live Capture hierarchy across partial semantic resynchronization", async () => {
+    const partialSync = topologyCheckpoint(
+      "page-live",
+      "partial-live",
+      "unused-sub",
+      0
+    );
+    if (
+      partialSync.begin.type !== TOPOLOGY_SYNC_BEGIN ||
+      partialSync.chunk.type !== TOPOLOGY_SYNC_CHUNK ||
+      partialSync.complete.type !== TOPOLOGY_SYNC_COMPLETE
+    ) {
+      throw new Error("invalid partial topology checkpoint fixture");
+    }
+    const partialRecords = partialSync.chunk.records.filter(
+      (record) => record.kind === "page" || record.kind === "client"
+    );
+    panel.applyTopologySyncFrame({
+      ...partialSync.begin,
+      recordCount: partialRecords.length
+    });
+    panel.applyTopologySyncFrame({
+      ...partialSync.chunk,
+      recordCount: partialRecords.length,
+      records: partialRecords
+    });
+    panel.applyTopologySyncFrame({
+      ...partialSync.complete,
+      recordCount: partialRecords.length
+    });
+    panel.appendCaptureMessage(
+      semanticCapture(
+        "client-status",
+        {
+          client: {
+            id: "live-client",
+            status: "CONNECTED:WS-STREAMING",
+            sessionId: "live-session"
+          }
+        },
+        "page-live",
+        1
+      )
+    );
+
+    panel.appendCaptureMessage(
+      createCaptureMessage("client-status", {
+        client: {
+          id: "live-client",
+          status: "CONNECTED:WS-STREAMING",
+          sessionId: "live-session"
+        }
+      })
+    );
+    panel.appendCaptureMessage(
+      createCaptureMessage("subscription-started", {
+        client: { id: "live-client", sessionId: "live-session" },
+        subscription: {
+          id: "live-subscription",
+          mode: "COMMAND",
+          active: true,
+          subscribed: true,
+          listenerCount: 1
+        }
+      })
+    );
+    panel.appendCaptureMessage(
+      createCaptureMessage("listener-added", {
+        client: { id: "live-client", sessionId: "live-session" },
+        subscription: {
+          id: "live-subscription",
+          mode: "COMMAND",
+          listenerCount: 1
+        },
+        listener: { id: "live-listener", callbacks: ["onItemUpdate"] }
+      })
+    );
+    panel.appendCaptureMessage(
+      createCaptureMessage("item-update", {
+        client: { id: "live-client", sessionId: "live-session" },
+        subscription: { id: "live-subscription", mode: "COMMAND" },
+        listener: { id: "live-listener" },
+        item: { name: "orders", position: 1 },
+        update: {
+          isSnapshot: false,
+          fields: { command: "ADD", key: "order-101", status: "OPEN" },
+          changedFields: { command: "ADD", key: "order-101", status: "OPEN" }
+        }
+      })
+    );
+    await flushPanel();
+
+    expect(text(".event-count")).toBe("5");
+    clickView("COMMAND State");
+    expect(text(".command-workspace")).toContain("order-101");
+
+    clickView("Topology");
+    const topology = text(".topology-tree-pane");
+    expect(topology).toContain("live-client");
+    expect(topology).toContain("live-session");
+    expect(topology).toContain("live-subscription");
+    expect(topology).toContain("orders");
+    expect(topology).toContain("live-listener");
+    expect(text(".topology-overview")).toContain("Legacy event projection");
+    expect(text(".topology-overview")).not.toContain("Complete semantic coverage");
+
+    const emptyResync = topologyCheckpoint(
+      "page-live",
+      "empty-resync",
+      "unused-sub",
+      4
+    );
+    if (
+      emptyResync.begin.type !== TOPOLOGY_SYNC_BEGIN ||
+      emptyResync.complete.type !== TOPOLOGY_SYNC_COMPLETE
+    ) {
+      throw new Error("invalid empty topology checkpoint fixture");
+    }
+    panel.applyTopologySyncFrame({
+      ...emptyResync.begin,
+      chunkCount: 0,
+      recordCount: 0
+    });
+    panel.applyTopologySyncFrame({
+      ...emptyResync.complete,
+      chunkCount: 0,
+      recordCount: 0
+    });
+    await flushPanel();
+
+    expect(text(".topology-tree-pane")).toContain("live-listener");
+    expect(text(".topology-overview")).toContain("Legacy event projection");
+  });
+
   it("never writes semantic topology evidence to IndexedDB", async () => {
     const previousIndexedDb = globalThis.indexedDB;
     const sessionId = "panel-topology-persistence";

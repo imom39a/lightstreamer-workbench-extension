@@ -956,7 +956,7 @@ The default `npm test` command runs the Vitest files ending in `.test.ts`. The L
 npm run fixture:test
 ```
 
-Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` includes the static fixture assertions and `tests/lightstreamer-mutate-reinject.browser.spec.ts`. The browser proof loads the built extension, opens the shipped Workbench panel in a real DevTools session, selects a listenerless `websocket-tlcp` capture, opens **Mutate & re-inject**, edits `modelValues`, and invokes the real panel action. It verifies both direct evaluation and missing-capability fallback, panel success/error rendering, and exact official-client application UI update counts.
+Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` includes the static fixture assertions, `tests/lightstreamer-mutate-reinject.browser.spec.ts`, and the loaded-extension Playwright proof in `tests/extension-ui/lightstreamer-capture.spec.ts`. The browser coverage loads the built extension and shipped Workbench panel in real DevTools sessions. It verifies direct evaluation and missing-capability fallback, panel success/error rendering, exact official-client application UI update counts, and consistent live COMMAND evidence across Timeline detail, COMMAND State, Topology, and successful Local Injection.
 
 All fixture lifecycle and test entry points route through `scripts/lightstreamer/fixture.mjs`; the browser installer uses Puppeteer's cross-platform CLI. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
 
@@ -983,6 +983,7 @@ Coverage is organized by architectural boundary:
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |
 | `tests/lightstreamer-mutate-reinject.browser.spec.ts` | Real Chrome extension + shipped Workbench panel interaction + direct/fallback delivery + listenerless TLCP + official Lightstreamer client + exact rendered application UI update proof. |
+| `tests/extension-ui/lightstreamer-capture.spec.ts` | Loaded-extension Playwright proof for live listener Capture, selected Timeline detail under search and view switches, COMMAND State, complete Topology hierarchy, and successful Local Injection. |
 
 Other quality commands:
 

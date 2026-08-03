@@ -46,8 +46,8 @@ Commands:
   start  Replace and start the fixture Docker container
   wait   Wait until the fixture HTTP endpoint is ready
   stop   Remove the fixture Docker container
-  test   Build everything, run smoke and real-browser reinjection tests, then stop
-  browser-test  Build everything, run the real-browser reinjection test, then stop
+  test   Build everything, run smoke and real-browser extension tests, then stop
+  browser-test  Build everything, run the real-browser extension tests, then stop
 
 The same commands are available through npm run fixture:<command>.`;
 
@@ -199,6 +199,7 @@ async function testFixture({ browserOnly = false } = {}) {
       await runFixtureSmokeTest();
     }
     await runFixtureBrowserTest();
+    await runFixturePanelTest();
   } finally {
     await stopFixture({ quiet: true });
   }
@@ -222,7 +223,8 @@ async function runFixtureBrowserTest() {
     await build({
       entryPoints: [fixtureBrowserSource],
       outfile: generatedBrowserTest,
-      bundle: false,
+      bundle: true,
+      packages: "external",
       format: "esm",
       platform: "node",
       target: "node20",
@@ -232,6 +234,17 @@ async function runFixtureBrowserTest() {
   } finally {
     await rm(generatedBrowserTest, { force: true });
   }
+}
+
+async function runFixturePanelTest() {
+  await runProcess("npm", [
+    "exec",
+    "--",
+    "playwright",
+    "test",
+    "--config",
+    "playwright.extension.config.ts"
+  ]);
 }
 
 async function runFixtureSmokeTest() {

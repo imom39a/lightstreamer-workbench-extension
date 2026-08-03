@@ -1443,6 +1443,53 @@ describe("panel shell", () => {
     expect(text(".filtered-count")).toBe("1 shown");
   });
 
+  it("renders meaningful live Capture detail when selection occurs under an active search", async () => {
+    panel.appendCaptureMessage(
+      createCaptureMessage("item-update", {
+        client: { id: "search-client", sessionId: "search-session" },
+        subscription: { id: "search-subscription", mode: "COMMAND" },
+        listener: { id: "search-listener" },
+        item: { name: "orders", position: 1 },
+        update: {
+          isSnapshot: false,
+          fields: {
+            command: "ADD",
+            key: "order-101",
+            status: "OPEN"
+          },
+          changedFields: {
+            command: "ADD",
+            key: "order-101",
+            status: "OPEN"
+          }
+        },
+        raw: { callback: "onItemUpdate", fixture: "timeline-selection" }
+      })
+    );
+    await flushPanelRender();
+
+    input(".search-input", "order-101");
+    await flushPromises();
+    clickFirstEventRow();
+
+    expect(text(".selected-event-id")).toBe("event-1");
+    expect(text(".selected-event-command")).toContain("ADD/order-101");
+    expect(text(".detail-pane")).toContain('"status": "OPEN"');
+    openDetailSection("Context");
+    expect(text(".detail-pane")).toContain('"id": "search-client"');
+    expect(text(".detail-pane")).toContain('"id": "search-subscription"');
+    openDetailSection("Raw capture");
+    expect(text(".detail-pane")).toContain('"fixture": "timeline-selection"');
+
+    clickButtonByText(".view-selector button", "COMMAND State");
+    expect(text(".command-workspace")).toContain("order-101");
+    clickButtonByText(".view-selector button", "Timeline");
+
+    expect(text(".selected-event-id")).toBe("event-1");
+    expect(text(".selected-event-command")).toContain("ADD/order-101");
+    expect(text(".detail-pane")).toContain('"status": "OPEN"');
+  });
+
   it("renders synthetic live markers and row styling", () => {
     document.body.innerHTML = '<main id="app"></main>';
     const root = document.querySelector<HTMLElement>("#app");

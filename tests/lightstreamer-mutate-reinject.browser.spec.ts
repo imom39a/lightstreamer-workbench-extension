@@ -1,29 +1,21 @@
 import assert from "node:assert/strict";
-import { constants } from "node:fs";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, type ChildProcess } from "node:child_process";
-import { Browser, Cache } from "@puppeteer/browsers";
-import WebSocket from "ws";
+import { spawn } from "node:child_process";
 
-type CdpResponse = {
-  id?: number;
-  result?: unknown;
-  error?: { message?: string };
-};
-
-type RuntimeEvaluation = {
-  result?: {
-    value?: unknown;
-    description?: string;
-  };
-  exceptionDetails?: {
-    text?: string;
-    exception?: { description?: string };
-  };
-};
+import {
+  CdpClient,
+  evaluateByValue,
+  resolveChromeExecutable,
+  terminateChild,
+  waitForBrowserTargets,
+  waitForCondition,
+  waitForDebuggingPort,
+  waitForExtensionPanelTarget
+} from "./support/chrome-extension-cdp";
+import { type BrowserTarget } from "./support/devtools-panel";
 
 type CaptureMessage = {
   kind?: string;
@@ -58,12 +50,6 @@ type PanelDraftEditProof = {
   error: string;
 };
 
-type BrowserTarget = {
-  type?: string;
-  url?: string;
-  webSocketDebuggerUrl?: string;
-};
-
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const extensionDir = join(rootDir, "dist");
 const fixtureUrl = new URL(
@@ -85,7 +71,7 @@ const listenerFallbackMutatedMessage =
 
 async function runBrowserProof(): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-mutate-reinject-"));
-  const chromeExecutable = await resolveChromeExecutable();
+  const chromeExecutable = await resolveChromeExecutable(rootDir);
   const chromeLogs: string[] = [];
   const chromeArguments = [
     "--no-sandbox",
@@ -117,8 +103,11 @@ async function runBrowserProof(): Promise<void> {
   let devtoolsFrontendCdp: CdpClient | null = null;
   let panelCdp: CdpClient | null = null;
   try {
-    const debuggingPort = await waitForDebuggingPort(profileDir, chrome);
-    const targets = await waitForBrowserTargets(debuggingPort);
+    const debugging = await waitForDebuggingPort(profileDir, chrome);
+    const debuggingPort = debugging.port;
+    const targets = await waitForBrowserTargets(debuggingPort, {
+      requireExtensionDevtools: true
+    });
     const pageTarget = targets.find(
       (target) =>
         target.type === "page" &&
@@ -706,266 +695,6 @@ async function clickPanelInject(cdp: CdpClient): Promise<{
       };
     })()`
   );
-}
-
-class CdpClient {
-  private nextId = 1;
-  private readonly pending = new Map<
-    number,
-    {
-      resolve(value: unknown): void;
-      reject(error: Error): void;
-      timeout: ReturnType<typeof setTimeout>;
-    }
-  >();
-
-  private constructor(private readonly socket: WebSocket) {
-    socket.addEventListener("message", (event) => {
-      const response = JSON.parse(String(event.data)) as CdpResponse;
-      if (typeof response.id !== "number") {
-        return;
-      }
-      const request = this.pending.get(response.id);
-      if (!request) {
-        return;
-      }
-      clearTimeout(request.timeout);
-      this.pending.delete(response.id);
-      if (response.error) {
-        request.reject(new Error(response.error.message ?? "Chrome DevTools Protocol error"));
-      } else {
-        request.resolve(response.result);
-      }
-    });
-  }
-
-  static async connect(url: string): Promise<CdpClient> {
-    const socket = new WebSocket(url);
-    await new Promise<void>((resolvePromise, rejectPromise) => {
-      socket.addEventListener("open", () => resolvePromise(), { once: true });
-      socket.addEventListener(
-        "error",
-        () => rejectPromise(new Error("Unable to connect to Chrome DevTools Protocol")),
-        { once: true }
-      );
-    });
-    return new CdpClient(socket);
-  }
-
-  request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolvePromise, rejectPromise) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        rejectPromise(new Error(`Timed out waiting for Chrome DevTools Protocol method ${method}`));
-      }, 10_000);
-      this.pending.set(id, {
-        resolve: resolvePromise,
-        reject: rejectPromise,
-        timeout
-      });
-      this.socket.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  close(): void {
-    this.socket.close();
-  }
-}
-
-async function evaluateByValue<T>(cdp: CdpClient, expression: string): Promise<T> {
-  const evaluation = (await cdp.request("Runtime.evaluate", {
-    expression,
-    awaitPromise: true,
-    returnByValue: true
-  })) as RuntimeEvaluation;
-  if (evaluation.exceptionDetails) {
-    throw new Error(
-      evaluation.exceptionDetails.exception?.description ??
-        evaluation.exceptionDetails.text ??
-        "Browser evaluation failed"
-    );
-  }
-  return evaluation.result?.value as T;
-}
-
-async function waitForCondition(
-  cdp: CdpClient,
-  condition: string,
-  description: string,
-  timeoutMs = 15_000
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await evaluateByValue<boolean>(cdp, `Boolean(${condition})`)) {
-      return;
-    }
-    await delay(100);
-  }
-  throw new Error(`Timed out waiting for ${description}.`);
-}
-
-async function resolveChromeExecutable(): Promise<string> {
-  const configured = process.env.CHROME_PATH?.trim();
-  const cacheDir =
-    process.env.LSEW_BROWSER_CACHE_DIR?.trim() || join(rootDir, ".cache", "lsew-browsers");
-  const installedTestingBrowsers = new Cache(cacheDir)
-    .getInstalledBrowsers()
-    .filter((installed) => installed.browser === Browser.CHROME)
-    .sort((left, right) => right.buildId.localeCompare(left.buildId, undefined, { numeric: true }))
-    .map((installed) => installed.executablePath);
-  const candidates = [
-    configured,
-    ...installedTestingBrowsers,
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    ...commandCandidatesFromPath()
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  for (const candidate of candidates) {
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Try the next platform-specific Chrome location.
-    }
-  }
-  throw new Error(
-    "Chrome for Testing or Chromium was not found. Run npm run fixture:browser:install, or set CHROME_PATH, to run the real Mutate & re-inject browser proof."
-  );
-}
-
-function commandCandidatesFromPath(): string[] {
-  const executableNames =
-    process.platform === "win32" ? ["chromium.exe"] : ["chromium", "chromium-browser"];
-  return (process.env.PATH ?? "")
-    .split(delimiter)
-    .flatMap((directory) => executableNames.map((name) => join(directory, name)));
-}
-
-async function waitForDebuggingPort(
-  profile: string,
-  child: ChildProcess,
-  timeoutMs = 15_000
-): Promise<number> {
-  const activePortFile = join(profile, "DevToolsActivePort");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(
-        `Chrome exited before its debugging port opened (${child.exitCode ?? child.signalCode}).`
-      );
-    }
-    try {
-      const [rawPort] = (await readFile(activePortFile, "utf8")).trim().split(/\r?\n/);
-      const port = Number(rawPort);
-      if (Number.isInteger(port) && port > 0) {
-        return port;
-      }
-    } catch {
-      // Chrome creates DevToolsActivePort after the profile has initialized.
-    }
-    await delay(100);
-  }
-  throw new Error("Timed out waiting for Chrome's remote debugging port.");
-}
-
-async function fetchJson(url: string): Promise<unknown> {
-  const response = await fetch(url);
-  assert.equal(response.ok, true, `${url} should respond successfully`);
-  return response.json();
-}
-
-async function waitForBrowserTargets(port: number, timeoutMs = 10_000): Promise<BrowserTarget[]> {
-  const url = `http://127.0.0.1:${port}/json/list`;
-  const deadline = Date.now() + timeoutMs;
-  let latestTargets: BrowserTarget[] = [];
-  while (Date.now() < deadline) {
-    latestTargets = (await fetchJson(url)) as BrowserTarget[];
-    const hasPage = latestTargets.some(
-      (target) => target.type === "page" && !target.url?.startsWith("devtools://")
-    );
-    const hasExtensionDevtools = latestTargets.some(
-      (target) =>
-        target.type === "iframe" &&
-        target.url?.startsWith("chrome-extension://") &&
-        target.url.endsWith("/devtools.html")
-    );
-    const hasDevtoolsFrontend = latestTargets.some(
-      (target) => target.type === "page" && target.url?.startsWith("devtools://")
-    );
-    if (hasPage && hasExtensionDevtools && hasDevtoolsFrontend) {
-      return latestTargets;
-    }
-    await delay(100);
-  }
-  throw new Error(
-    `Timed out waiting for inspected-page and extension DevTools targets. Observed: ${JSON.stringify(
-      latestTargets.map(({ type, url }) => ({ type, url }))
-    )}`
-  );
-}
-
-async function waitForExtensionPanelTarget(
-  port: number,
-  timeoutMs = 10_000
-): Promise<BrowserTarget> {
-  const url = `http://127.0.0.1:${port}/json/list`;
-  const deadline = Date.now() + timeoutMs;
-  let latestTargets: BrowserTarget[] = [];
-  while (Date.now() < deadline) {
-    latestTargets = (await fetchJson(url)) as BrowserTarget[];
-    const panelTarget = latestTargets.find(
-      (target) =>
-        target.type === "iframe" &&
-        target.url?.startsWith("chrome-extension://") &&
-        target.url.endsWith("/extension/panel/index.html") &&
-        typeof target.webSocketDebuggerUrl === "string"
-    );
-    if (panelTarget) {
-      return panelTarget;
-    }
-    await delay(100);
-  }
-  throw new Error(
-    `Timed out waiting for the selected Workbench panel target. Observed: ${JSON.stringify(
-      latestTargets.map(({ type, url }) => ({ type, url }))
-    )}`
-  );
-}
-
-async function terminateChild(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-  child.kill();
-  if (await waitForExit(child, 2_000)) {
-    return;
-  }
-  child.kill("SIGKILL");
-  await waitForExit(child, 2_000);
-}
-
-async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return true;
-  }
-  return new Promise((resolvePromise) => {
-    const onExit = () => {
-      clearTimeout(timeout);
-      resolvePromise(true);
-    };
-    const timeout = setTimeout(() => {
-      child.removeListener("exit", onExit);
-      resolvePromise(false);
-    }, timeoutMs);
-    child.once("exit", onExit);
-  });
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
 await runBrowserProof();

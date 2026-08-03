@@ -95,4 +95,69 @@ describe("topology projection", () => {
     expect(projection.ingestHistory({ ...stale, topology: undefined })).toBe(false);
     expect(JSON.stringify(projection.snapshot())).not.toContain("stale-sub");
   });
+
+  it("uses an equal-depth fallback only when it preserves semantic nodes and adds live branches", () => {
+    const projection = createTopologyProjection();
+    const semantic = subscriptionEvent("semantic-1", "semantic-sub", "page-a", 1);
+    projection.ingestCapture(semantic);
+    projection.ingestCapture({
+      ...semantic,
+      id: "legacy-semantic-copy",
+      topology: undefined
+    });
+    projection.ingestCapture(subscriptionEvent("legacy-extra", "legacy-sub"));
+
+    const state = projection.snapshot();
+    const subscriptionIds = state.clients.flatMap((client) =>
+      client.sessions.flatMap((session) =>
+        session.subscriptions.map((subscription) => subscription.id)
+      )
+    );
+
+    expect(subscriptionIds).toEqual(expect.arrayContaining(["semantic-sub", "legacy-sub"]));
+    expect(projection.status()).toMatchObject({
+      semanticActive: false,
+      syncState: "legacy",
+      coverage: null
+    });
+  });
+
+  it("keeps semantic ownership when fallback evidence moves the same subscription", () => {
+    const projection = createTopologyProjection();
+    const semantic = subscriptionEvent("semantic-1", "semantic-sub", "page-a", 1);
+    projection.ingestCapture(semantic);
+    projection.ingestCapture({
+      ...semantic,
+      id: "legacy-original-session",
+      kind: "client-status",
+      topology: undefined,
+      subscription: undefined
+    });
+    const moved: LightstreamerEventEnvelope = {
+      ...semantic,
+      id: "legacy-moved",
+      topology: undefined,
+      client: {
+        ...semantic.client,
+        id: semantic.client?.id ?? "client-page-a",
+        sessionId: "fallback-session"
+      }
+    };
+    projection.ingestCapture(moved);
+    projection.ingestCapture({
+      ...moved,
+      id: "legacy-extra",
+      subscription: { ...moved.subscription, id: "legacy-sub" }
+    });
+
+    const state = projection.snapshot();
+    const subscriptionIds = state.clients.flatMap((client) =>
+      client.sessions.flatMap((session) =>
+        session.subscriptions.map((subscription) => subscription.id)
+      )
+    );
+
+    expect(subscriptionIds).toEqual(["semantic-sub"]);
+    expect(projection.status().semanticActive).toBe(true);
+  });
 });

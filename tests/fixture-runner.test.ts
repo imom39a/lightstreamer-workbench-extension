@@ -58,4 +58,20 @@ describe("cross-platform Lightstreamer fixture commands", () => {
     expect(result.stdout).toContain("--publish 18080:8080");
     expect(result.stdout).toContain("Lightstreamer fixture started at http://localhost:18080/");
   });
+
+  it("runs the loaded-extension Playwright proof inside the managed fixture lifecycle", () => {
+    const result = spawnSync(process.execPath, [runnerPath, "browser-test", "--dry-run"], {
+      cwd: rootDir,
+      encoding: "utf8"
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("docker run --detach");
+    expect(result.stdout).toContain(
+      "npm exec -- playwright test --config playwright.extension.config.ts"
+    );
+    expect(result.stdout.indexOf("docker run --detach")).toBeLessThan(
+      result.stdout.indexOf("npm exec -- playwright test")
+    );
+  });
 });
