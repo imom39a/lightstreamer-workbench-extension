@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="data:," />
+    <title>PROTOTYPE — Local Injection interaction models</title>
+    <link rel="stylesheet" href="./prototype.css" />
+  </head>
+  <body>
+    <main id="prototype"></main>
+    <aside id="prototype-lab" class="prototype-lab" aria-label="Prototype states"></aside>
+    <nav class="prototype-switcher injection-switcher" aria-label="Prototype variants">
+      <button type="button" data-switch="previous" aria-label="Previous variant">←</button>
+      <div class="prototype-switcher-copy">
+        <span class="prototype-label">PROTOTYPE</span>
+        <strong id="variant-label">A</strong>
+      </div>
+      <button type="button" data-switch="next" aria-label="Next variant">→</button>
+    </nav>
+    <script type="module" src="./prototype.js"></script>
+  </body>
+</html>
