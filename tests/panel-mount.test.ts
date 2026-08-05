@@ -407,7 +407,9 @@ describe("production panel mount wiring", () => {
     expect(root.textContent).toContain("closing it clears the in-memory history");
     expect(root.textContent).toContain("In-memory event history");
     await clickButton(root, "More actions");
-    expect(root.textContent).toContain("History uses in-memory fallback");
+    expect(root.textContent).toContain(
+      "current DevTools session history uses in-memory fallback"
+    );
     expect(consoleError).toHaveBeenCalledWith(
       "Falling back to in-memory event storage.",
       storageError

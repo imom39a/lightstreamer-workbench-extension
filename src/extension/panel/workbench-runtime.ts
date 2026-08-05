@@ -176,6 +176,7 @@ export type WorkbenchCommandProjection = Readonly<{
   name: string;
   basis: string;
   rows: readonly (readonly [string, string])[];
+  supportingLocalEvidenceId?: string;
 }>;
 
 export type WorkbenchDiagnostic = Readonly<{
@@ -417,6 +418,7 @@ export type WorkbenchCommand =
   | { type: "open-raw-evidence"; eventId: string }
   | { type: "export-scope" }
   | { type: "open-actions" }
+  | { type: "close-actions" }
   | { type: "freeze-evidence" }
   | { type: "follow-live" }
   | { type: "refresh-evidence" };
@@ -502,6 +504,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
+  private readonly retainedLocalEvidenceIds = new Set<string>();
   private readonly topologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly analytics: WorkbenchAnalytics;
@@ -517,9 +520,14 @@ class Runtime implements WorkbenchRuntime {
   private selectionHiddenByFilter = false;
   private contextId: string | null = null;
   private commandProjectionReturnContextId: string | null = null;
+  private actionsReturnContextId: string | null = null;
   private filters: EventFilterState = {};
   private find = "";
   private findCurrentEventId: string | null = null;
+  private findResultEvents: readonly LightstreamerEventEnvelope[] = Object.freeze([]);
+  private findMatchIndexes: readonly number[] = Object.freeze([]);
+  private findEvidence: EvidenceData | null = null;
+  private findQueryGeneration = 0;
   private mode: "live" | "frozen" = "live";
   private liveEvidence: EvidenceData = emptyEvidence;
   private frozenEvidence: EvidenceData | null = null;
@@ -727,9 +735,8 @@ class Runtime implements WorkbenchRuntime {
       }
       case "set-find":
         this.find = command.value;
-        this.reconcileFindCurrent();
         this.recordAnalyticsSearch(command.value);
-        this.publish();
+        this.refreshFindResults(false);
         return;
       case "find-next":
         this.navigateFind(1);
@@ -739,7 +746,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "clear-find":
         this.find = "";
-        this.findCurrentEventId = null;
+        this.clearFindResults();
         this.publish();
         return;
       case "show-older-evidence":
@@ -870,7 +877,16 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       case "open-actions":
+        if (this.contextId !== "context:actions") {
+          this.actionsReturnContextId = this.contextId;
+        }
         this.contextId = "context:actions";
+        this.publish();
+        return;
+      case "close-actions":
+        if (this.contextId !== "context:actions") return;
+        this.contextId = this.actionsReturnContextId;
+        this.actionsReturnContextId = null;
         this.publish();
         return;
       case "freeze-evidence":
@@ -988,39 +1004,85 @@ class Runtime implements WorkbenchRuntime {
 
   private displayedEvidence(): EvidenceData {
     if (this.evidenceLoading) return emptyEvidence;
-    return this.mode === "frozen" ? this.frozenEvidence ?? emptyEvidence : this.liveEvidence;
+    return this.findEvidence ?? (this.mode === "frozen" ? this.frozenEvidence ?? emptyEvidence : this.liveEvidence);
   }
 
-  private findMatches(): readonly LightstreamerEventEnvelope[] {
+  private clearFindResults(): void {
+    this.findQueryGeneration += 1;
+    this.findCurrentEventId = null;
+    this.findResultEvents = Object.freeze([]);
+    this.findMatchIndexes = Object.freeze([]);
+    this.findEvidence = null;
+  }
+
+  private refreshFindResults(preserveCurrent: boolean): void {
     const query = this.find.trim().toLowerCase();
-    if (!query) return [];
-    return this.displayedEvidence().events.filter((event) =>
-      createEvidenceFindText(event).includes(query)
-    );
-  }
-
-  private reconcileFindCurrent(): void {
-    const matches = this.findMatches();
-    if (matches.length === 0) {
-      this.findCurrentEventId = null;
-      return;
-    }
-    if (!matches.some(({ id }) => id === this.findCurrentEventId)) {
-      this.findCurrentEventId = matches[0]?.id ?? null;
-    }
-  }
-
-  private navigateFind(direction: 1 | -1): void {
-    const matches = this.findMatches();
-    if (matches.length === 0) {
-      this.findCurrentEventId = null;
+    if (!query) {
+      this.clearFindResults();
       this.publish();
       return;
     }
-    const current = matches.findIndex(({ id }) => id === this.findCurrentEventId);
+
+    const generation = ++this.findQueryGeneration;
+    const previousEventId = preserveCurrent ? this.findCurrentEventId : null;
+    const topology = this.topologyProjection.snapshot();
+    const target = findTopologySelection(topology, this.scopeId ?? "page");
+    const filters = combineScopeAndUserFilters(eventFiltersForScope(target), this.filters);
+    this.history.queryEvents({ filters, order: "asc" }).receive(
+      (result) => {
+        if (this.disposed || generation !== this.findQueryGeneration) return;
+        const events = Object.freeze([...result.events]);
+        const matchIndexes = Object.freeze(events.flatMap((event, index) =>
+          createEvidenceFindText(event).includes(query) ? [index] : []
+        ));
+        this.findResultEvents = events;
+        this.findMatchIndexes = matchIndexes;
+        const preservedMatch = previousEventId
+          ? matchIndexes.findIndex((index) => events[index]?.id === previousEventId)
+          : -1;
+        const currentMatch = preservedMatch >= 0 ? preservedMatch : 0;
+        const currentIndex = matchIndexes[currentMatch];
+        this.findCurrentEventId = currentIndex === undefined ? null : events[currentIndex]?.id ?? null;
+        this.findEvidence = currentIndex === undefined ? null : this.findWindow(currentIndex);
+        this.publish();
+      },
+      () => {
+        if (this.disposed || generation !== this.findQueryGeneration) return;
+        this.findResultEvents = Object.freeze([]);
+        this.findMatchIndexes = Object.freeze([]);
+        this.findCurrentEventId = null;
+        this.findEvidence = null;
+        this.publish();
+      }
+    );
+  }
+
+  private findWindow(currentIndex: number): EvidenceData {
+    const maximumStart = Math.max(0, this.findResultEvents.length - this.windowSize);
+    const start = Math.min(maximumStart, Math.max(0, currentIndex - Math.floor(this.windowSize / 2)));
+    const end = Math.min(this.findResultEvents.length, start + this.windowSize);
+    return freezeEvidence(
+      this.findResultEvents.slice(start, end),
+      this.findResultEvents.length,
+      this.findResultEvents.length - end
+    );
+  }
+
+  private navigateFind(direction: 1 | -1): void {
+    if (this.findMatchIndexes.length === 0) {
+      this.findCurrentEventId = null;
+      this.findEvidence = null;
+      this.publish();
+      return;
+    }
+    const current = this.findMatchIndexes.findIndex(
+      (index) => this.findResultEvents[index]?.id === this.findCurrentEventId
+    );
     const base = current < 0 ? (direction > 0 ? -1 : 0) : current;
-    const next = (base + direction + matches.length) % matches.length;
-    this.findCurrentEventId = matches[next]?.id ?? null;
+    const next = (base + direction + this.findMatchIndexes.length) % this.findMatchIndexes.length;
+    const currentIndex = this.findMatchIndexes[next];
+    this.findCurrentEventId = currentIndex === undefined ? null : this.findResultEvents[currentIndex]?.id ?? null;
+    this.findEvidence = currentIndex === undefined ? null : this.findWindow(currentIndex);
     this.publish();
   }
 
@@ -1200,6 +1262,7 @@ class Runtime implements WorkbenchRuntime {
     this.preparedExport = null;
     if (change.type === "clear") {
       this.commandStateProjections.clear();
+      this.retainedLocalEvidenceIds.clear();
       this.topologyProjection.clear();
     } else {
       const events = change.type === "append" ? [change.event] : change.events;
@@ -1210,6 +1273,7 @@ class Runtime implements WorkbenchRuntime {
       }
       for (const event of events) {
         this.commandStateProjections.apply(event);
+        if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
         this.topologyProjection.ingestHistory(event);
       }
     }
@@ -1787,6 +1851,9 @@ class Runtime implements WorkbenchRuntime {
       source === "scope" ||
       source === "filter" ||
       source === "reveal-selection";
+    if (changesEvidenceIdentity && this.find.trim()) {
+      this.clearFindResults();
+    }
     let completedSynchronously = false;
     this.history
       .queryEvents({
@@ -1818,7 +1885,9 @@ class Runtime implements WorkbenchRuntime {
           if (this.clearedSelectionEventId !== this.selectionEventId) {
             this.reconcileSelection(displayed, source);
           }
-          this.reconcileFindCurrent();
+          if (this.find.trim()) {
+            this.refreshFindResults(source === "passive" || source === "visibility");
+          }
           if (source === "initial") {
             this.snapshot = this.createSnapshot();
             return;
@@ -1859,9 +1928,11 @@ class Runtime implements WorkbenchRuntime {
           return;
         }
         this.commandStateProjections.clear();
+        this.retainedLocalEvidenceIds.clear();
         this.topologyProjection.replaceHistory(result.events);
         for (const event of result.events) {
           this.commandStateProjections.apply(event);
+          if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
         }
         // Hydration is passive. The initial constructor snapshot can be replaced
         // without notification; later asynchronous hydration emits one update.
@@ -1930,8 +2001,9 @@ class Runtime implements WorkbenchRuntime {
     const newerCount = !this.evidenceLoading && this.mode === "frozen"
       ? Math.max(0, this.liveEvidence.total - visibleEnd)
       : 0;
-    const findMatches = this.findMatches();
-    const findIndex = findMatches.findIndex(({ id }) => id === this.findCurrentEventId);
+    const findIndex = this.findMatchIndexes.findIndex(
+      (index) => this.findResultEvents[index]?.id === this.findCurrentEventId
+    );
     return Object.freeze({
       version: this.version,
       visible: this.visible,
@@ -1976,9 +2048,9 @@ class Runtime implements WorkbenchRuntime {
         find: this.find,
         findState: Object.freeze({
           query: this.find,
-          matchCount: findMatches.length,
+          matchCount: this.findMatchIndexes.length,
           currentIndex: findIndex,
-          currentEventId: findIndex >= 0 ? findMatches[findIndex]?.id ?? null : null
+          currentEventId: findIndex >= 0 ? this.findCurrentEventId : null
         }),
         focusedEventId: this.focusedEventId,
         selectedEventId: this.selectionEventId,
@@ -2275,7 +2347,11 @@ class Runtime implements WorkbenchRuntime {
         ["Phase", evidencePhase(selected)],
         ["COMMAND operation", selected.update?.command ?? "—"],
         ["Evidence identity", selected.id],
+        ["Client identity", selected.client?.id ?? "—"],
+        ["Session identity", selected.client?.sessionId ?? "—"],
+        ["Subscription identity", selected.subscription?.id ?? "—"],
         ["Runtime object", evidenceObject(selected)],
+        ["COMMAND key", selected.update?.key ?? "—"],
         ["Changed", evidenceSummary(selected)],
         ["Observation path", evidenceObservationPath(selected)],
         ["Evidence limitations", evidenceLimitations(selected)]
@@ -2286,19 +2362,30 @@ class Runtime implements WorkbenchRuntime {
   private commandProjectionSnapshot(): WorkbenchSnapshot["commandProjections"] {
     const topology = this.topologyProjection.snapshot();
     const target = findTopologySelection(topology, this.scopeId ?? "page");
+    const observedState = this.commandStateProjections.snapshot("observed-server");
+    const localEffectiveState = this.commandStateProjections.snapshot("local-effective");
+    const supportingLocalEvidenceId = contributingLocalEvidenceId(
+      observedState,
+      localEffectiveState,
+      target,
+      this.retainedLocalEvidenceIds
+    );
+    const localEffective = commandProjection(
+      "Local Effective COMMAND State",
+      "Server Updates plus successfully delivered Local Injected Updates",
+      localEffectiveState,
+      target
+    );
     return Object.freeze({
       observed: commandProjection(
         "Observed Server COMMAND State",
         "Captured Server Updates only",
-        this.commandStateProjections.snapshot("observed-server"),
+        observedState,
         target
       ),
-      localEffective: commandProjection(
-        "Local Effective COMMAND State",
-        "Server Updates plus successfully delivered Local Injected Updates",
-        this.commandStateProjections.snapshot("local-effective"),
-        target
-      ),
+      localEffective: supportingLocalEvidenceId
+        ? Object.freeze({ ...localEffective, supportingLocalEvidenceId })
+        : localEffective,
       authoritativeLimit: "Neither projection is Authoritative COMMAND State."
     });
   }
@@ -3608,7 +3695,8 @@ function commandProjection(
   state: CommandState,
   target: TopologySelectionTarget | null
 ): WorkbenchCommandProjection {
-  const rows = commandSubscriptionsForScope(state, target).flatMap((subscription) =>
+  const subscriptions = commandSubscriptionsForScope(state, target);
+  const rows = subscriptions.flatMap((subscription) =>
     subscription.items.flatMap((item) =>
       item.activeRows.map((row) =>
         Object.freeze([
@@ -3621,6 +3709,72 @@ function commandProjection(
     )
   );
   return Object.freeze({ name, basis, rows: Object.freeze(rows) });
+}
+
+type ScopedCommandRow = CommandState["subscriptions"][number]["items"][number]["activeRows"][number];
+type ScopedDeletedCommandKey = CommandState["subscriptions"][number]["items"][number]["deletedKeys"][number];
+
+function contributingLocalEvidenceId(
+  observedState: CommandState,
+  localEffectiveState: CommandState,
+  target: TopologySelectionTarget | null,
+  retainedLocalEvidenceIds: ReadonlySet<string>
+): string | null {
+  const observedRows = new Map<string, ScopedCommandRow>();
+  const localRows = new Map<string, ScopedCommandRow>();
+  const localDeletedKeys = new Map<string, ScopedDeletedCommandKey>();
+  const collect = (
+    state: CommandState,
+    rows: Map<string, ScopedCommandRow>,
+    deletedKeys?: Map<string, ScopedDeletedCommandKey>
+  ) => {
+    for (const subscription of commandSubscriptionsForScope(state, target)) {
+      for (const item of subscription.items) {
+        for (const row of item.activeRows) {
+          rows.set(commandRowIdentity(subscription.subscriptionId, item.itemId, row.key), row);
+        }
+        if (deletedKeys) {
+          for (const deleted of item.deletedKeys) {
+            deletedKeys.set(
+              commandRowIdentity(subscription.subscriptionId, item.itemId, deleted.key),
+              deleted
+            );
+          }
+        }
+      }
+    }
+  };
+  collect(observedState, observedRows);
+  collect(localEffectiveState, localRows, localDeletedKeys);
+
+  let supporting: { eventId: string; timestamp: number } | null = null;
+  for (const identity of new Set([...observedRows.keys(), ...localRows.keys()])) {
+    const observed = observedRows.get(identity);
+    const local = localRows.get(identity);
+    if (observed && local && commandFieldsEqual(observed.fields, local.fields)) continue;
+    const provenance = local?.latest ?? localDeletedKeys.get(identity)?.deletedAt;
+    if (
+      !provenance?.synthetic ||
+      !retainedLocalEvidenceIds.has(provenance.eventId) ||
+      (supporting && provenance.timestamp < supporting.timestamp)
+    ) continue;
+    supporting = { eventId: provenance.eventId, timestamp: provenance.timestamp };
+  }
+  return supporting?.eventId ?? null;
+}
+
+function commandRowIdentity(subscriptionId: string, itemId: string, key: string): string {
+  return `${subscriptionId}\u0000${itemId}\u0000${key}`;
+}
+
+function commandFieldsEqual(
+  left: ScopedCommandRow["fields"],
+  right: ScopedCommandRow["fields"]
+): boolean {
+  const leftEntries = Object.entries(left);
+  return leftEntries.length === Object.keys(right).length && leftEntries.every(
+    ([field, value]) => Object.is(value, right[field])
+  );
 }
 
 function commandSubscriptionsForScope(

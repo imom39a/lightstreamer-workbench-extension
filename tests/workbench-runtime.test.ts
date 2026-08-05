@@ -1,7 +1,9 @@
+import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { createInMemoryEventHistory } from "../src/core/event-history";
+import { createInMemoryEventHistory, createIndexedDbEventHistory } from "../src/core/event-history";
+import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
 import { createCaptureMessage } from "../src/bridge/messages";
 import {
   type AnalyticsConsent,
@@ -1230,6 +1232,20 @@ describe("WorkbenchRuntime", () => {
       qty: 3
     }));
     history.append(commandUpdate("command-4", { ...subAOrders, qty: 9 }, { synthetic: true, command: "UPDATE" }));
+    history.append(commandUpdate("command-5", {
+      ...subAOrders,
+      itemName: "trades",
+      itemPosition: 2,
+      key: "trade-key",
+      qty: 8
+    }, { synthetic: true, command: "UPDATE" }));
+    history.append(commandUpdate("command-6", {
+      ...subAOrders,
+      itemName: "trades",
+      itemPosition: 2,
+      key: "trade-key",
+      qty: 2
+    }, { command: "UPDATE" }));
     const runtime = createWorkbenchRuntime({ history });
 
     expect(runtime.getSnapshot().commandProjections.observed.rows.map(([label]) => label)).toEqual([
@@ -1238,6 +1254,9 @@ describe("WorkbenchRuntime", () => {
       "sub-b / orders / shared-key"
     ]);
     expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=9");
+    expect(runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId).toBe(
+      "command-4"
+    );
     expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
 
     const select = (kind: "client" | "session" | "subscription" | "item" | "listener", label: string) => {
@@ -1268,6 +1287,7 @@ describe("WorkbenchRuntime", () => {
     expect(itemProjection.localEffective.rows).toEqual([
       ["sub-a / orders / shared-key", "command=UPDATE, key=shared-key, qty=9"]
     ]);
+    expect(itemProjection.localEffective.supportingLocalEvidenceId).toBe("command-4");
     expect(select("listener", "listener-a").observed.rows.map(([label]) => label)).toEqual([
       "sub-a / orders / shared-key"
     ]);
@@ -1302,6 +1322,31 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().scopeId).toBe(before.scopeId);
     expect(runtime.getSnapshot().selectionEventId).toBe(before.selectionEventId);
     expect(runtime.getSnapshot().evidence.focusedEventId).toBe(before.evidence.focusedEventId);
+    runtime.dispose();
+  });
+
+  it("returns Session operations to the prior Context without changing investigation state", () => {
+    const history = createInMemoryEventHistory();
+    history.append(event("actions-origin", "orders"));
+    const runtime = createWorkbenchRuntime({ history });
+    runtime.dispatch({ type: "select-evidence", eventId: "actions-origin" });
+    runtime.dispatch({ type: "open-context" });
+    runtime.dispatch({ type: "set-filters", filters: { item: "orders" } });
+    runtime.dispatch({ type: "freeze-evidence" });
+    const origin = runtime.getSnapshot();
+
+    runtime.dispatch({ type: "open-actions" });
+    expect(runtime.getSnapshot().contextId).toBe("context:actions");
+    runtime.dispatch({ type: "close-actions" });
+    expect(runtime.getSnapshot()).toMatchObject({
+      scopeId: origin.scopeId,
+      selectionEventId: origin.selectionEventId,
+      contextId: origin.contextId,
+      evidence: {
+        mode: origin.evidence.mode,
+        filters: origin.evidence.filters
+      }
+    });
     runtime.dispose();
   });
 
@@ -1975,6 +2020,91 @@ describe("WorkbenchRuntime", () => {
       currentEventId: "update-1"
     });
     runtime.dispose();
+  });
+
+  it("finds and reveals matches across all 4,000 retained events without changing the investigation", async () => {
+    const history = createInMemoryEventHistory({ batchSize: 256 });
+    const scheduler = createScheduler();
+    const matchNumbers = new Set([5, 2_050, 3_995]);
+    for (let number = 1; number <= 4_000; number += 1) {
+      history.append({
+        ...event(`retained-${number}`, matchNumbers.has(number) ? `needle-${number}` : `orders-${number}`),
+        subscription: { id: "retained-subscription", mode: "MERGE" }
+      });
+    }
+    const runtime = createWorkbenchRuntime({ history, scheduler, windowSize: 60 });
+    runtime.dispatch({ type: "select-evidence", eventId: "retained-4000" });
+    runtime.dispatch({ type: "open-context" });
+    runtime.dispatch({ type: "set-filters", filters: { mode: "MERGE" } });
+    const origin = runtime.getSnapshot();
+
+    runtime.dispatch({ type: "set-find", value: "needle" });
+    expect(runtime.getSnapshot().evidence.findState).toEqual({
+      query: "needle",
+      matchCount: 3,
+      currentIndex: 0,
+      currentEventId: "retained-5"
+    });
+    expect(runtime.getSnapshot().evidence.events).toHaveLength(60);
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-5")).toBe(true);
+
+    runtime.dispatch({ type: "find-next" });
+    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("retained-2050");
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-2050")).toBe(true);
+    expect(runtime.getSnapshot()).toMatchObject({
+      scopeId: origin.scopeId,
+      selectionEventId: origin.selectionEventId,
+      contextId: origin.contextId,
+      evidence: {
+        mode: origin.evidence.mode,
+        filters: origin.evidence.filters
+      }
+    });
+
+    history.append({
+      ...event("retained-4001", "orders-4001"),
+      subscription: { id: "retained-subscription", mode: "MERGE" }
+    });
+    await flushStoreNotifications();
+    scheduler.flushFrame();
+    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("retained-2050");
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-2050")).toBe(true);
+
+    runtime.dispatch({ type: "find-next" });
+    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("retained-3995");
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-3995")).toBe(true);
+    runtime.dispatch({ type: "clear-find" });
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-4001")).toBe(true);
+    runtime.dispose();
+  });
+
+  it("uses the same complete retained Find contract with IndexedDB history", async () => {
+    const sessionId = "workbench-complete-find";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const history = await createIndexedDbEventHistory({ sessionId, reset: true, batchSize: 64 });
+    try {
+      await Promise.all(Array.from({ length: 180 }, (_, index) => {
+        const number = index + 1;
+        return history.append({
+          ...event(`indexed-retained-${number}`, [2, 91, 179].includes(number) ? `indexed-needle-${number}` : `indexed-orders-${number}`),
+          subscription: { id: "indexed-retained-subscription", mode: "MERGE" }
+        }).toPromise();
+      }));
+      const runtime = createWorkbenchRuntime({ history, windowSize: 60 });
+      await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(180));
+      runtime.dispatch({ type: "set-find", value: "indexed-needle" });
+      await vi.waitFor(() => expect(runtime.getSnapshot().evidence.findState.matchCount).toBe(3));
+      expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-2");
+      expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-2")).toBe(true);
+      runtime.dispatch({ type: "find-next" });
+      expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-91");
+      expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-91")).toBe(true);
+      runtime.dispose();
+    } finally {
+      await history.close().toPromise();
+      await deleteEventDatabase(eventDatabaseName(sessionId));
+    }
   });
 
   it("keeps an active Scope explicit when its independent Filter produces empty Evidence", () => {

@@ -65,8 +65,19 @@ const root = document.querySelector("#app");
 if (!(root instanceof HTMLElement)) throw new Error("Workbench scenario requires #app.");
 
 const scenario = getWorkbenchScenario(scenarioId);
-const history = createInMemoryEventHistory();
-for (const event of scenario.initialEvents) history.append(event);
+const retainedHistory = createInMemoryEventHistory();
+for (const event of scenario.initialEvents) retainedHistory.append(event);
+const history = scenario.failLocalEvidenceRetention ? {
+  ...retainedHistory,
+  append(event) {
+    if (!event.synthetic) return retainedHistory.append(event);
+    const error = new Error("Synthetic Evidence retention failed in the browser scenario.");
+    return {
+      receive(_onValue, onError) { onError(error); },
+      toPromise() { return Promise.reject(error); }
+    };
+  }
+} : retainedHistory;
 let localInjectionExecutionCount = 0;
 const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
   execute(request) {

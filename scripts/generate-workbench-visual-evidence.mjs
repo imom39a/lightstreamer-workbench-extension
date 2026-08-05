@@ -213,6 +213,19 @@ async function prepareProductionState(page, setup) {
     await page.getByRole("region", { name: "COMMAND projection comparison" }).waitFor();
     return;
   }
+  if (setup === "retained-find") {
+    await page.getByRole("button", { name: "Find", exact: true }).click();
+    await page.getByRole("textbox", { name: "Find in ordered Evidence" }).fill("complete-retained-find-anchor");
+    await page.getByRole("search", { name: "Find in ordered Evidence" }).getByText("1 of 3 matches").waitFor();
+    await page.locator('[data-find-current="true"]').waitFor();
+    return;
+  }
+  if (setup === "more-actions") {
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("region", { name: "Session operations" }).waitFor();
+    await page.getByRole("button", { name: "Back to prior investigation" }).waitFor();
+    return;
+  }
   throw new Error(`Unknown production visual setup: ${setup}`);
 }
 

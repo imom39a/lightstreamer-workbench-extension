@@ -1,7 +1,7 @@
 import axe from "axe-core";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
-import { type WorkbenchScenarioId } from "../support/workbench-scenarios";
+import { highVolumeEventId, type WorkbenchScenarioId } from "../support/workbench-scenarios";
 
 const browserDiagnostics = new WeakMap<Page, string[]>();
 
@@ -151,6 +151,20 @@ test("Workbench keeps selected Evidence, roving focus, and distinct COMMAND proj
 
 test("Workbench promotes distinct COMMAND projections and restores the investigation", async ({ page }, testInfo) => {
   await openScenario(page, "command-projection-matching", { width: 900, height: 700 }, "dark");
+  const contextSummary = page.getByRole("region", { name: "COMMAND projection summary" });
+  await expect(contextSummary.getByLabel("Observed Server COMMAND State")).toContainText(
+    "Captured Server Updates only"
+  );
+  await expect(contextSummary.getByLabel("Local Effective COMMAND State")).toContainText(
+    "Server Updates plus successfully delivered Local Injected Updates"
+  );
+  await expect(contextSummary).toContainText("Observed Server COMMAND State");
+  await expect(contextSummary).toContainText("Captured Server Updates only");
+  await expect(contextSummary).toContainText("Local Effective COMMAND State");
+  await expect(contextSummary).toContainText("Server Updates plus successfully delivered Local Injected Updates");
+  await expect(contextSummary).toContainText("Matching projections");
+  await expect(contextSummary.locator("li")).toHaveCount(0);
+  await expect(contextSummary).toContainText("Neither projection is Authoritative COMMAND State.");
   const compare = page.getByRole("button", { name: "Compare COMMAND projections" });
   await compare.focus();
   await page.keyboard.press("Enter");
@@ -183,7 +197,8 @@ test("Workbench promotes distinct COMMAND projections and restores the investiga
   expect(compactColumns[1]?.top).toBeGreaterThan(compactColumns[0]?.top ?? 0);
   expect(compactColumns.every(({ width }) => width > 0)).toBe(true);
   await attachNamedScenarioScreenshot(page, testInfo, "command-projection-compact-light");
-  await compactComparison.getByRole("button", { name: "Reveal Evidence" }).focus();
+  await expect(compactComparison.getByRole("button", { name: "Reveal Evidence" })).toHaveCount(0);
+  await compactComparison.getByRole("button", { name: "Back to Evidence" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toBeFocused();
 
@@ -207,12 +222,12 @@ test("Workbench promotes distinct COMMAND projections and restores the investiga
 test("Workbench restores the Evidence anchor after COMMAND projection comparison", async ({ page }, testInfo) => {
   await openScenario(page, "frozen-high-volume", { width: 900, height: 700 }, "dark");
   await page.getByRole("button", { name: "Filter" }).click();
-  await page.getByLabel("Filter Evidence").fill("high-volume");
+  await page.getByLabel("Filter Evidence").fill("retained-evidence-event");
   await page.getByRole("button", { name: "Apply Filter" }).click();
-  await expect(page.getByText("Filter: high-volume", { exact: true })).toBeVisible();
+  await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
 
   const grid = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
-  const focused = page.locator('[data-evidence-id="high-volume-90"]');
+  const focused = page.locator(`[data-evidence-id="${highVolumeEventId(3_970)}"]`);
   await focused.focus();
   await expect(focused).toBeFocused();
   await grid.hover();
@@ -224,7 +239,7 @@ test("Workbench restores the Evidence anchor after COMMAND projection comparison
   await page.getByRole("button", { name: "Back to Evidence" }).click();
 
   await expect.poll(() => grid.evaluate((ledger) => ledger.scrollTop)).toBe(beforeScrollTop);
-  await expect(page.getByText("Filter: high-volume", { exact: true })).toBeVisible();
+  await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
   await expect(focused).toHaveAttribute("aria-selected", "true");
   await expect(focused).toBeFocused();
 
@@ -244,6 +259,10 @@ test("Workbench explains Local-only COMMAND projection differences without chang
   const originatingEvidence = page.locator('[data-evidence-id="event-5"]');
   await expect(originatingEvidence).toHaveAttribute("aria-selected", "true");
   await expect(page.locator(".workbench-react__evidence-row").filter({ hasText: "LOCAL" })).not.toHaveCount(0);
+  const divergentSummary = page.getByRole("region", { name: "COMMAND projection summary" });
+  await expect(divergentSummary).toContainText("Projections differ");
+  await expect(divergentSummary).toContainText("successful Local Injected Update");
+  await expect(divergentSummary.getByRole("button", { name: "Reveal supporting Evidence" })).toBeVisible();
   await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
 
   const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
@@ -272,6 +291,29 @@ test("Workbench explains Local-only COMMAND projection differences without chang
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench omits false supporting Evidence routes when Local Evidence retention fails", async ({ page }, testInfo) => {
+  await openScenario(page, "command-projection-retention-failure", { width: 1440, height: 900 }, "dark");
+  const draft = page.getByRole("region", { name: "Local Injection Draft" });
+  await expect(draft.getByRole("heading", { name: "DELIVERED LOCALLY" })).toBeVisible();
+  await draft.getByRole("button", { name: "Finish Local Injection" }).click();
+
+  const unrelatedPriorLocal = page.locator('[data-evidence-id="retained-prior-local-evidence"]');
+  await expect(unrelatedPriorLocal).toBeVisible();
+  const summary = page.getByRole("region", { name: "COMMAND projection summary" });
+  await expect(summary).toContainText("Projections differ");
+  await expect(summary.getByRole("button", { name: "Reveal supporting Evidence" })).toHaveCount(0);
+
+  await summary.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
+  await expect(comparison.getByText("Why different?", { exact: true })).toBeVisible();
+  await expect(comparison.getByRole("button", { name: "Reveal Evidence" })).toHaveCount(0);
+  await comparison.getByRole("button", { name: "Back to Evidence" }).click();
+  await expect(unrelatedPriorLocal).toHaveAttribute("aria-selected", "false");
+
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
 });
 
 test("Workbench presents unavailable COMMAND projections truthfully", async ({ page }, testInfo) => {
@@ -384,7 +426,7 @@ test("Workbench keeps low-frequency session controls and scoped export deliberat
   await page.getByRole("button", { name: "More actions" }).click();
   await expect(page.getByRole("heading", { name: "Session operations" })).toBeVisible();
   await page.getByRole("button", { name: "Clear retained Evidence…" }).click();
-  await expect(page.getByText(/Clear \d+ retained events\?/)).toBeVisible();
+  await expect(page.getByText(/Clear all \d+ retained Evidence events for this DevTools session\?/)).toBeVisible();
   await page.getByRole("button", { name: "Keep Evidence" }).click();
 
   await page.getByRole("button", { name: "Export Scope…" }).click();
@@ -399,6 +441,81 @@ test("Workbench keeps low-frequency session controls and scoped export deliberat
   await attachScenarioScreenshot(page, testInfo);
 });
 
+test("Workbench keeps More actions compact and returns to the exact prior high-volume investigation", async ({ page }, testInfo) => {
+  await openScenario(page, "frozen-high-volume", { width: 900, height: 700 }, "light");
+  const selectedIdentity = highVolumeEventId(3_970);
+  const grid = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
+  await page.getByRole("button", { name: "Filter", exact: true }).click();
+  await page.getByLabel("Filter Evidence").fill("retained-evidence-event");
+  await page.getByRole("button", { name: "Apply Filter" }).click();
+  await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
+  await grid.hover();
+  await page.mouse.wheel(0, 260);
+  const beforeScrollTop = await grid.evaluate((element) => element.scrollTop);
+  expect(beforeScrollTop).toBeGreaterThan(0);
+  const priorHeading = page.getByRole("complementary", { name: "Context" }).getByRole("heading", { name: new RegExp(selectedIdentity) });
+  await expect(priorHeading).toBeVisible();
+
+  const more = page.getByRole("button", { name: "More actions" });
+  await more.focus();
+  await page.keyboard.press("Enter");
+  const operations = page.getByRole("region", { name: "Session operations" });
+  await expect(operations).toContainText("current DevTools session history");
+  await expect(operations).toContainText("4,000 retained");
+  await expect(operations).toContainText("4,000 captured");
+  await expect(operations).toContainText("60 currently shown");
+  const clear = operations.getByRole("button", { name: "Clear retained Evidence…" });
+  await expect(clear).toBeVisible();
+  await clear.click();
+  await expect(operations).toContainText("Clear all 4,000 retained Evidence events for this DevTools session?");
+  await operations.getByRole("button", { name: "Keep Evidence" }).click();
+
+  const operationsLayout = await operations.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const sections = Array.from(element.children).filter((child) => child instanceof HTMLElement && child.tagName === "SECTION") as HTMLElement[];
+    const last = sections.at(-1)?.getBoundingClientRect();
+    return {
+      lastBottom: last?.bottom ?? rect.top,
+      containerBottom: rect.bottom,
+      sectionHeights: sections.map((section) => section.getBoundingClientRect().height)
+    };
+  });
+  expect(operationsLayout.lastBottom).toBeLessThanOrEqual(operationsLayout.containerBottom);
+  expect(Math.max(...operationsLayout.sectionHeights)).toBeLessThan(220);
+
+  await page.getByRole("button", { name: "Back to prior investigation" }).click();
+  await expect(more).toBeFocused();
+  await expect(priorHeading).toBeVisible();
+  await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
+  await expect(page.locator(`[data-evidence-id="${selectedIdentity}"]`)).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBe(beforeScrollTop);
+  await expect(page.getByText(/View FROZEN/)).toBeVisible();
+
+  for (const viewport of [
+    { width: 563, height: 700 },
+    { width: 900, height: 320 },
+    { width: 1440, height: 900 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(more).toBeVisible();
+    await more.focus();
+    await page.keyboard.press("Enter");
+    const back = page.getByRole("button", { name: "Back to prior investigation" });
+    await expect(back).toBeVisible();
+    if (viewport.width === 563) {
+      const compactTheme = page.getByLabel("Panel theme");
+      await expect(compactTheme).toBeVisible();
+      await compactTheme.selectOption("dark");
+      await expect(page.locator(".workbench-react")).toHaveAttribute("data-theme", "dark");
+      await attachNamedScenarioScreenshot(page, testInfo, "compact-more-actions-theme-route");
+    }
+    await back.click();
+    await expect(more).toBeFocused();
+  }
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
 test("Workbench keeps a compact Frozen high-volume investigation stable and restores Context", async ({
   page
 }, testInfo) => {
@@ -410,7 +527,7 @@ test("Workbench keeps a compact Frozen high-volume investigation stable and rest
   await expect(page.getByText(/View FROZEN .*30 newer/)).toBeVisible();
   await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
 
-  const selectedRow = page.locator('[data-evidence-id="high-volume-90"]');
+  const selectedRow = page.locator(`[data-evidence-id="${highVolumeEventId(3_970)}"]`);
   await expect(selectedRow).toHaveAttribute("aria-selected", "true");
   await selectedRow.focus();
   await page.getByRole("button", { name: "Open Context" }).click();
@@ -426,11 +543,109 @@ test("Workbench keeps a compact Frozen high-volume investigation stable and rest
   await attachScenarioScreenshot(page, testInfo);
 });
 
+test("Workbench finds off-window matches across all retained Evidence without changing the investigation", async ({ page }, testInfo) => {
+  await openScenario(page, "frozen-high-volume", { width: 900, height: 700 }, "dark");
+  const shell = page.locator(".workbench-react");
+  const operating = page.locator(".workbench-react__operating");
+  const selectedIdentity = highVolumeEventId(3_970);
+  await expect(page.getByText(/60 shown \/ 4,000/)).toBeVisible();
+  await expect(page.getByText(/View FROZEN .*30 newer/)).toBeVisible();
+  await expect(operating.getByRole("button", { name: "Find", exact: true })).toBeVisible();
+  await expect(operating.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
+
+  const find = operating.getByRole("button", { name: "Find", exact: true });
+  await find.focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("textbox", { name: "Find in ordered Evidence" }).fill("complete-retained-find-anchor");
+  await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("1 of 3 matches");
+  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(5)}"]`)).toHaveAttribute("data-find-current", "true");
+  await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
+
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(2_050)}"]`)).toHaveAttribute("data-find-current", "true");
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.locator(`[data-evidence-id="${highVolumeEventId(3_995)}"]`)).toHaveAttribute("data-find-current", "true");
+  await expect(page.getByText(/View FROZEN/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: new RegExp(selectedIdentity) })).toBeVisible();
+
+  await page.getByRole("button", { name: "Close Find" }).click();
+  await expect(find).toBeFocused();
+  await expect(page.locator(`[data-evidence-id="${selectedIdentity}"]`)).toHaveAttribute("aria-selected", "true");
+  await expect(shell).toHaveAttribute("data-geometry", "normal");
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
+test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked geometry", async ({ page }, testInfo) => {
+  const selectedIdentity = highVolumeEventId(3_970);
+  const longItem = "portfolio/orders/north-america/enterprise-customer-primary-book";
+  const longClient = "lightstreamer-client-for-global-orders-monitoring-workspace";
+  const longSession = "session-2026-08-05-primary-production-orders-command-stream";
+  const longSubscription = "subscription-orders-command-all-regions-with-production-identities";
+  const longKey = "customer-order-command-key-with-long-production-identity-9";
+  await openScenario(page, "frozen-high-volume", { width: 563, height: 700 }, "light");
+  const shell = page.locator(".workbench-react");
+  const ledger = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
+  const selected = page.locator(`[data-evidence-id="${selectedIdentity}"]`);
+  await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
+  await expect(selected).toHaveAttribute("title", new RegExp(selectedIdentity));
+  await expect(selected.locator('[role="gridcell"]').nth(4)).toHaveAttribute("title", longItem);
+  const compactHeights = await page.locator(".workbench-react__evidence-row").evaluateAll((rows) =>
+    [...new Set(rows.map((row) => row.getBoundingClientRect().height))]
+  );
+  expect(compactHeights).toHaveLength(1);
+  expect(compactHeights[0]).toBeGreaterThanOrEqual(48);
+  expect(compactHeights[0]).toBeLessThanOrEqual(54);
+
+  const operatingTop = await page.locator(".workbench-react__operating").evaluate((element) => element.getBoundingClientRect().top);
+  await ledger.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  expect(await page.locator(".workbench-react__operating").evaluate((element) => element.getBoundingClientRect().top)).toBe(operatingTop);
+  const shellScroll = await shell.evaluate((element) => ({ client: element.clientHeight, scroll: element.scrollHeight }));
+  expect(shellScroll.scroll).toBe(shellScroll.client);
+
+  for (const viewport of [
+    { width: 900, height: 700, geometry: "normal" },
+    { width: 900, height: 320, geometry: "shallow" },
+    { width: 1440, height: 900, geometry: "wide" }
+  ] as const) {
+    await page.setViewportSize(viewport);
+    await expect(shell).toHaveAttribute("data-geometry", viewport.geometry);
+    await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
+    if (viewport.geometry === "normal" || viewport.geometry === "wide") {
+      const columnWidths = await selected.locator('[role="gridcell"]').evaluateAll((cells) =>
+        cells.map((cell) => cell.getBoundingClientRect().width)
+      );
+      expect(columnWidths).toHaveLength(6);
+      expect(columnWidths.every((width) => width >= 64)).toBe(true);
+    }
+    await expectShellFits(page);
+  }
+
+  await page.setViewportSize({ width: 900, height: 700 });
+  await selected.focus();
+  await page.getByRole("button", { name: "Open Context" }).click();
+  const context = page.getByRole("complementary", { name: "Context" });
+  await expect(context.getByRole("heading", { name: new RegExp(selectedIdentity) })).toBeVisible();
+  await expect(context.getByText(longClient, { exact: true })).toBeVisible();
+  await expect(context.getByText(longSession, { exact: true })).toBeVisible();
+  await expect(context.getByText(longSubscription, { exact: true })).toBeVisible();
+  await expect(context.getByText(longItem, { exact: true })).toBeVisible();
+  await expect(context.getByText(longKey, { exact: true })).toBeVisible();
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
 test("Workbench keeps Find reachable and restorable in compact geometry", async ({ page }, testInfo) => {
   await openScenario(page, "filter-find", { width: 563, height: 700 }, "dark");
   const find = page.getByRole("button", { name: "Find", exact: true });
+  const filter = page.getByRole("button", { name: "Filter", exact: true });
   await expect(find).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "Workbench theme" })).toBeVisible();
+  await expect(filter).toBeVisible();
+  await filter.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Filter Evidence")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(filter).toBeFocused();
+  await expect(page.getByText("Filter: scenario-event", { exact: true })).toBeVisible();
   await find.focus();
   await page.keyboard.press(process.platform === "darwin" ? "Meta+f" : "Control+f");
   await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toBeVisible();
@@ -438,6 +653,12 @@ test("Workbench keeps Find reachable and restorable in compact geometry", async 
   await expect(page.getByRole("textbox", { name: "Find in ordered Evidence" })).toHaveValue("");
   await page.keyboard.press("Escape");
   await expect(find).toBeFocused();
+
+  for (const viewport of [{ width: 900, height: 320 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    await expect(page.getByRole("button", { name: "Find", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
+  }
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -617,15 +838,15 @@ test("Workbench preserves structural selection contrast in forced colors", async
 
 test("Workbench navigates retained Evidence windows without losing keyboard boundary focus", async ({ page }, testInfo) => {
   await openScenario(page, "frozen-high-volume", { width: 900, height: 700 }, "dark");
-  const initial = page.locator('[data-evidence-id="high-volume-90"]');
+  const initial = page.locator(`[data-evidence-id="${highVolumeEventId(3_970)}"]`);
   await initial.focus();
   await page.keyboard.press(process.platform === "darwin" ? "Meta+Home" : "Control+Home");
-  const oldest = page.locator('[data-evidence-id="high-volume-1"]');
+  const oldest = page.locator(`[data-evidence-id="${highVolumeEventId(1)}"]`);
   await expect(oldest).toHaveAttribute("aria-selected", "true");
   await expect(oldest).toBeFocused();
 
   await page.keyboard.press(process.platform === "darwin" ? "Meta+End" : "Control+End");
-  const newest = page.locator('[data-evidence-id="high-volume-120"]');
+  const newest = page.locator(`[data-evidence-id="${highVolumeEventId(4_000)}"]`);
   await expect(newest).toHaveAttribute("aria-selected", "true");
   await expect(newest).toBeFocused();
   const evidenceGrid = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });

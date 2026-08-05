@@ -160,7 +160,7 @@
 }
 .workbench-react__operating > strong, .workbench-react__operating > span { margin-right: 12px; border-right: 1px solid var(--wb-border); padding-right: 12px; }
 .workbench-react__operating [data-condition="limited"], .workbench-react__operating [data-condition="unavailable"] { color: var(--wb-warning); }
-.workbench-react__operating-actions { display: flex; gap: 5px; margin-left: auto; font-family: inherit; }
+.workbench-react__operating-actions { display: flex; min-width: 0; align-items: center; gap: 5px; margin-left: auto; font-family: inherit; }
 .workbench-react__scope-strip {
   display: flex;
   min-height: 31px;
@@ -238,6 +238,7 @@
 .workbench-react__evidence-row[aria-selected="true"] { border-left-color: var(--wb-selection-marker); background: var(--wb-selection); }
 .workbench-react__evidence-row[data-find-current="true"] { box-shadow: inset 0 0 0 1px var(--wb-info); }
 .workbench-react__evidence-row span:first-child, .workbench-react__evidence-row span:nth-child(5) { display: flex; align-items: center; gap: 4px; }
+.workbench-react__evidence-row time { flex: 0 0 auto; }
 .workbench-react__evidence-row small { overflow: hidden; color: var(--wb-subtle); font-size: 9px; line-height: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .workbench-react__find-match { color: var(--wb-info) !important; }
 .workbench-react__empty { display: grid; place-content: center; flex: 1 1 auto; gap: 7px; color: var(--wb-muted); padding: 30px; text-align: center; }
@@ -249,8 +250,9 @@
 .workbench-react__context-fields dt { color: var(--wb-muted); }
 .workbench-react__context-fields dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .workbench-react__context-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.workbench-react__operations, .workbench-react__export { display: grid; gap: 14px; }
+.workbench-react__operations, .workbench-react__export { display: grid; align-content: start; gap: 14px; }
 .workbench-react__operations > section, .workbench-react__export fieldset { display: grid; gap: 7px; margin: 0; border: 1px solid var(--wb-border); padding: 9px; }
+.workbench-react__operations > .workbench-react__operations-danger { border-color: var(--wb-warning); background: var(--wb-warning-soft); }
 .workbench-react__operations h3 { margin: 0; font-size: 12px; }
 .workbench-react__operations p, .workbench-react__export p { margin: 0; color: var(--wb-muted); }
 .workbench-react__operations section > div, .workbench-react__export > label { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -407,11 +409,15 @@
 .workbench-react[data-geometry="compact"] .workbench-react__local-parked { grid-template-columns: minmax(0, 1fr) auto; }
 .workbench-react[data-geometry="compact"] .workbench-react__local-parked > span { grid-column: 1 / -1; grid-row: 2; }
 .workbench-react__diagnostic span { color: var(--wb-text); }
-.workbench-react__projection { margin-top: 12px; border-top: 1px solid var(--wb-border); padding-top: 9px; }
-.workbench-react__projection h3 { margin: 0 0 5px; font-size: 12px; }
-.workbench-react__projection p { margin: 0 0 6px; color: var(--wb-muted); }
-.workbench-react__projection ul { display: grid; gap: 4px; margin: 0; padding-left: 18px; }
+.workbench-react__projection-summary { display: grid; gap: 7px; margin: 12px 0; border-top: 1px solid var(--wb-border); padding-top: 9px; }
+.workbench-react__projection-bases { display: grid; gap: 5px; }
+.workbench-react__projection-bases > section { border-left: 3px solid var(--wb-info); background: var(--wb-raised); padding: 6px 8px; }
+.workbench-react__projection-bases h3 { margin: 0; font-size: 12px; }
+.workbench-react__projection-bases p { margin: 2px 0 0; color: var(--wb-muted); font-size: 11px; }
+.workbench-react__projection-summary-state { display: grid; gap: 2px; margin: 0; }
+.workbench-react__projection-summary-state span { color: var(--wb-muted); }
 .workbench-react__projection-limit { color: var(--wb-muted); }
+.workbench-react__projection-summary > .workbench-react__projection-limit { margin: 0; }
 .workbench-react__projection-document { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
 .workbench-react__projection-document > .workbench-react__pane-header h1 { margin: 2px 0 0; font-size: 14px; }
 .workbench-react__projection-document > footer { flex: 0 0 auto; border-top: 1px solid var(--wb-border); background: var(--wb-raised); color: var(--wb-muted); padding: 7px 10px; }
@@ -490,12 +496,8 @@
 .workbench-react[data-geometry="compact"][data-compact-surface="context"] .workbench-react__evidence { display: none; }
 .workbench-react[data-geometry="compact"] .workbench-react__operating > strong,
 .workbench-react[data-geometry="compact"] .workbench-react__operating > span { min-width: 0; margin-right: 5px; overflow: hidden; padding-right: 6px; text-overflow: ellipsis; }
-.workbench-react[data-geometry="compact"] .workbench-react__operating-actions > :not(button) { display: none; }
-.workbench-react[data-geometry="compact"] .workbench-react__operating-actions button:not(:first-child):not(:last-child) { display: none; }
 .workbench-react[data-geometry="compact"] .workbench-react__operating-actions > label[for="workbench-theme"],
-.workbench-react[data-geometry="compact"] .workbench-react__operating-actions > select#workbench-theme { display: inline-block; }
-.workbench-react[data-geometry="compact"] .workbench-react__operating-actions > label[for="workbench-theme"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.workbench-react[data-geometry="compact"] .workbench-react__operating-actions > select#workbench-theme { max-width: 72px; }
+.workbench-react[data-geometry="compact"] .workbench-react__operating-actions > select#workbench-theme { display: none; }
 .workbench-react[data-geometry="compact"] .workbench-react__operating-actions > .workbench-react__find { position: absolute; z-index: 5; top: 32px; right: 0; display: flex; max-width: 100%; border: 1px solid var(--wb-border); background: var(--wb-raised); padding: 5px; }
 .workbench-react[data-geometry="compact"] .workbench-react__compact-back { display: inline-block; }
 .workbench-react[data-geometry="compact"] .workbench-react__ledger-header { display: none; }

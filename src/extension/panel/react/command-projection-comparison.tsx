@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type JSX } from "react";
+import { useLayoutEffect, useRef, type JSX, type RefObject } from "react";
 
 import { type WorkbenchCommandProjection, type WorkbenchSnapshot } from "../workbench-runtime";
 
@@ -6,7 +6,16 @@ type CommandProjectionComparisonProps = Readonly<{
   scope: string;
   capture: WorkbenchSnapshot["capture"];
   projections: WorkbenchSnapshot["commandProjections"];
+  hasSupportingLocalEvidence: boolean;
   onBack(): void;
+  onRevealEvidence(): void;
+}>;
+
+type CommandProjectionContextSummaryProps = Readonly<{
+  projections: WorkbenchSnapshot["commandProjections"];
+  hasSupportingLocalEvidence: boolean;
+  compareButtonRef: RefObject<HTMLButtonElement | null>;
+  onCompare(): void;
   onRevealEvidence(): void;
 }>;
 
@@ -34,11 +43,51 @@ function ProjectionColumn({ projection }: Readonly<{ projection: WorkbenchComman
   </section>;
 }
 
+/** Compact Context treatment that keeps both projection contracts without duplicating matching rows. */
+export function CommandProjectionContextSummary({
+  projections,
+  hasSupportingLocalEvidence,
+  compareButtonRef,
+  onCompare,
+  onRevealEvidence
+}: CommandProjectionContextSummaryProps): JSX.Element {
+  const matching = sameRows(projections.observed, projections.localEffective);
+  return <section className="workbench-react__projection-summary" aria-label="COMMAND projection summary">
+    <div className="workbench-react__projection-bases">
+      <section aria-label={projections.observed.name}>
+        <h3>{projections.observed.name}</h3>
+        <p>{projections.observed.basis}</p>
+      </section>
+      <section aria-label={projections.localEffective.name}>
+        <h3>{projections.localEffective.name}</h3>
+        <p>{projections.localEffective.basis}</p>
+      </section>
+    </div>
+    <p className="workbench-react__projection-summary-state">
+      <strong>{matching ? "Matching projections" : "Projections differ"}</strong>
+      <span>{matching
+        ? "Both named projections currently contain the same state; their evidence bases remain distinct."
+        : hasSupportingLocalEvidence
+          ? "A successful Local Injected Update contributes to Local Effective COMMAND State only."
+          : "The available captured evidence produces different projection state."
+      }</span>
+    </p>
+    <p className="workbench-react__projection-limit">{projections.authoritativeLimit}</p>
+    <div className="workbench-react__context-actions">
+      <button ref={compareButtonRef} type="button" onClick={onCompare}>Compare COMMAND projections</button>
+      {!matching && hasSupportingLocalEvidence
+        ? <button type="button" onClick={onRevealEvidence}>Reveal supporting Evidence</button>
+        : null}
+    </div>
+  </section>;
+}
+
 /** Promoted, scope-preserving comparison of the two COMMAND projections. */
 export function CommandProjectionComparison({
   scope,
   capture,
   projections,
+  hasSupportingLocalEvidence,
   onBack,
   onRevealEvidence
 }: CommandProjectionComparisonProps): JSX.Element {
@@ -73,7 +122,9 @@ export function CommandProjectionComparison({
         ? "Both projections contain the same contributing state for the current Scope."
         : "Successful Local Injected Updates advance Local Effective COMMAND State only; Observed Server COMMAND State remains Server-only."}
       </span>
-      <button type="button" onClick={onRevealEvidence}>Reveal Evidence</button>
+      {hasSupportingLocalEvidence
+        ? <button type="button" onClick={onRevealEvidence}>Reveal Evidence</button>
+        : null}
     </section>
     <footer>{projections.authoritativeLimit}</footer>
   </section>;

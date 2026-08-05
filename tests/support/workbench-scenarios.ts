@@ -23,6 +23,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "command-projection-matching",
   "command-projection-before-local",
   "command-projection-local-difference",
+  "command-projection-retention-failure",
   "command-projection-unavailable",
   "recovering",
   "retired-scope",
@@ -66,6 +67,7 @@ export type WorkbenchScenario = Readonly<{
   openRawEvidence?: boolean;
   filterQuery?: string;
   findQuery?: string;
+  failLocalEvidenceRetention?: boolean;
   localInjection?: Readonly<{
     entry: "selection" | "scope";
     rawText?: string;
@@ -83,6 +85,10 @@ export type WorkbenchScenario = Readonly<{
 
 export function isWorkbenchScenarioId(value: string): value is WorkbenchScenarioId {
   return (WORKBENCH_SCENARIO_IDS as readonly string[]).includes(value);
+}
+
+export function highVolumeEventId(sequence: number): string {
+  return `retained-evidence-event-${String(sequence).padStart(4, "0")}-from-orders-command-subscription-with-long-production-identity`;
 }
 /**
  * The browser contract deliberately reuses the canonical COMMAND capture
@@ -109,9 +115,9 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
     case "frozen-high-volume":
       return {
         id,
-        initialEvents: highVolumeEvents(1, 90),
-        laterEvents: highVolumeEvents(91, 30),
-        selectedEventId: "high-volume-90",
+        initialEvents: highVolumeEvents(1, 3_970),
+        laterEvents: highVolumeEvents(3_971, 30),
+        selectedEventId: highVolumeEventId(3_970),
         captureStatus: "capturing",
         freezeBeforeLaterEvents: true
       };
@@ -190,6 +196,41 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
           executorOutcome: "delivered"
         }
       };
+    case "command-projection-retention-failure": {
+      const priorLocalSource = topology.capturedEvents.find((event) => event.kind === "item-update");
+      if (!priorLocalSource?.update) {
+        throw new Error("The topology scenario must include an Item Update.");
+      }
+      return {
+        ...localInjectionCapturedScenario(id),
+        initialEvents: [{
+          ...priorLocalSource,
+          id: "retained-prior-local-evidence",
+          timestamp: priorLocalSource.timestamp - 1,
+          source: "synthetic",
+          synthetic: true,
+          update: {
+            ...priorLocalSource.update,
+            command: "UPDATE",
+            fields: { command: "UPDATE", key: "small-alpha", value: "7" },
+            changedFields: { value: "7" }
+          }
+        }],
+        failLocalEvidenceRetention: true,
+        localInjection: {
+          entry: "selection",
+          rawText: JSON.stringify({
+            command: "UPDATE",
+            key: "small-alpha",
+            isSnapshot: false,
+            fields: { command: "UPDATE", key: "small-alpha", value: "9" }
+          }, null, 2),
+          review: true,
+          execute: true,
+          executorOutcome: "delivered"
+        }
+      };
+    }
     case "command-projection-before-local":
       return localInjectionCapturedScenario(id);
     case "command-projection-unavailable":
@@ -363,17 +404,51 @@ function highVolumeEvents(first: number, count: number): readonly LightstreamerE
   }
   return Array.from({ length: count }, (_, offset) => {
     const sequence = first + offset;
+    const findAnchor = sequence === 5 || sequence === 2_050 || sequence === 3_995;
     return {
       ...source,
-      id: `high-volume-${sequence}`,
+      id: highVolumeEventId(sequence),
       timestamp: source.timestamp + sequence,
-      item: { ...source.item, name: `orders-${sequence % 7}` },
+      client: {
+        ...source.client,
+        id: "lightstreamer-client-for-global-orders-monitoring-workspace",
+        sessionId: "session-2026-08-05-primary-production-orders-command-stream"
+      },
+      subscription: {
+        ...source.subscription,
+        id: "subscription-orders-command-all-regions-with-production-identities",
+        items: ["portfolio/orders/north-america/enterprise-customer-primary-book"]
+      },
+      listener: {
+        ...source.listener,
+        id: "listener-workbench-high-volume-orders-command-investigation"
+      },
+      item: {
+        ...source.item,
+        name: "portfolio/orders/north-america/enterprise-customer-primary-book"
+      },
       update: {
         ...source.update,
-        fields: { ...source.update?.fields, qty: String(sequence), sequence: String(sequence) },
-        changedFields: { qty: String(sequence), sequence: String(sequence) }
+        key: `customer-order-command-key-with-long-production-identity-${sequence % 17}`,
+        fields: {
+          ...source.update?.fields,
+          key: `customer-order-command-key-with-long-production-identity-${sequence % 17}`,
+          quantity_for_primary_execution_venue: String(sequence),
+          retained_sequence_number: String(sequence),
+          ...(findAnchor ? { complete_find_anchor: "complete-retained-find-anchor" } : {})
+        },
+        changedFields: {
+          quantity_for_primary_execution_venue: String(sequence),
+          retained_sequence_number: String(sequence),
+          ...(findAnchor ? { complete_find_anchor: "complete-retained-find-anchor" } : {})
+        }
       },
-      raw: { ...source.raw, scenario: "react-frozen-high-volume", sequence }
+      raw: {
+        ...source.raw,
+        scenario: "react-frozen-high-volume-long-identities",
+        sequence,
+        ...(findAnchor ? { findAnchor: "complete-retained-find-anchor" } : {})
+      }
     };
   });
 }

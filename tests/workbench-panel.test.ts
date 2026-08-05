@@ -310,6 +310,57 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
+  it("does not offer unrelated Local Evidence when a divergent projection has no retained contributor", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot({
+      commandProjections: {
+        observed: {
+          name: "Observed Server COMMAND State",
+          basis: "Captured Server Updates only",
+          rows: [["orders / alpha", "command=ADD, qty=1"]]
+        },
+        localEffective: {
+          name: "Local Effective COMMAND State",
+          basis: "Server Updates plus successfully delivered Local Injected Updates",
+          rows: [["orders / alpha", "command=UPDATE, qty=17"]]
+        },
+        authoritativeLimit: "Neither projection is Authoritative COMMAND State."
+      }
+    });
+    const runtime = createTestRuntime({
+      ...base,
+      evidence: {
+        ...base.evidence,
+        events: base.evidence.events.map((event, index) =>
+          index === 0 ? { ...event, source: "LOCAL" as const } : event
+        )
+      }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    expect(rootElement.textContent).toContain("Projections differ");
+    expect(
+      Array.from(rootElement.querySelectorAll("button")).some(
+        (button) => button.textContent === "Reveal supporting Evidence"
+      )
+    ).toBe(false);
+
+    await act(async () => runtime.setSnapshot({
+      ...runtime.getSnapshot(),
+      contextId: "command-projections"
+    }));
+    expect(rootElement.querySelector('[aria-label="COMMAND projection comparison"]')).not.toBeNull();
+    expect(
+      Array.from(rootElement.querySelectorAll("button")).some(
+        (button) => button.textContent === "Reveal Evidence"
+      )
+    ).toBe(false);
+
+    await act(async () => root.unmount());
+  });
+
   it("keeps captured Evidence ordered, selected, and distinct from keyboard focus", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");

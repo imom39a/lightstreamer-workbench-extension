@@ -157,7 +157,17 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       expect(reactProof.evidence).toContain("SERVER");
       expect(reactProof.evidence).toContain("ADD");
       expect(reactProof.context).toContain("fixture-message.TICKER");
-      expect(reactProof.observed).toContain("fixture-message.TICKER");
+      expect(reactProof.observed).toContain("Captured Server Updates only");
+      expect(reactProof.observed).not.toContain("fixture-message.TICKER");
+      await pressContextPanelButton(panelCdp, "Compare COMMAND projections");
+      await waitForCondition(
+        panelCdp,
+        `document.querySelector('[aria-label="COMMAND projection comparison"]') &&
+          document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
+            ?.includes("fixture-message.TICKER")`,
+        "the promoted comparison to expose the complete observed COMMAND row"
+      );
+      await clickPanelButton(panelCdp, "Back to Evidence");
 
       const editedMessage = "Edited by Workbench Local Injection.";
       const localInjectionDocument = {
@@ -278,29 +288,39 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
           [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
             .some((row) => [...row.querySelectorAll('[role="gridcell"]')]
               .some((cell) => cell.textContent?.trim() === "LOCAL")) &&
-          document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
+          document.querySelector('[aria-label="COMMAND projection summary"]')?.textContent
+            ?.includes("Projections differ")
+        `,
+        "React Evidence and the concise COMMAND summary to reflect the delivered Local Injection"
+      );
+      const localEvidenceProof = await evaluateByValue<string>(
+        panelCdp,
+        `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+          .find((row) => [...row.querySelectorAll('[role="gridcell"]')]
+            .some((cell) => cell.textContent?.trim() === "LOCAL"))?.textContent ?? ""`
+      );
+      expect(localEvidenceProof).toContain("LOCAL");
+      expect(localEvidenceProof).toContain("UPDATE");
+      await pressContextPanelButton(panelCdp, "Compare COMMAND projections");
+      await waitForCondition(
+        panelCdp,
+        `document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
             ?.includes("Attention - real Lightstreamer client.") &&
           document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent
-            ?.includes(${JSON.stringify(editedMessage)})
-        `,
-        "React Evidence and named COMMAND projections to reflect the delivered Local Injection"
+            ?.includes(${JSON.stringify(editedMessage)})`,
+        "the promoted comparison to expose the divergent COMMAND rows"
       );
-      const localProof = await evaluateByValue<{
-        localEvidence: string;
+      const projectionProof = await evaluateByValue<{
         observed: string;
         localEffective: string;
       }>(panelCdp, `({
-        localEvidence: [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-          .find((row) => [...row.querySelectorAll('[role="gridcell"]')]
-            .some((cell) => cell.textContent?.trim() === "LOCAL"))?.textContent ?? "",
         observed: document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent ?? "",
         localEffective: document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent ?? ""
       })`);
-      expect(localProof.localEvidence).toContain("LOCAL");
-      expect(localProof.localEvidence).toContain("UPDATE");
-      expect(localProof.observed).toContain("Attention - real Lightstreamer client.");
-      expect(localProof.observed).not.toContain(editedMessage);
-      expect(localProof.localEffective).toContain(editedMessage);
+      expect(projectionProof.observed).toContain("Attention - real Lightstreamer client.");
+      expect(projectionProof.observed).not.toContain(editedMessage);
+      expect(projectionProof.localEffective).toContain(editedMessage);
+      await clickPanelButton(panelCdp, "Back to Evidence");
 
       if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
         .find((candidate) => candidate.querySelector("span")?.textContent?.includes("scenario.mutate-reinject"))`)) {
@@ -377,14 +397,21 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
             .filter((row) => [...row.querySelectorAll('[role="gridcell"]')]
               .some((cell) => cell.textContent?.trim() === "LOCAL"));
           return localRows.length === 2 &&
-            document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
-              ?.includes("Attention - real Lightstreamer client.") &&
-            !document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
-              ?.includes(${JSON.stringify(authoredMessage)}) &&
-            document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent
-              ?.includes(${JSON.stringify(authoredMessage)});
+            document.querySelector('[aria-label="COMMAND projection summary"]')?.textContent
+              ?.includes("Projections differ");
         })()`,
-        "the authored Local Evidence and divergent COMMAND projections"
+        "the authored Local Evidence and concise divergent COMMAND summary"
+      );
+      await pressContextPanelButton(panelCdp, "Compare COMMAND projections");
+      await waitForCondition(
+        panelCdp,
+        `document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
+            ?.includes("Attention - real Lightstreamer client.") &&
+          !document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
+            ?.includes(${JSON.stringify(authoredMessage)}) &&
+          document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent
+            ?.includes(${JSON.stringify(authoredMessage)})`,
+        "the promoted comparison to expose the authored divergent COMMAND rows"
       );
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
   } catch (error) {
@@ -451,6 +478,16 @@ async function pressVisiblePanelButton(cdp: CdpClient, label: string): Promise<v
     nativeVirtualKeyCode: 13
   });
   await cdp.request("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+}
+
+async function pressContextPanelButton(cdp: CdpClient, label: string): Promise<void> {
+  const selector = `[...document.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && !candidate.disabled
+  )`;
+  if (!await isPanelElementVisible(cdp, selector)) {
+    await clickPanelButton(cdp, "Open Context");
+  }
+  await pressVisiblePanelButton(cdp, label);
 }
 
 async function setPanelViewport(

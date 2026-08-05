@@ -76,3 +76,53 @@ npm run test:ui:visual
 npm run test:ui:extension
 npm run fixture:test:browser
 ```
+
+## Field UX batch
+
+The `field-ux-01` through `field-ux-05` batch extended the maintained matrix
+to eight deterministic states. In addition to the four states above, the
+packet includes:
+
+- complete retained-Evidence Find — Dark, 900×700;
+- 4,000 long-identity Evidence events — Light, 563×700;
+- reversible More actions — Dark, 900×320;
+- matching ordinary COMMAND projection summary — Light, 1440×900.
+
+`npm run test:ui:visual` produced 24 reference, current, and diff artifacts.
+The committed visual gate contains 16 separately generated Darwin and pinned-
+Linux baselines. The first read-only visual comparison failed as expected:
+the four existing images reflected the intentional control-hierarchy and
+Context changes, and the four new field-UX states had no baseline. Deliberate
+platform-specific updates were then generated with `npm run test:ui:update`
+locally and in the pinned Playwright container. Normal comparison runs passed
+all 47 checks on both platforms. A final contributor-attribution correction
+deliberately removed the unsupported Reveal Evidence action from the matching
+comparison baseline; that single Darwin/Linux baseline pair was regenerated
+through the gated update commands and then passed normal comparison.
+
+An independent reviewer inspected every packet image, the manifest, and all
+16 platform baselines. The review passed with no material findings: retained
+Find remained bounded and legible, long identities truncated only in the
+ledger while their exact values remained visible in Context, Find and Filter
+retained a clear operating hierarchy, matching and divergent COMMAND
+projection meanings remained distinct and non-authoritative without duplicate
+tables, and More actions stayed compact with a visible return route and a
+separated destructive Clear operation. The reviewer found no clipping,
+overlap, horizontal shell overflow, hidden focus target, contrast problem, or
+platform-specific regression.
+
+The shipped DevTools-panel smoke passed, and the official Lightstreamer-client
+fixture passed its complete captured and source-free Local Injection journey in
+both 900×700 normal and 563×700 compact panel geometries. The release package
+audit also passed within the one-megabyte ZIP budget.
+
+Exact visual commands used for this batch:
+
+```text
+CI=1 npm run test:ui -- --grep "visual baseline"
+CI=1 npm run test:ui:update
+docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui:update'
+CI=1 npm run test:ui
+docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui'
+npm run test:ui:visual
+```

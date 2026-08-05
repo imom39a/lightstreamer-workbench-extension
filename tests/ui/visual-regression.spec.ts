@@ -7,7 +7,7 @@ type VisualCase = Readonly<{
   viewport: { width: number; height: number };
   theme: "dark" | "light";
   prototype: { variant: string; state: string; frame: string };
-  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" };
+  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -104,6 +104,23 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expectVisibleKeyboardTarget(page, compare);
       await page.keyboard.press("Enter");
       await expect(page.getByRole("region", { name: "COMMAND projection comparison" })).toBeVisible();
+      return;
+    }
+    case "retained-find": {
+      const find = page.getByRole("button", { name: "Find", exact: true });
+      await expectVisibleKeyboardTarget(page, find);
+      await page.keyboard.press("Enter");
+      await page.getByRole("textbox", { name: "Find in ordered Evidence" }).fill("complete-retained-find-anchor");
+      await expect(page.getByRole("search", { name: "Find in ordered Evidence" })).toContainText("1 of 3 matches");
+      await expect(page.locator('[data-find-current="true"]')).toBeVisible();
+      return;
+    }
+    case "more-actions": {
+      const more = page.getByRole("button", { name: "More actions" });
+      await expectVisibleKeyboardTarget(page, more);
+      await page.keyboard.press("Enter");
+      await expect(page.getByRole("region", { name: "Session operations" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Back to prior investigation" })).toBeVisible();
       return;
     }
   }

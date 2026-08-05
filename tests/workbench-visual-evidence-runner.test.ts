@@ -44,6 +44,34 @@ describe("Workbench visual-evidence runner", () => {
           theme: "light",
           prototype: { variant: "A", state: "command", frame: "wide" },
           production: { scenario: "command-projection-matching", setup: "command-comparison" }
+        },
+        {
+          id: "normal-retained-find-dark",
+          viewport: { width: 900, height: 700 },
+          theme: "dark",
+          prototype: { variant: "A", state: "frozen", frame: "normal" },
+          production: { scenario: "frozen-high-volume", setup: "retained-find" }
+        },
+        {
+          id: "compact-long-identities-light",
+          viewport: { width: 563, height: 700 },
+          theme: "light",
+          prototype: { variant: "A", state: "frozen", frame: "compact" },
+          production: { scenario: "frozen-high-volume", setup: "none" }
+        },
+        {
+          id: "shallow-more-actions-dark",
+          viewport: { width: 900, height: 320 },
+          theme: "dark",
+          prototype: { variant: "A", state: "selected", frame: "shallow" },
+          production: { scenario: "live-selected", setup: "more-actions" }
+        },
+        {
+          id: "wide-matching-summary-light",
+          viewport: { width: 1440, height: 900 },
+          theme: "light",
+          prototype: { variant: "A", state: "selected", frame: "wide" },
+          production: { scenario: "command-projection-matching", setup: "none" }
         }
       ]
     });

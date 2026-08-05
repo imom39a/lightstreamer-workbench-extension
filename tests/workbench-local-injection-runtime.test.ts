@@ -977,6 +977,26 @@ describe("WorkbenchRuntime Local Injection", () => {
 
   it("advances Local Effective COMMAND State once when delivered Evidence retention fails", async () => {
     const retainedHistory = historyWithCommandTarget();
+    retainedHistory.append(commandEvent("synthetic-prior-7", "item-update", {
+      source: "synthetic",
+      synthetic: true,
+      update: {
+        isSnapshot: false,
+        command: "UPDATE",
+        key: "order-1",
+        fields: { command: "UPDATE", key: "order-1", qty: 9 },
+        changedFields: { qty: 9 }
+      }
+    }));
+    retainedHistory.append(commandEvent("server-overwrite-8", "item-update", {
+      update: {
+        isSnapshot: false,
+        command: "UPDATE",
+        key: "order-1",
+        fields: { command: "UPDATE", key: "order-1", qty: 1 },
+        changedFields: { qty: 1 }
+      }
+    }));
     const retentionFailure = new Error("synthetic retention failed");
     const history: EventHistory = {
       ...retainedHistory,
@@ -1018,8 +1038,11 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
     expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=17");
+    expect(
+      runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId
+    ).toBeUndefined();
     const synthetic = await retainedHistory.queryEvents({ filters: { synthetic: true } }).toPromise();
-    expect(synthetic.total).toBe(0);
+    expect(synthetic.events.map(({ id }) => id)).toEqual(["synthetic-prior-7"]);
     runtime.dispose();
   });
 });
