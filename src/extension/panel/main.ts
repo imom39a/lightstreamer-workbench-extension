@@ -72,7 +72,6 @@ import {
 } from "../../core/topology-state";
 import {
   createDisabledAnalytics,
-  createGoogleAnalytics,
   eventCountBucket,
   type AnalyticsReplayOutcome,
   type AnalyticsReplaySurface,
@@ -81,6 +80,7 @@ import {
   type WorkbenchAnalyticsEvent
 } from "../analytics";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
+import { createBrowserPanelAnalytics } from "./panel-analytics";
 import { createThemeManager, type ThemePreference } from "./theme";
 import {
   createCommandSummaryRow,
@@ -8821,20 +8821,6 @@ function createSyntheticProvenance(event: LightstreamerEventEnvelope): Record<st
   };
 }
 
-function createPanelAnalytics(): WorkbenchAnalytics {
-  try {
-    return createGoogleAnalytics({
-      measurementId: import.meta.env.VITE_LSEW_GA_MEASUREMENT_ID ?? "",
-      apiSecret: import.meta.env.VITE_LSEW_GA_API_SECRET ?? "",
-      extensionVersion: chrome.runtime.getManifest().version,
-      storage: window.localStorage,
-      fetcher: globalThis.fetch.bind(globalThis)
-    });
-  } catch {
-    return createDisabledAnalytics();
-  }
-}
-
 async function bootPanel(): Promise<void> {
   const root = document.querySelector<HTMLElement>("#app");
   if (root) {
@@ -8852,7 +8838,7 @@ async function bootPanel(): Promise<void> {
     panel = renderPanel(root, undefined, {
       history,
       visible,
-      analytics: createPanelAnalytics()
+      analytics: createBrowserPanelAnalytics()
     });
     const bridge = connectPanelBridge({
       onStatusChange: panel.setStatus,

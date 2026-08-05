@@ -51,10 +51,12 @@ type EventMetaRecord = {
   captureSource: string | null;
   synthetic: number;
   clientId: string | null;
+  sessionId: string | null;
   subscriptionId: string | null;
   subscriptionMode: string | null;
   itemName: string | null;
   itemPosition: number | null;
+  listenerId: string | null;
   commandKey: string | null;
   commandValue: string | null;
   isSnapshot: number;
@@ -324,10 +326,12 @@ function createEventMetaRecord(seq: number, event: LightstreamerEventEnvelope): 
     captureSource: event.captureSource ?? null,
     synthetic: booleanKey(event.synthetic) ?? 0,
     clientId: event.client?.id ?? null,
+    sessionId: event.client?.sessionId ?? null,
     subscriptionId: event.subscription?.id ?? null,
     subscriptionMode: event.subscription?.mode ?? null,
     itemName: event.item?.name ?? null,
     itemPosition: event.item?.position ?? null,
+    listenerId: event.listener?.id ?? null,
     commandKey: event.update?.key ?? null,
     commandValue: event.update?.command ?? null,
     isSnapshot: booleanKey(Boolean(event.update?.isSnapshot)) ?? 0
@@ -391,6 +395,9 @@ function metaMatchesResidualFilters(meta: EventMetaRecord, filters: EventFilterS
       captureSource: captureSourceFromMeta(meta.captureSource),
       synthetic: Boolean(meta.synthetic),
       kind: meta.kind as LightstreamerEventEnvelope["kind"],
+      client: meta.clientId
+        ? { id: meta.clientId, sessionId: meta.sessionId }
+        : undefined,
       subscription: meta.subscriptionId
         ? { id: meta.subscriptionId, mode: meta.subscriptionMode }
         : undefined,
@@ -398,6 +405,7 @@ function metaMatchesResidualFilters(meta: EventMetaRecord, filters: EventFilterS
         meta.itemName || meta.itemPosition !== null
           ? { name: meta.itemName, position: meta.itemPosition }
           : undefined,
+      listener: meta.listenerId ? { id: meta.listenerId } : undefined,
       update: {
         key: meta.commandKey,
         command: meta.commandValue,

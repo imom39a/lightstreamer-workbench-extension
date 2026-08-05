@@ -14,6 +14,7 @@ const snapshotSuffix = process.platform === "linux" ? "-linux" : "";
 export default defineConfig({
   testDir: "./tests/ui",
   testMatch: /\.spec\.ts$/,
+  testIgnore: "react-diagnose.spec.ts",
   timeout: 30_000,
   expect: {
     timeout: 10_000,

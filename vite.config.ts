@@ -4,6 +4,8 @@ import { normalizePath } from "vite";
 
 const projectRoot = __dirname;
 const sourceRoot = resolve(projectRoot, "src");
+const panelRenderer = resolvePanelRenderer(process.env.LSEW_PANEL_RENDERER);
+const extensionOutDir = process.env.LSEW_EXTENSION_OUT_DIR ?? "dist";
 
 export default defineConfig({
   root: sourceRoot,
@@ -11,7 +13,7 @@ export default defineConfig({
   publicDir: resolve(projectRoot, "public"),
   build: {
     emptyOutDir: true,
-    outDir: resolve(projectRoot, "dist"),
+    outDir: resolve(projectRoot, extensionOutDir),
     rollupOptions: {
       input: {
         "extension/background": resolve(sourceRoot, "extension/background.ts"),
@@ -25,6 +27,11 @@ export default defineConfig({
       }
     }
   },
+  resolve: {
+    alias: {
+      "panel-renderer": resolve(sourceRoot, "extension/panel/renderer", `${panelRenderer}.tsx`)
+    }
+  },
   test: {
     environment: "jsdom",
     globals: true,
@@ -34,3 +41,13 @@ export default defineConfig({
     }
   }
 });
+
+function resolvePanelRenderer(value: string | undefined): "legacy" | "react" {
+  if (!value || value === "legacy") {
+    return "legacy";
+  }
+  if (value === "react") {
+    return "react";
+  }
+  throw new Error(`Unsupported LSEW_PANEL_RENDERER: ${value}`);
+}

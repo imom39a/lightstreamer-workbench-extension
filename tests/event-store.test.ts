@@ -178,6 +178,65 @@ describe("event store", () => {
     await deleteEventDatabase(eventDatabaseName(sessionId));
   });
 
+  it("keeps structural residual filtering and bounded totals in parity across memory and IndexedDB", async () => {
+    const sessionId = "event-store-structural-filter-parity-test";
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const memory = createEventStore();
+    const indexed = await createIndexedDbEventStore({ sessionId });
+    const events = [
+      {
+        ...event("structural-1"),
+        client: { id: "client-a", sessionId: "session-a" },
+        subscription: { id: "sub-a", mode: "COMMAND" },
+        item: { name: "orders", position: 1 },
+        listener: { id: "listener-a" }
+      },
+      {
+        ...event("structural-2"),
+        client: { id: "client-a", sessionId: "session-a" },
+        subscription: { id: "sub-a", mode: "COMMAND" },
+        item: { name: "orders", position: 1 },
+        listener: { id: "listener-a" }
+      },
+      {
+        ...event("structural-other"),
+        client: { id: "client-b", sessionId: "session-b" },
+        subscription: { id: "sub-b", mode: "COMMAND" },
+        item: { name: "orders", position: 1 },
+        listener: { id: "listener-b" }
+      }
+    ] satisfies LightstreamerEventEnvelope[];
+    for (const captured of events) {
+      memory.append(captured);
+      await indexed.append(captured);
+    }
+    const getSpy = vi.spyOn(IDBObjectStore.prototype, "get");
+    const query = {
+      filters: {
+        clientId: "client-a",
+        sessionId: "session-a",
+        subscriptionId: "sub-a",
+        item: "orders",
+        itemPosition: 1,
+        listenerId: "listener-a"
+      },
+      limit: 1,
+      offset: 0,
+      order: "asc" as const
+    };
+
+    const memoryResult = memory.queryEvents(query);
+    const indexedResult = await indexed.queryEvents(query);
+    expect(indexedResult).toEqual(memoryResult);
+    expect(indexedResult).toMatchObject({ total: 2 });
+    expect(indexedResult.events.map(({ id }) => id)).toEqual(["structural-2"]);
+    expect(getSpy).toHaveBeenCalledTimes(1);
+
+    getSpy.mockRestore();
+    indexed.close?.();
+    await deleteEventDatabase(eventDatabaseName(sessionId));
+  });
+
   it("keeps topology in subscriber memory but never crosses the repository boundary", async () => {
     const sessionId = "event-store-topology-boundary-test";
     await deleteEventDatabase(eventDatabaseName(sessionId));

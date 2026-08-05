@@ -8,6 +8,7 @@ import { build } from "esbuild";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(scriptDir, "..");
+const renderer = process.argv.includes("--react") ? "react" : "legacy";
 const browserTest = join(rootDir, "tests", "extension-panel.browser.spec.ts");
 const temporaryRoot = await mkdtemp(
   join(rootDir, "tests", ".lsew-extension-panel-browser-test-")
@@ -34,7 +35,12 @@ function runProcess(executable, args) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(executable, args, {
       cwd: rootDir,
-      env: { ...process.env, LSEW_PROJECT_ROOT: rootDir },
+      env: {
+        ...process.env,
+        LSEW_PROJECT_ROOT: rootDir,
+        LSEW_EXTENSION_DIR: renderer === "react" ? "dist-react" : "dist",
+        LSEW_EXPECTED_RENDERER: renderer
+      },
       shell: false,
       stdio: "inherit",
       windowsHide: true

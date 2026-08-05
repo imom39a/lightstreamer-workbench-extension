@@ -3,6 +3,8 @@ import { type LightstreamerEventEnvelope } from "./event-envelope";
 
 export type EventFilterState = {
   query?: string;
+  clientId?: string | null;
+  sessionId?: string | null;
   subscriptionId?: string;
   mode?: string;
   item?: string;
@@ -12,6 +14,7 @@ export type EventFilterState = {
   snapshot?: boolean;
   synthetic?: boolean;
   kind?: CaptureKind;
+  listenerId?: string;
 };
 
 export function createEventSearchText(event: LightstreamerEventEnvelope): string {
@@ -71,6 +74,24 @@ export function matchesEventFilters(
   }
 
   if (filters.subscriptionId && event.subscription?.id !== filters.subscriptionId) {
+    return false;
+  }
+
+  if (
+    filters.clientId !== undefined &&
+    (event.client?.id ?? null) !== filters.clientId
+  ) {
+    return false;
+  }
+
+  if (
+    filters.sessionId !== undefined &&
+    (event.client?.sessionId ?? null) !== filters.sessionId
+  ) {
+    return false;
+  }
+
+  if (filters.listenerId && event.listener?.id !== filters.listenerId) {
     return false;
   }
 

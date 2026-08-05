@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const projectRoot = process.cwd();
-const manifestPath = resolve(projectRoot, "dist/manifest.json");
+const outputDirectory = process.env.LSEW_EXTENSION_OUT_DIR ?? "dist";
+const manifestPath = resolve(projectRoot, outputDirectory, "manifest.json");
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
 const contentScripts = manifest.content_scripts ?? [];
@@ -10,7 +11,7 @@ const contentScriptFiles = contentScripts.flatMap((entry) => entry.js ?? []);
 const failures = [];
 
 for (const file of contentScriptFiles) {
-  const outputPath = resolve(projectRoot, "dist", file);
+  const outputPath = resolve(projectRoot, outputDirectory, file);
   const source = await readFile(outputPath, "utf8");
 
   if (/^\s*import\s/m.test(source) || /^\s*export\s/m.test(source)) {

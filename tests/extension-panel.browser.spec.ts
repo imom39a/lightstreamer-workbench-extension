@@ -14,6 +14,7 @@ import {
   resolveChromeExecutable,
   terminateChild,
   waitForBrowserTargets,
+  waitForCondition,
   waitForDebuggingPort,
   waitForExtensionPanelTarget
 } from "./support/chrome-extension-cdp";
@@ -23,7 +24,8 @@ import { getExtensionPanelSmokeScenario } from "./support/panel-scenarios";
 const rootDir = process.env.LSEW_PROJECT_ROOT
   ? resolve(process.env.LSEW_PROJECT_ROOT)
   : resolve(fileURLToPath(new URL("..", import.meta.url)));
-const extensionDir = join(rootDir, "dist");
+const expectedRenderer = process.env.LSEW_EXPECTED_RENDERER === "react" ? "react" : "legacy";
+const extensionDir = resolve(rootDir, process.env.LSEW_EXTENSION_DIR ?? "dist");
 const scenario = getExtensionPanelSmokeScenario();
 
 async function runExtensionPanelSmoke(): Promise<void> {
@@ -94,6 +96,41 @@ async function runExtensionPanelSmoke(): Promise<void> {
     );
     panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl);
     await panelCdp.request("Runtime.enable");
+
+    if (expectedRenderer === "react") {
+      await waitForCondition(
+        panelCdp,
+        `
+          document.querySelector("#app")?.dataset.panelRenderer === "react" &&
+          document.querySelector('[aria-label="Structural runtime scope"]') &&
+          document.querySelector('[aria-label="Ordered Evidence"]') &&
+          document.querySelector('[aria-label="Context"]')
+        `,
+        "the React Scoped Evidence Workspace to become usable"
+      );
+      const proof = await evaluateByValue<{
+        renderer: string;
+        scope: string;
+        evidence: string;
+        context: string;
+        hasLegacyViews: boolean;
+      }>(panelCdp, `({
+        renderer: document.querySelector("#app")?.dataset.panelRenderer ?? "",
+        scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
+        evidence: document.querySelector('[aria-label="Ordered Evidence"]')?.textContent ?? "",
+        context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
+        hasLegacyViews: Boolean(document.querySelector(".view-selector"))
+      })`);
+      assert.equal(proof.renderer, "react");
+      assert.match(proof.scope, /Inspected page/);
+      assert.match(proof.evidence, /Ordered Evidence/);
+      assert.match(proof.context, /Observed Server COMMAND State/);
+      assert.equal(proof.hasLegacyViews, false);
+      console.log(
+        "React-only extension panel smoke passed: DevTools selected the semantic Scope, Evidence, and Context workspace."
+      );
+      return;
+    }
 
     const initialView = await selectPanelView(panelCdp, scenario.initialView);
     assert.deepEqual(initialView, {

@@ -4,15 +4,16 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const outputDirectory = process.env.LSEW_EXTENSION_OUT_DIR ?? "dist";
 
 const entries = [
   {
     entryPoint: "src/content/content-script.ts",
-    outfile: "dist/content/content-script.js"
+    outfile: `${outputDirectory}/content/content-script.js`
   },
   {
     entryPoint: "src/injected/lightstreamer-instrumentation.ts",
-    outfile: "dist/injected/lightstreamer-instrumentation.js"
+    outfile: `${outputDirectory}/injected/lightstreamer-instrumentation.js`
   }
 ];
 

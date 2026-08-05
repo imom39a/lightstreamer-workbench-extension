@@ -18,6 +18,7 @@ describe("cross-platform Lightstreamer fixture commands", () => {
     ["fixture:stop", "stop"],
     ["fixture:test", "test"],
     ["fixture:test:browser", "browser-test"],
+    ["fixture:test:react", "react-browser-test"],
     ["fixture:test:dry-run", "test --dry-run"]
   ])("runs %s through Node instead of a platform shell", (scriptName, command) => {
     expect(packageJson.scripts[scriptName]).toBe(
@@ -38,7 +39,9 @@ describe("cross-platform Lightstreamer fixture commands", () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("fixture.mjs <build|start|wait|stop|test|browser-test>");
+    expect(result.stdout).toContain(
+      "fixture.mjs <build|start|wait|stop|test|browser-test|react-browser-test>"
+    );
   });
 
   it("constructs fixture startup as argument-safe Docker commands", () => {
@@ -72,6 +75,30 @@ describe("cross-platform Lightstreamer fixture commands", () => {
     );
     expect(result.stdout.indexOf("docker run --detach")).toBeLessThan(
       result.stdout.indexOf("npm exec -- playwright test")
+    );
+  });
+
+  it("runs the React read-only official-client proof against the React-only artifact", () => {
+    const result = spawnSync(process.execPath, [runnerPath, "react-browser-test", "--dry-run"], {
+      cwd: rootDir,
+      encoding: "utf8"
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("npm run build:react");
+    expect(result.stdout).toContain("docker run --detach");
+    expect(result.stdout).toContain(
+      "npm exec -- playwright test --config playwright.extension.config.ts"
+    );
+    expect(result.stdout).not.toContain("lightstreamer-mutate-reinject");
+  });
+
+  it("exposes a real unpacked React extension smoke command without changing the Store smoke", () => {
+    expect(packageJson.scripts["test:ui:extension"]).toBe(
+      "npm run build && node scripts/test-ui-extension.mjs"
+    );
+    expect(packageJson.scripts["test:ui:extension:react"]).toBe(
+      "npm run build:react && node scripts/test-ui-extension.mjs --react"
     );
   });
 });

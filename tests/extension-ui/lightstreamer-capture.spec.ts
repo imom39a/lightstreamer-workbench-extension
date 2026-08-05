@@ -24,13 +24,18 @@ import {
 } from "../support/devtools-panel";
 
 const rootDir = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const extensionDir = join(rootDir, "dist");
+const expectedRenderer = process.env.LSEW_EXPECTED_RENDERER === "react" ? "react" : "legacy";
+const extensionDir = resolve(rootDir, process.env.LSEW_EXTENSION_DIR ?? "dist");
 const fixtureUrl = new URL(
   "/mutate-reinject.html?capture=listener",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
 
-test("live COMMAND Capture stays consistent across Timeline, Topology, and Local Injection", async () => {
+test(
+  expectedRenderer === "react"
+    ? "official-client COMMAND Capture is readable through React Scope, Evidence, and Context"
+    : "live COMMAND Capture stays consistent across Timeline, Topology, and Local Injection",
+  async () => {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-playwright-extension-"));
   const chromeExecutable = await resolveChromeExecutable(rootDir);
   const chromeLogs: string[] = [];
@@ -105,6 +110,51 @@ test("live COMMAND Capture stays consistent across Timeline, Topology, and Local
     latestTargets = await listBrowserTargets(debugging.port);
     panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl ?? "");
     await panelCdp.request("Runtime.enable");
+
+    if (expectedRenderer === "react") {
+      await waitForCondition(
+        panelCdp,
+        `
+          document.querySelector("#app")?.dataset.panelRenderer === "react" &&
+          document.querySelector(".workbench-react__operating strong")?.textContent === "Capture RUNNING" &&
+          [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+            .some((row) => row.textContent?.includes("scenario.mutate-reinject"))
+        `,
+        "React Evidence to display the official-client COMMAND update"
+      );
+      await evaluateByValue(panelCdp, `(() => {
+        const row = [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+          .find((candidate) => candidate.textContent?.includes("scenario.mutate-reinject"));
+        if (!(row instanceof HTMLButtonElement)) throw new Error("React Evidence row is missing");
+        row.click();
+      })()`);
+      await waitForCondition(
+        panelCdp,
+        `document.querySelector('[aria-label="Context"]')?.textContent?.includes("scenario.mutate-reinject")`,
+        "React Context to follow the selected official-client Evidence"
+      );
+      const reactProof = await evaluateByValue<{
+        renderer: string;
+        scope: string;
+        evidence: string;
+        context: string;
+        observed: string;
+      }>(panelCdp, `({
+        renderer: document.querySelector("#app")?.dataset.panelRenderer ?? "",
+        scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
+        evidence: document.querySelector('[aria-label="Ordered Lightstreamer Evidence"]')?.textContent ?? "",
+        context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
+        observed: document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent ?? ""
+      })`);
+      expect(reactProof.renderer).toBe("react");
+      expect(reactProof.scope).toContain("scenario.mutate-reinject");
+      expect(reactProof.evidence).toContain("SERVER");
+      expect(reactProof.evidence).toContain("ADD");
+      expect(reactProof.context).toContain("fixture-message.TICKER");
+      expect(reactProof.observed).toContain("fixture-message.TICKER");
+      return;
+    }
+
     await waitForCondition(
       panelCdp,
       `
@@ -233,7 +283,8 @@ test("live COMMAND Capture stays consistent across Timeline, Topology, and Local
     if (chrome) await terminateChild(chrome);
     await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
-});
+  }
+);
 
 async function setPanelSearch(cdp: CdpClient, query: string): Promise<void> {
   await evaluateByValue(

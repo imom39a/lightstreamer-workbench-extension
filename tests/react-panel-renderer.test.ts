@@ -1,0 +1,423 @@
+import { act } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  PANEL_CAPTURE_MESSAGE,
+  PANEL_REGISTER_MESSAGE,
+  PANEL_STATUS_MESSAGE,
+  PANEL_TOPOLOGY_SYNC_FRAME,
+  PANEL_VISIBILITY_MESSAGE,
+  TOPOLOGY_SYNC_BEGIN,
+  TOPOLOGY_SYNC_VERSION,
+  createCaptureMessage
+} from "../src/bridge/messages";
+import {
+  createInMemoryEventHistory,
+  type EventHistory
+} from "../src/core/event-history";
+import { type WorkbenchAnalytics } from "../src/extension/analytics";
+import { mountPanelRenderer } from "../src/extension/panel/renderer/react";
+import {
+  THEME_STORAGE_KEY,
+  type DevToolsThemeName
+} from "../src/extension/panel/theme";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+type FakePort = {
+  postedMessages: unknown[];
+  messageListeners: Array<(message: unknown) => void>;
+  disconnectListeners: Array<() => void>;
+  disconnect: ReturnType<typeof vi.fn>;
+  onMessage: { addListener(listener: (message: unknown) => void): void };
+  onDisconnect: { addListener(listener: () => void): void };
+  postMessage(message: unknown): void;
+};
+
+describe("React panel renderer production wiring", () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<main id="app"></main>';
+    document.documentElement.removeAttribute("data-theme");
+    const themeValues = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn((key: string) => themeValues.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => themeValues.set(key, value))
+    });
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(performance.now());
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  });
+
+  afterEach(() => {
+    document.documentElement.removeAttribute("data-theme");
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  it("starts from the developer's persisted theme preference", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: { tabId: 40 },
+        panels: { themeName: "default", setThemeChangeHandler: vi.fn() }
+      }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory: async () => history,
+      createInMemoryHistory: createInMemoryEventHistory
+    });
+    await flushPanel();
+
+    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("dark");
+    expect(root.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+
+    dispose();
+  });
+
+  it("persists a developer's theme change and applies it immediately", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: { tabId: 41 },
+        panels: { themeName: "default", setThemeChangeHandler: vi.fn() }
+      }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory: async () => history,
+      createInMemoryHistory: createInMemoryEventHistory
+    });
+    await flushPanel();
+
+    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("auto");
+    expect(root.dataset.theme).toBe("light");
+
+    await selectTheme(root, "dark");
+
+    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("dark");
+    expect(root.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
+
+    dispose();
+  });
+
+  it("follows the live DevTools theme in Auto and disposes the theme listener", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    const themeHandler: { current: ((theme: DevToolsThemeName) => void) | null } = {
+      current: null
+    };
+    const setThemeChangeHandler = vi.fn(
+      (handler?: ((theme: DevToolsThemeName) => void) | null) => {
+        themeHandler.current = handler ?? null;
+      }
+    );
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: { tabId: 43 },
+        panels: { themeName: "default", setThemeChangeHandler }
+      }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory: async () => history,
+      createInMemoryHistory: createInMemoryEventHistory
+    });
+    await flushPanel();
+
+    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("auto");
+    expect(root.dataset.theme).toBe("light");
+    const installedHandler = themeHandler.current;
+    if (!installedHandler) {
+      throw new Error("DevTools theme handler was not installed");
+    }
+
+    installedHandler?.("dark");
+
+    expect(root.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("auto");
+
+    dispose();
+    dispose();
+    installedHandler?.("default");
+
+    expect(root.dataset.theme).toBe("dark");
+    expect(setThemeChangeHandler).toHaveBeenCalledTimes(2);
+    expect(setThemeChangeHandler).toHaveBeenLastCalledWith(null);
+  });
+
+  it("opens session history and routes bridge, topology, and visibility input into one panel", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    const closeHistory = vi.spyOn(history, "close");
+    const createIndexedDbHistory = vi.fn(async () => history);
+    const port = createFakePort();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 42 } },
+      runtime: { connect: vi.fn(() => port as unknown as chrome.runtime.Port) }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory,
+      createInMemoryHistory: createInMemoryEventHistory
+    });
+    await flushPanel();
+
+    expect(createIndexedDbHistory).toHaveBeenCalledWith({
+      sessionId: 42,
+      reset: true,
+      clearOnClose: true
+    });
+    expect(port.postedMessages).toContainEqual({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: PANEL_VISIBILITY_MESSAGE, visible: false },
+        origin: window.location.origin
+      })
+    );
+    port.messageListeners[0]?.({ type: PANEL_STATUS_MESSAGE, status: "capturing" });
+    port.messageListeners[0]?.({
+      type: PANEL_CAPTURE_MESSAGE,
+      message: createCaptureMessage("item-update", {
+        client: { id: "client-renderer" },
+        subscription: { id: "subscription-renderer", mode: "MERGE" },
+        item: { name: "renderer-item", position: 1 },
+        update: { fields: { value: 7 }, changedFields: { value: 7 } }
+      })
+    });
+    port.messageListeners[0]?.({
+      type: PANEL_TOPOLOGY_SYNC_FRAME,
+      frame: {
+        type: TOPOLOGY_SYNC_BEGIN,
+        version: TOPOLOGY_SYNC_VERSION,
+        syncId: "renderer-sync",
+        pageEpoch: "renderer-page",
+        cutoffCaptureSequence: 0,
+        chunkCount: 0,
+        recordCount: 0,
+        coverage: { status: "partial", getters: {}, reason: "late-attachment" }
+      }
+    });
+    await flushPanel();
+
+    expect(root.textContent).not.toContain("renderer-item");
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: PANEL_VISIBILITY_MESSAGE, visible: true },
+        origin: window.location.origin
+      })
+    );
+    await flushPanel();
+
+    expect(root.textContent).toContain("renderer-item");
+    expect(root.textContent).toContain("Coverage LIMITED");
+
+    dispose();
+    dispose();
+    await flushPanel();
+
+    expect(root.textContent).toBe("");
+    expect(port.disconnect).toHaveBeenCalledTimes(1);
+    expect(closeHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the production analytics boundary for consent without affecting investigation", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    const analytics: WorkbenchAnalytics = {
+      available: true,
+      getConsent: vi.fn((): "unknown" => "unknown"),
+      setConsent: vi.fn(async () => true),
+      track: vi.fn(async () => undefined)
+    };
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 61 } }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory: async () => history,
+      createInMemoryHistory: createInMemoryEventHistory,
+      createAnalytics: () => analytics
+    });
+    await flushPanel();
+
+    await clickButton(root, "More actions");
+    expect(root.textContent).toContain("Usage analytics is off until you choose to enable it.");
+
+    await clickButton(root, "Enable analytics");
+    expect(analytics.setConsent).toHaveBeenCalledWith("granted");
+    expect(root.textContent).toContain("Anonymous usage analytics is enabled.");
+
+    dispose();
+  });
+
+  it("keeps the panel usable when analytics construction fails", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 62 } }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory: async () => history,
+      createInMemoryHistory: createInMemoryEventHistory,
+      createAnalytics() {
+        throw new Error("analytics configuration unavailable");
+      }
+    });
+    await flushPanel();
+
+    expect(root.textContent).toContain("Ordered Evidence");
+    await clickButton(root, "More actions");
+    expect(root.textContent).toContain("Usage analytics is unavailable in this build. Nothing is sent.");
+
+    dispose();
+  });
+
+  it("states the storage limitation when IndexedDB falls back to session memory", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    const closeHistory = vi.spyOn(history, "close");
+    const storageError = new Error("IndexedDB denied");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 73 } }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory: vi.fn(async () => Promise.reject(storageError)),
+      createInMemoryHistory: () => history
+    });
+    await flushPanel();
+
+    expect(root.textContent).toContain("Coverage LIMITED");
+    expect(root.textContent).toContain(
+      "IndexedDB is unavailable. Evidence is held in memory for this DevTools session."
+    );
+    expect(root.textContent).toContain("closing it clears the in-memory history");
+    expect(root.textContent).toContain("In-memory event history");
+    await clickButton(root, "More actions");
+    expect(root.textContent).toContain("History uses in-memory fallback");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Falling back to in-memory event storage.",
+      storageError
+    );
+
+    dispose();
+    await flushPanel();
+    expect(closeHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes late history without creating panel resources after early disposal", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    const closeHistory = vi.spyOn(history, "close");
+    const pendingHistory = deferred<EventHistory>();
+    const connect = vi.fn();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 99 } },
+      runtime: { connect }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory: () => pendingHistory.promise,
+      createInMemoryHistory: createInMemoryEventHistory
+    });
+
+    dispose();
+    dispose();
+    pendingHistory.resolve(history);
+    await flushPanel();
+
+    expect(root.textContent).toBe("");
+    expect(connect).not.toHaveBeenCalled();
+    expect(closeHistory).toHaveBeenCalledTimes(1);
+  });
+});
+
+function createFakePort(): FakePort {
+  const port = {
+    postedMessages: [] as unknown[],
+    messageListeners: [] as Array<(message: unknown) => void>,
+    disconnectListeners: [] as Array<() => void>,
+    onMessage: {
+      addListener(listener: (message: unknown) => void) {
+        port.messageListeners.push(listener);
+      }
+    },
+    onDisconnect: {
+      addListener(listener: () => void) {
+        port.disconnectListeners.push(listener);
+      }
+    },
+    postMessage(message: unknown) {
+      port.postedMessages.push(message);
+    },
+    disconnect: vi.fn(() => {
+      port.disconnectListeners.forEach((listener) => listener());
+    })
+  };
+  return port;
+}
+
+async function flushPanel(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolvePromise!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+}
+
+function findButton(root: HTMLElement, label: string): HTMLButtonElement {
+  const button = [...root.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent?.trim() === label
+  );
+  if (!button) {
+    throw new Error(`Missing button: ${label}`);
+  }
+  return button;
+}
+
+async function clickButton(root: HTMLElement, label: string): Promise<void> {
+  await act(async () => {
+    findButton(root, label).click();
+    await Promise.resolve();
+  });
+  await flushPanel();
+}
+
+async function selectTheme(root: HTMLElement, theme: "auto" | "dark" | "light"): Promise<void> {
+  const select = root.querySelector<HTMLSelectElement>("#workbench-theme");
+  if (!select) {
+    throw new Error("Missing Theme select");
+  }
+  await act(async () => {
+    select.value = theme;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await Promise.resolve();
+  });
+  await flushPanel();
+}
