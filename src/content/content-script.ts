@@ -85,7 +85,12 @@ function forwardReinjectionToPage(
     let settled = false;
     let responsePort: MessagePort | null = null;
     const timeout = setTimeout(() => {
-      finish(createBridgeErrorResult(requestId, "Timed out waiting for page reinjection result."));
+      finish(
+        createAcknowledgementUnknownResult(
+          requestId,
+          "Timed out waiting for page reinjection result."
+        )
+      );
     }, PAGE_REINJECT_TIMEOUT_MS);
 
     function finish(result: ReinjectionResult) {
@@ -152,6 +157,19 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
     requestId,
     ok: false,
     status: "bridge-error",
+    timestamp: Date.now(),
+    error
+  };
+}
+
+function createAcknowledgementUnknownResult(
+  requestId: string,
+  error: string
+): ReinjectionResult {
+  return {
+    requestId,
+    ok: false,
+    status: "acknowledgement-unknown",
     timestamp: Date.now(),
     error
   };

@@ -154,7 +154,83 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       filename: null
     },
     evidenceCopy: { state: "idle", eventCount: 0, text: null },
+    localInjection: {
+      state: "idle",
+      entryError: null,
+      blockedEntry: null,
+      discardConfirmation: false,
+      availability: {
+        selectedUpdate: { available: true, reason: null },
+        commandScope: { available: false, reason: "Choose a live COMMAND Item or Listener Scope." }
+      },
+      draft: null
+    },
     ...overrides
+  };
+}
+
+function activeLocalInjection(
+  draftOverrides: Partial<NonNullable<WorkbenchSnapshot["localInjection"]["draft"]>> = {}
+): WorkbenchSnapshot["localInjection"] {
+  const rawText = JSON.stringify({
+    command: "UPDATE",
+    key: "order-1042",
+    isSnapshot: false,
+    fields: { command: "UPDATE", key: "order-1042", qty: 18, status: "open" }
+  }, null, 2);
+  return {
+    state: "active",
+    entryError: null,
+    blockedEntry: null,
+    discardConfirmation: false,
+    availability: {
+      selectedUpdate: { available: true, reason: null },
+      commandScope: { available: false, reason: "A Local Injection Draft already exists." }
+    },
+    draft: {
+      id: "local-injection-draft-1",
+      phase: "edit",
+      rawText,
+      document: {
+        command: "UPDATE",
+        key: "order-1042",
+        isSnapshot: false,
+        fields: { command: "UPDATE", key: "order-1042", qty: 18, status: "open" }
+      },
+      diagnostics: [],
+      ready: true,
+      anchor: {
+        sourceKind: "captured-event",
+        sourceEventId: "evt-2",
+        pageEpoch: "page-1",
+        clientId: "client-main",
+        sessionId: "S-9",
+        subscriptionId: "sub-7",
+        subscriptionMode: "COMMAND",
+        itemName: "portfolio",
+        itemPosition: 1,
+        listenerId: "listener-1",
+        captureSource: "listener",
+        executionTarget: "captured-listener",
+        fieldSchema: ["command", "key", "qty", "status"]
+      },
+      source: { kind: "captured-event", rawText },
+      compareStatus: "unchanged",
+      compareOpen: false,
+      minimized: false,
+      parked: false,
+      open: true,
+      restorationOrigin: {
+        scopeId: "page",
+        selectionEventId: "evt-2",
+        focusedEventId: "evt-2",
+        contextId: null
+      },
+      executionId: null,
+      preflightFingerprint: null,
+      outcome: null,
+      ...draftOverrides
+    }
   };
 }
 
@@ -718,6 +794,187 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
     expect(document.body.textContent).toContain(`${selectedEvidence.id} · immutable SERVER Evidence`);
     expect(document.querySelector("pre")?.textContent).toContain(JSON.stringify(selectedEvidence.raw, null, 2));
+    await act(async () => root.unmount());
+  });
+
+  it("offers exactly one selected-Evidence and applicable COMMAND Scope entry into Local Injection", async () => {
+    const base = snapshot();
+    const localInjection = activeLocalInjection();
+    const runtime = createTestRuntime({
+      ...base,
+      scopeId: "item",
+      scope: {
+        ...base.scope,
+        selection: { id: "item", kind: "item", retired: false },
+        nodes: [
+          { id: "subscription", kind: "subscription", label: "orders", detail: "COMMAND · 2 listeners", parentId: null, depth: 0, tone: "active", lifecycle: "active", retired: false, selected: false },
+          { id: "item", kind: "item", label: "portfolio", parentId: "subscription", depth: 1, tone: "active", lifecycle: "active", retired: false, selected: true }
+        ]
+      },
+      localInjection: {
+        ...localInjection,
+        state: "idle",
+        availability: {
+          selectedUpdate: { available: true, reason: null },
+          commandScope: { available: true, reason: null }
+        },
+        draft: null
+      }
+    });
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const createDraft = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Create Local Injection Draft"
+    );
+    const author = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Author COMMAND Item Update"
+    );
+    expect(createDraft).toBeTruthy();
+    expect(author).toBeTruthy();
+    await act(async () => createDraft?.click());
+    await act(async () => author?.click());
+    expect(runtime.commands).toEqual(expect.arrayContaining([
+      { type: "begin-local-injection-from-selection" },
+      { type: "begin-local-injection-from-scope" }
+    ]));
+    expect(document.body.textContent).not.toContain("Add event");
+    expect(document.body.textContent).not.toContain("Server Injection");
+    expect(document.body.textContent).not.toContain("Replay");
+
+    await act(async () => root.unmount());
+  });
+
+  it("promotes one protected Local Injection Draft into an accessible document workspace", async () => {
+    const runtime = createTestRuntime(snapshot({ localInjection: activeLocalInjection() }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => {
+      root.render(createElement(WorkbenchPanel, { runtime }));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('[aria-label="Local Injection Draft"]')).toBeTruthy();
+    });
+    const region = document.querySelector<HTMLElement>('[aria-label="Local Injection Draft"]');
+    if (!region) throw new Error("missing Local Injection Draft region");
+    expect(region.textContent).toContain("Target");
+    expect(region.textContent).toContain("sub-7");
+    expect(region.textContent).toContain("Session S-9");
+    expect(region.textContent).toContain("Source evt-2 · immutable");
+    expect(region.textContent).toContain("LOCAL ONLY");
+    expect(region.textContent).toContain("READY");
+    expect(document.querySelector('[aria-label="Local Injection JSON"]')).toBeTruthy();
+    const click = async (name: string) => {
+      const button = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find(
+        (candidate) => candidate.textContent === name
+      );
+      expect(button, name).toBeTruthy();
+      await act(async () => button?.click());
+    };
+    await click("Compare Source");
+    await click("Review Local Injection");
+    await click("Minimize");
+    await click("Park draft");
+    await click("Discard draft");
+    expect(runtime.commands).toEqual(expect.arrayContaining([
+      { type: "set-local-injection-compare", open: true },
+      { type: "review-local-injection" },
+      { type: "set-local-injection-minimized", minimized: true },
+      { type: "park-local-injection" },
+      { type: "request-discard-local-injection" }
+    ]));
+    expect(region.querySelector('[role="tablist"]')).toBeNull();
+    expect(region.textContent).not.toContain("Add event");
+    expect(region.textContent).not.toContain("Inject all");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps Cmd/Ctrl+F inside the Local Injection document and respects an already handled shortcut", async () => {
+    const runtime = createTestRuntime(snapshot({ localInjection: activeLocalInjection() }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => {
+      root.render(createElement(WorkbenchPanel, { runtime }));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Local Injection JSON"]')).toBeTruthy());
+
+    const editor = document.querySelector<HTMLElement>('[aria-label="Local Injection JSON"]');
+    await act(async () => editor?.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "f",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
+    })));
+    await vi.waitFor(() => expect(document.querySelector(".cm-search")).toBeTruthy());
+    expect(document.querySelector('[aria-label="Find in ordered Evidence"]')).toBeNull();
+
+    const handled = new KeyboardEvent("keydown", {
+      key: "f",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+    handled.preventDefault();
+    await act(async () => document.querySelector(".workbench-react")?.dispatchEvent(handled));
+    expect(document.querySelector('[aria-label="Find in ordered Evidence"]')).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("returns focus to the current Draft when a blocked replacement is kept", async () => {
+    const active = activeLocalInjection();
+    const blocked = {
+      ...active,
+      blockedEntry: { kind: "selected-event" as const, label: "Selected Evidence evt-1" }
+    };
+    const runtime = createTestRuntime(snapshot({ localInjection: blocked }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => {
+      root.render(createElement(WorkbenchPanel, { runtime }));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Local Injection JSON"]')).toBeTruthy());
+
+    const editor = document.querySelector<HTMLElement>('[aria-label="Local Injection JSON"]')!;
+    const keep = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Keep current draft"
+    )!;
+    editor.focus();
+    keep.focus();
+    await act(async () => keep.click());
+    expect(runtime.commands).toContainEqual({ type: "resume-local-injection" });
+    await act(async () => runtime.setSnapshot(snapshot({
+      localInjection: { ...active, blockedEntry: null }
+    })));
+    expect(document.activeElement).toBe(editor);
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a parked Draft boundary resumable and puts discard confirmation on the visible workspace", async () => {
+    const parked = activeLocalInjection({ open: false, parked: true });
+    const runtime = createTestRuntime(snapshot({
+      localInjection: { ...parked, discardConfirmation: true }
+    }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Parked Local Injection Draft"]')).toBeTruthy());
+
+    const parkedRegion = document.querySelector<HTMLElement>('[aria-label="Parked Local Injection Draft"]')!;
+    expect(parkedRegion.textContent).toContain("sub-7 · portfolio");
+    expect(parkedRegion.textContent).toContain("READY · Session S-9 · Source evt-2");
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Discard Local Injection Draft"]')).toBeTruthy());
+    const confirmation = document.querySelector<HTMLElement>('[aria-label="Discard Local Injection Draft"]');
+    expect(confirmation).toBeTruthy();
+    expect(confirmation?.closest("[hidden]")).toBeNull();
+    const resume = Array.from(parkedRegion.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Resume Local Injection Draft"
+    );
+    await act(async () => resume?.click());
+    expect(runtime.commands).toContainEqual({ type: "resume-local-injection" });
+
     await act(async () => root.unmount());
   });
 });

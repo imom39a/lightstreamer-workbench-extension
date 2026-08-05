@@ -7,6 +7,7 @@ import {
   CONTENT_REINJECT_RESULT,
   PAGE_CAPTURE_SYNC_REQUEST,
   PANEL_REINJECT_REQUEST,
+  PANEL_REINJECT_RESULT,
   PANEL_VISIBILITY_MESSAGE,
   RUNTIME_REINJECT_RESULT,
   TOPOLOGY_LIMITS,
@@ -24,6 +25,7 @@ import {
   isContentReinjectResultMessage,
   isPageCaptureSyncRequestMessage,
   isPanelReinjectRequestMessage,
+  isPanelReinjectResultMessage,
   isPanelVisibilityMessage,
   isRuntimeReinjectResultMessage,
   isTopologyObservation,
@@ -400,6 +402,107 @@ describe("bridge reinjection message validation", () => {
         }
       })
     ).toBe(false);
+  });
+
+  it("preserves coherent listener delivery counts and acknowledgement-unknown across every result boundary", () => {
+    const partialResult = {
+      requestId: "request-partial",
+      ok: false,
+      status: "listener-error",
+      timestamp: 123,
+      error: "One listener failed.",
+      attemptedCount: 2,
+      deliveredCount: 1,
+      failedCount: 1
+    };
+
+    expect(
+      isRuntimeReinjectResultMessage({
+        type: RUNTIME_REINJECT_RESULT,
+        result: partialResult
+      })
+    ).toBe(true);
+    expect(
+      isContentReinjectResultMessage({
+        type: CONTENT_REINJECT_RESULT,
+        result: partialResult
+      })
+    ).toBe(true);
+    expect(
+      isPanelReinjectResultMessage({
+        type: PANEL_REINJECT_RESULT,
+        result: partialResult
+      })
+    ).toBe(true);
+
+    expect(
+      isPanelReinjectResultMessage({
+        type: PANEL_REINJECT_RESULT,
+        result: {
+          requestId: "request-unknown",
+          ok: false,
+          status: "acknowledgement-unknown",
+          timestamp: 124,
+          error: "The request may have executed, but its acknowledgement was lost."
+        }
+      })
+    ).toBe(true);
+  });
+
+  it("rejects contradictory reinjection outcomes at the bridge boundary", () => {
+    const wrap = (result: Record<string, unknown>) => ({
+      type: PANEL_REINJECT_RESULT,
+      result
+    });
+    const base = {
+      requestId: "request-invalid",
+      ok: false,
+      status: "listener-error",
+      timestamp: 123,
+      error: "Listener failed."
+    };
+
+    expect(isPanelReinjectResultMessage(wrap(base))).toBe(false);
+    expect(
+      isPanelReinjectResultMessage(
+        wrap({ ...base, attemptedCount: 2, deliveredCount: 1, failedCount: 2 })
+      )
+    ).toBe(false);
+    expect(
+      isPanelReinjectResultMessage(
+        wrap({ ...base, ok: true, attemptedCount: 2, deliveredCount: 1, failedCount: 1 })
+      )
+    ).toBe(false);
+    expect(
+      isPanelReinjectResultMessage(
+        wrap({
+          ...base,
+          status: "acknowledgement-unknown",
+          attemptedCount: 1,
+          deliveredCount: 1,
+          failedCount: 0
+        })
+      )
+    ).toBe(false);
+  });
+
+  it("rejects a count-bearing success unless at least one attempted delivery fully succeeded", () => {
+    const wrap = (attemptedCount: number, deliveredCount: number, failedCount: number) => ({
+      type: PANEL_REINJECT_RESULT,
+      result: {
+        requestId: "request-success-counts",
+        ok: true,
+        status: "success",
+        timestamp: 123,
+        attemptedCount,
+        deliveredCount,
+        failedCount
+      }
+    });
+
+    expect(isPanelReinjectResultMessage(wrap(1, 1, 0))).toBe(true);
+    expect(isPanelReinjectResultMessage(wrap(0, 0, 0))).toBe(false);
+    expect(isPanelReinjectResultMessage(wrap(2, 1, 1))).toBe(false);
   });
 });
 

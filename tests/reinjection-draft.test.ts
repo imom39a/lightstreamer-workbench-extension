@@ -10,6 +10,14 @@ import {
   validateReinjectionDraft
 } from "../src/core/reinjection-draft";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import {
+  analyzeLocalInjectionDocument,
+  applyLocalInjectionDocumentToDraft,
+  createLocalInjectionDocumentFromDraft,
+  serializeLocalInjectionDocument,
+  validateLocalInjectionDocument
+} from "../src/core/local-injection-document";
+import { reduceCommandState } from "../src/core/command-state";
 
 function itemUpdate(overrides: Partial<LightstreamerEventEnvelope> = {}): LightstreamerEventEnvelope {
   return {
@@ -34,6 +42,180 @@ function itemUpdate(overrides: Partial<LightstreamerEventEnvelope> = {}): Lights
 }
 
 describe("reinjection drafts", () => {
+  it("uses the exact raw Local Injection document and preserves every JSON primitive", () => {
+    const source = createDraftFromEvent(
+      itemUpdate({
+        update: {
+          isSnapshot: false,
+          fields: {
+            command: "ADD",
+            key: "primitive-key",
+            nullable: null,
+            empty: "",
+            disabled: false,
+            zero: 0
+          },
+          changedFields: {},
+          command: "ADD",
+          key: "primitive-key"
+        }
+      })
+    );
+    if (!source) throw new Error("missing source");
+
+    const document = createLocalInjectionDocumentFromDraft(source);
+    const text = serializeLocalInjectionDocument(document);
+    const analyzed = analyzeLocalInjectionDocument(text, {
+      mode: "COMMAND",
+      schemaFields: Object.keys(document.fields),
+      commandState: reduceCommandState([]),
+      subscriptionId: "subscription-1",
+      itemName: "scenario.snapshot-basic",
+      itemPosition: 1
+    });
+
+    expect(Object.keys(document)).toEqual(["command", "key", "isSnapshot", "fields"]);
+    expect(analyzed.ready).toBe(true);
+    expect(analyzed.document?.fields).toMatchObject({ nullable: null, empty: "", disabled: false, zero: 0 });
+    expect(applyLocalInjectionDocumentToDraft(source, analyzed.document!)).toMatchObject({
+      command: "ADD",
+      key: "primitive-key",
+      isSnapshot: false,
+      fields: { nullable: null, empty: "", disabled: false, zero: 0 }
+    });
+  });
+
+  it("validates a captured MERGE document without applying COMMAND-only semantics", () => {
+    const source = createDraftFromEvent(
+      itemUpdate({
+        subscription: {
+          id: "subscription-merge",
+          mode: "MERGE",
+          fields: ["price", "halted"]
+        },
+        update: {
+          isSnapshot: false,
+          fields: { price: 101, halted: false },
+          changedFields: { price: 101, halted: false }
+        }
+      })
+    );
+    if (!source) throw new Error("missing MERGE source");
+    const analyzed = analyzeLocalInjectionDocument(
+      serializeLocalInjectionDocument(createLocalInjectionDocumentFromDraft(source)),
+      {
+        mode: "MERGE",
+        commandSemantics: "not-applicable",
+        schemaFields: ["price", "halted"],
+        commandState: reduceCommandState([]),
+        subscriptionId: "subscription-merge",
+        itemName: "scenario.snapshot-basic",
+        itemPosition: 1
+      }
+    );
+
+    expect(analyzed).toMatchObject({
+      ready: true,
+      diagnostics: [],
+      document: {
+        command: null,
+        key: null,
+        isSnapshot: false,
+        fields: { price: 101, halted: false }
+      }
+    });
+  });
+
+  it("blocks JSON syntax, duplicate keys, and unknown or missing top-level keys", () => {
+    const context = {
+      mode: "COMMAND",
+      schemaFields: ["command", "key"],
+      commandState: reduceCommandState([]),
+      subscriptionId: "subscription-1",
+      itemName: "orders",
+      itemPosition: 1
+    } as const;
+
+    expect(analyzeLocalInjectionDocument('{"command":"ADD",', context)).toMatchObject({
+      ready: false,
+      diagnostics: [expect.objectContaining({ category: "syntax", code: "invalid-json" })]
+    });
+    expect(
+      analyzeLocalInjectionDocument(
+        '{"command":"ADD","command":"UPDATE","key":"a","isSnapshot":false,"fields":{"command":"ADD","key":"a"}}',
+        context
+      ).diagnostics
+    ).toContainEqual(expect.objectContaining({ category: "syntax", code: "duplicate-key", path: "command" }));
+    expect(
+      analyzeLocalInjectionDocument(
+        '{"command":"ADD","key":"a","fields":{"command":"ADD","key":"a"},"extra":true}',
+        context
+      ).diagnostics.map(({ code }) => code)
+    ).toEqual(expect.arrayContaining(["missing-top-level-key", "unknown-top-level-key"]));
+  });
+
+  it("blocks non-primitive fields, non-finite programmatic numbers, empty names, schema mismatch, and COMMAND state errors", () => {
+    const state = reduceCommandState([
+      itemUpdate({
+        update: {
+          isSnapshot: false,
+          fields: { command: "ADD", key: "known", qty: 1 },
+          changedFields: { qty: 1 },
+          command: "ADD",
+          key: "known"
+        }
+      })
+    ]);
+    const context = {
+      mode: "COMMAND",
+      schemaFields: ["command", "key", "qty"],
+      commandState: state,
+      subscriptionId: "subscription-1",
+      itemName: "scenario.snapshot-basic",
+      itemPosition: 1
+    } as const;
+    const analyzed = analyzeLocalInjectionDocument(
+      '{"command":"UPDATE","key":"missing","isSnapshot":false,"fields":{"command":"UPDATE","key":"missing","":1,"extra":{},"qty":2}}',
+      context
+    );
+
+    expect(analyzed.ready).toBe(false);
+    expect(analyzed.diagnostics.map(({ code }) => code)).toEqual(
+      expect.arrayContaining(["non-primitive-field", "empty-field-name", "schema-mismatch", "unknown-key-update"])
+    );
+    const nonFinite = createLocalInjectionDocumentFromDraft(createDraftFromEvent(itemUpdate())!);
+    nonFinite.fields.qty = Number.POSITIVE_INFINITY;
+    expect(validateLocalInjectionDocument(nonFinite, context)).toContainEqual(
+      expect.objectContaining({ category: "schema", code: "non-finite-number" })
+    );
+  });
+
+  it("blocks contradictory COMMAND/key field copies and accepts the corrected document", () => {
+    const context = {
+      mode: "COMMAND",
+      commandSemantics: "required",
+      schemaFields: ["command", "key", "qty"],
+      commandState: reduceCommandState([]),
+      subscriptionId: "subscription-1",
+      itemName: "orders",
+      itemPosition: 1
+    } as const;
+    const contradictory = analyzeLocalInjectionDocument(
+      '{"command":"ADD","key":"top-key","isSnapshot":false,"fields":{"command":"UPDATE","key":"field-key","qty":1}}',
+      context
+    );
+    expect(contradictory.ready).toBe(false);
+    expect(contradictory.diagnostics.map(({ code }) => code)).toEqual(
+      expect.arrayContaining(["command-field-mismatch", "key-field-mismatch"])
+    );
+
+    const corrected = analyzeLocalInjectionDocument(
+      '{"command":"ADD","key":"top-key","isSnapshot":false,"fields":{"command":"ADD","key":"top-key","qty":1}}',
+      context
+    );
+    expect(corrected).toMatchObject({ ready: true, diagnostics: [] });
+  });
+
   it("clones source event id, target ids, command, key, and fields", () => {
     const draft = createDraftFromEvent(itemUpdate());
 

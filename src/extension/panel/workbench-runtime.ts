@@ -13,6 +13,22 @@ import {
 import { createEventSearchText, matchesEventFilters, type EventFilterState } from "../../core/event-filter";
 import { type EventStore, type EventStoreChange, type EventStoreStats } from "../../core/event-store";
 import {
+  analyzeLocalInjectionDocument,
+  applyLocalInjectionDocumentToDraft,
+  createLocalInjectionDocumentFromDraft,
+  localInjectionDocumentsEqual,
+  serializeLocalInjectionDocument,
+  type LocalInjectionDiagnostic,
+  type LocalInjectionDocument
+} from "../../core/local-injection-document";
+import {
+  createDraftFromEvent,
+  createNewCommandDraftFromContext,
+  type ReinjectionDraft,
+  type ReinjectionExecutionTarget
+} from "../../core/reinjection-draft";
+import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
+import {
   createDisabledAnalytics,
   eventCountBucket,
   type AnalyticsConsent,
@@ -184,6 +200,101 @@ export type WorkbenchEvidenceCopySnapshot = Readonly<{
   error?: string;
 }>;
 
+export type LocalInjectionExecutionResult = Readonly<{
+  requestId: string;
+  ok: boolean;
+  status:
+    | "success"
+    | "stale-target"
+    | "listener-error"
+    | "wire-error"
+    | "bridge-error"
+    | "acknowledgement-unknown";
+  timestamp: number;
+  error?: string;
+  attemptedCount?: number;
+  deliveredCount?: number;
+  failedCount?: number;
+}>;
+
+export type LocalInjectionExecutionRequest = Readonly<{
+  executionId: string;
+  preflightFingerprint: string;
+  executionTarget: ReinjectionExecutionTarget;
+  document: Readonly<LocalInjectionDocument>;
+  draft: ReinjectionDraft;
+}>;
+
+export type LocalInjectionExecutor = Readonly<{
+  execute(request: LocalInjectionExecutionRequest): Promise<LocalInjectionExecutionResult>;
+}>;
+
+export type WorkbenchLocalInjectionAnchor = Readonly<{
+  sourceKind: "captured-event" | "authored";
+  sourceEventId: string | null;
+  pageEpoch: string | null;
+  clientId: string | null;
+  sessionId: string | null;
+  subscriptionId: string;
+  subscriptionMode: string | null;
+  itemName: string | null;
+  itemPosition: number | null;
+  listenerId: string | null;
+  captureSource: "listener" | "wire";
+  executionTarget: ReinjectionExecutionTarget;
+  fieldSchema: readonly string[];
+}>;
+
+export type WorkbenchLocalInjectionOutcome = Readonly<{
+  disposition: "delivered" | "blocked" | "failed" | "partial" | "acknowledgement-unknown";
+  headline: "DELIVERED LOCALLY" | "NOT RUN" | "DELIVERY FAILED" | "PARTIALLY DELIVERED" | "DELIVERY UNKNOWN";
+  status: LocalInjectionExecutionResult["status"];
+  executionId: string;
+  requestId: string | null;
+  timestamp: number;
+  detail: string;
+  attemptedCount?: number;
+  deliveredCount?: number;
+  failedCount?: number;
+}>;
+
+export type WorkbenchLocalInjectionRestorationOrigin = Readonly<{
+  scopeId: string | null;
+  selectionEventId: string | null;
+  focusedEventId: string | null;
+  contextId: string | null;
+}>;
+
+export type WorkbenchLocalInjectionSnapshot = Readonly<{
+  state: "idle" | "active";
+  availability: Readonly<{
+    selectedUpdate: Readonly<{ available: boolean; reason: string | null }>;
+    commandScope: Readonly<{ available: boolean; reason: string | null }>;
+  }>;
+  entryError: string | null;
+  blockedEntry: Readonly<{ kind: "selected-event" | "scope-author"; label: string }> | null;
+  discardConfirmation: boolean;
+  draft: Readonly<{
+    id: string;
+    phase: "edit" | "review" | "pending" | "outcome";
+    rawText: string;
+    document: Readonly<LocalInjectionDocument> | null;
+    diagnostics: readonly LocalInjectionDiagnostic[];
+    ready: boolean;
+    anchor: WorkbenchLocalInjectionAnchor;
+    source: Readonly<{ kind: "captured-event" | "authored"; rawText: string | null }>;
+    compareStatus: "unchanged" | "changed" | "no-source";
+    compareOpen: boolean;
+    minimized: boolean;
+    parked: boolean;
+    open: boolean;
+    restorationOrigin: WorkbenchLocalInjectionRestorationOrigin;
+    executionId: string | null;
+    preflightFingerprint: string | null;
+    outcome: WorkbenchLocalInjectionOutcome | null;
+  }> | null;
+}>;
+
 /** The immutable, renderer-neutral investigation state for one panel session. */
 export type WorkbenchSnapshot = Readonly<{
   version: number;
@@ -223,6 +334,7 @@ export type WorkbenchSnapshot = Readonly<{
   analytics: WorkbenchAnalyticsSnapshot;
   export: WorkbenchExportSnapshot;
   evidenceCopy: WorkbenchEvidenceCopySnapshot;
+  localInjection: WorkbenchLocalInjectionSnapshot;
   evidence: WorkbenchEvidenceSnapshot;
 }>;
 
@@ -255,6 +367,20 @@ export type WorkbenchCommand =
   | { type: "show-newest-evidence" }
   | { type: "prepare-scoped-evidence-copy" }
   | { type: "clear-scoped-evidence-copy" }
+  | { type: "begin-local-injection-from-selection" }
+  | { type: "begin-local-injection-from-scope" }
+  | { type: "set-local-injection-json"; text: string }
+  | { type: "review-local-injection" }
+  | { type: "edit-local-injection" }
+  | { type: "execute-local-injection" }
+  | { type: "set-local-injection-compare"; open: boolean }
+  | { type: "set-local-injection-minimized"; minimized: boolean }
+  | { type: "park-local-injection" }
+  | { type: "resume-local-injection" }
+  | { type: "request-discard-local-injection" }
+  | { type: "cancel-discard-local-injection" }
+  | { type: "confirm-discard-local-injection" }
+  | { type: "finish-local-injection" }
   | { type: "select-evidence"; eventId: string | null }
   | { type: "focus-evidence"; eventId: string | null }
   | { type: "set-context"; contextId: string | null }
@@ -300,12 +426,38 @@ export type WorkbenchRuntimeOptions = {
   normalizer?: EventNormalizer;
   windowSize?: number;
   scheduler?: WorkbenchRuntimeScheduler;
+  localInjectionExecutor?: LocalInjectionExecutor;
 };
 
 type EvidenceData = {
   events: readonly LightstreamerEventEnvelope[];
   total: number;
   offset: number;
+};
+
+type LocalInjectionEntryIntent =
+  | { kind: "selected-event"; eventId: string }
+  | { kind: "scope-author"; scopeId: string };
+
+type LocalInjectionDraftState = {
+  id: string;
+  baseDraft: ReinjectionDraft;
+  anchor: WorkbenchLocalInjectionAnchor;
+  rawText: string;
+  document: LocalInjectionDocument | null;
+  documentDiagnostics: readonly LocalInjectionDiagnostic[];
+  targetDiagnostics: readonly LocalInjectionDiagnostic[];
+  sourceDocument: LocalInjectionDocument | null;
+  sourceRawText: string | null;
+  phase: "edit" | "review" | "pending" | "outcome";
+  compareOpen: boolean;
+  minimized: boolean;
+  parked: boolean;
+  open: boolean;
+  restorationOrigin: WorkbenchLocalInjectionRestorationOrigin;
+  executionId: string | null;
+  preflightFingerprint: string | null;
+  outcome: WorkbenchLocalInjectionOutcome | null;
 };
 
 const emptyEvidence: EvidenceData = Object.freeze({ events: Object.freeze([]), total: 0, offset: 0 });
@@ -320,6 +472,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly windowSize: number;
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
   private readonly normalizer: EventNormalizer;
+  private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
   private readonly topologyProjection = createTopologyProjection();
@@ -376,6 +529,12 @@ class Runtime implements WorkbenchRuntime {
     text: null
   });
   private evidenceCopyGeneration = 0;
+  private localInjectionDraft: LocalInjectionDraftState | null = null;
+  private localInjectionBlockedEntry: LocalInjectionEntryIntent | null = null;
+  private localInjectionDiscardConfirmation = false;
+  private localInjectionEntryError: string | null = null;
+  private localInjectionSequence = 0;
+  private currentPageEpoch: string | null = null;
   private preparedExport: {
     document: TopologyStructuredSnapshot;
     json: string;
@@ -392,6 +551,7 @@ class Runtime implements WorkbenchRuntime {
     this.captureStatus = options.captureStatus ?? "idle";
     this.captureOverride = options.capture ?? {};
     this.normalizer = options.normalizer ?? createEventNormalizer();
+    this.localInjectionExecutor = options.localInjectionExecutor ?? null;
     this.storage = options.storage ?? { mode: "indexeddb" };
     this.analytics = options.analytics ?? createDisabledAnalytics();
     this.analyticsConsent = this.analytics.getConsent();
@@ -557,6 +717,56 @@ class Runtime implements WorkbenchRuntime {
         this.invalidateEvidenceCopy();
         this.publish();
         return;
+      case "begin-local-injection-from-selection":
+        this.beginLocalInjectionFromSelection();
+        return;
+      case "begin-local-injection-from-scope":
+        this.beginLocalInjectionFromScope();
+        return;
+      case "set-local-injection-json":
+        this.setLocalInjectionJson(command.text);
+        return;
+      case "review-local-injection":
+        this.reviewLocalInjection();
+        return;
+      case "edit-local-injection":
+        this.editLocalInjection();
+        return;
+      case "execute-local-injection":
+        this.executeLocalInjection();
+        return;
+      case "set-local-injection-compare":
+        if (!this.localInjectionDraft) return;
+        this.localInjectionDraft.compareOpen = command.open;
+        this.publish();
+        return;
+      case "set-local-injection-minimized":
+        if (!this.localInjectionDraft) return;
+        this.localInjectionDraft.minimized = command.minimized;
+        this.publish();
+        return;
+      case "park-local-injection":
+        this.parkLocalInjection();
+        return;
+      case "resume-local-injection":
+        this.resumeLocalInjection();
+        return;
+      case "request-discard-local-injection":
+        if (!this.localInjectionDraft) return;
+        this.localInjectionDiscardConfirmation = true;
+        this.publish();
+        return;
+      case "cancel-discard-local-injection":
+        if (!this.localInjectionDraft) return;
+        this.localInjectionDiscardConfirmation = false;
+        this.publish();
+        return;
+      case "confirm-discard-local-injection":
+        this.confirmDiscardLocalInjection();
+        return;
+      case "finish-local-injection":
+        this.finishLocalInjection();
+        return;
       case "select-evidence":
         this.selectionEventId = command.eventId;
         this.focusedEventId = command.eventId;
@@ -693,6 +903,7 @@ class Runtime implements WorkbenchRuntime {
 
   private ingestCaptureMessage(message: CaptureMessage): void {
     const event = this.normalizer.normalize(message);
+    this.currentPageEpoch = event.topology?.pageEpoch ?? this.currentPageEpoch;
     this.captureStatus = "capturing";
     this.topologyProjection.ingestCapture(event);
     this.preparedExport = null;
@@ -709,6 +920,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private applyTopologySyncFrame(frame: TopologySyncFrame): void {
+    this.currentPageEpoch = frame.pageEpoch;
     const result = this.topologyProjection.applySyncFrame(frame);
     this.preparedExport = null;
     this.topologyCoverage = frame.coverage.status === "partial" ? "LIMITED" : "USEFUL";
@@ -1051,6 +1263,430 @@ class Runtime implements WorkbenchRuntime {
     );
   }
 
+  private beginLocalInjectionFromSelection(): void {
+    const eventId = this.selectionEventId;
+    if (!eventId) {
+      this.localInjectionEntryError = "Select one captured Item Update before creating a Local Injection draft.";
+      this.publish();
+      return;
+    }
+    this.enterLocalInjection({ kind: "selected-event", eventId });
+  }
+
+  private beginLocalInjectionFromScope(): void {
+    this.enterLocalInjection({ kind: "scope-author", scopeId: this.scopeId ?? "page" });
+  }
+
+  private enterLocalInjection(intent: LocalInjectionEntryIntent): void {
+    this.localInjectionEntryError = null;
+    if (this.localInjectionDraft) {
+      this.localInjectionBlockedEntry = intent;
+      this.localInjectionDiscardConfirmation = false;
+      this.localInjectionDraft.open = true;
+      this.localInjectionDraft.parked = false;
+      this.publish();
+      return;
+    }
+
+    const candidate = this.createLocalInjectionCandidate(intent);
+    if (!candidate) {
+      this.publish();
+      return;
+    }
+    this.localInjectionDraft = candidate;
+    this.localInjectionBlockedEntry = null;
+    this.localInjectionDiscardConfirmation = false;
+    this.publish();
+  }
+
+  private createLocalInjectionCandidate(
+    intent: LocalInjectionEntryIntent
+  ): LocalInjectionDraftState | null {
+    const sourceEvent = intent.kind === "selected-event"
+      ? this.selectedEventEnvelope?.id === intent.eventId
+        ? this.selectedEventEnvelope
+        : this.displayedEvidence().events.find(({ id }) => id === intent.eventId) ?? null
+      : null;
+    let baseDraft: ReinjectionDraft | null = null;
+    let anchor: WorkbenchLocalInjectionAnchor | null = null;
+    let sourceDocument: LocalInjectionDocument | null = null;
+
+    if (intent.kind === "selected-event") {
+      if (!sourceEvent || !isCompatibleLocalInjectionSource(sourceEvent)) {
+        this.localInjectionEntryError = "Selected Evidence is not a compatible captured Item Update with a live delivery target.";
+        return null;
+      }
+      baseDraft = createDraftFromEvent(sourceEvent);
+      if (!baseDraft) return null;
+      const fieldSchema = localInjectionFieldSchema(
+        sourceEvent.subscription?.fields,
+        sourceEvent.update?.fields
+      );
+      baseDraft = {
+        ...baseDraft,
+        sourceSubscription: {
+          ...baseDraft.sourceSubscription!,
+          fields: [...fieldSchema]
+        }
+      };
+      anchor = anchorFromDraft(
+        baseDraft,
+        "captured-event",
+        sourceEvent.topology?.pageEpoch ?? this.currentPageEpoch,
+        fieldSchema
+      );
+      sourceDocument = createLocalInjectionDocumentFromDraft(baseDraft);
+    } else {
+      const target = findTopologySelection(this.topologyProjection.snapshot(), intent.scopeId);
+      const authored = authoredDraftFromScope(target, this.currentPageEpoch);
+      if (!authored) {
+        this.localInjectionEntryError = "Authoring requires a live COMMAND Item or Listener Scope with captured field and listener context.";
+        return null;
+      }
+      ({ draft: baseDraft, anchor } = authored);
+    }
+
+    const document = createLocalInjectionDocumentFromDraft(baseDraft);
+    const rawText = serializeLocalInjectionDocument(document);
+    const state: LocalInjectionDraftState = {
+      id: `local-injection-draft-${++this.localInjectionSequence}`,
+      baseDraft,
+      anchor,
+      rawText,
+      document,
+      documentDiagnostics: Object.freeze([]),
+      targetDiagnostics: Object.freeze([]),
+      sourceDocument,
+      sourceRawText: sourceDocument ? serializeLocalInjectionDocument(sourceDocument) : null,
+      phase: "edit",
+      compareOpen: false,
+      minimized: false,
+      parked: false,
+      open: true,
+      restorationOrigin: Object.freeze({
+        scopeId: this.scopeId,
+        selectionEventId: this.selectionEventId,
+        focusedEventId: this.focusedEventId,
+        contextId: this.contextId
+      }),
+      executionId: null,
+      preflightFingerprint: null,
+      outcome: null
+    };
+    this.refreshLocalInjectionValidation(state);
+    return state;
+  }
+
+  private setLocalInjectionJson(text: string): void {
+    const draft = this.localInjectionDraft;
+    if (!draft || draft.phase !== "edit") return;
+    draft.rawText = text;
+    draft.preflightFingerprint = null;
+    draft.outcome = null;
+    this.refreshLocalInjectionValidation(draft);
+    this.publish();
+  }
+
+  private reviewLocalInjection(): void {
+    const draft = this.localInjectionDraft;
+    if (!draft || draft.phase !== "edit") return;
+    this.refreshLocalInjectionValidation(draft);
+    if (localInjectionReady(draft)) {
+      draft.phase = "review";
+      draft.preflightFingerprint = this.localInjectionFingerprint(draft);
+    }
+    this.publish();
+  }
+
+  private editLocalInjection(): void {
+    const draft = this.localInjectionDraft;
+    if (!draft || draft.phase !== "review") return;
+    draft.phase = "edit";
+    draft.preflightFingerprint = null;
+    this.publish();
+  }
+
+  private executeLocalInjection(): void {
+    const draft = this.localInjectionDraft;
+    if (!draft || draft.phase !== "review" || !draft.document || !draft.preflightFingerprint) return;
+    this.refreshLocalInjectionValidation(draft);
+    const currentFingerprint = this.localInjectionFingerprint(draft);
+    if (!localInjectionReady(draft)) {
+      const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
+      draft.executionId = executionId;
+      draft.phase = "outcome";
+      draft.outcome = blockedLocalInjectionOutcome(
+        executionId,
+        draft.targetDiagnostics[0]?.message ?? "The protected Local Injection target changed after Review."
+      );
+      this.publish();
+      return;
+    }
+    if (currentFingerprint !== draft.preflightFingerprint) {
+      draft.phase = "edit";
+      draft.preflightFingerprint = null;
+      this.publish();
+      return;
+    }
+
+    const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
+    const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, draft.document);
+    const request: LocalInjectionExecutionRequest = Object.freeze({
+      executionId,
+      preflightFingerprint: draft.preflightFingerprint,
+      executionTarget: draft.anchor.executionTarget,
+      document: freezeLocalInjectionDocument(draft.document),
+      draft: cloneReinjectionDraft(executionDraft)
+    });
+    draft.executionId = executionId;
+    draft.phase = "pending";
+    this.publish();
+
+    let result: Promise<LocalInjectionExecutionResult>;
+    try {
+      result = this.localInjectionExecutor
+        ? this.localInjectionExecutor.execute(request)
+        : Promise.resolve({
+            requestId: executionId,
+            ok: false,
+            status: "bridge-error",
+            timestamp: Date.now(),
+            error: "Local Injection executor is unavailable."
+          });
+    } catch (error) {
+      result = Promise.resolve({
+        requestId: executionId,
+        ok: false,
+        status: "bridge-error",
+        timestamp: Date.now(),
+        error: errorMessage(error)
+      });
+    }
+    void result.then(
+      (outcome) => this.completeLocalInjection(executionId, executionDraft, outcome),
+      (error) => this.completeLocalInjection(executionId, executionDraft, {
+        requestId: executionId,
+        ok: false,
+        status: "acknowledgement-unknown",
+        timestamp: Date.now(),
+        error: errorMessage(error)
+      })
+    );
+  }
+
+  private completeLocalInjection(
+    executionId: string,
+    executionDraft: ReinjectionDraft,
+    result: LocalInjectionExecutionResult
+  ): void {
+    const draft = this.localInjectionDraft;
+    if (
+      this.disposed ||
+      !draft ||
+      draft.phase !== "pending" ||
+      draft.executionId !== executionId ||
+      draft.outcome
+    ) return;
+
+    if (localInjectionResultConfirmsDelivery(result)) {
+      const synthetic = createSyntheticEventFromDraft(
+        executionDraft,
+        {
+          requestId: result.requestId,
+          ok: true,
+          status: "success",
+          timestamp: result.timestamp
+        },
+        draft.anchor.executionTarget
+      );
+      this.history.append(synthetic).receive(
+        () => this.setLocalInjectionOutcome(executionId, deliveredLocalInjectionOutcome(executionId, result)),
+        () => this.setLocalInjectionOutcome(
+          executionId,
+          deliveredLocalInjectionOutcome(
+            executionId,
+            result,
+            "Delivered locally, but the synthetic Evidence could not be retained in session history."
+          )
+        )
+      );
+      return;
+    }
+    this.setLocalInjectionOutcome(executionId, localInjectionOutcomeFromResult(executionId, result));
+  }
+
+  private setLocalInjectionOutcome(
+    executionId: string,
+    outcome: WorkbenchLocalInjectionOutcome
+  ): void {
+    const draft = this.localInjectionDraft;
+    if (!draft || draft.phase !== "pending" || draft.executionId !== executionId || draft.outcome) return;
+    draft.outcome = Object.freeze(outcome);
+    draft.phase = "outcome";
+    this.publish();
+  }
+
+  private refreshLocalInjectionValidation(draft: LocalInjectionDraftState): void {
+    const analysis = analyzeLocalInjectionDocument(draft.rawText, {
+      mode: draft.anchor.subscriptionMode,
+      commandSemantics:
+        draft.anchor.sourceKind === "authored" || draft.anchor.subscriptionMode === "COMMAND"
+          ? "required"
+          : "not-applicable",
+      schemaFields: draft.anchor.fieldSchema,
+      commandState: this.commandStateProjections.snapshot("local-effective"),
+      subscriptionId: draft.anchor.subscriptionId,
+      itemName: draft.anchor.itemName,
+      itemPosition: draft.anchor.itemPosition
+    });
+    draft.document = analysis.document;
+    draft.documentDiagnostics = analysis.diagnostics;
+    draft.targetDiagnostics = Object.freeze(this.validateLocalInjectionTarget(draft.anchor));
+  }
+
+  private validateLocalInjectionTarget(
+    anchor: WorkbenchLocalInjectionAnchor
+  ): LocalInjectionDiagnostic[] {
+    const diagnostics: LocalInjectionDiagnostic[] = [];
+    const stale = (code: string, message: string) => diagnostics.push(Object.freeze({
+      category: "target" as const,
+      severity: "error" as const,
+      code,
+      message
+    }));
+    if (this.captureStatus === "bridge disconnected") {
+      stale("stale-page-delivery", "The inspected-page Local Injection delivery target is disconnected.");
+    }
+    if (anchor.pageEpoch && this.currentPageEpoch && anchor.pageEpoch !== this.currentPageEpoch) {
+      stale("stale-page-delivery", "The inspected page changed after this draft was created.");
+    }
+    const state = this.topologyProjection.snapshot();
+    const client = anchor.clientId
+      ? state.clients.find(({ id }) => id === anchor.clientId) ?? null
+      : null;
+    if (!client) {
+      stale("stale-client", "The protected Lightstreamer Client is no longer available.");
+      return diagnostics;
+    }
+    const session = anchor.sessionId
+      ? client.sessions.find((candidate) => candidate.id === anchor.sessionId && !candidate.historical) ?? null
+      : null;
+    if (!session || !session.active) {
+      stale("stale-session", "The protected Lightstreamer Session is no longer active.");
+      return diagnostics;
+    }
+    const subscription = session.subscriptions.find(
+      (candidate) => candidate.id === anchor.subscriptionId && !candidate.historical
+    );
+    if (!subscription || !subscription.active) {
+      stale("stale-subscription", "The protected Subscription is no longer active.");
+      return diagnostics;
+    }
+    const item = subscription.items.find(
+      (candidate) =>
+        (anchor.itemName !== null && candidate.name === anchor.itemName) ||
+        (anchor.itemPosition !== null && candidate.position === anchor.itemPosition)
+    );
+    if (!item) stale("stale-item", "The protected Subscription item is no longer available.");
+    if (anchor.executionTarget === "captured-listener") {
+      if (!subscription.listeners.some(isActiveLocalInjectionDeliveryListener)) {
+        stale("stale-listener", "The protected Subscription has no current Item Update listeners.");
+      }
+    } else if (anchor.itemPosition === null || anchor.captureSource !== "wire") {
+      stale("stale-wire-target", "The protected captured wire delivery target is unavailable.");
+    }
+    return diagnostics;
+  }
+
+  private localInjectionFingerprint(draft: LocalInjectionDraftState): string {
+    const target = this.validateLocalInjectionTarget(draft.anchor).map(({ code }) => code);
+    return hashLocalInjectionValue({
+      anchor: draft.anchor,
+      document: draft.document,
+      target,
+      deliveryIdentity: this.localInjectionDeliveryIdentity(draft.anchor)
+    });
+  }
+
+  private localInjectionDeliveryIdentity(
+    anchor: WorkbenchLocalInjectionAnchor
+  ): unknown {
+    const state = this.topologyProjection.snapshot();
+    const client = state.clients.find(({ id }) => id === anchor.clientId);
+    const session = client?.sessions.find(
+      (candidate) => candidate.id === anchor.sessionId && !candidate.historical
+    );
+    const subscription = session?.subscriptions.find(
+      (candidate) => candidate.id === anchor.subscriptionId && !candidate.historical
+    );
+    const item = subscription?.items.find(
+      (candidate) =>
+        (anchor.itemName !== null && candidate.name === anchor.itemName) ||
+        (anchor.itemPosition !== null && candidate.position === anchor.itemPosition)
+    );
+    const deliveryListenerIds = subscription?.listeners
+      .filter(isActiveLocalInjectionDeliveryListener)
+      .map(({ id }) => id)
+      .sort() ?? [];
+    return {
+      pageEpoch: this.currentPageEpoch,
+      captureStatus: this.captureStatus,
+      clientId: client?.id ?? null,
+      sessionId: session?.id ?? null,
+      sessionActive: session?.active ?? false,
+      subscriptionId: subscription?.id ?? null,
+      subscriptionActive: subscription?.active ?? false,
+      serverEstablished: subscription?.serverEstablished ?? false,
+      itemId: item?.id ?? null,
+      deliveryListenerIds
+    };
+  }
+
+  private parkLocalInjection(): void {
+    const draft = this.localInjectionDraft;
+    if (!draft || draft.phase === "pending") return;
+    draft.open = false;
+    draft.parked = true;
+    draft.minimized = false;
+    this.localInjectionBlockedEntry = null;
+    this.localInjectionDiscardConfirmation = false;
+    this.publish();
+  }
+
+  private resumeLocalInjection(): void {
+    const draft = this.localInjectionDraft;
+    if (!draft) return;
+    draft.open = true;
+    draft.parked = false;
+    this.localInjectionBlockedEntry = null;
+    this.localInjectionDiscardConfirmation = false;
+    this.publish();
+  }
+
+  private confirmDiscardLocalInjection(): void {
+    const draft = this.localInjectionDraft;
+    if (!draft || !this.localInjectionDiscardConfirmation || draft.phase === "pending") return;
+    const blocked = this.localInjectionBlockedEntry;
+    this.localInjectionDraft = null;
+    this.localInjectionBlockedEntry = null;
+    this.localInjectionDiscardConfirmation = false;
+    if (blocked) {
+      const candidate = this.createLocalInjectionCandidate(blocked);
+      this.localInjectionDraft = candidate;
+    }
+    this.publish();
+  }
+
+  private finishLocalInjection(): void {
+    const draft = this.localInjectionDraft;
+    if (!draft || draft.phase !== "outcome") return;
+    this.localInjectionDraft = null;
+    this.localInjectionBlockedEntry = null;
+    this.localInjectionDiscardConfirmation = false;
+    this.localInjectionEntryError = null;
+    this.publish();
+  }
+
   private refreshEvidence(
     source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility",
     offset = 0
@@ -1168,6 +1804,21 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.reconcileScopeIdentity();
+    const localInjectionDraft = this.localInjectionDraft;
+    if (localInjectionDraft?.phase === "edit") {
+      this.refreshLocalInjectionValidation(localInjectionDraft);
+    } else if (localInjectionDraft?.phase === "review") {
+      this.refreshLocalInjectionValidation(localInjectionDraft);
+      const reviewedFingerprint = localInjectionDraft.preflightFingerprint;
+      if (
+        !reviewedFingerprint ||
+        !localInjectionReady(localInjectionDraft) ||
+        this.localInjectionFingerprint(localInjectionDraft) !== reviewedFingerprint
+      ) {
+        localInjectionDraft.phase = "edit";
+        localInjectionDraft.preflightFingerprint = null;
+      }
+    }
     this.version += 1;
     this.snapshot = this.createSnapshot();
     for (const listener of this.listeners) {
@@ -1215,6 +1866,7 @@ class Runtime implements WorkbenchRuntime {
       }),
       export: this.exportSnapshot(),
       evidenceCopy: this.evidenceCopy,
+      localInjection: this.localInjectionSnapshot(),
       evidence: Object.freeze({
         events: Object.freeze(evidence.events.map(toWorkbenchEvidence)),
         loading: this.evidenceLoading,
@@ -1262,6 +1914,113 @@ class Runtime implements WorkbenchRuntime {
       coverage: this.captureOverride.coverage ?? this.topologyCoverage ?? "USEFUL",
       ...(this.captureOverride.detail ? { detail: this.captureOverride.detail } : {}),
       ...(this.captureOverride.recovery ? { recovery: this.captureOverride.recovery } : {})
+    });
+  }
+
+  private localInjectionSnapshot(): WorkbenchLocalInjectionSnapshot {
+    const draft = this.localInjectionDraft;
+    return Object.freeze({
+      state: draft ? "active" as const : "idle" as const,
+      availability: this.localInjectionAvailability(),
+      entryError: this.localInjectionEntryError,
+      blockedEntry: this.localInjectionBlockedEntry
+        ? Object.freeze({
+            kind: this.localInjectionBlockedEntry.kind,
+            label: this.localInjectionBlockedEntry.kind === "selected-event"
+              ? `Selected Evidence ${this.localInjectionBlockedEntry.eventId}`
+              : `COMMAND Scope ${this.localInjectionBlockedEntry.scopeId}`
+          })
+        : null,
+      discardConfirmation: this.localInjectionDiscardConfirmation,
+      draft: draft
+        ? Object.freeze({
+            id: draft.id,
+            phase: draft.phase,
+            rawText: draft.rawText,
+            document: draft.document ? freezeLocalInjectionDocument(draft.document) : null,
+            diagnostics: Object.freeze([
+              ...draft.documentDiagnostics,
+              ...draft.targetDiagnostics
+            ]),
+            ready: localInjectionReady(draft),
+            anchor: draft.anchor,
+            source: Object.freeze({
+              kind: draft.anchor.sourceKind,
+              rawText: draft.sourceRawText
+            }),
+            compareStatus: draft.sourceDocument && draft.document
+              ? localInjectionDocumentsEqual(draft.sourceDocument, draft.document)
+                ? "unchanged" as const
+                : "changed" as const
+              : "no-source" as const,
+            compareOpen: draft.compareOpen,
+            minimized: draft.minimized,
+            parked: draft.parked,
+            open: draft.open,
+            restorationOrigin: draft.restorationOrigin,
+            executionId: draft.executionId,
+            preflightFingerprint: draft.preflightFingerprint,
+            outcome: draft.outcome
+          })
+        : null
+    });
+  }
+
+  private localInjectionAvailability(): WorkbenchLocalInjectionSnapshot["availability"] {
+    const selectedEvent = this.selectionEventId
+      ? this.selectedEventEnvelope?.id === this.selectionEventId
+        ? this.selectedEventEnvelope
+        : this.displayedEvidence().events.find(({ id }) => id === this.selectionEventId) ?? null
+      : null;
+    let selectedUpdate: { available: boolean; reason: string | null };
+    if (!selectedEvent) {
+      selectedUpdate = {
+        available: false,
+        reason: "Select one captured Item Update to create a Local Injection draft."
+      };
+    } else if (!isCompatibleLocalInjectionSource(selectedEvent)) {
+      selectedUpdate = {
+        available: false,
+        reason: "Selected Evidence is not a compatible captured Item Update."
+      };
+    } else {
+      const baseDraft = createDraftFromEvent(selectedEvent)!;
+      const fieldSchema = localInjectionFieldSchema(
+        selectedEvent.subscription?.fields,
+        selectedEvent.update?.fields
+      );
+      const anchor = anchorFromDraft(
+        baseDraft,
+        "captured-event",
+        selectedEvent.topology?.pageEpoch ?? this.currentPageEpoch,
+        fieldSchema
+      );
+      const targetDiagnostic = this.validateLocalInjectionTarget(anchor)[0];
+      selectedUpdate = targetDiagnostic
+        ? { available: false, reason: targetDiagnostic.message }
+        : { available: true, reason: null };
+    }
+
+    const scopeTarget = findTopologySelection(
+      this.topologyProjection.snapshot(),
+      this.scopeId ?? "page"
+    );
+    const authored = authoredDraftFromScope(scopeTarget, this.currentPageEpoch);
+    let commandScope: { available: boolean; reason: string | null };
+    if (!authored) {
+      commandScope = {
+        available: false,
+        reason: "Select a live COMMAND Item or Listener Scope with captured field and listener context."
+      };
+    } else {
+      const targetDiagnostic = this.validateLocalInjectionTarget(authored.anchor)[0];
+      commandScope = targetDiagnostic
+        ? { available: false, reason: targetDiagnostic.message }
+        : { available: true, reason: null };
+    }
+    return Object.freeze({
+      selectedUpdate: Object.freeze(selectedUpdate),
+      commandScope: Object.freeze(commandScope)
     });
   }
 
@@ -1699,6 +2458,310 @@ function humanizeKind(kind: string): string {
 
 function createEvidenceFindText(event: LightstreamerEventEnvelope): string {
   return `${createEventSearchText(event)} ${humanizeKind(event.kind)}`.toLowerCase();
+}
+
+function isCompatibleLocalInjectionSource(event: LightstreamerEventEnvelope): boolean {
+  const fields = localInjectionFieldSchema(event.subscription?.fields, event.update?.fields);
+  const listenerTarget = Boolean(event.listener?.id);
+  const wireTarget = event.captureSource === "wire" && Boolean(event.item?.position);
+  const mode = event.subscription?.mode;
+  const commandContextReady =
+    mode !== "COMMAND" || (fields.includes("command") && fields.includes("key"));
+  return (
+    event.kind === "item-update" &&
+    !event.synthetic &&
+    event.source === "server" &&
+    (mode === "COMMAND" || mode === "MERGE" || mode === "DISTINCT") &&
+    Boolean(event.client?.id) &&
+    Boolean(event.client?.sessionId) &&
+    Boolean(event.subscription?.id) &&
+    Boolean(event.item?.name || event.item?.position) &&
+    fields.length > 0 &&
+    commandContextReady &&
+    (listenerTarget || wireTarget)
+  );
+}
+
+function localInjectionFieldSchema(
+  captured: readonly string[] | null | undefined,
+  observed: Readonly<Record<string, unknown>> | undefined
+): string[] {
+  const fields: string[] = [];
+  for (const field of captured ?? Object.keys(observed ?? {})) {
+    if (field.trim() && !fields.includes(field)) fields.push(field);
+  }
+  return fields;
+}
+
+function anchorFromDraft(
+  draft: ReinjectionDraft,
+  sourceKind: WorkbenchLocalInjectionAnchor["sourceKind"],
+  pageEpoch: string | null,
+  fieldSchema: readonly string[]
+): WorkbenchLocalInjectionAnchor {
+  const executionTarget: ReinjectionExecutionTarget =
+    draft.target.listenerId || draft.captureSource !== "wire"
+      ? "captured-listener"
+      : "captured-wire";
+  return Object.freeze({
+    sourceKind,
+    sourceEventId: sourceKind === "captured-event" ? draft.sourceEventId : null,
+    pageEpoch,
+    clientId: draft.sourceClient?.id ?? null,
+    sessionId: draft.sourceClient?.sessionId ?? null,
+    subscriptionId: draft.target.subscriptionId!,
+    subscriptionMode: draft.subscriptionMode ?? null,
+    itemName: draft.item.name ?? null,
+    itemPosition: draft.item.position ?? null,
+    listenerId: draft.target.listenerId,
+    captureSource: draft.captureSource ?? "listener",
+    executionTarget,
+    fieldSchema: Object.freeze([...fieldSchema])
+  });
+}
+
+function authoredDraftFromScope(
+  target: TopologySelectionTarget | null,
+  pageEpoch: string | null
+): { draft: ReinjectionDraft; anchor: WorkbenchLocalInjectionAnchor } | null {
+  if (!target || (target.kind !== "item" && target.kind !== "listener")) return null;
+  if (!target.client || !target.session || target.session.historical || !target.session.active) return null;
+  const subscription = target.subscription;
+  const item = target.kind === "item" ? target.item : target.item;
+  if (!item || subscription.mode !== "COMMAND" || subscription.historical || !subscription.active) return null;
+  const listener = target.kind === "listener"
+    ? target.listener
+    : subscription.listeners.find(
+        (candidate) => candidate.active && item.listenerIds.includes(candidate.id)
+      ) ?? null;
+  if (!listener?.active) return null;
+  const fieldSchema = localInjectionFieldSchema(subscription.fields, undefined);
+  if (!fieldSchema.includes("command") || !fieldSchema.includes("key")) return null;
+  const sourceClient = {
+    id: target.client.id,
+    status: target.client.status,
+    sessionId: target.session.id,
+    transport: target.session.transport
+  };
+  const sourceSubscription = {
+    id: subscription.id,
+    mode: subscription.mode,
+    fields: [...fieldSchema],
+    items: subscription.configuredItems ? [...subscription.configuredItems] : undefined,
+    active: subscription.active,
+    subscribed: subscription.serverEstablished
+  };
+  const draft = createNewCommandDraftFromContext({
+    subscriptionId: subscription.id,
+    mode: subscription.mode,
+    listenerId: listener.id,
+    captureSource: "listener",
+    itemName: item.name,
+    itemPosition: item.position,
+    fields: [...fieldSchema]
+  });
+  if (!draft) return null;
+  const protectedDraft: ReinjectionDraft = {
+    ...draft,
+    sourceClient,
+    sourceSubscription
+  };
+  return {
+    draft: protectedDraft,
+    anchor: anchorFromDraft(protectedDraft, "authored", pageEpoch, fieldSchema)
+  };
+}
+
+function localInjectionReady(draft: LocalInjectionDraftState): boolean {
+  return Boolean(draft.document) &&
+    draft.documentDiagnostics.every(({ severity }) => severity !== "error") &&
+    draft.targetDiagnostics.every(({ severity }) => severity !== "error");
+}
+
+function isActiveLocalInjectionDeliveryListener(
+  listener: Readonly<{ active: boolean; callbacks: readonly string[] }>
+): boolean {
+  return listener.active && listener.callbacks.includes("onItemUpdate");
+}
+
+function freezeLocalInjectionDocument(
+  document: LocalInjectionDocument
+): Readonly<LocalInjectionDocument> {
+  return Object.freeze({
+    command: document.command,
+    key: document.key,
+    isSnapshot: document.isSnapshot,
+    fields: Object.freeze({ ...document.fields })
+  });
+}
+
+function cloneReinjectionDraft(draft: ReinjectionDraft): ReinjectionDraft {
+  return {
+    ...draft,
+    ...(draft.sourceClient ? { sourceClient: { ...draft.sourceClient } } : {}),
+    ...(draft.sourceSubscription
+      ? {
+          sourceSubscription: {
+            ...draft.sourceSubscription,
+            ...(draft.sourceSubscription.items ? { items: [...draft.sourceSubscription.items] } : {}),
+            ...(draft.sourceSubscription.fields ? { fields: [...draft.sourceSubscription.fields] } : {})
+          }
+        }
+      : {}),
+    target: { ...draft.target },
+    item: { ...draft.item },
+    fields: { ...draft.fields },
+    sourceFields: { ...draft.sourceFields },
+    changedFields: { ...draft.changedFields },
+    originalChangedFields: { ...draft.originalChangedFields },
+    provenance: { ...draft.provenance }
+  };
+}
+
+function hashLocalInjectionValue(value: unknown): string {
+  const text = stableJson(value);
+  let hash = 2_166_136_261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `li-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function blockedLocalInjectionOutcome(
+  executionId: string,
+  detail: string
+): WorkbenchLocalInjectionOutcome {
+  return Object.freeze({
+    disposition: "blocked",
+    headline: "NOT RUN",
+    status: "stale-target",
+    executionId,
+    requestId: null,
+    timestamp: Date.now(),
+    detail: `BLOCKED · ${detail}`
+  });
+}
+
+function deliveredLocalInjectionOutcome(
+  executionId: string,
+  result: LocalInjectionExecutionResult,
+  detail = "The update was delivered through the protected local page target. No server was contacted."
+): WorkbenchLocalInjectionOutcome {
+  return Object.freeze({
+    disposition: "delivered",
+    headline: "DELIVERED LOCALLY",
+    status: "success",
+    executionId,
+    requestId: result.requestId,
+    timestamp: result.timestamp,
+    detail,
+    ...localInjectionDeliveryCounts(result)
+  });
+}
+
+function localInjectionOutcomeFromResult(
+  executionId: string,
+  result: LocalInjectionExecutionResult
+): WorkbenchLocalInjectionOutcome {
+  const counts = localInjectionDeliveryCounts(result);
+  if (result.status === "success") {
+    return Object.freeze({
+      disposition: "failed",
+      headline: "DELIVERY FAILED",
+      status: result.status,
+      executionId,
+      requestId: result.requestId,
+      timestamp: result.timestamp,
+      detail: result.error ?? "The reported success result did not confirm any listener delivery and was rejected as invalid.",
+      ...counts
+    });
+  }
+  if (result.status === "stale-target") {
+    return Object.freeze({
+      disposition: "blocked",
+      headline: "NOT RUN",
+      status: result.status,
+      executionId,
+      requestId: result.requestId,
+      timestamp: result.timestamp,
+      detail: `BLOCKED · ${result.error ?? "The protected target is stale."}`,
+      ...counts
+    });
+  }
+  if (result.status === "acknowledgement-unknown") {
+    return Object.freeze({
+      disposition: "acknowledgement-unknown",
+      headline: "DELIVERY UNKNOWN",
+      status: result.status,
+      executionId,
+      requestId: result.requestId,
+      timestamp: result.timestamp,
+      detail: result.error ?? "The page may have executed the request, but Workbench did not receive a trustworthy acknowledgement. No retry was attempted."
+    });
+  }
+  if (result.status === "listener-error" && (result.deliveredCount ?? 0) > 0) {
+    return Object.freeze({
+      disposition: "partial",
+      headline: "PARTIALLY DELIVERED",
+      status: result.status,
+      executionId,
+      requestId: result.requestId,
+      timestamp: result.timestamp,
+      detail: result.error ?? "Some captured listeners received the update and at least one listener failed.",
+      ...counts
+    });
+  }
+  return Object.freeze({
+    disposition: "failed",
+    headline: "DELIVERY FAILED",
+    status: result.status,
+    executionId,
+    requestId: result.requestId,
+    timestamp: result.timestamp,
+    detail: result.error ?? "The local delivery target rejected the update.",
+    ...counts
+  });
+}
+
+function localInjectionResultConfirmsDelivery(
+  result: LocalInjectionExecutionResult
+): boolean {
+  if (result.status !== "success" || !result.ok) return false;
+  const hasAnyCount =
+    result.attemptedCount !== undefined ||
+    result.deliveredCount !== undefined ||
+    result.failedCount !== undefined;
+  if (!hasAnyCount) return true;
+  return (
+    Number.isSafeInteger(result.attemptedCount) &&
+    Number.isSafeInteger(result.deliveredCount) &&
+    Number.isSafeInteger(result.failedCount) &&
+    result.attemptedCount! > 0 &&
+    result.deliveredCount === result.attemptedCount &&
+    result.failedCount === 0
+  );
+}
+
+function localInjectionDeliveryCounts(
+  result: LocalInjectionExecutionResult
+): Pick<WorkbenchLocalInjectionOutcome, "attemptedCount" | "deliveredCount" | "failedCount"> {
+  return {
+    ...(result.attemptedCount !== undefined ? { attemptedCount: result.attemptedCount } : {}),
+    ...(result.deliveredCount !== undefined ? { deliveredCount: result.deliveredCount } : {}),
+    ...(result.failedCount !== undefined ? { failedCount: result.failedCount } : {})
+  };
 }
 
 function topologyScopeNodes(

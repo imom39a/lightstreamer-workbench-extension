@@ -291,7 +291,8 @@ export type ReinjectionResultStatus =
   | "stale-target"
   | "listener-error"
   | "wire-error"
-  | "bridge-error";
+  | "bridge-error"
+  | "acknowledgement-unknown";
 
 export type ReinjectionResult = {
   requestId: string;
@@ -299,6 +300,9 @@ export type ReinjectionResult = {
   status: ReinjectionResultStatus;
   timestamp: number;
   error?: string;
+  attemptedCount?: number;
+  deliveredCount?: number;
+  failedCount?: number;
 };
 
 export type RuntimeReinjectResultMessage = {
@@ -715,14 +719,71 @@ function isReinjectionResult(value: unknown): value is ReinjectionResult {
     return false;
   }
 
-  return (
+  if (!(
     isNonEmptyString(value.requestId) &&
     typeof value.ok === "boolean" &&
     isReinjectionResultStatus(value.status) &&
     typeof value.timestamp === "number" &&
     Number.isFinite(value.timestamp) &&
     (value.error === undefined || typeof value.error === "string")
-  );
+  )) {
+    return false;
+  }
+
+  const hasAnyCount =
+    value.attemptedCount !== undefined ||
+    value.deliveredCount !== undefined ||
+    value.failedCount !== undefined;
+  const counts = readReinjectionCounts(value);
+
+  if (value.status === "success") {
+    return value.ok && (
+      !hasAnyCount ||
+      (counts !== null &&
+        counts.attempted > 0 &&
+        counts.delivered === counts.attempted &&
+        counts.failed === 0)
+    );
+  }
+  if (value.status === "stale-target") {
+    return (
+      !value.ok &&
+      (!hasAnyCount ||
+        (counts !== null &&
+          counts.attempted === 0 &&
+          counts.delivered === 0 &&
+          counts.failed === 0))
+    );
+  }
+  if (value.status === "listener-error") {
+    return (
+      !value.ok &&
+      typeof value.error === "string" &&
+      counts !== null &&
+      counts.attempted > 0 &&
+      counts.failed > 0
+    );
+  }
+
+  return !value.ok && !hasAnyCount;
+}
+
+function readReinjectionCounts(
+  value: Record<string, unknown>
+): { attempted: number; delivered: number; failed: number } | null {
+  if (
+    !isSafeNonNegativeInteger(value.attemptedCount) ||
+    !isSafeNonNegativeInteger(value.deliveredCount) ||
+    !isSafeNonNegativeInteger(value.failedCount) ||
+    value.attemptedCount !== value.deliveredCount + value.failedCount
+  ) {
+    return null;
+  }
+  return {
+    attempted: value.attemptedCount,
+    delivered: value.deliveredCount,
+    failed: value.failedCount
+  };
 }
 
 function isReinjectionResultStatus(value: unknown): value is ReinjectionResultStatus {
@@ -731,7 +792,8 @@ function isReinjectionResultStatus(value: unknown): value is ReinjectionResultSt
     value === "stale-target" ||
     value === "listener-error" ||
     value === "wire-error" ||
-    value === "bridge-error"
+    value === "bridge-error" ||
+    value === "acknowledgement-unknown"
   );
 }
 

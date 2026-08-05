@@ -114,7 +114,9 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
       }
 
       handlers.onStatusChange("bridge disconnected");
-      resolvePendingWithBridgeError("Bridge disconnected before reinjection completed.");
+      resolvePendingWithAcknowledgementUnknown(
+        "Bridge disconnected before reinjection completed."
+      );
       reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
     });
 
@@ -153,7 +155,9 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
       }
-      resolvePendingWithBridgeError("Bridge disconnected before reinjection completed.");
+      resolvePendingWithAcknowledgementUnknown(
+        "Bridge disconnected before reinjection completed."
+      );
       port?.disconnect();
     }
   };
@@ -169,22 +173,38 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         pendingReinjections.delete(requestId);
-        resolve(createBridgeErrorResult(requestId, "Timed out waiting for reinjection result."));
+        resolve(
+          createAcknowledgementUnknownResult(
+            requestId,
+            "Timed out waiting for reinjection result."
+          )
+        );
       }, REINJECT_TIMEOUT_MS);
 
       pendingReinjections.set(requestId, { resolve, timer });
-      port?.postMessage({
-        type: PANEL_REINJECT_REQUEST,
-        requestId,
-        draft: payload
-      });
+      try {
+        port?.postMessage({
+          type: PANEL_REINJECT_REQUEST,
+          requestId,
+          draft: payload
+        });
+      } catch (error) {
+        pendingReinjections.delete(requestId);
+        clearTimeout(timer);
+        resolve(
+          createBridgeErrorResult(
+            requestId,
+            error instanceof Error ? error.message : "Could not post the reinjection request."
+          )
+        );
+      }
     });
   }
 
-  function resolvePendingWithBridgeError(error: string) {
+  function resolvePendingWithAcknowledgementUnknown(error: string) {
     for (const [requestId, pending] of pendingReinjections.entries()) {
       clearTimeout(pending.timer);
-      pending.resolve(createBridgeErrorResult(requestId, error));
+      pending.resolve(createAcknowledgementUnknownResult(requestId, error));
     }
     pendingReinjections.clear();
   }
@@ -215,7 +235,7 @@ function reinjectThroughInspectedPage(
         cleanupLegacyPageReinjection(requestId);
       }
       finish(
-        createBridgeErrorResult(
+        createAcknowledgementUnknownResult(
           requestId,
           legacyRequestStarted
             ? "Timed out waiting for the inspected-page reinjection result."
@@ -239,7 +259,7 @@ function reinjectThroughInspectedPage(
                 cleanupLegacyPageReinjection(requestId);
               }
               finish(
-                createBridgeErrorResult(
+                createAcknowledgementUnknownResult(
                   requestId,
                   exceptionInfo.description ||
                     exceptionInfo.value ||
@@ -253,7 +273,7 @@ function reinjectThroughInspectedPage(
             if (evaluation?.bridgeState === "unavailable") {
               if (legacyRequestStarted) {
                 finish(
-                  createBridgeErrorResult(
+                  createAcknowledgementUnknownResult(
                     requestId,
                     "The inspected-page reinjection request lost its result channel. Reload the inspected page and capture a fresh update."
                   )
@@ -281,7 +301,7 @@ function reinjectThroughInspectedPage(
                 cleanupLegacyPageReinjection(requestId);
               }
               finish(
-                createBridgeErrorResult(
+                createAcknowledgementUnknownResult(
                   requestId,
                   "The inspected page reinjection bridge returned an invalid result. Reload the inspected page and capture a fresh update."
                 )
@@ -515,6 +535,19 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
     requestId,
     ok: false,
     status: "bridge-error",
+    timestamp: Date.now(),
+    error
+  };
+}
+
+function createAcknowledgementUnknownResult(
+  requestId: string,
+  error: string
+): ReinjectionResult {
+  return {
+    requestId,
+    ok: false,
+    status: "acknowledgement-unknown",
     timestamp: Date.now(),
     error
   };

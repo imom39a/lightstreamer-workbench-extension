@@ -9,6 +9,8 @@ import { formatTargets, type BrowserTarget } from "./devtools-panel";
 
 type CdpResponse = {
   id?: number;
+  method?: string;
+  params?: unknown;
   result?: unknown;
   error?: { message?: string };
 };
@@ -28,6 +30,7 @@ export type DebuggingEndpoint = {
 
 export class CdpClient {
   private nextId = 1;
+  private readonly eventListeners = new Map<string, Set<(params: unknown) => void>>();
   private readonly pending = new Map<
     number,
     {
@@ -40,7 +43,14 @@ export class CdpClient {
   private constructor(private readonly socket: WebSocket) {
     socket.on("message", (rawMessage) => {
       const message = JSON.parse(String(rawMessage)) as CdpResponse;
-      if (typeof message.id !== "number") return;
+      if (typeof message.id !== "number") {
+        if (message.method) {
+          for (const listener of this.eventListeners.get(message.method) ?? []) {
+            listener(message.params);
+          }
+        }
+        return;
+      }
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
@@ -78,12 +88,23 @@ export class CdpClient {
     });
   }
 
+  on(method: string, listener: (params: unknown) => void): () => void {
+    const listeners = this.eventListeners.get(method) ?? new Set<(params: unknown) => void>();
+    listeners.add(listener);
+    this.eventListeners.set(method, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.eventListeners.delete(method);
+    };
+  }
+
   close(): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(new Error("Chrome DevTools Protocol connection closed."));
     }
     this.pending.clear();
+    this.eventListeners.clear();
     this.socket.close();
   }
 }

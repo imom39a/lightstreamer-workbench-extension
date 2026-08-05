@@ -48,7 +48,7 @@ Commands:
   stop   Remove the fixture Docker container
   test   Build everything, run smoke and real-browser extension tests, then stop
   browser-test  Build everything, run the real-browser extension tests, then stop
-  react-browser-test  Build and run the React read-only official-client extension proof, then stop
+  react-browser-test  Build and run the React official-client Local Injection proof, then stop
 
 The same commands are available through npm run fixture:<command>.`;
 

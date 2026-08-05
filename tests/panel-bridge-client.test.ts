@@ -402,7 +402,7 @@ describe("panel bridge client", () => {
     });
   });
 
-  it("does not retry a direct reinjection that returns an invalid result", async () => {
+  it("reports acknowledgement unknown and does not retry a direct reinjection whose result is lost", async () => {
     const port = createFakePort();
     const evaluate = vi.fn(
       (
@@ -449,7 +449,7 @@ describe("panel bridge client", () => {
 
     await expect(bridge.reinjectDraft(createValidDraft())).resolves.toMatchObject({
       ok: false,
-      status: "bridge-error",
+      status: "acknowledgement-unknown",
       error: expect.stringContaining("invalid result")
     });
     expect(
@@ -460,6 +460,121 @@ describe("panel bridge client", () => {
           (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
       )
     ).toBe(false);
+  });
+
+  it("does not duplicate a direct reinjection when its DevTools acknowledgement times out", async () => {
+    vi.useFakeTimers();
+    const port = createFakePort();
+    const evaluate = vi.fn();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42,
+          eval: evaluate
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+    const resultPromise = bridge.reinjectDraft(createValidDraft());
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(resultPromise).resolves.toMatchObject({
+      ok: false,
+      status: "acknowledgement-unknown",
+      error: expect.stringContaining("did not complete")
+    });
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(
+      port.postedMessages.filter(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+      )
+    ).toHaveLength(0);
+  });
+
+  it("marks a posted runtime request acknowledgement unknown when the port disconnects", async () => {
+    vi.useFakeTimers();
+    const port = createFakePort();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+    const resultPromise = bridge.reinjectDraft(createValidDraft());
+
+    expect(
+      port.postedMessages.filter(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+      )
+    ).toHaveLength(1);
+    port.disconnect();
+
+    await expect(resultPromise).resolves.toMatchObject({
+      ok: false,
+      status: "acknowledgement-unknown",
+      error: expect.stringContaining("disconnected")
+    });
+    bridge.disconnect();
+  });
+
+  it("keeps a synchronous runtime-post failure distinct as a pre-execution bridge error", async () => {
+    const port = createFakePort();
+    const originalPostMessage = port.postMessage.bind(port);
+    port.postMessage = (message) => {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
+      ) {
+        throw new Error("runtime port is closed");
+      }
+      originalPostMessage(message);
+    };
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: {
+          tabId: 42
+        }
+      },
+      runtime: {
+        connect: vi.fn(() => port)
+      }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange: vi.fn(),
+      onCaptureMessage: vi.fn()
+    });
+
+    await expect(bridge.reinjectDraft(createValidDraft())).resolves.toMatchObject({
+      ok: false,
+      status: "bridge-error",
+      error: "runtime port is closed"
+    });
+    bridge.disconnect();
   });
 
   it("preserves an edited JSON-string field and its changed-field semantics across the panel bridge", async () => {

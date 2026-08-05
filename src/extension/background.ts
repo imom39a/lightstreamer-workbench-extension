@@ -87,11 +87,13 @@ chrome.runtime.onConnect.addListener((port) => {
 
         deliverReinjectionResult(
           tabId,
-          createBridgeErrorResult(
-            message.requestId,
-            runtimeError ??
-              "Content script did not accept the reinjection request. Reload the inspected page and try again."
-          )
+          runtimeError && !isMissingContentScriptReceiverError(runtimeError)
+            ? createAcknowledgementUnknownResult(message.requestId, runtimeError)
+            : createBridgeErrorResult(
+                message.requestId,
+                runtimeError ??
+                  "Content script did not accept the reinjection request. Reload the inspected page and try again."
+              )
         );
       }
     );
@@ -158,6 +160,27 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
     timestamp: Date.now(),
     error
   };
+}
+
+function createAcknowledgementUnknownResult(
+  requestId: string,
+  error: string
+): ReinjectionResult {
+  return {
+    requestId,
+    ok: false,
+    status: "acknowledgement-unknown",
+    timestamp: Date.now(),
+    error
+  };
+}
+
+function isMissingContentScriptReceiverError(error: string): boolean {
+  const normalized = error.toLowerCase();
+  return (
+    normalized.includes("receiving end does not exist") ||
+    normalized.includes("could not establish connection")
+  );
 }
 
 function deliverReinjectionResult(tabId: number, result: ReinjectionResult): boolean {

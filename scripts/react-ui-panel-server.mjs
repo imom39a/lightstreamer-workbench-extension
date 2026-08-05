@@ -67,11 +67,24 @@ if (!(root instanceof HTMLElement)) throw new Error("React Diagnose scenario req
 const scenario = getReactDiagnoseScenario(scenarioId);
 const history = createInMemoryEventHistory();
 for (const event of scenario.initialEvents) history.append(event);
+let localInjectionExecutionCount = 0;
+const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
+  execute(request) {
+    localInjectionExecutionCount += 1;
+    const outcome = scenario.localInjection.executorOutcome;
+    if (outcome === "pending") return new Promise(() => undefined);
+    if (outcome === "delivered") return Promise.resolve({ requestId: request.executionId, ok: true, status: "success", timestamp: 1_780_872_100_001, attemptedCount: 1, deliveredCount: 1, failedCount: 0 });
+    if (outcome === "partial") return Promise.resolve({ requestId: request.executionId, ok: false, status: "listener-error", timestamp: 1_780_872_100_002, error: "One current listener rejected the local delivery.", attemptedCount: 2, deliveredCount: 1, failedCount: 1 });
+    if (outcome === "unknown") return Promise.resolve({ requestId: request.executionId, ok: false, status: "acknowledgement-unknown", timestamp: 1_780_872_100_003, error: "The page acknowledgement channel closed before Workbench could prove delivery." });
+    return Promise.resolve({ requestId: request.executionId, ok: false, status: "listener-error", timestamp: 1_780_872_100_004, error: "The protected local listener rejected the update.", attemptedCount: 1, deliveredCount: 0, failedCount: 1 });
+  }
+} : undefined;
 const runtime = createWorkbenchRuntime({
   history,
   captureStatus: scenario.captureStatus,
   capture: scenario.capture,
-  theme
+  theme,
+  ...(localInjectionExecutor ? { localInjectionExecutor } : {})
 });
 for (const frame of scenario.topologySyncFrames ?? []) {
   runtime.dispatch({ type: "apply-topology-sync-frame", frame });
@@ -100,9 +113,22 @@ if (scenario.findQuery) runtime.dispatch({ type: "set-find", value: scenario.fin
 if (scenario.freezeBeforeLaterEvents) runtime.dispatch({ type: "freeze-evidence" });
 for (const event of scenario.laterEvents ?? []) history.append(event);
 if (scenario.openRawEvidence && scenario.selectedEventId) runtime.dispatch({ type: "open-raw-evidence", eventId: scenario.selectedEventId });
+if (scenario.localInjection) {
+  runtime.dispatch({ type: scenario.localInjection.entry === "selection" ? "begin-local-injection-from-selection" : "begin-local-injection-from-scope" });
+  if (scenario.localInjection.rawText !== undefined) runtime.dispatch({ type: "set-local-injection-json", text: scenario.localInjection.rawText });
+  if (scenario.localInjection.compareOpen) runtime.dispatch({ type: "set-local-injection-compare", open: true });
+  if (scenario.localInjection.minimized) runtime.dispatch({ type: "set-local-injection-minimized", minimized: true });
+  if (scenario.localInjection.parked) runtime.dispatch({ type: "park-local-injection" });
+  if (scenario.localInjection.staleBeforeReview) runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
+  if (scenario.localInjection.review) runtime.dispatch({ type: "review-local-injection" });
+  if (scenario.localInjection.staleAfterReview) runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
+  if (scenario.localInjection.execute) runtime.dispatch({ type: "execute-local-injection" });
+  if (scenario.localInjection.secondEntry) runtime.dispatch({ type: scenario.localInjection.secondEntry === "selection" ? "begin-local-injection-from-selection" : "begin-local-injection-from-scope" });
+}
 await new Promise((resolve) => setTimeout(resolve, 48));
 document.documentElement.dataset.reactScenario = scenarioId;
 document.documentElement.dataset.reactSceneReady = "true";
+window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
 window.addEventListener("pagehide", () => { reactRoot.unmount(); runtime.dispose(); }, { once: true });
 `;
 }

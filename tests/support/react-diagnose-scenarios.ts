@@ -21,7 +21,19 @@ export const REACT_DIAGNOSE_SCENARIO_IDS = [
   "filter-find",
   "filter-hidden-selection",
   "recovering",
-  "retired-scope"
+  "retired-scope",
+  "local-injection-captured",
+  "local-injection-authored",
+  "local-injection-large",
+  "local-injection-invalid",
+  "local-injection-conflict",
+  "local-injection-stale-edit",
+  "local-injection-stale-review",
+  "local-injection-pending",
+  "local-injection-delivered",
+  "local-injection-failed",
+  "local-injection-partial",
+  "local-injection-unknown"
 ] as const;
 
 export type ReactDiagnoseScenarioId = (typeof REACT_DIAGNOSE_SCENARIO_IDS)[number];
@@ -34,7 +46,7 @@ export type ReactDiagnoseScenario = Readonly<{
   captureMessages?: readonly CaptureMessage[];
   selectedEventId?: string;
   selectedScope?: Readonly<{
-    kind: "session";
+    kind: "session" | "item" | "listener";
     retired: boolean;
     label: string;
   }>;
@@ -50,6 +62,19 @@ export type ReactDiagnoseScenario = Readonly<{
   openRawEvidence?: boolean;
   filterQuery?: string;
   findQuery?: string;
+  localInjection?: Readonly<{
+    entry: "selection" | "scope";
+    rawText?: string;
+    compareOpen?: boolean;
+    minimized?: boolean;
+    parked?: boolean;
+    review?: boolean;
+    staleBeforeReview?: boolean;
+    staleAfterReview?: boolean;
+    execute?: boolean;
+    secondEntry?: "selection" | "scope";
+    executorOutcome?: "pending" | "delivered" | "failed" | "partial" | "unknown";
+  }>;
 }>;
 
 export function isReactDiagnoseScenarioId(value: string): value is ReactDiagnoseScenarioId {
@@ -167,7 +192,102 @@ export function getReactDiagnoseScenario(id: ReactDiagnoseScenarioId): ReactDiag
         },
         captureStatus: "capturing"
       };
+    case "local-injection-captured":
+      return localInjectionCapturedScenario(id);
+    case "local-injection-authored":
+      return {
+        id,
+        initialEvents: [],
+        topologySyncFrames: topology.topologySyncFrames,
+        captureMessages: topology.captureMessages,
+        selectedEventId: "event-5",
+        selectedScope: {
+          kind: "item",
+          retired: false,
+          label: "topology-small-item · #1"
+        },
+        captureStatus: "capturing"
+      };
+    case "local-injection-large": {
+      const source = topology.capturedEvents.at(-1);
+      if (!source?.update || !source.subscription) throw new Error("Topology scenario requires a captured Item Update source.");
+      const fields = Object.fromEntries(Array.from({ length: 500 }, (_, index) => {
+        if (index === 0) return ["command", "UPDATE"];
+        if (index === 1) return ["key", "small-alpha"];
+        return [`field_${String(index - 1).padStart(3, "0")}`, `value-${index - 1}`];
+      }));
+      const event: LightstreamerEventEnvelope = {
+        ...source,
+        id: "large-local-source",
+        subscription: { ...source.subscription, fields: Object.keys(fields) },
+        update: { ...source.update, command: "UPDATE", key: "small-alpha", fields, changedFields: fields }
+      };
+      return {
+        id,
+        initialEvents: [event],
+        topologySyncFrames: topology.topologySyncFrames,
+        captureMessages: topology.captureMessages,
+        selectedEventId: event.id,
+        captureStatus: "capturing",
+        localInjection: { entry: "selection", compareOpen: true }
+      };
+    }
+    case "local-injection-invalid":
+      return {
+        ...localInjectionCapturedScenario(id),
+        localInjection: {
+          entry: "selection",
+          rawText: '{\n  "command": "UPDATE",\n  "command": "ADD",\n  "key": "missing",\n  "isSnapshot": false,\n  "fields": {"command": "UPDATE", "key": "missing", "value": "2"}\n}'
+        }
+      };
+    case "local-injection-conflict":
+      return {
+        ...localInjectionCapturedScenario(id),
+        localInjection: { entry: "selection", secondEntry: "selection" }
+      };
+    case "local-injection-stale-review":
+      return {
+        ...localInjectionCapturedScenario(id),
+        localInjection: { entry: "selection", review: true, staleAfterReview: true, execute: true }
+      };
+    case "local-injection-stale-edit":
+      return {
+        ...localInjectionCapturedScenario(id),
+        localInjection: { entry: "selection", staleBeforeReview: true, review: true }
+      };
+    case "local-injection-pending":
+      return localInjectionOutcomeScenario(id, "pending");
+    case "local-injection-delivered":
+      return localInjectionOutcomeScenario(id, "delivered");
+    case "local-injection-failed":
+      return localInjectionOutcomeScenario(id, "failed");
+    case "local-injection-partial":
+      return localInjectionOutcomeScenario(id, "partial");
+    case "local-injection-unknown":
+      return localInjectionOutcomeScenario(id, "unknown");
   }
+}
+
+function localInjectionCapturedScenario(id: ReactDiagnoseScenarioId): ReactDiagnoseScenario {
+  const topology = getPanelScenario("topology-small");
+  return {
+    id,
+    initialEvents: [],
+    topologySyncFrames: topology.topologySyncFrames,
+    captureMessages: topology.captureMessages,
+    selectedEventId: "event-5",
+    captureStatus: "capturing"
+  };
+}
+
+function localInjectionOutcomeScenario(
+  id: ReactDiagnoseScenarioId,
+  outcome: "pending" | "delivered" | "failed" | "partial" | "unknown"
+): ReactDiagnoseScenario {
+  return {
+    ...localInjectionCapturedScenario(id),
+    localInjection: { entry: "selection", review: true, execute: true, executorOutcome: outcome }
+  };
 }
 
 function semanticSessionStatus(

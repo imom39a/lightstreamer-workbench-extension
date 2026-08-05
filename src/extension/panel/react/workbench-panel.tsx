@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { lazy, Suspense, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import {
   type WorkbenchCommand,
@@ -14,6 +14,11 @@ import {
 import { renderTopologyHtmlReport } from "../topology-html-report";
 
 import "./workbench-panel.css";
+
+const LazyLocalInjectionDocument = lazy(async () => {
+  const module = await import("./local-injection-document");
+  return { default: module.LocalInjectionDocument };
+});
 
 export type WorkbenchPanelProps = { runtime: WorkbenchRuntime };
 
@@ -150,6 +155,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const contextSplitter = useRef<HTMLDivElement | null>(null);
   const scopeRestore = useRef<HTMLButtonElement | null>(null);
   const contextRestore = useRef<HTMLButtonElement | null>(null);
+  const resumeLocalInjection = useRef<HTMLButtonElement | null>(null);
+  const parkedDiscardTrigger = useRef<HTMLButtonElement | null>(null);
+  const parkedDiscardDialog = useRef<HTMLElement | null>(null);
+  const restoreParkedDiscardFocus = useRef(false);
+  const previousLocalInjectionDraft = useRef<WorkbenchSnapshot["localInjection"]["draft"]>(null);
+  const previousParkedDiscardConfirmation = useRef(false);
   const scopeCollapse = useRef<HTMLButtonElement | null>(null);
   const contextCollapse = useRef<HTMLButtonElement | null>(null);
   const paneRestoreDestination = useRef<{ scope: "splitter" | "collapse"; context: "splitter" | "collapse" }>({ scope: "splitter", context: "splitter" });
@@ -182,6 +193,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     }
     return true;
   });
+  const canAuthorCommandUpdate = snapshot.localInjection.availability.commandScope.available;
+  const canCreateLocalInjectionDraft = snapshot.localInjection.availability.selectedUpdate.available;
   const total = evidence.total;
   const shown = events.length;
   const limited = coverage === "LIMITED" || coverage === "UNAVAILABLE";
@@ -190,6 +203,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   );
   const compactSurface = snapshot.contextId === "context:scope" ? "scope" : snapshot.contextId ? "context" : undefined;
   const rawEvidence = snapshot.contextId?.startsWith("raw:") ? selected : null;
+  const localInjection = snapshot.localInjection;
+  const localInjectionDraft = localInjection.draft;
   const contextMode = snapshot.contextId === "context:actions"
     ? "actions"
     : snapshot.contextId === "context:export"
@@ -571,6 +586,43 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     pendingPaneFocus.current = null;
   }, [scopeCollapsed, contextCollapsed]);
 
+  useLayoutEffect(() => {
+    const previous = previousLocalInjectionDraft.current;
+    const current = localInjectionDraft;
+    if (previous?.open && current?.parked) {
+      resumeLocalInjection.current?.focus();
+    } else if (previous && !current) {
+      const restoration = previous.restorationOrigin;
+      const focus = (target: HTMLElement | null | undefined): boolean => {
+        if (!target?.isConnected) return false;
+        target.focus();
+        return document.activeElement === target;
+      };
+      if (previous.source.kind === "authored") {
+        if (!(geometry === "wide" && restoration.scopeId && focus(scopeNodesById.current.get(restoration.scopeId)))) {
+          focus(scopeTrigger.current);
+        }
+      } else {
+        const eventId = restoration.focusedEventId ?? restoration.selectionEventId;
+        if (!(eventId && focus(evidenceRows.current.get(eventId)))) {
+          if (!(restoration.contextId && focus(contextLens.current))) focus(scopeTrigger.current);
+        }
+      }
+    }
+    previousLocalInjectionDraft.current = current;
+  }, [geometry, localInjectionDraft]);
+
+  useLayoutEffect(() => {
+    const confirmation = !!localInjectionDraft?.parked && localInjection.discardConfirmation;
+    if (!previousParkedDiscardConfirmation.current && confirmation) {
+      parkedDiscardDialog.current?.focus();
+    } else if (previousParkedDiscardConfirmation.current && !confirmation && restoreParkedDiscardFocus.current) {
+      restoreParkedDiscardFocus.current = false;
+      parkedDiscardTrigger.current?.focus();
+    }
+    previousParkedDiscardConfirmation.current = confirmation;
+  }, [localInjection.discardConfirmation, localInjectionDraft?.parked]);
+
   useLayoutEffect(() => () => {
     if (scopeTypeaheadReset.current !== null) window.clearTimeout(scopeTypeaheadReset.current);
   }, []);
@@ -587,8 +639,10 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       style={{ "--wb-scope-width": `${renderedScopeWidth}px`, "--wb-context-size": `${contextSize}px` } as CSSProperties}
       aria-label="Lightstreamer Workbench"
       onKeyDown={(keyEvent) => {
-        if (rawEvidence) return;
+        if (rawEvidence || keyEvent.defaultPrevented) return;
         if ((keyEvent.metaKey || keyEvent.ctrlKey) && keyEvent.key.toLowerCase() === "f") {
+          const target = keyEvent.target;
+          if (target instanceof Element && target.closest('[aria-label="Local Injection Draft"]')) return;
           keyEvent.preventDefault();
           openFind(document.activeElement instanceof HTMLElement ? document.activeElement : keyEvent.currentTarget);
           return;
@@ -649,8 +703,34 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         {contextCollapsed ? <button ref={contextRestore} className="workbench-react__restore-pane" type="button" onClick={() => restorePane("context")}>Restore Context</button> : null}
         <strong className="workbench-react__scope-label">{scopeLabel}</strong>
         <span className="workbench-react__scope-status">{scopeStatus}</span>
+        {canAuthorCommandUpdate ? <button type="button" onClick={() => dispatch(runtime, { type: "begin-local-injection-from-scope" })}>Author COMMAND Item Update</button> : null}
       </nav>
-      {rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
+      {localInjection.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Local Injection unavailable</strong><span>{localInjection.entryError}</span></div> : null}
+      {localInjectionDraft ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection editor…</div>}><LazyLocalInjectionDocument
+        runtime={runtime}
+        localInjection={localInjection}
+        hidden={!localInjectionDraft.open}
+        inlineCompare={geometry !== "wide"}
+      /></Suspense> : null}
+      {localInjectionDraft?.parked ? <section className="workbench-react__local-parked" aria-label="Parked Local Injection Draft">
+        <div><span className="workbench-react__eyebrow">Parked Local Injection Draft</span><strong>{localInjectionDraft.anchor.subscriptionId} · {localInjectionDraft.anchor.itemName ?? `Item #${localInjectionDraft.anchor.itemPosition ?? "Unknown"}`}</strong></div>
+        <span>{localInjectionDraft.ready ? "READY" : "BLOCKED"} · Session {localInjectionDraft.anchor.sessionId ?? "Unknown"} · {localInjectionDraft.compareStatus === "no-source" ? "newly authored" : `Source ${localInjectionDraft.anchor.sourceEventId ?? "Unknown"}`}</span>
+        <button type="button" ref={resumeLocalInjection} onClick={() => dispatch(runtime, { type: "resume-local-injection" })}>Resume Local Injection Draft</button>
+        <button type="button" ref={parkedDiscardTrigger} onClick={() => dispatch(runtime, { type: "request-discard-local-injection" })}>Discard draft</button>
+      </section> : null}
+      {localInjectionDraft?.parked && localInjection.discardConfirmation ? <section className="workbench-react__local-confirmation workbench-react__local-confirmation--parked" role="alertdialog" aria-label="Discard Local Injection Draft" tabIndex={-1} ref={parkedDiscardDialog} onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        restoreParkedDiscardFocus.current = true;
+        dispatch(runtime, { type: "cancel-discard-local-injection" });
+      }}>
+        <strong>Discard this Local Injection Draft?</strong><span>Its JSON, editor history, and protected target cannot be recovered.</span><button type="button" onClick={() => {
+          restoreParkedDiscardFocus.current = true;
+          dispatch(runtime, { type: "cancel-discard-local-injection" });
+        }}>Keep draft</button><button type="button" onClick={() => dispatch(runtime, { type: "confirm-discard-local-injection" })}>Confirm discard</button>
+      </section> : null}
+      {localInjectionDraft?.open ? null : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
         <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Complete raw Evidence</span><strong>{rawEvidence.id} · immutable {rawEvidence.source} Evidence</strong></div><div className="workbench-react__document-actions"><button type="button" onClick={() => void copyRawEvidence()}>Copy raw Evidence</button><button type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
         <div className="workbench-react__document-boundary"><span>Source <strong>{rawEvidence.source}</strong></span><span>Phase <strong>{rawEvidence.phase}</strong></span><span>Mutable <strong>NO</strong></span></div>
         <p className="workbench-react__document-status" role="status">{copyStatus}</p>
@@ -743,7 +823,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               {projection("Observed Server COMMAND State", snapshot.commandProjections.observed)}
               {projection("Local Effective COMMAND State", snapshot.commandProjections.localEffective)}
               <p className="workbench-react__projection-limit">{snapshot.commandProjections.authoritativeLimit}</p>
-              <div className="workbench-react__context-actions"><button type="button" onClick={() => selected && dispatch(runtime, { type: "open-raw-evidence", eventId: selected.id })}>Open complete raw</button><button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button></div>
+              <div className="workbench-react__context-actions">{selected ? <button type="button" disabled={!canCreateLocalInjectionDraft} title={snapshot.localInjection.availability.selectedUpdate.reason ?? undefined} onClick={() => dispatch(runtime, { type: "begin-local-injection-from-selection" })}>Create Local Injection Draft</button> : null}<button type="button" onClick={() => selected && dispatch(runtime, { type: "open-raw-evidence", eventId: selected.id })}>Open complete raw</button><button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button></div>
             </>}
           </div>
         </aside>

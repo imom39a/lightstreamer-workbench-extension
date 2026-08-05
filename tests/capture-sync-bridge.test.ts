@@ -278,7 +278,7 @@ describe("active subscription capture synchronization bridge", () => {
     );
   });
 
-  it("returns a page timeout through both feedback protocols", async () => {
+  it("returns acknowledgement unknown through both protocols after a dispatched page request times out", async () => {
     vi.useFakeTimers();
     let runtimeMessageListener:
       | ((
@@ -327,7 +327,7 @@ describe("active subscription capture synchronization bridge", () => {
       expect.objectContaining({
         requestId: "timeout-request",
         ok: false,
-        status: "bridge-error",
+        status: "acknowledgement-unknown",
         error: "Timed out waiting for page reinjection result."
       })
     );
@@ -337,7 +337,7 @@ describe("active subscription capture synchronization bridge", () => {
         result: expect.objectContaining({
           requestId: "timeout-request",
           ok: false,
-          status: "bridge-error",
+          status: "acknowledgement-unknown",
           error: "Timed out waiting for page reinjection result."
         })
       },

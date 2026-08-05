@@ -13,6 +13,7 @@ import { WorkbenchPanel } from "../react/workbench-panel";
 import { createThemeManager, type ThemeManager } from "../theme";
 import {
   createWorkbenchRuntime,
+  type LocalInjectionExecutor,
   type WorkbenchRuntime
 } from "../workbench-runtime";
 
@@ -23,6 +24,8 @@ export type ReactPanelRendererOptions = {
   createIndexedDbHistory?: typeof createIndexedDbEventHistory;
   createInMemoryHistory?: typeof createInMemoryEventHistory;
   createAnalytics?: () => WorkbenchAnalytics;
+  createRuntime?: typeof createWorkbenchRuntime;
+  connectBridge?: typeof connectPanelBridge;
 };
 
 export function mountPanelRenderer(
@@ -32,6 +35,8 @@ export function mountPanelRenderer(
   const createIndexedHistory = options.createIndexedDbHistory ?? createIndexedDbEventHistory;
   const createMemoryHistory = options.createInMemoryHistory ?? createInMemoryEventHistory;
   const createAnalytics = options.createAnalytics ?? createBrowserPanelAnalytics;
+  const createRuntime = options.createRuntime ?? createWorkbenchRuntime;
+  const connectBridgeClient = options.connectBridge ?? connectPanelBridge;
   let visible = true;
   let disposed = false;
   let historyClosed = false;
@@ -83,11 +88,26 @@ export function mountPanelRenderer(
       return;
     }
 
-    runtime = createWorkbenchRuntime({
+    const localInjectionExecutor: LocalInjectionExecutor = {
+      execute(request) {
+        if (!bridge) {
+          return Promise.resolve({
+            requestId: request.executionId,
+            ok: false,
+            status: "bridge-error",
+            timestamp: Date.now(),
+            error: "The Local Injection bridge is not connected."
+          });
+        }
+        return bridge.reinjectDraft(request.draft, request.executionTarget);
+      }
+    };
+    runtime = createRuntime({
       history,
       visible,
       theme: themeManager.preference,
       analytics: safelyCreateAnalytics(createAnalytics),
+      localInjectionExecutor,
       storage: storageLimited
         ? { mode: "memory", reason: "IndexedDB is unavailable" }
         : { mode: "indexeddb" },
@@ -104,7 +124,7 @@ export function mountPanelRenderer(
     const presentationRuntime = bindRuntime(runtime, themeManager);
     reactRoot = createRoot(root);
     reactRoot.render(<WorkbenchPanel runtime={presentationRuntime} />);
-    bridge = connectPanelBridge({
+    bridge = connectBridgeClient({
       onStatusChange(status) {
         runtime?.dispatch({ type: "set-capture-status", status });
       },

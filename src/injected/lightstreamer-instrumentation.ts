@@ -3496,7 +3496,10 @@ function reinjectDraft(
       ok: false,
       status: "stale-target",
       timestamp: Date.now(),
-      error: "The target Subscription has no current Item Update listeners."
+      error: "The target Subscription has no current Item Update listeners.",
+      attemptedCount: delivery.attemptedListenerCount,
+      deliveredCount: delivery.deliveredListenerCount,
+      failedCount: delivery.failedListenerCount
     };
   }
   if (!delivery.ok) {
@@ -3505,14 +3508,20 @@ function reinjectDraft(
       ok: false,
       status: "listener-error",
       timestamp: Date.now(),
-      error: delivery.error
+      error: delivery.error,
+      attemptedCount: delivery.attemptedListenerCount,
+      deliveredCount: delivery.deliveredListenerCount,
+      failedCount: delivery.failedListenerCount
     };
   }
   return {
     requestId,
     ok: true,
     status: "success",
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    attemptedCount: delivery.attemptedListenerCount,
+    deliveredCount: delivery.deliveredListenerCount,
+    failedCount: delivery.failedListenerCount
   };
 }
 

@@ -21,6 +21,11 @@ import {
   THEME_STORAGE_KEY,
   type DevToolsThemeName
 } from "../src/extension/panel/theme";
+import {
+  createWorkbenchRuntime,
+  type LocalInjectionExecutionRequest,
+  type WorkbenchRuntimeOptions
+} from "../src/extension/panel/workbench-runtime";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -33,6 +38,51 @@ type FakePort = {
   onDisconnect: { addListener(listener: () => void): void };
   postMessage(message: unknown): void;
 };
+
+function createLocalInjectionExecutionRequest(): LocalInjectionExecutionRequest {
+  const draft = {
+    sourceEventId: "event-renderer-1",
+    captureSource: "listener" as const,
+    source: {
+      clientId: "client-renderer",
+      sessionId: "session-renderer",
+      subscriptionId: "subscription-renderer"
+    },
+    target: {
+      subscriptionId: "subscription-renderer",
+      listenerId: "listener-renderer"
+    },
+    item: { name: "scenario.renderer", position: 1 },
+    command: "UPDATE",
+    key: "renderer-key",
+    sourceCommand: "UPDATE",
+    sourceKey: "renderer-key",
+    fields: { command: "UPDATE", key: "renderer-key", value: 2 },
+    sourceFields: { command: "UPDATE", key: "renderer-key", value: 1 },
+    changedFields: { value: 2 },
+    originalChangedFields: { value: 1 },
+    isSnapshot: false,
+    sourceIsSnapshot: false,
+    provenance: {
+      source: "clone" as const,
+      sourceEventKind: "item-update" as const,
+      sourceSynthetic: false
+    },
+    manualChangedFieldsOverride: false
+  };
+  return {
+    executionId: "local-injection-execution-renderer-1",
+    preflightFingerprint: "fingerprint-renderer-1",
+    executionTarget: "captured-listener",
+    document: {
+      command: "UPDATE",
+      key: "renderer-key",
+      isSnapshot: false,
+      fields: { command: "UPDATE", key: "renderer-key", value: 2 }
+    },
+    draft
+  };
+}
 
 describe("React panel renderer production wiring", () => {
   beforeEach(() => {
@@ -55,6 +105,55 @@ describe("React panel renderer production wiring", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  it("delegates immutable Local Injection execution to the connected bridge and fails safely before connection", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    const request = createLocalInjectionExecutionRequest();
+    const bridgeResult = {
+      requestId: "bridge-request-1",
+      ok: true,
+      status: "success" as const,
+      timestamp: 123,
+      attemptedCount: 1,
+      deliveredCount: 1,
+      failedCount: 0
+    };
+    const reinjectDraft = vi.fn(async () => bridgeResult);
+    const bridge = { reinjectDraft, disconnect: vi.fn() };
+    let earlyResult: Promise<unknown> | null = null;
+    const createRuntime = vi.fn((options: WorkbenchRuntimeOptions = {}) => {
+      earlyResult = options.localInjectionExecutor?.execute(request) ?? null;
+      return createWorkbenchRuntime(options);
+    });
+    const connectBridge = vi.fn(() => bridge);
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: {
+        inspectedWindow: { tabId: 88 },
+        panels: { themeName: "default", setThemeChangeHandler: vi.fn() }
+      }
+    } as unknown as typeof chrome;
+
+    const dispose = mountPanelRenderer(root, {
+      createIndexedDbHistory: async () => history,
+      createInMemoryHistory: createInMemoryEventHistory,
+      createRuntime,
+      connectBridge
+    });
+    await flushPanel();
+
+    await expect(earlyResult).resolves.toMatchObject({
+      requestId: request.executionId,
+      ok: false,
+      status: "bridge-error",
+      error: expect.stringContaining("not connected")
+    });
+    const executor = createRuntime.mock.calls[0]?.[0]?.localInjectionExecutor;
+    await expect(executor?.execute(request)).resolves.toEqual(bridgeResult);
+    expect(reinjectDraft).toHaveBeenCalledWith(request.draft, "captured-listener");
+
+    dispose();
   });
 
   it("starts from the developer's persisted theme preference", async () => {

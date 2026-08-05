@@ -20,7 +20,12 @@ describe("Subscription-scoped Local Injection", () => {
 
     const result = registry.deliver("subscription-1", () => ({ value: 42 }));
 
-    expect(result).toEqual({ ok: true, deliveredListenerCount: 2 });
+    expect(result).toEqual({
+      ok: true,
+      attemptedListenerCount: 2,
+      deliveredListenerCount: 2,
+      failedListenerCount: 0
+    });
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
     expect(first.mock.calls[0]?.[0]).toBe(second.mock.calls[0]?.[0]);
@@ -45,7 +50,9 @@ describe("Subscription-scoped Local Injection", () => {
     expect(registry.hasTarget("subscription-1")).toBe(true);
     expect(registry.deliver("subscription-1", () => ({}))).toEqual({
       ok: true,
-      deliveredListenerCount: 1
+      attemptedListenerCount: 1,
+      deliveredListenerCount: 1,
+      failedListenerCount: 0
     });
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledTimes(1);
@@ -57,7 +64,9 @@ describe("Subscription-scoped Local Injection", () => {
     expect(registry.deliver("subscription-1", () => ({}))).toEqual({
       ok: false,
       reason: "stale-target",
-      deliveredListenerCount: 0
+      attemptedListenerCount: 0,
+      deliveredListenerCount: 0,
+      failedListenerCount: 0
     });
   });
 
@@ -80,7 +89,9 @@ describe("Subscription-scoped Local Injection", () => {
     expect(registry.deliver("subscription-1", () => ({}))).toEqual({
       ok: false,
       reason: "listener-error",
+      attemptedListenerCount: 2,
       deliveredListenerCount: 1,
+      failedListenerCount: 1,
       error: "first listener failed"
     });
     expect(second).toHaveBeenCalledTimes(1);

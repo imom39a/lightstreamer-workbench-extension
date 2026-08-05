@@ -7,17 +7,23 @@ export type SubscriptionLocalInjectionListener<TUpdate> = {
 export type SubscriptionLocalInjectionResult =
   | {
       ok: true;
+      attemptedListenerCount: number;
       deliveredListenerCount: number;
+      failedListenerCount: number;
     }
   | {
       ok: false;
       reason: "stale-target";
+      attemptedListenerCount: 0;
       deliveredListenerCount: 0;
+      failedListenerCount: 0;
     }
   | {
       ok: false;
       reason: "listener-error";
+      attemptedListenerCount: number;
       deliveredListenerCount: number;
+      failedListenerCount: number;
       error: string;
     };
 
@@ -73,7 +79,9 @@ export function createSubscriptionLocalInjectionRegistry<TUpdate>(): Subscriptio
         return {
           ok: false,
           reason: "stale-target",
-          deliveredListenerCount: 0
+          attemptedListenerCount: 0,
+          deliveredListenerCount: 0,
+          failedListenerCount: 0
         };
       }
 
@@ -93,12 +101,16 @@ export function createSubscriptionLocalInjectionRegistry<TUpdate>(): Subscriptio
         ? {
             ok: false,
             reason: "listener-error",
+            attemptedListenerCount: listeners.length,
             deliveredListenerCount,
+            failedListenerCount: listeners.length - deliveredListenerCount,
             error: firstError
           }
         : {
             ok: true,
-            deliveredListenerCount
+            attemptedListenerCount: listeners.length,
+            deliveredListenerCount,
+            failedListenerCount: 0
           };
     }
   };

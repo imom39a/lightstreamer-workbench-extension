@@ -8113,6 +8113,8 @@ function analyticsReplayOutcome(result: ReinjectionResult): AnalyticsReplayOutco
       return "wire_error";
     case "bridge-error":
       return "bridge_error";
+    case "acknowledgement-unknown":
+      return "bridge_error";
   }
 }
 
@@ -8128,6 +8130,14 @@ function createFailureMessage(result: ReinjectionResult): ReinjectionMessage {
     return {
       kind: "error",
       text: "The inspected page did not acknowledge reinjection. Reload the inspected page, capture a fresh update, and try again.",
+      detail: result.error
+    };
+  }
+
+  if (result.status === "acknowledgement-unknown") {
+    return {
+      kind: "error",
+      text: "The inspected page may have received this replay, but Workbench lost its acknowledgement. Inspect current page state or capture fresh evidence before retrying.",
       detail: result.error
     };
   }
@@ -8151,6 +8161,14 @@ function createCommandFailureMessage(result: ReinjectionResult): ReinjectionMess
     return {
       kind: "error",
       text: "The inspected page did not acknowledge the COMMAND reinjection. Reload the inspected page, capture a fresh update, and try again.",
+      detail: result.error
+    };
+  }
+
+  if (result.status === "acknowledgement-unknown") {
+    return {
+      kind: "error",
+      text: "The inspected page may have received this COMMAND update, but Workbench lost its acknowledgement. Inspect current page state or capture fresh evidence before retrying.",
       detail: result.error
     };
   }

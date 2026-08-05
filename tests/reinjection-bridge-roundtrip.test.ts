@@ -241,7 +241,77 @@ describe("reinjection bridge round trip", () => {
     );
   });
 
-  it("returns a separate content result to the exact panel that originated the request", async () => {
+  it.each([
+    {
+      label: "a missing content-script receiver",
+      runtimeError: "Could not establish connection. Receiving end does not exist.",
+      expectedStatus: "bridge-error"
+    },
+    {
+      label: "a response channel that closes after dispatch",
+      runtimeError: "The message port closed before a response was received.",
+      expectedStatus: "acknowledgement-unknown"
+    }
+  ] as const)("classifies $label truthfully", async ({ runtimeError, expectedStatus }) => {
+    let connectListener: ((port: chrome.runtime.Port) => void) | null = null;
+    const portMessageListeners: Array<(message: unknown) => void> = [];
+    const panelMessages: unknown[] = [];
+    const port = {
+      name: PANEL_PORT_NAME,
+      onMessage: {
+        addListener(listener: (message: unknown) => void) {
+          portMessageListeners.push(listener);
+        }
+      },
+      onDisconnect: { addListener: vi.fn() },
+      postMessage(message: unknown) {
+        panelMessages.push(message);
+      }
+    } as unknown as chrome.runtime.Port;
+
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      runtime: {
+        lastError: { message: runtimeError },
+        onConnect: {
+          addListener(listener: (port: chrome.runtime.Port) => void) {
+            connectListener = listener;
+          }
+        },
+        onMessage: { addListener: vi.fn() }
+      },
+      tabs: {
+        sendMessage(
+          _tabId: number,
+          _message: unknown,
+          callback?: (response?: unknown) => void
+        ) {
+          callback?.(undefined);
+        }
+      }
+    } as unknown as typeof chrome;
+
+    await import("../src/extension/background");
+    const notifyConnect = connectListener as ((port: chrome.runtime.Port) => void) | null;
+    notifyConnect?.(port);
+    portMessageListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    portMessageListeners[0]?.({
+      type: PANEL_REINJECT_REQUEST,
+      requestId: "ambiguous-background-result",
+      draft: wireDraft()
+    });
+
+    expect(panelMessages).toContainEqual({
+      type: PANEL_REINJECT_RESULT,
+      result: expect.objectContaining({
+        requestId: "ambiguous-background-result",
+        ok: false,
+        status: expectedStatus,
+        error: runtimeError
+      })
+    });
+  });
+
+  it("returns a partial listener result to the exact panel that originated the request", async () => {
     let connectListener: ((port: chrome.runtime.Port) => void) | null = null;
     let backgroundMessageListener: RuntimeMessageListener | null = null;
     const firstPortListeners: Array<(message: unknown) => void> = [];
@@ -300,16 +370,20 @@ describe("reinjection bridge round trip", () => {
     firstPortListeners[0]?.({
       type: PANEL_REINJECT_REQUEST,
       requestId: "originating-panel-1",
-      draft: wireDraft()
+      draft: listenerDraft()
     });
 
     notifyConnect?.(secondPort);
     secondPortListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
     const result = {
       requestId: "originating-panel-1",
-      ok: true,
-      status: "success",
-      timestamp: 1_784_737_272_925
+      ok: false,
+      status: "listener-error",
+      timestamp: 1_784_737_272_925,
+      error: "One listener failed.",
+      attemptedCount: 2,
+      deliveredCount: 1,
+      failedCount: 1
     } as const;
     const forwardBackgroundMessage = backgroundMessageListener as RuntimeMessageListener | null;
     expect(forwardBackgroundMessage).not.toBeNull();
@@ -380,6 +454,17 @@ function wireDraft(): ReinjectionDraftPayload {
       source: "clone",
       sourceEventKind: "item-update",
       sourceSynthetic: false
+    }
+  };
+}
+
+function listenerDraft(): ReinjectionDraftPayload {
+  return {
+    ...wireDraft(),
+    executionTarget: "captured-listener",
+    target: {
+      subscriptionId: "subscription-3",
+      listenerId: "listener-1"
     }
   };
 }

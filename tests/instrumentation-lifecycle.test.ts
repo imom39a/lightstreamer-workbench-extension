@@ -1772,13 +1772,20 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     } as unknown as MessageEvent);
 
     expect(
-      messages.some(
+      messages.find(
         (message) =>
           isRuntimeReinjectResultMessage(message) &&
-          message.result.requestId === "request-2" &&
-          message.result.status === "stale-target"
+          message.result.requestId === "request-2"
       )
-    ).toBe(true);
+    ).toMatchObject({
+      result: {
+        ok: false,
+        status: "stale-target",
+        attemptedCount: 0,
+        deliveredCount: 0,
+        failedCount: 0
+      }
+    });
   });
 
   it("keeps the Subscription target live when the source listener is removed", () => {
@@ -1827,9 +1834,13 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         throw new Error("fixture listener failed");
       }
     };
+    const survivingListener = {
+      onItemUpdate: vi.fn()
+    };
 
     client.subscribe(subscription);
     subscription.addListener(listener);
+    subscription.addListener(survivingListener);
 
     expect(() => {
       messageListeners[0]({
@@ -1842,15 +1853,23 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       } as unknown as MessageEvent);
     }).not.toThrow();
 
-    expect(
-      messages.some(
-        (message) =>
-          isRuntimeReinjectResultMessage(message) &&
-          message.result.requestId === "request-3" &&
-          message.result.status === "listener-error" &&
-          message.result.error === "fixture listener failed"
-      )
-    ).toBe(true);
+    const result = messages.find(
+      (message) =>
+        isRuntimeReinjectResultMessage(message) &&
+        message.result.requestId === "request-3"
+    );
+    expect(result).toMatchObject({
+      type: RUNTIME_REINJECT_RESULT,
+      result: {
+        ok: false,
+        status: "listener-error",
+        error: "fixture listener failed",
+        attemptedCount: 2,
+        deliveredCount: 1,
+        failedCount: 1
+      }
+    });
+    expect(survivingListener.onItemUpdate).toHaveBeenCalledTimes(1);
   });
 });
 

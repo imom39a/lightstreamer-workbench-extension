@@ -2589,6 +2589,39 @@ describe("panel shell", () => {
       "synthetic snapshot"
     );
   });
+
+  it("warns against blind retry when reinjection acknowledgement is unknown", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = document.querySelector<HTMLElement>("#app");
+    if (!root) {
+      throw new Error("missing test root");
+    }
+    panel = renderPanel(root, undefined, {
+      bridge: {
+        reinjectDraft() {
+          return Promise.resolve({
+            requestId: "request-unknown",
+            ok: false,
+            status: "acknowledgement-unknown",
+            timestamp: 123,
+            error: "The result channel closed."
+          });
+        }
+      }
+    });
+
+    appendCommandUpdate(panel, "alpha", { qty: 1 });
+    clickFirstEventRow();
+    document.querySelector<HTMLButtonElement>(".reinject-button")?.click();
+    await flushPromises();
+
+    expect(text(".reinjection-message")).toContain(
+      "may have received this replay"
+    );
+    expect(text(".reinjection-message")).toContain("before retrying");
+    expect(text(".reinjection-detail")).toBe("The result channel closed.");
+    expect(text(".event-count")).toBe("1");
+  });
 });
 
 function createSuccessResult(requestId: string): ReinjectionResult {
