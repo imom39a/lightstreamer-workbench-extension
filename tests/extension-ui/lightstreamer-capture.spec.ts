@@ -30,7 +30,10 @@ const fixtureUrl = new URL(
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
 
-test("official-client COMMAND Local Injection is edited, delivered, and projected", async () => {
+async function runOfficialClientAuthoredJourney(
+  windowSize: string,
+  viewport: Readonly<{ width: number; height: number }>
+): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-playwright-extension-"));
   const chromeExecutable = await resolveChromeExecutable(rootDir);
   const chromeLogs: string[] = [];
@@ -54,7 +57,7 @@ test("official-client COMMAND Local Injection is edited, delivered, and projecte
       `--user-data-dir=${profileDir}`,
       `--disable-extensions-except=${extensionDir}`,
       `--load-extension=${extensionDir}`,
-      "--window-size=1280,900",
+      `--window-size=${windowSize}`,
       "about:blank"
     ];
     if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
@@ -112,6 +115,12 @@ test("official-client COMMAND Local Injection is edited, delivered, and projecte
     await panelCdp.request("Debugger.enable");
     await panelCdp.request("Runtime.enable");
     await installBrowserErrorCapture(panelCdp);
+    await setPanelViewport(
+      devtoolsCdp,
+      panelCdp,
+      viewport,
+      `${viewport.width}×${viewport.height}`
+    );
 
       await waitForCondition(
         panelCdp,
@@ -122,12 +131,12 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         `,
         "React Evidence to display the official-client COMMAND update"
       );
-      await evaluateByValue(panelCdp, `(() => {
-        const row = [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-          .find((candidate) => candidate.textContent?.includes("scenario.mutate-reinject"));
-        if (!(row instanceof HTMLButtonElement)) throw new Error("React Evidence row is missing");
-        row.click();
-      })()`);
+      await clickVisiblePanelElement(
+        panelCdp,
+        `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+          .find((candidate) => candidate.textContent?.includes("scenario.mutate-reinject"))`,
+        "the rendered official-client Evidence row"
+      );
       await waitForCondition(
         panelCdp,
         `document.querySelector('[aria-label="Context"]')?.textContent?.includes("scenario.mutate-reinject")`,
@@ -175,13 +184,28 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         `,
         "the selected captured update to offer one Local Injection Draft"
       );
+      if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Create Local Injection Draft" && !button.disabled)`)) {
+        await clickPanelButton(panelCdp, "Open Context");
+        await waitForCondition(
+          panelCdp,
+          `(() => {
+            const button = [...document.querySelectorAll("button")]
+              .find((candidate) => candidate.textContent?.trim() === "Create Local Injection Draft" && !candidate.disabled);
+            if (!(button instanceof HTMLElement)) return false;
+            const rect = button.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && getComputedStyle(button).display !== "none";
+          })()`,
+          "the compact Context route to reveal Local Injection"
+        );
+      }
       expect(
         await evaluateByValue<boolean>(panelCdp, `Boolean(document.querySelector(".cm-editor"))`)
       ).toBe(false);
       expect(
         panelScriptUrls.some((url) => url.endsWith("/assets/local-injection-document.js"))
       ).toBe(false);
-      await clickPanelButton(panelCdp, "Create Local Injection Draft");
+      await pressVisiblePanelButton(panelCdp, "Create Local Injection Draft");
       await waitForCondition(
         panelCdp,
         `
@@ -278,12 +302,16 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       expect(localProof.observed).not.toContain(editedMessage);
       expect(localProof.localEffective).toContain(editedMessage);
 
-      await evaluateByValue(panelCdp, `(() => {
-        const item = [...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
-          .find((candidate) => candidate.querySelector("span")?.textContent?.includes("scenario.mutate-reinject"));
-        if (!(item instanceof HTMLButtonElement)) throw new Error("Fixture COMMAND Item Scope is missing");
-        item.click();
-      })()`);
+      if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
+        .find((candidate) => candidate.querySelector("span")?.textContent?.includes("scenario.mutate-reinject"))`)) {
+        await clickPanelButton(panelCdp, "Scope");
+      }
+      await clickVisiblePanelElement(
+        panelCdp,
+        `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
+          .find((candidate) => candidate.querySelector("span")?.textContent?.includes("scenario.mutate-reinject"))`,
+        "the rendered fixture COMMAND Item Scope"
+      );
       await waitForCondition(
         panelCdp,
         `[...document.querySelectorAll("button")].some(
@@ -291,7 +319,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         )`,
         "the live COMMAND Item Scope to offer authored Local Injection"
       );
-      await clickPanelButton(panelCdp, "Author COMMAND Item Update");
+      await pressVisiblePanelButton(panelCdp, "Author COMMAND Item Update");
       await waitForCondition(
         panelCdp,
         `document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]')`,
@@ -373,37 +401,179 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
     if (chrome) await terminateChild(chrome);
     await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
-  }
-);
+}
+
+test("official-client authored COMMAND Local Injection works through visible normal DevTools controls", async () => {
+  await runOfficialClientAuthoredJourney("2664,727", { width: 900, height: 700 });
+});
+
+test("official-client authored COMMAND Local Injection works through visible compact DevTools controls", async () => {
+  await runOfficialClientAuthoredJourney("1653,727", { width: 563, height: 700 });
+});
 
 async function clickPanelButton(cdp: CdpClient, label: string): Promise<void> {
-  await evaluateByValue(
+  await clickVisiblePanelElement(
     cdp,
-    `(() => {
-      const button = [...document.querySelectorAll("button")].find(
-        (candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)}
-      );
-      if (!(button instanceof HTMLButtonElement)) throw new Error("Missing ${label} button");
-      if (button.disabled) throw new Error("${label} button is disabled");
-      button.click();
-    })()`
+    `[...document.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && !candidate.disabled
+    )`,
+    `${label} button`
   );
 }
+
+async function pressVisiblePanelButton(cdp: CdpClient, label: string): Promise<void> {
+  await evaluateByValue<void>(cdp, `(() => {
+    const button = [...document.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && !candidate.disabled
+    );
+    if (!(button instanceof HTMLButtonElement)) throw new Error("Missing ${label} button");
+    button.scrollIntoView({ block: "center", inline: "nearest" });
+    const rect = button.getBoundingClientRect();
+    const style = getComputedStyle(button);
+    if (!rect.width || !rect.height || style.visibility === "hidden" || style.display === "none") {
+      throw new Error("${label} button is not visibly keyboard reachable");
+    }
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    if (!button.contains(document.elementFromPoint(x, y))) {
+      throw new Error("${label} button is obscured at its keyboard target");
+    }
+    button.focus();
+    if (document.activeElement !== button) throw new Error("${label} button did not receive keyboard focus");
+  })()`);
+  await cdp.request("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    code: "Enter",
+    text: "\r",
+    unmodifiedText: "\r",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13
+  });
+  await cdp.request("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+}
+
+async function setPanelViewport(
+  devtoolsCdp: CdpClient,
+  panelCdp: CdpClient,
+  viewport: Readonly<{ width: number; height: number }>,
+  label: string
+): Promise<void> {
+  const devtoolsViewport = await evaluateByValue<{ width: number; height: number }>(
+    devtoolsCdp,
+    `({ width: window.innerWidth, height: window.innerHeight })`
+  );
+  const devtoolsChromeHeight = 27;
+  const devtoolsHeight = viewport.height + devtoolsChromeHeight;
+  await devtoolsCdp.request("Emulation.setDeviceMetricsOverride", {
+    width: devtoolsViewport.width,
+    height: devtoolsHeight,
+    deviceScaleFactor: 1,
+    mobile: false
+  });
+  await evaluateByValue<void>(devtoolsCdp, `(async () => {
+    const UI = await import("devtools://devtools/bundled/ui/legacy/legacy.js");
+    const split = UI.InspectorView.InspectorView.instance().ownerSplit();
+    if (!split) throw new Error("DevTools Inspector split is unavailable.");
+    // The split owns a one-pixel divider outside the panel iframe.
+    split.setSidebarSize(${viewport.width + 1});
+  })()`);
+  try {
+    await waitForCondition(
+      panelCdp,
+      `(() => {
+        const panel = document.querySelector(".workbench-react");
+        if (!(panel instanceof HTMLElement)) return false;
+        const rect = panel.getBoundingClientRect();
+        return window.innerWidth === ${viewport.width} &&
+          window.innerHeight === ${viewport.height} &&
+          rect.width === ${viewport.width} &&
+          rect.height === ${viewport.height} &&
+          document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+      })()`,
+      `the ${label} DevTools panel viewport to fit the shipped Workbench root`
+    );
+  } catch (error) {
+    const actual = await evaluateByValue<unknown>(panelCdp, `(() => {
+      const rect = document.querySelector(".workbench-react")?.getBoundingClientRect();
+      return {
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        panelWidth: rect?.width ?? 0,
+        panelHeight: rect?.height ?? 0,
+        documentWidth: document.documentElement.clientWidth,
+        documentScrollWidth: document.documentElement.scrollWidth
+      };
+    })()`);
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nPanel viewport: ${JSON.stringify(actual)}`);
+  }
+}
+
+async function clickVisiblePanelElement(
+  cdp: CdpClient,
+  targetExpression: string,
+  description: string
+): Promise<void> {
+  const point = await evaluateByValue<{ x: number; y: number }>(
+    cdp,
+    `(() => {
+      const target = ${targetExpression};
+      if (!(target instanceof HTMLElement)) throw new Error("Missing ${description}");
+      target.scrollIntoView({ block: "center", inline: "nearest" });
+      const rect = target.getBoundingClientRect();
+      const style = getComputedStyle(target);
+      if (!rect.width || !rect.height || style.visibility === "hidden" || style.display === "none") {
+        throw new Error("${description} is not visibly operable");
+      }
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      if (!target.contains(document.elementFromPoint(x, y))) {
+        throw new Error("${description} is obscured at its visible click target");
+      }
+      return { x, y };
+    })()`
+  );
+  await cdp.request("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
+  await cdp.request("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
+}
+
+async function isPanelElementVisible(cdp: CdpClient, targetExpression: string): Promise<boolean> {
+  return evaluateByValue<boolean>(cdp, `(() => {
+    const target = ${targetExpression};
+    if (!(target instanceof HTMLElement)) return false;
+    const rect = target.getBoundingClientRect();
+    const style = getComputedStyle(target);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+  })()`);
+}
+
 async function replaceLocalInjectionJson(cdp: CdpClient, text: string): Promise<void> {
-  await evaluateByValue(
+  await clickVisiblePanelElement(
+    cdp,
+    `document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]')`,
+    "Local Injection JSON editor"
+  );
+  await selectAllInFocusedEditor(cdp);
+  await cdp.request("Input.insertText", { text });
+  await waitForCondition(
     cdp,
     `(() => {
       const editor = document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]');
-      if (!(editor instanceof HTMLElement)) throw new Error("Local Injection JSON editor is missing");
-      editor.focus();
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(editor);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-    })()`
+      return editor instanceof HTMLElement &&
+        [...editor.querySelectorAll(".cm-line")].map((line) => line.textContent ?? "").join("\\n") === ${JSON.stringify(text)};
+    })()`,
+    "the visible Local Injection JSON editor to replace its complete document"
   );
-  await cdp.request("Input.insertText", { text });
+}
+
+async function selectAllInFocusedEditor(cdp: CdpClient): Promise<void> {
+  const modifier = process.platform === "darwin"
+    ? { key: "Meta", code: "MetaLeft", windowsVirtualKeyCode: 91, nativeVirtualKeyCode: 91, modifiers: 4 }
+    : { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17, modifiers: 2 };
+  await cdp.request("Input.dispatchKeyEvent", { type: "rawKeyDown", ...modifier });
+  await cdp.request("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: modifier.modifiers });
+  await cdp.request("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: modifier.modifiers });
+  await cdp.request("Input.dispatchKeyEvent", { type: "keyUp", ...modifier });
 }
 
 async function installBrowserErrorCapture(cdp: CdpClient): Promise<void> {

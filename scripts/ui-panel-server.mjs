@@ -2,7 +2,7 @@
 
 import { createServer } from "node:http";
 import { createReadStream, existsSync } from "node:fs";
-import { copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,7 @@ try {
   await buildScenarioBundle(temporaryRoot);
   await mkdir(join(temporaryRoot, "icons"), { recursive: true });
   await copyFile(resolve(projectRoot, "public/icons/title-icon.svg"), join(temporaryRoot, "icons/title-icon.svg"));
-  await writeFile(join(temporaryRoot, "index.html"), htmlSource());
+  await writeFile(join(temporaryRoot, "index.html"), await productionPanelHtml());
 
   const port = Number(process.env.LSEW_UI_PORT ?? 4173);
   await new Promise((resolvePromise, rejectPromise) => {
@@ -133,20 +133,15 @@ window.addEventListener("pagehide", () => { reactRoot.unmount(); runtime.dispose
 `;
 }
 
-function htmlSource() {
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark light">
-    <link rel="icon" href="/icons/title-icon.svg">
-    <title>Lightstreamer Workbench panel scenario</title>
-    <link rel="stylesheet" href="/entry.css">
-    <style>html, body, #app { height: 100%; margin: 0; } body { overflow: hidden; }</style>
-  </head>
-  <body><main id="app"></main><script type="module" src="/entry.js"></script></body>
-</html>`;
+async function productionPanelHtml() {
+  const shippedHtml = await readFile(resolve(projectRoot, "src/extension/panel/index.html"), "utf8");
+  const bootstrap = '<script type="module" src="./bootstrap.ts"></script>';
+  if (!shippedHtml.includes(bootstrap)) {
+    throw new Error("The shipped panel HTML no longer contains the expected bootstrap module.");
+  }
+  return shippedHtml
+    .replace("</head>", '    <link rel="stylesheet" href="./entry.css">\n  </head>')
+    .replace(bootstrap, '<script type="module" src="./entry.js"></script>');
 }
 
 function createStaticHandler(root) {

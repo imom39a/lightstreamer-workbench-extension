@@ -20,6 +20,10 @@ export const WORKBENCH_SCENARIO_IDS = [
   "raw-evidence",
   "filter-find",
   "filter-hidden-selection",
+  "command-projection-matching",
+  "command-projection-before-local",
+  "command-projection-local-difference",
+  "command-projection-unavailable",
   "recovering",
   "retired-scope",
   "local-injection-captured",
@@ -46,7 +50,7 @@ export type WorkbenchScenario = Readonly<{
   captureMessages?: readonly CaptureMessage[];
   selectedEventId?: string;
   selectedScope?: Readonly<{
-    kind: "session" | "item" | "listener";
+    kind: "session" | "subscription" | "item" | "listener";
     retired: boolean;
     label: string;
   }>;
@@ -87,6 +91,7 @@ export function isWorkbenchScenarioId(value: string): value is WorkbenchScenario
  */
 export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario {
   const canonical = getPanelScenario("command-state").capturedEvents;
+  const serverOnlyCanonical = canonical.filter((event) => !event.synthetic);
   const topology = getPanelScenario("topology-small");
 
   switch (id) {
@@ -162,6 +167,42 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         filterQuery: "scenario-event-1"
       };
     }
+    case "command-projection-matching":
+      return {
+        id,
+        initialEvents: serverOnlyCanonical,
+        selectedEventId: "scenario-event-3",
+        captureStatus: "capturing"
+      };
+    case "command-projection-local-difference":
+      return {
+        ...localInjectionCapturedScenario(id),
+        localInjection: {
+          entry: "selection",
+          rawText: JSON.stringify({
+            command: "UPDATE",
+            key: "small-alpha",
+            isSnapshot: false,
+            fields: { command: "UPDATE", key: "small-alpha", value: "9" }
+          }, null, 2),
+          review: true,
+          execute: true,
+          executorOutcome: "delivered"
+        }
+      };
+    case "command-projection-before-local":
+      return localInjectionCapturedScenario(id);
+    case "command-projection-unavailable":
+      return {
+        id,
+        initialEvents: [],
+        captureStatus: "idle",
+        capture: {
+          operation: "IDLE",
+          coverage: "UNAVAILABLE",
+          detail: "No captured Server Updates are available for this Scope."
+        }
+      };
     case "recovering":
       return {
         id,
@@ -199,11 +240,10 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         initialEvents: [],
         topologySyncFrames: topology.topologySyncFrames,
         captureMessages: topology.captureMessages,
-        selectedEventId: "event-5",
         selectedScope: {
-          kind: "item",
+          kind: "subscription",
           retired: false,
-          label: "topology-small-item · #1"
+          label: "topology-small-subscription"
         },
         captureStatus: "capturing"
       };

@@ -12,6 +12,7 @@ import {
   type TopologySensitiveCategory
 } from "../topology-export";
 import { renderTopologyHtmlReport } from "../topology-html-report";
+import { CommandProjectionComparison } from "./command-projection-comparison";
 
 import "./workbench-panel.css";
 
@@ -320,6 +321,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const findTrigger = useRef<HTMLButtonElement | null>(null);
   const scopeTrigger = useRef<HTMLButtonElement | null>(null);
   const contextLens = useRef<HTMLElement | null>(null);
+  const commandProjectionTrigger = useRef<HTMLButtonElement | null>(null);
+  const commandProjectionEvidenceScrollTop = useRef(0);
+  const previousCommandProjectionContext = useRef(false);
+  const pendingCommandProjectionReturnFocus = useRef<
+    { target: "trigger" } | { target: "evidence"; eventId: string } | null
+  >(null);
   const scopeSplitter = useRef<HTMLDivElement | null>(null);
   const contextSplitter = useRef<HTMLDivElement | null>(null);
   const scopeRestore = useRef<HTMLButtonElement | null>(null);
@@ -444,6 +451,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   );
   const compactSurface = snapshot.contextId === "context:scope" ? "scope" : snapshot.contextId ? "context" : undefined;
   const rawEvidence = snapshot.contextId?.startsWith("raw:") ? selected : null;
+  const commandProjectionComparison = snapshot.contextId === "command-projections";
+  const supportingProjectionEvidenceId = [...events].reverse().find((event) => event.source === "LOCAL")?.id ?? null;
   const localInjection = snapshot.localInjection;
   const localInjectionDraft = localInjection.draft;
   const contextMode = snapshot.contextId === "context:actions"
@@ -878,6 +887,50 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [snapshot.contextId]);
 
   useLayoutEffect(() => {
+    const wasOpen = previousCommandProjectionContext.current;
+    if (wasOpen && !commandProjectionComparison) {
+      const returnFocus = pendingCommandProjectionReturnFocus.current;
+      pendingCommandProjectionReturnFocus.current = null;
+      window.requestAnimationFrame(() => {
+        if (returnFocus?.target === "evidence") {
+          const evidenceTarget = evidenceRows.current.get(returnFocus.eventId);
+          if (evidenceTarget) evidenceTarget.focus({ preventScroll: true });
+          else commandProjectionTrigger.current?.focus();
+        } else {
+          commandProjectionTrigger.current?.focus();
+        }
+        window.requestAnimationFrame(() => {
+          if (evidenceLedger.current) {
+            evidenceLedger.current.scrollTop = commandProjectionEvidenceScrollTop.current;
+          }
+        });
+      });
+    }
+    previousCommandProjectionContext.current = commandProjectionComparison;
+  }, [commandProjectionComparison, snapshot.evidence.focusedEventId, snapshot.selectionEventId]);
+
+  const closeCommandProjectionComparison = (action: "back" | "reveal") => {
+    const eventId = action === "reveal"
+      ? supportingProjectionEvidenceId ?? snapshot.evidence.focusedEventId ?? snapshot.selectionEventId
+      : snapshot.evidence.focusedEventId ?? snapshot.selectionEventId;
+    pendingCommandProjectionReturnFocus.current = eventId
+      ? { target: "evidence", eventId }
+      : { target: "trigger" };
+    dispatch(runtime, { type: "close-command-projection-comparison" });
+    if (action === "reveal" && eventId) {
+      dispatch(runtime, { type: "focus-evidence", eventId });
+    }
+    if (geometry === "compact") {
+      dispatch(runtime, { type: "set-context", contextId: null });
+    }
+  };
+
+  const openCommandProjectionComparison = () => {
+    commandProjectionEvidenceScrollTop.current = evidenceLedger.current?.scrollTop ?? 0;
+    dispatch(runtime, { type: "open-command-projection-comparison" });
+  };
+
+  useLayoutEffect(() => {
     if (findOpen) findInput.current?.focus();
   }, [findOpen]);
 
@@ -1044,7 +1097,13 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           dispatch(runtime, { type: "cancel-discard-local-injection" });
         }}>Keep draft</button><button type="button" onClick={() => dispatch(runtime, { type: "confirm-discard-local-injection" })}>Confirm discard</button>
       </section> : null}
-      {localInjectionDraft?.open ? null : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
+      {localInjectionDraft?.open ? null : commandProjectionComparison ? <CommandProjectionComparison
+        scope={scopeLabel}
+        capture={snapshot.capture}
+        projections={snapshot.commandProjections}
+        onBack={() => closeCommandProjectionComparison("back")}
+        onRevealEvidence={() => closeCommandProjectionComparison("reveal")}
+      /> : rawEvidence ? <section className="workbench-react__document" aria-label="Complete raw Evidence">
         <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Complete raw Evidence</span><strong>{rawEvidence.id} · immutable {rawEvidence.source} Evidence</strong></div><div className="workbench-react__document-actions"><button type="button" onClick={() => void copyRawEvidence()}>Copy raw Evidence</button><button type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
         <div className="workbench-react__document-boundary"><span>Source <strong>{rawEvidence.source}</strong></span><span>Phase <strong>{rawEvidence.phase}</strong></span><span>Mutable <strong>NO</strong></span></div>
         <p className="workbench-react__document-status" role="status">{copyStatus}</p>
@@ -1117,7 +1176,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               {projection("Observed Server COMMAND State", snapshot.commandProjections.observed)}
               {projection("Local Effective COMMAND State", snapshot.commandProjections.localEffective)}
               <p className="workbench-react__projection-limit">{snapshot.commandProjections.authoritativeLimit}</p>
-              <div className="workbench-react__context-actions">{selected ? <button type="button" disabled={!canCreateLocalInjectionDraft} title={snapshot.localInjection.availability.selectedUpdate.reason ?? undefined} onClick={() => dispatch(runtime, { type: "begin-local-injection-from-selection" })}>Create Local Injection Draft</button> : null}<button type="button" onClick={() => selected && dispatch(runtime, { type: "open-raw-evidence", eventId: selected.id })}>Open complete raw</button><button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button></div>
+              <div className="workbench-react__context-actions"><button ref={commandProjectionTrigger} type="button" onClick={openCommandProjectionComparison}>Compare COMMAND projections</button>{selected ? <button type="button" disabled={!canCreateLocalInjectionDraft} title={snapshot.localInjection.availability.selectedUpdate.reason ?? undefined} onClick={() => dispatch(runtime, { type: "begin-local-injection-from-selection" })}>Create Local Injection Draft</button> : null}<button type="button" onClick={() => selected && dispatch(runtime, { type: "open-raw-evidence", eventId: selected.id })}>Open complete raw</button><button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button></div>
             </>}
           </div>
         </aside>

@@ -178,7 +178,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       },
       commandScope: {
         available: false,
-        reason: "Select a live COMMAND Item or Listener Scope with captured field and listener context."
+        reason: "Select a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context."
       }
     });
 
@@ -203,7 +203,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       selectedUpdate: { available: true, reason: null },
       commandScope: {
         available: false,
-        reason: "Select a live COMMAND Item or Listener Scope with captured field and listener context."
+        reason: "Select a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context."
       }
     });
     merge.dispose();
@@ -300,10 +300,14 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("authors a no-source draft only from a live COMMAND Item Scope", () => {
+  it("authors one no-source Draft from a live single-item COMMAND Subscription or Item Scope", () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
-    const item = runtime.getSnapshot().scope.nodes.find(({ kind }) => kind === "item");
-    runtime.dispatch({ type: "set-scope", scopeId: item?.id ?? null });
+    const subscription = runtime.getSnapshot().scope.nodes.find(({ kind }) => kind === "subscription");
+    runtime.dispatch({ type: "set-scope", scopeId: subscription?.id ?? null });
+    expect(runtime.getSnapshot().localInjection.availability.commandScope).toEqual({
+      available: true,
+      reason: null
+    });
     runtime.dispatch({ type: "begin-local-injection-from-scope" });
 
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
@@ -317,13 +321,79 @@ describe("WorkbenchRuntime Local Injection", () => {
         listenerId: identity.listenerId
       }
     });
-    expect(runtime.getSnapshot().localInjection.draft?.document).toEqual({
+    runtime.dispose();
+
+    const itemRuntime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    const item = itemRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "item");
+    itemRuntime.dispatch({ type: "set-scope", scopeId: item?.id ?? null });
+    itemRuntime.dispatch({ type: "begin-local-injection-from-scope" });
+
+    expect(itemRuntime.getSnapshot().localInjection.draft).toMatchObject({
+      source: { kind: "authored", rawText: null },
+      compareStatus: "no-source",
+      ready: false,
+      anchor: {
+        sourceEventId: null,
+        subscriptionId: identity.subscriptionId,
+        itemName: identity.itemName,
+        listenerId: identity.listenerId
+      }
+    });
+    expect(itemRuntime.getSnapshot().localInjection.draft?.document).toEqual({
       command: null,
       key: null,
       isSnapshot: false,
       fields: { command: null, key: null, qty: null }
     });
-    runtime.dispose();
+    itemRuntime.dispose();
+
+    const ambiguousHistory = historyWithCommandTarget();
+    ambiguousHistory.append(commandEvent("source-7", "item-update", {
+      subscription: {
+        id: identity.subscriptionId,
+        mode: "COMMAND",
+        items: [identity.itemName, "orders-secondary"],
+        fields: ["command", "key", "qty"],
+        active: true,
+        subscribed: true
+      },
+      item: { name: "orders-secondary", position: 2 },
+      update: {
+        isSnapshot: false,
+        command: "ADD",
+        key: "order-2",
+        fields: { command: "ADD", key: "order-2", qty: 2 },
+        changedFields: { command: "ADD", key: "order-2", qty: 2 }
+      }
+    }));
+    const ambiguousRuntime = createWorkbenchRuntime({ history: ambiguousHistory, captureStatus: "capturing" });
+    const ambiguousSubscription = ambiguousRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "subscription");
+    ambiguousRuntime.dispatch({ type: "set-scope", scopeId: ambiguousSubscription?.id ?? null });
+    expect(ambiguousRuntime.getSnapshot().localInjection.availability.commandScope).toMatchObject({
+      available: false,
+      reason: expect.stringContaining("exactly one current item")
+    });
+    ambiguousRuntime.dispatch({ type: "begin-local-injection-from-scope" });
+    expect(ambiguousRuntime.getSnapshot().localInjection).toMatchObject({
+      state: "idle",
+      draft: null,
+      entryError: expect.stringContaining("exactly one current item")
+    });
+    const secondItem = ambiguousRuntime.getSnapshot().scope.nodes.find(
+      ({ kind, label }) => kind === "item" && label.includes("orders-secondary")
+    );
+    ambiguousRuntime.dispatch({ type: "set-scope", scopeId: secondItem?.id ?? null });
+    expect(ambiguousRuntime.getSnapshot().localInjection.availability.commandScope).toEqual({
+      available: true,
+      reason: null
+    });
+    ambiguousRuntime.dispatch({ type: "begin-local-injection-from-scope" });
+    expect(ambiguousRuntime.getSnapshot().localInjection.draft?.anchor).toMatchObject({
+      subscriptionId: identity.subscriptionId,
+      itemName: "orders-secondary",
+      itemPosition: 2
+    });
+    ambiguousRuntime.dispose();
 
     const mergeRuntime = createWorkbenchRuntime({
       history: historyWithMergeTarget(),

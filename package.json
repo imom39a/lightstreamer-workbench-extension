@@ -40,7 +40,10 @@
     "prototype:visual-semantics": "vite prototypes --host 127.0.0.1 --port 4178",
     "prototype:integrated-ui": "vite prototypes --host 127.0.0.1 --port 4179",
     "test:ui": "node scripts/test-ui.mjs",
-    "test:ui:extension": "npm run build && node scripts/test-ui-extension.mjs"
+    "test:ui:update": "node scripts/test-ui-update.mjs",
+    "test:ui:visual": "node scripts/generate-workbench-visual-evidence.mjs",
+    "test:ui:extension": "npm run build && node scripts/test-ui-extension.mjs",
+    "docs:check": "node scripts/check-docs.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

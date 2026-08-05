@@ -273,6 +273,43 @@ describe("React Workbench Diagnose panel", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
   });
 
+  it("renders a promoted COMMAND projection comparison with distinct complete bases", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const runtime = createTestRuntime(snapshot({
+      contextId: "command-projections",
+      commandProjections: {
+        observed: {
+          name: "Observed Server COMMAND State",
+          basis: "Captured Server Updates only",
+          rows: [["orders / alpha", "command=ADD, qty=1"]]
+        },
+        localEffective: {
+          name: "Local Effective COMMAND State",
+          basis: "Server Updates plus successfully delivered Local Injected Updates",
+          rows: [["orders / alpha", "command=UPDATE, qty=9"]]
+        },
+        authoritativeLimit: "Neither projection is Authoritative COMMAND State."
+      }
+    }));
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const comparison = document.querySelector<HTMLElement>(
+      '[aria-label="COMMAND projection comparison"]'
+    );
+    expect(comparison).not.toBeNull();
+    expect(comparison?.textContent).toContain("Observed Server COMMAND State");
+    expect(comparison?.textContent).toContain("Captured Server Updates only");
+    expect(comparison?.textContent).toContain("Local Effective COMMAND State");
+    expect(comparison?.textContent).toContain(
+      "Server Updates plus successfully delivered Local Injected Updates"
+    );
+    expect(comparison?.textContent).toContain("Neither projection is Authoritative COMMAND State.");
+
+    await act(async () => root.unmount());
+  });
+
   it("keeps captured Evidence ordered, selected, and distinct from keyboard focus", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");

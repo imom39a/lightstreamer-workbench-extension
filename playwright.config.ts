@@ -12,7 +12,7 @@ const chromeExecutable = resolveChromeExecutable();
 
 export default defineConfig({
   testDir: "./tests/ui",
-  testMatch: "workbench.spec.ts",
+  testMatch: "*.spec.ts",
   timeout: 30_000,
   expect: {
     timeout: 10_000,

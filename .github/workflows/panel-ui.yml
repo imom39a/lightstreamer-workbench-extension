@@ -8,6 +8,9 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/test-ui.mjs"
+      - "scripts/test-ui-update.mjs"
+      - "scripts/generate-workbench-visual-evidence.mjs"
+      - "scripts/check-docs.mjs"
       - "scripts/ui-panel-server.mjs"
       - "scripts/verify-extension-build.mjs"
       - "scripts/package-extension.mjs"
@@ -19,6 +22,9 @@ on:
       - "tests/support/panel-scenarios.ts"
       - "tests/support/workbench-scenarios.ts"
       - "tests/ui/**"
+      - "docs/agents/ui-verification.md"
+      - "docs/agents/ui-visual-qa.md"
+      - "CONTRIBUTING.md"
   workflow_dispatch:
 
 permissions:
@@ -60,6 +66,7 @@ jobs:
         run: |
           npm run typecheck
           npm test
+          npm run docs:check
 
       - name: Build and audit the production extension
         run: npm run build
@@ -73,6 +80,9 @@ jobs:
           LSEW_UI_UPDATE: "0"
         run: npm run test:ui
 
+      - name: Generate prototype and production visual review evidence
+        run: npm run test:ui:visual
+
       - name: Run unpacked production extension smoke
         run: node scripts/test-ui-extension.mjs
 
@@ -84,5 +94,6 @@ jobs:
           path: |
             test-results/ui/
             test-results/ui-report/
+            test-results/workbench-visual-qa/
             test-results/release/
           if-no-files-found: warn

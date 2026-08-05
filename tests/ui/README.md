@@ -19,7 +19,17 @@ npm run test:ui -- --scenario=local-injection-authored --viewport=900x700 --them
 
 The suite uses fixed scenario data, timestamps, viewport sizes, themes,
 `deviceScaleFactor: 1`, and disabled animations. It retains screenshots,
-traces, video, page HTML, and console output when a check fails; there is no
-separate baseline-update command. Collect and review intentional visual
-evidence through `docs/agents/ui-verification.md` and
-`docs/agents/ui-visual-qa.md` according to the Workbench UI Standard.
+traces, video, page HTML, and console output when a check fails.
+
+`visual-regression.spec.ts` is the small committed production baseline matrix:
+normal `900×700` Evidence density (Dark), compact `563×700` captured Draft
+(Light), shallow `900×320` authored Review (Dark), and wide `1440×900`
+COMMAND comparison (Light). `npm run test:ui` can only compare those images.
+Use `npm run test:ui:update` for a deliberate baseline creation or update and
+record the inspected artifacts and reason in the Project item or pull request.
+
+Run `npm run test:ui:visual` for the independent Material-UI review packet.
+It captures the same four states from the accepted `workbench-ui-10`
+prototype, the production harness, and an inspectable visual diff in
+`test-results/workbench-visual-qa/`. The prototype diff is evidence for
+semantic review, not a pixel-parity threshold.

@@ -41,15 +41,21 @@ Bounded UI changes exercise the affected deterministic scene and the geometry,
 theme, keyboard, and accessibility evidence required by the standard.
 Material UI changes cover compact and normal viewports, relevant shallow and
 wide geometry, and representative Dark and Light themes defined in
-`tests/ui/visual-matrix.ts`. Inspect the generated screenshots and, when a
-visual diff exists, inspect expected, actual, and diff artifacts. Do not update
-baselines during normal verification; use only `npm run test:ui:update` for an
+`tests/ui/visual-matrix.json`. `npm run test:ui` compares committed production
+baselines and never updates them. Use only `npm run test:ui:update` for an
 intentional baseline change and record why it changed. Every baseline creation
-or update is a Material UI change.
+or update is a Material UI change. Run `npm run test:ui:visual` to create the
+accepted-prototype reference, current production, and diff artifacts under
+`test-results/workbench-visual-qa/`; inspect all three before handoff.
 
 Record the changed workflows, scenarios, viewport sizes, themes, browser
 tests, screenshot artifacts, accessibility results, and any intentional
 baseline updates in the pull request or the related internal Project ticket.
+
+For the complete maintained Material UI gate, also run `npm run test:ui:extension`
+for the shipped DevTools panel, `npm run fixture:test:browser` for the official
+Lightstreamer-client path, `npm run release:package` for the package audit,
+and `npm run docs:check` to validate documented command names.
 
 ## Independent visual QA
 

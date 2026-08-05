@@ -196,7 +196,7 @@
 .workbench-react__pane { min-width: 0; min-height: 0; overflow: hidden; border-right: 1px solid var(--wb-border); }
 .workbench-react__pane:last-child { border-right: 0; }
 .workbench-react__pane-header { position: relative; z-index: 2; display: flex; min-height: 44px; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--wb-border); background: var(--wb-raised); padding: 6px 9px; }
-.workbench-react__pane-header div { display: grid; min-width: 0; }
+.workbench-react__pane-header > div:first-child { display: grid; min-width: 0; }
 .workbench-react__eyebrow { color: var(--wb-subtle); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
 .workbench-react__pane-header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workbench-react__compact-back { display: none; }
@@ -294,16 +294,16 @@
   display: grid;
   min-width: 0;
   flex: 0 0 auto;
-  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
   margin: 0;
   border-bottom: 1px solid var(--wb-border-strong);
   background: var(--wb-surface);
 }
-.workbench-react__local-boundary > div { min-width: 0; border-right: 1px solid var(--wb-border); padding: 5px 9px; }
+.workbench-react__local-boundary > div { display: grid; min-width: 0; align-content: start; border-right: 1px solid var(--wb-border); padding: 5px 9px; }
 .workbench-react__local-boundary > div:last-child { border-right: 0; }
 .workbench-react__local-boundary dt { color: var(--wb-muted); font: 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .05em; text-transform: uppercase; }
-.workbench-react__local-boundary dd { min-width: 0; margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workbench-react__local-boundary dd { min-width: 0; margin: 2px 0 0; overflow-wrap: anywhere; word-break: break-word; }
 .workbench-react__local-boundary .workbench-react__local-only { grid-column: 1 / -1; border-top: 1px solid var(--wb-border); border-right: 0; background: var(--wb-info-soft); color: var(--wb-info); }
 .workbench-react__local-conflict, .workbench-react__local-confirmation {
   display: flex;
@@ -372,7 +372,7 @@
 .workbench-react__local-problems ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .workbench-react__local-problems li { display: grid; grid-template-columns: 90px minmax(0, 1fr); border-left: 3px solid var(--wb-error); background: var(--wb-error-soft); color: var(--wb-error); padding: 5px 7px; }
 .workbench-react__local-problems li span { color: var(--wb-text); }
-.workbench-react__local-review, .workbench-react__local-pending, .workbench-react__local-outcome { display: grid; min-width: 680px; gap: 9px; padding: 14px; }
+.workbench-react__local-review, .workbench-react__local-pending, .workbench-react__local-outcome { display: grid; min-width: 0; gap: 9px; padding: 14px; }
 .workbench-react__local-review h2, .workbench-react__local-pending h2, .workbench-react__local-outcome h2 { margin: 0; font-size: 17px; }
 .workbench-react__local-review p, .workbench-react__local-pending p, .workbench-react__local-outcome p { margin: 0; }
 .workbench-react__local-review pre, .workbench-react__local-pending pre { min-width: max-content; margin: 0; border: 1px solid var(--wb-border); background: var(--wb-surface); padding: 10px; color: var(--wb-text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -383,7 +383,7 @@
 .workbench-react__local-footer > span { min-width: 0; margin-right: auto; overflow: hidden; color: var(--wb-muted); text-overflow: ellipsis; white-space: nowrap; }
 .workbench-react__local-footer button:last-child { border-color: var(--wb-info); }
 .workbench-react__local-injection[data-minimized="true"] { flex: 0 0 auto; }
-.workbench-react__local-injection[data-minimized="true"] .workbench-react__local-boundary { grid-template-columns: repeat(4, minmax(120px, 1fr)); }
+.workbench-react__local-injection[data-minimized="true"] .workbench-react__local-boundary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .workbench-react__local-injection[data-minimized="true"] .workbench-react__local-only { display: block; }
 .workbench-react__local-parked { display: grid; flex: 0 0 auto; grid-template-columns: minmax(180px, 1fr) minmax(180px, auto) auto auto; align-items: center; gap: 8px; border-bottom: 1px solid var(--wb-info); background: var(--wb-info-soft); color: var(--wb-info); padding: 6px 9px; }
 .workbench-react__local-parked > div { display: grid; min-width: 0; }
@@ -412,6 +412,21 @@
 .workbench-react__projection p { margin: 0 0 6px; color: var(--wb-muted); }
 .workbench-react__projection ul { display: grid; gap: 4px; margin: 0; padding-left: 18px; }
 .workbench-react__projection-limit { color: var(--wb-muted); }
+.workbench-react__projection-document { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
+.workbench-react__projection-document > .workbench-react__pane-header h1 { margin: 2px 0 0; font-size: 14px; }
+.workbench-react__projection-document > footer { flex: 0 0 auto; border-top: 1px solid var(--wb-border); background: var(--wb-raised); color: var(--wb-muted); padding: 7px 10px; }
+.workbench-react__projection-document > .workbench-react__projection-limit { flex: 0 0 auto; margin: 0; border-bottom: 1px solid var(--wb-border); background: var(--wb-warning-soft); color: var(--wb-text); padding: 7px 10px; }
+.workbench-react__projection-shallow-summary { display: none; }
+.workbench-react__projection-columns { display: grid; min-height: 0; flex: 1 1 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; overflow: auto; padding: 10px; }
+.workbench-react__projection-column { min-width: 320px; border: 1px solid var(--wb-border); background: var(--wb-surface); }
+.workbench-react__projection-column > header { min-height: 66px; border-bottom: 1px solid var(--wb-border); background: var(--wb-raised); padding: 8px 10px; }
+.workbench-react__projection-column h2 { margin: 0; font-size: 13px; }
+.workbench-react__projection-column header p { margin: 4px 0 0; color: var(--wb-muted); }
+.workbench-react__projection-column dl { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(120px, .8fr); margin: 0; }
+.workbench-react__projection-column dt, .workbench-react__projection-column dd { min-width: 0; margin: 0; border-bottom: 1px solid var(--wb-border); padding: 7px 9px; overflow-wrap: anywhere; }
+.workbench-react__projection-column dd { border-left: 1px solid var(--wb-border); }
+.workbench-react__projection-empty { margin: 0; color: var(--wb-muted); padding: 10px; }
+.workbench-react__projection-explanation { display: grid; flex: 0 0 auto; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; border-top: 1px solid var(--wb-border); background: var(--wb-info-soft); padding: 8px 10px; }
 
 .workbench-react__status { display: flex; min-height: 27px; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--wb-border); color: var(--wb-muted); padding: 3px 9px; white-space: nowrap; }
 .workbench-react__status span { overflow: hidden; text-overflow: ellipsis; }
@@ -447,6 +462,19 @@
 .workbench-react[data-geometry="shallow"][data-context-collapsed="true"] .workbench-react__workspace { grid-template-columns: 1fr; }
 .workbench-react[data-geometry="shallow"][data-context-collapsed="true"] .workbench-react__evidence { grid-column: 1; }
 .workbench-react[data-geometry="shallow"] .workbench-react__pane-header { min-height: 34px; }
+.workbench-react[data-geometry="shallow"] .workbench-react__operating,
+.workbench-react[data-geometry="shallow"] .workbench-react__scope-strip { min-height: 27px; padding-block: 1px; }
+.workbench-react[data-geometry="shallow"] .workbench-react__local-header { gap: 6px; padding: 3px 7px; }
+.workbench-react[data-geometry="shallow"] .workbench-react__local-boundary { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.workbench-react[data-geometry="shallow"] .workbench-react__local-boundary > div { padding: 3px 7px; }
+.workbench-react[data-geometry="shallow"] .workbench-react__local-footer { min-height: 32px; padding: 3px 7px; }
+.workbench-react[data-geometry="shallow"] .workbench-react__status { min-height: 24px; padding-block: 0; }
+.workbench-react[data-geometry="shallow"] .workbench-react__local-review { gap: 2px; padding: 4px 8px; }
+.workbench-react[data-geometry="shallow"] .workbench-react__projection-columns { grid-template-columns: 1fr; }
+.workbench-react[data-geometry="shallow"] .workbench-react__projection-column { min-width: 0; }
+.workbench-react[data-geometry="shallow"] .workbench-react__projection-explanation { grid-template-columns: 1fr auto; }
+.workbench-react[data-geometry="shallow"] .workbench-react__projection-explanation > span { grid-column: 1 / -1; }
+.workbench-react[data-geometry="shallow"] .workbench-react__projection-shallow-summary { display: block; flex: 0 0 auto; margin: 0; border-bottom: 1px solid var(--wb-border); background: var(--wb-raised); padding: 4px 10px; }
 
 .workbench-react[data-geometry="compact"] .workbench-react__operating { overflow: hidden; }
 .workbench-react[data-geometry="compact"] .workbench-react__workspace { grid-template-columns: 1fr; }
@@ -483,6 +511,10 @@
 .workbench-react[data-geometry="compact"] .workbench-react__evidence-row > span:nth-child(6) { grid-column: 4; grid-row: 2; }
 .workbench-react[data-geometry="compact"] .workbench-react__condition { grid-template-columns: 1fr auto; }
 .workbench-react[data-geometry="compact"] .workbench-react__condition span { grid-column: 1 / 3; }
+.workbench-react[data-geometry="compact"] .workbench-react__projection-columns { grid-template-columns: 1fr; }
+.workbench-react[data-geometry="compact"] .workbench-react__projection-column { min-width: 0; }
+.workbench-react[data-geometry="compact"] .workbench-react__projection-explanation { grid-template-columns: 1fr auto; }
+.workbench-react[data-geometry="compact"] .workbench-react__projection-explanation > span { grid-column: 1 / -1; }
 @media (forced-colors: active) {
   .workbench-react__evidence-row, .workbench-react__scope-node {
     forced-color-adjust: none;

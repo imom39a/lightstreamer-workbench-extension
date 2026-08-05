@@ -54,6 +54,24 @@ async function expectShellFits(page: Page): Promise<void> {
   expect(dimensions.documentScrollWidth).toBeLessThanOrEqual(dimensions.documentClientWidth);
 }
 
+async function expectShellFitsExactly(page: Page): Promise<void> {
+  const dimensions = await page.locator(".workbench-react").evaluate((shell) => {
+    const rect = shell.getBoundingClientRect();
+    return {
+      width: rect.width,
+      height: rect.height,
+      left: rect.left,
+      top: rect.top,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight
+    };
+  });
+  expect(dimensions.left).toBe(0);
+  expect(dimensions.top).toBe(0);
+  expect(dimensions.width).toBe(dimensions.viewportWidth);
+  expect(dimensions.height).toBe(dimensions.viewportHeight);
+}
+
 async function expectWorkspaceFitsExactly(page: Page): Promise<void> {
   const dimensions = await page.locator(".workbench-react__workspace").evaluate((workspace) => ({
     clientWidth: workspace.clientWidth,
@@ -68,6 +86,13 @@ async function expectWorkspaceFitsExactly(page: Page): Promise<void> {
 async function attachScenarioScreenshot(page: Page, testInfo: TestInfo): Promise<void> {
   const name = testInfo.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
   await testInfo.attach(`current-${name}.png`, {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png"
+  });
+}
+
+async function attachNamedScenarioScreenshot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  await testInfo.attach(`${name}.png`, {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png"
   });
@@ -118,6 +143,145 @@ test("Workbench keeps selected Evidence, roving focus, and distinct COMMAND proj
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: "scenario-event-4 · Item Update" })).toBeFocused();
   await expect(page.getByText("scenario-event-4 · Item Update")).toBeVisible();
+
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench promotes distinct COMMAND projections and restores the investigation", async ({ page }, testInfo) => {
+  await openScenario(page, "command-projection-matching", { width: 900, height: 700 }, "dark");
+  const compare = page.getByRole("button", { name: "Compare COMMAND projections" });
+  await compare.focus();
+  await page.keyboard.press("Enter");
+  const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
+  await expect(comparison).toBeVisible();
+  await expect(comparison.getByRole("heading", { name: "Observed Server COMMAND State" })).toBeVisible();
+  await expect(comparison.getByText("Captured Server Updates only", { exact: true })).toBeVisible();
+  await expect(comparison.getByRole("heading", { name: "Local Effective COMMAND State" })).toBeVisible();
+  await expect(comparison.getByText("Server Updates plus successfully delivered Local Injected Updates", { exact: true })).toBeVisible();
+  await expect(comparison.getByText("Why matching?", { exact: true })).toBeVisible();
+  const normalColumns = await comparison.locator(".workbench-react__projection-column").evaluateAll((columns) =>
+    columns.map((column) => ({ top: column.getBoundingClientRect().top, width: column.getBoundingClientRect().width }))
+  );
+  expect(normalColumns).toHaveLength(2);
+  expect(normalColumns[0]?.top).toBe(normalColumns[1]?.top);
+  expect(normalColumns.every(({ width }) => width > 300)).toBe(true);
+  await attachNamedScenarioScreenshot(page, testInfo, "command-projection-normal-dark");
+  await comparison.getByRole("button", { name: "Back to Evidence" }).click();
+  await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toBeFocused();
+  await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toHaveAttribute("aria-selected", "true");
+
+  await openScenario(page, "command-projection-matching", { width: 563, height: 700 }, "light");
+  await page.getByRole("button", { name: "Open Context" }).click();
+  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  const compactComparison = page.getByRole("region", { name: "COMMAND projection comparison" });
+  const compactColumns = await compactComparison.locator(".workbench-react__projection-column").evaluateAll((columns) =>
+    columns.map((column) => ({ top: column.getBoundingClientRect().top, width: column.getBoundingClientRect().width }))
+  );
+  expect(compactColumns).toHaveLength(2);
+  expect(compactColumns[1]?.top).toBeGreaterThan(compactColumns[0]?.top ?? 0);
+  expect(compactColumns.every(({ width }) => width > 0)).toBe(true);
+  await attachNamedScenarioScreenshot(page, testInfo, "command-projection-compact-light");
+  await compactComparison.getByRole("button", { name: "Reveal Evidence" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toBeFocused();
+
+  await openScenario(page, "command-projection-matching", { width: 900, height: 320 }, "light");
+  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  const shallowComparison = page.getByRole("region", { name: "COMMAND projection comparison" });
+  await expect(shallowComparison).toBeVisible();
+  const shallowColumns = await shallowComparison.locator(".workbench-react__projection-column").evaluateAll((columns) =>
+    columns.map((column) => ({ top: column.getBoundingClientRect().top, width: column.getBoundingClientRect().width }))
+  );
+  expect(shallowColumns).toHaveLength(2);
+  expect(shallowColumns[1]?.top).toBeGreaterThan(shallowColumns[0]?.top ?? 0);
+  expect(await shallowComparison.evaluate((document) => document.scrollWidth <= document.clientWidth)).toBe(true);
+  await expect(shallowComparison).toContainText("Comparing Observed Server COMMAND State with Local Effective COMMAND State.");
+  await attachNamedScenarioScreenshot(page, testInfo, "command-projection-shallow-light");
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench restores the Evidence anchor after COMMAND projection comparison", async ({ page }, testInfo) => {
+  await openScenario(page, "frozen-high-volume", { width: 900, height: 700 }, "dark");
+  await page.getByRole("button", { name: "Filter" }).click();
+  await page.getByLabel("Filter Evidence").fill("high-volume");
+  await page.getByRole("button", { name: "Apply Filter" }).click();
+  await expect(page.getByText("Filter: high-volume", { exact: true })).toBeVisible();
+
+  const grid = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
+  const focused = page.locator('[data-evidence-id="high-volume-90"]');
+  await focused.focus();
+  await expect(focused).toBeFocused();
+  await grid.hover();
+  await page.mouse.wheel(0, -240);
+  const beforeScrollTop = await grid.evaluate((ledger) => ledger.scrollTop);
+  expect(beforeScrollTop).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  await page.getByRole("button", { name: "Back to Evidence" }).click();
+
+  await expect.poll(() => grid.evaluate((ledger) => ledger.scrollTop)).toBe(beforeScrollTop);
+  await expect(page.getByText("Filter: high-volume", { exact: true })).toBeVisible();
+  await expect(focused).toHaveAttribute("aria-selected", "true");
+  await expect(focused).toBeFocused();
+
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
+test("Workbench explains Local-only COMMAND projection differences without changing the observed projection", async ({ page }, testInfo) => {
+  await openScenario(page, "command-projection-before-local", { width: 1440, height: 900 }, "dark");
+  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  const observedBeforeDelivery = await page.getByLabel("Observed Server COMMAND State").textContent();
+
+  await openScenario(page, "command-projection-local-difference", { width: 1440, height: 900 }, "dark");
+  const draft = page.getByRole("region", { name: "Local Injection Draft" });
+  await expect(draft.getByRole("heading", { name: "DELIVERED LOCALLY" })).toBeVisible();
+  await draft.getByRole("button", { name: "Finish Local Injection" }).click();
+  const originatingEvidence = page.locator('[data-evidence-id="event-5"]');
+  await expect(originatingEvidence).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".workbench-react__evidence-row").filter({ hasText: "LOCAL" })).not.toHaveCount(0);
+  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+
+  const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
+  await expect(comparison.getByText("Why different?", { exact: true })).toBeVisible();
+  await expect(comparison).toContainText("Successful Local Injected Updates advance Local Effective COMMAND State only");
+  const observed = comparison.getByLabel("Observed Server COMMAND State");
+  const localEffective = comparison.getByLabel("Local Effective COMMAND State");
+  await expect(observed).toHaveText(observedBeforeDelivery ?? "");
+  await expect(observed).not.toContainText("value=9");
+  await expect(localEffective).toContainText("command=UPDATE, key=small-alpha, value=9");
+  await expect(comparison).toContainText("Neither projection is Authoritative COMMAND State.");
+  await attachNamedScenarioScreenshot(page, testInfo, "command-projection-wide-dark-local-difference");
+  const supportingLocalEvidence = page.locator(".workbench-react__evidence-row", { hasText: "LOCAL" }).last();
+  await comparison.getByRole("button", { name: "Back to Evidence" }).click();
+  await expect(originatingEvidence).toHaveAttribute("aria-selected", "true");
+  await expect(originatingEvidence).toBeFocused();
+  await expect(supportingLocalEvidence).toHaveAttribute("aria-selected", "false");
+
+  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  const reopenedComparison = page.getByRole("region", { name: "COMMAND projection comparison" });
+  await reopenedComparison.getByRole("button", { name: "Reveal Evidence" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(supportingLocalEvidence).toHaveAttribute("aria-selected", "true");
+  await expect(supportingLocalEvidence).toBeFocused();
+
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench presents unavailable COMMAND projections truthfully", async ({ page }, testInfo) => {
+  await openScenario(page, "command-projection-unavailable", { width: 900, height: 700 }, "light");
+  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
+  await expect(comparison).toContainText("Capture Coverage UNAVAILABLE");
+  await expect(comparison).toContainText("No captured Server Updates are available for this Scope.");
+  await expect(comparison.getByText("No reconstructed rows are available for the current Scope.")).toHaveCount(2);
+  await expect(comparison).toContainText("Neither projection is Authoritative COMMAND State.");
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -175,6 +339,41 @@ test("Workbench returns compact Scope commitment to the originating Evidence row
   await expect(row).toHaveAttribute("aria-selected", "true");
 
   await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench exposes selected captured Local Injection through the visible Context route", async ({ page }, testInfo) => {
+  for (const [viewport, contextNeedsOpening] of [
+    [{ width: 900, height: 700 }, false],
+    [{ width: 563, height: 700 }, true]
+  ] as const) {
+    await openScenario(page, "local-injection-captured", viewport, "dark");
+    const selectedEvidence = page.locator('[data-evidence-id="event-5"]');
+    await selectedEvidence.click();
+    await expect(selectedEvidence).toHaveAttribute("aria-selected", "true");
+
+    if (contextNeedsOpening) {
+      await page.getByRole("button", { name: "Open Context" }).click();
+      await expect(page.getByRole("complementary", { name: "Context" })).toBeVisible();
+    }
+
+    const createDraft = page.getByRole("button", { name: "Create Local Injection Draft" });
+    await expect(createDraft).toBeVisible();
+    await createDraft.focus();
+    await expect(createDraft).toBeFocused();
+    await createDraft.click();
+
+    const draft = page.getByRole("region", { name: "Local Injection Draft" });
+    await expect(draft).toBeVisible();
+    await expect(draft).toContainText("topology-small-subscription");
+    await expect(draft).toContainText("Session topology-small-session");
+    await expect(draft).toContainText("Source event-5 · immutable");
+    await expect(draft).toContainText("LOCAL ONLY");
+    await expect(page.getByRole("textbox", { name: "Local Injection JSON", exact: true })).toBeFocused();
+    await expectShellFits(page);
+  }
+
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
 });
@@ -712,13 +911,21 @@ test("Workbench edits one protected captured Local Injection Draft in lazy CodeM
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench authors a source-free COMMAND Item Update and seals Review read-only", async ({ page }, testInfo) => {
+test("Workbench authors a source-free COMMAND Item Update from a live single-item Subscription without captured Evidence selection", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-authored", { width: 900, height: 700 }, "light");
-  await page.getByRole("button", { name: "Author COMMAND Item Update" }).click();
+  await expect(page.locator('[aria-label="Ordered Lightstreamer Evidence"] [aria-selected="true"]')).toHaveCount(0);
+  const author = page.getByRole("button", { name: "Author COMMAND Item Update" });
+  await expect(author).toBeVisible();
+  await author.focus();
+  await expect(author).toBeFocused();
+  await page.keyboard.press("Enter");
 
   const draft = page.getByRole("region", { name: "Local Injection Draft" });
   const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
   await expect(editor).toBeFocused();
+  await expect(draft).toContainText("topology-small-subscription");
+  await expect(draft).toContainText("Session topology-small-session");
+  await expect(draft).toContainText("LOCAL ONLY");
   await expect(draft).toContainText("Source None · newly authored");
   await expect(page.getByRole("button", { name: "Compare Source" })).toBeDisabled();
   await expect(draft.getByRole("button", { name: "Review Local Injection" })).toBeDisabled();
@@ -967,3 +1174,142 @@ test("Workbench keeps delivered, failed, partial, and unknown Local Injection ou
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
 });
+
+test("Workbench keeps dense Evidence controls and protected Local Injection boundaries operable at every docked geometry", async ({
+  page
+}, testInfo) => {
+  await openScenario(page, "live-selected", { width: 900, height: 700 }, "dark");
+  const evidenceHeader = page.locator(".workbench-react__evidence > .workbench-react__pane-header");
+  const evidenceSummary = evidenceHeader.locator(".workbench-react__evidence-summary");
+  await expect(evidenceSummary).toHaveCSS("display", "flex");
+  expect(await evidenceHeader.evaluate((header) => header.getBoundingClientRect().height)).toBeLessThanOrEqual(44);
+  await expectCoreControlInViewport(page, page.getByRole("button", { name: "Open Context" }));
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await attachMatrixScreenshot(page, testInfo, "normal-dark-evidence");
+
+  await openScenario(page, "local-injection-captured", { width: 563, height: 700 }, "light");
+  await page.getByRole("button", { name: "Open Context" }).click();
+  const createDraft = page.getByRole("button", { name: "Create Local Injection Draft" });
+  await expectCoreControlInViewport(page, createDraft);
+  await page.keyboard.press("Enter");
+  const compactDraft = page.getByRole("region", { name: "Local Injection Draft" });
+  await expect(compactDraft).toBeVisible();
+  await expectProtectedBoundaryValues(compactDraft);
+  await expectCoreControlInViewport(page, compactDraft.getByRole("button", { name: "Review Local Injection" }));
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await attachMatrixScreenshot(page, testInfo, "compact-light-captured-edit");
+
+  await openScenario(page, "local-injection-authored", { width: 900, height: 320 }, "dark");
+  const author = page.getByRole("button", { name: "Author COMMAND Item Update" });
+  await expectCoreControlInViewport(page, author);
+  await page.keyboard.press("Enter");
+  const authoredDraft = page.getByRole("region", { name: "Local Injection Draft" });
+  await expect(authoredDraft).toBeVisible();
+  const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
+  await editor.fill(JSON.stringify({
+    command: "ADD",
+    key: "density-check",
+    isSnapshot: false,
+    fields: { command: "ADD", key: "density-check", value: "42" }
+  }, null, 2));
+  const review = authoredDraft.getByRole("button", { name: "Review Local Injection" });
+  await expectCoreControlInViewport(page, review);
+  await page.keyboard.press("Enter");
+  const reviewRegion = authoredDraft.getByRole("region", { name: "Review Local Injection" });
+  await expect(reviewRegion).toBeVisible();
+  const reviewHeading = reviewRegion.getByRole("heading", { name: "Review Local Injection" });
+  const reviewLocalOnly = reviewRegion.locator(".workbench-react__local-review-local-only");
+  const reviewScrollOwner = authoredDraft.locator('[data-shared-scroll-owner="true"]');
+  await expectContentInViewport(reviewHeading);
+  await reviewHeading.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect.poll(() => reviewScrollOwner.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(0);
+  await expectContentInViewport(reviewLocalOnly);
+  await expectCoreControlInViewport(page, authoredDraft.getByRole("button", { name: "Inject locally" }));
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await attachMatrixScreenshot(page, testInfo, "shallow-dark-authored-review");
+
+  await openScenario(page, "local-injection-delivered", { width: 1440, height: 900 }, "light");
+  const deliveredDraft = page.getByRole("region", { name: "Local Injection Draft" });
+  await expectProtectedBoundaryValues(deliveredDraft);
+  await expectCoreControlInViewport(page, deliveredDraft.getByRole("button", { name: "Finish Local Injection" }));
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachMatrixScreenshot(page, testInfo, "wide-light-delivered-outcome");
+});
+
+async function expectProtectedBoundaryValues(draft: ReturnType<Page["getByRole"]>): Promise<void> {
+  const values = await draft.locator(".workbench-react__local-boundary > div").evaluateAll((boundaries) =>
+    boundaries.map((boundary) => {
+      const label = boundary.querySelector("dt")?.textContent?.trim();
+      const value = boundary.querySelector("dd");
+      if (!(value instanceof HTMLElement)) throw new Error(`Protected boundary ${label ?? "Unknown"} is missing its value.`);
+      const style = getComputedStyle(value);
+      return {
+        label,
+        text: value.textContent?.trim() ?? "",
+        textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
+        scrollWidth: value.scrollWidth,
+        clientWidth: value.clientWidth
+      };
+    })
+  );
+  expect(values.map(({ label }) => label)).toEqual(expect.arrayContaining(["Target", "Session", "Source", "Validation", "Delivery", "Boundary"]));
+  for (const value of values) {
+    expect(value.textOverflow, `${value.label} must not silently ellipsize`).not.toBe("ellipsis");
+    expect(value.whiteSpace, `${value.label} must expose its complete value`).not.toBe("nowrap");
+    expect(value.scrollWidth, `${value.label} must fit or wrap its complete value`).toBeLessThanOrEqual(value.clientWidth);
+  }
+  expect(values.find(({ label }) => label === "Boundary")?.text).toContain("LOCAL ONLY");
+}
+
+async function expectCoreControlInViewport(page: Page, control: ReturnType<Page["getByRole"]>): Promise<void> {
+  await expect(control).toBeVisible();
+  await control.focus();
+  await expect(control).toBeFocused();
+  const geometry = await control.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    return {
+      intersectsViewport: rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+      unobscured: element.contains(document.elementFromPoint(centerX, centerY))
+    };
+  });
+  expect(geometry.intersectsViewport).toBe(true);
+  expect(geometry.unobscured).toBe(true);
+}
+
+async function expectContentInViewport(content: ReturnType<Page["getByRole"]>): Promise<void> {
+  await expect(content).toBeVisible();
+  const geometry = await content.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    return {
+      width: rect.width,
+      height: rect.height,
+      top: rect.top,
+      bottom: rect.bottom,
+      viewportHeight: window.innerHeight,
+      unobscured: element.contains(document.elementFromPoint(centerX, centerY))
+    };
+  });
+  expect(geometry.width).toBeGreaterThan(0);
+  expect(geometry.height).toBeGreaterThan(0);
+  expect(geometry.top).toBeGreaterThanOrEqual(0);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+  expect(geometry.unobscured).toBe(true);
+}
+
+async function attachMatrixScreenshot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  await testInfo.attach(`current-repair-03-${name}.png`, {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png"
+  });
+}

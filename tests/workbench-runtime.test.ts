@@ -1274,6 +1274,37 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
+  it("opens and closes the promoted COMMAND comparison without changing the investigation state", () => {
+    const history = createInMemoryEventHistory();
+    history.append(commandUpdate("comparison-command-1", {
+      clientId: "comparison-client",
+      sessionId: "comparison-session",
+      subscriptionId: "comparison-subscription",
+      itemName: "orders",
+      itemPosition: 1,
+      listenerId: "comparison-listener",
+      key: "comparison-key",
+      qty: 1
+    }));
+    const runtime = createWorkbenchRuntime({ history });
+    runtime.dispatch({ type: "select-evidence", eventId: "comparison-command-1" });
+    runtime.dispatch({ type: "open-context" });
+    const before = runtime.getSnapshot();
+
+    runtime.dispatch({ type: "open-command-projection-comparison" });
+    expect(runtime.getSnapshot().contextId).toBe("command-projections");
+    expect(runtime.getSnapshot().scopeId).toBe(before.scopeId);
+    expect(runtime.getSnapshot().selectionEventId).toBe(before.selectionEventId);
+    expect(runtime.getSnapshot().evidence.filters).toEqual(before.evidence.filters);
+
+    runtime.dispatch({ type: "close-command-projection-comparison" });
+    expect(runtime.getSnapshot().contextId).toBe(before.contextId);
+    expect(runtime.getSnapshot().scopeId).toBe(before.scopeId);
+    expect(runtime.getSnapshot().selectionEventId).toBe(before.selectionEventId);
+    expect(runtime.getSnapshot().evidence.focusedEventId).toBe(before.evidence.focusedEventId);
+    runtime.dispose();
+  });
+
   it("keeps a retained COMMAND projection available in retired Session Scope", () => {
     const history = createInMemoryEventHistory();
     const identity = {

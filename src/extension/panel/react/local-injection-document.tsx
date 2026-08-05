@@ -50,6 +50,16 @@ function deliveryCounts(localInjection: WorkbenchLocalInjectionSnapshot): string
   return `${outcome.deliveredCount ?? 0} delivered · ${outcome.failedCount ?? 0} failed · ${outcome.attemptedCount} attempted`;
 }
 
+function validationLabel(localInjection: WorkbenchLocalInjectionSnapshot): string {
+  const draft = localInjection.draft;
+  if (!draft) return "No Draft is available.";
+  if (draft.ready) return "READY · JSON, COMMAND semantics, and the protected target are valid";
+  const firstProblem = draft.diagnostics[0]?.message;
+  return firstProblem
+    ? `BLOCKED · ${firstProblem}`
+    : "BLOCKED · The protected target is not currently valid for Local Injection.";
+}
+
 /** Full-canvas, single-event Local Injection document. */
 export function LocalInjectionDocument({
   runtime,
@@ -228,11 +238,12 @@ export function LocalInjectionDocument({
     </header>
 
     <dl className="workbench-react__local-boundary">
-      <div><dt>Target</dt><dd>{draft.anchor.subscriptionId} · {draft.anchor.itemName ?? `Item #${draft.anchor.itemPosition ?? "Unknown"}`} · {draft.anchor.subscriptionMode ?? "Unknown mode"}</dd></div>
-      <div><dt>Session</dt><dd>Session {draft.anchor.sessionId ?? "Unknown"} · Client {draft.anchor.clientId ?? "Unknown"}</dd></div>
-      <div><dt>Source</dt><dd>{sourceLabel(localInjection)}</dd></div>
-      <div><dt>Delivery</dt><dd>One Logical Update → every current listener on this exact Subscription</dd></div>
-      <div className="workbench-react__local-only"><dt>Boundary</dt><dd>LOCAL ONLY · inspected-page runtime · Lightstreamer Server is not contacted</dd></div>
+      <div data-protected-boundary="target"><dt>Target</dt><dd>{draft.anchor.subscriptionId} · {draft.anchor.itemName ?? `Item #${draft.anchor.itemPosition ?? "Unknown"}`} · {draft.anchor.subscriptionMode ?? "Unknown mode"}</dd></div>
+      <div data-protected-boundary="session"><dt>Session</dt><dd>Session {draft.anchor.sessionId ?? "Unknown"} · Client {draft.anchor.clientId ?? "Unknown"}</dd></div>
+      <div data-protected-boundary="source"><dt>Source</dt><dd>{sourceLabel(localInjection)}</dd></div>
+      <div data-protected-boundary="validation"><dt>Validation</dt><dd>{validationLabel(localInjection)}</dd></div>
+      <div data-protected-boundary="delivery"><dt>Delivery</dt><dd>One Logical Update → every current listener on this exact Subscription</dd></div>
+      <div className="workbench-react__local-only" data-protected-boundary="local-only"><dt>Boundary</dt><dd>LOCAL ONLY · inspected-page runtime · Lightstreamer Server is not contacted</dd></div>
     </dl>
 
     {localInjection.blockedEntry ? <section className="workbench-react__local-conflict" role="alert">
@@ -295,12 +306,18 @@ export function LocalInjectionDocument({
           </section>
         </section>
 
-        <section className="workbench-react__local-review" hidden={!review} aria-label="Review Local Injection">
+        <section className="workbench-react__local-review" hidden={!review} aria-label="Review Local Injection" onKeyDown={(event) => {
+          if (event.key !== "PageDown") return;
+          const owner = scrollOwnerRef.current;
+          if (!owner) return;
+          event.preventDefault();
+          owner.scrollBy({ top: Math.max(24, owner.clientHeight * .8) });
+        }}>
           <header><span className="workbench-react__eyebrow">Read-only execution boundary</span><h2 ref={reviewHeadingRef} tabIndex={-1}>Review Local Injection</h2></header>
-          <pre aria-label="Reviewed Local Injection JSON" tabIndex={0}>{draft.rawText}</pre>
-          <p><strong>Target:</strong> {draft.anchor.subscriptionId} · {draft.anchor.itemName ?? `Item #${draft.anchor.itemPosition ?? "Unknown"}`} · Session {draft.anchor.sessionId ?? "Unknown"}</p>
-          <p><strong>Local only:</strong> one Logical Update is delivered to every current listener. Lightstreamer Server is not contacted.</p>
+          <p className="workbench-react__local-review-local-only"><strong>Local only:</strong> one Logical Update is delivered to every current listener. Lightstreamer Server is not contacted.</p>
           <p><strong>Projection boundary:</strong> successful delivery advances Local Effective COMMAND State only. Observed Server COMMAND State remains unchanged.</p>
+          <p><strong>Target:</strong> {draft.anchor.subscriptionId} · {draft.anchor.itemName ?? `Item #${draft.anchor.itemPosition ?? "Unknown"}`} · Session {draft.anchor.sessionId ?? "Unknown"}</p>
+          <pre aria-label="Reviewed Local Injection JSON" tabIndex={0}>{draft.rawText}</pre>
           {!draft.ready ? <p role="alert"><strong>NOT READY.</strong> The protected target or reviewed JSON changed. No Injection can be attempted.</p> : null}
         </section>
 

@@ -137,6 +137,22 @@ npm run test:ui -- --scenario=local-injection-authored --viewport=900x700 --them
 
 `Auto`, `Dark`, and `Light` are supported themes. The semantic suite does not maintain a second renderer's screenshot baselines; it retains screenshots and other browser artifacts when a check fails. Capture deliberate visual-review evidence through the Workbench UI verification procedure. The runner uses `CHROME_PATH` when set, then the Chrome for Testing browser installed by `npm run fixture:browser:install`, then a system Chrome installation.
 
+The production visual-regression matrix is part of `npm run test:ui`; it never rewrites its committed Playwright snapshots. Run `npm run test:ui:update` only for an intentional, reviewed baseline creation or update. Run `npm run test:ui:visual` to create the accepted-prototype reference, current production, and visual-diff packet at compact `563×700`, normal `900×700`, shallow `900×320`, and wide `1440×900` geometry. That packet is ignored local evidence for independent visual QA, not a pixel-parity acceptance threshold.
+
+Before handoff for a Material UI change, run and record the purpose and outcome of:
+
+```bash
+npm run typecheck                 # Type contracts
+npm test                          # Unit and command-contract tests
+npm run test:ui                   # Chromium behavior and read-only visual baselines
+npm run test:ui:visual            # Prototype/current/diff independent-review packet
+npm run test:ui:extension         # Shipped unpacked DevTools panel
+npm run fixture:test:browser      # Official-client Local Injection proof
+npm run build                      # Production build and extension audit
+npm run release:package           # Chrome Store package audit
+npm run docs:check                # Documented-command integrity
+```
+
 ## UI Definition of Done
 
 Classify panel changes as Non-UI, Bounded UI, or Material UI under the

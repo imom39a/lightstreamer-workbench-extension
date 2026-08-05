@@ -108,16 +108,28 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
         evidence: string;
         context: string;
         hasLegacyViews: boolean;
+        panel: { width: number; height: number; viewportWidth: number; viewportHeight: number };
       }>(panelCdp, `({
         scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
         evidence: document.querySelector('[aria-label="Ordered Evidence"]')?.textContent ?? "",
         context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
-        hasLegacyViews: Boolean(document.querySelector(".view-selector"))
+        hasLegacyViews: Boolean(document.querySelector(".view-selector")),
+        panel: (() => {
+          const panel = document.querySelector(".workbench-react")?.getBoundingClientRect();
+          return {
+            width: panel?.width ?? 0,
+            height: panel?.height ?? 0,
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight
+          };
+        })()
       })`);
       assert.match(proof.scope, /Inspected page/);
       assert.match(proof.evidence, /Ordered Evidence/);
       assert.match(proof.context, /Observed Server COMMAND State/);
       assert.equal(proof.hasLegacyViews, false);
+      assert.equal(proof.panel.width, proof.panel.viewportWidth);
+      assert.equal(proof.panel.height, proof.panel.viewportHeight);
       console.log(
         "Production extension panel smoke passed: DevTools selected the semantic Scope, Evidence, and Context workspace."
       );

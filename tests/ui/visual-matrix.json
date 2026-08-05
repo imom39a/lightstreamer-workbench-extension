@@ -1,0 +1,30 @@
+[
+  {
+    "id": "normal-density-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal" },
+    "production": { "scenario": "live-selected", "setup": "none" }
+  },
+  {
+    "id": "compact-captured-draft-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "B", "state": "edit", "frame": "compact" },
+    "production": { "scenario": "local-injection-captured", "setup": "captured-draft" }
+  },
+  {
+    "id": "shallow-authored-review-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "prototype": { "variant": "B", "state": "review", "frame": "shallow" },
+    "production": { "scenario": "local-injection-authored", "setup": "authored-review" }
+  },
+  {
+    "id": "wide-command-comparison-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "command", "frame": "wide" },
+    "production": { "scenario": "command-projection-matching", "setup": "command-comparison" }
+  }
+]

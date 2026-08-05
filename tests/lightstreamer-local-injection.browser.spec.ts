@@ -129,7 +129,7 @@ async function runBrowserProof(): Promise<void> {
     panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl);
     await panelCdp.request("Runtime.enable");
 
-    await waitForPanelEvidence(panelCdp);
+    const wireEvidenceCount = await waitForPanelEvidence(panelCdp);
     const directWireMessage = "Direct wire Local Injection through the protected page bridge.";
     await injectFromLatestServerEvidence(panelCdp, directWireMessage);
     await waitForRenderedMessage(pageCdp, directWireMessage, 2);
@@ -147,7 +147,7 @@ async function runBrowserProof(): Promise<void> {
     const listenerCapture = await latestFixtureCapture(pageCdp, "listener");
     assert.ok(listenerCapture.payload?.listener?.id);
     assert.notEqual(listenerCapture.payload?.raw?.captureSource, "websocket-tlcp");
-    await waitForPanelEvidence(panelCdp);
+    await waitForPanelEvidence(panelCdp, wireEvidenceCount);
 
     assert.equal(
       await evaluateByValue<boolean>(pageCdp, "delete globalThis.__LSEW_REINJECTION_BRIDGE__"),
@@ -207,24 +207,33 @@ async function latestFixtureCapture(
   );
 }
 
-async function waitForPanelEvidence(cdp: CdpClient): Promise<void> {
+async function waitForPanelEvidence(cdp: CdpClient, previousCount = 0): Promise<number> {
   await waitForCondition(
     cdp,
     `
       document.querySelector(".workbench-react__operating strong")?.textContent === "Capture RUNNING" &&
       [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
-        .some((row) =>
+        .filter((row) =>
           row.textContent?.includes("scenario.mutate-reinject") &&
           [...row.querySelectorAll('[role="gridcell"]')]
             .some((cell) => cell.textContent?.trim() === "SERVER")
-        )
+        ).length > ${previousCount}
     `,
     "the production Evidence workspace to show the fixture Item Update"
+  );
+  return evaluateByValue<number>(
+    cdp,
+    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+      .filter((row) =>
+        row.textContent?.includes("scenario.mutate-reinject") &&
+        [...row.querySelectorAll('[role="gridcell"]')]
+          .some((cell) => cell.textContent?.trim() === "SERVER")
+      ).length`
   );
 }
 
 async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: string): Promise<void> {
-  await evaluateByValue(cdp, `(() => {
+  const latestServerEvidence = `(() => {
     const rows = [...document.querySelectorAll(
       '[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]'
     )].filter((row) =>
@@ -232,17 +241,69 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
       [...row.querySelectorAll('[role="gridcell"]')]
         .some((cell) => cell.textContent?.trim() === "SERVER")
     );
-    const row = rows.at(-1);
-    if (!(row instanceof HTMLButtonElement)) throw new Error("Fixture SERVER Evidence is missing.");
-    row.click();
-  })()`);
-  await waitForCondition(
+    return rows.at(-1);
+  })()`;
+  if (!await isPanelElementVisible(cdp, latestServerEvidence)) {
+    await clickVisiblePanelElement(
+      cdp,
+      `[...document.querySelectorAll("button")].find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return candidate.textContent?.trim() === "Back to Evidence" && rect.width > 0 && rect.height > 0;
+      })`,
+      "visible Back to Evidence button"
+    );
+    await waitForCondition(
+      cdp,
+      `(() => {
+        const target = ${latestServerEvidence};
+        if (!(target instanceof HTMLElement)) return false;
+        const rect = target.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })()`,
+      "the latest fixture SERVER Evidence to return to view"
+    );
+  }
+  await clickVisiblePanelElement(
     cdp,
-    `[...document.querySelectorAll("button")].some(
-      (button) => button.textContent?.trim() === "Create Local Injection Draft" && !button.disabled
-    )`,
-    "the selected Evidence to offer Local Injection"
+    latestServerEvidence,
+    "latest visible fixture SERVER Evidence"
   );
+  try {
+    await waitForCondition(
+      cdp,
+      `[...document.querySelectorAll("button")].some(
+        (button) => button.textContent?.trim() === "Create Local Injection Draft" && !button.disabled
+      )`,
+      "the selected Evidence to offer Local Injection"
+    );
+  } catch (error) {
+    const diagnostic = await evaluateByValue<unknown>(cdp, `(() => {
+      const row = ${latestServerEvidence};
+      const shell = document.querySelector(".workbench-react");
+      return {
+        compactSurface: shell?.getAttribute("data-compact-surface"),
+        rowSelected: row?.getAttribute("aria-selected"),
+        activeElement: document.activeElement?.textContent?.trim(),
+        context: document.querySelector('[aria-label="Context"]')?.textContent?.trim()
+      };
+    })()`);
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nPanel state: ${JSON.stringify(diagnostic)}`);
+  }
+  if (!await isPanelElementVisible(cdp, `[...document.querySelectorAll("button")]
+    .find((button) => button.textContent?.trim() === "Create Local Injection Draft" && !button.disabled)`)) {
+    await clickPanelButton(cdp, "Open Context");
+    await waitForCondition(
+      cdp,
+      `(() => {
+        const button = [...document.querySelectorAll("button")]
+          .find((candidate) => candidate.textContent?.trim() === "Create Local Injection Draft" && !candidate.disabled);
+        if (!(button instanceof HTMLElement)) return false;
+        const rect = button.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && getComputedStyle(button).display !== "none";
+      })()`,
+      "the compact Context route to reveal Local Injection"
+    );
+  }
   await clickPanelButton(cdp, "Create Local Injection Draft");
   await waitForCondition(
     cdp,
@@ -300,27 +361,88 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
 }
 
 async function replaceLocalInjectionJson(cdp: CdpClient, text: string): Promise<void> {
-  await evaluateByValue(cdp, `(() => {
-    const editor = document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]');
-    if (!(editor instanceof HTMLElement)) throw new Error("Local Injection JSON editor is missing.");
-    editor.focus();
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(editor);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-  })()`);
+  await clickVisiblePanelElement(
+    cdp,
+    `document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]')`,
+    "Local Injection JSON editor"
+  );
+  await selectAllInFocusedEditor(cdp);
   await cdp.request("Input.insertText", { text });
+  try {
+    await waitForCondition(
+      cdp,
+      `(() => {
+        const editor = document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]');
+        return editor instanceof HTMLElement &&
+          [...editor.querySelectorAll(".cm-line")].map((line) => line.textContent ?? "").join("\\n") === ${JSON.stringify(text)};
+      })()`,
+      "the visible Local Injection JSON editor to replace its complete document"
+    );
+  } catch (error) {
+    const actualText = await evaluateByValue<string>(
+      cdp,
+      `(() => {
+        const editor = document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]');
+        return editor instanceof HTMLElement
+          ? [...editor.querySelectorAll(".cm-line")].map((line) => line.textContent ?? "").join("\\n")
+          : "";
+      })()`
+    );
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nEditor contents: ${JSON.stringify(actualText)}`);
+  }
+}
+
+async function selectAllInFocusedEditor(cdp: CdpClient): Promise<void> {
+  const modifier = process.platform === "darwin"
+    ? { key: "Meta", code: "MetaLeft", windowsVirtualKeyCode: 91, nativeVirtualKeyCode: 91, modifiers: 4 }
+    : { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17, modifiers: 2 };
+  await cdp.request("Input.dispatchKeyEvent", { type: "rawKeyDown", ...modifier });
+  await cdp.request("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: modifier.modifiers });
+  await cdp.request("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: modifier.modifiers });
+  await cdp.request("Input.dispatchKeyEvent", { type: "keyUp", ...modifier });
 }
 
 async function clickPanelButton(cdp: CdpClient, label: string): Promise<void> {
-  await evaluateByValue(cdp, `(() => {
-    const button = [...document.querySelectorAll("button")]
-      .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)});
-    if (!(button instanceof HTMLButtonElement) || button.disabled) {
-      throw new Error("Panel button unavailable: " + ${JSON.stringify(label)});
+  await clickVisiblePanelElement(
+    cdp,
+    `[...document.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && !candidate.disabled)`,
+    `${label} button`
+  );
+}
+
+async function clickVisiblePanelElement(
+  cdp: CdpClient,
+  targetExpression: string,
+  description: string
+): Promise<void> {
+  const point = await evaluateByValue<{ x: number; y: number }>(cdp, `(() => {
+    const target = ${targetExpression};
+    if (!(target instanceof HTMLElement)) throw new Error("Missing ${description}");
+    target.scrollIntoView({ block: "center", inline: "nearest" });
+    const rect = target.getBoundingClientRect();
+    const style = getComputedStyle(target);
+    if (!rect.width || !rect.height || style.visibility === "hidden" || style.display === "none") {
+      throw new Error("${description} is not visibly operable");
     }
-    button.click();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    if (!target.contains(document.elementFromPoint(x, y))) {
+      throw new Error("${description} is obscured at its visible click target");
+    }
+    return { x, y };
+  })()`);
+  await cdp.request("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
+  await cdp.request("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
+}
+
+async function isPanelElementVisible(cdp: CdpClient, targetExpression: string): Promise<boolean> {
+  return evaluateByValue<boolean>(cdp, `(() => {
+    const target = ${targetExpression};
+    if (!(target instanceof HTMLElement)) return false;
+    const rect = target.getBoundingClientRect();
+    const style = getComputedStyle(target);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
   })()`);
 }
 

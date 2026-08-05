@@ -409,6 +409,8 @@ export type WorkbenchCommand =
   | { type: "select-evidence"; eventId: string | null }
   | { type: "focus-evidence"; eventId: string | null }
   | { type: "set-context"; contextId: string | null }
+  | { type: "open-command-projection-comparison" }
+  | { type: "close-command-projection-comparison" }
   | { type: "open-context" }
   | { type: "open-scope" }
   | { type: "open-diagnostics" }
@@ -514,6 +516,7 @@ class Runtime implements WorkbenchRuntime {
   private focusedEventId: string | null = null;
   private selectionHiddenByFilter = false;
   private contextId: string | null = null;
+  private commandProjectionReturnContextId: string | null = null;
   private filters: EventFilterState = {};
   private find = "";
   private findCurrentEventId: string | null = null;
@@ -830,6 +833,16 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "set-context":
         this.contextId = command.contextId;
+        this.publish();
+        return;
+      case "open-command-projection-comparison":
+        this.commandProjectionReturnContextId = this.contextId;
+        this.contextId = "command-projections";
+        this.publish();
+        return;
+      case "close-command-projection-comparison":
+        this.contextId = this.commandProjectionReturnContextId;
+        this.commandProjectionReturnContextId = null;
         this.publish();
         return;
       case "open-context":
@@ -1383,7 +1396,7 @@ class Runtime implements WorkbenchRuntime {
       const target = findTopologySelection(this.topologyProjection.snapshot(), intent.scopeId);
       const authored = authoredDraftFromScope(target, this.currentPageEpoch);
       if (!authored) {
-        this.localInjectionEntryError = "Authoring requires a live COMMAND Item or Listener Scope with captured field and listener context.";
+        this.localInjectionEntryError = "Authoring requires a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context.";
         return null;
       }
       ({ draft: baseDraft, anchor } = authored);
@@ -2098,7 +2111,7 @@ class Runtime implements WorkbenchRuntime {
     if (!authored) {
       commandScope = {
         available: false,
-        reason: "Select a live COMMAND Item or Listener Scope with captured field and listener context."
+        reason: "Select a live COMMAND Item Scope, Listener Scope, or a Subscription with exactly one current item and a captured listener context."
       };
     } else {
       const targetDiagnostic = this.validateLocalInjectionTarget(authored.anchor)[0];
@@ -2678,10 +2691,12 @@ function authoredDraftFromScope(
   target: TopologySelectionTarget | null,
   pageEpoch: string | null
 ): { draft: ReinjectionDraft; anchor: WorkbenchLocalInjectionAnchor } | null {
-  if (!target || (target.kind !== "item" && target.kind !== "listener")) return null;
+  if (!target || (target.kind !== "subscription" && target.kind !== "item" && target.kind !== "listener")) return null;
   if (!target.client || !target.session || target.session.historical || !target.session.active) return null;
   const subscription = target.subscription;
-  const item = target.kind === "item" ? target.item : target.item;
+  const item = target.kind === "subscription"
+    ? subscription.items.length === 1 ? subscription.items[0] ?? null : null
+    : target.item;
   if (!item || subscription.mode !== "COMMAND" || subscription.historical || !subscription.active) return null;
   const listener = target.kind === "listener"
     ? target.listener
