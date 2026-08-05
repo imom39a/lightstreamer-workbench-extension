@@ -145,14 +145,16 @@ The update command accepts the same scenario, viewport, and theme options. The r
 
 ## UI Definition of Done
 
-Material Workbench panel changes follow the browser evidence process in
+Classify panel changes as Non-UI, Bounded UI, or Material UI under the
+[`Workbench UI Standard`](docs/WORKBENCH_UI_STANDARD.md), then collect the
+proportional evidence through
 [`docs/agents/ui-verification.md`](docs/agents/ui-verification.md). Add a
-failing user-facing test before changing UI behavior, exercise compact and
-normal viewports with representative themes, inspect the relevant screenshots,
-and record the tested workflows, accessibility results, and visual artifacts
-in the pull request or internal Project ticket. `npm test` alone is not enough
-for browser-visible behavior; normal verification must include `npm run
-test:ui` and `npm run build`.
+failing user-facing test before changing browser-visible behavior, inspect the
+relevant screenshots, and record the tested workflows, accessibility results,
+and visual artifacts in the pull request or internal Project ticket. Material
+UI changes also require the independent review defined in
+[`docs/agents/ui-visual-qa.md`](docs/agents/ui-visual-qa.md). `npm test` alone
+is not enough for browser-visible behavior.
 
 The `fixture:*` npm commands use a cross-platform Node runner and work from Windows PowerShell/cmd as well as macOS and Linux shells. Individual lifecycle commands are also available:
 

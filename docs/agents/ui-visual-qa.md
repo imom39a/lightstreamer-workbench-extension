@@ -1,6 +1,7 @@
 # Independent visual QA
 
-Independent visual QA is required for material Workbench panel changes. The
+Independent visual QA is required for Material UI changes under the
+[`Workbench UI Standard`](../WORKBENCH_UI_STANDARD.md). The
 reviewer receives only the acceptance criteria, the base and changed
 screenshots, the visual diffs, the tested viewport/theme matrix, and the
 browser/a11y results. The implementation rationale is intentionally omitted

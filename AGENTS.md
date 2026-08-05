@@ -65,7 +65,11 @@ The tool is generic developer infrastructure, not an application-specific debugg
 
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+### Workbench UI
+
+All panel UI work follows [`docs/WORKBENCH_UI_STANDARD.md`](docs/WORKBENCH_UI_STANDARD.md). Classify the change as Non-UI, Bounded UI, or Material UI before implementation, preserve the linked accepted design contracts, and collect the proportional browser and visual-QA evidence defined there. Do not introduce a permanent surface, shared component, semantic exception, or visual-baseline change without satisfying its explicit gate.
+
+Use [`docs/agents/ui-verification.md`](docs/agents/ui-verification.md) for the browser procedure and [`docs/agents/ui-visual-qa.md`](docs/agents/ui-visual-qa.md) for independent review.
 
 ## Architecture
 
