@@ -142,14 +142,17 @@ compact captured Draft now shows a structured JSON-string field. The new wide
 state proves the `JSON string` marker, wrapped structured payload, exact key,
 and single Context scroll boundary together.
 
-Local and pinned-Linux read-only Playwright runs each passed all 50 checks.
+Local and pinned-Linux read-only Playwright runs each passed the full browser suite.
 The asserted browser coverage includes a 220-subscription live Scope, 4,000
 long-identity Evidence events, compact/normal/wide selected-data restoration,
-physical PageDown movement in the Local Injection editor, one shared editor
-scroll owner, and no serious or critical axe findings. The shipped extension
-smoke and official-client fixture passed; the latter proved captured encoded
-JSON round trips as a string through direct wire, message-channel fallback,
-and listener fallback delivery.
+passive high-volume growth at normal and wide geometry without displaced
+selection or focus, Filter-hidden selected Fields/Changed fields/JSON patches,
+physical PageDown/PageUp, wheel, and caret-driven movement in the Local
+Injection editor, one shared editor scroll owner, and no serious or critical
+axe findings. The shipped extension smoke, release package, docs check, and
+official-client fixture passed; the latter proved captured encoded JSON round
+trips as a string through direct wire, message-channel fallback, and listener
+fallback delivery.
 
 An independent reviewer inspected all packet images and platform baselines
 and passed the batch with no material findings. The reviewer found no blank
@@ -166,4 +169,6 @@ docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwrig
 npm run test:ui:visual
 npm run test:ui:extension
 npm run fixture:test:browser
+npm run release:package
+npm run docs:check
 ```

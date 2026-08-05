@@ -140,6 +140,13 @@ await new Promise((resolve) => setTimeout(resolve, 48));
 document.documentElement.dataset.reactScenario = scenarioId;
 document.documentElement.dataset.reactSceneReady = "true";
 window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
+let deferredEventsReleased = false;
+window.__appendDeferredWorkbenchEvents = () => {
+  if (deferredEventsReleased) return 0;
+  deferredEventsReleased = true;
+  for (const event of scenario.deferredEvents ?? []) history.append(event);
+  return scenario.deferredEvents?.length ?? 0;
+};
 window.addEventListener("pagehide", () => { reactRoot.unmount(); runtime.dispose(); }, { once: true });
 `;
 }

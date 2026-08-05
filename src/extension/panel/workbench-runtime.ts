@@ -12,7 +12,7 @@ import {
 } from "../../core/event-history";
 import { createEventSearchText, matchesEventFilters, type EventFilterState } from "../../core/event-filter";
 import { type EventStore, type EventStoreChange, type EventStoreStats } from "../../core/event-store";
-import { expandJsonStringFields } from "../../core/json-string-fields";
+import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
 import {
   analyzeLocalInjectionDocument,
   applyLocalInjectionDocumentToDraft,
@@ -2867,20 +2867,8 @@ function deepFreezeLocalInjectionFields(
   fields: LocalInjectionDocument["fields"]
 ): LocalInjectionDocument["fields"] {
   return Object.freeze(Object.fromEntries(
-    Object.entries(fields).map(([name, value]) => [name, deepFreezeLocalInjectionValue(value)])
+    Object.entries(fields).map(([name, value]) => [name, cloneAndFreezeJsonValue(value)])
   ));
-}
-
-function deepFreezeLocalInjectionValue<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((entry) => deepFreezeLocalInjectionValue(entry))) as T;
-  }
-  if (typeof value === "object" && value !== null) {
-    return Object.freeze(Object.fromEntries(
-      Object.entries(value).map(([name, entry]) => [name, deepFreezeLocalInjectionValue(entry)])
-    )) as T;
-  }
-  return value;
 }
 
 function cloneReinjectionDraft(draft: ReinjectionDraft): ReinjectionDraft {

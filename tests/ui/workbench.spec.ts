@@ -645,9 +645,29 @@ test("Workbench keeps a large live Scope contiguous while Ordered Evidence owns 
   const tree = page.getByRole("tree", { name: /Runtime Scope tree/ });
   const selectedScope = tree.getByRole("treeitem", { name: /high-scope-subscription-220/, selected: true });
   const evidence = page.locator('[data-evidence-id="high-scope-event-220"]');
+  const scopeLabel = page.locator(".workbench-react__scope-label");
+  const contextHeading = page.getByRole("complementary", { name: "Context" }).getByRole("heading", { level: 2 });
 
+  await tree.evaluate((element) => { element.scrollTop = 270; });
   await evidence.focus();
   await expect(evidence).toBeFocused();
+  await expect(evidence).toHaveAttribute("aria-selected", "true");
+  await expect(selectedScope).toHaveCount(0);
+  const beforeGrowth = {
+    scrollTop: await tree.evaluate((element) => element.scrollTop),
+    scrollHeight: await tree.evaluate((element) => element.scrollHeight),
+    scopeLabel: await scopeLabel.textContent(),
+    contextHeading: await contextHeading.textContent()
+  };
+  expect(await page.evaluate(() => (window as unknown as {
+    __appendDeferredWorkbenchEvents(): number;
+  }).__appendDeferredWorkbenchEvents())).toBe(40);
+  await expect.poll(() => tree.evaluate((element) => element.scrollHeight)).toBeGreaterThan(beforeGrowth.scrollHeight);
+  expect(await tree.evaluate((element) => element.scrollTop)).toBe(beforeGrowth.scrollTop);
+  await expect(scopeLabel).toHaveText(beforeGrowth.scopeLabel!);
+  await expect(contextHeading).toHaveText(beforeGrowth.contextHeading!);
+  await expect(evidence).toBeFocused();
+  await expect(evidence).toHaveAttribute("aria-selected", "true");
   await expect(selectedScope).toHaveCount(0);
   const scopeWindow = await tree.evaluate((element) => {
     const treeRect = element.getBoundingClientRect();
@@ -671,8 +691,45 @@ test("Workbench keeps a large live Scope contiguous while Ordered Evidence owns 
   const firstScopeRow = tree.getByRole("treeitem").first();
   await firstScopeRow.focus();
   await page.keyboard.press("End");
-  await expect(tree.locator('[role="treeitem"][tabindex="0"]')).toBeFocused();
-  await expect(selectedScope).toBeInViewport();
+  const endRow = tree.locator('[role="treeitem"][tabindex="0"]');
+  await expect(endRow).toBeFocused();
+  await expect(endRow).toHaveAttribute("data-scope-id", /high-scope-subscription-260/);
+  await expect(endRow).toBeInViewport();
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench keeps a normal high-cardinality Scope picker bounded through passive growth", async ({ page }, testInfo) => {
+  await openScenario(page, "live-high-scope", { width: 900, height: 700 }, "light");
+  await page.getByRole("button", { name: "Scope", exact: true }).click();
+  const tree = page.getByRole("tree", { name: /Runtime Scope tree/ });
+  await tree.evaluate((element) => { element.scrollTop = 540; });
+  const focused = tree.getByRole("treeitem").nth(4);
+  await focused.focus();
+  const focusedId = await tree.evaluate((element) =>
+    (element.ownerDocument.activeElement as HTMLElement | null)?.dataset.scopeId ?? null
+  );
+  expect(focusedId).not.toBeNull();
+  const before = {
+    top: await tree.evaluate((element) => element.scrollTop),
+    height: await tree.evaluate((element) => element.scrollHeight)
+  };
+
+  expect(await page.evaluate(() => (window as unknown as {
+    __appendDeferredWorkbenchEvents(): number;
+  }).__appendDeferredWorkbenchEvents())).toBe(40);
+  await expect.poll(() => tree.evaluate((element) => element.scrollHeight)).toBeGreaterThan(before.height);
+  expect(await tree.evaluate((element) => element.scrollTop)).toBe(before.top);
+  await expect.poll(() => tree.locator("[data-scope-id]").evaluateAll(
+    (rows, id) => rows.some((row) => row.getAttribute("data-scope-id") === id && row === document.activeElement),
+    focusedId
+  )).toBe(true);
+  expect(Number(await tree.getAttribute("data-mounted-node-count"))).toBeLessThanOrEqual(127);
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator('[data-evidence-id="high-scope-event-220"]')).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".workbench-react__scope-label")).toContainText("high-scope-subscription-220");
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
@@ -1054,6 +1111,14 @@ test("Workbench preserves a Filter-hidden selection through passive Capture and 
 
   await expect(page.getByText("Selected event outside current results", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "scenario-event-3 · Item Update" })).toBeVisible();
+  const selectedUpdate = page.getByRole("complementary", { name: "Context" })
+    .getByRole("region", { name: "Selected update" });
+  await expect(selectedUpdate.getByRole("region", { name: "Fields", exact: true }))
+    .toContainText('"selected": false');
+  await expect(selectedUpdate.getByRole("region", { name: "Changed fields", exact: true }))
+    .toContainText("retainedDetails");
+  await expect(selectedUpdate.getByRole("region", { name: "JSON patches", exact: true }))
+    .toContainText('"path": "/passenger/selected"');
   const focusedVisible = page.locator('[data-evidence-id="scenario-event-1"]');
   await expect(focusedVisible).toHaveAttribute("aria-selected", "false");
   await expect(page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" })).toHaveAttribute("tabindex", "0");
@@ -1139,6 +1204,18 @@ test("Workbench exposes selected update data and expands captured JSON strings i
   await editor.focus();
   await scrollOwner.evaluate((owner) => { owner.scrollTop = 0; });
   await page.keyboard.press("PageDown");
+  await expect.poll(() => scrollOwner.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(0);
+  const afterPageDown = await scrollOwner.evaluate((owner) => owner.scrollTop);
+  await editor.hover();
+  await page.mouse.wheel(0, 400);
+  await expect.poll(() => scrollOwner.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(afterPageDown);
+  const beforePageUp = await scrollOwner.evaluate((owner) => owner.scrollTop);
+  await editor.focus();
+  await page.keyboard.press("PageUp");
+  await expect.poll(() => scrollOwner.evaluate((owner) => owner.scrollTop)).toBeLessThan(beforePageUp);
+  await scrollOwner.evaluate((owner) => { owner.scrollTop = 0; });
+  await editor.focus();
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+End" : "Control+End");
   await expect.poll(() => scrollOwner.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(0);
   const scrollContract = await draft.evaluate((region) => ({
     owners: region.querySelectorAll('[data-shared-scroll-owner="true"]').length,

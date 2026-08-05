@@ -89,12 +89,12 @@ Normal and wide Evidence use stable columns in this order where capacity permits
 - Phase;
 - COMMAND operation when applicable;
 - evidence kind and Lightstreamer object identity;
-- change or delivery summary;
+- exact COMMAND key when captured, otherwise an em dash;
 - material diagnostic severity.
 
 Rows do not accumulate pills or badge necklaces. Common neutral values remain compact text. A low-frequency explanation belongs in Context.
 
-Compact Evidence uses the accepted two-line row grammar while retaining time/order, evidence identity, textual Source, event kind, relevant COMMAND operation, object identity, and change summary. A complete value that is visually truncated remains available programmatically and in Context. Inherently two-dimensional evidence may own bounded horizontal scrolling; the panel shell never does.
+Compact Evidence uses the accepted two-line row grammar while retaining time/order, evidence identity, textual Source, event kind, relevant COMMAND operation, object identity, and exact captured COMMAND key. Changed-field detail remains in selected Context and complete raw Evidence. A complete value that is visually truncated remains available programmatically and in Context. Inherently two-dimensional evidence may own bounded horizontal scrolling; the panel shell never does.
 
 Use an em dash only for not applicable. Use the literal word `unknown` when Workbench cannot determine a value, and name `unavailable`, `redacted`, or `inferred` where those are the actual evidence conditions.
 

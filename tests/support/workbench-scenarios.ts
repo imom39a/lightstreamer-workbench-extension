@@ -49,6 +49,8 @@ export type WorkbenchScenario = Readonly<{
   id: WorkbenchScenarioId;
   initialEvents: readonly LightstreamerEventEnvelope[];
   laterEvents?: readonly LightstreamerEventEnvelope[];
+  /** Browser-test Evidence held until the test explicitly releases one passive update batch. */
+  deferredEvents?: readonly LightstreamerEventEnvelope[];
   topologySyncFrames?: readonly TopologySyncFrame[];
   captureMessages?: readonly CaptureMessage[];
   selectedEventId?: string;
@@ -126,7 +128,8 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
     case "live-high-scope":
       return {
         id,
-        initialEvents: highScopeEvents(),
+        initialEvents: highScopeEvents(1, 220),
+        deferredEvents: highScopeEvents(221, 40),
         selectedEventId: "high-scope-event-220",
         selectedScope: {
           kind: "subscription",
@@ -177,10 +180,25 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return { id, initialEvents: canonical, selectedEventId: "scenario-event-3", captureStatus: "capturing", filterQuery: "scenario-event", findQuery: "item update" };
     case "filter-hidden-selection": {
       const passive = canonical[0];
-      if (!passive) throw new Error("The canonical scenario must include the initial Item Update.");
+      const selected = canonical.find((event) => event.id === "scenario-event-3");
+      if (!passive || !selected?.update) {
+        throw new Error("The canonical scenario must include the passive and selected Item Updates.");
+      }
+      const retainedDetails = JSON.stringify({ passenger: { selected: false, priority: true } });
+      const enrichedSelected: LightstreamerEventEnvelope = {
+        ...selected,
+        update: {
+          ...selected.update,
+          fields: { ...selected.update.fields, retainedDetails },
+          changedFields: { retainedDetails },
+          jsonPatches: {
+            retainedDetails: [{ op: "replace", path: "/passenger/selected", value: false }]
+          }
+        }
+      };
       return {
         id,
-        initialEvents: canonical,
+        initialEvents: canonical.map((event) => event.id === selected.id ? enrichedSelected : event),
         laterEvents: [{ ...passive, id: "scenario-event-1-passive", timestamp: passive.timestamp + 1000 }],
         selectedEventId: "scenario-event-3",
         captureStatus: "capturing",
@@ -518,13 +536,13 @@ function highVolumeEvents(first: number, count: number): readonly LightstreamerE
   });
 }
 
-function highScopeEvents(): readonly LightstreamerEventEnvelope[] {
+function highScopeEvents(first: number, count: number): readonly LightstreamerEventEnvelope[] {
   const source = getPanelScenario("command-state").capturedEvents[2];
   if (!source) {
     throw new Error("The canonical COMMAND scenario must include an UPDATE item for high Scope Evidence.");
   }
-  return Array.from({ length: 220 }, (_, offset) => {
-    const sequence = offset + 1;
+  return Array.from({ length: count }, (_, offset) => {
+    const sequence = first + offset;
     return {
       ...source,
       id: `high-scope-event-${sequence}`,

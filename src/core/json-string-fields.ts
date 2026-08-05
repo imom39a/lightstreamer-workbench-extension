@@ -62,8 +62,8 @@ export function expandJsonStringFields(
       continue;
     }
     names.add(name);
-    sources.set(name, Object.freeze({ text: value, value: freezeJson(cloneJson(parsed)) }));
-    expandedEntries.push([name, freezeJson(cloneJson(parsed))]);
+    sources.set(name, Object.freeze({ text: value, value: cloneAndFreezeJsonValue(parsed) }));
+    expandedEntries.push([name, cloneAndFreezeJsonValue(parsed)]);
   }
 
   const result = Object.freeze({
@@ -128,24 +128,23 @@ export function jsonStructurallyEqual(left: JsonValue, right: JsonValue): boolea
   return false;
 }
 
+/** Creates an immutable JSON snapshot without retaining mutable caller-owned containers. */
+export function cloneAndFreezeJsonValue<T extends JsonValue>(value: T): T {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((entry) => cloneAndFreezeJsonValue(entry))) as T;
+  }
+  if (isJsonObject(value)) {
+    return Object.freeze(Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, cloneAndFreezeJsonValue(entry)])
+    )) as T;
+  }
+  return value;
+}
+
 function isJsonContainer(value: unknown): value is JsonContainer {
   return Array.isArray(value) || isJsonObject(value);
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function cloneJson<T extends JsonValue>(value: T): T {
-  if (Array.isArray(value)) return value.map((entry) => cloneJson(entry)) as T;
-  if (isJsonObject(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, cloneJson(entry)])) as T;
-  }
-  return value;
-}
-
-function freezeJson<T extends JsonValue>(value: T): T {
-  if (Array.isArray(value)) value.forEach((entry) => freezeJson(entry));
-  else if (isJsonObject(value)) Object.values(value).forEach((entry) => freezeJson(entry));
-  return Object.freeze(value);
 }

@@ -927,6 +927,10 @@ describe("React Workbench Diagnose panel", () => {
     expect(document.activeElement).toBe(evidenceRow);
     expect(document.querySelector(`[data-scope-id="${selectedScopeId}"]`)).toBeNull();
     expect(Number(tree.dataset.mountedNodeCount)).toBeLessThanOrEqual(127);
+    const tabStops = tree.querySelectorAll<HTMLButtonElement>('[role="treeitem"][tabindex="0"]');
+    expect(tabStops).toHaveLength(1);
+    tabStops[0]?.focus();
+    expect(document.activeElement).toBe(tabStops[0]);
 
     await act(async () => root.unmount());
   });

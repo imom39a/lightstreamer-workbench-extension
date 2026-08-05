@@ -96,6 +96,7 @@ const ScopeTreeRow = memo(function ScopeTreeRow({
         actionsRef.current.focus(node.id);
         actionsRef.current.commit(node.id);
       }}
+      onFocus={() => actionsRef.current.focus(node.id)}
       onKeyDown={(event) => actionsRef.current.key(event, node)}
     ><span>{node.label}</span><em>{node.detail ? `${node.detail} · ${lifecycleLabel(node.lifecycle)}` : lifecycleLabel(node.lifecycle)}</em></button>
   );
@@ -446,6 +447,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   );
   const maximumScopeWindowStart = Math.max(0, visibleScopeNodes.length - scopeWindowSize);
   const renderedScopeWindowStart = clamp(scopeWindowStart, 0, maximumScopeWindowStart);
+  const scopeOwnsFocus = scopeTreeHasDomFocus || scopeTree.current?.contains(document.activeElement);
+  const focusedScopeIsMounted = focusedScopeIndex >= renderedScopeWindowStart &&
+    focusedScopeIndex < renderedScopeWindowStart + scopeWindowSize;
+  const scopeTabStopId = scopeOwnsFocus || focusedScopeIsMounted
+    ? renderedFocusId
+    : visibleScopeNodes[renderedScopeWindowStart]?.id ?? null;
   const renderedScopeEntries = useMemo(() => {
     const entries = visibleScopeNodes
       .slice(renderedScopeWindowStart, renderedScopeWindowStart + scopeWindowSize)
@@ -453,7 +460,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         node: snapshot.scope.resolveNode(structure.id)!,
         index: renderedScopeWindowStart + offset
       }));
-    const scopeOwnsFocus = scopeTreeHasDomFocus || scopeTree.current?.contains(document.activeElement);
     if (scopeOwnsFocus && focusedScopeIndex >= 0 && !entries.some(({ index }) => index === focusedScopeIndex)) {
       const focusedStructure = visibleScopeNodes[focusedScopeIndex]!;
       entries.push({
@@ -463,7 +469,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       entries.sort((left, right) => left.index - right.index);
     }
     return entries;
-  }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes, snapshot.scope, scopeTreeHasDomFocus]);
+  }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes, snapshot.scope, scopeOwnsFocus]);
   const canAuthorCommandUpdate = snapshot.localInjection.availability.commandScope.available;
   const canCreateLocalInjectionDraft = snapshot.localInjection.availability.selectedUpdate.available;
   const total = evidence.total;
@@ -1200,7 +1206,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             childrenByParent={scopeChildrenByParent}
             siblingPositionById={scopeSiblingPositionById}
             collapsedIds={collapsedScopeIds}
-            focusId={renderedFocusId}
+            focusId={scopeTabStopId}
             onDomFocusChange={setScopeTreeHasDomFocus}
             treeRef={scopeTree}
             nodeRefs={scopeNodesById}
