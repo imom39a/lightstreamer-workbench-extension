@@ -576,6 +576,136 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
+  it("rebuilds ordered Scope locators when an established inactive Subscription becomes active", () => {
+    const history = createInMemoryEventHistory();
+    const subscription = (
+      id: string,
+      active: boolean,
+      timestamp: number
+    ): LightstreamerEventEnvelope => ({
+      ...topologyEvent(`${id}-started`, "subscription-started"),
+      timestamp,
+      subscription: {
+        id,
+        mode: "MERGE",
+        items: [`item-${id}`],
+        active,
+        subscribed: true
+      },
+      item: { name: `item-${id}`, position: 1 }
+    });
+    history.append(subscription("A", false, 1));
+    history.append(subscription("B", true, 2));
+    const scheduler = createScheduler();
+    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    const initialScope = runtime.getSnapshot().scope;
+    expect(
+      initialScope.structure
+        .filter(({ kind }) => kind === "subscription")
+        .map(({ label }) => label)
+    ).toEqual(["B", "A"]);
+
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("item-update", {
+        client: {
+          id: "client-main",
+          status: "CONNECTED:WS-STREAMING",
+          sessionId: "S-1"
+        },
+        subscription: { id: "A", mode: "MERGE" },
+        item: { name: "item-A", position: 1 },
+        update: {
+          isSnapshot: false,
+          fields: { value: 1 },
+          changedFields: { value: 1 }
+        }
+      })
+    });
+    scheduler.flushFrame();
+
+    const refreshedScope = runtime.getSnapshot().scope;
+    const subscriptions = refreshedScope.structure.filter(
+      ({ kind }) => kind === "subscription"
+    );
+    expect(refreshedScope.structureRevision).toBeGreaterThan(
+      initialScope.structureRevision
+    );
+    expect(subscriptions.map(({ label }) => label)).toEqual(["A", "B"]);
+    expect(
+      subscriptions.map(({ id }) => {
+        const resolved = refreshedScope.resolveNode(id);
+        return [resolved?.label, resolved?.detail];
+      })
+    ).toEqual([
+      ["A", expect.stringContaining("1 real")],
+      ["B", expect.stringContaining("0 real")]
+    ]);
+    runtime.dispose();
+  });
+
+  it("refreshes sensitive export counts when facts-only updates add and remove connection facts", () => {
+    const history = createInMemoryEventHistory();
+    history.append(topologyEvent("sensitive-subscription", "subscription-started"));
+    const scheduler = createScheduler();
+    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    expect(runtime.getSnapshot().export.sensitiveCounts).toMatchObject({
+      "server-addresses": 0,
+      "client-ips": 0
+    });
+
+    const dispatchFacts = (
+      id: string,
+      values: {
+        serverAddress: string | null;
+        serverInstanceAddress: string | null;
+        clientIp: string | null;
+      }
+    ): void => {
+      runtime.dispatch({
+        type: "ingest-capture-message",
+        message: createCaptureMessage("item-update", {
+          id,
+          client: {
+            id: "client-main",
+            status: "CONNECTED:WS-STREAMING",
+            sessionId: "S-1",
+            ...values
+          },
+          subscription: { id: "orders-subscription", mode: "COMMAND" },
+          item: { name: "orders", position: 1 },
+          update: {
+            isSnapshot: false,
+            fields: { value: id },
+            changedFields: { value: id }
+          }
+        })
+      });
+      scheduler.flushFrame();
+    };
+
+    dispatchFacts("sensitive-add", {
+      serverAddress: "https://example.test/lightstreamer",
+      serverInstanceAddress: "instance.example.test",
+      clientIp: "192.0.2.10"
+    });
+    expect(runtime.getSnapshot().export.sensitiveCounts).toMatchObject({
+      "server-addresses": 2,
+      "client-ips": 1
+    });
+
+    dispatchFacts("sensitive-remove", {
+      serverAddress: null,
+      serverInstanceAddress: null,
+      clientIp: null
+    });
+    expect(runtime.getSnapshot().export.sensitiveCounts).toMatchObject({
+      "server-addresses": 0,
+      "client-ips": 0
+    });
+    runtime.dispose();
+  });
+
   it("preserves a Frozen Evidence window, selection, and filtered newer count until Follow Live", async () => {
     const history = createInMemoryEventHistory();
     const scheduler = createScheduler();

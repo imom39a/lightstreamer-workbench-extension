@@ -479,7 +479,8 @@ function eventMayChangeScopeStructure(
   const subscription = session?.subscriptions.find(
     (candidate) =>
       candidate.id === subscriptionId &&
-      (candidate.active || candidate.serverEstablished)
+      candidate.active &&
+      candidate.serverEstablished
   );
   if (!subscription) return true;
 
@@ -521,6 +522,9 @@ function eventMayChangeSensitiveStructure(
   if (scopeStructureMayHaveChanged) return true;
   const subscription = event.subscription;
   return Boolean(
+    event.client?.serverAddress !== undefined ||
+    event.client?.serverInstanceAddress !== undefined ||
+    event.client?.clientIp !== undefined ||
     subscription?.fields ||
     subscription?.fieldSchema !== undefined ||
     subscription?.commandSecondLevelFields ||
