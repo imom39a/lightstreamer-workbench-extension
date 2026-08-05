@@ -145,8 +145,10 @@ and single Context scroll boundary together.
 Local and pinned-Linux read-only Playwright runs each passed the full browser suite.
 The asserted browser coverage includes a 220-subscription live Scope, 4,000
 long-identity Evidence events, compact/normal/wide selected-data restoration,
-passive high-volume growth at normal and wide geometry without displaced
-selection or focus, Filter-hidden selected Fields/Changed fields/JSON patches,
+passive high-volume growth plus a leading-insertion topology reorder at normal
+and wide geometry without displaced selection, off-window Scope focus, or
+scroll position, exact/long/missing COMMAND keys across compact/normal/wide,
+Filter-hidden selected Fields/Changed fields/JSON patches,
 physical PageDown/PageUp, wheel, and caret-driven movement in the Local
 Injection editor, one shared editor scroll owner, and no serious or critical
 axe findings. The shipped extension smoke, release package, docs check, and

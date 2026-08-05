@@ -129,7 +129,7 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return {
         id,
         initialEvents: highScopeEvents(1, 220),
-        deferredEvents: highScopeEvents(221, 40),
+        deferredEvents: [...highScopeEvents(0, 1), ...highScopeEvents(221, 39)],
         selectedEventId: "high-scope-event-220",
         selectedScope: {
           kind: "subscription",
@@ -485,10 +485,10 @@ function highVolumeEvents(first: number, count: number): readonly LightstreamerE
   if (!source) {
     throw new Error("The canonical COMMAND scenario must include an UPDATE item for high-volume Evidence.");
   }
-  return Array.from({ length: count }, (_, offset) => {
+  return Array.from({ length: count }, (_, offset): LightstreamerEventEnvelope => {
     const sequence = first + offset;
     const findAnchor = sequence === 5 || sequence === 2_050 || sequence === 3_995;
-    return {
+    const event: LightstreamerEventEnvelope = {
       ...source,
       id: highVolumeEventId(sequence),
       timestamp: source.timestamp + sequence,
@@ -533,6 +533,27 @@ function highVolumeEvents(first: number, count: number): readonly LightstreamerE
         ...(findAnchor ? { findAnchor: "complete-retained-find-anchor" } : {})
       }
     };
+    if (sequence === 3_969 && event.update) {
+      return {
+        ...event,
+        update: {
+          ...event.update,
+          key: undefined,
+          fields: { ...event.update.fields, key: "field-only-key-must-not-be-inferred" }
+        }
+      };
+    }
+    if (sequence === 3_968) {
+      return {
+        ...event,
+        kind: "client-status",
+        subscription: undefined,
+        listener: undefined,
+        item: undefined,
+        update: undefined
+      };
+    }
+    return event;
   });
 }
 

@@ -587,6 +587,20 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   const shell = page.locator(".workbench-react");
   const ledger = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
   const selected = page.locator(`[data-evidence-id="${selectedIdentity}"]`);
+  const missingKey = page.locator(`[data-evidence-id="${highVolumeEventId(3_969)}"]`);
+  const nonUpdate = page.locator(`[data-evidence-id="${highVolumeEventId(3_968)}"]`);
+  const assertCommandKeyContract = async () => {
+    const headers = await page.locator('[role="columnheader"]').allTextContents();
+    expect(headers).toContain("COMMAND key");
+    expect(headers).not.toContain("Change");
+    await expect(selected.locator('[role="gridcell"]').nth(5)).toHaveText(longKey);
+    await expect(selected.locator('[role="gridcell"]').nth(5)).toHaveAttribute("title", longKey);
+    await expect(missingKey.locator('[role="gridcell"]').nth(5)).toHaveText("—");
+    await expect(missingKey.locator('[role="gridcell"]').nth(5)).toHaveAttribute("title", "No COMMAND key");
+    await expect(missingKey).not.toContainText("field-only-key-must-not-be-inferred");
+    await expect(nonUpdate.locator('[role="gridcell"]').nth(3)).toHaveText("—");
+    await expect(nonUpdate.locator('[role="gridcell"]').nth(5)).toHaveText("—");
+  };
   await expect(page.locator(".workbench-react__evidence-row")).toHaveCount(60);
   await expect(selected).toHaveAttribute("title", new RegExp(selectedIdentity));
   await expect(selected.locator('[role="gridcell"]').nth(4)).toHaveAttribute("title", longItem);
@@ -596,6 +610,7 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   expect(compactHeights).toHaveLength(1);
   expect(compactHeights[0]).toBeGreaterThanOrEqual(48);
   expect(compactHeights[0]).toBeLessThanOrEqual(54);
+  await assertCommandKeyContract();
 
   const operatingTop = await page.locator(".workbench-react__operating").evaluate((element) => element.getBoundingClientRect().top);
   await ledger.evaluate((element) => { element.scrollTop = element.scrollHeight; });
@@ -618,16 +633,14 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
       expect(columnWidths).toHaveLength(6);
       expect(columnWidths.every((width) => width >= 64)).toBe(true);
     }
+    if (viewport.geometry === "normal" || viewport.geometry === "wide") {
+      await assertCommandKeyContract();
+    }
     await expectShellFits(page);
   }
 
   await page.setViewportSize({ width: 900, height: 700 });
-  const columnHeaders = await page.locator('[role="columnheader"]').allTextContents();
-  const normalCells = selected.locator('[role="gridcell"]');
-  expect(columnHeaders).toContain("COMMAND key");
-  expect(columnHeaders).not.toContain("Change");
-  await expect(normalCells.nth(5)).toHaveText(longKey);
-  await expect(normalCells.nth(5)).toHaveAttribute("title", longKey);
+  await assertCommandKeyContract();
   await selected.focus();
   await page.getByRole("button", { name: "Open Context" }).click();
   const context = page.getByRole("complementary", { name: "Context" });
@@ -693,7 +706,7 @@ test("Workbench keeps a large live Scope contiguous while Ordered Evidence owns 
   await page.keyboard.press("End");
   const endRow = tree.locator('[role="treeitem"][tabindex="0"]');
   await expect(endRow).toBeFocused();
-  await expect(endRow).toHaveAttribute("data-scope-id", /high-scope-subscription-260/);
+  await expect(endRow).toHaveAttribute("data-scope-id", /high-scope-subscription-259/);
   await expect(endRow).toBeInViewport();
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -704,9 +717,20 @@ test("Workbench keeps a normal high-cardinality Scope picker bounded through pas
   await openScenario(page, "live-high-scope", { width: 900, height: 700 }, "light");
   await page.getByRole("button", { name: "Scope", exact: true }).click();
   const tree = page.getByRole("tree", { name: /Runtime Scope tree/ });
-  await tree.evaluate((element) => { element.scrollTop = 540; });
-  const focused = tree.getByRole("treeitem").nth(4);
+  const focused = tree.getByRole("treeitem", { name: /high-scope-subscription-220/ });
+  await tree.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect(focused).toBeVisible();
   await focused.focus();
+  await tree.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect(focused).toBeFocused();
+  await expect(focused).toHaveAttribute("tabindex", "0");
+  await expect(focused).not.toBeInViewport();
   const focusedId = await tree.evaluate((element) =>
     (element.ownerDocument.activeElement as HTMLElement | null)?.dataset.scopeId ?? null
   );
@@ -715,16 +739,20 @@ test("Workbench keeps a normal high-cardinality Scope picker bounded through pas
     top: await tree.evaluate((element) => element.scrollTop),
     height: await tree.evaluate((element) => element.scrollHeight)
   };
+  await expect(tree.getByRole("treeitem", { name: /high-scope-subscription-000/ })).toHaveCount(0);
 
   expect(await page.evaluate(() => (window as unknown as {
     __appendDeferredWorkbenchEvents(): number;
   }).__appendDeferredWorkbenchEvents())).toBe(40);
   await expect.poll(() => tree.evaluate((element) => element.scrollHeight)).toBeGreaterThan(before.height);
   expect(await tree.evaluate((element) => element.scrollTop)).toBe(before.top);
+  await expect(tree.getByRole("treeitem", { name: /high-scope-subscription-000/ })).toBeVisible();
   await expect.poll(() => tree.locator("[data-scope-id]").evaluateAll(
     (rows, id) => rows.some((row) => row.getAttribute("data-scope-id") === id && row === document.activeElement),
     focusedId
   )).toBe(true);
+  await expect(focused).toHaveAttribute("tabindex", "0");
+  await expect(focused).not.toBeInViewport();
   expect(Number(await tree.getAttribute("data-mounted-node-count"))).toBeLessThanOrEqual(127);
 
   await page.keyboard.press("Escape");
