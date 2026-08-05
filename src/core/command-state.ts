@@ -179,6 +179,7 @@ export type CommandStateProjections = {
 };
 
 const SUPPORTED_COMMANDS = new Set<CommandLifecycleCommand>(["ADD", "UPDATE", "DELETE"]);
+const APPLIED_PROJECTION_EVENT_DEDUP_LIMIT = 4_096;
 
 export function reduceCommandState(events: readonly LightstreamerEventEnvelope[]): CommandState {
   const accumulator = createCommandStateAccumulator();
@@ -208,9 +209,17 @@ export function createCommandStateIndex(): CommandStateIndex {
 export function createCommandStateProjections(): CommandStateProjections {
   const observedServer = createCommandStateIndex();
   const localEffective = createCommandStateIndex();
+  const appliedEventIds = new Set<string>();
 
   return {
     apply(event) {
+      if (appliedEventIds.has(event.id)) return;
+      appliedEventIds.add(event.id);
+      while (appliedEventIds.size > APPLIED_PROJECTION_EVENT_DEDUP_LIMIT) {
+        const oldest = appliedEventIds.values().next().value as string | undefined;
+        if (oldest === undefined) break;
+        appliedEventIds.delete(oldest);
+      }
       localEffective.apply(event);
       if (!isLocalInjectedEvent(event)) {
         observedServer.apply(event);
@@ -220,6 +229,7 @@ export function createCommandStateProjections(): CommandStateProjections {
     clear() {
       observedServer.clear();
       localEffective.clear();
+      appliedEventIds.clear();
     },
 
     snapshot(projection) {

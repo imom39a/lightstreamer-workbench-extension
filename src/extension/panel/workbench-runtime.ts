@@ -114,6 +114,27 @@ export type WorkbenchScopeNode = Readonly<{
   selected: boolean;
 }>;
 
+export type WorkbenchScopeStructureNode = Readonly<
+  Pick<WorkbenchScopeNode, "id" | "kind" | "label" | "parentId" | "depth">
+>;
+
+type ScopeSubscriptionLocator = Readonly<{
+  clientIndex: number | null;
+  sessionIndex: number | null;
+  collection: "waiting" | "session" | "unassigned";
+  subscriptionIndex: number;
+}>;
+
+type ScopeNodeDescriptor = WorkbenchScopeStructureNode & Readonly<{
+  locator:
+    | { kind: "page" }
+    | { kind: "client"; clientIndex: number }
+    | { kind: "session"; clientIndex: number; sessionIndex: number }
+    | ({ kind: "subscription" } & ScopeSubscriptionLocator)
+    | ({ kind: "item"; itemIndex: number } & ScopeSubscriptionLocator)
+    | ({ kind: "listener"; itemIndex: number | null; listenerId: string } & ScopeSubscriptionLocator);
+}>;
+
 export type WorkbenchStorageSnapshot = Readonly<{
   mode: "indexeddb" | "memory";
   reason?: string;
@@ -307,6 +328,9 @@ export type WorkbenchSnapshot = Readonly<{
   scope: Readonly<{
     label: string;
     status: string;
+    structureRevision: number;
+    structure: readonly WorkbenchScopeStructureNode[];
+    resolveNode(scopeId: string): WorkbenchScopeNode | null;
     nodes: readonly WorkbenchScopeNode[];
     focusedNodeId: string | null;
     selection: Readonly<{
@@ -538,14 +562,19 @@ class Runtime implements WorkbenchRuntime {
   private localInjectionEntryError: string | null = null;
   private localInjectionSequence = 0;
   private currentPageEpoch: string | null = null;
-  private scopeSnapshotCache: {
-    state: TopologyState;
+  private scopeStructureCache: {
+    revision: number;
+    descriptors: readonly ScopeNodeDescriptor[];
+    descriptorById: ReadonlyMap<string, ScopeNodeDescriptor>;
+  } | null = null;
+  private scopeNodePresentationCache: {
+    revision: number;
+    nodes: Map<string, WorkbenchScopeNode>;
+  } | null = null;
+  private exportSensitiveCountsCache: {
+    revision: number;
     scopeId: string | null;
-    captureStatus: CaptureStatus;
-    semanticActive: boolean;
-    syncState: string;
-    coverageStatus: string | null;
-    snapshot: WorkbenchSnapshot["scope"];
+    counts: Readonly<Record<TopologySensitiveCategory, number>>;
   } | null = null;
   private preparedExport: {
     document: TopologyStructuredSnapshot;
@@ -1140,7 +1169,7 @@ class Runtime implements WorkbenchRuntime {
     this.visible = visible;
     if (!visible) {
       this.cancelPassivePublication();
-      this.publish();
+      this.publish(true);
       return;
     }
 
@@ -1516,6 +1545,10 @@ class Runtime implements WorkbenchRuntime {
         },
         draft.anchor.executionTarget
       );
+      // Successful delivery advances Local Effective COMMAND State even when
+      // retaining the corresponding synthetic Evidence fails. A successful
+      // history append echoes the same identity and is projection-deduplicated.
+      this.commandStateProjections.apply(synthetic);
       this.history.append(synthetic).receive(
         () => this.setLocalInjectionOutcome(executionId, deliveredLocalInjectionOutcome(executionId, result)),
         () => this.setLocalInjectionOutcome(
@@ -1795,7 +1828,12 @@ class Runtime implements WorkbenchRuntime {
           }
         }
       );
-    if (!completedSynchronously && source !== "initial" && source !== "passive") {
+    if (
+      !completedSynchronously &&
+      source !== "initial" &&
+      source !== "passive" &&
+      source !== "visibility"
+    ) {
       if (changesEvidenceIdentity) this.evidenceLoading = true;
       this.publish();
     }
@@ -1828,20 +1866,20 @@ class Runtime implements WorkbenchRuntime {
 
   private reconcileScopeIdentity(): void {
     if (this.scopeId === "page") return;
-    const nodes = topologyScopeNodes(
-      this.topologyProjection.snapshot(),
-      this.scopeId,
-      this.captureStatus
-    );
-    if (nodes.some(({ id }) => id === this.scopeId)) return;
+    const state = this.topologyProjection.snapshot();
+    if (this.currentScopeStructure(state).descriptorById.has(this.scopeId ?? "page")) return;
     this.scopeId = "page";
     this.scopeFocusedNodeId = "page";
     this.preparedExport = null;
     this.invalidateEvidenceCopy();
   }
 
-  private publish(): void {
+  private publish(allowHidden = false): void {
     if (this.disposed) {
+      return;
+    }
+    if (!this.visible && !allowHidden) {
+      this.hiddenDirty = true;
       return;
     }
     this.reconcileScopeIdentity();
@@ -2077,27 +2115,30 @@ class Runtime implements WorkbenchRuntime {
   private scopeSnapshot(): WorkbenchSnapshot["scope"] {
     const state = this.topologyProjection.snapshot();
     const projectionStatus = this.topologyProjection.status();
-    const cached = this.scopeSnapshotCache;
-    if (
-      cached?.state === state &&
-      cached.scopeId === this.scopeId &&
-      cached.captureStatus === this.captureStatus &&
-      cached.semanticActive === projectionStatus.semanticActive &&
-      cached.syncState === projectionStatus.syncState &&
-      cached.coverageStatus === (projectionStatus.coverage?.status ?? null)
-    ) {
-      if (cached.snapshot.focusedNodeId === this.scopeFocusedNodeId) return cached.snapshot;
-      cached.snapshot = Object.freeze({
-        ...cached.snapshot,
-        focusedNodeId: this.scopeFocusedNodeId
-      });
-      return cached.snapshot;
-    }
-    const nodes = topologyScopeNodes(state, this.scopeId, this.captureStatus);
-    const selected = nodes.find((node) => node.selected) ?? nodes[0];
+    const structure = this.currentScopeStructure(state);
+    const selectedDescriptor =
+      structure.descriptorById.get(this.scopeId ?? "page") ?? structure.descriptors[0];
+    const resolved = new Map<string, WorkbenchScopeNode>();
+    const resolveNode = (scopeId: string): WorkbenchScopeNode | null => {
+      const cached = resolved.get(scopeId);
+      if (cached) return cached;
+      const descriptor = structure.descriptorById.get(scopeId);
+      if (!descriptor) return null;
+      const node = resolveScopeNode(
+        state,
+        descriptor,
+        this.scopeId,
+        this.captureStatus
+      );
+      const stableNode = this.stableScopeNode(structure.revision, node);
+      resolved.set(scopeId, stableNode);
+      return stableNode;
+    };
+    const selected = selectedDescriptor ? resolveNode(selectedDescriptor.id) : null;
     const limited = projectionStatus.coverage?.status === "partial";
-    const snapshot = Object.freeze({
-      label: scopeBreadcrumb(nodes, selected),
+    let materializedNodes: readonly WorkbenchScopeNode[] | null = null;
+    const snapshot: WorkbenchSnapshot["scope"] = {
+      label: scopeBreadcrumb(structure.descriptorById, selectedDescriptor),
       status: [
         selected ? scopeLifecycleLabel(selected.lifecycle) : "Unknown",
         selected?.detail,
@@ -2105,7 +2146,15 @@ class Runtime implements WorkbenchRuntime {
       ]
         .filter(Boolean)
         .join(" · "),
-      nodes: Object.freeze(nodes),
+      structureRevision: structure.revision,
+      structure: structure.descriptors,
+      resolveNode,
+      get nodes() {
+        materializedNodes ??= Object.freeze(
+          structure.descriptors.map((descriptor) => resolveNode(descriptor.id)!)
+        );
+        return materializedNodes;
+      },
       focusedNodeId: this.scopeFocusedNodeId,
       selection: selected
         ? Object.freeze({ id: selected.id, kind: selected.kind, retired: selected.retired })
@@ -2119,17 +2168,33 @@ class Runtime implements WorkbenchRuntime {
             : "Complete semantic coverage from the official Lightstreamer client API."
           : "Legacy capture coverage; unavailable runtime properties remain explicit."
       })
-    });
-    this.scopeSnapshotCache = {
-      state,
-      scopeId: this.scopeId,
-      captureStatus: this.captureStatus,
-      semanticActive: projectionStatus.semanticActive,
-      syncState: projectionStatus.syncState,
-      coverageStatus: projectionStatus.coverage?.status ?? null,
-      snapshot
     };
-    return snapshot;
+    return Object.freeze(snapshot);
+  }
+
+  private currentScopeStructure(state: TopologyState): NonNullable<Runtime["scopeStructureCache"]> {
+    const revision = this.topologyProjection.scopeStructureRevision();
+    if (this.scopeStructureCache?.revision === revision) return this.scopeStructureCache;
+    const descriptors = Object.freeze(createScopeNodeDescriptors(state));
+    this.scopeStructureCache = {
+      revision,
+      descriptors,
+      descriptorById: new Map(descriptors.map((descriptor) => [descriptor.id, descriptor]))
+    };
+    return this.scopeStructureCache;
+  }
+
+  private stableScopeNode(
+    revision: number,
+    node: WorkbenchScopeNode
+  ): WorkbenchScopeNode {
+    if (this.scopeNodePresentationCache?.revision !== revision) {
+      this.scopeNodePresentationCache = { revision, nodes: new Map() };
+    }
+    const cached = this.scopeNodePresentationCache.nodes.get(node.id);
+    if (cached && sameScopeNodePresentation(cached, node)) return cached;
+    this.scopeNodePresentationCache.nodes.set(node.id, node);
+    return node;
   }
 
   private retentionSnapshot(): WorkbenchRetentionSnapshot {
@@ -2145,13 +2210,24 @@ class Runtime implements WorkbenchRuntime {
 
   private exportSnapshot(): WorkbenchExportSnapshot {
     const state = topologyStateForScope(this.topologyProjection.snapshot(), this.scopeId);
+    const sensitiveRevision = this.topologyProjection.sensitiveStructureRevision();
+    if (
+      this.exportSensitiveCountsCache?.revision !== sensitiveRevision ||
+      this.exportSensitiveCountsCache.scopeId !== this.scopeId
+    ) {
+      this.exportSensitiveCountsCache = {
+        revision: sensitiveRevision,
+        scopeId: this.scopeId,
+        counts: Object.freeze(topologySensitiveCategoryCounts(state))
+      };
+    }
     const redactions = TOPOLOGY_SENSITIVE_CATEGORIES.filter((category) =>
       this.exportRedactions.has(category)
     );
     return Object.freeze({
       activeScopeId: this.scopeId,
       redactions: Object.freeze(redactions),
-      sensitiveCounts: Object.freeze(topologySensitiveCategoryCounts(state)),
+      sensitiveCounts: this.exportSensitiveCountsCache.counts,
       completeEvidence: this.exportCompleteEvidence,
       document: this.preparedExport?.document ?? null,
       json: this.preparedExport?.json ?? null,
@@ -2863,74 +2939,58 @@ function localInjectionDeliveryCounts(
   };
 }
 
-function topologyScopeNodes(
-  state: TopologyState,
-  selectedId: string | null,
-  captureStatus: CaptureStatus
-): WorkbenchScopeNode[] {
-  const nodes: WorkbenchScopeNode[] = [];
+function createScopeNodeDescriptors(state: TopologyState): ScopeNodeDescriptor[] {
+  const descriptors: ScopeNodeDescriptor[] = [];
   const add = (
     presentation: ReturnType<typeof topologyPageNodePresentation>,
     parentId: string | null,
     depth: number,
-    lifecycle: WorkbenchScopeLifecycle
+    locator: ScopeNodeDescriptor["locator"]
   ): string => {
     const id = presentation.selection.key;
     const kind = presentation.selection.kind;
     if (!isStructuralScopeKind(kind)) {
       throw new Error(`Non-structural ${kind} cannot enter Workbench Scope.`);
     }
-    nodes.push(
-      Object.freeze({
-        id,
-        kind,
-        label: presentation.label,
-        detail: presentation.meta,
-        parentId,
-        depth,
-        tone: presentation.tone,
-        lifecycle,
-        retired: lifecycle === "retired",
-        selected: id === selectedId
-      })
-    );
+    descriptors.push(Object.freeze({
+      id,
+      kind,
+      label: presentation.label,
+      parentId,
+      depth,
+      locator
+    }));
     return id;
   };
 
-  const pageId = add(
-    topologyPageNodePresentation(state),
-    null,
-    0,
-    pageScopeLifecycle(state, captureStatus)
-  );
+  const pageId = add(topologyPageNodePresentation(state), null, 0, { kind: "page" });
   const addSubscription = (
     client: TopologyState["clients"][number] | null,
     session: TopologyState["clients"][number]["sessions"][number] | null,
     subscription: TopologyState["clients"][number]["sessions"][number]["subscriptions"][number],
+    locator: ScopeSubscriptionLocator,
     parentId: string,
-    depth: number,
-    inheritedLifecycle: WorkbenchScopeLifecycle
+    depth: number
   ) => {
-    const lifecycle = subscriptionScopeLifecycle(subscription, inheritedLifecycle);
     const subscriptionId = add(
       topologySubscriptionNodePresentation(client, session, subscription),
       parentId,
       depth,
-      lifecycle
+      { kind: "subscription", ...locator }
     );
-    for (const item of subscription.items) {
+    for (const [itemIndex, item] of subscription.items.entries()) {
       const itemId = add(
         topologyItemNodePresentation(client, session, subscription, item),
         subscriptionId,
         depth + 1,
-        lifecycle
+        { kind: "item", ...locator, itemIndex }
       );
       for (const listenerId of item.listenerIds) {
         add(
           topologyListenerNodePresentation(client, session, subscription, item, listenerId),
           itemId,
           depth + 2,
-          listenerScopeLifecycle(subscription, listenerId, lifecycle)
+          { kind: "listener", ...locator, itemIndex, listenerId }
         );
       }
     }
@@ -2940,47 +3000,218 @@ function topologyScopeNodes(
           topologyListenerNodePresentation(client, session, subscription, null, listenerId),
           subscriptionId,
           depth + 1,
-          listenerScopeLifecycle(subscription, listenerId, lifecycle)
+          { kind: "listener", ...locator, itemIndex: null, listenerId }
         );
       }
     }
   };
 
-  for (const client of state.clients) {
-    const clientLifecycle = connectionScopeLifecycle(client.normalizedStatus);
+  for (const [clientIndex, client] of state.clients.entries()) {
     const clientId = add(
       topologyClientNodePresentation(client),
       pageId,
       1,
-      clientLifecycle
+      { kind: "client", clientIndex }
     );
-    for (const subscription of client.waitingSubscriptions) {
-      addSubscription(client, null, subscription, clientId, 2, clientLifecycle);
+    for (const [subscriptionIndex, subscription] of client.waitingSubscriptions.entries()) {
+      addSubscription(
+        client,
+        null,
+        subscription,
+        { clientIndex, sessionIndex: null, collection: "waiting", subscriptionIndex },
+        clientId,
+        2
+      );
     }
-    for (const session of client.sessions) {
-      const sessionLifecycle = session.historical
-        ? "retired"
-        : connectionScopeLifecycle(session.normalizedStatus);
+    for (const [sessionIndex, session] of client.sessions.entries()) {
       const sessionId = add(
         topologySessionNodePresentation(client, session),
         clientId,
         2,
-        sessionLifecycle
+        { kind: "session", clientIndex, sessionIndex }
       );
-      for (const subscription of session.subscriptions) {
-        addSubscription(client, session, subscription, sessionId, 3, sessionLifecycle);
+      for (const [subscriptionIndex, subscription] of session.subscriptions.entries()) {
+        addSubscription(
+          client,
+          session,
+          subscription,
+          { clientIndex, sessionIndex, collection: "session", subscriptionIndex },
+          sessionId,
+          3
+        );
       }
     }
   }
-  for (const subscription of state.unassignedSubscriptions) {
-    addSubscription(null, null, subscription, pageId, 1, "unknown");
-  }
-  if (!nodes.some((node) => node.selected)) {
-    return nodes.map((node, index) =>
-      Object.freeze({ ...node, selected: index === 0 })
+  for (const [subscriptionIndex, subscription] of state.unassignedSubscriptions.entries()) {
+    addSubscription(
+      null,
+      null,
+      subscription,
+      { clientIndex: null, sessionIndex: null, collection: "unassigned", subscriptionIndex },
+      pageId,
+      1
     );
   }
-  return nodes;
+  return descriptors;
+}
+
+function resolveScopeNode(
+  state: TopologyState,
+  descriptor: ScopeNodeDescriptor,
+  selectedId: string | null,
+  captureStatus: CaptureStatus
+): WorkbenchScopeNode {
+  const located = locateScopeDescriptor(state, descriptor.locator);
+  if (!located) {
+    return Object.freeze({
+      ...descriptor,
+      detail: "Unavailable in current topology snapshot",
+      tone: "neutral",
+      lifecycle: "unknown",
+      retired: false,
+      selected: descriptor.id === (selectedId ?? "page")
+    });
+  }
+  let presentation: ReturnType<typeof topologyPageNodePresentation>;
+  let lifecycle: WorkbenchScopeLifecycle;
+  switch (located.kind) {
+    case "page":
+      presentation = topologyPageNodePresentation(state);
+      lifecycle = pageScopeLifecycle(state, captureStatus);
+      break;
+    case "client":
+      presentation = topologyClientNodePresentation(located.client);
+      lifecycle = connectionScopeLifecycle(located.client.normalizedStatus);
+      break;
+    case "session":
+      presentation = topologySessionNodePresentation(located.client, located.session);
+      lifecycle = located.session.historical
+        ? "retired"
+        : connectionScopeLifecycle(located.session.normalizedStatus);
+      break;
+    case "subscription": {
+      const inherited = located.session
+        ? located.session.historical
+          ? "retired"
+          : connectionScopeLifecycle(located.session.normalizedStatus)
+        : located.client
+          ? connectionScopeLifecycle(located.client.normalizedStatus)
+          : "unknown";
+      presentation = topologySubscriptionNodePresentation(
+        located.client,
+        located.session,
+        located.subscription
+      );
+      lifecycle = subscriptionScopeLifecycle(located.subscription, inherited);
+      break;
+    }
+    case "item": {
+      const inherited = located.session
+        ? located.session.historical
+          ? "retired"
+          : connectionScopeLifecycle(located.session.normalizedStatus)
+        : located.client
+          ? connectionScopeLifecycle(located.client.normalizedStatus)
+          : "unknown";
+      presentation = topologyItemNodePresentation(
+        located.client,
+        located.session,
+        located.subscription,
+        located.item
+      );
+      lifecycle = subscriptionScopeLifecycle(located.subscription, inherited);
+      break;
+    }
+    case "listener": {
+      const inherited = located.session
+        ? located.session.historical
+          ? "retired"
+          : connectionScopeLifecycle(located.session.normalizedStatus)
+        : located.client
+          ? connectionScopeLifecycle(located.client.normalizedStatus)
+          : "unknown";
+      const subscriptionLifecycle = subscriptionScopeLifecycle(located.subscription, inherited);
+      presentation = topologyListenerNodePresentation(
+        located.client,
+        located.session,
+        located.subscription,
+        located.item,
+        located.listener.id
+      );
+      lifecycle = listenerScopeLifecycle(
+        located.subscription,
+        located.listener.id,
+        subscriptionLifecycle
+      );
+      break;
+    }
+  }
+  return Object.freeze({
+    id: descriptor.id,
+    kind: descriptor.kind,
+    label: presentation.label,
+    detail: presentation.meta,
+    parentId: descriptor.parentId,
+    depth: descriptor.depth,
+    tone: presentation.tone,
+    lifecycle,
+    retired: lifecycle === "retired",
+    selected: descriptor.id === (selectedId ?? "page")
+  });
+}
+
+function locateScopeDescriptor(
+  state: TopologyState,
+  locator: ScopeNodeDescriptor["locator"]
+): Exclude<TopologySelectionTarget, { kind: "generation" | "inferred-child" }> | null {
+  if (locator.kind === "page") return { kind: "page", state };
+  const client = state.clients[locator.clientIndex ?? -1];
+  if (locator.kind === "client") {
+    return client ? { kind: "client", client } : null;
+  }
+  const session = client?.sessions[locator.sessionIndex ?? -1];
+  if (locator.kind === "session") {
+    return client && session ? { kind: "session", client, session } : null;
+  }
+  const locatedSubscription = locateScopeSubscription(state, locator);
+  if (!locatedSubscription) return null;
+  const { subscription } = locatedSubscription;
+  if (locator.kind === "subscription") {
+    return { kind: "subscription", ...locatedSubscription };
+  }
+  const item = locator.itemIndex === null
+    ? null
+    : subscription.items[locator.itemIndex];
+  if (locator.kind === "item") {
+    return item ? { kind: "item", ...locatedSubscription, item } : null;
+  }
+  const listener = subscription.listeners.find(({ id }) => id === locator.listenerId);
+  return listener
+    ? { kind: "listener", ...locatedSubscription, item, listener }
+    : null;
+}
+
+function locateScopeSubscription(
+  state: TopologyState,
+  locator: ScopeSubscriptionLocator
+): {
+  client: TopologyState["clients"][number] | null;
+  session: TopologyState["clients"][number]["sessions"][number] | null;
+  subscription: TopologySubscription;
+} | null {
+  if (locator.collection === "unassigned") {
+    const subscription = state.unassignedSubscriptions[locator.subscriptionIndex];
+    return subscription ? { client: null, session: null, subscription } : null;
+  }
+  const client = state.clients[locator.clientIndex ?? -1];
+  if (!client) return null;
+  if (locator.collection === "waiting") {
+    const subscription = client.waitingSubscriptions[locator.subscriptionIndex];
+    return subscription ? { client, session: null, subscription } : null;
+  }
+  const session = client.sessions[locator.sessionIndex ?? -1];
+  const subscription = session?.subscriptions[locator.subscriptionIndex];
+  return session && subscription ? { client, session, subscription } : null;
 }
 
 function connectionScopeLifecycle(
@@ -3068,18 +3299,35 @@ function isStructuralScopeKind(
 }
 
 function scopeBreadcrumb(
-  nodes: readonly WorkbenchScopeNode[],
-  selected: WorkbenchScopeNode | undefined
+  nodesById: ReadonlyMap<string, WorkbenchScopeStructureNode>,
+  selected: WorkbenchScopeStructureNode | undefined
 ): string {
   if (!selected) return "Inspected page";
-  const byId = new Map(nodes.map((node) => [node.id, node]));
   const labels: string[] = [];
-  let current: WorkbenchScopeNode | undefined = selected;
+  let current: WorkbenchScopeStructureNode | undefined = selected;
   while (current) {
     labels.unshift(current.label);
-    current = current.parentId ? byId.get(current.parentId) : undefined;
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
   }
   return labels.join(" › ");
+}
+
+function sameScopeNodePresentation(
+  left: WorkbenchScopeNode,
+  right: WorkbenchScopeNode
+): boolean {
+  return (
+    left.id === right.id &&
+    left.kind === right.kind &&
+    left.label === right.label &&
+    left.detail === right.detail &&
+    left.parentId === right.parentId &&
+    left.depth === right.depth &&
+    left.tone === right.tone &&
+    left.lifecycle === right.lifecycle &&
+    left.retired === right.retired &&
+    left.selected === right.selected
+  );
 }
 
 function eventFiltersForScope(target: TopologySelectionTarget | null): EventFilterState {

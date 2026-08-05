@@ -48,6 +48,8 @@ export type TopologyProjection = {
   replaceHistory(events: readonly LightstreamerEventEnvelope[]): void;
   applySyncFrame(frame: TopologySyncFrame): TopologyProjectionResult;
   snapshot(): TopologyState;
+  scopeStructureRevision(): number;
+  sensitiveStructureRevision(): number;
   status(): TopologyProjectionStatus;
   resetCurrentObservations(): void;
   clearHistory(): void;
@@ -76,13 +78,17 @@ export function createTopologyProjection(): TopologyProjection {
   const preservedHistory = new Map<string, TopologyClient>();
   const staleSemanticEventIds = new Set<string>();
   const retainedSemanticEventIds = new Set<string>();
-  let structuralSelectionDirty = true;
-  let selectedStructuralState: TopologyState | null = null;
+  let materializedStateDirty = true;
+  let materializedScopeStructureDirty = true;
+  let materializedState: TopologyState | null = null;
+  let materializedScopeStructureKeys: readonly string[] = [];
+  let scopeStructureRevision = 0;
+  let sensitiveStructureRevision = 0;
   let usingLegacyLiveFallback = false;
 
-  function invalidateStructuralSelection(): void {
-    structuralSelectionDirty = true;
-    selectedStructuralState = null;
+  function invalidateMaterializedState(scopeStructureMayHaveChanged = true): void {
+    materializedStateDirty = true;
+    materializedScopeStructureDirty ||= scopeStructureMayHaveChanged;
   }
 
   function activatePage(pageEpoch: string): TopologyProjectionResult {
@@ -107,11 +113,17 @@ export function createTopologyProjection(): TopologyProjection {
   }
 
   function ingestCapture(event: LightstreamerEventEnvelope): TopologyProjectionResult {
-    const preservesStructure = eventPreservesMaterializedStructure(selectedStructuralState, event);
+    const scopeStructureMayHaveChanged = eventMayChangeScopeStructure(
+      event,
+      materializedState
+    );
+    if (eventMayChangeSensitiveStructure(event, scopeStructureMayHaveChanged)) {
+      sensitiveStructureRevision += 1;
+    }
     const observation = event.topology;
     if (!observation) {
       legacyLiveFallbackIndex.ingest(event);
-      if (!preservesStructure) invalidateStructuralSelection();
+      invalidateMaterializedState(scopeStructureMayHaveChanged);
       return { accepted: true, resetConsumerState: false };
     }
     const activation = activatePage(observation.pageEpoch);
@@ -126,23 +138,30 @@ export function createTopologyProjection(): TopologyProjection {
     semanticEvents.set(semanticEventKey(observation), event);
     trimMap(semanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
     syncCoordinator.applyLive(observation);
-    if (!preservesStructure) invalidateStructuralSelection();
+    invalidateMaterializedState(scopeStructureMayHaveChanged);
     return activation;
   }
 
   function ingestHistory(event: LightstreamerEventEnvelope): boolean {
-    const preservesStructure = eventPreservesMaterializedStructure(selectedStructuralState, event);
+    const scopeStructureMayHaveChanged = eventMayChangeScopeStructure(
+      event,
+      materializedState
+    );
+    if (eventMayChangeSensitiveStructure(event, scopeStructureMayHaveChanged)) {
+      sensitiveStructureRevision += 1;
+    }
     const belongsToCurrentPage = !staleSemanticEventIds.delete(event.id);
     const wasSemanticCapture = retainedSemanticEventIds.delete(event.id);
     legacyIndex.ingest(event);
     if (belongsToCurrentPage && !wasSemanticCapture) {
       legacyLiveFallbackIndex.ingest(event);
     }
-    if (!preservesStructure) invalidateStructuralSelection();
+    invalidateMaterializedState(scopeStructureMayHaveChanged);
     return belongsToCurrentPage;
   }
 
   function replaceHistory(events: readonly LightstreamerEventEnvelope[]): void {
+    sensitiveStructureRevision += 1;
     legacyIndex.clear();
     if (!semanticActive) {
       legacyLiveFallbackIndex.clear();
@@ -153,10 +172,11 @@ export function createTopologyProjection(): TopologyProjection {
         legacyLiveFallbackIndex.ingest(event);
       }
     }
-    invalidateStructuralSelection();
+    invalidateMaterializedState();
   }
 
   function applySyncFrame(frame: TopologySyncFrame): TopologyProjectionResult {
+    sensitiveStructureRevision += 1;
     const activation = activatePage(frame.pageEpoch);
     if (!activation.accepted) {
       return activation;
@@ -183,7 +203,7 @@ export function createTopologyProjection(): TopologyProjection {
     if (syncCoordinator.status().state === "partial") {
       replayRetainedEvents(frame.pageEpoch);
     }
-    invalidateStructuralSelection();
+    invalidateMaterializedState();
     return activation;
   }
 
@@ -206,18 +226,32 @@ export function createTopologyProjection(): TopologyProjection {
     return semanticActive ? syncCoordinator.snapshot() : legacyIndex;
   }
 
-  function structuralProjection(): TopologyState {
-    if (!structuralSelectionDirty && selectedStructuralState) {
-      return selectedStructuralState;
+  function currentMaterializedState(): TopologyState {
+    if (!materializedStateDirty && materializedState) {
+      return materializedState;
     }
     const activeState = snapshotPanelTopologyState(activeIndex());
-    const fallbackState = legacyLiveFallbackIndex.snapshot();
-    usingLegacyLiveFallback =
-      semanticActive &&
-      fallbackPreservesAndExtendsStructure(activeState, fallbackState);
-    selectedStructuralState = usingLegacyLiveFallback ? fallbackState : activeState;
-    structuralSelectionDirty = false;
-    return selectedStructuralState;
+    let selectedState = activeState;
+    usingLegacyLiveFallback = false;
+    if (semanticActive) {
+      const fallbackState = legacyLiveFallbackIndex.snapshot();
+      usingLegacyLiveFallback = fallbackPreservesAndExtendsStructure(
+        activeState,
+        fallbackState
+      );
+      if (usingLegacyLiveFallback) selectedState = fallbackState;
+    }
+    materializedState = mergePreservedHistory(selectedState);
+    if (materializedScopeStructureDirty) {
+      const nextStructureKeys = [...topologyStructuralKeys(materializedState, false)];
+      if (!sameOrderedKeys(materializedScopeStructureKeys, nextStructureKeys)) {
+        scopeStructureRevision += 1;
+      }
+      materializedScopeStructureKeys = nextStructureKeys;
+      materializedScopeStructureDirty = false;
+    }
+    materializedStateDirty = false;
+    return materializedState;
   }
 
   function rememberHistory(state: TopologyState): void {
@@ -284,7 +318,7 @@ export function createTopologyProjection(): TopologyProjection {
     retainedSemanticEventIds.clear();
     legacyLiveFallbackIndex.clear();
     usingLegacyLiveFallback = false;
-    invalidateStructuralSelection();
+    invalidateMaterializedState();
   }
 
   return {
@@ -294,11 +328,20 @@ export function createTopologyProjection(): TopologyProjection {
     applySyncFrame,
 
     snapshot() {
-      return mergePreservedHistory(structuralProjection());
+      return currentMaterializedState();
+    },
+
+    scopeStructureRevision() {
+      currentMaterializedState();
+      return scopeStructureRevision;
+    },
+
+    sensitiveStructureRevision() {
+      return sensitiveStructureRevision;
     },
 
     status() {
-      structuralProjection();
+      currentMaterializedState();
       if (usingLegacyLiveFallback) {
         return {
           semanticActive: false,
@@ -316,52 +359,23 @@ export function createTopologyProjection(): TopologyProjection {
     resetCurrentObservations() {
       resetPanelTopologyObservations(activeIndex());
       legacyLiveFallbackIndex.resetCurrentObservations();
-      invalidateStructuralSelection();
+      invalidateMaterializedState();
     },
 
     clearHistory() {
+      sensitiveStructureRevision += 1;
       activeIndex().clearHistory();
       legacyLiveFallbackIndex.clearHistory();
       preservedHistory.clear();
-      invalidateStructuralSelection();
+      invalidateMaterializedState();
     },
 
     clear() {
+      sensitiveStructureRevision += 1;
       legacyIndex.clear();
       resetSemanticProjection();
     }
   };
-}
-
-function eventPreservesMaterializedStructure(
-  state: TopologyState | null,
-  event: LightstreamerEventEnvelope
-): boolean {
-  if (
-    !state ||
-    event.kind !== "item-update" ||
-    !event.subscription?.id ||
-    (!event.item?.name && event.item?.position === undefined)
-  ) {
-    return false;
-  }
-  const subscriptions = [
-    ...state.unassignedSubscriptions,
-    ...state.clients.flatMap((client) => {
-      if (event.client?.id && client.id !== event.client.id) return [];
-      return [
-        ...client.waitingSubscriptions,
-        ...client.sessions.flatMap((session) => session.subscriptions)
-      ];
-    })
-  ].filter((subscription) => subscription.id === event.subscription?.id);
-  const preserves = subscriptions.some((subscription) =>
-    subscription.items.some((item) => {
-      if (event.item?.name !== undefined) return item.name === event.item.name;
-      return item.position === event.item?.position;
-    })
-  );
-  return preserves;
 }
 
 function fallbackPreservesAndExtendsStructure(
@@ -376,7 +390,10 @@ function fallbackPreservesAndExtendsStructure(
   );
 }
 
-function topologyStructuralKeys(state: TopologyState): Set<string> {
+function topologyStructuralKeys(
+  state: TopologyState,
+  includeNonScopeNodes = true
+): Set<string> {
   const keys = new Set<string>();
   const addSubscription = (
     client: TopologyClient | null,
@@ -399,20 +416,22 @@ function topologyStructuralKeys(state: TopologyState): Set<string> {
         );
       }
     }
-    for (const generation of subscription.commandGenerations) {
-      keys.add(
-        topologyCommandGenerationKey(client, session, subscription, generation)
-      );
-      for (const child of generation.inferredChildren) {
+    if (includeNonScopeNodes) {
+      for (const generation of subscription.commandGenerations) {
         keys.add(
-          topologyInferredChildKey(
-            client,
-            session,
-            subscription,
-            generation,
-            child
-          )
+          topologyCommandGenerationKey(client, session, subscription, generation)
         );
+        for (const child of generation.inferredChildren) {
+          keys.add(
+            topologyInferredChildKey(
+              client,
+              session,
+              subscription,
+              generation,
+              child
+            )
+          );
+        }
       }
     }
   };
@@ -435,10 +454,94 @@ function topologyStructuralKeys(state: TopologyState): Set<string> {
   return keys;
 }
 
+/**
+ * Item updates are the topology hot path. They cannot change Scope membership
+ * when every referenced owner is already present at the exact active path and
+ * the listener is already attached to the item. Unknown or partial ownership
+ * remains structural so this optimization can never hide a new Scope node.
+ */
+function eventMayChangeScopeStructure(
+  event: LightstreamerEventEnvelope,
+  state: TopologyState | null
+): boolean {
+  if (event.kind !== "item-update" || !state) return true;
+
+  const clientId = event.client?.id;
+  const sessionId = event.client?.sessionId;
+  const subscriptionId = event.subscription?.id;
+  if (!clientId || !sessionId || !subscriptionId) return true;
+
+  const client = state.clients.find((candidate) => candidate.id === clientId);
+  const session = client?.sessions.find(
+    (candidate) =>
+      candidate.id === sessionId && candidate.active && !candidate.historical
+  );
+  const subscription = session?.subscriptions.find(
+    (candidate) =>
+      candidate.id === subscriptionId &&
+      (candidate.active || candidate.serverEstablished)
+  );
+  if (!subscription) return true;
+
+  const configuredItems = event.subscription?.items;
+  if (
+    configuredItems &&
+    !sameOrderedKeys(subscription.configuredItems ?? [], configuredItems)
+  ) {
+    return true;
+  }
+
+  const itemName = event.item?.name;
+  const itemPosition = event.item?.position;
+  if (itemName === undefined && itemPosition === undefined) {
+    return event.listener?.id
+      ? !subscription.listeners.some(
+          (listener) => listener.id === event.listener?.id
+        )
+      : false;
+  }
+  const item = subscription.items.find(
+    (candidate) =>
+      (itemName === undefined || candidate.name === itemName) &&
+      (itemPosition === undefined || candidate.position === itemPosition)
+  );
+  if (!item) return true;
+
+  const listenerId = event.listener?.id;
+  return listenerId
+    ? !subscription.listeners.some((listener) => listener.id === listenerId) ||
+        !item.listenerIds.includes(listenerId)
+    : false;
+}
+
+function eventMayChangeSensitiveStructure(
+  event: LightstreamerEventEnvelope,
+  scopeStructureMayHaveChanged: boolean
+): boolean {
+  if (scopeStructureMayHaveChanged) return true;
+  const subscription = event.subscription;
+  return Boolean(
+    subscription?.fields ||
+    subscription?.fieldSchema !== undefined ||
+    subscription?.commandSecondLevelFields ||
+    subscription?.commandSecondLevelFieldSchema !== undefined ||
+    event.update?.command ||
+    event.update?.key
+  );
+}
+
 function semanticEventKey(
   observation: Pick<TopologyObservation, "pageEpoch" | "captureSequence">
 ): string {
   return `${observation.pageEpoch}:${observation.captureSequence}`;
+}
+
+function sameKeys(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((key) => right.has(key));
+}
+
+function sameOrderedKeys(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((key, index) => key === right[index]);
 }
 
 function trimMap<K, V>(map: Map<K, V>, limit: number): void {

@@ -161,7 +161,7 @@ describe("topology projection", () => {
     expect(projection.status().semanticActive).toBe(true);
   });
 
-  it("reuses the structural snapshot for repeat deliveries to a known Item and Listener", () => {
+  it("refreshes volatile counters and newly observed Listener and Session membership", () => {
     const projection = createTopologyProjection();
     const base = subscriptionEvent("legacy-subscription", "legacy-sub");
     projection.ingestCapture(base);
@@ -173,18 +173,77 @@ describe("topology projection", () => {
       kind: "item-update",
       listener: { id: "listener-1", callbacks: ["onItemUpdate"] },
       item: { name: "item-1", position: 1 },
-      update: { isSnapshot: false, fields: { value }, changedFields: { value } }
+      update: { isSnapshot: false, fields: { value }, changedFields: { value } },
+      raw: { logicalEventId: id, callback: "onItemUpdate" }
     });
     const firstDelivery = update("delivery-1", 1);
     projection.ingestCapture(firstDelivery);
     projection.ingestHistory(firstDelivery);
-    const structuralSnapshot = projection.snapshot();
+    const firstSnapshot = projection.snapshot();
+    const firstStructureRevision = projection.scopeStructureRevision();
+    expect(firstSnapshot.clients[0]?.sessions[0]?.subscriptions[0]).toMatchObject({
+      updateCount: 1,
+      deliveryCount: 1,
+      items: [expect.objectContaining({ updateCount: 1, deliveryCount: 1 })],
+      listeners: [expect.objectContaining({ id: "listener-1", deliveryCount: 1 })]
+    });
 
     const secondDelivery = update("delivery-2", 2);
     projection.ingestCapture(secondDelivery);
     projection.ingestHistory(secondDelivery);
+    const secondSnapshot = projection.snapshot();
+    expect(secondSnapshot).not.toBe(firstSnapshot);
+    expect(projection.scopeStructureRevision()).toBe(firstStructureRevision);
+    expect(secondSnapshot.clients[0]?.sessions[0]?.subscriptions[0]).toMatchObject({
+      updateCount: 2,
+      deliveryCount: 2,
+      items: [expect.objectContaining({ updateCount: 2, deliveryCount: 2 })],
+      listeners: [expect.objectContaining({ id: "listener-1", deliveryCount: 2 })]
+    });
 
-    expect(projection.snapshot()).toBe(structuralSnapshot);
-    expect(structuralSnapshot.clients[0]?.sessions[0]?.subscriptions[0]?.items[0]?.name).toBe("item-1");
+    const newMembership: LightstreamerEventEnvelope = {
+      ...update("delivery-3", 3),
+      client: {
+        ...base.client,
+        id: base.client?.id ?? "client-legacy",
+        sessionId: "session-next"
+      },
+      listener: { id: "listener-2", callbacks: ["onItemUpdate"] }
+    };
+    projection.ingestCapture(newMembership);
+    projection.ingestHistory(newMembership);
+    const membershipSnapshot = projection.snapshot();
+    expect(projection.scopeStructureRevision()).toBeGreaterThan(firstStructureRevision);
+    expect(membershipSnapshot.clients[0]?.sessions.map(({ id }) => id)).toEqual(
+      expect.arrayContaining(["session-legacy", "session-next"])
+    );
+    const currentSubscription = membershipSnapshot.clients[0]?.sessions
+      .find(({ id }) => id === "session-next")
+      ?.subscriptions[0];
+    expect(currentSubscription?.listeners).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "listener-2", deliveryCount: 1 })
+    ]));
+    expect(currentSubscription?.items[0]?.listenerIds).toContain("listener-2");
+  });
+
+  it("bumps Scope structure revision when the same identities reorder", () => {
+    const projection = createTopologyProjection();
+    const eventFor = (clientId: string, timestamp: number): LightstreamerEventEnvelope => ({
+      ...subscriptionEvent(`reorder-${clientId}-${timestamp}`, `sub-${clientId}`),
+      timestamp,
+      client: {
+        id: clientId,
+        status: "CONNECTED:WS-STREAMING",
+        sessionId: `session-${clientId}`
+      }
+    });
+    projection.replaceHistory([eventFor("a", 1), eventFor("b", 2)]);
+    expect(projection.snapshot().clients.map(({ id }) => id)).toEqual(["a", "b"]);
+    const firstRevision = projection.scopeStructureRevision();
+
+    projection.replaceHistory([eventFor("a", 3), eventFor("b", 2)]);
+
+    expect(projection.snapshot().clients.map(({ id }) => id)).toEqual(["b", "a"]);
+    expect(projection.scopeStructureRevision()).toBeGreaterThan(firstRevision);
   });
 });

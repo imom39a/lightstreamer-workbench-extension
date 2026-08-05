@@ -538,7 +538,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("reuses structural Scope nodes across evidence-only Capture publications", async () => {
+  it("reuses unchanged structural Scope nodes while refreshing volatile counter presentations", async () => {
     const history = createInMemoryEventHistory();
     history.append(topologyEvent("client-1", "client-created"));
     history.append(topologyEvent("session-1", "client-status"));
@@ -547,7 +547,9 @@ describe("WorkbenchRuntime", () => {
     history.append(topologyEvent("update-1", "item-update"));
     const scheduler = createScheduler();
     const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
-    const structuralNodes = runtime.getSnapshot().scope.nodes;
+    const initialScope = runtime.getSnapshot().scope;
+    const structuralNodes = initialScope.structure;
+    const initialFacts = initialScope.nodes;
 
     runtime.dispatch({
       type: "ingest-capture-message",
@@ -561,7 +563,16 @@ describe("WorkbenchRuntime", () => {
     });
     scheduler.flushFrame();
 
-    expect(runtime.getSnapshot().scope.nodes).toBe(structuralNodes);
+    const refreshedScope = runtime.getSnapshot().scope;
+    const refreshedNodes = refreshedScope.nodes;
+    expect(refreshedScope.structure).toBe(structuralNodes);
+    expect(refreshedScope.structureRevision).toBe(initialScope.structureRevision);
+    expect(refreshedNodes).not.toBe(initialFacts);
+    expect(refreshedNodes.map(({ id }) => id)).toEqual(initialFacts.map(({ id }) => id));
+    expect(refreshedNodes.find(({ kind }) => kind === "subscription")?.detail).toContain("2 real");
+    expect(refreshedNodes.find(({ kind }) => kind === "item")?.detail).toContain("2 updates");
+    expect(initialFacts.find(({ kind }) => kind === "subscription")?.detail).toContain("1 real");
+    expect(initialFacts.find(({ kind }) => kind === "item")?.detail).toContain("1 updates");
     runtime.dispose();
   });
 
@@ -633,6 +644,44 @@ describe("WorkbenchRuntime", () => {
     scheduler.flushFallback();
 
     expect(notifications).toBe(2);
+  });
+
+  it("defers hidden theme, Capture status, history, and multi-frame topology publication until one restore", async () => {
+    const history = createInMemoryEventHistory();
+    const scheduler = createScheduler();
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const snapshots: Array<ReturnType<typeof runtime.getSnapshot>> = [];
+    runtime.subscribe(() => snapshots.push(runtime.getSnapshot()));
+
+    runtime.dispatch({ type: "set-visible", visible: false });
+    const hiddenSnapshot = runtime.getSnapshot();
+    snapshots.length = 0;
+    runtime.dispatch({ type: "set-theme", theme: "dark" });
+    runtime.dispatch({ type: "set-capture-status", status: "capturing" });
+    for (const frame of getPanelScenario("topology-large").topologySyncFrames ?? []) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    history.append(event("hidden-history-1"));
+    await flushStoreNotifications();
+
+    expect(snapshots).toEqual([]);
+    expect(runtime.getSnapshot()).toBe(hiddenSnapshot);
+    expect(scheduler.frameCount()).toBe(0);
+    await expect(history.count().toPromise()).resolves.toBe(1);
+
+    runtime.dispatch({ type: "set-visible", visible: true });
+
+    expect(snapshots).toHaveLength(1);
+    expect(runtime.getSnapshot()).toMatchObject({
+      visible: true,
+      theme: "dark",
+      captureStatus: "capturing"
+    });
+    expect(runtime.getSnapshot().scope.nodes).toHaveLength(6);
+    expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual([
+      "hidden-history-1"
+    ]);
+    runtime.dispose();
   });
 
   it("preserves a Frozen historical window across hidden visibility while Live reveal follows newest", async () => {

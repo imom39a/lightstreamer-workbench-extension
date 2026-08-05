@@ -31,6 +31,52 @@ type ScopeTreeActions = {
   key(event: ReactKeyboardEvent<HTMLButtonElement>, node: ScopeNode): void;
 };
 
+const ScopeTreeRow = memo(function ScopeTreeRow({
+  node,
+  index,
+  siblingPosition,
+  hasChildren,
+  collapsed,
+  focused,
+  nodeRefs,
+  actionsRef
+}: {
+  node: ScopeNode;
+  index: number;
+  siblingPosition: { position: number; size: number } | undefined;
+  hasChildren: boolean;
+  collapsed: boolean;
+  focused: boolean;
+  nodeRefs: { current: Map<string, HTMLButtonElement> };
+  actionsRef: { current: ScopeTreeActions };
+}): JSX.Element {
+  return (
+    <button
+      className="workbench-react__scope-node workbench-react__scope-node--windowed"
+      role="treeitem"
+      aria-level={node.depth + 1}
+      aria-posinset={siblingPosition?.position}
+      aria-setsize={siblingPosition?.size}
+      aria-selected={node.selected}
+      aria-current={node.selected ? "true" : undefined}
+      data-retired={node.retired || undefined}
+      data-scope-id={node.id}
+      aria-expanded={hasChildren ? !collapsed : undefined}
+      tabIndex={focused ? 0 : -1}
+      style={{ top: `${index * SCOPE_NODE_HEIGHT}px` }}
+      ref={(element) => {
+        if (element) nodeRefs.current.set(node.id, element);
+        else nodeRefs.current.delete(node.id);
+      }}
+      onClick={() => {
+        actionsRef.current.focus(node.id);
+        actionsRef.current.commit(node.id);
+      }}
+      onKeyDown={(event) => actionsRef.current.key(event, node)}
+    ><span>{node.label}</span><em>{node.detail ? `${node.detail} · ${lifecycleLabel(node.lifecycle)}` : lifecycleLabel(node.lifecycle)}</em></button>
+  );
+});
+
 const ScopeTree = memo(function ScopeTree({
   logicalNodeCount,
   visibleNodeCount,
@@ -48,7 +94,10 @@ const ScopeTree = memo(function ScopeTree({
   visibleNodeCount: number;
   entries: readonly ScopeTreeEntry[];
   logicalHeight: number;
-  childrenByParent: ReadonlyMap<string | null, readonly ScopeNode[]>;
+  childrenByParent: ReadonlyMap<
+    string | null,
+    readonly WorkbenchSnapshot["scope"]["structure"][number][]
+  >;
   siblingPositionById: ReadonlyMap<string, { position: number; size: number }>;
   collapsedIds: ReadonlySet<string>;
   focusId: string | null;
@@ -76,30 +125,17 @@ const ScopeTree = memo(function ScopeTree({
           const siblingPosition = siblingPositionById.get(node.id);
           const hasChildren = (childrenByParent.get(node.id)?.length ?? 0) > 0;
           return (
-            <button
-              className="workbench-react__scope-node workbench-react__scope-node--windowed"
+            <ScopeTreeRow
               key={node.id}
-              role="treeitem"
-              aria-level={node.depth + 1}
-              aria-posinset={siblingPosition?.position}
-              aria-setsize={siblingPosition?.size}
-              aria-selected={node.selected}
-              aria-current={node.selected ? "true" : undefined}
-              data-retired={node.retired || undefined}
-              data-scope-id={node.id}
-              aria-expanded={hasChildren ? !collapsedIds.has(node.id) : undefined}
-              tabIndex={node.id === focusId ? 0 : -1}
-              style={{ top: `${index * SCOPE_NODE_HEIGHT}px` }}
-              ref={(element) => {
-                if (element) nodeRefs.current.set(node.id, element);
-                else nodeRefs.current.delete(node.id);
-              }}
-              onClick={() => {
-                actionsRef.current.focus(node.id);
-                actionsRef.current.commit(node.id);
-              }}
-              onKeyDown={(event) => actionsRef.current.key(event, node)}
-            ><span>{node.label}</span><em>{node.detail ? `${node.detail} · ${lifecycleLabel(node.lifecycle)}` : lifecycleLabel(node.lifecycle)}</em></button>
+              node={node}
+              index={index}
+              siblingPosition={siblingPosition}
+              hasChildren={hasChildren}
+              collapsed={collapsedIds.has(node.id)}
+              focused={node.id === focusId}
+              nodeRefs={nodeRefs}
+              actionsRef={actionsRef}
+            />
           );
         })}
       </div>
@@ -316,7 +352,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const findState = evidence.findState;
   const hiddenSelection = evidence.hiddenSelection;
   const contextFields = snapshot.context.fields;
-  const scopeNodes = snapshot.scope.nodes;
+  const scopeNodes = snapshot.scope.structure;
   const {
     scopeNodeById,
     scopeChildrenByParent,
@@ -327,7 +363,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     const nodeById = new Map(scopeNodes.map((node) => [node.id, node]));
     const childrenByParent = new Map<
       string | null,
-      WorkbenchSnapshot["scope"]["nodes"][number][]
+      WorkbenchSnapshot["scope"]["structure"][number][]
     >();
     for (const node of scopeNodes) {
       const siblings = childrenByParent.get(node.parentId) ?? [];
@@ -355,7 +391,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       visibleScopeNodes: visibleNodes,
       visibleScopeIndexById: new Map(visibleNodes.map((node, index) => [node.id, index]))
     };
-  }, [collapsedScopeIds, scopeNodes]);
+  }, [collapsedScopeIds, snapshot.scope.structureRevision]);
   const requestedFocusedNode = snapshot.scope.focusedNodeId
     ? scopeNodeById.get(snapshot.scope.focusedNodeId)
     : undefined;
@@ -365,7 +401,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       ? scopeNodeById.get(effectiveFocusedNode.parentId)
       : undefined;
   }
-  effectiveFocusedNode ??= scopeNodes.find((node) => node.selected && visibleScopeIndexById.has(node.id));
+  const selectedStructure = snapshot.scope.selection
+    ? scopeNodeById.get(snapshot.scope.selection.id)
+    : undefined;
+  effectiveFocusedNode ??= selectedStructure && visibleScopeIndexById.has(selectedStructure.id)
+    ? selectedStructure
+    : undefined;
   effectiveFocusedNode ??= visibleScopeNodes[0];
   const renderedFocusId = pendingScopeFocus.current ?? effectiveFocusedNode?.id ?? null;
   const focusedScopeIndex = renderedFocusId ? visibleScopeIndexById.get(renderedFocusId) ?? -1 : -1;
@@ -379,13 +420,20 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const renderedScopeEntries = useMemo(() => {
     const entries = visibleScopeNodes
       .slice(renderedScopeWindowStart, renderedScopeWindowStart + scopeWindowSize)
-      .map((node, offset) => ({ node, index: renderedScopeWindowStart + offset }));
+      .map((structure, offset) => ({
+        node: snapshot.scope.resolveNode(structure.id)!,
+        index: renderedScopeWindowStart + offset
+      }));
     if (focusedScopeIndex >= 0 && !entries.some(({ index }) => index === focusedScopeIndex)) {
-      entries.push({ node: visibleScopeNodes[focusedScopeIndex]!, index: focusedScopeIndex });
+      const focusedStructure = visibleScopeNodes[focusedScopeIndex]!;
+      entries.push({
+        node: snapshot.scope.resolveNode(focusedStructure.id)!,
+        index: focusedScopeIndex
+      });
       entries.sort((left, right) => left.index - right.index);
     }
     return entries;
-  }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes]);
+  }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes, snapshot.scope]);
   const canAuthorCommandUpdate = snapshot.localInjection.availability.commandScope.available;
   const canCreateLocalInjectionDraft = snapshot.localInjection.availability.selectedUpdate.available;
   const total = evidence.total;
@@ -675,7 +723,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         scopeTypeaheadReset.current = null;
       }, 700);
       const currentIndex = visibleScopeIndexById.get(node.id) ?? 0;
-      let match: WorkbenchSnapshot["scope"]["nodes"][number] | undefined;
+      let match: WorkbenchSnapshot["scope"]["structure"][number] | undefined;
       for (let offset = 1; offset <= visibleScopeNodes.length; offset += 1) {
         const candidate = visibleScopeNodes[(currentIndex + offset) % visibleScopeNodes.length];
         if (candidate?.label.toLocaleLowerCase().startsWith(scopeTypeahead.current)) {

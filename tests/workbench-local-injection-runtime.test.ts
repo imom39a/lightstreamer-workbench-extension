@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { createInMemoryEventHistory } from "../src/core/event-history";
+import { createInMemoryEventHistory, type EventHistory } from "../src/core/event-history";
 import {
   createWorkbenchRuntime,
   type LocalInjectionExecutionResult,
@@ -902,6 +902,54 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispatch({ type: "finish-local-injection" });
     expect(runtime.getSnapshot().localInjection.state).toBe("idle");
     expect(runtime.getSnapshot().selectionEventId).toBe("source-6");
+    runtime.dispose();
+  });
+
+  it("advances Local Effective COMMAND State once when delivered Evidence retention fails", async () => {
+    const retainedHistory = historyWithCommandTarget();
+    const retentionFailure = new Error("synthetic retention failed");
+    const history: EventHistory = {
+      ...retainedHistory,
+      append(event) {
+        if (!event.synthetic) return retainedHistory.append(event);
+        return {
+          receive(_onValue, onError) {
+            onError(retentionFailure);
+          },
+          toPromise() {
+            return Promise.reject(retentionFailure);
+          }
+        };
+      }
+    };
+    const executor = {
+      execute: vi.fn(async () => result("success", {
+        requestId: "delivered-without-history",
+        attemptedCount: 1,
+        deliveredCount: 1,
+        failedCount: 0
+      }))
+    };
+    const runtime = createWorkbenchRuntime({
+      history,
+      captureStatus: "capturing",
+      localInjectionExecutor: executor
+    });
+    beginSelected(runtime);
+    runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(17) });
+    runtime.dispatch({ type: "review-local-injection" });
+    runtime.dispatch({ type: "execute-local-injection" });
+    await flushAsync();
+
+    expect(runtime.getSnapshot().localInjection.draft?.outcome).toMatchObject({
+      disposition: "delivered",
+      headline: "DELIVERED LOCALLY",
+      detail: expect.stringContaining("could not be retained")
+    });
+    expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
+    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=17");
+    const synthetic = await retainedHistory.queryEvents({ filters: { synthetic: true } }).toPromise();
+    expect(synthetic.total).toBe(0);
     runtime.dispose();
   });
 });

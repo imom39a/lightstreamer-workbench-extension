@@ -21,7 +21,7 @@ type TestRuntime = WorkbenchRuntime & {
 function createTestRuntime(snapshot: WorkbenchSnapshot): TestRuntime {
   const listeners = new Set<() => void>();
   const commands: WorkbenchCommand[] = [];
-  let current = snapshot;
+  let current = withScopeContract(snapshot);
 
   return {
     getSnapshot: () => current,
@@ -34,10 +34,37 @@ function createTestRuntime(snapshot: WorkbenchSnapshot): TestRuntime {
     },
     dispose: vi.fn(),
     setSnapshot(next) {
-      current = next;
+      current = withScopeContract(next);
       listeners.forEach((listener) => listener());
     },
     commands
+  };
+}
+
+function withScopeContract(snapshot: WorkbenchSnapshot): WorkbenchSnapshot {
+  const possiblyLegacyScope = snapshot.scope as Partial<WorkbenchSnapshot["scope"]>;
+  if (
+    possiblyLegacyScope.structure &&
+    typeof possiblyLegacyScope.resolveNode === "function" &&
+    possiblyLegacyScope.structure.length === snapshot.scope.nodes.length
+  ) {
+    return snapshot;
+  }
+  const nodes = snapshot.scope.nodes ?? [];
+  return {
+    ...snapshot,
+    scope: {
+      ...snapshot.scope,
+      structureRevision: 0,
+      structure: nodes.map(({ id, kind, label, parentId, depth }) => ({
+        id,
+        kind,
+        label,
+        parentId,
+        depth
+      })),
+      resolveNode: (scopeId) => nodes.find(({ id }) => id === scopeId) ?? null
+    }
   };
 }
 
@@ -93,6 +120,9 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
     scope: {
       label: "Page / client-main / Session S-9 / orders.command / portfolio",
       status: "Subscribed · Snapshot complete",
+      structureRevision: 0,
+      structure: [],
+      resolveNode: () => null,
       nodes: [],
       focusedNodeId: "page",
       selection: {

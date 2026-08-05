@@ -129,6 +129,36 @@ describe("COMMAND state reducer", () => {
     expect(projections.snapshot("local-effective").subscriptions).toEqual([]);
   });
 
+  it("deduplicates a successfully projected Local Injection when retained history echoes it", () => {
+    const projections = createCommandStateProjections();
+    const server = commandEvent("event-dedupe-server", {
+      key: "alpha",
+      fields: { command: "ADD", key: "alpha", qty: "1" }
+    });
+    const local = commandEvent("event-dedupe-local", {
+      command: "UPDATE",
+      key: "alpha",
+      fields: { command: "UPDATE", key: "alpha", qty: "9" },
+      changedFields: { qty: "9" },
+      source: "synthetic",
+      synthetic: true
+    });
+
+    projections.apply(server);
+    projections.apply(local);
+    projections.apply(local);
+
+    const row = firstItem(projections.snapshot("local-effective")).activeRows[0];
+    expect(row.fields).toMatchObject({ qty: "9" });
+    expect(row.lifecycle.map(({ eventId }) => eventId)).toEqual([
+      "event-dedupe-server",
+      "event-dedupe-local"
+    ]);
+    expect(firstItem(projections.snapshot("observed-server")).activeRows[0].fields).toMatchObject({
+      qty: "1"
+    });
+  });
+
   it("matches incremental COMMAND indexing with full reduction", () => {
     const events = [
       commandEvent("event-1", { key: "alpha", snapshot: true }),
