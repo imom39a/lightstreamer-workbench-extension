@@ -6,7 +6,7 @@ type VisualCase = Readonly<{
   id: string;
   viewport: { width: number; height: number };
   theme: "dark" | "light";
-  prototype: { variant: string; state: string; frame: string };
+  prototype: { variant: string; state: string; frame: string; setup: string };
   production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
@@ -53,7 +53,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expect(page.locator(".workbench-react__evidence-summary")).toHaveCSS("display", "flex");
       return;
     case "captured-draft": {
-      await page.getByRole("button", { name: "Open Context" }).click();
+      await page.getByRole("button", { name: "Open selected Context" }).click();
       const create = page.getByRole("button", { name: "Create Local Injection Draft" });
       await expectVisibleKeyboardTarget(page, create);
       await page.keyboard.press("Enter");

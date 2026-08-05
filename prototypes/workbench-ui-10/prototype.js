@@ -40,16 +40,24 @@ const requestedVariant = params.get("variant")?.toUpperCase();
 const variant = VARIANTS[requestedVariant] ? requestedVariant : "A";
 const requestedState = params.get("state");
 const stateKey = VARIANTS[variant].states.includes(requestedState) ? requestedState : VARIANTS[variant].states[0];
+const visualSetup = params.get("setup") ?? "none";
 
 const state = {
   variant,
   state: stateKey,
   frame: FRAMES[params.get("frame")] ? params.get("frame") : "auto",
   theme: THEMES[params.get("theme")] ? params.get("theme") : "dark",
-  selected: params.get("event") ?? (stateKey === "live" ? "" : "evt-1842"),
+  selected: params.get("event") ?? (
+    visualSetup === "selected-json"
+      ? "json-string-event"
+      : ["retained-find", "long-identities"].includes(visualSetup)
+        ? highVolumeEventId(3_970)
+        : stateKey === "live" ? "" : "evt-1842"
+  ),
   surface: params.get("surface") ?? "evidence",
   presentation: params.get("presentation") === "1",
-  filtered: params.get("filter") === "updates"
+  filtered: params.get("filter") === "updates",
+  visualSetup
 };
 
 const EVENTS = [
@@ -68,6 +76,43 @@ const EVENTS = [
   { id: "evt-1850", time: "14:09:08.377", source: "RUNTIME", phase: "—", op: "—", kind: "Session status", object: "S-9", change: "RECOVERING", severity: "Information" },
   { id: "evt-1851", time: "14:09:09.201", source: "WORKBENCH", phase: "UNKNOWN", op: "—", kind: "Capture diagnostic", object: "orders.command", change: "late attachment limits phase", severity: "Error" }
 ];
+
+const JSON_STRING_EVENT = {
+  id: "json-string-event",
+  time: "22:40:00.114",
+  source: "SERVER",
+  phase: "LIVE",
+  op: "ADD",
+  kind: "Item Update",
+  object: "topology-small-item",
+  change: "json-string-alpha",
+  severity: "—"
+};
+
+const RETAINED_FIND_EVENTS = Array.from({ length: 12 }, (_, index) => highVolumeEvent(index + 1, {
+  searchAnchor: [5, 8, 11].includes(index + 1) ? "complete-retained-find-anchor" : ""
+}));
+const LONG_IDENTITY_EVENTS = Array.from({ length: 14 }, (_, index) => highVolumeEvent(3_961 + index));
+const HIGH_VOLUME_SELECTED_EVENT = highVolumeEvent(3_970);
+
+function highVolumeEventId(sequence) {
+  return `retained-evidence-event-${String(sequence).padStart(4, "0")}-from-orders-command-subscription-with-long-production-identity`;
+}
+
+function highVolumeEvent(sequence, extra = {}) {
+  return {
+    id: highVolumeEventId(sequence),
+    time: `22:40:03.${String(sequence % 1_000).padStart(3, "0")}`,
+    source: "SERVER",
+    phase: "LIVE",
+    op: "UPDATE",
+    kind: "Item Update",
+    object: "portfolio/orders/north-america/enterprise-customer-primary-book",
+    change: `customer-order-command-key-with-long-production-identity-${sequence % 10}`,
+    severity: "—",
+    ...extra
+  };
+}
 
 function render() {
   document.documentElement.dataset.theme = state.theme;
@@ -93,17 +138,25 @@ function renderOperatingStrip() {
   const disconnected = state.state === "disconnected";
   const capture = disconnected ? "STOPPED" : "RUNNING";
   const coverage = degraded ? (disconnected ? "UNAVAILABLE" : "LIMITED") : "USEFUL";
-  const view = frozen ? "FROZEN · 2,418 newer" : "FOLLOW LIVE";
+  const view = frozen
+    ? `FROZEN · ${["retained-find", "long-identities"].includes(state.visualSetup) ? "30" : "2,418"} newer`
+    : "FOLLOW LIVE";
   return `<header class="operating-strip">
     <strong>Capture ${capture}</strong>
     <span class="${degraded ? "condition" : ""}">Coverage ${coverage}</span>
     <span>View ${view}</span>
     <div class="operating-actions">
-      <button data-action="find">Find</button>
+      ${state.visualSetup === "retained-find" ? renderPrototypeFind() : `<button data-action="find">Find</button>`}
       <button data-action="filter-toggle">${state.filtered ? "Filter: Updates" : "Filter"}</button>
       <button aria-label="More actions">More actions</button>
     </div>
   </header>`;
+}
+
+function renderPrototypeFind() {
+  const query = "complete-retained-find-anchor";
+  const matches = evidenceForState().filter((event) => event.searchAnchor === query);
+  return `<div class="prototype-find" role="search" aria-label="Find in ordered Evidence"><label for="prototype-find">Find</label><input id="prototype-find" value="${query}" readonly><span>1 of ${matches.length} matches</span><button>Previous</button><button>Next</button><button>Close Find</button></div>`;
 }
 
 function renderScopeStrip() {
@@ -116,6 +169,11 @@ function renderScopeStrip() {
     recovering: "Recovering · target readiness pending",
     stale: "Historical · read-only"
   }[state.state] ?? "Subscribed · Snapshot complete";
+  if (state.visualSetup !== "none") return `<nav class="scope-strip" aria-label="Runtime scope">
+    <button data-action="scope">Scope</button>
+    <strong>${state.variant === "B" ? "Inspected page › topology-small-client › Session topology-small-session › topology-small-subscription" : "Inspected page"}</strong>
+    <em class="scope-state">Active · 1 clients · 1 subscriptions</em>
+  </nav>`;
   return `<nav class="scope-strip" aria-label="Runtime scope">
     <button data-action="scope">Scope</button>
     <span>Page</span><b>›</b><span>client-main</span><b>›</b><span>${session}</span><b>›</b><strong>orders.command</strong><b>›</b><span>portfolio</span>
@@ -160,6 +218,11 @@ function scopeNode(label, meta, selected = false) {
 }
 
 function evidenceForState() {
+  if (state.visualSetup === "retained-find") return RETAINED_FIND_EVENTS;
+  if (state.visualSetup === "long-identities") return LONG_IDENTITY_EVENTS;
+  if (state.visualSetup === "selected-json") return [JSON_STRING_EVENT, ...EVENTS.slice(0, 5)];
+  if (state.visualSetup === "matching-summary") return EVENTS.slice(0, 5);
+  if (["live-selected", "more-actions"].includes(state.visualSetup)) return EVENTS.slice(0, 6);
   if (state.state === "empty") return [];
   if (state.variant === "C") {
     if (state.state === "coverage") return EVENTS.filter((event) => ["evt-1838", "evt-1842", "evt-1843", "evt-1851"].includes(event.id));
@@ -174,9 +237,14 @@ function evidenceForState() {
 
 function renderEvidencePane() {
   const events = evidenceForState();
-  const total = state.state === "frozen" ? "48 shown / 118,420" : `${events.length} shown / 12,482`;
+  const scopeLabel = state.visualSetup === "none" ? "orders.command / portfolio" : "Inspected page";
+  const total = ["retained-find", "long-identities"].includes(state.visualSetup)
+    ? "60 shown / 4,000"
+    : state.visualSetup !== "none"
+      ? `${events.length} shown / ${events.length}`
+      : state.state === "frozen" ? "48 shown / 118,420" : `${events.length} shown / 12,482`;
   return `<section class="pane evidence-pane" aria-label="Ordered Evidence">
-    <header class="pane-heading"><div><small>Ordered Evidence</small><strong>orders.command / portfolio</strong></div><span>${total}</span></header>
+    <header class="pane-heading"><div><small>Ordered Evidence</small><strong>${scopeLabel}</strong></div><span>${total}</span></header>
     ${renderConditionNotice()}
     ${events.length ? `<div class="evidence-grid" role="grid" aria-label="Ordered Lightstreamer Evidence">
       <div class="ledger-header" role="row"><span>Time / #</span><span>Source</span><span>Phase</span><span>Op</span><span>Evidence / object</span><span>Change</span><span>Diagnostic</span></div>
@@ -199,7 +267,8 @@ function renderConditionNotice() {
 
 function renderEvidenceRow(event) {
   const selected = state.selected === event.id;
-  return `<div class="evidence-row ${selected ? "selected" : ""}" role="row" tabindex="${selected ? "0" : "-1"}" aria-selected="${selected}" data-event="${event.id}">
+  const findCurrent = state.visualSetup === "retained-find" && event.searchAnchor && event === RETAINED_FIND_EVENTS.find((candidate) => candidate.searchAnchor);
+  return `<div class="evidence-row ${selected ? "selected" : ""} ${findCurrent ? "find-current" : ""}" role="row" tabindex="${selected ? "0" : "-1"}" aria-selected="${selected}" data-event="${event.id}"${event.searchAnchor ? ` data-find-anchor="${event.searchAnchor}"` : ""}>
     <span><time>${event.time}</time><small>${event.id}</small></span>
     <strong>${event.source}</strong>
     <span>${event.phase}</span>
@@ -215,7 +284,11 @@ function renderEmptyState() {
 }
 
 function renderContextPane() {
-  const selected = EVENTS.find((event) => event.id === state.selected);
+  const selected = ["retained-find", "long-identities"].includes(state.visualSetup)
+    ? HIGH_VOLUME_SELECTED_EVENT
+    : EVENTS.find((event) => event.id === state.selected);
+  if (state.visualSetup === "more-actions") return renderSessionOperations();
+  if (state.visualSetup === "selected-json") return renderEvidenceContext(JSON_STRING_EVENT);
   if (state.variant === "C") return renderRecoveryContext(selected);
   if (!selected) return renderDossier();
   return renderEvidenceContext(selected);
@@ -232,12 +305,44 @@ function renderDossier() {
 }
 
 function renderEvidenceContext(event) {
+  if (state.visualSetup === "matching-summary") return renderMatchingSummaryContext(event);
+  if (state.visualSetup === "selected-json") return renderSelectedJsonContext(event);
   return `<aside class="pane context-pane" aria-label="Selected Evidence Context">
     <header><div><small>Selected Evidence</small><strong>${event.id} · ${event.kind}</strong></div><button data-action="close-context" aria-label="Close Context">×</button></header>
     <div class="context-tabs" role="tablist"><button class="active">Summary</button><button>Fields</button><button>Deliveries</button><button>COMMAND State</button><button data-action="raw">Raw</button></div>
     <div class="context-body"><dl>
       <dt>Source</dt><dd>${titleCase(event.source)}</dd><dt>Phase</dt><dd>${titleCase(event.phase)}</dd><dt>COMMAND operation</dt><dd>${event.op}</dd><dt>Evidence identity</dt><dd>${event.id}</dd><dt>Runtime object</dt><dd>sub-7 / portfolio / ${event.object}</dd><dt>Changed</dt><dd>${event.change}</dd>
     </dl>${event.severity !== "—" ? `<section class="diagnostic warning"><strong>! Warning · Delivery interpretation</strong><span>One later listener reports an application exception. The Logical Update remains captured Server Evidence.</span><button>Reveal related deliveries</button></section>` : ""}<div class="context-actions"><button data-action="raw">Open complete raw</button><button data-action="create-draft">Create Local Injection Draft</button></div></div>
+  </aside>`;
+}
+
+function renderSessionOperations() {
+  return `<aside class="pane context-pane" aria-label="Session operations">
+    <header><div><small>Session operations</small><strong>Session operations</strong></div><button>Back to prior investigation</button></header>
+    <div class="context-body prototype-operations"><p>The current DevTools session history uses <strong>IndexedDB</strong> and is cleared when this DevTools session closes.</p><section><strong>Retained Evidence copy</strong><p>6 captured · 6 retained · 6 currently shown for the active Scope and Filter.</p><button>Copy complete scoped Evidence</button></section><section><strong>Clear retained Evidence</strong><p>Clear all retained Evidence for this DevTools session.</p><button>Clear retained Evidence…</button></section><section><strong>Scoped export</strong><p>Prepare a versioned download for the current Scope.</p><button>Export Scope…</button></section></div>
+  </aside>`;
+}
+
+function renderMatchingSummaryContext(event) {
+  return `<aside class="pane context-pane" aria-label="Selected Evidence Context">
+    <header><div><small>Selected Evidence</small><strong>${event.id} · ${event.kind}</strong></div><button aria-label="Close Context">×</button></header>
+    <div class="context-body"><dl><dt>Source</dt><dd>SERVER</dd><dt>Phase</dt><dd>LIVE</dd><dt>COMMAND operation</dt><dd>UPDATE</dd><dt>Evidence identity</dt><dd>${event.id}</dd><dt>COMMAND key</dt><dd>alpha</dd></dl><section class="prototype-projection-summary"><div><strong>Observed Server COMMAND State</strong><span>Captured Server Updates only</span></div><div><strong>Local Effective COMMAND State</strong><span>Server Updates plus successfully delivered Local Injected Updates</span></div><strong>Matching projections</strong><p>Both named projections currently contain the same state; their evidence bases remain distinct.</p><p>Neither projection is Authoritative COMMAND State.</p><button>Compare COMMAND projections</button></section><div class="context-actions"><button>Create Local Injection Draft</button><button>Open complete raw</button></div></div>
+  </aside>`;
+}
+
+function renderSelectedJsonContext(event) {
+  return `<aside class="pane context-pane" aria-label="Selected Evidence Context">
+    <header><div><small>Selected Evidence</small><strong>${event.id} · ${event.kind}</strong></div><button aria-label="Close Context">×</button></header>
+    <div class="context-body"><dl><dt>Source</dt><dd>SERVER</dd><dt>Phase</dt><dd>LIVE</dd><dt>COMMAND operation</dt><dd>ADD</dd><dt>Evidence identity</dt><dd>${event.id}</dd><dt>Runtime object</dt><dd>topology-small-item</dd><dt>COMMAND key</dt><dd>json-string-alpha</dd></dl><section class="prototype-selected-update"><strong>Selected update</strong><small>Fields</small><dl><dt>command</dt><dd><code>ADD</code></dd><dt>key</dt><dd><code>json-string-alpha</code></dd><dt>modelValues</dt><dd><span>JSON string</span><pre>{
+  "passenger": {
+    "selected": false,
+    "priority": false,
+    "itinerary": [
+      { "segment": 1, "from": "AIRPORT-00", "to": "AIRPORT-01" },
+      { "segment": 2, "from": "AIRPORT-01", "to": "AIRPORT-02" }
+    ]
+  }
+}</pre></dd></dl></section></div>
   </aside>`;
 }
 
@@ -257,6 +362,11 @@ function renderRecoveryContext(selected) {
 }
 
 function renderCommandDocument() {
+  if (state.visualSetup === "command-comparison") return `<section class="document-pane projection-document" aria-label="COMMAND projection comparison">
+    <header><div><small>COMMAND projection comparison</small><strong>Inspected page</strong></div><button>Back to Evidence</button></header>
+    <div class="projection-columns">${projectionColumn("Observed Server COMMAND State", "Captured Server Updates only", [["scenario-subscription-1 / scenario.snapshot-basic / alpha", "command=UPDATE, key=alpha, qty=15, status=live"], ["scenario-subscription-1 / scenario.snapshot-basic / ghost", "command=UPDATE, key=ghost, qty=1, status=diagnostic"]])}${projectionColumn("Local Effective COMMAND State", "Server Updates plus successfully delivered Local Injected Updates", [["scenario-subscription-1 / scenario.snapshot-basic / alpha", "command=UPDATE, key=alpha, qty=15, status=live"], ["scenario-subscription-1 / scenario.snapshot-basic / ghost", "command=UPDATE, key=ghost, qty=1, status=diagnostic"]])}</div>
+    <div class="projection-explanation"><strong>Why matching?</strong><span>Both projections contain the same contributing state for the current Scope.</span></div><footer>Neither projection is Authoritative COMMAND State.</footer>
+  </section>`;
   return `<section class="document-pane projection-document" aria-label="COMMAND projection comparison">
     <header><div><small>COMMAND projection comparison</small><strong>orders.command / portfolio</strong></div><button data-action="minimize">← Evidence</button></header>
     <div class="projection-limit">! Observed Server COMMAND State may be incomplete before sequence 1,838.</div>
@@ -293,15 +403,37 @@ function renderExportDocument() {
 function renderInjectionDocument() {
   const injection = injectionState();
   if (state.state === "review") return renderInjectionReview(injection);
+  const fixture = injectionFixture();
   return `<section class="document-pane injection-document" aria-label="Local Injection Draft">
-    <header><div><small>Local Injection Draft · single event</small><strong>Edit evt-1842 · UPDATE / order-1042</strong></div><button data-action="minimize">Minimize Draft</button></header>
-    <dl class="injection-meta"><dt>Target</dt><dd>sub-7 · orders.command / portfolio · Session S-9 <strong>${injection.target}</strong></dd><dt>Source</dt><dd>evt-1842 · SERVER · immutable</dd><dt>Draft</dt><dd>LOCAL ONLY · ${injection.changed ? "changed" : "unchanged"}</dd><dt>Validation</dt><dd class="tone-${injection.tone}">${injection.validation}</dd><dt>Outcome</dt><dd class="tone-${injection.tone}">${injection.outcome}</dd></dl>
+    <header><div><small>Local Injection Draft · single event</small><strong>${fixture.title}</strong></div><button data-action="minimize">Minimize Draft</button></header>
+    <dl class="injection-meta"><dt>Target</dt><dd>${fixture.target} <strong>${injection.target}</strong></dd><dt>Session</dt><dd>${fixture.session}</dd><dt>Source</dt><dd>${fixture.source}</dd><dt>Draft</dt><dd>LOCAL ONLY · ${injection.changed ? "changed" : "unchanged"}</dd><dt>Validation</dt><dd class="tone-${injection.tone}">${injection.validation}</dd><dt>Outcome</dt><dd class="tone-${injection.tone}">${injection.outcome}</dd></dl>
     <section class="editor-heading"><strong>${state.state === "compare" ? "Compare Source" : "Raw JSON"}</strong><span>Tab: Move focus</span><button>Problems ${state.state === "invalid" ? "2" : "0"}</button><button data-action="compare">${state.state === "compare" ? "Close comparison" : "Compare Source"}</button></section>
     ${state.state === "compare" ? renderSourceComparison() : renderEditor()}
     ${renderInjectionCondition()}
     ${renderInjectionOutcome(injection)}
     ${renderInjectionActionBar(injection)}
   </section>`;
+}
+
+function injectionFixture() {
+  if (state.visualSetup === "captured-draft") return {
+    title: "Edit json-string-event · ADD / topology-small-item",
+    target: "topology-small-subscription · topology-small-item · COMMAND",
+    session: "Session topology-small-session · Client topology-small-client",
+    source: "json-string-event · SERVER · immutable"
+  };
+  if (state.visualSetup === "authored-review") return {
+    title: "ADD topology-small-item",
+    target: "topology-small-subscription · topology-small-item · COMMAND",
+    session: "Session topology-small-session · Client topology-small-client",
+    source: "None · newly authored"
+  };
+  return {
+    title: "Edit evt-1842 · UPDATE / order-1042",
+    target: "sub-7 · orders.command / portfolio · Session S-9",
+    session: "Session S-9 · Client client-main",
+    source: "evt-1842 · SERVER · immutable"
+  };
 }
 
 function renderInjectionActionBar(injection) {
@@ -338,9 +470,10 @@ function renderInjectionOutcome(injection) {
 }
 
 function renderInjectionReview(injection) {
+  const fixture = injectionFixture();
   return `<section class="document-pane review-document" aria-label="Review Local Injection">
-    <header><div><small>Review Local Injection</small><strong>UPDATE order-1042</strong></div><button data-action="edit-draft">← Edit Draft</button></header>
-    <div class="review-grid"><section><small>LOCAL INJECTION TARGET</small><strong>sub-7 · orders.command / portfolio</strong><span>Session S-9 · ACTIVE · 2 current listeners</span></section><section><small>INJECTION SOURCE</small><strong>evt-1842 · SERVER · immutable</strong><span>Draft has 3 deliberate value changes</span></section><section><small>EXECUTION BOUNDARY</small><strong>LOCAL ONLY</strong><span>Deliver one Logical Update to the current listeners. Lightstreamer Server is not contacted.</span></section><section><small>VALIDATION</small><strong>READY</strong><span>JSON valid · target current · COMMAND identity valid</span></section></div>
+    <header><div><small>Review Local Injection</small><strong>${fixture.title}</strong></div><button data-action="edit-draft">← Edit Draft</button></header>
+    <div class="review-grid"><section><small>LOCAL INJECTION TARGET</small><strong>${fixture.target}</strong><span>${fixture.session} · ACTIVE</span></section><section><small>INJECTION SOURCE</small><strong>${fixture.source}</strong><span>${state.visualSetup === "authored-review" ? "No immutable Source; authored from current Scope" : "Draft has deliberate value changes"}</span></section><section><small>EXECUTION BOUNDARY</small><strong>LOCAL ONLY</strong><span>Deliver one Logical Update to the current listeners. Lightstreamer Server is not contacted.</span></section><section><small>VALIDATION</small><strong>READY</strong><span>JSON valid · target current · COMMAND identity valid</span></section></div>
     <pre>${escapeHtml(rawDraft(false))}</pre>
     <footer class="action-bar"><button data-action="edit-draft">Back to editing</button><span>Target and Draft revalidated at execution.</span><button class="primary" data-action="inject">Inject locally</button></footer>
   </section>`;
@@ -348,7 +481,11 @@ function renderInjectionReview(injection) {
 
 function renderStatusStrip() {
   const frozen = state.state === "frozen";
-  const count = frozen ? "48 shown / 118,420 retained · Frozen · 2,418 newer" : state.variant === "C" ? `${evidenceForState().length} shown / 12,482 retained · Evidence limit active` : "14 shown / 12,482 retained · Live";
+  const count = ["retained-find", "long-identities"].includes(state.visualSetup)
+    ? "60 shown / 4,000 retained · Frozen · 30 newer"
+    : state.visualSetup !== "none"
+      ? `${evidenceForState().length} shown / ${evidenceForState().length} retained · Live`
+      : frozen ? "48 shown / 118,420 retained · Frozen · 2,418 newer" : state.variant === "C" ? `${evidenceForState().length} shown / 12,482 retained · Evidence limit active` : "14 shown / 12,482 retained · Live";
   const operation = state.state === "disconnected" ? "Retained Evidence remains readable · Capture stopped" : "Selection and focus independent · Capture continues";
   return `<footer class="status-strip"><span>${count}</span><span>${operation}</span></footer>`;
 }
@@ -510,6 +647,35 @@ function rawEvidence() {
 }
 
 function rawDraft(invalid) {
+  if (state.visualSetup === "captured-draft") return `{
+  "command": "ADD",
+  "key": "json-string-alpha",
+  "isSnapshot": false,
+  "fields": {
+    "command": "ADD",
+    "key": "json-string-alpha",
+    "modelValues": {
+      "passenger": {
+        "selected": false,
+        "priority": false,
+        "itinerary": [
+          { "segment": 1, "from": "AIRPORT-00", "to": "AIRPORT-01" },
+          { "segment": 2, "from": "AIRPORT-01", "to": "AIRPORT-02" }
+        ]
+      }
+    }
+  }
+}${invalid ? "\ntrailing-token" : ""}`;
+  if (state.visualSetup === "authored-review") return `{
+  "command": "ADD",
+  "key": "visual-review",
+  "isSnapshot": false,
+  "fields": {
+    "command": "ADD",
+    "key": "visual-review",
+    "value": "42"
+  }
+}${invalid ? "\ntrailing-token" : ""}`;
   return `{
   "command": "UPDATE",
   "key": "order-1042",

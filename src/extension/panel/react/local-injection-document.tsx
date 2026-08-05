@@ -235,18 +235,18 @@ export function LocalInjectionDocument({
       <div><span className="workbench-react__eyebrow">One event · one Local Injection</span><h1>Local Injection Draft</h1><span>{draft.id}</span></div>
       <strong data-readiness={draft.ready ? "ready" : "blocked"}>{phaseLabel(localInjection)}</strong>
       <div className="workbench-react__local-header-actions">
-        <button type="button" ref={minimizeButtonRef} data-local-focus-transition="true" onClick={() => {
+        <button type="button" ref={minimizeButtonRef} disabled={pending} data-local-focus-transition="true" onClick={() => {
           if (!minimized) {
             rememberScroll();
             minimizeReturnFocusRef.current = currentDraftFocus();
           }
           dispatch(runtime, { type: "set-local-injection-minimized", minimized: !minimized });
-        }}>{minimized ? "Expand draft" : "Minimize"}</button>
+        }}>{minimized ? "Expand Draft event" : "Collapse Draft event"}</button>
         <button type="button" disabled={pending} data-local-focus-transition="true" onClick={() => {
           rememberScroll();
           parkReturnFocusRef.current = currentDraftFocus();
           dispatch(runtime, { type: "park-local-injection" });
-        }}>Park draft</button>
+        }}>Park draft and return to Evidence</button>
         <button type="button" disabled={pending} data-local-focus-transition="true" onClick={(event) => requestDiscard(event.currentTarget)}>Discard draft</button>
       </div>
     </header>

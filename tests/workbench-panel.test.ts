@@ -413,7 +413,7 @@ describe("React Workbench Diagnose panel", () => {
 
     const row = document.querySelector<HTMLButtonElement>('[data-evidence-id="evt-2"]');
     const openContext = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent === "Open Context"
+      (button) => button.textContent === "Focus selected Context"
     );
     row?.focus();
     openContext?.click();
@@ -683,10 +683,12 @@ describe("React Workbench Diagnose panel", () => {
 
   it("routes retained-window controls and complete scoped Evidence copy through runtime commands", async () => {
     const base = snapshot();
-    const runtime = createTestRuntime({
+    const operationsSnapshot = {
       ...base,
-      evidence: { ...base.evidence, total: 120, visibleEnd: 60, hasOlder: true, hasNewer: true }
-    });
+      evidence: { ...base.evidence, total: 120, visibleEnd: 60, hasOlder: true, hasNewer: true },
+      contextId: "context:actions"
+    } satisfies WorkbenchSnapshot;
+    const runtime = createTestRuntime({ ...operationsSnapshot, contextId: null });
     const root = createRoot(document.querySelector("#app")!);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
     const click = async (name: string) => {
@@ -697,6 +699,8 @@ describe("React Workbench Diagnose panel", () => {
     await click("Older");
     await click("Newer");
     await click("Newest");
+    await click("More actions");
+    await act(async () => runtime.setSnapshot(operationsSnapshot));
     await click("Copy complete scoped Evidence");
     expect(runtime.commands).toEqual(expect.arrayContaining([
       { type: "show-oldest-evidence" },
@@ -1280,8 +1284,8 @@ describe("React Workbench Diagnose panel", () => {
     };
     await click("Compare Source");
     await click("Review Local Injection");
-    await click("Minimize");
-    await click("Park draft");
+    await click("Collapse Draft event");
+    await click("Park draft and return to Evidence");
     await click("Discard draft");
     expect(runtime.commands).toEqual(expect.arrayContaining([
       { type: "set-local-injection-compare", open: true },

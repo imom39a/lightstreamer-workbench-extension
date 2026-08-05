@@ -291,7 +291,7 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
   }
   if (!await isPanelElementVisible(cdp, `[...document.querySelectorAll("button")]
     .find((button) => button.textContent?.trim() === "Create Local Injection Draft" && !button.disabled)`)) {
-    await clickPanelButton(cdp, "Open Context");
+    await clickPanelButton(cdp, "Open selected Context");
     await waitForCondition(
       cdp,
       `(() => {

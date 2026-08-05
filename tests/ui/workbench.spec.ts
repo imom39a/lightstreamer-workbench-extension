@@ -190,7 +190,7 @@ test("Workbench promotes distinct COMMAND projections and restores the investiga
   await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toHaveAttribute("aria-selected", "true");
 
   await openScenario(page, "command-projection-matching", { width: 563, height: 700 }, "light");
-  await page.getByRole("button", { name: "Open Context" }).click();
+  await page.getByRole("button", { name: "Open selected Context" }).click();
   await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
   const compactComparison = page.getByRole("region", { name: "COMMAND projection comparison" });
   const compactColumns = await compactComparison.locator(".workbench-react__projection-column").evaluateAll((columns) =>
@@ -336,6 +336,11 @@ test("Workbench presents unavailable COMMAND projections truthfully", async ({ p
 test("Workbench exposes structural Scope as a roving tree at wide geometry", async ({ page }, testInfo) => {
   await openScenario(page, "live-selected", { width: 1440, height: 900 }, "light");
 
+  const scopeDisclosure = page.getByRole("button", { name: "Scope", exact: true });
+  await expect(scopeDisclosure).toHaveAttribute("aria-expanded", "true");
+  await expect(scopeDisclosure).toHaveAttribute("aria-controls", "workbench-runtime-scope");
+  await scopeDisclosure.click();
+  await expect(page.locator(":focus")).toHaveRole("treeitem");
   const scopeItems = page.getByRole("treeitem");
   expect(await scopeItems.count()).toBeGreaterThan(1);
   await expect(scopeItems.first()).toContainText("Active");
@@ -353,16 +358,23 @@ test("Workbench exposes structural Scope as a roving tree at wide geometry", asy
 test("Workbench opens and restores the temporary Scope picker at normal and shallow geometry", async ({ page }, testInfo) => {
   await openScenario(page, "live-selected", { width: 900, height: 700 }, "light");
   const scope = page.getByRole("button", { name: "Scope", exact: true });
+  await expect(scope).toHaveAttribute("aria-expanded", "false");
+  await expect(scope).toHaveAttribute("aria-controls", "workbench-runtime-scope");
   await scope.focus();
   await scope.click();
+  await expect(scope).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("button", { name: "Close Scope" })).toBeVisible();
   await expect(page.getByRole("tree")).toBeVisible();
+  await expect(page.locator(":focus")).toHaveRole("treeitem");
   await page.keyboard.press("Escape");
+  await expect(scope).toHaveAttribute("aria-expanded", "false");
   await expect(scope).toBeFocused();
 
   await openScenario(page, "live-selected", { width: 900, height: 320 }, "dark");
   await scope.click();
+  await expect(scope).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("button", { name: "Close Scope" })).toBeVisible();
+  await expect(page.locator(":focus")).toHaveRole("treeitem");
   await page.keyboard.press("Escape");
   await expect(scope).toBeFocused();
 
@@ -399,7 +411,7 @@ test("Workbench exposes selected captured Local Injection through the visible Co
     await expect(selectedEvidence).toHaveAttribute("aria-selected", "true");
 
     if (contextNeedsOpening) {
-      await page.getByRole("button", { name: "Open Context" }).click();
+      await page.getByRole("button", { name: "Open selected Context" }).click();
       await expect(page.getByRole("complementary", { name: "Context" })).toBeVisible();
     }
 
@@ -426,8 +438,13 @@ test("Workbench exposes selected captured Local Injection through the visible Co
 test("Workbench keeps low-frequency session controls and scoped export deliberate", async ({ page }, testInfo) => {
   await openScenario(page, "live-selected", { width: 900, height: 700 }, "dark");
 
-  await page.getByRole("button", { name: "More actions" }).click();
-  await expect(page.getByRole("heading", { name: "Session operations" })).toBeVisible();
+  const moreActions = page.getByRole("button", { name: "More actions" });
+  await expect(moreActions).toHaveAttribute("aria-expanded", "false");
+  await expect(moreActions).toHaveAttribute("aria-controls", "workbench-context");
+  await moreActions.click();
+  const operationsHeading = page.getByRole("heading", { name: "Session operations" });
+  await expect(operationsHeading).toBeFocused();
+  await expect(moreActions).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("button", { name: "Clear retained Evidence…" }).click();
   await expect(page.getByText(/Clear all \d+ retained Evidence events for this DevTools session\?/)).toBeVisible();
   await page.getByRole("button", { name: "Keep Evidence" }).click();
@@ -464,6 +481,7 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   await page.keyboard.press("Enter");
   const operations = page.getByRole("region", { name: "Session operations" });
   await expect(operations).toContainText("current DevTools session history");
+  await expect(page.getByRole("button", { name: "Collapse Context" })).toHaveCount(0);
   await expect(operations).toContainText("4,000 retained");
   await expect(operations).toContainText("4,000 captured");
   await expect(operations).toContainText("60 currently shown");
@@ -488,6 +506,7 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
 
   await page.getByRole("button", { name: "Back to prior investigation" }).click();
   await expect(more).toBeFocused();
+  await expect(more).toHaveAttribute("aria-expanded", "false");
   await expect(priorHeading).toBeVisible();
   await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
   await expect(page.locator(`[data-evidence-id="${selectedIdentity}"]`)).toHaveAttribute("aria-selected", "true");
@@ -533,7 +552,7 @@ test("Workbench keeps a compact Frozen high-volume investigation stable and rest
   const selectedRow = page.locator(`[data-evidence-id="${highVolumeEventId(3_970)}"]`);
   await expect(selectedRow).toHaveAttribute("aria-selected", "true");
   await selectedRow.focus();
-  await page.getByRole("button", { name: "Open Context" }).click();
+  await page.getByRole("button", { name: "Open selected Context" }).click();
   await expect(page.getByRole("complementary", { name: "Context" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Back to Evidence" })).toBeVisible();
   await page.getByRole("button", { name: "Back to Evidence" }).click();
@@ -645,7 +664,7 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   await page.setViewportSize({ width: 900, height: 700 });
   await assertCommandKeyContract();
   await selected.focus();
-  await page.getByRole("button", { name: "Open Context" }).click();
+  await page.getByRole("button", { name: "Focus selected Context" }).click();
   const context = page.getByRole("complementary", { name: "Context" });
   await expect(context.getByRole("heading", { name: new RegExp(selectedIdentity) })).toBeVisible();
   await expect(context.getByText(longClient, { exact: true })).toBeVisible();
@@ -828,8 +847,10 @@ test("Workbench lets wide panes resize, collapse, and restore independently", as
   await expect(page.getByRole("button", { name: "Collapse Scope" })).toBeFocused();
   await page.getByRole("button", { name: "Collapse Context" }).click();
   await expect(page.getByLabel("Context", { exact: true })).toBeHidden();
-  await page.getByRole("button", { name: "Restore Context" }).click();
+  const restoreSelectedContext = page.getByRole("button", { name: "Restore selected Context" });
+  await restoreSelectedContext.click();
   await expect(page.getByLabel("Context", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "scenario-event-3 · Item Update" })).toBeFocused();
   await page.getByRole("button", { name: "Collapse Scope" }).click();
   await page.getByRole("button", { name: "Collapse Context" }).click();
   await expect(page.getByLabel("Ordered Evidence")).toBeVisible();
@@ -903,12 +924,21 @@ test("Workbench keeps active capture without selection and selected Local Eviden
   await openScenario(page, "active-no-selection", { width: 900, height: 700 }, "light");
   await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Inspected page" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open Context" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /selected Context/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open complete raw" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Export Scope…" })).toBeVisible();
 
   await openScenario(page, "selected-local-evidence", { width: 900, height: 320 }, "dark");
   const local = page.locator('[data-evidence-id="scenario-event-5"]');
   await expect(local).toHaveAttribute("aria-selected", "true");
   await expect(local).toContainText("LOCAL");
+  const unavailableDraft = page.getByRole("button", { name: "Create Local Injection Draft" });
+  await expect(unavailableDraft).toBeDisabled();
+  await expect(unavailableDraft).toHaveAttribute("aria-describedby", "workbench-local-injection-unavailable-reason");
+  await expect(page.locator("#workbench-local-injection-unavailable-reason")).toHaveText("Selected Evidence is not a compatible captured Item Update.");
+  await expect(page.getByRole("button", { name: "Export Scope…" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy complete scoped Evidence" })).toHaveCount(0);
+  await page.getByRole("button", { name: "More actions" }).click();
   await expect(page.getByRole("button", { name: "Copy complete scoped Evidence" })).toBeVisible();
 
   await expectShellFits(page);
@@ -1241,7 +1271,7 @@ test("Workbench exposes selected Item Update fields after Evidence metadata and 
   await expect(modelValues).toBeInViewport();
 
   await page.setViewportSize({ width: 563, height: 700 });
-  await page.getByRole("button", { name: "Open Context" }).click();
+  await page.getByRole("button", { name: "Open selected Context" }).click();
   await expect(selectedUpdate).toBeVisible();
   await context.getByRole("button", { name: "Create Local Injection Draft" }).click();
 
@@ -1397,13 +1427,13 @@ test("Workbench authors a source-free COMMAND Item Update from a live single-ite
 
   await page.setViewportSize({ width: 563, height: 700 });
   await editor.focus();
-  await draft.getByRole("button", { name: "Minimize" }).click();
-  await expect(draft.getByRole("button", { name: "Expand draft" })).toBeFocused();
+  await draft.getByRole("button", { name: "Collapse Draft event" }).click();
+  await expect(draft.getByRole("button", { name: "Expand Draft event" })).toBeFocused();
   await expect(draft).toContainText("topology-small-subscription");
   await expect(draft).toContainText("Source None · newly authored");
-  await draft.getByRole("button", { name: "Expand draft" }).click();
+  await draft.getByRole("button", { name: "Expand Draft event" }).click();
   await expect(editor).toBeFocused();
-  await draft.getByRole("button", { name: "Park draft" }).click();
+  await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
   const parked = page.getByRole("region", { name: "Parked Local Injection Draft" });
   await expect(parked).toContainText("topology-small-subscription");
   const resume = parked.getByRole("button", { name: "Resume Local Injection Draft" });
@@ -1482,9 +1512,9 @@ test("Workbench keeps a 500-field Draft editor model across compare, geometry, m
   await expect(page.locator(".cm-foldPlaceholder")).toBeVisible();
 
   await page.setViewportSize({ width: 900, height: 700 });
-  await draft.getByRole("button", { name: "Minimize" }).click();
-  await draft.getByRole("button", { name: "Expand draft" }).click();
-  await draft.getByRole("button", { name: "Park draft" }).click();
+  await draft.getByRole("button", { name: "Collapse Draft event" }).click();
+  await draft.getByRole("button", { name: "Expand Draft event" }).click();
+  await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
   await page.getByRole("region", { name: "Parked Local Injection Draft" }).getByRole("button", { name: "Resume Local Injection Draft" }).click();
   await expect(page.locator(".cm-foldPlaceholder")).toBeVisible();
   await page.locator(".cm-foldPlaceholder").click();
@@ -1498,9 +1528,9 @@ test("Workbench keeps a 500-field Draft editor model across compare, geometry, m
   await expect(page.getByText("Immutable Source", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Compare Source" }).click();
   await page.setViewportSize({ width: 900, height: 700 });
-  await draft.getByRole("button", { name: "Minimize" }).click();
-  await draft.getByRole("button", { name: "Expand draft" }).click();
-  await draft.getByRole("button", { name: "Park draft" }).click();
+  await draft.getByRole("button", { name: "Collapse Draft event" }).click();
+  await draft.getByRole("button", { name: "Expand Draft event" }).click();
+  await draft.getByRole("button", { name: "Park draft and return to Evidence" }).click();
   await page.getByRole("region", { name: "Parked Local Injection Draft" }).getByRole("button", { name: "Resume Local Injection Draft" }).click();
   expect(await scrollOwner.evaluate((owner) => owner.scrollTop)).toBe(420);
 
@@ -1552,7 +1582,8 @@ test("Workbench prevents duplicate execution while one Local Injection acknowled
   const draft = page.getByRole("region", { name: "Local Injection Draft" });
   await expect(draft).toContainText("DELIVERY PENDING");
   await expect(draft).toContainText("No repeat or automatic retry is available");
-  await expect(draft.getByRole("button", { name: "Park draft" })).toBeDisabled();
+  await expect(draft.getByRole("button", { name: "Collapse Draft event" })).toBeDisabled();
+  await expect(draft.getByRole("button", { name: "Park draft and return to Evidence" })).toBeDisabled();
   await expect(draft.getByRole("button", { name: "Discard draft" })).toBeDisabled();
   await expect(draft.getByRole("button", { name: "Inject locally" })).toHaveCount(0);
   await page.keyboard.press(process.platform === "darwin" ? "Meta+Enter" : "Control+Enter");
@@ -1627,19 +1658,32 @@ test("Workbench keeps dense Evidence controls and protected Local Injection boun
   const evidenceSummary = evidenceHeader.locator(".workbench-react__evidence-summary");
   await expect(evidenceSummary).toHaveCSS("display", "flex");
   expect(await evidenceHeader.evaluate((header) => header.getBoundingClientRect().height)).toBeLessThanOrEqual(44);
-  await expectCoreControlInViewport(page, page.getByRole("button", { name: "Open Context" }));
+  const focusSelectedContext = page.getByRole("button", { name: "Focus selected Context" });
+  await expectCoreControlInViewport(page, focusSelectedContext);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "scenario-event-3 · Item Update" })).toBeFocused();
+  await focusSelectedContext.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "scenario-event-3 · Item Update" })).toBeFocused();
   await expectShellFitsExactly(page);
   await expectShellFits(page);
   await attachMatrixScreenshot(page, testInfo, "normal-dark-evidence");
 
   await openScenario(page, "local-injection-captured", { width: 563, height: 700 }, "light");
-  await page.getByRole("button", { name: "Open Context" }).click();
+  await page.getByRole("button", { name: "Open selected Context" }).click();
   const createDraft = page.getByRole("button", { name: "Create Local Injection Draft" });
   await expectCoreControlInViewport(page, createDraft);
   await page.keyboard.press("Enter");
   const compactDraft = page.getByRole("region", { name: "Local Injection Draft" });
   await expect(compactDraft).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scope", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "More actions" })).toBeDisabled();
   await expectProtectedBoundaryValues(compactDraft);
+  const compactBoundaryRows = await compactDraft.locator(".workbench-react__local-boundary > div").evaluateAll((items) =>
+    [...new Set(items.map((item) => Math.round(item.getBoundingClientRect().top)))]
+  );
+  expect(compactBoundaryRows).toHaveLength(3);
+  expect(await compactDraft.locator('[data-shared-scroll-owner="true"]').evaluate((owner) => owner.getBoundingClientRect().height)).toBeGreaterThanOrEqual(300);
   await expectCoreControlInViewport(page, compactDraft.getByRole("button", { name: "Review Local Injection" }));
   await expectShellFitsExactly(page);
   await expectShellFits(page);

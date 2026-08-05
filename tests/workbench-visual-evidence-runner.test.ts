@@ -21,63 +21,63 @@ describe("Workbench visual-evidence runner", () => {
           id: "normal-density-dark",
           viewport: { width: 900, height: 700 },
           theme: "dark",
-          prototype: { variant: "A", state: "selected", frame: "normal" },
+          prototype: { variant: "A", state: "selected", frame: "normal", setup: "live-selected" },
           production: { scenario: "live-selected", setup: "none" }
         },
         {
           id: "compact-captured-draft-light",
           viewport: { width: 563, height: 700 },
           theme: "light",
-          prototype: { variant: "B", state: "edit", frame: "compact" },
+          prototype: { variant: "B", state: "edit", frame: "compact", setup: "captured-draft" },
           production: { scenario: "local-injection-json", setup: "captured-draft" }
         },
         {
           id: "shallow-authored-review-dark",
           viewport: { width: 900, height: 320 },
           theme: "dark",
-          prototype: { variant: "B", state: "review", frame: "shallow" },
+          prototype: { variant: "B", state: "review", frame: "shallow", setup: "authored-review" },
           production: { scenario: "local-injection-authored", setup: "authored-review" }
         },
         {
           id: "wide-command-comparison-light",
           viewport: { width: 1440, height: 900 },
           theme: "light",
-          prototype: { variant: "A", state: "command", frame: "wide" },
+          prototype: { variant: "A", state: "command", frame: "wide", setup: "command-comparison" },
           production: { scenario: "command-projection-matching", setup: "command-comparison" }
         },
         {
           id: "normal-retained-find-dark",
           viewport: { width: 900, height: 700 },
           theme: "dark",
-          prototype: { variant: "A", state: "frozen", frame: "normal" },
+          prototype: { variant: "A", state: "frozen", frame: "normal", setup: "retained-find" },
           production: { scenario: "frozen-high-volume", setup: "retained-find" }
         },
         {
           id: "compact-long-identities-light",
           viewport: { width: 563, height: 700 },
           theme: "light",
-          prototype: { variant: "A", state: "frozen", frame: "compact" },
+          prototype: { variant: "A", state: "frozen", frame: "compact", setup: "long-identities" },
           production: { scenario: "frozen-high-volume", setup: "none" }
         },
         {
           id: "shallow-more-actions-dark",
           viewport: { width: 900, height: 320 },
           theme: "dark",
-          prototype: { variant: "A", state: "selected", frame: "shallow" },
+          prototype: { variant: "A", state: "selected", frame: "shallow", setup: "more-actions" },
           production: { scenario: "live-selected", setup: "more-actions" }
         },
         {
           id: "wide-matching-summary-light",
           viewport: { width: 1440, height: 900 },
           theme: "light",
-          prototype: { variant: "A", state: "selected", frame: "wide" },
+          prototype: { variant: "A", state: "selected", frame: "wide", setup: "matching-summary" },
           production: { scenario: "command-projection-matching", setup: "none" }
         },
         {
           id: "wide-selected-json-dark",
           viewport: { width: 1440, height: 900 },
           theme: "dark",
-          prototype: { variant: "A", state: "selected", frame: "wide" },
+          prototype: { variant: "A", state: "selected", frame: "wide", setup: "selected-json" },
           production: { scenario: "local-injection-json", setup: "none" }
         }
       ]

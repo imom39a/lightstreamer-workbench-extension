@@ -135,10 +135,63 @@ async function capturePrototype(runningBrowser, scenario) {
     await page.goto(`http://127.0.0.1:${prototypePort}/workbench-ui-10/?${query}`, { waitUntil: "networkidle" });
     const workbench = page.locator(".workbench");
     await workbench.waitFor({ state: "visible" });
+    await assertPrototypeSetup(page, workbench, scenario.prototype.setup);
     await page.evaluate(() => document.fonts.ready);
     return await workbench.screenshot({ animations: "disabled", caret: "hide" });
   } finally {
     await context.close();
+  }
+}
+
+async function assertPrototypeSetup(page, workbench, setup) {
+  const expectedText = {
+    "live-selected": ["evt-1842", "Open complete raw"],
+    "captured-draft": ["topology-small-subscription", "json-string-event", "json-string-alpha"],
+    "authored-review": ["topology-small-subscription", "None · newly authored", "visual-review"],
+    "command-comparison": ["Why matching?", "scenario-subscription-1 / scenario.snapshot-basic / alpha"],
+    "more-actions": ["Session operations", "Copy complete scoped Evidence"],
+    "matching-summary": ["Matching projections", "Neither projection is Authoritative COMMAND State."],
+    "selected-json": ["json-string-event", "JSON string", "AIRPORT-02"]
+  }[setup];
+  if (expectedText) {
+    const text = await workbench.innerText();
+    for (const marker of expectedText) {
+      if (!text.includes(marker)) throw new Error(`Prototype setup ${setup} is missing ${JSON.stringify(marker)}.`);
+    }
+  }
+  if (setup === "authored-review") {
+    const text = await workbench.innerText();
+    if (text.includes("evt-1842 · SERVER · immutable")) {
+      throw new Error("Authored Review prototype must not claim an immutable captured source.");
+    }
+  }
+  if (setup === "retained-find") {
+    const query = "complete-retained-find-anchor";
+    const inputValue = await page.locator("#prototype-find").inputValue();
+    const matches = page.locator(`.evidence-row[data-find-anchor="${query}"]`);
+    if (inputValue !== query || await matches.count() !== 3 || await page.locator(".evidence-row.find-current").count() !== 1) {
+      throw new Error("Retained Find prototype must derive one current result from exactly three matching events.");
+    }
+  }
+  if (["retained-find", "long-identities"].includes(setup)) {
+    const text = await workbench.innerText();
+    if (!text.includes("View FROZEN · 30 newer") || !text.includes("Frozen · 30 newer")) {
+      throw new Error(`Prototype setup ${setup} must report the same 30-newer frozen window in both status surfaces.`);
+    }
+  }
+  if (setup === "long-identities") {
+    const eventId = "retained-evidence-event-3961-from-orders-command-subscription-with-long-production-identity";
+    const row = page.locator(`.evidence-row[data-event="${eventId}"]`);
+    if (await row.count() !== 1) {
+      throw new Error(`Long-identity prototype is missing event ${JSON.stringify(eventId)}.`);
+    }
+    const text = await row.textContent() ?? "";
+    for (const marker of [
+      "portfolio/orders/north-america/enterprise-customer-primary-book",
+      "customer-order-command-key-with-long-production-identity-1"
+    ]) {
+      if (!text.includes(marker)) throw new Error(`Long-identity prototype is missing ${JSON.stringify(marker)}.`);
+    }
   }
 }
 
@@ -169,7 +222,7 @@ async function captureProduction(runningBrowser, scenario) {
 async function prepareProductionState(page, setup) {
   if (setup === "none") return;
   if (setup === "captured-draft") {
-    await page.getByRole("button", { name: "Open Context" }).click();
+    await page.getByRole("button", { name: "Open selected Context" }).click();
     await page.getByRole("button", { name: "Create Local Injection Draft" }).click();
     await page.getByRole("region", { name: "Local Injection Draft" }).waitFor();
     return;

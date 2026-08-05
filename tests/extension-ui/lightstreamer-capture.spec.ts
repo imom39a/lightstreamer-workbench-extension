@@ -196,7 +196,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       );
       if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll("button")]
         .find((button) => button.textContent?.trim() === "Create Local Injection Draft" && !button.disabled)`)) {
-        await clickPanelButton(panelCdp, "Open Context");
+        await clickPanelButton(panelCdp, "Open selected Context");
         await waitForCondition(
           panelCdp,
           `(() => {
@@ -495,7 +495,7 @@ async function pressContextPanelButton(cdp: CdpClient, label: string): Promise<v
     (candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && !candidate.disabled
   )`;
   if (!await isPanelElementVisible(cdp, selector)) {
-    await clickPanelButton(cdp, "Open Context");
+    await clickPanelButton(cdp, "Open selected Context");
   }
   await pressVisiblePanelButton(cdp, label);
 }

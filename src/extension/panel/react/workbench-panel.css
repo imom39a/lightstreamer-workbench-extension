@@ -261,7 +261,8 @@
 .workbench-react__selected-update p { margin: 0; color: var(--wb-muted); }
 .workbench-react__selected-update pre { min-width: 0; margin: 0; overflow: visible; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__json-string-marker { width: max-content; border: 1px solid var(--wb-border-strong); background: var(--wb-raised); color: var(--wb-muted); padding: 1px 4px; font-size: 10px; }
-.workbench-react__context-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.workbench-react__context-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.workbench-react__action-reason { flex: 1 1 220px; border-left: 3px solid var(--wb-warning); background: var(--wb-warning-soft); color: var(--wb-text); padding: 5px 7px; }
 .workbench-react__operations, .workbench-react__export { display: grid; align-content: start; gap: 14px; }
 .workbench-react__operations > section, .workbench-react__export fieldset { display: grid; gap: 7px; margin: 0; border: 1px solid var(--wb-border); padding: 9px; }
 .workbench-react__operations > .workbench-react__operations-danger { border-color: var(--wb-warning); background: var(--wb-warning-soft); }
@@ -417,7 +418,13 @@
 .workbench-react[data-geometry="compact"] .workbench-react__local-header > div:first-child > span:last-child { display: none; }
 .workbench-react[data-geometry="compact"] .workbench-react__local-header-actions { grid-column: 1 / -1; justify-content: flex-start; }
 .workbench-react[data-geometry="compact"] .workbench-react__local-boundary,
-.workbench-react[data-geometry="compact"] .workbench-react__local-injection[data-minimized="true"] .workbench-react__local-boundary { grid-template-columns: 1fr 1fr; }
+.workbench-react[data-geometry="compact"] .workbench-react__local-injection[data-minimized="true"] .workbench-react__local-boundary { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.workbench-react[data-geometry="compact"] .workbench-react__local-boundary > div { padding: 3px 7px; }
+.workbench-react[data-geometry="compact"] .workbench-react__local-boundary > [data-protected-boundary="target"],
+.workbench-react[data-geometry="compact"] .workbench-react__local-boundary > [data-protected-boundary="session"] { grid-column: span 3; }
+.workbench-react[data-geometry="compact"] .workbench-react__local-boundary > [data-protected-boundary="source"],
+.workbench-react[data-geometry="compact"] .workbench-react__local-boundary > [data-protected-boundary="validation"],
+.workbench-react[data-geometry="compact"] .workbench-react__local-boundary > [data-protected-boundary="delivery"] { grid-column: span 2; }
 .workbench-react[data-geometry="compact"] .workbench-react__local-boundary .workbench-react__local-only { grid-column: 1 / -1; }
 .workbench-react[data-geometry="compact"] .workbench-react__local-editor-toolbar { align-items: flex-start; flex-direction: column; }
 .workbench-react[data-geometry="compact"] .workbench-react__local-parked { grid-template-columns: minmax(0, 1fr) auto; }

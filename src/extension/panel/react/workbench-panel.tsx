@@ -307,6 +307,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   });
   const pendingEvidenceFocus = useRef<string | null>(null);
   const pendingScopeFocus = useRef<string | null>(null);
+  const pendingScopeEntryFocus = useRef(false);
   const pendingContextFocus = useRef(false);
   const pendingRetainedBoundaryFocus = useRef<"oldest" | "newest" | null>(null);
   const [copyStatus, setCopyStatus] = useState("");
@@ -361,6 +362,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const actionsEvidenceScrollTop = useRef(0);
   const actionsContextScrollTop = useRef(0);
   const pendingActionsRestoration = useRef(false);
+  const pendingActionsFocus = useRef(false);
   const resizeCleanup = useRef<(() => void) | null>(null);
   const evidence = snapshot.evidence;
   const events = evidence.events;
@@ -486,6 +488,17 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     : snapshot.contextId === "context:export"
       ? "export"
       : "inspect";
+  const workspaceAvailable = !localInjectionDraft?.open && !commandProjectionComparison && !rawEvidence;
+  const scopeIsPresented = geometry === "wide"
+    ? !scopeCollapsed
+    : geometry === "compact"
+      ? compactSurface === "scope"
+      : scopePickerOpen;
+  const selectedContextActionLabel = geometry === "compact"
+    ? "Open selected Context"
+    : contextCollapsed
+      ? "Restore selected Context"
+      : "Focus selected Context";
   const wideSideBudget = Math.max(SCOPE_MIN_WIDTH + CONTEXT_MIN_WIDTH, viewport.width - EVIDENCE_MIN_WIDTH - SPLITTER_SIZE * 2);
   const renderedScopeWidth = geometry === "wide"
     ? clamp(scopeWidth, SCOPE_MIN_WIDTH, wideSideBudget - CONTEXT_MIN_WIDTH)
@@ -584,6 +597,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const openContext = () => {
     pendingEvidenceFocus.current = focusedEventId ?? selectedEventId;
     pendingContextFocus.current = true;
+    if (contextCollapsed) setContextCollapsed(false);
+    else if (geometry !== "compact" && contextMode === "inspect") {
+      contextLens.current?.focus();
+      pendingContextFocus.current = false;
+    }
     dispatch(runtime, { type: "open-context" });
   };
 
@@ -662,8 +680,23 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
 
   const openScope = (origin: HTMLButtonElement) => {
     scopeTrigger.current = origin;
+    pendingScopeEntryFocus.current = true;
     if (isCompactGeometry()) {
       dispatch(runtime, { type: "open-scope" });
+      return;
+    }
+    if (geometry === "wide") {
+      if (scopeCollapsed) setScopeCollapsed(false);
+      else {
+        const nodeId = renderedFocusId;
+        if (nodeId) {
+          revealScopeNode(nodeId);
+          window.requestAnimationFrame(() => {
+            scopeNodesById.current.get(nodeId)?.focus();
+            pendingScopeEntryFocus.current = false;
+          });
+        }
+      }
       return;
     }
     setScopePickerOpen(true);
@@ -671,7 +704,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
 
   const closeScope = () => {
     setScopePickerOpen(false);
-    window.requestAnimationFrame(() => scopeTrigger.current?.focus());
+    scopeTrigger.current?.focus();
   };
 
   const commitScope = (scopeId: string) => {
@@ -865,6 +898,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const openActions = () => {
     actionsEvidenceScrollTop.current = evidenceLedger.current?.scrollTop ?? 0;
     actionsContextScrollTop.current = contextBody.current?.scrollTop ?? 0;
+    pendingActionsFocus.current = true;
+    if (contextCollapsed) setContextCollapsed(false);
     dispatch(runtime, { type: "open-actions" });
   };
 
@@ -930,11 +965,28 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [snapshot.scope.focusedNodeId, renderedScopeWindowStart, scopeWindowSize]);
 
   useLayoutEffect(() => {
+    if (!pendingScopeEntryFocus.current || !scopeIsPresented) return;
+    const nodeId = renderedFocusId;
+    if (!nodeId) return;
+    revealScopeNode(nodeId);
+    const node = scopeNodesById.current.get(nodeId);
+    if (!node) return;
+    node.focus();
+    pendingScopeEntryFocus.current = false;
+  }, [scopeIsPresented, renderedFocusId, renderedScopeWindowStart, scopeWindowSize]);
+
+  useLayoutEffect(() => {
     if (!pendingContextFocus.current) return;
     if (isCompactGeometry() && !snapshot.contextId) return;
     contextLens.current?.focus();
     pendingContextFocus.current = false;
-  }, [snapshot.contextId]);
+  }, [contextCollapsed, geometry, snapshot.contextId]);
+
+  useLayoutEffect(() => {
+    if (!pendingActionsFocus.current || contextMode !== "actions") return;
+    contextLens.current?.focus();
+    pendingActionsFocus.current = false;
+  }, [contextMode, contextCollapsed, snapshot.contextId]);
 
   useLayoutEffect(() => {
     const wasOpen = previousCommandProjectionContext.current;
@@ -1143,11 +1195,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             value={snapshot.theme}
             onChange={(event) => dispatch(runtime, { type: "set-theme", theme: event.currentTarget.value as "auto" | "dark" | "light" })}
           ><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select>
-          <button ref={moreActionsTrigger} type="button" onClick={openActions}>More actions</button>
+          <button ref={moreActionsTrigger} type="button" disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-context" : undefined} aria-expanded={workspaceAvailable && contextMode === "actions"} onClick={openActions}>More actions</button>
         </div>
       </header>
       <nav className="workbench-react__scope-strip" aria-label="Current runtime scope">
-        <button type="button" ref={scopeTrigger} onClick={(event) => openScope(event.currentTarget)}>Scope</button>
+        <button type="button" ref={scopeTrigger} disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-runtime-scope" : undefined} aria-expanded={workspaceAvailable && scopeIsPresented} onClick={(event) => openScope(event.currentTarget)}>Scope</button>
         {scopeCollapsed ? <button ref={scopeRestore} className="workbench-react__restore-pane workbench-react__restore-pane--scope" type="button" onClick={() => restorePane("scope")}>Restore Scope</button> : null}
         {contextCollapsed ? <button ref={contextRestore} className="workbench-react__restore-pane" type="button" onClick={() => restorePane("context")}>Restore Context</button> : null}
         <strong className="workbench-react__scope-label">{scopeLabel}</strong>
@@ -1192,7 +1244,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <p className="workbench-react__document-status" role="status">{copyStatus}</p>
         <pre tabIndex={0}>{JSON.stringify(rawEvidence.raw, null, 2)}</pre>
       </section> : <main className="workbench-react__workspace">
-        <nav className="workbench-react__pane workbench-react__scope" aria-label="Structural runtime scope">
+        <nav className="workbench-react__pane workbench-react__scope" id="workbench-runtime-scope" aria-label="Structural runtime scope">
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Runtime Scope</span><strong>Inspected page</strong></div><div><button ref={scopeCollapse} className="workbench-react__scope-collapse" type="button" onClick={() => collapsePane("scope", "collapse")}>Collapse Scope</button><button className="workbench-react__scope-picker-close" type="button" onClick={closeScope}>Close Scope</button><button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
           <ScopeTree
             logicalNodeCount={scopeNodes.length}
@@ -1211,7 +1263,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </nav>
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
-          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>{shown.toLocaleString()} shown / {total.toLocaleString()}</span>{activeFilterEntries.length ? <><span className="workbench-react__active-filter">Filter: {activeFilterEntries.map(([, value]) => String(value)).join(" · ")}</span><button type="button" onClick={() => dispatch(runtime, { type: "clear-filters" })}>Clear filters</button></> : null}<button type="button" disabled={snapshot.evidenceCopy.state === "preparing"} onClick={() => dispatch(runtime, { type: "prepare-scoped-evidence-copy" })}>{snapshot.evidenceCopy.state === "preparing" ? "Preparing complete Evidence…" : "Copy complete scoped Evidence"}</button>{selected ? <button type="button" onClick={openContext}>Open Context</button> : null}</div></header>
+          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>{shown.toLocaleString()} shown / {total.toLocaleString()}</span>{activeFilterEntries.length ? <><span className="workbench-react__active-filter">Filter: {activeFilterEntries.map(([, value]) => String(value)).join(" · ")}</span><button type="button" onClick={() => dispatch(runtime, { type: "clear-filters" })}>Clear filters</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : null}</div></header>
           {filterOpen ? <form className="workbench-react__filter" id="workbench-filter" aria-label="Filter ordered Evidence" onSubmit={(event) => {
             event.preventDefault();
             const query = filterDraft.trim();
@@ -1242,8 +1294,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           </div> : <div className="workbench-react__empty"><strong>No Evidence in the current Scope.</strong><span>Capture {captureOperation.toLowerCase()} with Coverage {coverage.toLowerCase()}.</span><button type="button" onClick={(event) => openScope(event.currentTarget)}>Change Scope</button></div>}
         </section>
         <div ref={contextSplitter} className="workbench-react__splitter workbench-react__splitter--context" role="separator" aria-label="Resize Context" aria-orientation={isNormalGeometry() ? "horizontal" : "vertical"} aria-valuemin={contextMinimum} aria-valuemax={Math.min(CONTEXT_MAX_SIZE, contextMaximum)} aria-valuenow={contextSize} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("context", event)} onPointerDown={(event) => startResize("context", event)} />
-        <aside className="workbench-react__pane workbench-react__context" aria-label="Context">
-          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? "Selected Evidence" : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div><button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button>{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
+        <aside className="workbench-react__pane workbench-react__context" id="workbench-context" aria-label="Context">
+          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? "Selected Evidence" : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div>{contextMode !== "actions" ? <button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button> : null}{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
           <div className="workbench-react__context-body" ref={contextBody}>
             {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
               <p>The current DevTools session history uses <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong> and is cleared when this DevTools session closes.</p>
@@ -1268,7 +1320,20 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
                 onCompare={openCommandProjectionComparison}
                 onRevealEvidence={revealSupportingProjectionEvidence}
               />
-              <div className="workbench-react__context-actions">{selected ? <button type="button" disabled={!canCreateLocalInjectionDraft} title={snapshot.localInjection.availability.selectedUpdate.reason ?? undefined} onClick={() => dispatch(runtime, { type: "begin-local-injection-from-selection" })}>Create Local Injection Draft</button> : null}<button type="button" onClick={() => selected && dispatch(runtime, { type: "open-raw-evidence", eventId: selected.id })}>Open complete raw</button><button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button></div>
+              <div className="workbench-react__context-actions">
+                {selected ? <>
+                  <button
+                    type="button"
+                    disabled={!canCreateLocalInjectionDraft}
+                    aria-describedby={!canCreateLocalInjectionDraft ? "workbench-local-injection-unavailable-reason" : undefined}
+                    onClick={() => dispatch(runtime, { type: "begin-local-injection-from-selection" })}
+                  >Create Local Injection Draft</button>
+                  {!canCreateLocalInjectionDraft && snapshot.localInjection.availability.selectedUpdate.reason
+                    ? <span className="workbench-react__action-reason" id="workbench-local-injection-unavailable-reason">{snapshot.localInjection.availability.selectedUpdate.reason}</span>
+                    : null}
+                  <button type="button" onClick={() => dispatch(runtime, { type: "open-raw-evidence", eventId: selected.id })}>Open complete raw</button>
+                </> : <button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button>}
+              </div>
             </>}
           </div>
         </aside>
