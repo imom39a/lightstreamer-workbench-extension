@@ -126,3 +126,44 @@ CI=1 npm run test:ui
 docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui'
 npm run test:ui:visual
 ```
+
+## Stream UX batch
+
+The `stream-ux-01` through `stream-ux-04` batch retained the eight prior
+matrix states, changed the compact captured-Draft state to exercise an encoded
+JSON-string source, and added a ninth wide selected-JSON state. The resulting
+packet contains 27 reference, current, and diff images, with 18 separately
+generated Darwin and pinned-Linux baselines.
+
+Five existing baseline pairs changed intentionally: the Evidence ledger now
+shows `COMMAND key` instead of `Change`, selected Item Update data precedes the
+existing Context metadata and concise COMMAND projection summary, and the
+compact captured Draft now shows a structured JSON-string field. The new wide
+state proves the `JSON string` marker, wrapped structured payload, exact key,
+and single Context scroll boundary together.
+
+Local and pinned-Linux read-only Playwright runs each passed all 50 checks.
+The asserted browser coverage includes a 220-subscription live Scope, 4,000
+long-identity Evidence events, compact/normal/wide selected-data restoration,
+physical PageDown movement in the Local Injection editor, one shared editor
+scroll owner, and no serious or critical axe findings. The shipped extension
+smoke and official-client fixture passed; the latter proved captured encoded
+JSON round trips as a string through direct wire, message-channel fallback,
+and listener fallback delivery.
+
+An independent reviewer inspected all packet images and platform baselines
+and passed the batch with no material findings. The reviewer found no blank
+Scope band, clipping, overlap, hidden focus state, lost projection meaning, or
+platform-specific layout regression.
+
+Exact visual commands used for this batch:
+
+```text
+CI=1 npm run test:ui:update
+docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui:update'
+CI=1 npm run test:ui
+docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui'
+npm run test:ui:visual
+npm run test:ui:extension
+npm run fixture:test:browser
+```

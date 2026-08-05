@@ -85,6 +85,98 @@ describe("reinjection drafts", () => {
     });
   });
 
+  it("expands captured JSON-container strings for editing and restores string delivery semantics", () => {
+    const exactSource = '{\n  "passenger": { "selected": false, "priority": false }\n}';
+    const source = createDraftFromEvent(
+      itemUpdate({
+        update: {
+          isSnapshot: false,
+          fields: {
+            command: "UPDATE",
+            key: "alpha",
+            modelValues: exactSource,
+            legs: '[{"from":"ATL","to":"JAN"}]',
+            malformed: '{"passenger":',
+            scalar: "true",
+            ordinary: "customer"
+          },
+          changedFields: { modelValues: exactSource },
+          command: "UPDATE",
+          key: "alpha"
+        }
+      })
+    );
+    if (!source) throw new Error("missing JSON-string source");
+
+    const document = createLocalInjectionDocumentFromDraft(source);
+    expect(document.fields).toMatchObject({
+      modelValues: { passenger: { selected: false, priority: false } },
+      legs: [{ from: "ATL", to: "JAN" }],
+      malformed: '{"passenger":',
+      scalar: "true",
+      ordinary: "customer"
+    });
+
+    const context = {
+      mode: "COMMAND",
+      schemaFields: Object.keys(source.fields),
+      jsonStringFields: ["modelValues", "legs"],
+      commandState: reduceCommandState([
+        itemUpdate({
+          update: {
+            isSnapshot: false,
+            fields: { command: "ADD", key: "alpha" },
+            changedFields: { command: "ADD", key: "alpha" },
+            command: "ADD",
+            key: "alpha"
+          }
+        })
+      ]),
+      subscriptionId: "subscription-1",
+      itemName: "scenario.snapshot-basic",
+      itemPosition: 1
+    } as const;
+    const analyzed = analyzeLocalInjectionDocument(
+      serializeLocalInjectionDocument(document),
+      context
+    );
+    expect(analyzed.ready).toBe(true);
+
+    const unchanged = applyLocalInjectionDocumentToDraft(source, analyzed.document!);
+    expect(unchanged.fields.modelValues).toBe(exactSource);
+    expect(typeof unchanged.fields.legs).toBe("string");
+    expect(JSON.parse(String(unchanged.fields.legs))).toEqual([{ from: "ATL", to: "JAN" }]);
+
+    const editedText = serializeLocalInjectionDocument({
+      ...analyzed.document!,
+      fields: {
+        ...analyzed.document!.fields,
+        modelValues: { passenger: { selected: true, priority: false } }
+      }
+    });
+    const edited = analyzeLocalInjectionDocument(editedText, context);
+    expect(edited.ready).toBe(true);
+    const execution = applyLocalInjectionDocumentToDraft(source, edited.document!);
+    expect(typeof execution.fields.modelValues).toBe("string");
+    expect(JSON.parse(String(execution.fields.modelValues))).toEqual({
+      passenger: { selected: true, priority: false }
+    });
+    expect(execution.changedFields.modelValues).toBe(execution.fields.modelValues);
+    expect(source.fields.modelValues).toBe(exactSource);
+
+    const scalarReplacement = analyzeLocalInjectionDocument(
+      serializeLocalInjectionDocument({
+        ...analyzed.document!,
+        fields: { ...analyzed.document!.fields, modelValues: "false" }
+      }),
+      context
+    );
+    expect(scalarReplacement.ready).toBe(false);
+    expect(scalarReplacement.diagnostics).toContainEqual(
+      expect.objectContaining({ code: "encoded-json-field-type", path: "fields.modelValues" })
+    );
+  });
+
   it("validates a captured MERGE document without applying COMMAND-only semantics", () => {
     const source = createDraftFromEvent(
       itemUpdate({

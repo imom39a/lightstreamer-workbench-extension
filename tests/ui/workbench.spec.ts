@@ -622,6 +622,12 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   }
 
   await page.setViewportSize({ width: 900, height: 700 });
+  const columnHeaders = await page.locator('[role="columnheader"]').allTextContents();
+  const normalCells = selected.locator('[role="gridcell"]');
+  expect(columnHeaders).toContain("COMMAND key");
+  expect(columnHeaders).not.toContain("Change");
+  await expect(normalCells.nth(5)).toHaveText(longKey);
+  await expect(normalCells.nth(5)).toHaveAttribute("title", longKey);
   await selected.focus();
   await page.getByRole("button", { name: "Open Context" }).click();
   const context = page.getByRole("complementary", { name: "Context" });
@@ -630,8 +636,46 @@ test("Workbench keeps 4,000 long-identity Evidence rows bounded at every docked 
   await expect(context.getByText(longSession, { exact: true })).toBeVisible();
   await expect(context.getByText(longSubscription, { exact: true })).toBeVisible();
   await expect(context.getByText(longItem, { exact: true })).toBeVisible();
-  await expect(context.getByText(longKey, { exact: true })).toBeVisible();
+  await expect(context.locator(".workbench-react__context-fields dd").filter({ hasText: longKey })).toBeVisible();
   await expectNoSeriousAxeViolations(page, testInfo);
+});
+
+test("Workbench keeps a large live Scope contiguous while Ordered Evidence owns focus", async ({ page }, testInfo) => {
+  await openScenario(page, "live-high-scope", { width: 1440, height: 900 }, "dark");
+  const tree = page.getByRole("tree", { name: /Runtime Scope tree/ });
+  const selectedScope = tree.getByRole("treeitem", { name: /high-scope-subscription-220/, selected: true });
+  const evidence = page.locator('[data-evidence-id="high-scope-event-220"]');
+
+  await evidence.focus();
+  await expect(evidence).toBeFocused();
+  await expect(selectedScope).toHaveCount(0);
+  const scopeWindow = await tree.evaluate((element) => {
+    const treeRect = element.getBoundingClientRect();
+    const rows = [...element.querySelectorAll<HTMLElement>('[role="treeitem"]')];
+    const visibleRows = rows
+      .map((row) => ({ id: row.dataset.scopeId, top: row.getBoundingClientRect().top }))
+      .filter(({ top }) => top >= treeRect.top && top < treeRect.bottom)
+      .sort((left, right) => left.top - right.top);
+    return {
+      mounted: Number(element.dataset.mountedNodeCount),
+      visibleRows,
+      scrollTop: element.scrollTop
+    };
+  });
+  expect(scopeWindow.mounted).toBeLessThanOrEqual(127);
+  expect(scopeWindow.visibleRows.length).toBeGreaterThan(3);
+  expect(scopeWindow.visibleRows.slice(1).every((row, index) =>
+    Math.abs(row.top - scopeWindow.visibleRows[index]!.top - 27) < 1
+  )).toBe(true);
+
+  const firstScopeRow = tree.getByRole("treeitem").first();
+  await firstScopeRow.focus();
+  await page.keyboard.press("End");
+  await expect(tree.locator('[role="treeitem"][tabindex="0"]')).toBeFocused();
+  await expect(selectedScope).toBeInViewport();
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachScenarioScreenshot(page, testInfo);
 });
 
 test("Workbench keeps Find reachable and restorable in compact geometry", async ({ page }, testInfo) => {
@@ -1051,6 +1095,57 @@ test("Workbench keeps retired Scope selectable and explicitly historical", async
   await expect(retired).not.toHaveAttribute("aria-disabled", "true");
   await retired.click();
   await expect(retired).toHaveAttribute("aria-selected", "true");
+
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench exposes selected update data and expands captured JSON strings in one scrollable editor", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-json", { width: 1440, height: 900 }, "dark");
+
+  const context = page.getByRole("complementary", { name: "Context" });
+  const selectedUpdate = context.getByRole("region", { name: "Selected update" });
+  await expect(selectedUpdate).toBeVisible();
+  await expect(selectedUpdate.getByRole("region", { name: "Fields", exact: true })).toContainText("modelValues");
+  await expect(selectedUpdate.getByRole("region", { name: "Changed fields", exact: true })).toContainText("ordinary");
+  await expect(selectedUpdate.getByRole("region", { name: "JSON patches", exact: true })).toContainText('"op": "replace"');
+  await expect(selectedUpdate.getByText("JSON string", { exact: true })).toHaveCount(2);
+  await expect(selectedUpdate).toContainText('"selected": false');
+  await expect(selectedUpdate).toContainText('{"passenger":');
+  await expect(context.getByText("Observed Server COMMAND State", { exact: true })).toBeVisible();
+  await expect(context.getByText("Local Effective COMMAND State", { exact: true })).toBeVisible();
+  expect(await selectedUpdate.evaluate((node) => {
+    const projection = node.parentElement?.querySelector(".workbench-react__projection-summary");
+    return projection ? node.getBoundingClientRect().top < projection.getBoundingClientRect().top : false;
+  })).toBe(true);
+
+  await page.setViewportSize({ width: 900, height: 700 });
+  await expect(selectedUpdate.getByRole("heading", { name: "Selected update" })).toBeInViewport();
+  await expect(selectedUpdate.getByText("modelValues", { exact: true }).first()).toBeInViewport();
+
+  await page.setViewportSize({ width: 563, height: 700 });
+  await page.getByRole("button", { name: "Open Context" }).click();
+  await expect(selectedUpdate).toBeVisible();
+  await context.getByRole("button", { name: "Create Local Injection Draft" }).click();
+
+  const draft = page.getByRole("region", { name: "Local Injection Draft" });
+  const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
+  const scrollOwner = draft.locator('[data-shared-scroll-owner="true"]');
+  await expect(editor).toContainText('"modelValues": {');
+  await expect(editor).toContainText('"itinerary": [');
+  await expect(editor).not.toContainText('\\"selected\\"');
+  await expect.poll(() => scrollOwner.evaluate((owner) => owner.scrollHeight > owner.clientHeight)).toBe(true);
+  await editor.focus();
+  await scrollOwner.evaluate((owner) => { owner.scrollTop = 0; });
+  await page.keyboard.press("PageDown");
+  await expect.poll(() => scrollOwner.evaluate((owner) => owner.scrollTop)).toBeGreaterThan(0);
+  const scrollContract = await draft.evaluate((region) => ({
+    owners: region.querySelectorAll('[data-shared-scroll-owner="true"]').length,
+    nestedScrollable: Array.from(region.querySelectorAll<HTMLElement>(".cm-scroller"))
+      .some((node) => getComputedStyle(node).overflowY !== "visible")
+  }));
+  expect(scrollContract).toEqual({ owners: 1, nestedScrollable: false });
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);

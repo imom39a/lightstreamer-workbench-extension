@@ -310,6 +310,16 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
     'document.querySelector(\'[aria-label="Local Injection JSON"][contenteditable="true"]\')',
     "the raw Local Injection editor"
   );
+  await waitForCondition(
+    cdp,
+    `(() => {
+      const text = document.querySelector('[aria-label="Local Injection JSON"]')?.textContent ?? "";
+      return text.includes('"modelValues": {') &&
+        text.includes(${JSON.stringify(initialMessage)}) &&
+        !text.includes('\\\\"messageId\\\\"');
+    })()`,
+    "the captured JSON-string field to expand as structured editor JSON"
+  );
 
   const key = `fixture-local-${++localInjectionKeySequence}.TICKER`;
   const document = {
@@ -320,11 +330,11 @@ async function injectFromLatestServerEvidence(cdp: CdpClient, messageText: strin
       key,
       command: "ADD",
       modelId: "MESSENGER",
-      modelValues: JSON.stringify({
+      modelValues: {
         messageId: "fixture-1",
         messageText,
         messageType: "TICKER"
-      })
+      }
     }
   };
   await replaceLocalInjectionJson(cdp, JSON.stringify(document, null, 2));

@@ -23,6 +23,20 @@ type LocalInjectionPresentation = Readonly<{
   blockedEntry: boolean;
 }>;
 
+/**
+ * CodeMirror intentionally has no scrollable viewport in this document: the
+ * Local Injection canvas owns both axes so the editor, diagnostics, and review
+ * material travel together.  Page navigation from CodeMirror therefore has to
+ * target that outer owner explicitly.
+ */
+export function scrollLocalInjectionOwnerByPage(
+  owner: HTMLElement,
+  key: "PageDown" | "PageUp"
+): void {
+  const direction = key === "PageDown" ? 1 : -1;
+  owner.scrollBy({ top: direction * Math.max(24, owner.clientHeight * .8) });
+}
+
 function dispatch(runtime: WorkbenchRuntime, command: WorkbenchCommand): void {
   runtime.dispatch(command);
 }
@@ -270,6 +284,16 @@ export function LocalInjectionDocument({
         className="workbench-react__local-scroll"
         data-shared-scroll-owner="true"
         ref={scrollOwnerRef}
+        onKeyDownCapture={(event) => {
+          if ((event.key !== "PageDown" && event.key !== "PageUp")
+            || event.altKey
+            || event.ctrlKey
+            || event.metaKey) return;
+          const owner = scrollOwnerRef.current;
+          if (!owner) return;
+          event.preventDefault();
+          scrollLocalInjectionOwnerByPage(owner, event.key);
+        }}
         onScroll={(event) => {
           if (hidden || minimized) return;
           scrollPositionsRef.current[scrollKey] = {
@@ -311,7 +335,7 @@ export function LocalInjectionDocument({
           const owner = scrollOwnerRef.current;
           if (!owner) return;
           event.preventDefault();
-          owner.scrollBy({ top: Math.max(24, owner.clientHeight * .8) });
+          scrollLocalInjectionOwnerByPage(owner, "PageDown");
         }}>
           <header><span className="workbench-react__eyebrow">Read-only execution boundary</span><h2 ref={reviewHeadingRef} tabIndex={-1}>Review Local Injection</h2></header>
           <p className="workbench-react__local-review-local-only"><strong>Local only:</strong> one Logical Update is delivered to every current listener. Lightstreamer Server is not contacted.</p>

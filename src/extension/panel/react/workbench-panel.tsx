@@ -31,6 +31,30 @@ type ScopeTreeActions = {
   key(event: ReactKeyboardEvent<HTMLButtonElement>, node: ScopeNode): void;
 };
 
+function SelectedUpdateDetails({
+  update
+}: Readonly<{ update: WorkbenchSnapshot["context"]["selectedUpdate"] }>): JSX.Element | null {
+  if (!update) return null;
+  const groups = [
+    ["Fields", update.fields],
+    ["Changed fields", update.changedFields],
+    ["JSON patches", update.jsonPatches]
+  ] as const;
+  return <section className="workbench-react__selected-update" aria-label="Selected update">
+    <h3>Selected update</h3>
+    {groups.map(([title, entries]) => <section key={title} aria-label={title}>
+      <h4>{title}</h4>
+      {entries.length ? <dl>{entries.flatMap((entry) => [
+        <dt key={`${title}-${entry.name}-term`}>{entry.name}</dt>,
+        <dd key={`${title}-${entry.name}-value`}>
+          {entry.jsonString ? <span className="workbench-react__json-string-marker">JSON string</span> : null}
+          <pre>{entry.display}</pre>
+        </dd>
+      ])}</dl> : <p>No captured {title.toLowerCase()}.</p>}
+    </section>)}
+  </section>;
+}
+
 const ScopeTreeRow = memo(function ScopeTreeRow({
   node,
   index,
@@ -86,6 +110,7 @@ const ScopeTree = memo(function ScopeTree({
   siblingPositionById,
   collapsedIds,
   focusId,
+  onDomFocusChange,
   treeRef,
   nodeRefs,
   actionsRef
@@ -101,6 +126,7 @@ const ScopeTree = memo(function ScopeTree({
   siblingPositionById: ReadonlyMap<string, { position: number; size: number }>;
   collapsedIds: ReadonlySet<string>;
   focusId: string | null;
+  onDomFocusChange(hasFocus: boolean): void;
   treeRef: { current: HTMLDivElement | null };
   nodeRefs: { current: Map<string, HTMLButtonElement> };
   actionsRef: { current: ScopeTreeActions };
@@ -115,6 +141,10 @@ const ScopeTree = memo(function ScopeTree({
       data-mounted-node-count={entries.length}
       ref={treeRef}
       onScroll={(event) => actionsRef.current.scroll(event.currentTarget.scrollTop)}
+      onFocusCapture={() => onDomFocusChange(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) onDomFocusChange(false);
+      }}
     >
       <div
         className="workbench-react__scope-tree-window"
@@ -167,14 +197,14 @@ const EvidenceRow = memo(function EvidenceRow({
       data-find-current={findPosition ? true : undefined}
       aria-selected={selected}
       aria-current={findPosition ? "true" : undefined}
-      title={`${event.id} — ${event.kind} — ${event.object} — ${event.summary}`}
+      title={`${event.id} — ${event.kind} — ${event.object} — ${event.commandKey ?? "No COMMAND key"}`}
       tabIndex={-1}
       ref={(element) => {
         if (element) rowRefs.current.set(event.id, element);
         else rowRefs.current.delete(event.id);
       }}
       onClick={() => actionsRef.current.select(event.id)}
-    ><span role="gridcell"><time>{event.time}</time><small title={event.id}>{event.id}</small>{findPosition ? <small className="workbench-react__find-match">{findPosition}</small> : null}</span><strong role="gridcell">{event.source}</strong><span role="gridcell">{event.phase}</span><b role="gridcell">{event.command ?? "—"}</b><span role="gridcell" title={event.object}><strong>{event.kind}</strong><small>{event.object}</small></span><span role="gridcell" title={event.summary}>{event.summary}</span></button>
+    ><span role="gridcell"><time>{event.time}</time><small title={event.id}>{event.id}</small>{findPosition ? <small className="workbench-react__find-match">{findPosition}</small> : null}</span><strong role="gridcell">{event.source}</strong><span role="gridcell">{event.phase}</span><b role="gridcell">{event.command ?? "—"}</b><span role="gridcell" title={event.object}><strong>{event.kind}</strong><small>{event.object}</small></span><span role="gridcell" title={event.commandKey ?? "No COMMAND key"}>{event.commandKey ?? "—"}</span></button>
   );
 });
 
@@ -299,6 +329,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const [collapsedScopeIds, setCollapsedScopeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [scopeWindowStart, setScopeWindowStart] = useState(0);
   const [scopeTreeHeight, setScopeTreeHeight] = useState(SCOPE_NODE_HEIGHT * SCOPE_FALLBACK_VIEWPORT_ROWS);
+  const [scopeTreeHasDomFocus, setScopeTreeHasDomFocus] = useState(false);
   const scopeTypeahead = useRef("");
   const scopeTypeaheadReset = useRef<number | null>(null);
   const findInput = useRef<HTMLInputElement | null>(null);
@@ -422,7 +453,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         node: snapshot.scope.resolveNode(structure.id)!,
         index: renderedScopeWindowStart + offset
       }));
-    if (focusedScopeIndex >= 0 && !entries.some(({ index }) => index === focusedScopeIndex)) {
+    const scopeOwnsFocus = scopeTreeHasDomFocus || scopeTree.current?.contains(document.activeElement);
+    if (scopeOwnsFocus && focusedScopeIndex >= 0 && !entries.some(({ index }) => index === focusedScopeIndex)) {
       const focusedStructure = visibleScopeNodes[focusedScopeIndex]!;
       entries.push({
         node: snapshot.scope.resolveNode(focusedStructure.id)!,
@@ -431,7 +463,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       entries.sort((left, right) => left.index - right.index);
     }
     return entries;
-  }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes, snapshot.scope]);
+  }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes, snapshot.scope, scopeTreeHasDomFocus]);
   const canAuthorCommandUpdate = snapshot.localInjection.availability.commandScope.available;
   const canCreateLocalInjectionDraft = snapshot.localInjection.availability.selectedUpdate.available;
   const total = evidence.total;
@@ -1169,6 +1201,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             siblingPositionById={scopeSiblingPositionById}
             collapsedIds={collapsedScopeIds}
             focusId={renderedFocusId}
+            onDomFocusChange={setScopeTreeHasDomFocus}
             treeRef={scopeTree}
             nodeRefs={scopeNodesById}
             actionsRef={scopeTreeActions}
@@ -1191,7 +1224,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           <div className="workbench-react__evidence-window" aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}
           {evidence.loading ? <div className="workbench-react__empty" role="status" aria-live="polite"><strong>Loading Evidence…</strong><span>Resolving the current Scope and Filter.</span></div> : events.length ? <div className="workbench-react__ledger" role="grid" aria-label="Ordered Lightstreamer Evidence" tabIndex={0} ref={evidenceLedger} onKeyDown={handleEvidenceKey}>
-            <div className="workbench-react__ledger-header" role="row"><span role="columnheader">Time / #</span><span role="columnheader">Source</span><span role="columnheader">Phase</span><span role="columnheader">Op</span><span role="columnheader">Evidence / object</span><span role="columnheader">Change</span></div>
+            <div className="workbench-react__ledger-header" role="row"><span role="columnheader">Time / #</span><span role="columnheader">Source</span><span role="columnheader">Phase</span><span role="columnheader">Op</span><span role="columnheader">Evidence / object</span><span role="columnheader">COMMAND key</span></div>
             {events.map((event) => {
               const isSelected = event.id === selectedEventId;
               const isFindCurrent = event.id === findState.currentEventId;
@@ -1223,6 +1256,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               <label><input type="checkbox" checked={snapshot.export.completeEvidence} onChange={(event) => setCompleteEvidence(event.currentTarget.checked)} />Include complete establishment and COMMAND generation evidence</label>
               <div className="workbench-react__context-actions"><button type="button" disabled={!snapshot.export.json} onClick={() => downloadExport("json")}>Download JSON</button><button type="button" disabled={!snapshot.export.document} onClick={() => downloadExport("html")}>Download HTML</button></div>
             </section> : <>
+              <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
               <dl className="workbench-react__context-fields">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__diagnostic" key={`${diagnostic.title}-${index}`}><strong>{diagnostic.severity} · {diagnostic.title}</strong><span>{diagnostic.detail}</span>{diagnostic.recovery ? <button type="button" onClick={() => dispatch(runtime, { type: "open-diagnostics" })}>{diagnostic.recovery}</button> : null}</section>)}
               <CommandProjectionContextSummary

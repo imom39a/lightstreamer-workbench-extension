@@ -8,12 +8,20 @@ import {
   type DraftFieldValue,
   type ReinjectionDraft
 } from "./reinjection-draft";
+import {
+  expandJsonStringFields,
+  jsonStructurallyEqual,
+  serializeJsonStringFields,
+  type ExpandedJsonStringFieldValue
+} from "./json-string-fields";
+
+export type LocalInjectionFields = Record<string, ExpandedJsonStringFieldValue>;
 
 export type LocalInjectionDocument = {
   command: string | null;
   key: string | null;
   isSnapshot: boolean;
-  fields: DraftFields;
+  fields: LocalInjectionFields;
 };
 
 export type LocalInjectionDiagnosticCategory = "syntax" | "schema" | "semantic" | "target";
@@ -30,6 +38,8 @@ export type LocalInjectionValidationContext = Readonly<{
   mode: string | null;
   commandSemantics?: "required" | "not-applicable";
   schemaFields: readonly string[];
+  /** Captured fields proven to contain a complete encoded JSON object or array. */
+  jsonStringFields?: readonly string[];
   commandState: CommandState;
   subscriptionId: string;
   itemName?: string | null;
@@ -52,7 +62,7 @@ export function createLocalInjectionDocumentFromDraft(
     command: draft.command,
     key: draft.key,
     isSnapshot: draft.isSnapshot,
-    fields: { ...draft.fields }
+    fields: { ...expandJsonStringFields(draft.fields).fields }
   };
 }
 
@@ -80,7 +90,7 @@ export function analyzeLocalInjectionDocument(
   }
 
   const duplicateDiagnostics = duplicateJsonKeyDiagnostics(text);
-  const parsedDocument = parseDocumentShape(parsed);
+  const parsedDocument = parseDocumentShape(parsed, context.jsonStringFields ?? []);
   const diagnostics = [
     ...duplicateDiagnostics,
     ...parsedDocument.diagnostics
@@ -97,6 +107,7 @@ export function validateLocalInjectionDocument(
 ): LocalInjectionDiagnostic[] {
   const diagnostics: LocalInjectionDiagnostic[] = [];
   const schema = new Set(context.schemaFields);
+  const jsonStringFields = new Set(context.jsonStringFields ?? []);
   const fields = Object.keys(document.fields);
 
   for (const [fieldName, value] of Object.entries(document.fields)) {
@@ -111,6 +122,26 @@ export function validateLocalInjectionDocument(
           "schema",
           "non-finite-number",
           `Field "${fieldName}" must contain a finite number.`,
+          `fields.${fieldName}`
+        )
+      );
+    }
+    if (isJsonContainer(value) && !jsonStringFields.has(fieldName)) {
+      diagnostics.push(
+        diagnostic(
+          "schema",
+          "non-primitive-field",
+          `Field "${fieldName}" must contain a string, number, boolean, or null.`,
+          `fields.${fieldName}`
+        )
+      );
+    }
+    if (jsonStringFields.has(fieldName) && !isJsonContainer(value)) {
+      diagnostics.push(
+        diagnostic(
+          "schema",
+          "encoded-json-field-type",
+          `Field "${fieldName}" was captured as an encoded JSON string and must remain a JSON object or array.`,
           `fields.${fieldName}`
         )
       );
@@ -196,19 +227,21 @@ export function applyLocalInjectionDocumentToDraft(
   source: ReinjectionDraft,
   document: LocalInjectionDocument
 ): ReinjectionDraft {
+  const expansion = expandJsonStringFields(source.fields);
+  const serializedFields = serializeJsonStringFields(expansion, document.fields);
   const draft: ReinjectionDraft = {
     ...source,
     command: document.command,
     key: document.key,
     isSnapshot: document.isSnapshot,
-    fields: { ...document.fields },
+    fields: { ...serializedFields },
     manualChangedFieldsOverride: false
   };
   return {
     ...draft,
     changedFields: draftFieldsMatchSource(draft)
       ? { ...draft.originalChangedFields }
-      : changedFields(source.sourceFields, document.fields)
+      : changedFields(source.sourceFields, serializedFields)
   };
 }
 
@@ -224,7 +257,7 @@ export function localInjectionDocumentsEqual(
   );
 }
 
-function parseDocumentShape(value: unknown): {
+function parseDocumentShape(value: unknown, jsonStringFieldNames: readonly string[]): {
   document: LocalInjectionDocument | null;
   diagnostics: LocalInjectionDiagnostic[];
 } {
@@ -282,7 +315,8 @@ function parseDocumentShape(value: unknown): {
     );
   }
 
-  const fields: DraftFields = {};
+  const fieldEntries: Array<readonly [string, ExpandedJsonStringFieldValue]> = [];
+  const jsonStringFields = new Set(jsonStringFieldNames);
   if (!isRecord(value.fields)) {
     fatal = true;
     diagnostics.push(
@@ -290,6 +324,10 @@ function parseDocumentShape(value: unknown): {
     );
   } else {
     for (const [fieldName, fieldValue] of Object.entries(value.fields)) {
+      if (isJsonContainer(fieldValue) && jsonStringFields.has(fieldName)) {
+        fieldEntries.push([fieldName, fieldValue]);
+        continue;
+      }
       if (!isPrimitive(fieldValue)) {
         diagnostics.push(
           diagnostic(
@@ -301,9 +339,10 @@ function parseDocumentShape(value: unknown): {
         );
         continue;
       }
-      fields[fieldName] = fieldValue;
+      fieldEntries.push([fieldName, fieldValue]);
     }
   }
+  const fields: LocalInjectionFields = Object.fromEntries(fieldEntries);
 
   if (fatal) return { document: null, diagnostics };
   return {
@@ -398,11 +437,21 @@ function changedFields(source: DraftFields, draft: DraftFields): DraftFields {
   return changed;
 }
 
-function recordsEqual(left: DraftFields, right: DraftFields): boolean {
+function recordsEqual(left: LocalInjectionFields, right: LocalInjectionFields): boolean {
   const keys = Object.keys(left);
   return (
     keys.length === Object.keys(right).length &&
-    keys.every((key) => Object.hasOwn(right, key) && Object.is(left[key], right[key]))
+    keys.every((key) => {
+      if (!Object.hasOwn(right, key)) return false;
+      const leftValue = left[key]!;
+      const rightValue = right[key]!;
+      if (isJsonContainer(leftValue) || isJsonContainer(rightValue)) {
+        return isJsonContainer(leftValue) &&
+          isJsonContainer(rightValue) &&
+          jsonStructurallyEqual(leftValue, rightValue);
+      }
+      return Object.is(leftValue, rightValue);
+    })
   );
 }
 
@@ -417,6 +466,10 @@ function isPrimitive(value: unknown): value is DraftFieldValue {
     typeof value === "boolean" ||
     (typeof value === "number" && Number.isFinite(value))
   );
+}
+
+function isJsonContainer(value: unknown): value is Exclude<ExpandedJsonStringFieldValue, DraftFieldValue> {
+  return typeof value === "object" && value !== null;
 }
 
 function diagnostic(

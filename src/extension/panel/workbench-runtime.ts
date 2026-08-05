@@ -12,6 +12,7 @@ import {
 } from "../../core/event-history";
 import { createEventSearchText, matchesEventFilters, type EventFilterState } from "../../core/event-filter";
 import { type EventStore, type EventStoreChange, type EventStoreStats } from "../../core/event-store";
+import { expandJsonStringFields } from "../../core/json-string-fields";
 import {
   analyzeLocalInjectionDocument,
   applyLocalInjectionDocumentToDraft,
@@ -37,6 +38,10 @@ import {
   type WorkbenchAnalyticsEvent
 } from "../analytics";
 import { createTopologyProjection } from "./topology-projection";
+import {
+  selectedUpdateSnapshot,
+  type SelectedUpdateSnapshot
+} from "./selected-update-view-model";
 import {
   createTopologyStructuredSnapshot,
   serializeTopologySnapshot,
@@ -78,6 +83,7 @@ export type WorkbenchEvidence = Readonly<{
   source: "SERVER" | "LOCAL" | "RUNTIME" | "WORKBENCH";
   phase: "SNAPSHOT" | "LIVE" | "END OF SNAPSHOT" | "—";
   command: string | null;
+  commandKey: string | null;
   kind: string;
   object: string;
   summary: string;
@@ -170,6 +176,8 @@ export type WorkbenchContextSnapshot = Readonly<{
   kind: "evidence" | "runtime";
   title: string;
   fields: readonly (readonly [string, string])[];
+  /** Full retained Item Update evidence, independent of the evidence window. */
+  selectedUpdate: SelectedUpdateSnapshot | null;
 }>;
 
 export type WorkbenchCommandProjection = Readonly<{
@@ -1685,6 +1693,7 @@ class Runtime implements WorkbenchRuntime {
           ? "required"
           : "not-applicable",
       schemaFields: draft.anchor.fieldSchema,
+      jsonStringFields: expandJsonStringFields(draft.baseDraft.fields).encodedFieldNames,
       commandState: this.commandStateProjections.snapshot("local-effective"),
       subscriptionId: draft.anchor.subscriptionId,
       itemName: draft.anchor.itemName,
@@ -2342,6 +2351,7 @@ class Runtime implements WorkbenchRuntime {
     return Object.freeze({
       kind: "evidence",
       title: `${selected.id} · ${humanizeKind(selected.kind)}`,
+      selectedUpdate: selectedUpdateSnapshot(selected.update),
       fields: Object.freeze([
         ["Source", evidenceSource(selected)],
         ["Phase", evidencePhase(selected)],
@@ -2579,7 +2589,8 @@ function runtimeObjectDossier(
   return Object.freeze({
     kind: "runtime",
     title,
-    fields: Object.freeze(fields)
+    fields: Object.freeze(fields),
+    selectedUpdate: null
   });
 }
 
@@ -2655,6 +2666,7 @@ function toWorkbenchEvidence(event: LightstreamerEventEnvelope): WorkbenchEviden
     source: evidenceSource(event),
     phase: evidencePhase(event),
     command: event.update?.command ?? null,
+    commandKey: event.update?.key ?? null,
     kind: humanizeKind(event.kind),
     object: evidenceObject(event),
     summary: evidenceSummary(event),
@@ -2847,8 +2859,28 @@ function freezeLocalInjectionDocument(
     command: document.command,
     key: document.key,
     isSnapshot: document.isSnapshot,
-    fields: Object.freeze({ ...document.fields })
+    fields: deepFreezeLocalInjectionFields(document.fields)
   });
+}
+
+function deepFreezeLocalInjectionFields(
+  fields: LocalInjectionDocument["fields"]
+): LocalInjectionDocument["fields"] {
+  return Object.freeze(Object.fromEntries(
+    Object.entries(fields).map(([name, value]) => [name, deepFreezeLocalInjectionValue(value)])
+  ));
+}
+
+function deepFreezeLocalInjectionValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((entry) => deepFreezeLocalInjectionValue(entry))) as T;
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.freeze(Object.fromEntries(
+      Object.entries(value).map(([name, entry]) => [name, deepFreezeLocalInjectionValue(entry)])
+    )) as T;
+  }
+  return value;
 }
 
 function cloneReinjectionDraft(draft: ReinjectionDraft): ReinjectionDraft {

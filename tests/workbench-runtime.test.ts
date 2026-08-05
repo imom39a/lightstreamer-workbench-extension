@@ -891,6 +891,7 @@ describe("WorkbenchRuntime", () => {
       source: "SERVER",
       phase: "SNAPSHOT",
       command: "ADD",
+      commandKey: "order-17",
       object: "orders"
     });
     expect(snapshot.context).toMatchObject({ kind: "evidence", title: "command-1 · Item Update" });
@@ -921,7 +922,7 @@ describe("WorkbenchRuntime", () => {
 
     expect(runtime.getSnapshot().capture.operation).toBe("RUNNING");
     expect(runtime.getSnapshot().evidence.events).toEqual([
-      expect.objectContaining({ source: "SERVER", object: "captured-item", summary: "value" })
+      expect.objectContaining({ source: "SERVER", object: "captured-item", commandKey: null, summary: "value" })
     ]);
     runtime.dispose();
   });
@@ -1728,7 +1729,14 @@ describe("WorkbenchRuntime", () => {
       history.append({
         ...event(`selected-${index}`, "orders"),
         timestamp: index,
-        captureSource: "listener"
+        captureSource: "listener",
+        ...(index === 100 ? {
+          update: {
+            fields: { payload: '{"flight":{"number":"DL42"}}', malformed: "{nope" },
+            changedFields: { payload: '{"flight":{"number":"DL42"}}' },
+            jsonPatches: { payload: { op: "replace", path: "/flight/number", value: "DL43" } }
+          }
+        } : {})
       });
     }
     const runtime = createWorkbenchRuntime({ history, windowSize: 60 });
@@ -1750,6 +1758,18 @@ describe("WorkbenchRuntime", () => {
     expect(Object.fromEntries(runtime.getSnapshot().context.fields)).toMatchObject({
       "Observation path": "Server › listener Capture",
       "Evidence limitations": "Captured observation; unavailable properties remain Unknown and this is not Authoritative COMMAND State."
+    });
+    expect(runtime.getSnapshot().context.selectedUpdate).toMatchObject({
+      fields: [
+        {
+          name: "payload",
+          jsonString: true,
+          display: '{\n  "flight": {\n    "number": "DL42"\n  }\n}'
+        },
+        { name: "malformed", jsonString: false, display: "{nope" }
+      ],
+      changedFields: [{ name: "payload", jsonString: true }],
+      jsonPatches: [{ name: "payload" }]
     });
 
     runtime.dispatch({ type: "open-raw-evidence", eventId: "selected-100" });

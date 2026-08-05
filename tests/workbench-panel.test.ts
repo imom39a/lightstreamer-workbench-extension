@@ -99,6 +99,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
           source: "SERVER",
           phase: "SNAPSHOT",
           command: "ADD",
+          commandKey: "order-1042",
           kind: "Item Update",
           object: "order-1042",
           summary: "qty, status",
@@ -110,6 +111,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
           source: "SERVER",
           phase: "LIVE",
           command: "UPDATE",
+          commandKey: "order-1042",
           kind: "Item Update",
           object: "order-1042",
           summary: "qty, status",
@@ -146,7 +148,12 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
         ["Source", "SERVER"],
         ["Phase", "LIVE"],
         ["COMMAND operation", "UPDATE"]
-      ]
+      ],
+      selectedUpdate: {
+        fields: [],
+        changedFields: [],
+        jsonPatches: []
+      }
     },
     commandProjections: {
       observed: { name: "Observed Server COMMAND State", basis: "Captured Server Updates only", rows: [] },
@@ -446,6 +453,63 @@ describe("React Workbench Diagnose panel", () => {
     expect(document.querySelector<HTMLButtonElement>("[data-action='open-diagnostics']")?.textContent).toBe(
       "Open diagnostics"
     );
+
+    await act(async () => root.unmount());
+  });
+
+  it("lists the captured COMMAND key in Ordered Evidence while preserving Changed detail for Context", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const runtime = createTestRuntime(snapshot());
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const headers = Array.from(document.querySelectorAll('[role="columnheader"]')).map((header) => header.textContent);
+    const selectedRow = document.querySelector<HTMLElement>('[data-evidence-id="evt-2"]');
+    const cells = selectedRow?.querySelectorAll<HTMLElement>('[role="gridcell"]');
+
+    expect(headers).toContain("COMMAND key");
+    expect(headers).not.toContain("Change");
+    expect(cells?.[5]?.textContent).toBe("order-1042");
+    expect(cells?.[5]?.getAttribute("title")).toBe("order-1042");
+    expect(rootElement.textContent).toContain("COMMAND operation");
+
+    await act(async () => root.unmount());
+  });
+
+  it("renders retained selected Item Update data before the COMMAND projection summary", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const runtime = createTestRuntime({
+      ...base,
+      context: {
+        ...base.context,
+        selectedUpdate: {
+          fields: [
+            { name: "payload", display: '{\n  "flight": "DL42"\n}', jsonString: true },
+            { name: "malformed", display: "{nope", jsonString: false }
+          ],
+          changedFields: [{ name: "payload", display: '{\n  "flight": "DL42"\n}', jsonString: true }],
+          jsonPatches: [{ name: "payload", display: '{\n  "op": "replace"\n}', jsonString: false }]
+        }
+      }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const selectedUpdate = rootElement.querySelector<HTMLElement>('[aria-label="Selected update"]');
+    const contextFields = rootElement.querySelector<HTMLElement>(".workbench-react__context-fields");
+    const projection = rootElement.querySelector<HTMLElement>('[aria-label="COMMAND projection summary"]');
+    expect(selectedUpdate?.textContent).toContain("Fields");
+    expect(selectedUpdate?.textContent).toContain("Changed fields");
+    expect(selectedUpdate?.textContent).toContain("JSON patches");
+    expect(selectedUpdate?.textContent).toContain("JSON string");
+    expect(selectedUpdate?.textContent).toContain('"flight": "DL42"');
+    expect(selectedUpdate?.textContent).toContain("{nope");
+    expect(selectedUpdate?.compareDocumentPosition(projection!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(selectedUpdate?.compareDocumentPosition(contextFields!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(selectedUpdate?.querySelector("pre")?.parentElement?.className).not.toContain("scroll");
 
     await act(async () => root.unmount());
   });
@@ -821,6 +885,48 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => last?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })));
     expect(runtime.commands).toContainEqual({ type: "set-scope-focus", scopeId: "page" });
     expect(runtime.commands.some((command) => command.type === "set-scope")).toBe(false);
+
+    await act(async () => root.unmount());
+  });
+
+  it("does not leave an off-window Scope selection stranded after live structure growth while Evidence owns focus", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const logicalNodes: WorkbenchSnapshot["scope"]["nodes"] = [
+      { id: "page", kind: "page", label: "Inspected page", parentId: null, depth: 0, tone: "quiet", lifecycle: "active", retired: false, selected: false },
+      ...Array.from({ length: 220 }, (_, index) => ({
+        id: `subscription-${index + 1}`,
+        kind: "subscription" as const,
+        label: `Subscription ${String(index + 1).padStart(3, "0")}`,
+        parentId: "page",
+        depth: 1,
+        tone: "quiet" as const,
+        lifecycle: "active" as const,
+        retired: false,
+        selected: index === 219
+      }))
+    ];
+    const selectedScopeId = "subscription-220";
+    const runtime = createTestRuntime({
+      ...base,
+      scope: {
+        ...base.scope,
+        focusedNodeId: selectedScopeId,
+        selection: { id: selectedScopeId, kind: "subscription", retired: false },
+        nodes: logicalNodes
+      }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const tree = document.querySelector<HTMLDivElement>('[role="tree"]')!;
+    const evidenceRow = document.querySelector<HTMLButtonElement>('[data-evidence-id="evt-2"]')!;
+    evidenceRow.focus();
+
+    expect(document.activeElement).toBe(evidenceRow);
+    expect(document.querySelector(`[data-scope-id="${selectedScopeId}"]`)).toBeNull();
+    expect(Number(tree.dataset.mountedNodeCount)).toBeLessThanOrEqual(127);
 
     await act(async () => root.unmount());
   });

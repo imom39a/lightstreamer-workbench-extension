@@ -249,6 +249,17 @@
 .workbench-react__context-fields { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 5px 9px; margin: 0 0 12px; }
 .workbench-react__context-fields dt { color: var(--wb-muted); }
 .workbench-react__context-fields dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.workbench-react__selected-update { display: grid; gap: 8px; margin: 0 0 12px; border-bottom: 1px solid var(--wb-border); padding-bottom: 10px; }
+.workbench-react__selected-update > h3, .workbench-react__selected-update h4 { margin: 0; }
+.workbench-react__selected-update > h3 { font-size: 13px; }
+.workbench-react__selected-update > section { display: grid; gap: 5px; }
+.workbench-react__selected-update h4 { color: var(--wb-muted); font-size: 11px; text-transform: uppercase; }
+.workbench-react__selected-update dl { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 5px 9px; margin: 0; }
+.workbench-react__selected-update dt { min-width: 0; color: var(--wb-muted); overflow-wrap: anywhere; }
+.workbench-react__selected-update dd { display: grid; min-width: 0; gap: 4px; margin: 0; }
+.workbench-react__selected-update p { margin: 0; color: var(--wb-muted); }
+.workbench-react__selected-update pre { min-width: 0; margin: 0; overflow: visible; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__json-string-marker { width: max-content; border: 1px solid var(--wb-border-strong); background: var(--wb-raised); color: var(--wb-muted); padding: 1px 4px; font-size: 10px; }
 .workbench-react__context-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .workbench-react__operations, .workbench-react__export { display: grid; align-content: start; gap: 14px; }
 .workbench-react__operations > section, .workbench-react__export fieldset { display: grid; gap: 7px; margin: 0; border: 1px solid var(--wb-border); padding: 9px; }
@@ -325,7 +336,9 @@
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
-  overflow: auto;
+  /* The document is the only scroll owner: CodeMirror expands into it. */
+  overflow-x: auto;
+  overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }

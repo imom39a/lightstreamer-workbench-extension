@@ -178,11 +178,11 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
           key: "fixture-message.TICKER",
           command: "UPDATE",
           modelId: "MESSENGER",
-          modelValues: JSON.stringify({
+          modelValues: {
             messageId: "fixture-1",
             messageText: editedMessage,
             messageType: "TICKER"
-          })
+          }
         }
       };
       await waitForCondition(
@@ -227,6 +227,16 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       expect(
         await evaluateByValue<boolean>(panelCdp, `Boolean(document.querySelector(".cm-editor"))`)
       ).toBe(true);
+      await waitForCondition(
+        panelCdp,
+        `(() => {
+          const text = document.querySelector('[aria-label="Local Injection JSON"]')?.textContent ?? "";
+          return text.includes('"modelValues": {') &&
+            text.includes('"messageId": "fixture-1"') &&
+            !text.includes('\\\\"messageId\\\\"');
+        })()`,
+        "the captured JSON-string field to expand as structured editor JSON"
+      );
       await expect
         .poll(
           () =>

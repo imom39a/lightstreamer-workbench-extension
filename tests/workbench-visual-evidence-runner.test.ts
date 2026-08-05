@@ -29,7 +29,7 @@ describe("Workbench visual-evidence runner", () => {
           viewport: { width: 563, height: 700 },
           theme: "light",
           prototype: { variant: "B", state: "edit", frame: "compact" },
-          production: { scenario: "local-injection-captured", setup: "captured-draft" }
+          production: { scenario: "local-injection-json", setup: "captured-draft" }
         },
         {
           id: "shallow-authored-review-dark",
@@ -72,6 +72,13 @@ describe("Workbench visual-evidence runner", () => {
           theme: "light",
           prototype: { variant: "A", state: "selected", frame: "wide" },
           production: { scenario: "command-projection-matching", setup: "none" }
+        },
+        {
+          id: "wide-selected-json-dark",
+          viewport: { width: 1440, height: 900 },
+          theme: "dark",
+          prototype: { variant: "A", state: "selected", frame: "wide" },
+          production: { scenario: "local-injection-json", setup: "none" }
         }
       ]
     });

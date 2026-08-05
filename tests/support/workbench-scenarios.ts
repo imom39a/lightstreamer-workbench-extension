@@ -13,6 +13,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "active-no-selection",
   "selected-local-evidence",
   "frozen-high-volume",
+  "live-high-scope",
   "limited-capture",
   "empty-scope",
   "disconnected",
@@ -28,6 +29,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "recovering",
   "retired-scope",
   "local-injection-captured",
+  "local-injection-json",
   "local-injection-authored",
   "local-injection-large",
   "local-injection-invalid",
@@ -120,6 +122,18 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         selectedEventId: highVolumeEventId(3_970),
         captureStatus: "capturing",
         freezeBeforeLaterEvents: true
+      };
+    case "live-high-scope":
+      return {
+        id,
+        initialEvents: highScopeEvents(),
+        selectedEventId: "high-scope-event-220",
+        selectedScope: {
+          kind: "subscription",
+          retired: false,
+          label: "high-scope-subscription-220"
+        },
+        captureStatus: "capturing"
       };
     case "limited-capture":
       return {
@@ -275,6 +289,8 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       };
     case "local-injection-captured":
       return localInjectionCapturedScenario(id);
+    case "local-injection-json":
+      return localInjectionJsonScenario(id);
     case "local-injection-authored":
       return {
         id,
@@ -356,6 +372,55 @@ function localInjectionCapturedScenario(id: WorkbenchScenarioId): WorkbenchScena
     topologySyncFrames: topology.topologySyncFrames,
     captureMessages: topology.captureMessages,
     selectedEventId: "event-5",
+    captureStatus: "capturing"
+  };
+}
+
+function localInjectionJsonScenario(id: WorkbenchScenarioId): WorkbenchScenario {
+  const topology = getPanelScenario("topology-small");
+  const source = topology.capturedEvents.at(-1);
+  if (!source?.update || !source.subscription) {
+    throw new Error("Topology scenario requires a captured Item Update source.");
+  }
+  const modelValues = JSON.stringify({
+    passenger: {
+      selected: false,
+      priority: false,
+      itinerary: Array.from({ length: 48 }, (_, index) => ({
+        segment: index + 1,
+        from: `AIRPORT-${String(index).padStart(2, "0")}`,
+        to: `AIRPORT-${String(index + 1).padStart(2, "0")}`
+      }))
+    }
+  });
+  const fields = {
+    command: "ADD",
+    key: "json-string-alpha",
+    modelValues,
+    malformed: '{"passenger":',
+    scalar: "true",
+    ordinary: "customer"
+  };
+  const selected: LightstreamerEventEnvelope = {
+    ...source,
+    id: "json-string-event",
+    timestamp: source.timestamp + 10,
+    subscription: { ...source.subscription, fields: Object.keys(fields) },
+    update: {
+      ...source.update,
+      command: "ADD",
+      key: "json-string-alpha",
+      fields,
+      changedFields: { modelValues, ordinary: "customer" },
+      jsonPatches: { modelValues: [{ op: "replace", path: "/passenger/selected", value: false }] }
+    }
+  };
+  return {
+    id,
+    initialEvents: [selected],
+    topologySyncFrames: topology.topologySyncFrames,
+    captureMessages: topology.captureMessages,
+    selectedEventId: selected.id,
     captureStatus: "capturing"
   };
 }
@@ -448,6 +513,35 @@ function highVolumeEvents(first: number, count: number): readonly LightstreamerE
         scenario: "react-frozen-high-volume-long-identities",
         sequence,
         ...(findAnchor ? { findAnchor: "complete-retained-find-anchor" } : {})
+      }
+    };
+  });
+}
+
+function highScopeEvents(): readonly LightstreamerEventEnvelope[] {
+  const source = getPanelScenario("command-state").capturedEvents[2];
+  if (!source) {
+    throw new Error("The canonical COMMAND scenario must include an UPDATE item for high Scope Evidence.");
+  }
+  return Array.from({ length: 220 }, (_, offset) => {
+    const sequence = offset + 1;
+    return {
+      ...source,
+      id: `high-scope-event-${sequence}`,
+      timestamp: source.timestamp + sequence,
+      client: { ...source.client, id: "high-scope-client", sessionId: "high-scope-session" },
+      subscription: {
+        ...source.subscription,
+        id: `high-scope-subscription-${String(sequence).padStart(3, "0")}`,
+        items: [`high-scope-item-${String(sequence).padStart(3, "0")}`]
+      },
+      item: { ...source.item, name: `high-scope-item-${String(sequence).padStart(3, "0")}`, position: 1 },
+      update: {
+        ...source.update,
+        command: "UPDATE",
+        key: `high-scope-key-${String(sequence).padStart(3, "0")}`,
+        fields: { command: "UPDATE", key: `high-scope-key-${String(sequence).padStart(3, "0")}`, sequence },
+        changedFields: { sequence }
       }
     };
   });
