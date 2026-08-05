@@ -160,4 +160,31 @@ describe("topology projection", () => {
     expect(subscriptionIds).toEqual(["semantic-sub"]);
     expect(projection.status().semanticActive).toBe(true);
   });
+
+  it("reuses the structural snapshot for repeat deliveries to a known Item and Listener", () => {
+    const projection = createTopologyProjection();
+    const base = subscriptionEvent("legacy-subscription", "legacy-sub");
+    projection.ingestCapture(base);
+    projection.ingestHistory(base);
+    const update = (id: string, value: number): LightstreamerEventEnvelope => ({
+      ...base,
+      id,
+      timestamp: base.timestamp + value,
+      kind: "item-update",
+      listener: { id: "listener-1", callbacks: ["onItemUpdate"] },
+      item: { name: "item-1", position: 1 },
+      update: { isSnapshot: false, fields: { value }, changedFields: { value } }
+    });
+    const firstDelivery = update("delivery-1", 1);
+    projection.ingestCapture(firstDelivery);
+    projection.ingestHistory(firstDelivery);
+    const structuralSnapshot = projection.snapshot();
+
+    const secondDelivery = update("delivery-2", 2);
+    projection.ingestCapture(secondDelivery);
+    projection.ingestHistory(secondDelivery);
+
+    expect(projection.snapshot()).toBe(structuralSnapshot);
+    expect(structuralSnapshot.clients[0]?.sessions[0]?.subscriptions[0]?.items[0]?.name).toBe("item-1");
+  });
 });

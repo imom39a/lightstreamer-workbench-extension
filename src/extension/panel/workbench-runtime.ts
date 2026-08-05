@@ -32,6 +32,7 @@ import {
   createDisabledAnalytics,
   eventCountBucket,
   type AnalyticsConsent,
+  type AnalyticsLocalInjectionOutcome,
   type WorkbenchAnalytics,
   type WorkbenchAnalyticsEvent
 } from "../analytics";
@@ -476,6 +477,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
   private readonly topologyProjection = createTopologyProjection();
+  private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly analytics: WorkbenchAnalytics;
   private readonly unsubscribeHistory: () => void;
   private visible: boolean;
@@ -519,6 +521,7 @@ class Runtime implements WorkbenchRuntime {
   private analyticsError: string | null = null;
   private analyticsDetected = false;
   private analyticsSearchUsed = false;
+  private analyticsLocalInjectionUsed = false;
   private analyticsCapturedEventCount = 0;
   private analyticsSummarySent = false;
   private exportRedactions = new Set<TopologySensitiveCategory>();
@@ -535,6 +538,15 @@ class Runtime implements WorkbenchRuntime {
   private localInjectionEntryError: string | null = null;
   private localInjectionSequence = 0;
   private currentPageEpoch: string | null = null;
+  private scopeSnapshotCache: {
+    state: TopologyState;
+    scopeId: string | null;
+    captureStatus: CaptureStatus;
+    semanticActive: boolean;
+    syncState: string;
+    coverageStatus: string | null;
+    snapshot: WorkbenchSnapshot["scope"];
+  } | null = null;
   private preparedExport: {
     document: TopologyStructuredSnapshot;
     json: string;
@@ -914,9 +926,11 @@ class Runtime implements WorkbenchRuntime {
         // a failed append must never fabricate Evidence.
       }
     );
-    // Capture arrival is a developer-visible state transition even when an
-    // asynchronous history adapter has not committed its Evidence page yet.
-    this.publish();
+    // Capture remains lossless, but renderer notification is consolidated at
+    // the next paint boundary. The topology index is intentionally designed
+    // for many ingests followed by one snapshot at render cadence.
+    if (this.visible) this.schedulePassivePublication();
+    else this.hiddenDirty = true;
   }
 
   private applyTopologySyncFrame(frame: TopologySyncFrame): void {
@@ -1058,6 +1072,7 @@ class Runtime implements WorkbenchRuntime {
         this.analyticsConsent = consent;
         this.analyticsDetected = false;
         this.analyticsSearchUsed = false;
+        this.analyticsLocalInjectionUsed = false;
         this.analyticsCapturedEventCount = 0;
         this.analyticsSummarySent = false;
         if (consent === "granted") {
@@ -1080,7 +1095,7 @@ class Runtime implements WorkbenchRuntime {
   private recordAnalyticsSearch(value: string): void {
     if (value.trim() === "" || this.analyticsSearchUsed) return;
     this.analyticsSearchUsed = true;
-    this.trackAnalytics({ name: "search_used", view: "timeline" });
+    this.trackAnalytics({ name: "search_used" });
   }
 
   private trackAnalytics(event: WorkbenchAnalyticsEvent): void {
@@ -1094,9 +1109,8 @@ class Runtime implements WorkbenchRuntime {
     this.trackAnalytics({
       name: "session_summary",
       eventCountBucket: eventCountBucket(this.analyticsCapturedEventCount),
-      commandViewUsed: false,
       searchUsed: this.analyticsSearchUsed,
-      replayUsed: false
+      localInjectionUsed: this.analyticsLocalInjectionUsed
     });
   }
 
@@ -1413,12 +1427,14 @@ class Runtime implements WorkbenchRuntime {
     const currentFingerprint = this.localInjectionFingerprint(draft);
     if (!localInjectionReady(draft)) {
       const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
+      this.recordAnalyticsLocalInjectionAttempt(draft);
       draft.executionId = executionId;
       draft.phase = "outcome";
       draft.outcome = blockedLocalInjectionOutcome(
         executionId,
         draft.targetDiagnostics[0]?.message ?? "The protected Local Injection target changed after Review."
       );
+      this.recordAnalyticsLocalInjectionResult(draft, draft.outcome);
       this.publish();
       return;
     }
@@ -1429,6 +1445,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
 
+    this.recordAnalyticsLocalInjectionAttempt(draft);
     const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
     const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, draft.document);
     const request: LocalInjectionExecutionRequest = Object.freeze({
@@ -1523,7 +1540,31 @@ class Runtime implements WorkbenchRuntime {
     if (!draft || draft.phase !== "pending" || draft.executionId !== executionId || draft.outcome) return;
     draft.outcome = Object.freeze(outcome);
     draft.phase = "outcome";
+    this.recordAnalyticsLocalInjectionResult(draft, outcome);
     this.publish();
+  }
+
+  private recordAnalyticsLocalInjectionAttempt(draft: LocalInjectionDraftState): void {
+    this.analyticsLocalInjectionUsed = true;
+    this.trackAnalytics({
+      name: "local_injection_attempt",
+      surface: draft.anchor.sourceKind === "authored" ? "command_scope" : "selected_evidence",
+      target: draft.anchor.executionTarget === "captured-wire" ? "wire" : "listener",
+      edited: draft.sourceRawText === null || draft.rawText !== draft.sourceRawText
+    });
+  }
+
+  private recordAnalyticsLocalInjectionResult(
+    draft: LocalInjectionDraftState,
+    outcome: WorkbenchLocalInjectionOutcome
+  ): void {
+    this.trackAnalytics({
+      name: "local_injection_result",
+      surface: draft.anchor.sourceKind === "authored" ? "command_scope" : "selected_evidence",
+      target: draft.anchor.executionTarget === "captured-wire" ? "wire" : "listener",
+      edited: draft.sourceRawText === null || draft.rawText !== draft.sourceRawText,
+      outcome: analyticsLocalInjectionOutcome(outcome)
+    });
   }
 
   private refreshLocalInjectionValidation(draft: LocalInjectionDraftState): void {
@@ -1828,6 +1869,7 @@ class Runtime implements WorkbenchRuntime {
 
   private createSnapshot(): WorkbenchSnapshot {
     const evidence = this.displayedEvidence();
+    const scope = this.scopeSnapshot();
     const visibleEnd = evidence.events.length > 0
       ? Math.max(0, evidence.total - evidence.offset)
       : 0;
@@ -1846,16 +1888,16 @@ class Runtime implements WorkbenchRuntime {
       captureStatus: this.captureStatus,
       capture: this.captureSnapshot(),
       scopeId: this.scopeId,
-      scope: this.scopeSnapshot(),
+      scope,
       selectionEventId: this.selectionEventId,
       selectedEvidence:
         this.selectedEventEnvelope?.id === this.selectionEventId
-          ? toWorkbenchEvidence(this.selectedEventEnvelope)
+          ? this.presentEvidence(this.selectedEventEnvelope)
           : null,
       contextId: this.contextId,
-      context: this.contextSnapshot(evidence.events),
+      context: this.contextSnapshot(evidence.events, scope),
       commandProjections: this.commandProjectionSnapshot(),
-      diagnostics: this.diagnosticSnapshot(),
+      diagnostics: this.diagnosticSnapshot(scope),
       storage: Object.freeze({ ...this.storage }),
       retention: this.retentionSnapshot(),
       analytics: Object.freeze({
@@ -1868,7 +1910,7 @@ class Runtime implements WorkbenchRuntime {
       evidenceCopy: this.evidenceCopy,
       localInjection: this.localInjectionSnapshot(),
       evidence: Object.freeze({
-        events: Object.freeze(evidence.events.map(toWorkbenchEvidence)),
+        events: Object.freeze(evidence.events.map((event) => this.presentEvidence(event))),
         loading: this.evidenceLoading,
         total: this.evidenceLoading ? evidence.total : this.liveEvidence.total,
         windowSize: this.windowSize,
@@ -1900,6 +1942,14 @@ class Runtime implements WorkbenchRuntime {
             : null
       })
     });
+  }
+
+  private presentEvidence(event: LightstreamerEventEnvelope): WorkbenchEvidence {
+    const cached = this.evidencePresentationCache.get(event);
+    if (cached) return cached;
+    const presentation = toWorkbenchEvidence(event);
+    this.evidencePresentationCache.set(event, presentation);
+    return presentation;
   }
 
   private captureSnapshot(): WorkbenchCaptureSnapshot {
@@ -2027,10 +2077,26 @@ class Runtime implements WorkbenchRuntime {
   private scopeSnapshot(): WorkbenchSnapshot["scope"] {
     const state = this.topologyProjection.snapshot();
     const projectionStatus = this.topologyProjection.status();
+    const cached = this.scopeSnapshotCache;
+    if (
+      cached?.state === state &&
+      cached.scopeId === this.scopeId &&
+      cached.captureStatus === this.captureStatus &&
+      cached.semanticActive === projectionStatus.semanticActive &&
+      cached.syncState === projectionStatus.syncState &&
+      cached.coverageStatus === (projectionStatus.coverage?.status ?? null)
+    ) {
+      if (cached.snapshot.focusedNodeId === this.scopeFocusedNodeId) return cached.snapshot;
+      cached.snapshot = Object.freeze({
+        ...cached.snapshot,
+        focusedNodeId: this.scopeFocusedNodeId
+      });
+      return cached.snapshot;
+    }
     const nodes = topologyScopeNodes(state, this.scopeId, this.captureStatus);
     const selected = nodes.find((node) => node.selected) ?? nodes[0];
     const limited = projectionStatus.coverage?.status === "partial";
-    return Object.freeze({
+    const snapshot = Object.freeze({
       label: scopeBreadcrumb(nodes, selected),
       status: [
         selected ? scopeLifecycleLabel(selected.lifecycle) : "Unknown",
@@ -2054,6 +2120,16 @@ class Runtime implements WorkbenchRuntime {
           : "Legacy capture coverage; unavailable runtime properties remain explicit."
       })
     });
+    this.scopeSnapshotCache = {
+      state,
+      scopeId: this.scopeId,
+      captureStatus: this.captureStatus,
+      semanticActive: projectionStatus.semanticActive,
+      syncState: projectionStatus.syncState,
+      coverageStatus: projectionStatus.coverage?.status ?? null,
+      snapshot
+    };
+    return snapshot;
   }
 
   private retentionSnapshot(): WorkbenchRetentionSnapshot {
@@ -2083,14 +2159,16 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  private contextSnapshot(events: readonly LightstreamerEventEnvelope[]): WorkbenchContextSnapshot {
+  private contextSnapshot(
+    events: readonly LightstreamerEventEnvelope[],
+    scope: WorkbenchSnapshot["scope"]
+  ): WorkbenchContextSnapshot {
     const selected =
       (this.selectedEventEnvelope?.id === this.selectionEventId
         ? this.selectedEventEnvelope
         : events.find((event) => event.id === this.selectionEventId)) ?? null;
     if (!selected) {
       const topology = this.topologyProjection.snapshot();
-      const scope = this.scopeSnapshot();
       return runtimeObjectDossier(
         findTopologySelection(topology, this.scopeId ?? "page"),
         scope.label,
@@ -2136,7 +2214,7 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  private diagnosticSnapshot(): readonly WorkbenchDiagnostic[] {
+  private diagnosticSnapshot(scope: WorkbenchSnapshot["scope"]): readonly WorkbenchDiagnostic[] {
     const capture = this.captureSnapshot();
     const diagnostics: WorkbenchDiagnostic[] = [];
     if (this.captureStatus === "bridge disconnected") {
@@ -2179,7 +2257,7 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Restore IndexedDB availability and reopen DevTools"
       });
     }
-    const scopeSelection = this.scopeSnapshot().selection;
+    const scopeSelection = scope.selection;
     if (scopeSelection?.retired) {
       diagnostics.push({
         severity: "Information",
@@ -2733,6 +2811,27 @@ function localInjectionOutcomeFromResult(
     detail: result.error ?? "The local delivery target rejected the update.",
     ...counts
   });
+}
+
+function analyticsLocalInjectionOutcome(
+  outcome: WorkbenchLocalInjectionOutcome
+): AnalyticsLocalInjectionOutcome {
+  if (outcome.disposition === "partial") return "partial";
+  if (outcome.disposition === "acknowledgement-unknown") return "acknowledgement_unknown";
+  switch (outcome.status) {
+    case "success":
+      return "success";
+    case "stale-target":
+      return "stale_target";
+    case "listener-error":
+      return "listener_error";
+    case "wire-error":
+      return "wire_error";
+    case "bridge-error":
+      return "bridge_error";
+    case "acknowledgement-unknown":
+      return "acknowledgement_unknown";
+  }
 }
 
 function localInjectionResultConfirmsDelivery(

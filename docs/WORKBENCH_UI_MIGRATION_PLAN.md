@@ -1,20 +1,20 @@
 # Workbench production UI migration plan
 
-Status: **accepted implementation handoff, 2026-08-04**
+Status: **completed through Slice 3 cutover, 2026-08-05**
 
-This plan moves the production Chrome DevTools panel from the current feature-first DOM renderer to the accepted [integrated Workbench direction](../prototypes/workbench-ui-10/README.md). It is an implementation sequence, compatibility contract, and verification handoff. It does not change production behavior by itself.
+This document records the completed move from the feature-first DOM renderer to the accepted [integrated Workbench direction](../prototypes/workbench-ui-10/README.md). The original slice gates and fallback reasoning remain as implementation history; the current production state is authoritative wherever it differs from an earlier slice description.
 
 The migration preserves Lightstreamer and extension semantics. It replaces the panel renderer and its state boundary; it does not reinterpret Capture, COMMAND state, Local Injection, storage, privacy, export, or analytics.
 
 ## Outcome
 
-Implement the accepted **Scoped Evidence Workspace** with React in three developer-visible vertical slices:
+The accepted **Scoped Evidence Workspace** was implemented with React in three developer-visible vertical slices:
 
 1. **Read-only Diagnose and operate** — the complete observation, scoping, Evidence, Context, projection, export, and degraded-operation journey.
 2. **Single-event Local Injection** — both accepted entry paths, raw JSON editing, optional Source comparison, validation, review, execution, and persistent outcomes.
-3. **Cut over and remove the legacy renderer** — change the approved Store build to React only, prove capability parity, and delete the temporary compatibility machinery and obsolete interface.
+3. **Cut over and remove the legacy renderer** — changed the approved Store build to React only, proved capability parity, and deleted the temporary renderer-selection machinery and obsolete interface.
 
-Slices 1 and 2 are separately buildable React panel variants used in development and CI. They are not partial Store rollouts. The Store build continues to contain only the legacy renderer until Slice 3, when it changes directly to React and the legacy implementation is removed.
+The current repository has one panel implementation and one production artifact. `npm run build` writes the accepted React Workbench to `dist/`; Store packaging consumes that same artifact. The temporary Slice 1/2 React-only commands, second output directory, compile-time renderer alias, and renderer environment gate no longer exist.
 
 ## Decisions fixed by this plan
 
@@ -24,7 +24,7 @@ Slices 1 and 2 are separately buildable React panel variants used in development
 - Keep background, content-script, inspected-page instrumentation, bridge, event history, Capture, and Lightstreamer semantics framework-independent.
 - Create one React root and one `WorkbenchRuntime` per panel session.
 - Do not introduce Redux, Zustand, or another application state container initially.
-- Do not preserve `PanelController` or `renderPanel()` as the new panel interface. They remain isolated legacy implementation details until cutover and are then deleted.
+- The prior DOM controller and public render surface were not retained.
 - Do not run, mount, or hot-switch two renderers in one panel session.
 
 ### Deep runtime boundary
@@ -77,19 +77,19 @@ React components do not subscribe directly to Capture, history, bridge, or analy
 - The default surface is an editable raw JSON Draft. It is not a generated field-by-field form.
 - Optional Source comparison uses CodeMirror's two-sided merge presentation with one shared outer scroll owner. The Source is immutable and matched to the Draft by Evidence identity.
 - Long unchanged regions may collapse; each Draft event boundary may also be minimized without hiding its identity, target, validation problem, or outcome state.
-- Current production behavior contains exactly one Draft event. Visible Evidence never automatically becomes Draft membership.
+- Current production behavior contains exactly one Draft event. Visible Evidence never joins it automatically.
 
-### Build-time renderer boundary
+### Production build boundary
 
-- Keep the panel HTML/bootstrap stable and resolve an internal `panel-renderer` module through a Vite compile-time alias.
-- During Slices 1 and 2, the normal Store build resolves only the legacy renderer. A separate development and CI command resolves only the React renderer.
-- Never select the renderer with a URL parameter, local storage, hidden preference, remote flag, runtime conditional, or dynamic hot switch.
-- Each built extension contains exactly one renderer. Rollup must not retain the inactive implementation or its framework dependencies.
-- At cutover, the normal alias resolves React. The immediately following cleanup removes the alias, legacy renderer, legacy public interface, old-only selectors, tests, CSS, and baselines.
+- `npm run build` produces the single accepted React extension in `dist/`.
+- `npm run release:package` and the other release-format commands build and package that same `dist/` artifact.
+- No URL parameter, local storage value, hidden preference, environment gate, runtime condition, or compile-time alias selects another renderer.
+- React remains confined to the panel graph and is absent from background, content, and inspected-page instrumentation bundles.
+- CodeMirror and merge support remain in a lazy panel chunk rather than the initial panel JavaScript.
 
 ### Compatibility contract
 
-Compatibility is judged through deterministic panel scenarios and user-visible semantics—not `PanelController`, legacy DOM structure, or pixel parity with the old panel.
+Compatibility was judged through deterministic panel scenarios and user-visible semantics, not the removed controller/DOM structure or pixel parity with the old panel.
 
 Each cross-renderer scenario fixes:
 
@@ -99,7 +99,7 @@ Each cross-renderer scenario fixes:
 - developer actions expressed in semantic terms;
 - expected Scope, Evidence, selection, projections, diagnostics, export, Draft, and outcome semantics.
 
-Each renderer receives a thin interaction adapter. During coexistence, CI runs the same scenario contract against legacy and React separately and compares observable meaning and outcomes. Legacy selectors, adapter, and legacy-only baselines are deleted at cutover.
+During temporary coexistence, each renderer received a thin interaction adapter and CI compared observable meaning and outcomes. Those selectors, adapters, and old-only baselines were migration scaffolding and are not part of the current production boundary.
 
 Visual compatibility means conformance to the accepted prototype and UI standard, not visual parity with the legacy shell.
 
@@ -117,11 +117,11 @@ Visual compatibility means conformance to the accepted prototype and UI standard
 | Analytics | Existing consent, event minimization, failure isolation, and privacy boundaries remain unchanged. Renderer changes do not create new analytics meaning implicitly. | Consent-on/off and transport-failure tests. |
 | Theme and accessibility | Auto, Dark, Light, forced-colors awareness, keyboard composites, visible focus, and exact restoration follow the accepted standards. | Pairwise screenshots, keyboard paths, and axe. |
 
-## Slice 1 — Read-only Diagnose and operate
+## Slice 1 — Read-only Diagnose and operate (completed)
 
 ### Developer-visible outcome
 
-A developer can open the React panel, establish whether Capture is useful, scope an investigation, inspect ordered Evidence, understand runtime and COMMAND state, preserve a historical investigation during sustained Capture, diagnose degraded operation, and export or copy relevant evidence. No Local Injection capability is claimed by the React build yet.
+This slice established the read-only Diagnose journey before Local Injection was added. Its temporary capability limit does not describe the current production panel.
 
 ### Included behavior
 
@@ -138,15 +138,15 @@ A developer can open the React panel, establish whether Capture is useful, scope
 - scoped versioned JSON and offline HTML export with current redaction and credential rules;
 - theme preference, current retention/clear behavior, session teardown, analytics consent, and failure isolation.
 
-### Implementation order
+### Completed implementation sequence
 
-1. Add the stable bootstrap, compile-time renderer alias, React-only build command, scenario adapter, React root, and the smallest `WorkbenchRuntime` that renders a truthful empty or Capture-orientation state.
-2. Bring Capture operation, Coverage, Topology, and Scope into the runtime with the operating strip and Scope picker.
-3. Bring history querying, bounded Evidence, Filter, Find, selection, Context, and Live/Frozen behavior into the same runtime slice.
-4. Add raw Evidence, COMMAND projections, diagnostics, high-volume/degraded behavior, export, theme, retention/clear, and analytics consent.
-5. Complete the Slice 1 verification packet and establish the React bundle, startup, long-task, and memory baseline.
+1. Added the stable bootstrap, temporary candidate-build boundary, scenario adapter, React root, and the smallest `WorkbenchRuntime` that rendered a truthful empty or Capture-orientation state.
+2. Brought Capture operation, Coverage, Topology, and Scope into the runtime with the operating strip and Scope picker.
+3. Brought history querying, bounded Evidence, Filter, Find, selection, Context, and Live/Frozen behavior into the same runtime slice.
+4. Added raw Evidence, COMMAND projections, diagnostics, high-volume/degraded behavior, export, theme, retention/clear, and analytics consent.
+5. Completed the Slice 1 verification packet and established the React bundle, startup, long-task, and memory baseline.
 
-Each extraction lands with a developer-visible React behavior and its scenario. There is no foundation-only refactor or speculative shared-component library.
+Each extraction landed with a developer-visible React behavior and its scenario. No foundation-only refactor or speculative shared-component library was introduced.
 
 ### Required Slice 1 scenarios
 
@@ -161,16 +161,16 @@ Each extraction lands with a developer-visible React behavior and its scenario. 
 
 ### Slice 1 completion gate
 
-- Every included legacy capability has a scenario-backed React equivalent or an explicit accepted removal recorded in the ticket. Cosmetic similarity is not required.
+- Every included prior capability had a scenario-backed React equivalent or an explicit accepted removal recorded in the ticket. Cosmetic similarity was not required.
 - Capture, history, projections, export, privacy, and analytics tests pass unchanged or are replaced with semantic tests at an equal or stronger boundary.
 - The actual extension loads the React-only build against the official client fixture and completes a read-only Diagnose journey.
-- The normal Store build remains legacy and green.
+- At the Slice 1 checkpoint, the then-current Store artifact remained unchanged and green.
 
 ### Slice 1 fallback
 
-Do not change the Store renderer. If the React slice is not acceptable, remove or revert its isolated commits; Capture, storage, and the released panel remain on the prior verified legacy artifact.
+The historical Slice 1 fallback was to leave the then-current Store artifact unchanged and revert the isolated candidate commits. It is no longer a current build instruction.
 
-## Slice 2 — Single-event Local Injection
+## Slice 2 — Single-event Local Injection (completed)
 
 ### Developer-visible outcome
 
@@ -199,13 +199,13 @@ A developer can create one explicit Local Injection Draft from either a selected
 - Server Injection or any implication that Workbench creates an inbound server-stream update;
 - automatic retargeting, repetition, discarding, or broadening of a Draft.
 
-### Implementation order
+### Completed implementation sequence
 
-1. Add lazy modular CodeMirror integration and the selected-Evidence Source-to-Draft transition.
-2. Add semantic JSON validation, Source comparison, shared scrolling, collapse/minimize, and complete editor restoration.
-3. Add target preflight, dedicated Review, execution dispatch through the existing Local Injection bridge, and persistent outcomes.
-4. Add the authored COMMAND entry path using the same Draft and execution contract.
-5. Complete Local Injection browser, extension, performance, accessibility, and independent-review evidence.
+1. Added lazy modular CodeMirror integration and the selected-Evidence Source-to-Draft transition.
+2. Added semantic JSON validation, Source comparison, shared scrolling, collapse/minimize, and complete editor restoration.
+3. Added target preflight, dedicated Review, execution dispatch through the existing Local Injection bridge, and persistent outcomes.
+4. Added the authored COMMAND entry path using the same Draft and execution contract.
+5. Completed Local Injection browser, extension, performance, accessibility, and independent-review evidence.
 
 ### Required Slice 2 scenarios
 
@@ -224,28 +224,28 @@ A developer can create one explicit Local Injection Draft from either a selected
 - A real unpacked-extension fixture proves delivery through the existing official Lightstreamer client/listener path; a standalone mock is insufficient.
 - Invalid or stale Drafts cannot execute and never manufacture successful Injected Update Evidence.
 - CodeMirror and its language/merge code appear only in lazy panel chunks and require no remote code, `eval`, runtime JSX, or relaxed extension-page CSP.
-- The React build has capability parity for all accepted Diagnose and Local Injection journeys. Only then may Slice 3 begin.
+- The React build had capability parity for all accepted Diagnose and Local Injection journeys before Slice 3 began.
 
 ### Slice 2 fallback
 
-The Store build remains legacy. Revert the React Slice 2 commits or continue to use the last verified React Slice 1 artifact while defects are resolved. Never expose a partial Local Injection workflow in a Store build.
+The historical Slice 2 fallback was to keep the then-current Store artifact unchanged until the complete Local Injection workflow passed its gate. It is no longer a current build instruction; partial Local Injection capability must still never ship.
 
-## Slice 3 — Cut over and remove the legacy renderer
+## Slice 3 — Cut over and remove the legacy renderer (completed)
 
 ### Developer-visible outcome
 
-The normal extension build and Chrome Web Store package contain the accepted React Workbench only. All preserved capabilities remain available, and no temporary compatibility control or obsolete legacy interface remains.
+The normal extension build and Chrome Web Store package contain the accepted React Workbench only. All preserved capabilities remain available, and no temporary renderer compatibility control or obsolete interface remains.
 
-### Implementation order
+### Completed sequence
 
-1. Run and record the complete capability-parity checklist against the last legacy artifact and candidate React artifact using the shared scenarios.
-2. Switch the normal compile-time alias so `npm run build` and Store packaging resolve React only.
-3. Run the full unit, browser, extension, official-client fixture, export/offline, performance, accessibility, visual, CSP, and package verification packet.
-4. In the immediately following cleanup commit, delete the renderer alias, legacy `renderPanel()`/`PanelController` surface, legacy-only implementation and CSS, legacy interaction adapter, selectors, tests, screenshot baselines, and temporary build commands.
-5. Audit production source, tests, docs, analytics names, and screenshots for obsolete Timeline/Topology/COMMAND peer-view organization, Replay terminology, and accidental dual-renderer references.
-6. Build and retain the verified release artifact and its measurements before publication work begins.
+1. Recorded the complete capability-parity checklist against the last prior artifact and the candidate React artifact using shared scenarios.
+2. Switched `npm run build` and Store packaging directly to the accepted React panel.
+3. Ran the unit, browser, extension, official-client fixture, export/offline, performance, accessibility, visual, CSP, and package verification packet.
+4. Removed the renderer alias, prior public controller/mount surface, old-only implementation and CSS, interaction adapter, selectors, tests, screenshot baselines, and temporary build commands.
+5. Audited production source, tests, docs, analytics names, and screenshots for obsolete peer-view organization, Replay UI terminology, and accidental dual-renderer references.
+6. Built and retained the verified release artifact and its measurements before publication work began.
 
-The cutover and cleanup may be separate consecutive commits for reviewability, but they form one release boundary. Do not publish the intermediate dual-source repository state.
+The cutover and cleanup were reviewable consecutive steps but formed one release boundary. No intermediate dual-source repository state was eligible for publication.
 
 ### Slice 3 completion gate
 
@@ -259,7 +259,7 @@ The cutover and cleanup may be separate consecutive commits for reviewability, b
 
 ### Slice 3 fallback
 
-Rollback means reverting the cutover commit or reinstalling the previous verified legacy artifact. It does not mean shipping a runtime toggle, retaining two renderers indefinitely, or restoring legacy through a hidden setting. If the React artifact fails after cutover but before release, return `main` to the last verified commit while correcting the candidate.
+Rollback means reverting the complete cutover boundary or reinstalling the previous verified release artifact. It does not mean shipping a runtime toggle, retaining two renderers, or restoring the removed implementation through a hidden setting. If a candidate release fails before publication, return `main` to the last verified commit while correcting the candidate.
 
 ## Verification standard for every slice
 
@@ -269,8 +269,7 @@ All three slices are **Material UI** changes under the [Workbench UI standard](W
 
 - `npm run typecheck`
 - `npm test`
-- `npm run build` for the approved Store renderer
-- the corresponding React-only build during Slices 1 and 2
+- `npm run build` for the single approved Store artifact
 - focused runtime snapshot/command/disposal tests;
 - preserved domain, projection, history, export, privacy, analytics, and Local Injection tests;
 - a bundle-content audit proving renderer and framework isolation.
@@ -324,26 +323,22 @@ An independent reviewer receives the source acceptance criteria, deterministic s
 
 | Risk | Prevention and detection | Stop or fallback condition |
 | --- | --- | --- |
-| Renderer divergence during coexistence | One scenario contract, separate artifacts, capability comparisons, short three-slice migration. | A semantic mismatch without an approved product decision blocks the next slice. |
+| Historical renderer divergence during coexistence | One scenario contract, separate artifacts, capability comparisons, short three-slice migration. | A semantic mismatch without an approved product decision blocked the next slice. |
 | React render storms during Capture | Deep runtime, cached immutable snapshots, frame batching, bounded rows, hidden-panel consolidation. | Refresh-gap, long-task, or heap review trigger is exceeded. |
 | Focus or investigation loss | Identity-based Scope/Evidence/editor restoration and browser keyboard scenarios. | Passive Capture changes focus, selection, Frozen anchor, Context, or Draft. |
 | COMMAND semantic drift | Preserve existing projection modules and exact named outputs; scenario both projections after Local Injection. | Observed Server includes Local Evidence or Local Effective fails to include a successful local update. |
 | Unsafe Local Injection | Exact target identity, preflight validation, dedicated Review, pending lock, truthful immutable outcomes. | Any stale/invalid Draft can execute, a target silently changes, or successful Evidence is manufactured after uncertain failure. |
 | Editor/package growth | Modular lazy CodeMirror, per-chunk measurements, 500 kB initial-chunk and 1 MiB Store ZIP gates. | A budget is exceeded without explicit review or editor code enters initial/background/content bundles. |
 | Manifest V3 rejection | Local dependencies, compiled-artifact audit, CSP install proof, no remote executable code/evaluation. | Any runtime-loaded executable dependency, inline executable script, `eval`, or relaxed CSP is required. |
-| Permanent compatibility burden | Build-only alias, one renderer per artifact, immediate Slice 3 deletion audit. | A runtime renderer switch or indefinite legacy path becomes necessary; reopen the migration decision instead. |
+| Permanent renderer compatibility burden | One production mount and artifact, plus a source/output audit that rejects a second renderer path. | A runtime renderer switch or second production path becomes necessary; reopen the architecture decision instead. |
 
-## Handoff checklist
+## Current maintenance checklist
 
-Before implementation starts:
-
-- create implementation work items for Slice 1, Slice 2, and Slice 3 in that order;
-- attach this plan, the integrated prototype review matrix, and the UI standard to each item;
-- keep production work on `main` as requested, using small independently green commits and no migration branch;
-- record the last verified legacy commit and package as the initial fallback point;
-- capture the current package and runtime performance baseline using the same commands and environment planned for React;
-- do not start Slice 2 until Slice 1's React evidence packet is accepted;
-- do not start cutover until complete Diagnose and single-event Local Injection capability parity is accepted.
+- Keep `npm run build`, Store packaging, UI verification, extension smoke, and the official-client fixture on the same production panel.
+- Keep React confined to the panel and CodeMirror confined to its lazy document chunk.
+- Preserve exactly one Injection Draft and both accepted entry paths.
+- Record Material UI evidence under the Workbench UI standard and retain the verified release artifact and measurements before publication.
+- Treat any proposed second renderer path or hidden switch as a new architecture decision, not a rollback mechanism.
 
 ## Source decisions and evidence
 
@@ -358,13 +353,13 @@ Before implementation starts:
 - [React extension bundle-size research](research/react-chrome-extension-bundle-size.md)
 - [CodeMirror system guide](https://codemirror.net/docs/guide/) and [merge reference](https://codemirror.net/docs/ref/)
 
-## Approval record
+## Historical approval record
 
 The product owner explicitly approved:
 
 1. a temporary gated migration with capability parity before cutover and immediate legacy removal afterward;
 2. three vertical slices: Diagnose, single-event Local Injection, and cutover/removal;
-3. React in the panel only and a new framework-independent `WorkbenchRuntime` instead of preserving `PanelController`;
+3. React in the panel only and a new framework-independent `WorkbenchRuntime` instead of preserving the prior DOM controller;
 4. one runtime and one renderer per panel session;
 5. deterministic scenarios as the compatibility contract;
 6. a build-time-only renderer gate with no shipped runtime switch;
@@ -375,4 +370,4 @@ The product owner explicitly approved:
 11. pairwise visual verification plus browser, extension, performance, accessibility, and independent-review evidence;
 12. all remaining recommendations needed to complete this ordered handoff.
 
-No `CONTEXT.md` amendment is required. `WorkbenchRuntime`, React, renderer aliasing, CodeMirror, package budgets, vertical slices, and compatibility scenarios are implementation and product-process language. Existing domain terms and semantics remain authoritative.
+No `CONTEXT.md` amendment was required. `WorkbenchRuntime`, React, the now-removed renderer alias, CodeMirror, package budgets, vertical slices, and compatibility scenarios are implementation and product-process language. Existing domain terms and semantics remain authoritative.

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { lazy, memo, Suspense, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import {
   type WorkbenchCommand,
@@ -21,6 +21,125 @@ const LazyLocalInjectionDocument = lazy(async () => {
 });
 
 export type WorkbenchPanelProps = { runtime: WorkbenchRuntime };
+
+type ScopeNode = WorkbenchSnapshot["scope"]["nodes"][number];
+type ScopeTreeEntry = { node: ScopeNode; index: number };
+type ScopeTreeActions = {
+  scroll(scrollTop: number): void;
+  focus(scopeId: string): void;
+  commit(scopeId: string): void;
+  key(event: ReactKeyboardEvent<HTMLButtonElement>, node: ScopeNode): void;
+};
+
+const ScopeTree = memo(function ScopeTree({
+  logicalNodeCount,
+  visibleNodeCount,
+  entries,
+  logicalHeight,
+  childrenByParent,
+  siblingPositionById,
+  collapsedIds,
+  focusId,
+  treeRef,
+  nodeRefs,
+  actionsRef
+}: {
+  logicalNodeCount: number;
+  visibleNodeCount: number;
+  entries: readonly ScopeTreeEntry[];
+  logicalHeight: number;
+  childrenByParent: ReadonlyMap<string | null, readonly ScopeNode[]>;
+  siblingPositionById: ReadonlyMap<string, { position: number; size: number }>;
+  collapsedIds: ReadonlySet<string>;
+  focusId: string | null;
+  treeRef: { current: HTMLDivElement | null };
+  nodeRefs: { current: Map<string, HTMLButtonElement> };
+  actionsRef: { current: ScopeTreeActions };
+}): JSX.Element {
+  return (
+    <div
+      className="workbench-react__scope-tree"
+      role="tree"
+      aria-label={`Runtime Scope tree · ${logicalNodeCount.toLocaleString()} nodes`}
+      data-logical-node-count={logicalNodeCount}
+      data-visible-node-count={visibleNodeCount}
+      data-mounted-node-count={entries.length}
+      ref={treeRef}
+      onScroll={(event) => actionsRef.current.scroll(event.currentTarget.scrollTop)}
+    >
+      <div
+        className="workbench-react__scope-tree-window"
+        role="presentation"
+        style={{ height: `${logicalHeight}px` }}
+      >
+        {entries.map(({ node, index }) => {
+          const siblingPosition = siblingPositionById.get(node.id);
+          const hasChildren = (childrenByParent.get(node.id)?.length ?? 0) > 0;
+          return (
+            <button
+              className="workbench-react__scope-node workbench-react__scope-node--windowed"
+              key={node.id}
+              role="treeitem"
+              aria-level={node.depth + 1}
+              aria-posinset={siblingPosition?.position}
+              aria-setsize={siblingPosition?.size}
+              aria-selected={node.selected}
+              aria-current={node.selected ? "true" : undefined}
+              data-retired={node.retired || undefined}
+              data-scope-id={node.id}
+              aria-expanded={hasChildren ? !collapsedIds.has(node.id) : undefined}
+              tabIndex={node.id === focusId ? 0 : -1}
+              style={{ top: `${index * SCOPE_NODE_HEIGHT}px` }}
+              ref={(element) => {
+                if (element) nodeRefs.current.set(node.id, element);
+                else nodeRefs.current.delete(node.id);
+              }}
+              onClick={() => {
+                actionsRef.current.focus(node.id);
+                actionsRef.current.commit(node.id);
+              }}
+              onKeyDown={(event) => actionsRef.current.key(event, node)}
+            ><span>{node.label}</span><em>{node.detail ? `${node.detail} · ${lifecycleLabel(node.lifecycle)}` : lifecycleLabel(node.lifecycle)}</em></button>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
+type EvidenceRowActions = { select(eventId: string): void };
+
+const EvidenceRow = memo(function EvidenceRow({
+  event,
+  selected,
+  findPosition,
+  rowRefs,
+  actionsRef
+}: {
+  event: WorkbenchSnapshot["evidence"]["events"][number];
+  selected: boolean;
+  findPosition: string | null;
+  rowRefs: { current: Map<string, HTMLButtonElement> };
+  actionsRef: { current: EvidenceRowActions };
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      className="workbench-react__evidence-row"
+      role="row"
+      data-evidence-id={event.id}
+      data-find-current={findPosition ? true : undefined}
+      aria-selected={selected}
+      aria-current={findPosition ? "true" : undefined}
+      tabIndex={-1}
+      ref={(element) => {
+        if (element) rowRefs.current.set(event.id, element);
+        else rowRefs.current.delete(event.id);
+      }}
+      onClick={() => actionsRef.current.select(event.id)}
+    ><span role="gridcell"><time>{event.time}</time><small>{event.id}</small>{findPosition ? <small className="workbench-react__find-match">{findPosition}</small> : null}</span><strong role="gridcell">{event.source}</strong><span role="gridcell">{event.phase}</span><b role="gridcell">{event.command ?? "—"}</b><span role="gridcell"><strong>{event.kind}</strong><small>{event.object}</small></span><span role="gridcell">{event.summary}</span></button>
+  );
+});
 
 function dispatch(runtime: WorkbenchRuntime, command: WorkbenchCommand): void {
   runtime.dispatch(command);
@@ -85,6 +204,10 @@ const NORMAL_MIN_HEIGHT = PERSISTENT_CHROME_HEIGHT + EVIDENCE_MIN_HEIGHT + CONTE
 const SHALLOW_MIN_WIDTH = EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE;
 const WIDE_MIN_WIDTH = Math.max(1120, SCOPE_MIN_WIDTH + EVIDENCE_MIN_WIDTH + CONTEXT_MIN_WIDTH + SPLITTER_SIZE * 2);
 const GEOMETRY_HYSTERESIS = 32;
+const SCOPE_NODE_HEIGHT = 27;
+const SCOPE_WINDOW_OVERSCAN = 8;
+const SCOPE_FALLBACK_VIEWPORT_ROWS = 48;
+const SCOPE_MAX_WINDOW_SIZE = 127;
 
 function classifyGeometry(width: number, height: number): WorkbenchGeometry {
   if (width >= WIDE_MIN_WIDTH && height >= NORMAL_MIN_HEIGHT) return "wide";
@@ -124,8 +247,16 @@ function clamp(value: number, minimum: number, maximum: number): number {
 export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const snapshot = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot, runtime.getSnapshot);
   const evidenceRows = useRef(new Map<string, HTMLButtonElement>());
+  const evidenceRowActions = useRef<EvidenceRowActions>({ select: () => undefined });
   const evidenceLedger = useRef<HTMLDivElement | null>(null);
+  const scopeTree = useRef<HTMLDivElement | null>(null);
   const scopeNodesById = useRef(new Map<string, HTMLButtonElement>());
+  const scopeTreeActions = useRef<ScopeTreeActions>({
+    scroll: () => undefined,
+    focus: () => undefined,
+    commit: () => undefined,
+    key: () => undefined
+  });
   const pendingEvidenceFocus = useRef<string | null>(null);
   const pendingScopeFocus = useRef<string | null>(null);
   const pendingContextFocus = useRef(false);
@@ -145,6 +276,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState("");
   const [collapsedScopeIds, setCollapsedScopeIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [scopeWindowStart, setScopeWindowStart] = useState(0);
+  const [scopeTreeHeight, setScopeTreeHeight] = useState(SCOPE_NODE_HEIGHT * SCOPE_FALLBACK_VIEWPORT_ROWS);
   const scopeTypeahead = useRef("");
   const scopeTypeaheadReset = useRef<number | null>(null);
   const findInput = useRef<HTMLInputElement | null>(null);
@@ -184,15 +317,75 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const hiddenSelection = evidence.hiddenSelection;
   const contextFields = snapshot.context.fields;
   const scopeNodes = snapshot.scope.nodes;
-  const scopeNodeById = new Map(scopeNodes.map((node) => [node.id, node]));
-  const visibleScopeNodes = scopeNodes.filter((node) => {
-    let parentId = node.parentId;
-    while (parentId) {
-      if (collapsedScopeIds.has(parentId)) return false;
-      parentId = scopeNodeById.get(parentId)?.parentId ?? null;
+  const {
+    scopeNodeById,
+    scopeChildrenByParent,
+    scopeSiblingPositionById,
+    visibleScopeNodes,
+    visibleScopeIndexById
+  } = useMemo(() => {
+    const nodeById = new Map(scopeNodes.map((node) => [node.id, node]));
+    const childrenByParent = new Map<
+      string | null,
+      WorkbenchSnapshot["scope"]["nodes"][number][]
+    >();
+    for (const node of scopeNodes) {
+      const siblings = childrenByParent.get(node.parentId) ?? [];
+      siblings.push(node);
+      childrenByParent.set(node.parentId, siblings);
     }
-    return true;
-  });
+    const siblingPositionById = new Map<string, { position: number; size: number }>();
+    for (const siblings of childrenByParent.values()) {
+      for (let index = 0; index < siblings.length; index += 1) {
+        siblingPositionById.set(siblings[index]!.id, { position: index + 1, size: siblings.length });
+      }
+    }
+    const visibleNodes = scopeNodes.filter((node) => {
+      let parentId = node.parentId;
+      while (parentId) {
+        if (collapsedScopeIds.has(parentId)) return false;
+        parentId = nodeById.get(parentId)?.parentId ?? null;
+      }
+      return true;
+    });
+    return {
+      scopeNodeById: nodeById,
+      scopeChildrenByParent: childrenByParent,
+      scopeSiblingPositionById: siblingPositionById,
+      visibleScopeNodes: visibleNodes,
+      visibleScopeIndexById: new Map(visibleNodes.map((node, index) => [node.id, index]))
+    };
+  }, [collapsedScopeIds, scopeNodes]);
+  const requestedFocusedNode = snapshot.scope.focusedNodeId
+    ? scopeNodeById.get(snapshot.scope.focusedNodeId)
+    : undefined;
+  let effectiveFocusedNode = requestedFocusedNode;
+  while (effectiveFocusedNode && !visibleScopeIndexById.has(effectiveFocusedNode.id)) {
+    effectiveFocusedNode = effectiveFocusedNode.parentId
+      ? scopeNodeById.get(effectiveFocusedNode.parentId)
+      : undefined;
+  }
+  effectiveFocusedNode ??= scopeNodes.find((node) => node.selected && visibleScopeIndexById.has(node.id));
+  effectiveFocusedNode ??= visibleScopeNodes[0];
+  const renderedFocusId = pendingScopeFocus.current ?? effectiveFocusedNode?.id ?? null;
+  const focusedScopeIndex = renderedFocusId ? visibleScopeIndexById.get(renderedFocusId) ?? -1 : -1;
+  const scopeWindowSize = clamp(
+    Math.ceil(scopeTreeHeight / SCOPE_NODE_HEIGHT) + SCOPE_WINDOW_OVERSCAN * 2,
+    1,
+    SCOPE_MAX_WINDOW_SIZE
+  );
+  const maximumScopeWindowStart = Math.max(0, visibleScopeNodes.length - scopeWindowSize);
+  const renderedScopeWindowStart = clamp(scopeWindowStart, 0, maximumScopeWindowStart);
+  const renderedScopeEntries = useMemo(() => {
+    const entries = visibleScopeNodes
+      .slice(renderedScopeWindowStart, renderedScopeWindowStart + scopeWindowSize)
+      .map((node, offset) => ({ node, index: renderedScopeWindowStart + offset }));
+    if (focusedScopeIndex >= 0 && !entries.some(({ index }) => index === focusedScopeIndex)) {
+      entries.push({ node: visibleScopeNodes[focusedScopeIndex]!, index: focusedScopeIndex });
+      entries.sort((left, right) => left.index - right.index);
+    }
+    return entries;
+  }, [focusedScopeIndex, renderedScopeWindowStart, scopeWindowSize, visibleScopeNodes]);
   const canAuthorCommandUpdate = snapshot.localInjection.availability.commandScope.available;
   const canCreateLocalInjectionDraft = snapshot.localInjection.availability.selectedUpdate.available;
   const total = evidence.total;
@@ -406,22 +599,40 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     else if (compact) dispatch(runtime, { type: "set-context", contextId: null });
   };
 
+  const revealScopeNode = (scopeId: string) => {
+    const index = visibleScopeIndexById.get(scopeId) ?? -1;
+    if (index < 0) return;
+    if (index < renderedScopeWindowStart || index >= renderedScopeWindowStart + scopeWindowSize) {
+      setScopeWindowStart(clamp(index - Math.floor(scopeWindowSize / 2), 0, maximumScopeWindowStart));
+    }
+    const tree = scopeTree.current;
+    if (!tree) return;
+    const nodeTop = index * SCOPE_NODE_HEIGHT;
+    const nodeBottom = nodeTop + SCOPE_NODE_HEIGHT;
+    if (nodeTop < tree.scrollTop) tree.scrollTop = nodeTop;
+    else if (nodeBottom > tree.scrollTop + tree.clientHeight) {
+      tree.scrollTop = Math.max(0, nodeBottom - tree.clientHeight);
+    }
+  };
+
   const moveScope = (offset: number) => {
     const nodes = visibleScopeNodes;
-    const currentIndex = Math.max(0, nodes.findIndex((node) => node.id === snapshot.scope.focusedNodeId));
+    const currentIndex = Math.max(0, renderedFocusId ? visibleScopeIndexById.get(renderedFocusId) ?? 0 : 0);
     const next = nodes[Math.min(Math.max(currentIndex + offset, 0), nodes.length - 1)];
     if (!next) return;
+    revealScopeNode(next.id);
     pendingScopeFocus.current = next.id;
     dispatch(runtime, { type: "set-scope-focus", scopeId: next.id });
   };
 
   const focusScope = (scopeId: string) => {
+    revealScopeNode(scopeId);
     pendingScopeFocus.current = scopeId;
     dispatch(runtime, { type: "set-scope-focus", scopeId });
   };
 
   const handleScopeKey = (keyEvent: ReactKeyboardEvent<HTMLButtonElement>, node: WorkbenchSnapshot["scope"]["nodes"][number]) => {
-    const childNodes = scopeNodes.filter((candidate) => candidate.parentId === node.id);
+    const childNodes = scopeChildrenByParent.get(node.id) ?? [];
     const firstChild = childNodes[0];
     const isExpanded = childNodes.length > 0 && !collapsedScopeIds.has(node.id);
     if (keyEvent.key === "ArrowUp") { keyEvent.preventDefault(); moveScope(-1); return; }
@@ -444,6 +655,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     if (keyEvent.key === "ArrowLeft") {
       keyEvent.preventDefault();
       if (childNodes.length && isExpanded) {
+        focusScope(node.id);
         setCollapsedScopeIds((ids) => new Set(ids).add(node.id));
       } else if (node.parentId) {
         focusScope(node.parentId);
@@ -462,13 +674,42 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         scopeTypeahead.current = "";
         scopeTypeaheadReset.current = null;
       }, 700);
-      const currentIndex = Math.max(0, visibleScopeNodes.findIndex(({ id }) => id === node.id));
-      const candidates = [...visibleScopeNodes.slice(currentIndex + 1), ...visibleScopeNodes.slice(0, currentIndex + 1)];
-      const match = candidates.find(({ label }) => label.toLocaleLowerCase().startsWith(scopeTypeahead.current));
+      const currentIndex = visibleScopeIndexById.get(node.id) ?? 0;
+      let match: WorkbenchSnapshot["scope"]["nodes"][number] | undefined;
+      for (let offset = 1; offset <= visibleScopeNodes.length; offset += 1) {
+        const candidate = visibleScopeNodes[(currentIndex + offset) % visibleScopeNodes.length];
+        if (candidate?.label.toLocaleLowerCase().startsWith(scopeTypeahead.current)) {
+          match = candidate;
+          break;
+        }
+      }
       if (match) {
         keyEvent.preventDefault();
         focusScope(match.id);
       }
+    }
+  };
+
+  scopeTreeActions.current = {
+    scroll(scrollTop) {
+      const firstVisibleIndex = clamp(
+        Math.ceil(scrollTop / SCOPE_NODE_HEIGHT),
+        0,
+        Math.max(0, visibleScopeNodes.length - 1)
+      );
+      setScopeWindowStart(clamp(
+        firstVisibleIndex - SCOPE_WINDOW_OVERSCAN,
+        0,
+        maximumScopeWindowStart
+      ));
+    },
+    focus: focusScope,
+    commit: commitScope,
+    key: handleScopeKey
+  };
+  evidenceRowActions.current = {
+    select(eventId) {
+      dispatch(runtime, { type: "select-evidence", eventId });
     }
   };
 
@@ -526,6 +767,28 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   };
 
   useLayoutEffect(() => {
+    const tree = scopeTree.current;
+    if (!tree) return;
+    const measure = () => setScopeTreeHeight(Math.max(SCOPE_NODE_HEIGHT, tree.clientHeight));
+    measure();
+    if (typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(tree);
+    return () => observer.disconnect();
+  }, [geometry, scopeCollapsed, scopePickerOpen, snapshot.contextId]);
+
+  useLayoutEffect(() => {
+    if (!effectiveFocusedNode || effectiveFocusedNode.id === snapshot.scope.focusedNodeId) return;
+    if (scopeTree.current?.contains(document.activeElement)) pendingScopeFocus.current = effectiveFocusedNode.id;
+    dispatch(runtime, { type: "set-scope-focus", scopeId: effectiveFocusedNode.id });
+  }, [effectiveFocusedNode?.id, snapshot.scope.focusedNodeId]);
+
+  useLayoutEffect(() => {
+    if (scopeWindowStart <= maximumScopeWindowStart) return;
+    setScopeWindowStart(maximumScopeWindowStart);
+  }, [maximumScopeWindowStart, scopeWindowStart]);
+
+  useLayoutEffect(() => {
     const eventId = pendingEvidenceFocus.current;
     if (!eventId || snapshot.contextId) return;
     evidenceRows.current.get(eventId)?.focus();
@@ -553,9 +816,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   useLayoutEffect(() => {
     const nodeId = pendingScopeFocus.current;
     if (!nodeId) return;
-    scopeNodesById.current.get(nodeId)?.focus();
+    const node = scopeNodesById.current.get(nodeId);
+    if (!node) return;
+    node.focus();
     pendingScopeFocus.current = null;
-  }, [snapshot.scope.focusedNodeId]);
+  }, [snapshot.scope.focusedNodeId, renderedScopeWindowStart, scopeWindowSize]);
 
   useLayoutEffect(() => {
     if (!pendingContextFocus.current) return;
@@ -636,6 +901,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       data-scope-picker-open={scopePickerOpen || undefined}
       data-scope-collapsed={scopeCollapsed || undefined}
       data-context-collapsed={contextCollapsed || undefined}
+      data-snapshot-version={snapshot.version}
       style={{ "--wb-scope-width": `${renderedScopeWidth}px`, "--wb-context-size": `${contextSize}px` } as CSSProperties}
       aria-label="Lightstreamer Workbench"
       onKeyDown={(keyEvent) => {
@@ -738,30 +1004,19 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       </section> : <main className="workbench-react__workspace">
         <nav className="workbench-react__pane workbench-react__scope" aria-label="Structural runtime scope">
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Runtime Scope</span><strong>Inspected page</strong></div><div><button ref={scopeCollapse} className="workbench-react__scope-collapse" type="button" onClick={() => collapsePane("scope", "collapse")}>Collapse Scope</button><button className="workbench-react__scope-picker-close" type="button" onClick={closeScope}>Close Scope</button><button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button></div></header>
-          <div className="workbench-react__scope-tree" role="tree">
-            {visibleScopeNodes.map((node) => {
-              const hasChildren = scopeNodes.some((candidate) => candidate.parentId === node.id);
-              return (
-              <button
-                className="workbench-react__scope-node"
-                key={node.id}
-                role="treeitem"
-                aria-level={node.depth + 1}
-                aria-selected={node.selected}
-                aria-current={node.selected ? "true" : undefined}
-                data-retired={node.retired || undefined}
-                aria-expanded={hasChildren ? !collapsedScopeIds.has(node.id) : undefined}
-                tabIndex={node.id === snapshot.scope.focusedNodeId ? 0 : -1}
-                ref={(element) => {
-                  if (element) scopeNodesById.current.set(node.id, element);
-                  else scopeNodesById.current.delete(node.id);
-                }}
-                onClick={() => commitScope(node.id)}
-                onKeyDown={(keyEvent) => handleScopeKey(keyEvent, node)}
-              ><span>{node.label}</span><em>{node.detail ? `${node.detail} · ${lifecycleLabel(node.lifecycle)}` : lifecycleLabel(node.lifecycle)}</em></button>
-              );
-            })}
-          </div>
+          <ScopeTree
+            logicalNodeCount={scopeNodes.length}
+            visibleNodeCount={visibleScopeNodes.length}
+            entries={renderedScopeEntries}
+            logicalHeight={visibleScopeNodes.length * SCOPE_NODE_HEIGHT}
+            childrenByParent={scopeChildrenByParent}
+            siblingPositionById={scopeSiblingPositionById}
+            collapsedIds={collapsedScopeIds}
+            focusId={renderedFocusId}
+            treeRef={scopeTree}
+            nodeRefs={scopeNodesById}
+            actionsRef={scopeTreeActions}
+          />
         </nav>
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
@@ -782,24 +1037,15 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             <div className="workbench-react__ledger-header" role="row"><span role="columnheader">Time / #</span><span role="columnheader">Source</span><span role="columnheader">Phase</span><span role="columnheader">Op</span><span role="columnheader">Evidence / object</span><span role="columnheader">Change</span></div>
             {events.map((event) => {
               const isSelected = event.id === selectedEventId;
-              const isFocused = event.id === focusedEventId;
               const isFindCurrent = event.id === findState.currentEventId;
-              return <button
-                type="button"
+              return <EvidenceRow
                 key={event.id}
-                className="workbench-react__evidence-row"
-                role="row"
-                data-evidence-id={event.id}
-                data-find-current={isFindCurrent || undefined}
-                aria-selected={isSelected}
-                aria-current={isFindCurrent ? "true" : undefined}
-                tabIndex={-1}
-                ref={(element) => {
-                  if (element) evidenceRows.current.set(event.id, element);
-                  else evidenceRows.current.delete(event.id);
-                }}
-                onClick={() => dispatch(runtime, { type: "select-evidence", eventId: event.id })}
-              ><span role="gridcell"><time>{event.time}</time><small>{event.id}</small>{isFindCurrent ? <small className="workbench-react__find-match">Find {findState.currentIndex + 1} of {findState.matchCount}</small> : null}</span><strong role="gridcell">{event.source}</strong><span role="gridcell">{event.phase}</span><b role="gridcell">{event.command ?? "—"}</b><span role="gridcell"><strong>{event.kind}</strong><small>{event.object}</small></span><span role="gridcell">{event.summary}</span></button>;
+                event={event}
+                selected={isSelected}
+                findPosition={isFindCurrent ? `Find ${findState.currentIndex + 1} of ${findState.matchCount}` : null}
+                rowRefs={evidenceRows}
+                actionsRef={evidenceRowActions}
+              />;
             })}
           </div> : <div className="workbench-react__empty"><strong>No Evidence in the current Scope.</strong><span>Capture {captureOperation.toLowerCase()} with Coverage {coverage.toLowerCase()}.</span><button type="button" onClick={(event) => openScope(event.currentTarget)}>Change Scope</button></div>}
         </section>

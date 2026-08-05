@@ -1,8 +1,8 @@
 # Architecture
 
-Lightstreamer Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs client/session/subscription topology and COMMAND-mode state, and lets developers locally replay synthetic updates through captured listener callbacks or captured Lightstreamer WebSocket paths.
+Lightstreamer Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs client/session/subscription topology and COMMAND-mode state, and lets developers perform deliberate Local Injections through captured listener callbacks or captured Lightstreamer WebSocket paths.
 
-The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, capture messages cross the isolated content-script boundary, the service worker routes captures by inspected tab, and the DevTools panel owns storage, filtering, UI state, COMMAND reduction, and local synthetic event display. Reinjection prefers a versioned MAIN-world capability invoked directly with `chrome.devtools.inspectedWindow.eval`. If that global capability is absent after an extension refresh, the panel reuses the page's request-scoped message handler directly; version-skewed or otherwise unavailable page contexts retain the compatibility runtime relay.
+The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, Capture messages cross the isolated content-script boundary, the service worker routes them by inspected tab, and a framework-independent `WorkbenchRuntime` owns panel investigation state. React renders the Scoped Evidence Workspace from immutable runtime snapshots. Local Injection prefers a versioned MAIN-world capability invoked directly with `chrome.devtools.inspectedWindow.eval`. If that global capability is absent after an extension refresh, the panel reuses the page's request-scoped message handler directly; version-skewed or otherwise unavailable page contexts retain the compatibility runtime relay.
 
 ## Contents
 
@@ -16,7 +16,7 @@ The architecture is event-driven and split across Chrome extension execution con
 - [Storage Architecture](#storage-architecture)
 - [Topology State Architecture](#topology-state-architecture)
 - [COMMAND State Architecture](#command-state-architecture)
-- [Synthetic Reinjection Architecture](#synthetic-reinjection-architecture)
+- [Local Injection Delivery Architecture](#local-injection-delivery-architecture)
 - [Panel UI Architecture](#panel-ui-architecture)
 - [Panel Presentation Seams](#panel-presentation-seams)
 - [Optional Usage Analytics](#optional-usage-analytics)
@@ -34,8 +34,8 @@ The project is designed around these concrete implementation goals:
 - Install instrumentation at `document_start` so clients, subscriptions, and listeners can be wrapped before application code uses them.
 - Preserve application behavior while observing constructor calls, lifecycle methods, listener callbacks, and selected wire-level fallback frames.
 - Keep capture data local to the browser extension session; optional analytics may receive only a separate typed coarse-event allowlist after explicit consent.
-- Support backend-free local reinjection through captured listener callbacks and local TLCP replay on captured page WebSockets.
-- Mark synthetic updates in the normalized event stream and UI.
+- Support backend-free Local Injection through captured listener callbacks and local TLCP delivery on captured page WebSockets.
+- Mark successful Local Injected Updates in the normalized event stream and UI.
 
 ## Runtime Contexts
 
@@ -43,11 +43,11 @@ The extension runs in four active JavaScript contexts plus optional test fixture
 
 | Context | Source | Built Output | Main Responsibility |
 | --- | --- | --- | --- |
-| Page `MAIN` world instrumentation | `src/injected/lightstreamer-instrumentation.ts` | `dist/injected/lightstreamer-instrumentation.js` | Wrap Lightstreamer constructors, client/subscription methods, subscription listeners, WebSocket fallback, and page-side reinjection handling. |
-| Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` capture events to the extension runtime and retain a compatibility reinjection relay for older DevTools environments. |
-| Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by tab and route capture messages from content scripts to the right panel; retain compatibility routing for reinjection when direct inspected-page evaluation is unavailable. |
+| Page `MAIN` world instrumentation | `src/injected/lightstreamer-instrumentation.ts` | `dist/injected/lightstreamer-instrumentation.js` | Wrap Lightstreamer constructors, client/subscription methods, subscription listeners, WebSocket fallback, and the internally named page-side reinjection capability used for Local Injection. |
+| Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` Capture events to the extension runtime and retain the internal compatibility relay for Local Injection delivery. |
+| Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by tab and route Capture messages from content scripts to the right panel; retain compatibility routing for Local Injection when direct inspected-page evaluation is unavailable. |
 | DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Workbench` DevTools panel. |
-| DevTools panel UI | `src/extension/panel/main.ts`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/panel.css`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Render Timeline, Topology, and COMMAND views, own event storage, build state indexes, edit drafts, call the bridge for reinjection, and gate optional coarse analytics behind in-product consent. |
+| DevTools panel UI | `src/extension/panel/panel.tsx`, `src/extension/panel/workbench-runtime.ts`, `src/extension/panel/react/`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Mount the React Scoped Evidence Workspace, own session history and investigation state, expose exactly one Local Injection Draft, call the local-delivery bridge, and gate optional coarse analytics behind in-product consent. |
 
 ```mermaid
 flowchart LR
@@ -71,7 +71,7 @@ flowchart LR
   Devtools -- "chrome.devtools.panels.create" --> Panel
   Panel -- "runtime Port: lsew-panel" --> Background
   Background -- "PanelCaptureMessage" --> Panel
-  Panel -- "inspectedWindow.eval(versioned reinjection bridge)" --> Injected
+  Panel -- "inspectedWindow.eval(versioned Local Injection capability)" --> Injected
 ```
 
 ## Repository Layout
@@ -109,10 +109,10 @@ flowchart LR
 | `src/content/` | Isolated content-script bridge between `window.postMessage` in the page and Chrome extension messaging APIs. |
 | `src/extension/` | Extension runtime code: MV3 service worker and DevTools panel registration. |
 | `src/extension/analytics.ts` | Consent persistence, strict coarse-event serialization, and direct CORS-safe GA4 Measurement Protocol transport. It has no capture-envelope input. |
-| `src/extension/panel/` | DOM-rendered DevTools panel UI, bridge client, HTML entry, and CSS. |
-| `src/core/` | Runtime-independent domain logic: event envelopes, normalization, filtering, storage, COMMAND state reduction, reinjection drafts, synthetic events, and Lightstreamer-like structural types. |
+| `src/extension/panel/` | React panel mount, framework-independent `WorkbenchRuntime`, Scoped Evidence Workspace presentation, bridge client, HTML entry, theme, analytics boundary, and export presentation. |
+| `src/core/` | Runtime-independent domain logic: event envelopes, normalization, filtering, storage, COMMAND state reduction, Injection Drafts, synthetic events, and Lightstreamer-like structural types. |
 | `src/core/indexeddb/` | IndexedDB schema/open/delete helpers for event storage. |
-| `tests/` | Vitest unit and jsdom integration tests for bridge, instrumentation, core reducers, panel UI, CSS, storage, and reinjection. |
+| `tests/` | Vitest unit and jsdom integration tests for bridge, instrumentation, core reducers, `WorkbenchRuntime`, React presentation, storage, and Local Injection, plus browser and official-client proofs. |
 | `fixtures/lightstreamer/` | Deterministic Lightstreamer fixture server assets, Java adapters, and browser fixture page. |
 | `scripts/` | Build, extension packaging, Chrome Web Store, store asset, and Lightstreamer fixture helper scripts. |
 | `public/` | Static extension manifest, DevTools loader HTML, and icons copied into `dist/`. |
@@ -129,11 +129,7 @@ The package is TypeScript ESM with Vite and Vitest configuration in `vite.config
 npm run build
 ```
 
-That script expands to:
-
-```bash
-vite build && node scripts/build-content-scripts.mjs && node scripts/verify-extension-build.mjs
-```
+`scripts/build-extension.mjs` orchestrates the Vite extension-page build, the separately bundled content scripts, and compiled-output verification. There is one production renderer and one output directory; no renderer flag, alias, or parallel output artifact exists.
 
 ### Build Pipeline
 
@@ -142,7 +138,7 @@ flowchart TD
   Source["src/ and public/"]
   Vite["vite build"]
   Esbuild["scripts/build-content-scripts.mjs"]
-  Verify["scripts/verify-extension-build.mjs"]
+  Verify["compiled extension verification"]
   Dist["dist/ unpacked extension"]
 
   Source --> Vite
@@ -185,10 +181,10 @@ Capture starts in the inspected page, where the instrumentation script installs 
 - WeakSets for already-wrapped clients, subscriptions, and client listeners.
 - WeakMaps from subscriptions to listener proxies.
 - A WeakMap from subscriptions to clients, used to attach client IDs to subscription callback events.
-- A map of reinjection listener targets keyed by `subscriptionId:listenerId`.
-- A map of active wire reinjection targets keyed by normalized subscription ID, retaining the captured socket and TLCP subscription schema.
-- A WeakSet of synthetic WebSocket `MessageEvent` objects, used to prevent local replay from being recaptured as server traffic.
-- A WeakMap of original `onItemUpdate` callbacks used for synthetic local reinjection.
+- A map of internally named reinjection listener targets keyed by `subscriptionId:listenerId`.
+- A map of internally named active wire reinjection targets keyed by normalized Subscription ID, retaining the captured socket and TLCP Subscription schema.
+- A WeakSet of synthetic WebSocket `MessageEvent` objects, used to prevent Local Injection delivery from being recaptured as Server traffic.
+- A WeakMap of original `onItemUpdate` callbacks available as Local Injection targets.
 - An `emit()` function that posts validated capture messages to the page.
 
 It hooks all of these Lightstreamer constructor locations:
@@ -215,7 +211,7 @@ Wrapped client methods:
 Wrapped subscription behavior:
 
 - `addListener(listener)` replaces the listener with a proxy that captures selected callback invocations.
-- `removeListener(listener)` removes the matching proxy and unregisters reinjection target state.
+- `removeListener(listener)` removes the matching proxy and unregisters the corresponding Local Injection target state.
 - The original listener object remains the public identity used for stable listener IDs.
 
 Captured subscription callbacks are listed in `CALLBACKS_TO_CAPTURE`:
@@ -285,7 +281,7 @@ sequenceDiagram
   BG-->>UI: PanelCaptureMessage over lsew-panel port
   UI-->>UI: normalize to LightstreamerEventEnvelope
   UI-->>UI: append to EventStore
-  UI-->>UI: update timeline and COMMAND index
+  UI-->>UI: update history, topology, and COMMAND projections
 
   App->>LS: subscription listener receives onItemUpdate(update)
   Inj-->>Inj: proxy extracts item, fields, snapshot, command, key, raw diagnostics
@@ -339,25 +335,25 @@ clear-snapshot
 | `PANEL_REGISTER_MESSAGE` | panel to service worker | Register the panel port for `chrome.devtools.inspectedWindow.tabId`. |
 | `PANEL_STATUS_MESSAGE` | service worker to panel | Report bridge lifecycle status. |
 | `PANEL_CAPTURE_MESSAGE` | service worker to panel | Deliver a capture message to the matching inspected tab panel. |
-| `PANEL_REINJECT_REQUEST` | panel to service worker | Ask to reinject a serialized draft. |
-| `CONTENT_REINJECT_REQUEST` | service worker to content script | Forward panel reinjection request to the inspected tab. |
+| `PANEL_REINJECT_REQUEST` | panel to service worker | Carry a serialized Injection Draft over the compatibility path. |
+| `CONTENT_REINJECT_REQUEST` | service worker to content script | Forward that compatibility request to the inspected tab. |
 | `PAGE_REINJECT_REQUEST` | content script to page | Ask MAIN-world instrumentation to use the selected captured listener or wire target. |
-| `RUNTIME_REINJECT_RESULT` | page to content script | Return page-side reinjection result. |
+| `RUNTIME_REINJECT_RESULT` | page to content script | Return the internally named page-side delivery result. |
 | `CONTENT_REINJECT_RESULT` | content script to service worker | Relay a compatibility-path page result independently of the original response channel. |
-| `PANEL_REINJECT_RESULT` | service worker to panel | Return reinjection result to the panel. |
+| `PANEL_REINJECT_RESULT` | service worker to panel | Return the internally named delivery result to the panel. |
 
-The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Current Chrome DevTools reinjection first calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. When that global is missing but the already-loaded page still has an earlier message handler, the panel creates a request-scoped result slot and `MessageChannel` in the inspected page, sends `PAGE_REINJECT_REQUEST` there, and polls only for the correlated result. This avoids depending on an orphaned content-script acknowledgement and does not retry an already-started request. If the page capability is version-skewed or the direct page mechanism cannot start, the panel sends the same validated request through the compatibility runtime chain. The content script also transfers a request-scoped `MessagePort` with its page request. The page validates the serialized draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
+The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Local Injection first calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. When that global is missing but the already-loaded page still has an earlier message handler, the panel creates a request-scoped result slot and `MessageChannel` in the inspected page, sends `PAGE_REINJECT_REQUEST` there, and polls only for the correlated result. This avoids depending on an orphaned content-script acknowledgement and does not retry an already-started request. If the page capability is version-skewed or the direct page mechanism cannot start, the panel sends the same validated request through the compatibility runtime chain. The content script also transfers a request-scoped `MessagePort` with its page request. The page validates the serialized Draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
 
 The MAIN-world handler also publishes `RUNTIME_REINJECT_RESULT` on `window` for compatibility with older content scripts. For extension-reload compatibility, the content script returns the first valid result from either page channel through both the open `sendResponse` channel and `CONTENT_REINJECT_RESULT`. The service worker accepts either protocol, correlates the result by inspected tab and request ID to the panel port that originated it, and removes the pending request on first delivery so redundant feedback cannot produce duplicate panel results.
 
-### Reinjection Draft Payload
+### Internal Reinjection Draft Payload
 
 `isReinjectionDraftPayload()` requires:
 
 - non-empty `sourceEventId`
 - `executionTarget` set to `captured-listener` or `captured-wire`
 - non-empty `target.subscriptionId`
-- non-empty `target.listenerId` for listener replay; nullable for wire replay
+- non-empty `target.listenerId` for listener delivery; nullable for wire delivery
 - an item name or an integer item position
 - non-empty `command`
 - non-empty `key`
@@ -365,7 +361,7 @@ The MAIN-world handler also publishes `RUNTIME_REINJECT_RESULT` on `window` for 
 - JSON-compatible `provenance`
 - finite string, number, boolean, or null field values
 
-Reinjection results use one of these statuses:
+The internally named reinjection results use one of these statuses:
 
 - `success`
 - `stale-target`
@@ -503,7 +499,7 @@ Object stores:
 
 `src/core/event-repository.ts` handles IndexedDB queries by:
 
-1. Fast-pathing unfiltered limited queries through a cursor so the timeline does not read every metadata row for the common latest-events view.
+1. Fast-pathing unfiltered limited queries through a cursor so Ordered Evidence does not read every metadata row for the common latest-events view.
 2. Selecting one indexed structured filter when possible.
 3. Applying residual structured filters through metadata.
 4. Loading full envelopes and using `matchesEventFilters()` when free-text search is active so IndexedDB-backed search keeps the same substring semantics as the in-memory store.
@@ -535,19 +531,19 @@ page
 
 The reducer keeps constructor-only subscriptions visible until client ownership is observed. A Lightstreamer session ID is the authoritative session identity: recovery with the same ID creates a new connection epoch on the same session, while a different ID freezes the prior session and creates a new one. After session loss, locally active subscriptions move to the client-level **Waiting for session** group and attach to the replacement session only after a server-confirmed subscription callback. The extension never creates a Lightstreamer client or session and never calls `connect()` or `subscribe()`; it observes constructors, methods, listeners, and WebSockets owned by the inspected page.
 
-Each client retains at most five compact, immutable historical session snapshots. History keeps topology, configuration, item identities, final observed lifecycle phases, counters, timestamps, and the last observed transport, but not captured payload values or listener objects. Every historical session, subscription, and item is presented as **Frozen**, so a value such as `ws-streaming` cannot be mistaken for a connection maintained by the extension. Historical nodes are read-only reference data and are never reinjection targets.
+Each client retains at most five compact, immutable historical session snapshots. History keeps topology, configuration, item identities, final observed lifecycle phases, counters, timestamps, and the last observed transport, but not captured payload values or listener objects. Every historical session, Subscription, and item is presented as **Retired**, so a value such as `ws-streaming` cannot be mistaken for a connection maintained by the extension. Retired Scope is readable historical Evidence and can never be a Local Injection target.
 
 Logical updates and callback deliveries are separate counters. Primary instrumentation gives every observed `ItemUpdate` object a stable weakly held logical ID; delivery callbacks share that ID, and one callback is marked as the metric owner when object identity is unavailable. Synthetic updates have independent counts and never change server/logical update, snapshot, lost-update, or error totals.
 
-Snapshot phase follows the observed protocol: requested snapshots can move through waiting, snapshot, complete, and live; no-snapshot subscriptions become live after server establishment; clear produces cleared; a new session resets the phase; and fallback wire capture reports unknown when it cannot prove the state. COMMAND subscriptions expose only aggregate generation/key summaries in the structural Topology tree. Raw generation evidence starts as a bounded 25-entry detail collection, expands incrementally, can be copied completely without rendering every identity, and links to full key lifecycle in COMMAND State.
+Snapshot phase follows the observed protocol: requested snapshots can move through waiting, snapshot, complete, and live; no-snapshot subscriptions become live after server establishment; clear produces cleared; a new session resets the phase; and fallback wire Capture reports unknown when it cannot prove the state. COMMAND subscriptions expose aggregate generation/key summaries in structural Scope. Complete generation Evidence can be copied or inspected contextually without creating a permanent COMMAND destination.
 
 Exact duplicate diagnostics compare mode, item and field descriptors, snapshot, requested frequency, requested buffer size, and second-level COMMAND settings. Partially overlapping active subscriptions remain separate and receive an overlap diagnostic. Only captured errors and lost updates are warning health states; duplicate and overlap findings remain informational diagnostics.
 
 Primary API instrumentation reads documented `connectionDetails` and `connectionOptions` values synchronously from client callbacks. Passwords and HTTP headers are never read. When Lightstreamer exposes a client IP, page-world instrumentation irreversibly masks it before constructing any capture message; the exact address never crosses the inspected-page boundary, and the panel has no exact/masked presentation toggle. Public API clients are marked as full coverage, while WebSocket/TLCP fallback clients are marked as limited coverage so missing options or listener nodes are not mistaken for actual absence. Semantic values retain their evidence state, allowing the panel to distinguish **Unknown**, **Unavailable**, **Redacted**, and **Not applicable** instead of conflating valueless facts.
 
-The panel owns one `TopologyStateIndex` beside the COMMAND index. It rebuilds both indexes from storage on initialization, ingests appended events incrementally, and snapshots only on a scheduled render. **Reset current** clears topology observations only; it preserves captured events, COMMAND state, replay drafts, selections, and the independent live-target registry. **Clear history** removes only frozen session snapshots. The existing **Clear events** action remains the destructive current-session reset.
+`topology-projection.ts` owns one renderer-neutral topology projection beside the COMMAND projection. `WorkbenchRuntime` rebuilds projections from retained history during initialization, applies appended Evidence incrementally, and publishes cached snapshots on its frame-aligned passive cadence. The deliberate **Clear retained Evidence** operation resets current-session Evidence and derived projections after inline confirmation; it never changes the inspected application's runtime.
 
-The live-target registry tracks listener and wire targets independently from topology history. Listener targets can remain valid across a session change, with a warning, if the page bridge confirms the original listener is still registered. Wire targets must still belong to the same session and connection epoch. The panel disables stale replay controls proactively, and the page bridge remains authoritative at execution time.
+The live-target registry tracks listener and wire targets independently from topology history. Listener targets can remain valid across a Session change, with a warning, if the page bridge confirms the original listener is still registered. Wire targets must still belong to the same Session and connection epoch. `WorkbenchRuntime` blocks stale Draft Review or execution proactively, and the page bridge remains authoritative at execution time.
 
 ## COMMAND State Architecture
 
@@ -556,7 +552,7 @@ COMMAND state logic lives in `src/core/command-state.ts`. It is independent of t
 - `reduceCommandState(events)` folds an array into a `CommandState`.
 - `createCommandStateIndex()` exposes `apply(event)`, `clear()`, and `snapshot()`.
 
-The panel uses the incremental index. On store initialization it replays all existing events into the index. On append it applies the new event.
+The panel uses the incremental index. On history initialization it applies all retained events to the index; each later append is applied once.
 
 ### COMMAND Reduction Rules
 
@@ -674,17 +670,17 @@ Provenance labels are:
 
 Each active row keeps origin provenance and latest provenance separately. Deleted keys keep a tombstone with delete provenance and lifecycle history.
 
-## Synthetic Reinjection Architecture
+## Local Injection Delivery Architecture
 
-The project does not inject data into a real Lightstreamer server stream. Page reinjection is local and has two explicit delivery paths:
+Local Injection never injects data into a real Lightstreamer Server stream. It creates one protected, target-anchored Injection Draft and has two explicit inspected-page delivery paths. Existing source and bridge identifiers use `reinjection` for protocol continuity; that internal term does not name the user-facing workflow.
 
 1. The injected script captures original `onItemUpdate` callbacks and active Lightstreamer WebSocket subscription schemas.
-2. The panel creates a `ReinjectionDraft`.
-3. The panel derives the only valid page target from the capture: `captured-listener` for listener captures or `captured-wire` for wire captures. The action stays disabled if that target is unavailable.
-4. The panel invokes the versioned MAIN-world reinjection capability through `chrome.devtools.inspectedWindow.eval`. If a refreshed extension finds the global missing, it first reuses the already-loaded page's request-scoped message handler directly. A version-skewed or unavailable page context falls back to the panel → service worker → content script compatibility relay.
-5. For listener replay, the injected script calls the captured callback with a synthetic `ItemUpdate`-like object. For wire replay, it builds a complete schema-ordered TLCP `U` frame and dispatches a local `MessageEvent` on the captured page WebSocket.
+2. `WorkbenchRuntime` creates exactly one `ReinjectionDraft` from an immutable Injection Source or a live COMMAND scope, then owns its text, validation, Review state, protected target, pending execution, and outcome.
+3. The runtime derives the only valid page target from Capture: `captured-listener` for listener captures or `captured-wire` for wire captures. Review and execution stay blocked if that target is unavailable or stale.
+4. The panel's executor invokes the versioned MAIN-world reinjection capability through `chrome.devtools.inspectedWindow.eval`. If a refreshed extension finds the global missing, it first reuses the already-loaded page's request-scoped message handler directly. A version-skewed or unavailable page context falls back to the panel → service worker → content script compatibility relay.
+5. For listener delivery, the injected script calls the captured callback with a synthetic `ItemUpdate`-like object. For wire delivery, it builds a complete schema-ordered TLCP `U` frame and dispatches a local `MessageEvent` on the captured page WebSocket.
 6. The page returns a validated `ReinjectionResult` either synchronously to the DevTools evaluation callback or through the correlated compatibility relay.
-7. On success, the panel appends a local synthetic event envelope to its store.
+7. Only a successful result becomes marked Local Injected Update Evidence. Failed, stale, partial, or acknowledgement-unknown outcomes remain truthful outcomes and never manufacture successful Evidence.
 
 There is no panel-only injection path. A page-target failure returns an error and does not append a synthetic event.
 
@@ -699,7 +695,7 @@ sequenceDiagram
   participant WS as Captured page WebSocket
   participant Store as Panel EventStore
 
-  UI->>UI: create or edit ReinjectionDraft
+  UI->>UI: create or edit one Injection Draft
   UI->>PBC: reinjectDraft(draft, executionTarget)
   alt direct capability available
     PBC->>Inj: inspectedWindow.eval(versioned bridge.reinject)
@@ -727,7 +723,7 @@ sequenceDiagram
     Inj-->>PBC: ReinjectionResult
   else compatibility result
     Inj-->>CS: RUNTIME_REINJECT_RESULT via response port
-    Inj-->>CS: RUNTIME_REINJECT_RESULT via window (legacy fallback)
+    Inj-->>CS: RUNTIME_REINJECT_RESULT via window (compatibility fallback)
     CS-->>BG: ReinjectionResult via sendResponse
     CS-->>BG: CONTENT_REINJECT_RESULT (independent fallback)
     BG->>BG: correlate request and accept first result
@@ -752,14 +748,14 @@ The page-side synthetic update implements:
 
 `createSyntheticItemUpdate()` copies draft fields and ensures `command` and `key` are present in the synthetic field set.
 
-### Draft Workflows
+### Injection Draft Workflows
 
 `src/core/reinjection-draft.ts` supports two draft sources:
 
 | Workflow | Function | UI Location | Notes |
 | --- | --- | --- | --- |
-| Replay captured event | `createDraftFromEvent(event)` | Timeline event detail | **Re-inject** executes the captured values directly; **Mutate & re-inject** opens an editable draft. Requires a captured `item-update` and internally copies fields, changed fields, item, target subscription, and listener. |
-| New COMMAND update | `createNewCommandDraftFromContext(context)` | COMMAND detail pane | Requires captured COMMAND subscription, item, listener target, and field schema including `command` and `key`. |
+| Captured Injection Source | `createDraftFromEvent(event)` | Selected Evidence Context | **Create Local Injection Draft** copies the immutable source fields, changed fields, item, target Subscription instance, and captured delivery target into one prospective Draft. |
+| Source-free COMMAND update | `createNewCommandDraftFromContext(context)` | Live COMMAND Scope Context | **Author COMMAND Item Update** creates the same Draft contract without an Injection Source. It requires a live COMMAND Subscription, item, delivery target, and a schema containing `command` and `key`. |
 
 Draft mutation helpers:
 
@@ -770,7 +766,7 @@ Draft mutation helpers:
 - `setManualChangedFieldsOverride()`
 - `deriveChangedFields()`
 
-Draft validation:
+Draft validation remains a core boundary even though the user-facing document is a raw JSON editor:
 
 - `validateEditableDraft()` checks source, subscription target, item context, fields, and field names.
 - `validateDraftForExecutionTarget()` checks target-specific listener or wire context plus COMMAND command/key requirements.
@@ -778,122 +774,69 @@ Draft validation:
 
 ## Panel UI Architecture
 
-The panel is written as direct DOM construction in `src/extension/panel/main.ts`, with CSS in `src/extension/panel/panel.css`. It does not use React, Vue, or another UI component framework.
+The production panel is the React **Scoped Evidence Workspace**. `src/extension/panel/bootstrap.ts` mounts one root through `mountWorkbenchPanel()` in `src/extension/panel/panel.tsx`. The mount owns IndexedDB initialization with an in-memory fallback, bridge and visibility wiring, theme and analytics construction, the React root, and idempotent teardown.
 
-`renderPanel(root, state, options)` creates and returns a `PanelController`:
-
-```text
-setStatus(status)
-appendCaptureMessage(message)
-clearEvents()
-setBridge(bridge)
-dispose()
-```
+`src/extension/panel/workbench-runtime.ts` is the framework-independent state boundary. React reads its cached immutable snapshots through `useSyncExternalStore` and sends typed `WorkbenchCommand` values through `dispatch()`. Components never subscribe directly to Capture, history, bridge, or analytics services.
 
 ### Panel State Ownership
 
-The panel owns these major state categories:
+The runtime owns:
 
-- bridge status badge
-- selected timeline event and pin state
-- current timeline query version and render limit
-- event store stats and high-volume notice state
-- active reinjection draft and reinjection status message
-- active view: `timeline`, `topology`, or `command`
-- timeline detail pane open/width state
-- COMMAND detail pane open state
-- COMMAND context events and incremental COMMAND index
-- incremental topology index and selected topology node
-- selected COMMAND subscription item, key, and update event
-- resizable COMMAND pane widths
-- timeline filters and COMMAND filters
-- render scheduling/defer state during pointer and keyboard interactions
+- Capture operation, observation Coverage, inspected-page availability, storage mode, and retained-history state;
+- structural Topology and the committed Scope without coupling it to Evidence selection;
+- a bounded Ordered Evidence query window, Live/Frozen position, Filter, Find, focus, selection, and Context identity;
+- named Observed Server and Local Effective COMMAND projections plus diagnostics;
+- raw Evidence, scoped export, responsive-layout restoration identities, and session operations;
+- exactly one Local Injection Source/Draft/target/review/execution/outcome lifecycle.
 
-### Timeline View
+### Scoped Evidence Workspace
 
-The Timeline view renders:
+The accepted workspace has three semantic responsibilities rather than permanent feature views:
 
-- toolbar with product label, status, event count, filtered count, retention notice, and clear button
-- search input backed by `EventFilterState.query`
-- event rows with time, kind, client, subscription, mode, item, command/key, and source marker
-- collapsible detail pane with envelope, subscription, listener, item, raw diagnostics, update, synthetic provenance, and reinjection draft sections
+1. **Scope** presents page → client → Session → Subscription → item → listener structure as a roving tree at wide geometry and a temporary picker when space is constrained. Retired objects remain readable but cannot become Local Injection targets.
+2. **Ordered Evidence** is the dominant surface. It renders a query-backed 60-event window while the complete current-session history remains in the store. Filter changes visibility, Find navigates matches, selection anchors Context, and Live/Frozen position remains independent from Capture.
+3. **Context** explains the active runtime object or selected Evidence and provides complete raw Evidence, named COMMAND projections, scoped export, session operations, and the contextual entry to Local Injection.
 
-`renderFeed()` queries the store with:
+Elastic Triad presentation moves, collapses, or temporarily promotes these responsibilities across wide, normal, shallow, and compact geometry without reconstructing semantic state. Scope, Evidence focus, selection, Filter, Find, Live/Frozen position, Context, and a safe Draft restore by stable identity.
 
-```ts
-store.queryEvents({
-  filters: filterState,
-  order: "asc",
-  limit: TIMELINE_WINDOW_SIZE,
-  offset: timelineWindowOffset
-})
-```
+### COMMAND Projections
 
-`TIMELINE_WINDOW_SIZE` is `60`. The Timeline keeps that fixed DOM bound while all matching events remain retained in the store. **Live** follows the bounded current tail independently from Capture status. Scrolling away from current activity or choosing **Freeze view** anchors the visible matching window, counts newer matching events, and leaves Capture running. **Older** and **Newer** browse the frozen history; **Follow live** returns to the newest window. Event detail selection is independently pinned and never changes Live/Frozen state.
+COMMAND state is contextual evidence, not a permanent peer destination. Context always names both projections at their decision boundary:
 
-### Topology View
+- **Observed Server COMMAND State** uses captured Server Updates only.
+- **Local Effective COMMAND State** applies successful Local Injected Updates in addition to those Server Updates.
 
-The Topology view renders:
+Neither projection is Authoritative COMMAND State. Projection differences remain comparison evidence rather than success, severity, or a server-side mutation claim.
 
-- overview counts for clients, active sessions, active/server-established subscriptions, items, listeners, and capture coverage
-- a page → client → session → subscription → item → listener tree with per-branch collapse controls and bounded, lazy item/listener expansion
-- at most five compact historical sessions per client, waiting subscriptions, and constructor-only unassigned subscriptions
-- requested client/subscription settings beside server-observed bandwidth and real max frequency
-- separate logical-update, callback-delivery, synthetic, snapshot-phase, loss, error, listener, exact-duplicate, and overlap metrics
-- explicit full, mixed, or limited capture coverage
-- current listener/wire replay-target availability and provenance
-- bounded COMMAND generation summaries with complete copy access and a route to COMMAND State
-- a privacy-review export menu for a deterministic v1 JSON snapshot and a self-contained offline HTML report
+### Local Injection Document
 
-Selection and collapsed branches are keyed by stable captured IDs plus current/historical session context and survive passive append renders. Tree and detail scroll positions are restored around live updates. High-volume renders retain the existing tree DOM when its structure is unchanged, update only mutable text/status fields, and use one delegated tree interaction handler.
+The panel maintains exactly one target-anchored Injection Draft. A developer enters from a compatible selected Captured Item Update or a live COMMAND scope. `WorkbenchRuntime` protects the Injection Source, Subscription instance, Session, item identity, target, validation, Review state, pending lock, and outcome outside the editable document.
 
-`topology-export.ts` maps one immutable `TopologyState` snapshot into the shared versioned export schema. Compact evidence collections declare total, included, omitted, truncation, and latest-sampling metadata; complete evidence is opt-in. Server addresses, client IPs, item names, COMMAND keys, configured fields/schemas, and captured identifiers are independently redactable, while credential-like fields and URL credentials are always excluded. `topology-html-report.ts` renders the approved structured snapshot into offline HTML with inline CSS/search only, escaped application-controlled values, collapsible hierarchy, and the same bounded evidence metadata.
+`react/local-injection-document.tsx` is lazy-loaded. Its raw JSON editor and optional immutable Source comparison use modular CodeMirror packages that stay out of the initial panel chunk. A stale or invalid Draft cannot execute; a second entry cannot silently replace the current Draft; and successful delivery changes only Local Effective COMMAND State.
 
-### COMMAND State View
-
-The COMMAND view renders four panes:
-
-1. Subscriptions and items.
-2. Keys for the selected item, including active and deleted keys.
-3. Updates for the selected key.
-4. Detail pane for selected key, selected update, diagnostics, and new COMMAND update editor.
-
-Pane widths are stored in CSS custom properties:
-
-- `--command-subscriptions-width`
-- `--command-keys-width`
-- `--command-updates-width`
-
-Resize handles are accessible separators with keyboard support for left/right arrow adjustments.
+`topology-export.ts` maps one immutable scoped `TopologyState` snapshot into the shared versioned export schema. Compact evidence collections declare total, included, omitted, truncation, and latest-sampling metadata; complete evidence is opt-in. Server addresses, client IPs, item names, COMMAND keys, configured fields/schemas, and captured identifiers are independently redactable, while credential-like fields and URL credentials are always excluded. `topology-html-report.ts` renders the approved structured snapshot into offline HTML with inline CSS/search only, escaped application-controlled values, collapsible hierarchy, and the same bounded evidence metadata.
 
 ## Panel Presentation Seams
 
-`main.ts` remains the panel shell and owns domain state, storage subscriptions, query/reconciliation, and cross-view selection. Material presentation surfaces are extracted into small DOM modules so their interfaces can be tested and reviewed independently without moving Lightstreamer semantics into UI code:
+The production seams keep domain/runtime state deeper than React presentation:
 
-| Module | Owns | Shell-provided boundary |
+| Module | Owns | Boundary |
 | --- | --- | --- |
-| `topology-export-view.ts` | Export menu, redaction controls, compact placement, JSON/HTML download, Escape focus return | Immutable snapshot factory and redaction/session state |
-| `topology-actions-view.ts` | Topology actions, bounded COMMAND evidence, complete-copy action, COMMAND State route | Topology state, collapse state, render/reset/history callbacks |
-| `topology-tree-view.ts` | Structural node construction, roving-node presentation updates, branch attachment/collapse, and stable rendered-node maps | Selection and collapse maps plus topology presentation values |
-| `timeline-view.ts` | Timeline header, code legend, and window navigation controls | History queries, filters, and event/detail rendering |
-| `timeline-view.ts` state seam | Live/Frozen window state, bounded live-tail/reconciliation bookkeeping, newer-event count, selection/detail state, and view sizing | History queries, filter matching, and render scheduling |
-| `command-view.ts` | COMMAND view state, update header, summary rows, and selection/window bookkeeping | Command indexes, draft validation, timestamp formatting, and DOM pane composition |
-| `panel-dom.ts` | Shared text-node creation and numeric layout clamping | View-specific DOM composition |
-
-`topology-inspector.ts` remains the focused tree controller: it owns stable node identity, roving focus, typeahead, Arrow/Home/End navigation, and branch expand/collapse behavior. These seams deliberately preserve the shell's existing state transitions and DOM contracts, so extracting presentation does not change capture, storage, COMMAND reduction, or reinjection behavior.
+| `panel.tsx` | Production mount, storage fallback, bridge/theme/analytics wiring, visibility, React root, and teardown | One `WorkbenchRuntime` and one React root per panel session |
+| `workbench-runtime.ts` | Investigation state, history queries, projections, Draft lifecycle, export state, analytics dispatch, and publication cadence | Cached immutable snapshots plus typed commands |
+| `react/workbench-panel.tsx` | Scoped Evidence Workspace geometry, accessible composites, focus/restoration, and semantic controls | Snapshot rendering and command dispatch only |
+| `react/local-injection-document.tsx` | Promoted Draft, Source comparison, Review, and outcome presentation | Runtime-owned Draft semantics and target protection |
+| `react/local-injection-code-editor.tsx` | CodeMirror document state and editor-local interaction | Runtime-owned JSON text and diagnostics |
+| `topology-projection.ts` and `topology-view-model.ts` | Renderer-neutral structural reconstruction and view model | Capture/history inputs independent of React |
+| `topology-export.ts` and `topology-html-report.ts` | Versioned scoped export and offline report | Immutable scoped topology snapshot |
 
 ### Render Scheduling
 
-The panel avoids rerendering aggressively during high-volume append bursts:
-
-- The first `IMMEDIATE_APPEND_RENDER_BUDGET` appends render immediately.
-- Later appends are scheduled with `requestAnimationFrame` when available, or a 16 ms timeout fallback.
-- Pointer and keyboard activation defer store-triggered renders until the interaction completes.
-- Detail panes can preserve scroll position, focus selector, text selection, and open/closed `details` section state across rerenders.
+Developer commands publish synchronously. Passive Capture updates enter history and projections immediately, then `WorkbenchRuntime` publishes at most one cached snapshot per animation frame with a timeout fallback. Publications stop while the panel is hidden and resume with one consolidated snapshot. React keys semantic objects by stable identities; layout effects restore focus, pane sizes, scroll anchors, and the active Draft without allowing passive Capture to move the investigation.
 
 ## Optional Usage Analytics
 
-`src/extension/analytics.ts` is a deliberately separate boundary from capture normalization and storage. Its public `track()` input is a closed TypeScript union of coarse product actions; it never accepts a `CaptureMessage`, `LightstreamerEventEnvelope`, reinjection draft, search string, URL, or raw error.
+`src/extension/analytics.ts` is a deliberately separate boundary from Capture normalization and storage. Its public `track()` input is a closed TypeScript union of coarse product actions; it never accepts a `CaptureMessage`, `LightstreamerEventEnvelope`, Injection Draft, search string, URL, or raw error.
 
 ```mermaid
 flowchart LR
@@ -906,7 +849,7 @@ flowchart LR
   OptOut["User turns analytics off"] --> Stop["Delete ID + block future requests"]
 ```
 
-The transport sends one event per HTTPS request with advertising consent denied, credentials omitted, no referrer, and no retry path. Failures are swallowed so analytics cannot change capture, storage, rendering, or reinjection behavior. The random client ID is created only after consent. Session summaries use broad count buckets rather than exact high-volume totals.
+The transport sends one event per HTTPS request with advertising consent denied, credentials omitted, no referrer, and no retry path. Failures are swallowed so analytics cannot change Capture, storage, rendering, or Local Injection behavior. The random client ID is created only after consent. Session summaries use broad count buckets rather than exact high-volume totals.
 
 The transport uses a simple CORS content type accepted by the GA4 Measurement Protocol endpoint, so analytics adds no Chrome permission. Opt-out persists `denied`, deletes the local client ID, and prevents all later transport calls.
 
@@ -920,8 +863,8 @@ The fixture under `fixtures/lightstreamer/` provides deterministic scenarios for
 | --- | --- |
 | `fixtures/lightstreamer/pages/index.html` | Browser fixture page served by the Lightstreamer fixture scripts. |
 | `fixtures/lightstreamer/pages/fixture-client.js` | Creates Lightstreamer COMMAND subscriptions and exposes expected deterministic event counts. |
-| `fixtures/lightstreamer/pages/mutate-reinject.html` | Application UI used to prove that a mutated update reaches an official Lightstreamer client listener and changes rendered state. |
-| `fixtures/lightstreamer/client/mutate-reinject-client.ts` | Module-bundled official client fixture; keeping constructors off `window` forces the production WebSocket/TLCP capture and replay path. |
+| `fixtures/lightstreamer/pages/mutate-reinject.html` | Application UI used to prove that a Local Injected Update reaches an official Lightstreamer client listener and changes rendered state. The filename is retained as an internal fixture route. |
+| `fixtures/lightstreamer/client/mutate-reinject-client.ts` | Module-bundled official client fixture; keeping constructors off `window` forces the production WebSocket/TLCP Capture and Local Injection delivery path. The filename is retained for fixture compatibility. |
 | `fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureDataAdapter.java` | Emits deterministic snapshot/live COMMAND rows through a Lightstreamer `SmartDataProvider`. |
 | `fixtures/lightstreamer/adapter/src/main/java/dev/lightstreamer/workbench/FixtureMetadataAdapter.java` | Expands the `salesActivity.STORE_NYC_001` item group into invoice and expense items. |
 | `fixtures/lightstreamer/adapters/LSEW_FIXTURE/adapters.xml` | Registers fixture data and metadata adapter classes under adapter set `LSEW_FIXTURE`. |
@@ -931,7 +874,7 @@ Fixture scenarios include:
 
 - `scenario.snapshot-basic`
 - `scenario.add-update-delete`
-- `scenario.mutate-reinject`, whose `key, command, modelId, modelValues` schema mirrors the reported listenerless COMMAND capture
+- `scenario.mutate-reinject`, an internal compatibility identifier whose `key, command, modelId, modelValues` schema mirrors the reported listenerless COMMAND Capture
 - high-volume issue-style subscriptions totaling 1,692 expected events across 17 item groups in `fixture-client.js`
 
 The fixture page creates a `LightstreamerClient` for `http://localhost:8080` with adapter set `LSEW_FIXTURE`, adds subscription listeners, connects, and subscribes.
@@ -956,7 +899,7 @@ The default `npm test` command runs the Vitest files ending in `.test.ts`. The L
 npm run fixture:test
 ```
 
-Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` includes the static fixture assertions, `tests/lightstreamer-mutate-reinject.browser.spec.ts`, and the loaded-extension Playwright proof in `tests/extension-ui/lightstreamer-capture.spec.ts`. The browser coverage loads the built extension and shipped Workbench panel in real DevTools sessions. It verifies direct evaluation and missing-capability fallback, panel success/error rendering, exact official-client application UI update counts, and consistent live COMMAND evidence across Timeline detail, COMMAND State, Topology, and successful Local Injection.
+Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` builds the single Store artifact, runs the static fixture assertions, and exercises the loaded extension against the official client in real DevTools sessions. The browser coverage verifies Capture, selected Evidence and live COMMAND-scope entry paths, exactly one Local Injection Draft, direct and compatibility delivery where applicable, truthful success/error rendering, exact application UI update counts, and distinct Observed Server and Local Effective COMMAND projections.
 
 All fixture lifecycle and test entry points route through `scripts/lightstreamer/fixture.mjs`; the browser installer uses Puppeteer's cross-platform CLI. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
 
@@ -971,34 +914,36 @@ Coverage is organized by architectural boundary:
 | `tests/event-store.test.ts` | In-memory store behavior, high-volume stats, IndexedDB-backed queries, substring search parity, cursor paging, reset, and close cleanup behavior. |
 | `tests/command-state.test.ts` | Full and incremental COMMAND reduction, grouping, metadata carry-forward, item identity, lifecycle, provenance, diagnostics, and draft validation against state. |
 | `tests/topology-state.test.ts` | Session authority and recovery epochs, waiting ownership, logical/delivery/synthetic counters, snapshots, compact five-session history, duplicate/overlap diagnostics, reset semantics, and unassigned subscriptions. |
-| `tests/reinjection-draft.test.ts` | Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
+| `tests/reinjection-draft.test.ts` | Internal Injection Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
 | `tests/command-draft.test.ts` | Context-bound new COMMAND drafts, schema validation, and synthetic event conversion. |
 | `tests/synthetic-event.test.ts` | Synthetic envelope creation from successful reinjection results. |
 | `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, direct reinjection, request-scoped missing-global recovery, version-skew relay fallback, and timeout/error behavior. |
-| `tests/panel-shell.test.ts` | Timeline shell rendering, event detail, filtering, high-volume scroll paging, live-history anchoring, Promise/IndexedDB window races, bounded DOM rendering, and direct replay UI. |
-| `tests/panel-command-state.test.ts` | COMMAND State workbench rendering, selection, filtering, panes, draft editor, and synthetic append behavior. |
-| `tests/panel-topology.test.ts` | Topology tree/detail rendering, sensitive IP presentation, bounded expansion, DOM retention, historical filtering/clearing, non-destructive reset, duplicate/overlap diagnostics, and proactive listener/wire target validity. |
-| `tests/panel-scenarios.test.ts`, `tests/ui/*.spec.ts` | Deterministic export, sustained Live/Frozen memory and IndexedDB streams, compact viewport, keyboard/focus, serious/critical axe checks, and representative visual baselines. |
-| `tests/panel-css.test.ts` | CSS constraints for the panel. |
+| `tests/workbench-runtime.test.ts` | Cached snapshot ownership, Scope/Evidence/Context independence, bounded history, projections, storage fallback, export, analytics, passive publication, and disposal. |
+| `tests/workbench-local-injection-runtime.test.ts` | Both Local Injection entry paths, exactly-one-Draft protection, validation, Review, stale targets, pending locks, truthful outcomes, and COMMAND projection effects. |
+| `tests/react-workbench-panel.test.ts` | React semantic rendering, accessible composites, command dispatch, responsive restoration, and Local Injection presentation. |
+| `tests/react-panel-renderer.test.ts` | Production mount wiring, storage fallback, bridge delivery, visibility, theme, analytics, and teardown. |
+| `tests/panel-scenarios.test.ts` | Renderer-neutral deterministic Capture and topology scenario fixtures shared by runtime and performance checks. |
+| `tests/ui/workbench.spec.ts` | Browser-level Diagnose, Scope, Evidence, Context, geometry, keyboard, accessibility, export, and single-Draft Local Injection journeys. |
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |
-| `tests/lightstreamer-mutate-reinject.browser.spec.ts` | Real Chrome extension + shipped Workbench panel interaction + direct/fallback delivery + listenerless TLCP + official Lightstreamer client + exact rendered application UI update proof. |
-| `tests/extension-ui/lightstreamer-capture.spec.ts` | Loaded-extension Playwright proof for live listener Capture, selected Timeline detail under search and view switches, COMMAND State, complete Topology hierarchy, and successful Local Injection. |
+| `tests/extension-panel.browser.spec.ts` | Loaded-extension semantic smoke for the shipped Scoped Evidence Workspace. |
+| `tests/extension-ui/lightstreamer-capture.spec.ts` | Official-client loaded-extension proof for listener and wire Capture, Scoped Evidence, both Local Injection entry paths, exact application delivery, lazy editor loading, and Manifest V3 CSP compatibility. |
 
 Other quality commands:
 
 ```bash
 npm run typecheck
 npm run build
+npm run test:ui
+npm run test:ui:extension
+npm run measure:panel
 ```
 
-Topology performance is a manual merge gate rather than part of every CI run:
+The repeatable panel benchmark is available separately from the browser/package measurement:
 
 ```bash
-npm run benchmark:topology
+npm run benchmark:panel
 ```
-
-`.github/workflows/topology-performance.yml` exposes the same gate only through `workflow_dispatch`. It drives the real panel in Chrome for 60 seconds at 1,000 logical updates per second across 20 subscriptions × 50 items with three listener deliveries per update. The run covers collapsed and fully expanded item states, opens a lazy listener branch, and fails on incorrect logical/delivery totals, more than 500 ms of ingestion backlog or UI lag, p95 render time above 16 ms, any task longer than 50 ms, or interaction latency above 100 ms.
 
 Release packaging uses `scripts/package-extension.mjs`, which by default runs typecheck, tests, build verification, extension build validation, and deterministic ZIP creation.
 
@@ -1026,17 +971,17 @@ Release packaging uses `scripts/package-extension.mjs`, which by default runs ty
 1. Update `src/core/command-state.ts`.
 2. Add or adjust diagnostics with server-like messages, explanations, and suggestions.
 3. Update `validateCommandDraftAgainstState()` and `validateNewCommandDraft()` when drafts should follow the same semantic rules.
-4. Add tests in `tests/command-state.test.ts` and, if UI behavior changes, `tests/panel-command-state.test.ts`.
+4. Add tests in `tests/command-state.test.ts` and, if presentation or orchestration changes, the corresponding runtime, React, and browser scenario tests.
 
 ### Adding UI Features
 
-The panel is DOM-first. Follow the existing pattern:
+Follow the accepted deep runtime boundary:
 
-1. Add state in the `renderPanel()` closure.
-2. Build controls with helper functions such as `createTextElement()` and `createFilterInput()`.
-3. Preserve detail pane state when rerendering around user input.
-4. Use `resolveMaybe()` when code must work with both sync in-memory stores and async IndexedDB stores.
-5. Add jsdom tests in `tests/panel-shell.test.ts` or `tests/panel-command-state.test.ts`.
+1. Add observable semantic state and typed commands to `WorkbenchRuntime` only when the workflow requires them.
+2. Keep Capture, history, bridge, projection, export, analytics, and Injection Draft semantics framework-independent.
+3. Render immutable snapshots in the smallest focused React surface and preserve Scope, Evidence, Context, focus, scroll, and Draft restoration identities.
+4. Keep consequential actions contextual, keyboard reachable, and explicit about target and effect.
+5. Add runtime tests first, then React semantic tests and proportional browser scenarios under the Workbench UI standard.
 
 ## Operational Notes
 
@@ -1045,6 +990,6 @@ The panel is DOM-first. Follow the existing pattern:
 - The content bridge validates both capture messages and reinjection result messages before forwarding.
 - The service worker routes panel ports by inspected tab ID; capture messages without a sender tab ID are ignored.
 - The panel may use temporary IndexedDB storage, but it resets the inspected-tab session on startup, clears on normal panel teardown, and still has a memory fallback.
-- Active wire fallback subscriptions can be replayed locally through their captured page WebSocket even when no listener target was captured. Closed, deleted, unsubscribed, or handed-off targets return `stale-target` without dispatch.
-- Synthetic events are appended to panel history only after page-side delivery reports success. Unavailable, stale, rejected, or timed-out page targets never create a synthetic event.
+- Active wire fallback subscriptions can receive a Local Injection through their captured page WebSocket even when no listener target was captured. Closed, deleted, unsubscribed, or handed-off targets return `stale-target` without dispatch.
+- Local Injected Update Evidence is appended to panel history only after page-side delivery reports success. Unavailable, stale, rejected, partial, or acknowledgement-unknown targets never create successful Local Evidence.
 - `dist/` is generated output. Architecture changes should be made in `src/`, `public/`, or `scripts/`, then rebuilt.

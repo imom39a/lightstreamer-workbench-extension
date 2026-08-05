@@ -97,7 +97,8 @@ async function runTopologyPerformanceGate() {
         maxUiLagMs: 500,
         p95RenderMs: 16,
         maxInteractionMs: 100,
-        longTasksOver50Ms: 0
+        longTasksOver50Ms: 0,
+        maxMountedScopeNodes: 128
       }
     };
     const formatted = `${JSON.stringify(report, null, 2)}\n`;
@@ -154,6 +155,7 @@ async function buildHarness(outputDirectory) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Topology performance harness</title>
+    <style>html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }</style>
     ${cssLink}
   </head>
   <body>
@@ -251,11 +253,51 @@ function enforceThresholds(result) {
       `interaction ${result.maxInteractionMs.toFixed(2)} ms > 100 ms`
     );
   }
-  if (result.visibleNodes.expanded <= result.visibleNodes.collapsed) {
+  if (result.semanticNodes.expected !== result.semanticNodes.expanded) {
     failures.push(
-      `expanded tree did not add nodes (${result.visibleNodes.collapsed} -> ${result.visibleNodes.expanded})`
+      `expanded semantic tree ${result.semanticNodes.expanded} != expected ${result.semanticNodes.expected}`
     );
   }
+  if (result.semanticNodes.collapsed !== 1) {
+    failures.push(`collapsed semantic tree ${result.semanticNodes.collapsed} != 1`);
+  }
+  if (result.semanticNodes.restored !== result.semanticNodes.expected) {
+    failures.push(
+      `restored semantic tree ${result.semanticNodes.restored} != expected ${result.semanticNodes.expected}`
+    );
+  }
+  if (result.mountedNodes.collapsed !== 1) {
+    failures.push(`collapsed mounted tree ${result.mountedNodes.collapsed} != 1`);
+  }
+  if (result.mountedNodes.maximum > 128) {
+    failures.push(`mounted Scope working set ${result.mountedNodes.maximum} > 128`);
+  }
+  if (result.mountedNodes.restored >= result.semanticNodes.restored) {
+    failures.push(
+      `restored mounted tree was not bounded (${result.mountedNodes.restored} of ${result.semanticNodes.restored})`
+    );
+  }
+  if (result.navigation.endFocusedId !== result.navigation.lastId) {
+    failures.push(
+      `End focused ${result.navigation.endFocusedId ?? "nothing"} instead of ${result.navigation.lastId}`
+    );
+  }
+  if (result.navigation.homeFocusedId !== result.navigation.firstId) {
+    failures.push(
+      `Home focused ${result.navigation.homeFocusedId ?? "nothing"} instead of ${result.navigation.firstId}`
+    );
+  }
+  if (!result.navigation.scrollRangeAvailable) {
+    failures.push("Scope tree did not expose a bounded passive-scroll range");
+  }
+  if (!result.navigation.scrollPreservedFocus) {
+    failures.push("Passive Scope scrolling changed logical focus");
+  }
+  if (!result.navigation.scrollMountedOffscreen) {
+    failures.push("Passive Scope scrolling did not advance the mounted window");
+  }
+  if (!result.navigation.oneTabStop) failures.push("Scope tree did not retain exactly one tab stop");
+  if (!result.navigation.selectionStable) failures.push("Scope navigation changed committed selection");
   if (failures.length > 0) {
     throw new Error(
       `Topology performance gate failed:\n- ${failures.join("\n- ")}`

@@ -817,12 +817,12 @@ function createStoreListingCapture(): readonly LightstreamerEventEnvelope[] {
         key: "alpha",
         name: "Alpha",
         qty: "18",
-        status: "synthetic replay",
+        status: "local injection",
         version: "3"
       },
       changedFields: {
         qty: "18",
-        status: "synthetic replay",
+        status: "local injection",
         version: "3"
       },
       raw: {

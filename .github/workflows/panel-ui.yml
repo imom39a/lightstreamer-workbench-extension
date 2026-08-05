@@ -8,15 +8,16 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/test-ui.mjs"
-      - "scripts/test-ui-update.mjs"
       - "scripts/ui-panel-server.mjs"
+      - "scripts/verify-extension-build.mjs"
+      - "scripts/package-extension.mjs"
       - "src/bridge/**"
       - "src/core/**"
       - "src/extension/panel/**"
       - "tests/panel-*.test.ts"
       - "tests/extension-panel.browser.spec.ts"
-      - "tests/support/panel-scenario-dom.ts"
       - "tests/support/panel-scenarios.ts"
+      - "tests/support/workbench-scenarios.ts"
       - "tests/ui/**"
   workflow_dispatch:
 
@@ -43,14 +44,37 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Cache Chrome for Testing
+        uses: actions/cache@v5
+        with:
+          path: .cache/lsew-browsers
+          key: chrome-for-testing-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chrome for Testing
+        run: npm run fixture:browser:install
+
       - name: Verify pinned Playwright browser environment
         run: npx playwright --version
+
+      - name: Typecheck and run unit contracts
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Build and audit the production extension
+        run: npm run build
+
+      - name: Package within the Chrome Store budget
+        run: node scripts/package-extension.mjs --skip-typecheck --skip-tests --skip-build --out-dir test-results/release
 
       - name: Run panel UI browser gate
         env:
           CI: true
           LSEW_UI_UPDATE: "0"
         run: npm run test:ui
+
+      - name: Run unpacked production extension smoke
+        run: node scripts/test-ui-extension.mjs
 
       - name: Upload panel UI diagnostics
         if: failure()
@@ -60,4 +84,5 @@ jobs:
           path: |
             test-results/ui/
             test-results/ui-report/
+            test-results/release/
           if-no-files-found: warn

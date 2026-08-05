@@ -1,12 +1,12 @@
 # Contributing
 
-Thank you for helping improve Lightstreamer Workbench. This project is a Chrome DevTools extension for developers who need to inspect and locally replay Lightstreamer Web Client behavior, especially COMMAND subscription lifecycles.
+Thank you for helping improve Lightstreamer Workbench. This project is a Chrome DevTools extension for developers who need to diagnose and deliberately reproduce Lightstreamer Web Client behavior, especially COMMAND subscription lifecycles.
 
 ## Ground Rules
 
 - Keep the core model Lightstreamer-native. Do not add app-specific business objects to core capture, normalization, or COMMAND state modules.
-- Preserve the captured-data privacy boundary. Inspected URLs, Lightstreamer addresses, captured values/identifiers, search text, replay drafts, and raw errors must stay local. Changes to the opt-in analytics allowlist, remote logging, account sign-in, or any other off-device upload require an explicit design discussion.
-- Treat synthetic reinjection as local page replay through a captured listener or captured WebSocket. Do not imply that either path injects data into the real Lightstreamer server stream.
+- Preserve the captured-data privacy boundary. Inspected URLs, Lightstreamer addresses, captured values/identifiers, search text, Injection Drafts, and raw errors must stay local. Changes to the opt-in analytics allowlist, remote logging, account sign-in, or any other off-device upload require an explicit design discussion.
+- Treat Local Injection as local delivery through a captured listener or captured WebSocket. Do not imply that either path injects data into the real Lightstreamer Server stream.
 - Respect the official distribution boundary. Source forks are allowed under the project license, but the official Chrome Web Store item is published by maintainers only.
 - Prefer focused pull requests with clear user impact and test coverage.
 - Redact proprietary event payloads, tokens, cookies, customer data, account IDs, and internal URLs before posting issues or PR artifacts.
@@ -52,7 +52,7 @@ Feature requests should describe the debugging workflow, not just the UI control
 Good feature proposals usually answer:
 
 - Which user is affected: developer, QA engineer, maintainer, or release owner.
-- Which Lightstreamer primitive is involved: client, subscription, item, field, key, command, update, snapshot, or synthetic replay.
+- Which Lightstreamer primitive is involved: client, session, subscription, item, field, key, command, update, snapshot, client message, or Local Injection.
 - Whether the feature needs page instrumentation, panel UI, state reconstruction, release tooling, or documentation.
 - What should stay local-only.
 
@@ -105,7 +105,7 @@ Then run the complete fixture verification:
 npm run fixture:test
 ```
 
-This command builds the extension and fixture adapter, starts a local Lightstreamer container, runs the static capture assertions, then opens the shipped Workbench panel in a real DevTools session. The browser proof selects a listenerless TLCP update, opens **Mutate & re-inject**, edits it through the panel UI, re-injects the update, exercises both direct and compatibility-fallback delivery, and verifies that the official Lightstreamer client updates the fixture application's rendered UI exactly once per action.
+This command builds the single Store extension and fixture adapter, starts a local Lightstreamer container, runs the static Capture assertions, then opens the shipped React Workbench in a real DevTools session. The browser proof selects compatible Item Update Evidence, creates exactly one Local Injection Draft, edits and reviews it, injects it through the inspected page's normal local delivery boundary, and verifies that the official Lightstreamer client updates the fixture application's rendered UI exactly once per successful action. Applicable direct and compatibility-fallback delivery checks remain part of the fixture packet.
 
 To run only the real-browser proof, use `npm run fixture:test:browser`. Set `LSEW_BROWSER_HEADLESS=false` when a visible Chrome for Testing window is useful for debugging.
 
@@ -117,7 +117,7 @@ Run the independent DevTools-panel smoke proof with:
 npm run test:ui:extension
 ```
 
-This command builds the extension, loads the generated `dist/` directory into Chrome through CDP, selects the real **Lightstreamer Workbench** DevTools panel, and switches from Timeline to Topology. It does not start the Lightstreamer fixture; keep `npm run fixture:test:browser` for the real Mutate & re-inject proof. Set `LSEW_BROWSER_HEADLESS=false` to use a visible Chrome window while diagnosing a failure. Headless failures include the available DevTools targets and a Chrome log tail.
+This command builds the extension, loads the generated `dist/` directory into Chrome through CDP, selects the real **Lightstreamer Workbench** DevTools panel, and verifies the accepted Scoped Evidence Workspace. It does not start the Lightstreamer fixture; keep `npm run fixture:test:browser` for the official-client Local Injection proof. Set `LSEW_BROWSER_HEADLESS=false` to use a visible Chrome window while diagnosing a failure. Headless failures include the available DevTools targets and a Chrome log tail.
 
 To validate the complete orchestration without starting Docker or Maven, run `npm run fixture:test:dry-run`.
 
@@ -129,19 +129,13 @@ Run the deterministic Workbench panel scenarios in Chromium with:
 npm run test:ui
 ```
 
-The runner covers the shared `command-state`, `timeline-detail`, and `new-command` scenarios, waits for their `data-scene-ready` signal, and retains screenshots, traces, videos, page HTML, and browser console output when a check fails. Select one scenario, viewport, or theme when diagnosing a case:
+The runner covers deterministic Diagnose, Scope, Ordered Evidence, degraded-operation, responsive-layout, and single-Draft Local Injection scenarios. It retains screenshots, traces, videos, page HTML, and browser console output when a check fails. Select one scenario, viewport, or theme when diagnosing a case:
 
 ```bash
-npm run test:ui -- --scenario=new-command --viewport=900x700 --theme=dark
+npm run test:ui -- --scenario=local-injection-authored --viewport=900x700 --theme=dark
 ```
 
-`Auto`, `Dark`, and `Light` are supported themes. Normal verification never changes visual baselines. Update them deliberately with:
-
-```bash
-npm run test:ui:update
-```
-
-The update command accepts the same scenario, viewport, and theme options. The runner uses `CHROME_PATH` when set, then the Chrome for Testing browser installed by `npm run fixture:browser:install`, then a system Chrome installation.
+`Auto`, `Dark`, and `Light` are supported themes. The semantic suite does not maintain a second renderer's screenshot baselines; it retains screenshots and other browser artifacts when a check fails. Capture deliberate visual-review evidence through the Workbench UI verification procedure. The runner uses `CHROME_PATH` when set, then the Chrome for Testing browser installed by `npm run fixture:browser:install`, then a system Chrome installation.
 
 ## UI Definition of Done
 
@@ -165,7 +159,7 @@ npm run fixture:wait
 npm run fixture:stop
 ```
 
-Use the fixture for instrumentation, capture, normalization, and reinjection changes whenever a unit test alone does not prove browser/runtime behavior.
+Use the fixture for instrumentation, Capture, normalization, and Local Injection delivery changes whenever a unit test alone does not prove browser/runtime behavior.
 
 ## Project Architecture
 

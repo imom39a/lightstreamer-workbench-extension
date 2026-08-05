@@ -7,9 +7,9 @@ Lightstreamer Workbench uses an optional, consent-based GA4 stream to answer coa
 The analytics design is intentionally limited to these questions:
 
 1. Do users open the panel and detect Lightstreamer activity?
-2. Are Timeline, COMMAND State, and search useful?
-3. Which local replay surfaces and listener/wire targets are used?
-4. Which coarse replay outcomes need product attention?
+2. Is Ordered Evidence search useful?
+3. Which Local Injection entry categories and listener/wire targets are used?
+4. Which coarse Local Injection outcomes need product attention?
 5. Are behavior or reliability patterns changing by extension version or broad session volume?
 
 It cannot answer which sites, servers, subscriptions, items, fields, keys, values, queries, or exact errors users work with. Adding any of those would violate the analytics boundary.
@@ -18,23 +18,23 @@ It cannot answer which sites, servers, subscriptions, items, fields, keys, value
 
 All events include `extension_version`, numeric `session_id`, and `engagement_time_msec`. GA receives a random installation-scoped `client_id`; no user ID is set.
 
+The Slice 3 cutover migrated the telemetry schema to current product language. New events use `local_injection_*`; the former Replay and peer-view event names are not emitted by the accepted Scoped Evidence Workspace. Historical GA4 data may still contain the retired names, so reports should segment by `extension_version` when comparing releases across the cutover.
+
 | Event | When sent | Custom parameters |
 | --- | --- | --- |
 | `analytics_enabled` | The user explicitly enables analytics. | None |
 | `panel_view` | A consented panel session starts or the panel becomes visible. | None |
 | `lightstreamer_detected` | The first captured Lightstreamer event after consent in the current panel session. | None |
-| `view_changed` | The user switches between Timeline and COMMAND State. | `workbench_view` |
-| `search_used` | The first non-empty search in each view during the current consented session. Search text is never passed to analytics. | `workbench_view` |
-| `replay_attempt` | A locally valid replay is submitted to the listener or wire bridge. | `replay_surface`, `replay_target`, `replay_edited` |
-| `replay_result` | The inspected page returns a replay result. | `replay_surface`, `replay_target`, `replay_edited`, `replay_outcome` |
-| `session_summary` | Normal panel teardown after consent. | `event_count_bucket`, `command_view_used`, `search_used`, `replay_used` |
+| `search_used` | The first non-empty Ordered Evidence search during the current consented session. Search text is never passed to analytics. | None |
+| `local_injection_attempt` | A locally valid Injection Draft is submitted to the listener or wire bridge. | `local_injection_surface`, `local_injection_target`, `local_injection_edited` |
+| `local_injection_result` | The inspected page returns a Local Injection delivery result. | `local_injection_surface`, `local_injection_target`, `local_injection_edited`, `local_injection_outcome` |
+| `session_summary` | Normal panel teardown after consent. | `event_count_bucket`, `search_used`, `local_injection_used` |
 
 Allowed values are closed enums:
 
-- `workbench_view`: `timeline`, `command_state`
-- `replay_surface`: `timeline`, `command_state`, `new_command`
-- `replay_target`: `listener`, `wire`
-- `replay_outcome`: `success`, `stale_target`, `listener_error`, `wire_error`, `bridge_error`
+- `local_injection_surface`: `selected_evidence`, `command_scope`
+- `local_injection_target`: `listener`, `wire`
+- `local_injection_outcome`: `success`, `stale_target`, `listener_error`, `wire_error`, `bridge_error`, `acknowledgement_unknown`, `partial`
 - `event_count_bucket`: `0`, `1_10`, `11_100`, `101_1000`, `1001_plus`
 - Boolean flags are encoded as `0` or `1`.
 
@@ -45,14 +45,13 @@ Register these event-scoped custom dimensions in the dedicated property:
 | Display name | Event parameter |
 | --- | --- |
 | Extension version | `extension_version` |
-| Workbench view | `workbench_view` |
-| Replay surface | `replay_surface` |
-| Replay target | `replay_target` |
-| Replay edited | `replay_edited` |
-| Replay outcome | `replay_outcome` |
+| Local Injection entry category | `local_injection_surface` |
+| Local Injection target | `local_injection_target` |
+| Injection Draft edited | `local_injection_edited` |
+| Local Injection outcome | `local_injection_outcome` |
 | Event count bucket | `event_count_bucket` |
 
-The three session-summary flags do not need custom definitions because the corresponding `view_changed`, `search_used`, and `replay_attempt` events provide less ambiguous usage counts.
+The session-summary flags do not need custom definitions because `search_used` and `local_injection_attempt` provide less ambiguous usage counts.
 
 ## Recommended Reports
 
@@ -62,19 +61,19 @@ Build a funnel exploration with:
 
 1. `panel_view`
 2. `lightstreamer_detected`
-3. Any of `view_changed` or `search_used`
-4. `replay_attempt`
-5. Successful `replay_result`
+3. `search_used`
+4. `local_injection_attempt`
+5. Successful `local_injection_result`
 
-Use this to distinguish capture/detection friction from feature discovery and replay friction. Because analytics is opt-in, treat funnel percentages as directional rather than a census of all installs.
+Use this to distinguish Capture/detection friction from Evidence-search and Local Injection friction. Because analytics is opt-in, treat funnel percentages as directional rather than a census of all installs.
 
-### Replay reliability
+### Local Injection reliability
 
-Filter to `replay_result`, break down by `replay_target`, `replay_surface`, and `replay_outcome`, then compare `extension_version`. A rise in `bridge_error` suggests connectivity/version-skew work; `stale_target` suggests the UI may need clearer freshness guidance; listener/wire errors warrant targeted fixture and bridge tests. No raw error detail is available by design.
+Filter to `local_injection_result`, break down by `local_injection_target`, `local_injection_surface`, and `local_injection_outcome`, then compare `extension_version`. A rise in `bridge_error` suggests connectivity/version-skew work; `stale_target` suggests the UI may need clearer target-freshness guidance; `acknowledgement_unknown` identifies cases where Workbench cannot prove delivery; `partial` identifies mixed listener outcomes. Listener/wire errors warrant targeted fixture and bridge tests. No raw error detail is available by design.
 
 ### Feature adoption
 
-Plot `view_changed`, `search_used`, and `replay_attempt` event counts by `extension_version`. Use the unique-user metric only as an approximate opt-in installation count; the random client ID is deleted on opt-out and may be regenerated after storage clearing.
+Plot `search_used` and `local_injection_attempt` event counts by `extension_version`, then break Local Injection down by `local_injection_surface`. Use the unique-user metric only as an approximate opt-in installation count; the random client ID is deleted on opt-out and may be regenerated after storage clearing.
 
 ### Session volume
 

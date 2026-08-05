@@ -37,8 +37,8 @@ jobs:
       - name: Exercise the full fixture orchestration without external services
         run: npm run fixture:test:dry-run
 
-  mutate-reinject-browser:
-    name: Real Mutate & Inject browser proof
+  local-injection-browser:
+    name: Official-client Local Injection proof
     runs-on: ubuntu-latest
 
     steps:
@@ -70,5 +70,5 @@ jobs:
       - name: Install Chrome for Testing
         run: npm run fixture:browser:install
 
-      - name: Prove panel-to-official-client Mutate & Inject
+      - name: Prove capture and Local Injection through the production panel
         run: npm run fixture:test:browser

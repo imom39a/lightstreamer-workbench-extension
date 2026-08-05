@@ -107,10 +107,11 @@ export function createTopologyProjection(): TopologyProjection {
   }
 
   function ingestCapture(event: LightstreamerEventEnvelope): TopologyProjectionResult {
+    const preservesStructure = eventPreservesMaterializedStructure(selectedStructuralState, event);
     const observation = event.topology;
     if (!observation) {
       legacyLiveFallbackIndex.ingest(event);
-      invalidateStructuralSelection();
+      if (!preservesStructure) invalidateStructuralSelection();
       return { accepted: true, resetConsumerState: false };
     }
     const activation = activatePage(observation.pageEpoch);
@@ -125,18 +126,19 @@ export function createTopologyProjection(): TopologyProjection {
     semanticEvents.set(semanticEventKey(observation), event);
     trimMap(semanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
     syncCoordinator.applyLive(observation);
-    invalidateStructuralSelection();
+    if (!preservesStructure) invalidateStructuralSelection();
     return activation;
   }
 
   function ingestHistory(event: LightstreamerEventEnvelope): boolean {
+    const preservesStructure = eventPreservesMaterializedStructure(selectedStructuralState, event);
     const belongsToCurrentPage = !staleSemanticEventIds.delete(event.id);
     const wasSemanticCapture = retainedSemanticEventIds.delete(event.id);
     legacyIndex.ingest(event);
     if (belongsToCurrentPage && !wasSemanticCapture) {
       legacyLiveFallbackIndex.ingest(event);
     }
-    invalidateStructuralSelection();
+    if (!preservesStructure) invalidateStructuralSelection();
     return belongsToCurrentPage;
   }
 
@@ -329,6 +331,37 @@ export function createTopologyProjection(): TopologyProjection {
       resetSemanticProjection();
     }
   };
+}
+
+function eventPreservesMaterializedStructure(
+  state: TopologyState | null,
+  event: LightstreamerEventEnvelope
+): boolean {
+  if (
+    !state ||
+    event.kind !== "item-update" ||
+    !event.subscription?.id ||
+    (!event.item?.name && event.item?.position === undefined)
+  ) {
+    return false;
+  }
+  const subscriptions = [
+    ...state.unassignedSubscriptions,
+    ...state.clients.flatMap((client) => {
+      if (event.client?.id && client.id !== event.client.id) return [];
+      return [
+        ...client.waitingSubscriptions,
+        ...client.sessions.flatMap((session) => session.subscriptions)
+      ];
+    })
+  ].filter((subscription) => subscription.id === event.subscription?.id);
+  const preserves = subscriptions.some((subscription) =>
+    subscription.items.some((item) => {
+      if (event.item?.name !== undefined) return item.name === event.item.name;
+      return item.position === event.item?.position;
+    })
+  );
+  return preserves;
 }
 
 function fallbackPreservesAndExtendsStructure(

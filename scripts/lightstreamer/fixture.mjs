@@ -22,7 +22,7 @@ const fixtureSmokeSource = join(rootDir, "tests", "lightstreamer-fixture-capture
 const fixtureBrowserSource = join(
   rootDir,
   "tests",
-  "lightstreamer-mutate-reinject.browser.spec.ts"
+  "lightstreamer-local-injection.browser.spec.ts"
 );
 const fixtureClientSource = join(
   rootDir,
@@ -39,7 +39,7 @@ const fixtureClientOutput = join(
   "mutate-reinject-client.js"
 );
 
-const usage = `Usage: fixture.mjs <build|start|wait|stop|test|browser-test|react-browser-test> [--dry-run]
+const usage = `Usage: fixture.mjs <build|start|wait|stop|test|browser-test> [--dry-run]
 
 Commands:
   build  Build and deploy the Java fixture adapter
@@ -48,7 +48,6 @@ Commands:
   stop   Remove the fixture Docker container
   test   Build everything, run smoke and real-browser extension tests, then stop
   browser-test  Build everything, run the real-browser extension tests, then stop
-  react-browser-test  Build and run the React official-client Local Injection proof, then stop
 
 The same commands are available through npm run fixture:<command>.`;
 
@@ -81,9 +80,6 @@ try {
       break;
     case "browser-test":
       await testFixture({ browserOnly: true });
-      break;
-    case "react-browser-test":
-      await testReactFixture();
       break;
     default:
       throw new Error(`Unknown fixture command: ${command}\n\n${usage}`);
@@ -209,24 +205,11 @@ async function testFixture({ browserOnly = false } = {}) {
   }
 }
 
-async function testReactFixture() {
-  try {
-    await runProcess("npm", ["run", "build:react"]);
-    await buildFixtureClient();
-    await buildAdapter();
-    await startFixture();
-    await waitForFixture();
-    await runFixturePanelTest("react");
-  } finally {
-    await stopFixture({ quiet: true });
-  }
-}
-
 async function runFixtureBrowserTest() {
   const generatedBrowserTest = join(
     rootDir,
     "tests",
-    `.lightstreamer-mutate-reinject-${process.pid}-${Date.now()}.mjs`
+    `.lightstreamer-local-injection-${process.pid}-${Date.now()}.mjs`
   );
   if (dryRun) {
     console.log(
@@ -253,7 +236,7 @@ async function runFixtureBrowserTest() {
   }
 }
 
-async function runFixturePanelTest(renderer = "legacy") {
+async function runFixturePanelTest() {
   await runProcess("npm", [
     "exec",
     "--",
@@ -264,8 +247,7 @@ async function runFixturePanelTest(renderer = "legacy") {
   ], {
     env: {
       ...process.env,
-      LSEW_EXTENSION_DIR: renderer === "react" ? "dist-react" : "dist",
-      LSEW_EXPECTED_RENDERER: renderer
+      LSEW_EXTENSION_DIR: "dist"
     }
   });
 }

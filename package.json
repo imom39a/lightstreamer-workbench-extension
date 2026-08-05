@@ -8,14 +8,13 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
-    "build": "node scripts/build-extension.mjs --renderer legacy --out-dir dist",
-    "build:react": "node scripts/build-extension.mjs --renderer react --out-dir dist-react",
+    "build": "node scripts/build-extension.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "benchmark:panel": "vitest bench --run",
     "benchmark:event-history": "vitest bench --run benchmarks/event-history-indexeddb.bench.ts",
     "benchmark:topology": "node scripts/topology-performance.mjs",
-    "measure:react-panel": "npm run build && npm run build:react && node scripts/measure-react-panel.mjs",
+    "measure:panel": "npm run build && node scripts/measure-panel.mjs",
     "release:package": "node scripts/package-extension.mjs",
     "release:zip": "node scripts/package-extension.mjs --format zip",
     "release:crx": "node scripts/package-extension.mjs --format crx",
@@ -33,7 +32,6 @@
     "fixture:browser:install": "browsers install chrome@stable --path .cache/lsew-browsers",
     "fixture:test": "node scripts/lightstreamer/fixture.mjs test",
     "fixture:test:browser": "node scripts/lightstreamer/fixture.mjs browser-test",
-    "fixture:test:react": "node scripts/lightstreamer/fixture.mjs react-browser-test",
     "fixture:test:dry-run": "node scripts/lightstreamer/fixture.mjs test --dry-run",
     "prototype:workbench-ui": "vite prototypes/workbench-ui-04 --host 127.0.0.1 --port 4174",
     "prototype:local-injection": "vite prototypes --host 127.0.0.1 --port 4175",
@@ -42,10 +40,7 @@
     "prototype:visual-semantics": "vite prototypes --host 127.0.0.1 --port 4178",
     "prototype:integrated-ui": "vite prototypes --host 127.0.0.1 --port 4179",
     "test:ui": "node scripts/test-ui.mjs",
-    "test:ui:react": "playwright test --config tests/ui/react.playwright.config.ts",
-    "test:ui:update": "node scripts/test-ui-update.mjs",
-    "test:ui:extension": "npm run build && node scripts/test-ui-extension.mjs",
-    "test:ui:extension:react": "npm run build:react && node scripts/test-ui-extension.mjs --react"
+    "test:ui:extension": "npm run build && node scripts/test-ui-extension.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

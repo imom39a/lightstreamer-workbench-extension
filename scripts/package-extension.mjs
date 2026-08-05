@@ -8,6 +8,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   writeFile
 } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -49,13 +50,18 @@ if (!args.skipBuild) {
 
 const manifest = await readJson(resolve(distDir, "manifest.json"));
 await validateExtensionBuild({ manifest, packageJson, distDir });
+run(process.execPath, ["scripts/verify-extension-build.mjs", "--dist", distDir]);
 await mkdir(releaseDir, { recursive: true });
 
 if (format === "zip" || format === "both") {
   const zipPath = resolve(releaseDir, `${artifactBaseName}.zip`);
   await rm(zipPath, { force: true });
   await writeZipFromDirectory(distDir, zipPath);
-  console.log(`ZIP: ${zipPath}`);
+  const zipBytes = (await stat(zipPath)).size;
+  if (zipBytes >= 1_048_576) {
+    fail(`Stored ZIP exceeds the 1 MiB release budget (${zipBytes} bytes).`);
+  }
+  console.log(`ZIP: ${zipPath} (${zipBytes} bytes stored; budget < 1048576)`);
 }
 
 if (format === "crx" || format === "both") {

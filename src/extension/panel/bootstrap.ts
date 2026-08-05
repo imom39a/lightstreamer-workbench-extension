@@ -1,4 +1,4 @@
-import { mountPanelRenderer, panelRendererName, rendererBuildMarker } from "panel-renderer";
+import { mountWorkbenchPanel } from "./panel";
 
 function bootPanel(): void {
   const root = document.querySelector<HTMLElement>("#app");
@@ -6,9 +6,7 @@ function bootPanel(): void {
     return;
   }
 
-  root.dataset.panelRenderer = panelRendererName;
-  root.dataset.panelRendererBuild = rendererBuildMarker;
-  const dispose = mountPanelRenderer(root);
+  const dispose = mountWorkbenchPanel(root);
   window.addEventListener("pagehide", dispose, { once: true });
 }
 

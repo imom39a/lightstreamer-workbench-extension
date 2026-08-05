@@ -19,14 +19,11 @@ import {
   waitForExtensionPanelTarget
 } from "./support/chrome-extension-cdp";
 import { formatTargets, type BrowserTarget, waitForWorkbenchPanel } from "./support/devtools-panel";
-import { getExtensionPanelSmokeScenario } from "./support/panel-scenarios";
 
 const rootDir = process.env.LSEW_PROJECT_ROOT
   ? resolve(process.env.LSEW_PROJECT_ROOT)
   : resolve(fileURLToPath(new URL("..", import.meta.url)));
-const expectedRenderer = process.env.LSEW_EXPECTED_RENDERER === "react" ? "react" : "legacy";
 const extensionDir = resolve(rootDir, process.env.LSEW_EXTENSION_DIR ?? "dist");
-const scenario = getExtensionPanelSmokeScenario();
 
 async function runExtensionPanelSmoke(): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-extension-panel-smoke-"));
@@ -97,58 +94,33 @@ async function runExtensionPanelSmoke(): Promise<void> {
     panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl);
     await panelCdp.request("Runtime.enable");
 
-    if (expectedRenderer === "react") {
       await waitForCondition(
         panelCdp,
         `
-          document.querySelector("#app")?.dataset.panelRenderer === "react" &&
-          document.querySelector('[aria-label="Structural runtime scope"]') &&
+document.querySelector('[aria-label="Structural runtime scope"]') &&
           document.querySelector('[aria-label="Ordered Evidence"]') &&
           document.querySelector('[aria-label="Context"]')
         `,
         "the React Scoped Evidence Workspace to become usable"
       );
       const proof = await evaluateByValue<{
-        renderer: string;
         scope: string;
         evidence: string;
         context: string;
         hasLegacyViews: boolean;
       }>(panelCdp, `({
-        renderer: document.querySelector("#app")?.dataset.panelRenderer ?? "",
         scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
         evidence: document.querySelector('[aria-label="Ordered Evidence"]')?.textContent ?? "",
         context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
         hasLegacyViews: Boolean(document.querySelector(".view-selector"))
       })`);
-      assert.equal(proof.renderer, "react");
       assert.match(proof.scope, /Inspected page/);
       assert.match(proof.evidence, /Ordered Evidence/);
       assert.match(proof.context, /Observed Server COMMAND State/);
       assert.equal(proof.hasLegacyViews, false);
       console.log(
-        "React-only extension panel smoke passed: DevTools selected the semantic Scope, Evidence, and Context workspace."
+        "Production extension panel smoke passed: DevTools selected the semantic Scope, Evidence, and Context workspace."
       );
-      return;
-    }
-
-    const initialView = await selectPanelView(panelCdp, scenario.initialView);
-    assert.deepEqual(initialView, {
-      label: scenario.initialView,
-      active: true,
-      visible: true
-    });
-
-    const topologyView = await selectPanelView(panelCdp, "Topology");
-    assert.deepEqual(topologyView, {
-      label: "Topology",
-      active: true,
-      visible: true
-    });
-
-    console.log(
-      "Shipped extension panel smoke passed: DevTools selected Lightstreamer Workbench and switched Timeline to Topology."
-    );
   } catch (error) {
     const logTail = chromeLogs.join("").slice(-4_000);
     throw new Error(
@@ -192,30 +164,5 @@ async function startInspectedPage(): Promise<{ server: Server; url: string }> {
   }
   return { server, url: `http://127.0.0.1:${address.port}/` };
 }
-
-async function selectPanelView(
-  cdp: CdpClient,
-  label: "Timeline" | "Topology" | "COMMAND State"
-): Promise<{ label: string; active: boolean; visible: boolean }> {
-  return evaluateByValue(cdp, `(() => {
-    const button = [...document.querySelectorAll(".view-selector button")].find(
-      (candidate) => candidate.textContent === ${JSON.stringify(label)}
-    );
-    if (!(button instanceof HTMLButtonElement)) {
-      throw new Error(${JSON.stringify(`The shipped panel is missing its ${label} view control.`)});
-    }
-    button.click();
-    const active = button.dataset.active === "true";
-    const visible = ${
-      label === "Timeline"
-        ? '!document.querySelector(".workspace")?.hasAttribute("hidden")'
-        : label === "Topology"
-          ? '!document.querySelector(".topology-workspace")?.hasAttribute("hidden")'
-          : '!document.querySelector(".command-workspace")?.hasAttribute("hidden")'
-    };
-    return { label: button.textContent ?? "", active, visible };
-  })()`);
-}
-
 
 await runExtensionPanelSmoke();

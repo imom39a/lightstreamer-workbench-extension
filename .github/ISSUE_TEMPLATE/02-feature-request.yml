@@ -45,7 +45,7 @@ body:
         - COMMAND key
         - COMMAND ADD/UPDATE/DELETE
         - Snapshot
-        - Synthetic replay
+        - Local Injection
         - WebSocket/TLCP fallback
         - Other
   - type: textarea

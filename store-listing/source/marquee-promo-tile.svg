@@ -16,11 +16,11 @@
   <text x="82" y="258" fill="#f8fafc" font-family="Inter, Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Lightstreamer</text>
   <text x="82" y="330" fill="#f8fafc" font-family="Inter, Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Workbench</text>
   <text x="86" y="394" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="30">Inspect COMMAND streams, changed fields,</text>
-  <text x="86" y="436" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="30">snapshots, and local synthetic replay.</text>
+  <text x="86" y="436" fill="#d8dee9" font-family="Inter, Arial, Helvetica, sans-serif" font-size="30">snapshots, and backend-free Local Injection.</text>
   <rect x="86" y="482" width="158" height="42" rx="8" fill="#2563eb"/>
   <text x="121" y="510" fill="#eff6ff" font-family="Inter, Arial, Helvetica, sans-serif" font-size="20" font-weight="800">ADD keys</text>
   <rect x="266" y="482" width="196" height="42" rx="8" fill="#0f766e"/>
   <text x="301" y="510" fill="#ecfeff" font-family="Inter, Arial, Helvetica, sans-serif" font-size="20" font-weight="800">UPDATE state</text>
   <rect x="484" y="482" width="194" height="42" rx="8" fill="#334155"/>
-  <text x="520" y="510" fill="#f8fafc" font-family="Inter, Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Replay locally</text>
+  <text x="520" y="510" fill="#f8fafc" font-family="Inter, Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Inject locally</text>
 </svg>

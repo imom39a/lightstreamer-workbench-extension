@@ -6,9 +6,9 @@ This folder contains source-controlled Chrome Web Store release materials for Li
 
 Screenshots, 1280x800 PNG:
 
-1. `screenshots/01-command-state-active-keys.png`
-2. `screenshots/02-timeline-event-detail.png`
-3. `screenshots/03-new-command-update-editor.png`
+1. `screenshots/01-command-projections-context.png`
+2. `screenshots/02-ordered-evidence-context.png`
+3. `screenshots/03-local-injection-editor.png`
 
 Promotional images:
 
@@ -34,9 +34,9 @@ Generated page artwork:
 - `../docs/assets/mascot.png` - AI-generated original transparent mascot cutout
 - `../docs/assets/github-social-preview.png` - 1280x640 GitHub repository social preview image
 - `../docs/assets/real-app-gallery.png` - annotated feature walkthrough generated from the current COMMAND-state screenshot
-- `../docs/assets/app-command-state.png` - web-ready real app screenshot generated from `screenshots/01-command-state-active-keys.png`
-- `../docs/assets/app-timeline-detail.png` - web-ready real app screenshot generated from `screenshots/02-timeline-event-detail.png`
-- `../docs/assets/app-replay-editor.png` - web-ready real app screenshot generated from `screenshots/03-new-command-update-editor.png`
+- `../docs/assets/app-command-projections.png` - web-ready real app screenshot generated from `screenshots/01-command-projections-context.png`
+- `../docs/assets/app-ordered-evidence-context.png` - web-ready real app screenshot generated from `screenshots/02-ordered-evidence-context.png`
+- `../docs/assets/app-local-injection-editor.png` - web-ready real app screenshot generated from `screenshots/03-local-injection-editor.png`
 
 ## Regenerate Screenshots
 

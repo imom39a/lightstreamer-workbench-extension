@@ -1,23 +1,16 @@
 import { spawnSync } from "node:child_process";
 
 const args = parseArgs(process.argv.slice(2));
-const renderer = args.renderer ?? "legacy";
-const outDir = args.outDir ?? (renderer === "react" ? "dist-react" : "dist");
-
-if (renderer !== "legacy" && renderer !== "react") {
-  fail('Expected --renderer "legacy" or "react".');
-}
+const outDir = args.outDir ?? "dist";
 
 const environment = {
   ...process.env,
-  LSEW_PANEL_RENDERER: renderer,
   LSEW_EXTENSION_OUT_DIR: outDir
 };
 
 run("npx", ["vite", "build"], environment);
 run(process.execPath, ["scripts/build-content-scripts.mjs"], environment);
 run(process.execPath, ["scripts/verify-extension-build.mjs"], environment);
-run(process.execPath, ["scripts/verify-panel-renderer-build.mjs", "--dist", outDir, "--renderer", renderer], environment);
 
 function parseArgs(rawArgs) {
   const parsed = {};

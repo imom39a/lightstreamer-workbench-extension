@@ -1,29 +1,25 @@
-# Workbench UI baselines
+# Workbench UI verification
 
-These screenshots are generated from the local deterministic scenarios in
-`tests/support/panel-scenarios.ts` and the shipped panel source. They contain
-no production Capture data or third-party visual assets.
+`npm run test:ui` exercises the accepted React Scoped Evidence Workspace with
+deterministic scenarios from `tests/support/workbench-scenarios.ts`. The
+suite contains no production Capture data or third-party visual assets.
 
-The Linux Chromium gate uses the checked-in `*-snapshots-linux` baselines for
-both the existing panel scenes and the visual matrix; other local platforms
-use the default snapshot directories so the same command remains usable
-without cross-platform font-rendering noise.
+The browser checks cover Diagnose, structural Scope, Ordered Evidence,
+Context, Live/Frozen behavior, degraded operation, responsive geometry,
+keyboard and focus restoration, accessibility, export, and exactly one Local
+Injection Draft through both accepted entry paths. Local Injection scenarios
+include raw JSON editing, immutable Source comparison, validation, Review,
+stale targets, pending execution, and truthful outcomes.
 
-Run `npm run test:ui` to verify them. Run `npm run test:ui:update` deliberately
-when a reviewed visual change is intended.
+Select a scenario, viewport, or theme when diagnosing a case:
 
-## Visual matrix
+```bash
+npm run test:ui -- --scenario=local-injection-authored --viewport=900x700 --theme=dark
+```
 
-`visual-matrix.ts` is the intentionally small visual-regression matrix. It
-covers compact (563×137), medium (900×700), and wide (1280×800 / 1440×900)
-layouts, with representative Dark and Light coverage rather than a Cartesian
-explosion of every state. The baselines cover Timeline Live and Frozen,
-Topology expanded and collapsed, bounded high-cardinality COMMAND evidence,
-and the compact Topology Export surface.
-
-Visual checks use fixed scenario data, timestamps, viewport sizes, themes,
-`deviceScaleFactor: 1`, Chromium animation disabling, and the pinned Linux
-container (`mcr.microsoft.com/playwright:v1.62.1-noble` in CI). A baseline
-update must be accompanied by an inspected screenshot and a short explanation
-in the pull request or internal Project ticket. Normal `test:ui` never rewrites
-baselines.
+The suite uses fixed scenario data, timestamps, viewport sizes, themes,
+`deviceScaleFactor: 1`, and disabled animations. It retains screenshots,
+traces, video, page HTML, and console output when a check fails; there is no
+separate baseline-update command. Collect and review intentional visual
+evidence through `docs/agents/ui-verification.md` and
+`docs/agents/ui-visual-qa.md` according to the Workbench UI Standard.

@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible problem with capture, COMMAND state, reinjection, UI, or packaging.
+description: Report a reproducible problem with Capture, Diagnose, COMMAND projections, Local Injection, or packaging.
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -12,7 +12,7 @@ body:
     attributes:
       label: Summary
       description: What is broken?
-      placeholder: The COMMAND State view shows...
+      placeholder: The selected Evidence Context shows...
     validations:
       required: true
   - type: dropdown
@@ -22,9 +22,10 @@ body:
       multiple: true
       options:
         - Capture or instrumentation
-        - Timeline
-        - COMMAND State
-        - Synthetic reinjection
+        - Scope or structural Topology
+        - Ordered Evidence or Context
+        - COMMAND projections
+        - Local Injection
         - WebSocket/TLCP fallback
         - DevTools panel UI
         - Build, package, or release scripts

@@ -1,4 +1,4 @@
-import { type EventFilterState, filterEvents } from "./event-filter";
+import { type EventFilterState, filterEvents, hasActiveFilters } from "./event-filter";
 import {
   type LightstreamerEventEnvelope,
   toPersistableEventEnvelope
@@ -181,7 +181,8 @@ export function createEventStore(options: EventStoreOptions = {}): InMemoryEvent
 
     queryEvents(query = {}) {
       settleNotifications();
-      const visibleEvents = filterEvents(events, query.filters ?? {});
+      const filters = query.filters ?? {};
+      const visibleEvents = hasActiveFilters(filters) ? filterEvents(events, filters) : events;
       const total = visibleEvents.length;
       return {
         events: pageEvents(visibleEvents, query),

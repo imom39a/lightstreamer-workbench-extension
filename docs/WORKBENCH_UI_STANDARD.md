@@ -104,7 +104,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 ### Local Injection
 
 - Never edit Captured Item Update evidence in place. Create a separate Injection Draft from an immutable Injection Source or explicit source-free authoring entry.
-- Current behavior contains one target-anchored Draft. Visible Timeline events never automatically become Draft members.
+- Current behavior contains one target-anchored Draft. Visible Evidence never joins that Draft automatically.
 - Raw JSON is the primary editor. Keep Subscription instance, Session, item identity, Source, validation, target, and execution boundary protected outside the editable document.
 - Keep Compare Source optional. Side-by-side Source/Draft comparison uses one synchronized scroll; narrower layouts use inline comparison.
 - Review and inject one focused Draft. There is no direct injection keyboard shortcut.
@@ -169,7 +169,7 @@ Required evidence:
 
 ### 3. Material UI
 
-Use for any new control or workflow; workspace, layout, navigation, visual hierarchy, keyboard, focus, selection, semantic, provenance, Local Injection, destructive-action, Export, Timeline, Topology, COMMAND State, or accessibility change; a permanent-surface/shared-component decision; or any visual-baseline creation or update.
+Use for any new control or workflow; workspace, layout, navigation, visual hierarchy, keyboard, focus, selection, semantic, provenance, Local Injection, destructive-action, Export, Ordered Evidence, Scope/Topology, COMMAND projection, or accessibility change; a permanent-surface/shared-component decision; or any visual-baseline creation or update.
 
 Material UI requires all Bounded UI evidence plus:
 

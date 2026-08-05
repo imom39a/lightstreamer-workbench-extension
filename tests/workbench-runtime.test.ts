@@ -483,6 +483,88 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
+  it("preserves presentation identity for unchanged retained Evidence rows", async () => {
+    const history = createInMemoryEventHistory();
+    const scheduler = createScheduler();
+    history.append(event("event-1"));
+    history.append(event("event-2"));
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const firstPresentation = runtime.getSnapshot().evidence.events[0];
+
+    history.append(event("event-3"));
+    scheduler.flushFrame();
+
+    expect(runtime.getSnapshot().evidence.events[0]).toBe(firstPresentation);
+    runtime.dispose();
+  });
+
+  it("coalesces direct Capture notifications to render cadence without losing deliveries", async () => {
+    const history = createInMemoryEventHistory();
+    const scheduler = createScheduler();
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    let notifications = 0;
+    runtime.subscribe(() => {
+      notifications += 1;
+    });
+
+    for (let delivery = 1; delivery <= 3; delivery += 1) {
+      runtime.dispatch({
+        type: "ingest-capture-message",
+        message: createCaptureMessage("item-update", {
+          logicalEventId: "logical-1",
+          client: { id: "client-capture" },
+          subscription: { id: "capture-subscription", mode: "MERGE" },
+          listener: { id: `listener-${delivery}`, metricOwner: delivery === 1 },
+          item: { name: "captured-item", position: 1 },
+          update: { fields: { value: 7 }, changedFields: { value: 7 } }
+        })
+      });
+    }
+    await flushStoreNotifications();
+
+    expect(await history.count().toPromise()).toBe(3);
+    expect(notifications).toBe(0);
+    expect(scheduler.frameCount()).toBe(1);
+
+    scheduler.flushFrame();
+
+    expect(notifications).toBe(1);
+    expect(runtime.getSnapshot().evidence.total).toBe(3);
+    expect((await history.list().toPromise()).map((retained) => retained.listener?.id)).toEqual([
+      "listener-1",
+      "listener-2",
+      "listener-3"
+    ]);
+    runtime.dispose();
+  });
+
+  it("reuses structural Scope nodes across evidence-only Capture publications", async () => {
+    const history = createInMemoryEventHistory();
+    history.append(topologyEvent("client-1", "client-created"));
+    history.append(topologyEvent("session-1", "client-status"));
+    history.append(topologyEvent("subscription-1", "subscription-started"));
+    history.append(topologyEvent("listener-1", "listener-added"));
+    history.append(topologyEvent("update-1", "item-update"));
+    const scheduler = createScheduler();
+    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    const structuralNodes = runtime.getSnapshot().scope.nodes;
+
+    runtime.dispatch({
+      type: "ingest-capture-message",
+      message: createCaptureMessage("item-update", {
+        client: { id: "client-main", status: "CONNECTED:WS-STREAMING", sessionId: "S-1" },
+        subscription: { id: "orders-subscription", mode: "COMMAND", items: ["orders"], active: true, subscribed: true },
+        listener: { id: "orders-listener", callbacks: ["onItemUpdate"] },
+        item: { name: "orders", position: 1 },
+        update: { isSnapshot: false, fields: { value: 2 }, changedFields: { value: 2 } }
+      })
+    });
+    scheduler.flushFrame();
+
+    expect(runtime.getSnapshot().scope.nodes).toBe(structuralNodes);
+    runtime.dispose();
+  });
+
   it("preserves a Frozen Evidence window, selection, and filtered newer count until Follow Live", async () => {
     const history = createInMemoryEventHistory();
     const scheduler = createScheduler();
@@ -1148,6 +1230,7 @@ describe("WorkbenchRuntime", () => {
     ]);
     expect(JSON.stringify(analytics.events)).not.toContain("customer-secret");
     expect(JSON.stringify(analytics.events)).not.toContain("private-item");
+    expect(JSON.stringify(analytics.events)).not.toMatch(/replay/i);
   });
 
   it("isolates analytics transport and consent failures from investigation state", async () => {

@@ -77,8 +77,8 @@ describe("opt-in Google Analytics", () => {
       generateClientId: () => "123456789.1700000000"
     });
     const event = {
-      name: "replay_result",
-      surface: "command_state",
+      name: "local_injection_result",
+      surface: "selected_evidence",
       target: "listener",
       edited: true,
       outcome: "success",
@@ -124,12 +124,12 @@ describe("opt-in Google Analytics", () => {
       validation_behavior: "ENFORCE_RECOMMENDATIONS",
       events: [
         {
-          name: "replay_result",
+          name: "local_injection_result",
           params: {
-            replay_surface: "command_state",
-            replay_target: "listener",
-            replay_edited: 1,
-            replay_outcome: "success",
+            local_injection_surface: "selected_evidence",
+            local_injection_target: "listener",
+            local_injection_edited: 1,
+            local_injection_outcome: "success",
             session_id: 1_700_000_000,
             engagement_time_msec: 1,
             extension_version: "0.1.4"

@@ -3,15 +3,16 @@ const CLIENT_ID_STORAGE_KEY = "lsew.analytics.client-id.v1";
 const DEFAULT_COLLECTION_ENDPOINT = "https://www.google-analytics.com/mp/collect";
 
 export type AnalyticsConsent = "unknown" | "granted" | "denied";
-export type AnalyticsView = "timeline" | "topology" | "command_state";
-export type AnalyticsReplaySurface = "timeline" | "command_state" | "new_command";
-export type AnalyticsReplayTarget = "listener" | "wire";
-export type AnalyticsReplayOutcome =
+export type AnalyticsLocalInjectionSurface = "selected_evidence" | "command_scope";
+export type AnalyticsLocalInjectionTarget = "listener" | "wire";
+export type AnalyticsLocalInjectionOutcome =
   | "success"
   | "stale_target"
   | "listener_error"
   | "wire_error"
-  | "bridge_error";
+  | "bridge_error"
+  | "acknowledgement_unknown"
+  | "partial";
 export type AnalyticsEventCountBucket =
   | "0"
   | "1_10"
@@ -23,27 +24,25 @@ export type WorkbenchAnalyticsEvent =
   | { name: "analytics_enabled" }
   | { name: "panel_view" }
   | { name: "lightstreamer_detected" }
-  | { name: "view_changed"; view: AnalyticsView }
-  | { name: "search_used"; view: AnalyticsView }
+  | { name: "search_used" }
   | {
-      name: "replay_attempt";
-      surface: AnalyticsReplaySurface;
-      target: AnalyticsReplayTarget;
+      name: "local_injection_attempt";
+      surface: AnalyticsLocalInjectionSurface;
+      target: AnalyticsLocalInjectionTarget;
       edited: boolean;
     }
   | {
-      name: "replay_result";
-      surface: AnalyticsReplaySurface;
-      target: AnalyticsReplayTarget;
+      name: "local_injection_result";
+      surface: AnalyticsLocalInjectionSurface;
+      target: AnalyticsLocalInjectionTarget;
       edited: boolean;
-      outcome: AnalyticsReplayOutcome;
+      outcome: AnalyticsLocalInjectionOutcome;
     }
   | {
       name: "session_summary";
       eventCountBucket: AnalyticsEventCountBucket;
-      commandViewUsed: boolean;
       searchUsed: boolean;
-      replayUsed: boolean;
+      localInjectionUsed: boolean;
     };
 
 export type AnalyticsStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -71,19 +70,19 @@ type GoogleAnalyticsEvent = {
   params: Record<string, string | number>;
 };
 
-const analyticsViews = new Set<AnalyticsView>(["timeline", "topology", "command_state"]);
-const replaySurfaces = new Set<AnalyticsReplaySurface>([
-  "timeline",
-  "command_state",
-  "new_command"
+const localInjectionSurfaces = new Set<AnalyticsLocalInjectionSurface>([
+  "selected_evidence",
+  "command_scope"
 ]);
-const replayTargets = new Set<AnalyticsReplayTarget>(["listener", "wire"]);
-const replayOutcomes = new Set<AnalyticsReplayOutcome>([
+const localInjectionTargets = new Set<AnalyticsLocalInjectionTarget>(["listener", "wire"]);
+const localInjectionOutcomes = new Set<AnalyticsLocalInjectionOutcome>([
   "success",
   "stale_target",
   "listener_error",
   "wire_error",
-  "bridge_error"
+  "bridge_error",
+  "acknowledgement_unknown",
+  "partial"
 ]);
 const eventCountBuckets = new Set<AnalyticsEventCountBucket>([
   "0",
@@ -219,37 +218,34 @@ function serializeEvent(event: WorkbenchAnalyticsEvent): GoogleAnalyticsEvent | 
     case "panel_view":
     case "lightstreamer_detected":
       return { name: event.name, params: {} };
-    case "view_changed":
     case "search_used":
-      return analyticsViews.has(event.view)
-        ? { name: event.name, params: { workbench_view: event.view } }
-        : null;
-    case "replay_attempt":
-      if (!isValidReplayContext(event.surface, event.target)) {
+      return { name: event.name, params: {} };
+    case "local_injection_attempt":
+      if (!isValidLocalInjectionContext(event.surface, event.target)) {
         return null;
       }
       return {
         name: event.name,
         params: {
-          replay_surface: event.surface,
-          replay_target: event.target,
-          replay_edited: Number(event.edited)
+          local_injection_surface: event.surface,
+          local_injection_target: event.target,
+          local_injection_edited: Number(event.edited)
         }
       };
-    case "replay_result":
+    case "local_injection_result":
       if (
-        !isValidReplayContext(event.surface, event.target) ||
-        !replayOutcomes.has(event.outcome)
+        !isValidLocalInjectionContext(event.surface, event.target) ||
+        !localInjectionOutcomes.has(event.outcome)
       ) {
         return null;
       }
       return {
         name: event.name,
         params: {
-          replay_surface: event.surface,
-          replay_target: event.target,
-          replay_edited: Number(event.edited),
-          replay_outcome: event.outcome
+          local_injection_surface: event.surface,
+          local_injection_target: event.target,
+          local_injection_edited: Number(event.edited),
+          local_injection_outcome: event.outcome
         }
       };
     case "session_summary":
@@ -260,19 +256,18 @@ function serializeEvent(event: WorkbenchAnalyticsEvent): GoogleAnalyticsEvent | 
         name: event.name,
         params: {
           event_count_bucket: event.eventCountBucket,
-          command_view_used: Number(event.commandViewUsed),
           search_used: Number(event.searchUsed),
-          replay_used: Number(event.replayUsed)
+          local_injection_used: Number(event.localInjectionUsed)
         }
       };
   }
 }
 
-function isValidReplayContext(
-  surface: AnalyticsReplaySurface,
-  target: AnalyticsReplayTarget
+function isValidLocalInjectionContext(
+  surface: AnalyticsLocalInjectionSurface,
+  target: AnalyticsLocalInjectionTarget
 ): boolean {
-  return replaySurfaces.has(surface) && replayTargets.has(target);
+  return localInjectionSurfaces.has(surface) && localInjectionTargets.has(target);
 }
 
 function readConsent(storage: AnalyticsStorage): AnalyticsConsent {

@@ -211,8 +211,10 @@
 .workbench-react__filter label { color: var(--wb-muted); }
 
 .workbench-react__scope { display: flex; flex-direction: column; }
-.workbench-react__scope-tree { min-height: 0; overflow: auto; padding: 6px 0; }
+.workbench-react__scope-tree { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 6px 0; }
+.workbench-react__scope-tree-window { position: relative; min-width: 100%; }
 .workbench-react__scope-node { display: grid; width: 100%; min-height: 27px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; border: 0; border-left: 3px solid transparent; background: transparent; padding: 4px 8px; text-align: left; }
+.workbench-react__scope-node--windowed { position: absolute; inset-inline: 0; box-sizing: border-box; height: 27px; min-height: 27px; max-height: 27px; }
 .workbench-react__scope-node[aria-selected="true"] { border-left-color: var(--wb-selection-marker); background: var(--wb-selection); }
 .workbench-react__scope-node span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workbench-react__scope-node em { color: var(--wb-muted); font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-style: normal; }

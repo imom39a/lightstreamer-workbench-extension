@@ -9,12 +9,10 @@ const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const selectedTheme = parseTheme(process.env.LSEW_UI_THEME ?? "auto");
 const viewport = parseViewport(process.env.LSEW_UI_VIEWPORT ?? "1280x800");
 const chromeExecutable = resolveChromeExecutable();
-const snapshotSuffix = process.platform === "linux" ? "-linux" : "";
 
 export default defineConfig({
   testDir: "./tests/ui",
-  testMatch: /\.spec\.ts$/,
-  testIgnore: "react-diagnose.spec.ts",
+  testMatch: "workbench.spec.ts",
   timeout: 30_000,
   expect: {
     timeout: 10_000,
@@ -28,7 +26,6 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: 1,
   outputDir: "test-results/ui",
-  snapshotPathTemplate: `{snapshotDir}/{testFileDir}/{testFileName}-snapshots${snapshotSuffix}/{arg}{ext}`,
   updateSnapshots: process.env.LSEW_UI_UPDATE === "1" ? "all" : "none",
   reporter: [["list"], ["html", { outputFolder: "test-results/ui-report", open: "never" }]],
   use: {

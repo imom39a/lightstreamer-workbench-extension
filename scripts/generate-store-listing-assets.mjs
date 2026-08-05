@@ -15,16 +15,16 @@ const magickPath = findExecutable(["magick", "convert"]);
 
 const screenshots = [
   {
-    file: "01-command-state-active-keys.png",
+    file: "01-command-projections-context.png",
     scene: "command-state"
   },
   {
-    file: "02-timeline-event-detail.png",
+    file: "02-ordered-evidence-context.png",
     scene: "timeline-detail"
   },
   {
-    file: "03-new-command-update-editor.png",
-    scene: "new-command"
+    file: "03-local-injection-editor.png",
+    scene: "local-injection"
   }
 ];
 
@@ -50,10 +50,12 @@ try {
   await writeFile(join(tempDir, "entry.ts"), screenshotHarnessSource());
   await writeFile(join(tempDir, "index.html"), htmlSource());
   await build({
+    absWorkingDir: projectRoot,
     bundle: true,
     entryPoints: [join(tempDir, "entry.ts")],
     format: "esm",
     loader: { ".css": "css" },
+    nodePaths: [resolve(projectRoot, "node_modules")],
     outdir: tempDir,
     sourcemap: false,
     target: "chrome120"
@@ -78,51 +80,87 @@ try {
 }
 
 function screenshotHarnessSource() {
-  const mainPath = JSON.stringify(resolve(projectRoot, "src/extension/panel/main.ts"));
-  const storePath = JSON.stringify(resolve(projectRoot, "src/core/event-store.ts"));
-  const scenarioPath = JSON.stringify(resolve(projectRoot, "tests/support/panel-scenarios.ts"));
-  const scenarioDomPath = JSON.stringify(
-    resolve(projectRoot, "tests/support/panel-scenario-dom.ts")
-  );
+  const source = (path) => JSON.stringify(resolve(projectRoot, path));
   return `
-import { renderPanel } from ${mainPath};
-import { createEventStore } from ${storePath};
-import { getPanelScenario, type StoreListingScenarioId } from ${scenarioPath};
-import { applyPanelScenario } from ${scenarioDomPath};
+import { createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { createInMemoryEventHistory } from ${source("src/core/event-history.ts")};
+import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
+import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
+import { getWorkbenchScenario } from ${source("tests/support/workbench-scenarios.ts")};
 
 const scene = new URLSearchParams(window.location.search).get("scene") ?? "command-state";
+const scenarioId = {
+  "command-state": "live-selected",
+  "timeline-detail": "raw-evidence",
+  "local-injection": "local-injection-large"
+}[scene];
+if (!scenarioId) throw new Error("Unknown store-listing scenario: " + scene);
 const root = document.querySelector("#app");
-if (!(root instanceof HTMLElement)) {
-  throw new Error("Store-listing scenario requires #app.");
-}
-if (![
-  "command-state",
-  "timeline-detail",
-  "new-command"
-].includes(scene)) {
-  throw new Error("Unknown store-listing scenario: " + scene);
-}
-const store = createEventStore();
-const bridge = {
-  reinjectDraft() {
-    return Promise.resolve({
-      requestId: "store-listing-preview",
-      ok: true,
-      status: "success",
-      timestamp: 1780872000000
-    });
-  }
-};
-const panel = renderPanel(root, undefined, { store, bridge });
-applyPanelScenario(root, panel, store, getPanelScenario(scene as StoreListingScenarioId));
+if (!(root instanceof HTMLElement)) throw new Error("Store-listing scenario requires #app.");
 
-if (scene === "new-command") {
-  if (!document.querySelector(".command-draft-controls")) {
-    throw new Error("New COMMAND editor did not open for the store listing screenshot.");
+const scenario = getWorkbenchScenario(scenarioId);
+const history = createInMemoryEventHistory();
+for (const event of scenario.initialEvents) history.append(event);
+const runtime = createWorkbenchRuntime({
+  history,
+  captureStatus: scenario.captureStatus,
+  capture: scenario.capture,
+  theme: "dark",
+  localInjectionExecutor: {
+    execute(request) {
+      return Promise.resolve({
+        requestId: request.executionId,
+        ok: true,
+        status: "success",
+        timestamp: 1780872100001,
+        attemptedCount: 1,
+        deliveredCount: 1,
+        failedCount: 0
+      });
+    }
+  }
+});
+for (const frame of scenario.topologySyncFrames ?? []) {
+  runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+}
+for (const message of scenario.captureMessages ?? []) {
+  runtime.dispatch({ type: "ingest-capture-message", message });
+}
+const reactRoot = createRoot(root);
+reactRoot.render(createElement(WorkbenchPanel, { runtime }));
+
+await new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame)));
+if (scenario.selectedScope) {
+  const scope = runtime.getSnapshot().scope.nodes.find((node) =>
+    node.kind === scenario.selectedScope.kind &&
+    node.retired === scenario.selectedScope.retired &&
+    node.label === scenario.selectedScope.label
+  );
+  if (scope) {
+    runtime.dispatch({ type: "set-scope", scopeId: scope.id });
+    runtime.dispatch({ type: "set-scope-focus", scopeId: scope.id });
   }
 }
-
+if (scenario.selectedEventId) runtime.dispatch({ type: "select-evidence", eventId: scenario.selectedEventId });
+if (scenario.openRawEvidence && scenario.selectedEventId) {
+  runtime.dispatch({ type: "open-raw-evidence", eventId: scenario.selectedEventId });
+}
+if (scene === "local-injection") {
+  runtime.dispatch({ type: "begin-local-injection-from-selection" });
+  const rawText = runtime.getSnapshot().localInjection.draft?.rawText;
+  if (!rawText) throw new Error("Store-listing Local Injection draft did not open.");
+  const edited = JSON.parse(rawText);
+  edited.fields.field_249 = "edited-for-local-injection";
+  runtime.dispatch({ type: "set-local-injection-json", text: JSON.stringify(edited, null, 2) });
+  runtime.dispatch({ type: "set-local-injection-compare", open: true });
+}
+await new Promise((resolveReady) => setTimeout(resolveReady, 160));
 document.documentElement.dataset.sceneReady = "true";
+window.addEventListener("pagehide", () => {
+  reactRoot.unmount();
+  runtime.dispose();
+}, { once: true });
 `;
 }
 
@@ -252,16 +290,16 @@ async function generateRealAppPreviewAssets() {
   const docsAssetsDir = resolve(projectRoot, "docs/assets");
   const sourceScreenshots = [
     {
-      source: resolve(projectRoot, "store-listing/screenshots/01-command-state-active-keys.png"),
-      output: resolve(docsAssetsDir, "app-command-state.png")
+      source: resolve(projectRoot, "store-listing/screenshots/01-command-projections-context.png"),
+      output: resolve(docsAssetsDir, "app-command-projections.png")
     },
     {
-      source: resolve(projectRoot, "store-listing/screenshots/02-timeline-event-detail.png"),
-      output: resolve(docsAssetsDir, "app-timeline-detail.png")
+      source: resolve(projectRoot, "store-listing/screenshots/02-ordered-evidence-context.png"),
+      output: resolve(docsAssetsDir, "app-ordered-evidence-context.png")
     },
     {
-      source: resolve(projectRoot, "store-listing/screenshots/03-new-command-update-editor.png"),
-      output: resolve(docsAssetsDir, "app-replay-editor.png")
+      source: resolve(projectRoot, "store-listing/screenshots/03-local-injection-editor.png"),
+      output: resolve(docsAssetsDir, "app-local-injection-editor.png")
     }
   ];
 
@@ -333,7 +371,7 @@ function smallPromoOverlaySvg() {
   <rect x="276" y="214" width="64" height="25" rx="7" fill="#2563eb"/>
   <text x="290" y="232" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">ADD</text>
   <rect x="350" y="214" width="74" height="25" rx="7" fill="#0f766e"/>
-  <text x="361" y="232" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">REPLAY</text>
+  <text x="361" y="232" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">LOCAL</text>
 </svg>`;
 }
 
@@ -342,13 +380,13 @@ function marqueePromoOverlaySvg() {
   <text x="82" y="258" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Lightstreamer</text>
   <text x="82" y="330" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="800">Workbench</text>
   <text x="86" y="394" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">Inspect COMMAND streams, changed fields,</text>
-  <text x="86" y="436" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">snapshots, and local synthetic replay.</text>
+  <text x="86" y="436" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="30">snapshots, and backend-free Local Injection.</text>
   <rect x="86" y="482" width="158" height="42" rx="8" fill="#2563eb"/>
   <text x="121" y="510" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">ADD keys</text>
   <rect x="266" y="482" width="196" height="42" rx="8" fill="#0f766e"/>
   <text x="301" y="510" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">UPDATE state</text>
   <rect x="484" y="482" width="194" height="42" rx="8" fill="#334155"/>
-  <text x="520" y="510" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Replay locally</text>
+  <text x="520" y="510" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Inject locally</text>
 </svg>`;
 }
 
@@ -361,7 +399,7 @@ function realAppGalleryOverlaySvg() {
   <rect x="302" y="210" width="222" height="42" rx="8" fill="#0f766e"/>
   <text x="334" y="238" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Changed fields</text>
   <rect x="546" y="210" width="188" height="42" rx="8" fill="#334155"/>
-  <text x="579" y="238" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Replay path</text>
+  <text x="579" y="238" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800">Injection path</text>
   <text x="72" y="854" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="22">Generated from the current extension screenshot harness before each release.</text>
   <rect x="966" y="286" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
   <text x="996" y="334" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">1. Select a key</text>
@@ -372,9 +410,9 @@ function realAppGalleryOverlaySvg() {
   <text x="996" y="534" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Compare current values and</text>
   <text x="996" y="562" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">recent changes at a glance.</text>
   <rect x="966" y="606" width="352" height="132" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
-  <text x="996" y="654" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">3. Re-inject or edit</text>
-  <text x="996" y="694" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Replay directly or mutate first</text>
-  <text x="996" y="722" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">from the captured event.</text>
+  <text x="996" y="654" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="800">3. Review and inject</text>
+  <text x="996" y="694" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Compare, review, and inject</text>
+  <text x="996" y="722" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">through the protected local target.</text>
 </svg>`;
 }
 
@@ -385,13 +423,13 @@ function githubSocialPreviewOverlaySvg() {
   <text x="96" y="298" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">Inspect COMMAND</text>
   <text x="96" y="365" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800">streams in DevTools</text>
   <text x="100" y="420" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">Track keys, changed fields, snapshots,</text>
-  <text x="100" y="456" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">and local synthetic replay.</text>
+  <text x="100" y="456" fill="#d8dee9" font-family="Arial, Helvetica, sans-serif" font-size="25">and backend-free Local Injection.</text>
   <rect x="100" y="502" width="120" height="38" rx="8" fill="#2563eb"/>
   <text x="127" y="527" fill="#eff6ff" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">ADD</text>
   <rect x="238" y="502" width="150" height="38" rx="8" fill="#0f766e"/>
   <text x="266" y="527" fill="#ecfeff" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">UPDATE</text>
   <rect x="406" y="502" width="138" height="38" rx="8" fill="#334155"/>
-  <text x="434" y="527" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">REPLAY</text>
+  <text x="434" y="527" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">LOCAL</text>
   <rect x="706" y="502" width="474" height="38" rx="8" fill="rgba(15,23,42,0.74)" stroke="#334155" stroke-width="1"/>
   <text x="728" y="527" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">Backend-free Lightstreamer debugging in the browser</text>
 </svg>`;

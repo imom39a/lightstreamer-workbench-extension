@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Lightstreamer Workbench</title>
-    <meta name="description" content="A Chrome DevTools extension for inspecting Lightstreamer clients, COMMAND subscriptions, and local synthetic replays.">
+    <meta name="description" content="A Chrome DevTools workspace for diagnosing Lightstreamer clients, COMMAND subscriptions, and deliberate Local Injections.">
     <link rel="canonical" href="https://imom39a.github.io/lightstreamer-workbench-extension/">
     <meta property="og:title" content="Lightstreamer Workbench">
-    <meta property="og:description" content="Inspect, filter, mutate, and locally replay Lightstreamer COMMAND updates in Chrome DevTools.">
+    <meta property="og:description" content="Scope, inspect, and reproduce Lightstreamer COMMAND behavior with deliberate Local Injection in Chrome DevTools.">
     <meta property="og:url" content="https://imom39a.github.io/lightstreamer-workbench-extension/">
     <meta property="og:image" content="https://imom39a.github.io/lightstreamer-workbench-extension/assets/brand-hero-ai.png">
     <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
@@ -448,7 +448,7 @@
       <section class="hero">
         <div class="hero-copy">
           <h1><span>Lightstreamer</span><span>Workbench</span></h1>
-          <p class="lede">A Chrome DevTools extension for inspecting Lightstreamer clients, COMMAND subscriptions, item updates, snapshots, and local synthetic replay.</p>
+          <p class="lede">A Chrome DevTools extension for scoping, diagnosing, and deliberately reproducing Lightstreamer client and COMMAND subscription behavior.</p>
           <div class="hero-actions">
             <a class="button primary" href="https://github.com/imom39a/lightstreamer-workbench-extension/">View source</a>
             <a class="button secondary" href="https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/CONTRIBUTING.md#development-setup">Load locally</a>
@@ -472,8 +472,8 @@
           <span>Tracks keys, commands, changed fields, snapshots, and current state.</span>
         </div>
         <div class="fact">
-          <strong>Backend-free replay</strong>
-          <span>Mutate captured updates and reinject synthetic events into the inspected page.</span>
+          <strong>Backend-free Local Injection</strong>
+          <span>Create one protected Injection Draft and deliver it locally through the inspected page.</span>
         </div>
       </section>
 
@@ -482,18 +482,18 @@
         <div class="feature-grid">
           <article class="feature">
             <span class="marker" style="background: var(--blue)"></span>
-            <h3>See the event timeline</h3>
-            <p>Inspect captured clients, subscriptions, item updates, listener callbacks, and raw event envelopes from a DevTools panel.</p>
+            <h3>Diagnose Ordered Evidence</h3>
+            <p>Choose structural Scope, then filter, find, select, and inspect normalized Evidence without losing live Capture.</p>
           </article>
           <article class="feature">
             <span class="marker" style="background: var(--teal)"></span>
-            <h3>Understand COMMAND state</h3>
-            <p>Follow ADD, UPDATE, and DELETE key lifecycles without backend logs or waiting for production event sequences.</p>
+            <h3>Compare COMMAND projections</h3>
+            <p>Keep Observed Server COMMAND State distinct from Local Effective COMMAND State while following ADD, UPDATE, and DELETE lifecycles.</p>
           </article>
           <article class="feature">
             <span class="marker" style="background: var(--amber)"></span>
-            <h3>Replay locally</h3>
-            <p>Re-inject an update directly or edit field values first, with synthetic replays marked so experiments stay visible and separate from server events.</p>
+            <h3>Inject locally</h3>
+            <p>Create exactly one Draft from immutable Evidence or a live COMMAND scope, review its protected target, and keep successful Local Evidence separate from Server Evidence.</p>
           </article>
         </div>
       </section>
@@ -501,22 +501,22 @@
       <section class="section app-preview">
         <h2>Feature screenshots from the DevTools panel</h2>
         <p class="preview-lede">Each image is generated from the real extension panel harness, so the app visuals can stay current with each release while the brand artwork remains stable.</p>
-        <img class="real-app-gallery" src="assets/real-app-gallery.png" alt="Annotated COMMAND state feature walkthrough from the current Lightstreamer Workbench panel.">
+        <img class="real-app-gallery" src="assets/real-app-gallery.png" alt="Annotated investigation walkthrough from the Lightstreamer Workbench panel.">
         <div class="screenshot-grid">
           <article class="screenshot-card">
-            <img src="assets/app-command-state.png" alt="COMMAND state view with active keys selected.">
-            <strong>COMMAND state</strong>
-            <span>Current key lifecycle and changed-field inspection.</span>
+            <img src="assets/app-command-projections.png" alt="COMMAND projection context for selected Lightstreamer Evidence.">
+            <strong>COMMAND projections</strong>
+            <span>Observed Server and Local Effective state remain explicitly distinct.</span>
           </article>
           <article class="screenshot-card">
-            <img src="assets/app-timeline-detail.png" alt="Timeline detail view for a Lightstreamer update event.">
-            <strong>Timeline detail</strong>
-            <span>Captured item-update envelope and direct replay actions.</span>
+            <img src="assets/app-ordered-evidence-context.png" alt="Ordered Evidence with selected Item Update Context.">
+            <strong>Scoped Evidence</strong>
+            <span>Normalized Item Update Evidence with immutable raw detail one interaction away.</span>
           </article>
           <article class="screenshot-card">
-            <img src="assets/app-replay-editor.png" alt="Synthetic COMMAND replay editor in the DevTools panel.">
-            <strong>Replay editor</strong>
-            <span>Local synthetic update editing before reinjection.</span>
+            <img src="assets/app-local-injection-editor.png" alt="Local Injection Draft editor in the DevTools panel.">
+            <strong>Local Injection Draft</strong>
+            <span>Protected Source, raw JSON editing, validation, Review, and truthful outcome.</span>
           </article>
         </div>
       </section>
