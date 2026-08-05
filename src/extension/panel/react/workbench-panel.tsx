@@ -35,23 +35,19 @@ function SelectedUpdateDetails({
   update
 }: Readonly<{ update: WorkbenchSnapshot["context"]["selectedUpdate"] }>): JSX.Element | null {
   if (!update) return null;
-  const groups = [
-    ["Fields", update.fields],
-    ["Changed fields", update.changedFields],
-    ["JSON patches", update.jsonPatches]
-  ] as const;
+  const fieldEntries = update.fields;
   return <section className="workbench-react__selected-update" aria-label="Selected update">
     <h3>Selected update</h3>
-    {groups.map(([title, entries]) => <section key={title} aria-label={title}>
-      <h4>{title}</h4>
-      {entries.length ? <dl>{entries.flatMap((entry) => [
-        <dt key={`${title}-${entry.name}-term`}>{entry.name}</dt>,
-        <dd key={`${title}-${entry.name}-value`}>
+    <section aria-label="Fields">
+      <h4>Fields</h4>
+      {fieldEntries.length ? <dl>{fieldEntries.flatMap((entry) => [
+        <dt key={`fields-${entry.name}-term`}>{entry.name}</dt>,
+        <dd key={`fields-${entry.name}-value`}>
           {entry.jsonString ? <span className="workbench-react__json-string-marker">JSON string</span> : null}
           <pre>{entry.display}</pre>
         </dd>
-      ])}</dl> : <p>No captured {title.toLowerCase()}.</p>}
-    </section>)}
+      ])}</dl> : <p>No captured fields.</p>}
+    </section>
   </section>;
 }
 
@@ -1262,8 +1258,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               <label><input type="checkbox" checked={snapshot.export.completeEvidence} onChange={(event) => setCompleteEvidence(event.currentTarget.checked)} />Include complete establishment and COMMAND generation evidence</label>
               <div className="workbench-react__context-actions"><button type="button" disabled={!snapshot.export.json} onClick={() => downloadExport("json")}>Download JSON</button><button type="button" disabled={!snapshot.export.document} onClick={() => downloadExport("html")}>Download HTML</button></div>
             </section> : <>
+              <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
-              <dl className="workbench-react__context-fields">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__diagnostic" key={`${diagnostic.title}-${index}`}><strong>{diagnostic.severity} · {diagnostic.title}</strong><span>{diagnostic.detail}</span>{diagnostic.recovery ? <button type="button" onClick={() => dispatch(runtime, { type: "open-diagnostics" })}>{diagnostic.recovery}</button> : null}</section>)}
               <CommandProjectionContextSummary
                 projections={snapshot.commandProjections}

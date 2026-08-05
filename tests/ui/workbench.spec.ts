@@ -133,6 +133,9 @@ test("Workbench keeps selected Evidence, roving focus, and distinct COMMAND proj
   const normalRowHeight = await initialRow.evaluate((row) => row.getBoundingClientRect().height);
   expect(normalRowHeight).toBeGreaterThanOrEqual(26);
   expect(normalRowHeight).toBeLessThanOrEqual(28);
+  const eventIdentity = initialRow.locator('[role="gridcell"]').first().locator("small").first();
+  await expect(eventIdentity).toHaveText("scenario-event-3");
+  expect(await eventIdentity.evaluate((identity) => identity.scrollWidth <= identity.clientWidth)).toBe(true);
   await expect(initialRow).toHaveAttribute("aria-selected", "true");
   await initialRow.focus();
   await page.keyboard.press("ArrowDown");
@@ -1143,17 +1146,18 @@ test("Workbench preserves a Filter-hidden selection through passive Capture and 
     .getByRole("region", { name: "Selected update" });
   await expect(selectedUpdate.getByRole("region", { name: "Fields", exact: true }))
     .toContainText('"selected": false');
-  await expect(selectedUpdate.getByRole("region", { name: "Changed fields", exact: true }))
-    .toContainText("retainedDetails");
-  await expect(selectedUpdate.getByRole("region", { name: "JSON patches", exact: true }))
-    .toContainText('"path": "/passenger/selected"');
+  await expect(selectedUpdate.getByRole("region", { name: "Changed fields", exact: true })).toHaveCount(0);
+  await expect(selectedUpdate.getByRole("region", { name: "JSON patches", exact: true })).toHaveCount(0);
   const focusedVisible = page.locator('[data-evidence-id="scenario-event-1"]');
   await expect(focusedVisible).toHaveAttribute("aria-selected", "false");
   await expect(page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" })).toHaveAttribute("tabindex", "0");
   await expect(page.locator('[data-evidence-id="scenario-event-1-passive"]')).toBeVisible();
 
   await page.getByRole("button", { name: "Open complete raw" }).click();
-  await expect(page.getByLabel("Complete raw Evidence")).toContainText("scenario-event-3 · immutable SERVER Evidence");
+  const rawEvidence = page.getByLabel("Complete raw Evidence");
+  await expect(rawEvidence).toContainText("scenario-event-3 · immutable SERVER Evidence");
+  await expect(rawEvidence.locator("pre")).toContainText('"changedFields"');
+  await expect(rawEvidence.locator("pre")).toContainText('"jsonPatches"');
   await page.getByRole("button", { name: "Back to Evidence" }).click();
   await expect(page.getByText("Selected event outside current results", { exact: true })).toBeVisible();
 
@@ -1175,6 +1179,15 @@ test("Workbench marks and navigates Find results without changing selected Evide
   await page.keyboard.press("Enter");
   await expect.poll(() => page.locator('[data-find-current="true"]').getAttribute("data-evidence-id")).not.toBe(before);
   await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toHaveAttribute("aria-selected", "true");
+  const findCurrent = page.locator('[data-find-current="true"]');
+  const findIdentityCell = findCurrent.locator('[role="gridcell"]').first();
+  expect(await findIdentityCell.evaluate((cell) => {
+    const match = cell.querySelector<HTMLElement>(".workbench-react__find-match");
+    if (!match) return false;
+    const cellRect = cell.getBoundingClientRect();
+    const matchRect = match.getBoundingClientRect();
+    return matchRect.top >= cellRect.top && matchRect.bottom <= cellRect.bottom;
+  })).toBe(true);
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -1194,16 +1207,18 @@ test("Workbench keeps retired Scope selectable and explicitly historical", async
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench exposes selected update data and expands captured JSON strings in one scrollable editor", async ({ page }, testInfo) => {
+test("Workbench exposes selected Item Update fields after Evidence metadata and preserves readable JSON strings", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-json", { width: 1440, height: 900 }, "dark");
 
   const context = page.getByRole("complementary", { name: "Context" });
   const selectedUpdate = context.getByRole("region", { name: "Selected update" });
+  const contextFields = context.locator(".workbench-react__context-fields");
   await expect(selectedUpdate).toBeVisible();
   await expect(selectedUpdate.getByRole("region", { name: "Fields", exact: true })).toContainText("modelValues");
-  await expect(selectedUpdate.getByRole("region", { name: "Changed fields", exact: true })).toContainText("ordinary");
-  await expect(selectedUpdate.getByRole("region", { name: "JSON patches", exact: true })).toContainText('"op": "replace"');
-  await expect(selectedUpdate.getByText("JSON string", { exact: true })).toHaveCount(2);
+  await expect(selectedUpdate.getByRole("region", { name: "Changed fields", exact: true })).toHaveCount(0);
+  await expect(selectedUpdate.getByRole("region", { name: "JSON patches", exact: true })).toHaveCount(0);
+  await expect(contextFields.getByText("Source", { exact: true })).toBeVisible();
+  await expect(selectedUpdate.getByText("JSON string", { exact: true })).toHaveCount(1);
   await expect(selectedUpdate).toContainText('"selected": false');
   await expect(selectedUpdate).toContainText('{"passenger":');
   await expect(context.getByText("Observed Server COMMAND State", { exact: true })).toBeVisible();
@@ -1212,10 +1227,18 @@ test("Workbench exposes selected update data and expands captured JSON strings i
     const projection = node.parentElement?.querySelector(".workbench-react__projection-summary");
     return projection ? node.getBoundingClientRect().top < projection.getBoundingClientRect().top : false;
   })).toBe(true);
+  expect(await contextFields.evaluate((fields, update) =>
+    Boolean(fields.compareDocumentPosition(update as Node) & Node.DOCUMENT_POSITION_FOLLOWING),
+    await selectedUpdate.elementHandle()
+  )).toBe(true);
 
   await page.setViewportSize({ width: 900, height: 700 });
-  await expect(selectedUpdate.getByRole("heading", { name: "Selected update" })).toBeInViewport();
-  await expect(selectedUpdate.getByText("modelValues", { exact: true }).first()).toBeInViewport();
+  const selectedHeading = selectedUpdate.getByRole("heading", { name: "Selected update" });
+  await selectedHeading.scrollIntoViewIfNeeded();
+  await expect(selectedHeading).toBeInViewport();
+  const modelValues = selectedUpdate.getByText("modelValues", { exact: true }).first();
+  await modelValues.scrollIntoViewIfNeeded();
+  await expect(modelValues).toBeInViewport();
 
   await page.setViewportSize({ width: 563, height: 700 });
   await page.getByRole("button", { name: "Open Context" }).click();

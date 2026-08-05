@@ -457,7 +457,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("lists the captured COMMAND key in Ordered Evidence while preserving Changed detail for Context", async () => {
+  it("lists the captured COMMAND key in Ordered Evidence while preserving Evidence metadata for Context", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const runtime = createTestRuntime(snapshot());
@@ -477,7 +477,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("renders retained selected Item Update data before the COMMAND projection summary", async () => {
+  it("renders retained selected Item Update fields after Evidence metadata and before the COMMAND projection summary", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const base = snapshot();
@@ -502,13 +502,13 @@ describe("React Workbench Diagnose panel", () => {
     const contextFields = rootElement.querySelector<HTMLElement>(".workbench-react__context-fields");
     const projection = rootElement.querySelector<HTMLElement>('[aria-label="COMMAND projection summary"]');
     expect(selectedUpdate?.textContent).toContain("Fields");
-    expect(selectedUpdate?.textContent).toContain("Changed fields");
-    expect(selectedUpdate?.textContent).toContain("JSON patches");
+    expect(selectedUpdate?.querySelector('[aria-label="Changed fields"]')).toBeNull();
+    expect(selectedUpdate?.querySelector('[aria-label="JSON patches"]')).toBeNull();
     expect(selectedUpdate?.textContent).toContain("JSON string");
     expect(selectedUpdate?.textContent).toContain('"flight": "DL42"');
     expect(selectedUpdate?.textContent).toContain("{nope");
     expect(selectedUpdate?.compareDocumentPosition(projection!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(selectedUpdate?.compareDocumentPosition(contextFields!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(contextFields?.compareDocumentPosition(selectedUpdate!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(selectedUpdate?.querySelector("pre")?.parentElement?.className).not.toContain("scroll");
 
     await act(async () => root.unmount());

@@ -2362,7 +2362,6 @@ class Runtime implements WorkbenchRuntime {
         ["Subscription identity", selected.subscription?.id ?? "—"],
         ["Runtime object", evidenceObject(selected)],
         ["COMMAND key", selected.update?.key ?? "—"],
-        ["Changed", evidenceSummary(selected)],
         ["Observation path", evidenceObservationPath(selected)],
         ["Evidence limitations", evidenceLimitations(selected)]
       ] as const)
