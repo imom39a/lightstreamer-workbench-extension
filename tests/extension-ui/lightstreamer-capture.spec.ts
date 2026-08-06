@@ -146,28 +146,23 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         scope: string;
         evidence: string;
         context: string;
-        observed: string;
+        projectionSummaryPresent: boolean;
+        projectionButtonPresent: boolean;
       }>(panelCdp, `({
         scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
         evidence: document.querySelector('[aria-label="Ordered Lightstreamer Evidence"]')?.textContent ?? "",
         context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
-        observed: document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent ?? ""
+        projectionSummaryPresent: Boolean(document.querySelector('[aria-label="COMMAND projection summary"]')),
+        projectionButtonPresent: [...document.querySelectorAll("button")].some(
+          (button) => button.textContent?.includes("COMMAND projections")
+        )
       })`);
       expect(reactProof.scope).toContain("scenario.mutate-reinject");
       expect(reactProof.evidence).toContain("SERVER");
       expect(reactProof.evidence).toContain("ADD");
       expect(reactProof.context).toContain("fixture-message.TICKER");
-      expect(reactProof.context).toContain("Compare current Scope COMMAND projections");
-      expect(reactProof.observed).toBe("");
-      await pressContextPanelButton(panelCdp, "Compare current Scope COMMAND projections");
-      await waitForCondition(
-        panelCdp,
-        `document.querySelector('[aria-label="COMMAND projection comparison"]') &&
-          document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
-            ?.includes("fixture-message.TICKER")`,
-        "the promoted comparison to expose the complete observed COMMAND row"
-      );
-      await clickPanelButton(panelCdp, "Back to Evidence");
+      expect(reactProof.projectionSummaryPresent).toBe(false);
+      expect(reactProof.projectionButtonPresent).toBe(false);
 
       const editedMessage = "Edited by Workbench Local Injection.";
       const localInjectionDocument = {
@@ -299,8 +294,8 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
             .some((row) => [...row.querySelectorAll('[role="gridcell"]')]
               .some((cell) => cell.textContent?.trim() === "LOCAL")) &&
           !document.querySelector('[aria-label="COMMAND projection summary"]') &&
-          [...document.querySelectorAll("button")].some(
-            (button) => button.textContent?.trim() === "Compare current Scope COMMAND projections"
+          ![...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.includes("COMMAND projections")
           )
         `,
         "React Evidence to reflect the delivered Local Injection without a projection summary in Selected Evidence"
@@ -313,26 +308,35 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       );
       expect(localEvidenceProof).toContain("LOCAL");
       expect(localEvidenceProof).toContain("UPDATE");
-      await pressContextPanelButton(panelCdp, "Compare current Scope COMMAND projections");
-      await waitForCondition(
-        panelCdp,
-        `document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
-            ?.includes("Attention - real Lightstreamer client.") &&
-          document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent
-            ?.includes(${JSON.stringify(editedMessage)})`,
-        "the promoted comparison to expose the divergent COMMAND rows"
-      );
-      const projectionProof = await evaluateByValue<{
-        observed: string;
-        localEffective: string;
-      }>(panelCdp, `({
-        observed: document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent ?? "",
-        localEffective: document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent ?? ""
-      })`);
-      expect(projectionProof.observed).toContain("Attention - real Lightstreamer client.");
-      expect(projectionProof.observed).not.toContain(editedMessage);
-      expect(projectionProof.localEffective).toContain(editedMessage);
-      await clickPanelButton(panelCdp, "Back to Evidence");
+      if (viewport.width > 700) {
+        await clearPanelEvidenceSelection(panelCdp);
+        await waitForCondition(
+          panelCdp,
+          `document.querySelector('[aria-label="COMMAND projection summary"]')?.textContent
+            ?.includes("Projections differ")`,
+          "runtime-object Context to expose the divergent COMMAND summary"
+        );
+        await pressVisiblePanelButton(panelCdp, "Compare COMMAND projections");
+        await waitForCondition(
+          panelCdp,
+          `document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
+              ?.includes("Attention - real Lightstreamer client.") &&
+            document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent
+              ?.includes(${JSON.stringify(editedMessage)})`,
+          "the promoted comparison to expose the divergent COMMAND rows"
+        );
+        const projectionProof = await evaluateByValue<{
+          observed: string;
+          localEffective: string;
+        }>(panelCdp, `({
+          observed: document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent ?? "",
+          localEffective: document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent ?? ""
+        })`);
+        expect(projectionProof.observed).toContain("Attention - real Lightstreamer client.");
+        expect(projectionProof.observed).not.toContain(editedMessage);
+        expect(projectionProof.localEffective).toContain(editedMessage);
+        await clickPanelButton(panelCdp, "Back to Evidence");
+      }
 
       if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
         .find((candidate) => candidate.querySelector("span")?.textContent?.includes("scenario.mutate-reinject"))`)) {
@@ -344,6 +348,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
           .find((candidate) => candidate.querySelector("span")?.textContent?.includes("scenario.mutate-reinject"))`,
         "the rendered fixture COMMAND Item Scope"
       );
+
       await waitForCondition(
         panelCdp,
         `[...document.querySelectorAll("button")].some(
@@ -408,24 +413,9 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
           const localRows = [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
             .filter((row) => [...row.querySelectorAll('[role="gridcell"]')]
               .some((cell) => cell.textContent?.trim() === "LOCAL"));
-          return localRows.length === 2 &&
-            !document.querySelector('[aria-label="COMMAND projection summary"]') &&
-            [...document.querySelectorAll("button")].some(
-              (button) => button.textContent?.trim() === "Compare current Scope COMMAND projections"
-            );
+          return localRows.length === 2;
         })()`,
-        "the authored Local Evidence without a projection summary in Selected Evidence"
-      );
-      await pressContextPanelButton(panelCdp, "Compare current Scope COMMAND projections");
-      await waitForCondition(
-        panelCdp,
-        `document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
-            ?.includes("Attention - real Lightstreamer client.") &&
-          !document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
-            ?.includes(${JSON.stringify(authoredMessage)}) &&
-          document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent
-            ?.includes(${JSON.stringify(authoredMessage)})`,
-        "the promoted comparison to expose the authored divergent COMMAND rows"
+        "the authored Local Evidence"
       );
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
   } catch (error) {
@@ -494,14 +484,28 @@ async function pressVisiblePanelButton(cdp: CdpClient, label: string): Promise<v
   await cdp.request("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
 }
 
-async function pressContextPanelButton(cdp: CdpClient, label: string): Promise<void> {
-  const selector = `[...document.querySelectorAll("button")].find(
-    (candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && !candidate.disabled
-  )`;
-  if (!await isPanelElementVisible(cdp, selector)) {
-    await clickPanelButton(cdp, "Open selected Context");
+async function clearPanelEvidenceSelection(cdp: CdpClient): Promise<void> {
+  const contextBack = `document.querySelector('[aria-label="Context"] .workbench-react__compact-back')`;
+  if (await isPanelElementVisible(cdp, contextBack)) {
+    await clickVisiblePanelElement(cdp, contextBack, "Context Back to Evidence button");
   }
-  await pressVisiblePanelButton(cdp, label);
+  await clickPanelButton(cdp, "Filter");
+  await clickVisiblePanelElement(
+    cdp,
+    `document.querySelector("#workbench-filter-query")`,
+    "Filter Evidence input"
+  );
+  await cdp.request("Input.insertText", { text: "no-evidence-matches-this-query" });
+  await clickPanelButton(cdp, "Apply Filter");
+  await waitForCondition(
+    cdp,
+    `[...document.querySelectorAll("button")].some(
+      (candidate) => candidate.textContent?.trim() === "Clear selection" && !candidate.disabled
+    )`,
+    "the filtered Evidence to offer clearing its hidden selection"
+  );
+  await clickPanelButton(cdp, "Clear selection");
+  await clickPanelButton(cdp, "Clear filters");
 }
 
 async function setPanelViewport(

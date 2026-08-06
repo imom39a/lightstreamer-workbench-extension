@@ -384,7 +384,7 @@ describe("React Workbench Diagnose panel", () => {
     expect(rootElement.textContent).toContain("SERVER");
     expect(rootElement.textContent).toContain("View FOLLOW LIVE");
     expect(rootElement.querySelector('[aria-label="COMMAND projection summary"]')).toBeNull();
-    expect(rootElement.textContent).toContain("Compare current Scope COMMAND projections");
+    expect(rootElement.textContent).not.toContain("COMMAND projections");
 
     await act(async () => root.unmount());
   });
@@ -508,6 +508,7 @@ describe("React Workbench Diagnose panel", () => {
     expect(selectedUpdate?.textContent).toContain('"flight": "DL42"');
     expect(selectedUpdate?.textContent).toContain("{nope");
     expect(projection).toBeNull();
+    expect(rootElement.textContent).not.toContain("COMMAND projections");
     expect(contextFields?.compareDocumentPosition(selectedUpdate!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(selectedUpdate?.querySelector("pre")?.parentElement?.className).not.toContain("scroll");
 
@@ -569,7 +570,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
     expect(rootElement.querySelector('[aria-label="COMMAND projection summary"]')).toBeNull();
-    expect(rootElement.textContent).not.toContain("Compare current Scope COMMAND projections");
+    expect(rootElement.textContent).not.toContain("COMMAND projections");
 
     await act(async () => root.unmount());
   });

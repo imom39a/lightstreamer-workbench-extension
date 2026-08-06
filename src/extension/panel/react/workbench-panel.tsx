@@ -1322,11 +1322,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               /> : null}
               <div className="workbench-react__context-actions">
                 {selected ? <>
-                  {selected.command ? <button
-                    ref={commandProjectionTrigger}
-                    type="button"
-                    onClick={openCommandProjectionComparison}
-                  >Compare current Scope COMMAND projections</button> : null}
                   <button
                     type="button"
                     disabled={!canCreateLocalInjectionDraft}
