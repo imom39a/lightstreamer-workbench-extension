@@ -13,6 +13,7 @@
     "test": "vitest run",
     "benchmark:panel": "vitest bench --run",
     "benchmark:event-history": "vitest bench --run benchmarks/event-history-indexeddb.bench.ts",
+    "measure:event-history": "node scripts/event-history-performance.mjs",
     "benchmark:topology": "node scripts/topology-performance.mjs",
     "measure:panel": "npm run build && node scripts/measure-panel.mjs",
     "release:package": "node scripts/package-extension.mjs",
