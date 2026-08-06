@@ -10,6 +10,14 @@ Language for observing Lightstreamer activity, introducing Item Updates locally,
 An observation of Lightstreamer activity that continues along its original application path. Capture does not alter, suppress, replace, or redirect the observed activity.
 _Avoid_: Interception, in-flight mutation
 
+**Capture Operation**:
+Workbench's current operating state for observing activity and advancing Evidence: `RUNNING`, `IDLE`, or `STOPPED`.
+_Avoid_: Capture health, Live view
+
+**Observation Coverage**:
+How well Capture can support conclusions about the inspected application's relevant Lightstreamer activity: `USEFUL`, `LIMITED`, or `UNAVAILABLE`. It is independent of Event History completeness and History Capacity.
+_Avoid_: Capture Operation, retention completeness, storage health
+
 **Item Update**:
 An inbound set of field values for one subscribed item, interpreted under its Subscription mode. In COMMAND mode it applies to one key and carries a command.
 _Avoid_: Incoming message, server message
@@ -29,6 +37,36 @@ _Avoid_: Captured message
 **Captured Client Message**:
 An immutable record of a Client Message submitted by the inspected application. Its original submission proceeds unchanged, while the record may become the Injection Source for a later Server Injection.
 _Avoid_: Intercepted message
+
+### Evidence History
+
+**Evidence**:
+An immutable event record after it has been accepted into ordered Event History. Only Evidence may influence Topology and COMMAND projections; a captured event awaiting acceptance is not Evidence.
+_Avoid_: Pending Evidence, accepted captured event, stored event
+
+**Event History**:
+The ordered collection of Evidence retained during one History Interval.
+_Avoid_: Event Store, Timeline history
+
+**Committed Evidence Boundary**:
+The greatest Evidence sequence through which acceptance is complete and contiguous. Workbench makes history-completeness claims only through this boundary.
+_Avoid_: Latest captured event, storage cursor
+
+**Retained Range**:
+The contiguous span of Evidence currently available within a History Interval, bounded by its first and last Evidence sequences. An empty Event History has no Retained Range.
+_Avoid_: History completeness, visible window
+
+**History Interval**:
+The period whose retained Evidence is considered together, beginning when a Workbench panel starts or Clear completes and ending when the next Clear completes or the panel ends.
+_Avoid_: DevTools session, storage lifetime
+
+**Complete History**:
+An Event History with no missing captured events from the start of its History Interval through its Committed Evidence Boundary. Completeness is qualified by that interval and boundary, not by the full panel lifetime after Clear or stopped Capture.
+_Avoid_: Complete session history, all observed activity
+
+**History Capacity**:
+The supported workload envelope within which Event History can continue accepting complete, ordered Evidence. A lower-capacity history changes neither Observation Coverage nor the completeness of Evidence already accepted.
+_Avoid_: Observation Coverage, retained count, storage quota
 
 ### Injection
 

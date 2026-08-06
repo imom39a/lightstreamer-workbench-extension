@@ -16,4 +16,3 @@ fixtures/lightstreamer/adapter/target/
 fixtures/lightstreamer/adapters/*/lib/
 fixtures/lightstreamer/pages/mutate-reinject-client.js
 issues
-.agents/
