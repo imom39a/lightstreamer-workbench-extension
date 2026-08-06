@@ -1151,6 +1151,7 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
 
   await openScenario(page, "disconnected", { width: 900, height: 320 }, "light");
   await expect(page.getByText("Capture STOPPED", { exact: true })).toBeVisible();
+  await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
   const disconnectedDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
   await expect(disconnectedDiagnostics.getByText(/cannot observe new inspected-page activity/)).toBeVisible();
   await expect(disconnectedDiagnostics.getByText("Warning · Coverage LIMITED", { exact: true })).toHaveCount(0);
