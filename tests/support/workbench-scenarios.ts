@@ -148,7 +148,7 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
           operation: "RUNNING",
           coverage: "LIMITED",
           detail: "Earlier Snapshot Evidence may be incomplete.",
-          recovery: "Open Capture diagnostics"
+          recovery: "Reload the inspected page with DevTools open"
         }
       };
     case "empty-scope":

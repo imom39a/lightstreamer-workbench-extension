@@ -1011,7 +1011,10 @@ test("Workbench makes limited Capture actionable without hiding retained Evidenc
     diagnostics.getByText("Earlier Snapshot Evidence may be incomplete.")
   ).toBeVisible();
   await expect(
-    diagnostics.getByText("Recovery: Open Capture diagnostics")
+    diagnostics.getByText("Affected: Inspected page")
+  ).toBeVisible();
+  await expect(
+    diagnostics.getByText("Recovery: Reload the inspected page with DevTools open")
   ).toBeVisible();
   await expect(page.getByText("Earlier Snapshot Evidence may be incomplete.", { exact: true })).toHaveCount(1);
   await expect(page.getByLabel("Ordered Evidence").locator(".workbench-react__condition--warning")).toHaveCount(0);
@@ -1031,6 +1034,7 @@ test("Workbench retains ordered Evidence while a typed Session recovery is in pr
   await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
   await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
   await expect(page.getByText("Warning · Session recovering", { exact: true })).toBeVisible();
+  await expect(page.getByText("Affected: Session topology-small-session", { exact: true })).toBeVisible();
   await expect(
     page.getByText(
       "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change.",
@@ -1127,9 +1131,16 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
   await page.getByRole("button", { name: "Copy raw Evidence" }).click();
   await expect(page.getByRole("status")).toContainText("Copied raw Evidence");
 
-  await openScenario(page, "disconnected", { width: 900, height: 700 }, "light");
+  await openScenario(page, "disconnected", { width: 900, height: 320 }, "light");
   await expect(page.getByText("Capture STOPPED", { exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Workbench diagnostics" }).getByText(/Capture bridge disconnected/)).toBeVisible();
+  const disconnectedDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(disconnectedDiagnostics.getByText(/Capture bridge disconnected/)).toBeVisible();
+  await page.getByRole("button", { name: "Freeze Evidence" }).focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(disconnectedDiagnostics).toBeFocused();
+  await expect(disconnectedDiagnostics).toHaveCSS("outline-style", "solid");
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
 
   await openScenario(page, "memory-fallback", { width: 563, height: 700 }, "dark");
   const fallbackDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });

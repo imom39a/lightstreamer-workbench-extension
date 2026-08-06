@@ -1337,10 +1337,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </aside>
       </main>}
       <footer className="workbench-react__status">
-        {snapshot.diagnostics.length ? <div className="workbench-react__status-diagnostics" role="region" aria-label="Workbench diagnostics" aria-live="polite">
+        {snapshot.diagnostics.length ? <div className="workbench-react__status-diagnostics" role="region" aria-label="Workbench diagnostics" aria-live="polite" tabIndex={0}>
           {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-severity={diagnostic.severity.toLowerCase()} key={`${diagnostic.title}-${index}`}>
             <strong>{diagnostic.severity} · {diagnostic.title}</strong>
-            <span>{diagnostic.detail}</span>
+            <span className="workbench-react__status-affected">Affected: {diagnostic.affected}</span>
+            <span className="workbench-react__status-detail">{diagnostic.detail}</span>
             {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
           </section>)}
         </div> : null}

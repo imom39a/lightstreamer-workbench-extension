@@ -406,6 +406,7 @@ describe("production panel mount wiring", () => {
     expect(root.textContent).toContain("Coverage USEFUL");
     expect(root.textContent).not.toContain("Coverage LIMITED");
     expect(footerDiagnostics?.textContent).toContain("Warning · In-memory event history");
+    expect(footerDiagnostics?.textContent).toContain("Affected: Current panel session");
     expect(footerDiagnostics?.textContent).toContain(storageDetail);
     expect(footerDiagnostics?.textContent).toContain("Recovery: Restore IndexedDB availability and reopen DevTools");
     expect(root.textContent?.split(storageDetail)).toHaveLength(2);

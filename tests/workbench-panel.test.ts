@@ -441,11 +441,12 @@ describe("React Workbench Diagnose panel", () => {
           operation: "RUNNING",
           coverage: "LIMITED",
           detail: "Capture attached after this Subscription began. Earlier Snapshot evidence may be incomplete.",
-          recovery: "Open diagnostics"
+          recovery: "Reload the inspected page with DevTools open"
         },
         diagnostics: [{
           severity: "Warning",
           title: "Coverage LIMITED",
+          affected: "Inspected page",
           detail: "Capture attached after this Subscription began. Earlier Snapshot evidence may be incomplete.",
           recovery: "Reload the inspected page with DevTools open"
         }]
@@ -459,8 +460,10 @@ describe("React Workbench Diagnose panel", () => {
 
     expect(rootElement.textContent).toContain("Coverage LIMITED");
     expect(footerDiagnostics?.textContent).toContain("Warning · Coverage LIMITED");
+    expect(footerDiagnostics?.textContent).toContain("Affected: Inspected page");
     expect(footerDiagnostics?.textContent).toContain(diagnosticDetail);
     expect(footerDiagnostics?.textContent).toContain("Recovery: Reload the inspected page with DevTools open");
+    expect(footerDiagnostics?.tabIndex).toBe(0);
     expect(rootElement.textContent?.split(diagnosticDetail)).toHaveLength(2);
     expect(document.querySelector(".workbench-react__evidence .workbench-react__condition--warning")).toBeNull();
     expect(document.querySelector(".workbench-react__context .workbench-react__diagnostic")).toBeNull();
