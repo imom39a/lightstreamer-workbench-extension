@@ -309,8 +309,9 @@ export function createRepositoryEventStore(
     }
     flushTimer = globalThis.setTimeout(() => {
       flushTimer = null;
-      if (pendingAppends.length > 0) {
-        void enqueueOperation(flushPendingAppends);
+      const boundary = pendingAppends.at(-1) ?? null;
+      if (boundary) {
+        void enqueueOperation(() => flushPendingAppends(boundary));
       }
     }, 0);
   }
@@ -335,9 +336,12 @@ export function createRepositoryEventStore(
     return appended;
   }
 
-  async function flushPendingAppends(): Promise<void> {
-    while (pendingAppends.length > 0) {
-      const batch = pendingAppends.splice(0, batchSize);
+  async function flushPendingAppends(boundary: PendingAppend | null): Promise<void> {
+    while (boundary && pendingAppends.length > 0) {
+      const boundaryIndex = pendingAppends.indexOf(boundary);
+      if (boundaryIndex < 0) return;
+      const batch = pendingAppends.splice(0, Math.min(batchSize, boundaryIndex + 1));
+      const reachedBoundary = batch.includes(boundary);
       try {
         const appended = await appendRepositoryBatch(batch.map((entry) => entry.persistable));
         if (appended.length !== batch.length) {
@@ -359,15 +363,17 @@ export function createRepositoryEventStore(
           entry.reject(error);
         }
       }
+      if (reachedBoundary) return;
     }
   }
 
-  function drain(): Promise<void> {
-    if (pendingAppends.length > 0) {
-      cancelScheduledFlush();
-      return enqueueOperation(flushPendingAppends);
-    }
-    return operationTail;
+  function enqueueAfterAcceptedAppends<T>(operation: () => Promise<T>): Promise<T> {
+    const boundary = pendingAppends.at(-1) ?? null;
+    if (boundary) cancelScheduledFlush();
+    return enqueueOperation(async () => {
+      await flushPendingAppends(boundary);
+      return operation();
+    });
   }
 
   return {
@@ -387,37 +393,39 @@ export function createRepositoryEventStore(
     },
 
     queryEvents(query) {
-      return drain().then(() => repository.queryEvents(query));
+      return enqueueAfterAcceptedAppends(() => repository.queryEvents(query));
     },
 
     getEventById(id) {
-      return drain().then(() => repository.getEventById(id));
+      return enqueueAfterAcceptedAppends(() => repository.getEventById(id));
     },
 
-    async list(filters) {
-      await drain();
-      const result = await repository.queryEvents({ filters });
-      return result.events;
+    list(filters) {
+      return enqueueAfterAcceptedAppends(async () => {
+        const result = await repository.queryEvents({ filters });
+        return result.events;
+      });
     },
 
     count() {
-      return drain().then(async () => {
+      return enqueueAfterAcceptedAppends(async () => {
         retained = await repository.countEvents();
         return retained;
       });
     },
 
     stats() {
-      return drain().then(() => currentStats());
+      return enqueueAfterAcceptedAppends(async () => currentStats());
     },
 
     clear() {
       if (closed) {
         return Promise.resolve();
       }
+      const boundary = pendingAppends.at(-1) ?? null;
       cancelScheduledFlush();
       return enqueueOperation(async () => {
-        await flushPendingAppends();
+        await flushPendingAppends(boundary);
         await repository.clear();
         totalAppended = 0;
         retained = 0;
@@ -438,10 +446,11 @@ export function createRepositoryEventStore(
         return closePromise ?? Promise.resolve();
       }
       closed = true;
+      const boundary = pendingAppends.at(-1) ?? null;
       cancelScheduledFlush();
       closePromise = enqueueOperation(async () => {
         try {
-          await flushPendingAppends();
+          await flushPendingAppends(boundary);
           if (options.clearOnClose) {
             await repository.clear();
           }

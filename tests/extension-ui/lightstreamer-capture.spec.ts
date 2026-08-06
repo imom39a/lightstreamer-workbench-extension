@@ -25,14 +25,19 @@ import {
 
 const rootDir = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const extensionDir = resolve(rootDir, process.env.LSEW_EXTENSION_DIR ?? "dist");
-const fixtureUrl = new URL(
+const authoredFixtureUrl = new URL(
   "/mutate-reinject.html?capture=listener",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
+const highVolumeFixtureUrl = new URL(
+  "/?scenario=loading-evidence",
+  process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
+).href;
 
-async function runOfficialClientAuthoredJourney(
+async function runOfficialClientPanelJourney(
   windowSize: string,
-  viewport: Readonly<{ width: number; height: number }>
+  viewport: Readonly<{ width: number; height: number }>,
+  scenario: "authored" | "high-volume-loading" = "authored"
 ): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-playwright-extension-"));
   const chromeExecutable = await resolveChromeExecutable(rootDir);
@@ -84,16 +89,27 @@ async function runOfficialClientAuthoredJourney(
     pageCdp = await CdpClient.connect(inspectedTarget?.webSocketDebuggerUrl ?? "");
     await pageCdp.request("Page.enable");
     await pageCdp.request("Runtime.enable");
-    await pageCdp.request("Page.navigate", { url: fixtureUrl });
-    await waitForCondition(
-      pageCdp,
-      `
-        document.querySelector("#connection-state")?.textContent === "SUBSCRIBED" &&
-        Number(document.querySelector("#update-count")?.textContent) === 1 &&
-        document.querySelector("#message-text")?.textContent === "Attention - real Lightstreamer client."
-      `,
-      "the official client fixture to receive its deterministic COMMAND snapshot"
-    );
+    await pageCdp.request("Page.navigate", {
+      url: scenario === "high-volume-loading" ? highVolumeFixtureUrl : authoredFixtureUrl
+    });
+    if (scenario === "high-volume-loading") {
+      await waitForCondition(
+        pageCdp,
+        `window.LSEW_CONTINUOUS_EVIDENCE_TARGET === 20001 &&
+          document.querySelectorAll("#fixture-events li").length >= 100`,
+        "the official client fixture to begin continuous high-volume COMMAND Capture"
+      );
+    } else {
+      await waitForCondition(
+        pageCdp,
+        `
+          document.querySelector("#connection-state")?.textContent === "SUBSCRIBED" &&
+          Number(document.querySelector("#update-count")?.textContent) === 1 &&
+          document.querySelector("#message-text")?.textContent === "Attention - real Lightstreamer client."
+        `,
+        "the official client fixture to receive its deterministic COMMAND snapshot"
+      );
+    }
 
     const panelSelection = await waitForWorkbenchPanel({
       listTargets: () => listBrowserTargets(debugging.port),
@@ -121,6 +137,79 @@ async function runOfficialClientAuthoredJourney(
       viewport,
       `${viewport.width}×${viewport.height}`
     );
+
+    if (scenario === "high-volume-loading") {
+      await waitForCondition(
+        panelCdp,
+        `document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]').length > 0 &&
+          document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]').length >= 4`,
+        "the shipped panel to expose high-volume Evidence and Scope"
+      );
+      await clickVisiblePanelElement(
+        panelCdp,
+        `document.querySelector('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')`,
+        "one high-volume Evidence row"
+      );
+      for (const level of [2, 3, 4]) {
+        await clickVisiblePanelElement(
+          panelCdp,
+          `document.querySelector('[aria-label="Structural runtime scope"] [role="treeitem"][aria-level="${level}"]')`,
+          `high-volume Scope level ${level}`
+        );
+      }
+      try {
+        await waitForCondition(
+          panelCdp,
+          `!document.querySelector('[aria-label="Ordered Evidence"]')?.textContent?.includes("Loading Evidence") &&
+            document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]').length > 0`,
+          "the shipped panel to recover Evidence after repeated Scope choices"
+        );
+      } catch (error) {
+        const panelState = await evaluateByValue<unknown>(panelCdp, `({
+          evidence: document.querySelector('[aria-label="Ordered Evidence"]')?.textContent ?? "",
+          scope: document.querySelector('[aria-label="Current runtime scope"]')?.textContent ?? "",
+          rowCount: document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]').length,
+          context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
+          errors: window.__LSEW_BROWSER_ERRORS__ ?? []
+        })`);
+        const pageCaptureCount = await evaluateByValue<number>(
+          pageCdp,
+          `document.querySelectorAll("#fixture-events li").length`
+        );
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}\n` +
+          `Panel state: ${JSON.stringify(panelState)}\n` +
+          `Page capture count: ${pageCaptureCount}`
+        );
+      }
+      const pageCaptureCountAfterRecovery = await evaluateByValue<number>(
+        pageCdp,
+        `document.querySelectorAll("#fixture-events li").length`
+      );
+      const workbenchDeliveryCountExpression = `(() => {
+        const detail = document.querySelector(
+          '[aria-label="Structural runtime scope"] [role="treeitem"][aria-level="4"]'
+        )?.textContent ?? "";
+        return Number(detail.match(/([0-9]+) deliveries/)?.[1] ?? -1);
+      })()`;
+      const workbenchDeliveriesAfterRecovery = await evaluateByValue<number>(
+        panelCdp,
+        workbenchDeliveryCountExpression
+      );
+      expect(workbenchDeliveriesAfterRecovery).toBeGreaterThanOrEqual(0);
+      await waitForCondition(
+        pageCdp,
+        `document.querySelectorAll("#fixture-events li").length > ${pageCaptureCountAfterRecovery + 25}`,
+        "the official client fixture to keep receiving updates after Evidence recovers"
+      );
+      await waitForCondition(
+        panelCdp,
+        `${workbenchDeliveryCountExpression} > ${workbenchDeliveriesAfterRecovery + 25}`,
+        "Workbench Capture to keep ingesting updates after Evidence recovers"
+      );
+      expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      return;
+    }
 
       await waitForCondition(
         panelCdp,
@@ -435,11 +524,19 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
 }
 
 test("official-client authored COMMAND Local Injection works through visible normal DevTools controls", async () => {
-  await runOfficialClientAuthoredJourney("2664,727", { width: 900, height: 700 });
+  await runOfficialClientPanelJourney("2664,727", { width: 900, height: 700 });
 });
 
 test("official-client authored COMMAND Local Injection works through visible compact DevTools controls", async () => {
-  await runOfficialClientAuthoredJourney("1653,727", { width: 563, height: 700 });
+  await runOfficialClientPanelJourney("1653,727", { width: 563, height: 700 });
+});
+
+test("high-volume Capture does not leave shipped Evidence loading after repeated Scope choices", async () => {
+  await runOfficialClientPanelJourney(
+    "2664,927",
+    { width: 1440, height: 900 },
+    "high-volume-loading"
+  );
 });
 
 async function clickPanelButton(cdp: CdpClient, label: string): Promise<void> {

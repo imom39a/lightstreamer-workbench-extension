@@ -7,7 +7,12 @@ import {
   createIndexedDbEventHistory
 } from "../src/core/event-history";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { createEventStore, type EventStore } from "../src/core/event-store";
+import {
+  createEventStore,
+  createRepositoryEventStore,
+  type EventStore
+} from "../src/core/event-store";
+import { type EventRepository } from "../src/core/event-repository";
 import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
 
 function event(id: string): LightstreamerEventEnvelope {
@@ -46,6 +51,67 @@ describe("event history", () => {
     expect(notificationSizes.reduce((total, size) => total + size, 0)).toBe(10_000);
     expect(notificationSizes.length).toBeLessThan(100);
 
+    await history.close().toPromise();
+  });
+
+  it("lets a query complete at its accepted Evidence boundary while Capture continues", async () => {
+    const persisted: LightstreamerEventEnvelope[] = [];
+    let markInitialFlushStarted: () => void = () => undefined;
+    let releaseInitialFlush: () => void = () => undefined;
+    const initialFlushStarted = new Promise<void>((resolve) => {
+      markInitialFlushStarted = resolve;
+    });
+    const initialFlushReleased = new Promise<void>((resolve) => {
+      releaseInitialFlush = resolve;
+    });
+    let initialFlush = true;
+    const repository: EventRepository = {
+      async appendEvent(appended) {
+        persisted.push(appended);
+        return appended;
+      },
+      async appendEvents(appended) {
+        if (initialFlush) {
+          initialFlush = false;
+          markInitialFlushStarted();
+          await initialFlushReleased;
+        }
+        persisted.push(...appended);
+        return [...appended];
+      },
+      async queryEvents() {
+        return { events: [...persisted], total: persisted.length };
+      },
+      async getEventById(id) {
+        return persisted.find((candidate) => candidate.id === id) ?? null;
+      },
+      async countEvents() {
+        return persisted.length;
+      },
+      async clear() {
+        persisted.length = 0;
+      },
+      close() {
+        // No external resources.
+      }
+    };
+    const history = createEventHistory(createRepositoryEventStore(repository, { batchSize: 1 }));
+
+    const initialAppend = history.append(event("initially-flushing"));
+    await initialFlushStarted;
+    const acceptedBeforeQuery = history.append(event("accepted-before-query"));
+    const query = history.queryEvents();
+    const acceptedAfterQuery = history.append(event("accepted-after-query"));
+    releaseInitialFlush();
+    const result = await query.toPromise();
+
+    expect(result.events.map(({ id }) => id)).toEqual([
+      "initially-flushing",
+      "accepted-before-query"
+    ]);
+    await expect(initialAppend.toPromise()).resolves.toMatchObject({ id: "initially-flushing" });
+    await expect(acceptedBeforeQuery.toPromise()).resolves.toMatchObject({ id: "accepted-before-query" });
+    await expect(acceptedAfterQuery.toPromise()).resolves.toMatchObject({ id: "accepted-after-query" });
     await history.close().toPromise();
   });
 

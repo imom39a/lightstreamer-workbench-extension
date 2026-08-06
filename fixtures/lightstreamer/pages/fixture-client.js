@@ -60,6 +60,8 @@
     (total, group) => total + group.expectedEvents,
     0
   );
+  const CONTINUOUS_EVIDENCE_ITEM = "scenario.continuous-evidence";
+  const CONTINUOUS_EVIDENCE_TARGET = 20_001;
   const EXPECTED_EVENTS = [
     {
       item: "scenario.snapshot-basic",
@@ -102,6 +104,7 @@
   window.LSEW_EXPECTED_EVENTS = EXPECTED_EVENTS;
   window.LSEW_ISSUE_16_GROUPS = ISSUE_16_GROUPS;
   window.LSEW_ISSUE_16_TOTAL_EVENTS = ISSUE_16_TOTAL_EVENTS;
+  window.LSEW_CONTINUOUS_EVIDENCE_TARGET = CONTINUOUS_EVIDENCE_TARGET;
 
   const status = document.querySelector("#fixture-status");
   const events = document.querySelector("#fixture-events");
@@ -195,7 +198,9 @@
     const subscriptions =
       scenario === "issue-16"
         ? ISSUE_16_SUBSCRIPTIONS.map((group) => createCommandSubscription(constructors, group))
-        : [createCommandSubscription(constructors, { items: ITEMS })];
+        : scenario === "loading-evidence"
+          ? [createCommandSubscription(constructors, { items: [CONTINUOUS_EVIDENCE_ITEM] })]
+          : [createCommandSubscription(constructors, { items: ITEMS })];
 
     for (const subscription of subscriptions) {
       addFixtureListener(subscription);

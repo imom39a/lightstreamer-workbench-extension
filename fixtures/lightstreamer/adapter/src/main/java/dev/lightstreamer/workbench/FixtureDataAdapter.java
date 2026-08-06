@@ -73,6 +73,10 @@ public final class FixtureDataAdapter implements SmartDataProvider {
       emitMutateReinjectSnapshot(itemName, itemHandle);
       return;
     }
+    if ("scenario.continuous-evidence".equals(itemName)) {
+      emitContinuousEvidence(itemName, itemHandle);
+      return;
+    }
 
     Integer issue16Count = ISSUE_16_EVENT_COUNTS.get(itemName);
     if (issue16Count != null) {
@@ -144,6 +148,39 @@ public final class FixtureDataAdapter implements SmartDataProvider {
     scenarioThread.start();
   }
 
+  private void emitContinuousEvidence(String itemName, Object itemHandle) {
+    Thread scenarioThread = new Thread(
+        () -> {
+          try {
+            smartUpdateIfActive(
+                itemName,
+                itemHandle,
+                row("ADD", "continuous-0", "Continuous Evidence", "0", "snapshot", "0"),
+                true);
+            smartEndOfSnapshotIfActive(itemName, itemHandle);
+            for (int index = 1; index <= 20_000; index += 1) {
+              smartUpdateIfActive(
+                  itemName,
+                  itemHandle,
+                  row(
+                      "ADD",
+                      "continuous-" + index,
+                      "Continuous Evidence",
+                      String.valueOf(index),
+                      "live",
+                      String.valueOf(index)),
+                  false);
+              sleep(1);
+            }
+          } catch (FailureException exception) {
+            throw new IllegalStateException(exception);
+          }
+        },
+        "lsew-fixture-" + itemName);
+    scenarioThread.setDaemon(true);
+    scenarioThread.start();
+  }
+
   private void emitIssue16Group(String itemName, Object itemHandle, int count) {
     Thread scenarioThread = new Thread(
         () -> {
@@ -194,6 +231,7 @@ public final class FixtureDataAdapter implements SmartDataProvider {
     return "scenario.snapshot-basic".equals(itemName)
         || "scenario.add-update-delete".equals(itemName)
         || "scenario.mutate-reinject".equals(itemName)
+        || "scenario.continuous-evidence".equals(itemName)
         || ISSUE_16_EVENT_COUNTS.containsKey(itemName);
   }
 
