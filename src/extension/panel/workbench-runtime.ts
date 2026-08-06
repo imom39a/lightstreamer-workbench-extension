@@ -190,6 +190,7 @@ export type WorkbenchCommandProjection = Readonly<{
 export type WorkbenchDiagnostic = Readonly<{
   severity: "Information" | "Warning" | "Error";
   title: string;
+  affected: string;
   detail: string;
   recovery?: string;
 }>;
@@ -422,7 +423,6 @@ export type WorkbenchCommand =
   | { type: "close-command-projection-comparison" }
   | { type: "open-context" }
   | { type: "open-scope" }
-  | { type: "open-diagnostics" }
   | { type: "open-raw-evidence"; eventId: string }
   | { type: "export-scope" }
   | { type: "open-actions" }
@@ -868,10 +868,6 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "open-scope":
         this.contextId = "context:scope";
-        this.publish();
-        return;
-      case "open-diagnostics":
-        this.contextId = "context:diagnostics";
         this.publish();
         return;
       case "open-raw-evidence":
@@ -2425,38 +2421,50 @@ class Runtime implements WorkbenchRuntime {
       diagnostics.push({
         severity: "Error",
         title: "Capture disconnected",
+        affected: scope.label,
         detail: "Workbench cannot observe new inspected-page activity. Retained Evidence remains readable.",
         recovery: "Reconnect the inspected page and DevTools panel"
       });
     }
     const topology = this.topologyProjection.snapshot();
-    if (
-      topology.clients.some(
-        (client) =>
-          client.normalizedStatus === "recovering" ||
-          client.sessions.some((session) => session.normalizedStatus === "recovering")
-      )
-    ) {
+    const recoveringSessions = topology.clients.flatMap((client) =>
+      client.sessions
+        .filter((session) => session.normalizedStatus === "recovering")
+        .map((session) => `Session ${session.id ?? session.key}`)
+    );
+    const recoveringClients = topology.clients
+      .filter((client) => client.normalizedStatus === "recovering")
+      .map((client) => `Client ${client.id}`);
+    const recoveringObjects = recoveringSessions.length ? recoveringSessions : recoveringClients;
+    if (recoveringObjects.length) {
       diagnostics.push({
         severity: "Warning",
         title: "Session recovering",
-        detail: "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change."
+        affected: [...new Set(recoveringObjects)].join(", "),
+        detail: "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change.",
+        recovery: "Inspect the affected Session and wait for recovery or reconnect the inspected page"
       });
     }
     if (capture.coverage !== "USEFUL") {
       diagnostics.push({
         severity: capture.coverage === "UNAVAILABLE" ? "Error" : "Warning",
         title: `Coverage ${capture.coverage}`,
+        affected: scope.label,
         detail:
           capture.detail ??
           "Some runtime properties are unavailable; Workbench will not infer values without evidence.",
-        ...(capture.recovery ? { recovery: capture.recovery } : {})
+        recovery:
+          capture.recovery ??
+          (capture.coverage === "UNAVAILABLE"
+            ? "Reconnect the inspected page, then reload it with DevTools open"
+            : "Reload the inspected page with DevTools open")
       });
     }
     if (this.storage.mode === "memory") {
       diagnostics.push({
         severity: "Warning",
         title: "In-memory event history",
+        affected: "Current panel session",
         detail: `${this.storage.reason ? `${this.storage.reason}. ` : ""}Evidence remains available only while this panel session stays open.`,
         recovery: "Restore IndexedDB availability and reopen DevTools"
       });
@@ -2466,20 +2474,25 @@ class Runtime implements WorkbenchRuntime {
       diagnostics.push({
         severity: "Information",
         title: "Retired Scope",
-        detail: "This historical runtime object is read-only. Matching retained Evidence remains available."
+        affected: scope.label,
+        detail: "This historical runtime object is read-only. Matching retained Evidence remains available.",
+        recovery: "Select a current runtime Scope before starting Local Injection"
       });
     }
     if (this.clearedSelectionEventId) {
       diagnostics.push({
         severity: "Information",
         title: "Selected Evidence cleared",
-        detail: `Evidence ${this.clearedSelectionEventId} was deliberately removed from history; its selection identity is retained until you choose another Scope or Evidence row.`
+        affected: `Evidence ${this.clearedSelectionEventId}`,
+        detail: `Evidence ${this.clearedSelectionEventId} was deliberately removed from history; its selection identity is retained until you choose another Scope or Evidence row.`,
+        recovery: "Select another Scope or retained Evidence row"
       });
     }
     if (this.clearState === "error" && this.clearError) {
       diagnostics.push({
         severity: "Error",
         title: "History could not be cleared",
+        affected: "Current panel session",
         detail: this.clearError,
         recovery: "Try clearing history again"
       });
@@ -2488,7 +2501,9 @@ class Runtime implements WorkbenchRuntime {
       diagnostics.push({
         severity: "Warning",
         title: "Analytics preference unchanged",
-        detail: this.analyticsError
+        affected: "Usage analytics preference",
+        detail: this.analyticsError,
+        recovery: "Review the analytics preference and try again"
       });
     }
     return Object.freeze(diagnostics.map((diagnostic) => Object.freeze(diagnostic)));

@@ -8,6 +8,7 @@ const browserDiagnostics = new WeakMap<Page, string[]>();
 declare global {
   interface Window {
     axe: typeof axe;
+    __setWorkbenchStorageMode: (mode: "indexeddb" | "memory") => void;
   }
 }
 
@@ -1006,12 +1007,19 @@ test("Workbench makes limited Capture actionable without hiding retained Evidenc
   await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
   await expect(page.getByText("Coverage LIMITED", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Scope", exact: true })).toBeVisible();
+  const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
   await expect(
-    page.getByLabel("Ordered Evidence").getByText("Earlier Snapshot Evidence may be incomplete.")
+    diagnostics.getByText("Earlier Snapshot Evidence may be incomplete.")
   ).toBeVisible();
   await expect(
-    page.getByLabel("Ordered Evidence").getByRole("button", { name: "Open Capture diagnostics" })
+    diagnostics.getByText("Affected: Inspected page")
   ).toBeVisible();
+  await expect(
+    diagnostics.getByText("Recovery: Reload the inspected page with DevTools open")
+  ).toBeVisible();
+  await expect(page.getByText("Earlier Snapshot Evidence may be incomplete.", { exact: true })).toHaveCount(1);
+  await expect(page.getByLabel("Ordered Evidence").locator(".workbench-react__condition--warning")).toHaveCount(0);
+  await expect(page.getByRole("complementary", { name: "Context" }).locator(".workbench-react__diagnostic")).toHaveCount(0);
   await expect(page.locator(".workbench-react__evidence-row")).not.toHaveCount(0);
 
   await expectShellFits(page);
@@ -1027,6 +1035,7 @@ test("Workbench retains ordered Evidence while a typed Session recovery is in pr
   await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
   await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
   await expect(page.getByText("Warning · Session recovering", { exact: true })).toBeVisible();
+  await expect(page.getByText("Affected: Session topology-small-session", { exact: true })).toBeVisible();
   await expect(
     page.getByText(
       "The official client is attempting Session recovery. Evidence remains ordered, but current runtime availability may change.",
@@ -1044,6 +1053,23 @@ test("Workbench retains ordered Evidence while a typed Session recovery is in pr
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench preserves footer focus when a passive diagnostic resolves", async ({
+  page
+}, testInfo) => {
+  await openScenario(page, "memory-fallback", { width: 900, height: 700 }, "dark");
+  const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+
+  await diagnostics.focus();
+  await expect(diagnostics).toBeFocused();
+  await page.evaluate(() => window.__setWorkbenchStorageMode("indexeddb"));
+
+  await expect(page.getByText("Warning · In-memory event history", { exact: true })).toHaveCount(0);
+  await expect(diagnostics).toBeFocused();
+  await expect(diagnostics).toHaveAttribute("tabindex", "-1");
+  await expect(diagnostics).toHaveCSS("outline-style", "solid");
+  await expectNoSeriousAxeViolations(page, testInfo);
 });
 
 test("Workbench keeps a retired Session readable, scoped, and explicitly read-only", async ({
@@ -1123,11 +1149,42 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
   await page.getByRole("button", { name: "Copy raw Evidence" }).click();
   await expect(page.getByRole("status")).toContainText("Copied raw Evidence");
 
-  await openScenario(page, "disconnected", { width: 900, height: 700 }, "light");
+  await openScenario(page, "disconnected", { width: 900, height: 320 }, "light");
   await expect(page.getByText("Capture STOPPED", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Ordered Evidence").getByText(/Capture bridge disconnected/)).toBeVisible();
+  await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
+  const disconnectedDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(disconnectedDiagnostics.getByText(/cannot observe new inspected-page activity/)).toBeVisible();
+  await expect(disconnectedDiagnostics.getByText("Warning · Coverage LIMITED", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Open complete raw" }).focus();
+  await page.keyboard.press("Tab");
+  await expect(disconnectedDiagnostics).toBeFocused();
+  await expect(disconnectedDiagnostics).toHaveCSS("outline-style", "solid");
+  await expect.poll(() => disconnectedDiagnostics.evaluate((region) => {
+    const regionRect = region.getBoundingClientRect();
+    return [...region.querySelectorAll<HTMLElement>(".workbench-react__status-diagnostic")]
+      .every((diagnostic) => diagnostic.getBoundingClientRect().bottom <= regionRect.bottom);
+  })).toBe(true);
+  await expect.poll(() => page.getByLabel("Ordered Evidence").evaluate((evidence) => {
+    const evidenceRect = evidence.getBoundingClientRect();
+    return [...evidence.querySelectorAll<HTMLElement>(".workbench-react__evidence-row")].filter((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.height > 0 && rect.top >= evidenceRect.top && rect.bottom <= evidenceRect.bottom;
+    }).length;
+  })).toBeGreaterThanOrEqual(2);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
 
-  await openScenario(page, "memory-fallback", { width: 900, height: 700 }, "dark");
+  await openScenario(page, "memory-fallback", { width: 563, height: 700 }, "dark");
+  const fallbackDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  const fallbackDetail = "IndexedDB is unavailable. Evidence remains available only while this panel session stays open.";
+  await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
+  await expect(fallbackDiagnostics.getByText("Warning · In-memory event history", { exact: true })).toBeVisible();
+  await expect(fallbackDiagnostics.getByText(fallbackDetail, { exact: true })).toBeVisible();
+  await expect(page.getByText(fallbackDetail, { exact: true })).toHaveCount(1);
+  await expect.poll(() => page.getByLabel("Ordered Evidence").evaluate((evidence) => {
+    const rect = evidence.getBoundingClientRect();
+    return { left: rect.left, right: rect.right };
+  })).toEqual({ left: 0, right: 563 });
   await page.getByRole("button", { name: "More actions" }).click();
   await expect(page.getByText("in-memory fallback")).toBeVisible();
   await page.reload();

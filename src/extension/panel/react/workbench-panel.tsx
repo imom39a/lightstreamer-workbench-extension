@@ -1274,7 +1274,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             dispatch(runtime, { type: "clear-filters" });
           }}>Clear filters</button><button type="button" onClick={closeFilter}>Close Filter</button></form> : null}
           {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : null}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div></div> : null}
-          {limited && capture.detail ? <div className="workbench-react__condition workbench-react__condition--warning"><strong>! Coverage {coverage}</strong><span>{capture.detail}</span><button type="button" data-action="open-diagnostics" onClick={() => dispatch(runtime, { type: "open-diagnostics" })}>{capture.recovery ?? "Open diagnostics"}</button></div> : null}
           <div className="workbench-react__evidence-window" aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}
           {evidence.loading ? <div className="workbench-react__empty" role="status" aria-live="polite"><strong>Loading Evidence…</strong><span>Resolving the current Scope and Filter.</span></div> : events.length ? <div className="workbench-react__ledger" role="grid" aria-label="Ordered Lightstreamer Evidence" tabIndex={0} ref={evidenceLedger} onKeyDown={handleEvidenceKey}>
@@ -1312,7 +1311,6 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             </section> : <>
               <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
-              {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__diagnostic" key={`${diagnostic.title}-${index}`}><strong>{diagnostic.severity} · {diagnostic.title}</strong><span>{diagnostic.detail}</span>{diagnostic.recovery ? <button type="button" onClick={() => dispatch(runtime, { type: "open-diagnostics" })}>{diagnostic.recovery}</button> : null}</section>)}
               {!selected ? <CommandProjectionContextSummary
                 projections={snapshot.commandProjections}
                 hasSupportingLocalEvidence={Boolean(supportingProjectionEvidenceId)}
@@ -1338,7 +1336,17 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           </div>
         </aside>
       </main>}
-      <footer className="workbench-react__status"><span>{limited ? "Observation requires care; retained Evidence remains readable." : "Evidence is retained for this DevTools session."}</span><button type="button" onClick={() => dispatch(runtime, { type: evidenceMode === "FROZEN" ? "follow-live" : "freeze-evidence" })}>{evidenceMode === "FROZEN" ? "Follow Live" : "Freeze Evidence"}</button></footer>
+      <footer className="workbench-react__status" role="region" aria-label="Workbench diagnostics" tabIndex={snapshot.diagnostics.length ? 0 : -1}>
+        {snapshot.diagnostics.length ? <div className="workbench-react__status-diagnostics" aria-live="polite">
+          {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-severity={diagnostic.severity.toLowerCase()} key={`${diagnostic.title}-${index}`}>
+            <strong>{diagnostic.severity} · {diagnostic.title}</strong>
+            <span className="workbench-react__status-affected">Affected: {diagnostic.affected}</span>
+            <span className="workbench-react__status-detail">{diagnostic.detail}</span>
+            {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
+          </section>)}
+        </div> : null}
+        <div className="workbench-react__status-line"><span>{limited ? "Observation requires care; retained Evidence remains readable." : "Evidence is retained for this DevTools session."}</span><button type="button" onClick={() => dispatch(runtime, { type: evidenceMode === "FROZEN" ? "follow-live" : "freeze-evidence" })}>{evidenceMode === "FROZEN" ? "Follow Live" : "Freeze Evidence"}</button></div>
+      </footer>
     </section>
   );
 }

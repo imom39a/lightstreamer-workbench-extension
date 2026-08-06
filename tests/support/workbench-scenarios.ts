@@ -148,7 +148,7 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
           operation: "RUNNING",
           coverage: "LIMITED",
           detail: "Earlier Snapshot Evidence may be incomplete.",
-          recovery: "Open Capture diagnostics"
+          recovery: "Reload the inspected page with DevTools open"
         }
       };
     case "empty-scope":
@@ -158,13 +158,7 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         id,
         initialEvents: canonical,
         selectedEventId: "scenario-event-3",
-        captureStatus: "bridge disconnected",
-        capture: {
-          operation: "STOPPED",
-          coverage: "LIMITED",
-          detail: "The inspected-page Capture bridge disconnected. Retained Evidence remains readable.",
-          recovery: "Reconnect the inspected page and DevTools panel"
-        }
+        captureStatus: "bridge disconnected"
       };
     case "memory-fallback":
       return {

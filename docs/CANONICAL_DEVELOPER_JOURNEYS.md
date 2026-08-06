@@ -90,7 +90,7 @@ Workbench may show uncertainty when coverage cannot support a stronger claim. Ab
 - No Lightstreamer client or relevant activity has been detected.
 - Capture connected after the relevant lifecycle began or otherwise has limited coverage.
 - The DevTools bridge or inspected page is disconnected, navigating, or reloading.
-- Current-DevTools-session history is using its in-memory fallback or has a material retention limitation.
+- Current-DevTools-session history is using its in-memory fallback or has a material retention limitation; this limits History Capacity without changing Observation Coverage.
 - High event volume obscures the relevant interval; the developer must be able to Freeze, filter, and preserve selection without stopping Capture.
 - The selected runtime object retired while evidence was being inspected; historical evidence remains read-only and clearly distinguished from a live target.
 
@@ -171,7 +171,7 @@ What evidence is still trustworthy, what conclusion can I safely draw, and what 
 
 ### Canonical sequence
 
-1. Notice a contextual status that identifies the affected scope and severity without relying on color.
+1. Notice one stable footer diagnostic that identifies the affected scope and severity without relying on color.
 2. Inspect a concise explanation of what Workbench knows, what it cannot establish, and which existing evidence remains usable.
 3. Take the appropriate recovery action: wait for a client, reload or reconnect the inspected context, re-establish Capture, return to Live evidence, select a current target, correct a draft, or open detailed diagnostics.
 4. Reorient on the current client, Session, and Subscription context before continuing diagnosis or Local Injection.

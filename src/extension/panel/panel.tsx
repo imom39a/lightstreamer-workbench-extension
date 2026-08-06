@@ -109,16 +109,7 @@ export function mountWorkbenchPanel(
       localInjectionExecutor,
       storage: storageLimited
         ? { mode: "memory", reason: "IndexedDB is unavailable" }
-        : { mode: "indexeddb" },
-      ...(storageLimited
-        ? {
-            capture: {
-              coverage: "LIMITED" as const,
-              detail: "IndexedDB is unavailable. Evidence is held in memory for this DevTools session.",
-              recovery: "Keep DevTools open while investigating; closing it clears the in-memory history."
-            }
-          }
-        : {})
+        : { mode: "indexeddb" }
     });
     const presentationRuntime = bindRuntime(runtime, themeManager);
     reactRoot = createRoot(root);

@@ -61,5 +61,33 @@
     "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "selected-json" },
     "production": { "scenario": "local-injection-json", "setup": "none" }
+  },
+  {
+    "id": "normal-limited-capture-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "C", "state": "coverage", "frame": "normal", "setup": "none" },
+    "production": { "scenario": "limited-capture", "setup": "none" }
+  },
+  {
+    "id": "compact-memory-fallback-dark",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "none" },
+    "production": { "scenario": "memory-fallback", "setup": "none" }
+  },
+  {
+    "id": "shallow-disconnected-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "prototype": { "variant": "C", "state": "disconnected", "frame": "shallow", "setup": "none" },
+    "production": { "scenario": "disconnected", "setup": "none" }
+  },
+  {
+    "id": "wide-recovering-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "C", "state": "recovering", "frame": "wide", "setup": "none" },
+    "production": { "scenario": "recovering", "setup": "none" }
   }
 ]

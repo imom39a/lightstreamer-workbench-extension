@@ -140,6 +140,12 @@ await new Promise((resolve) => setTimeout(resolve, 48));
 document.documentElement.dataset.reactScenario = scenarioId;
 document.documentElement.dataset.reactSceneReady = "true";
 window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
+window.__setWorkbenchStorageMode = (mode) => runtime.dispatch({
+  type: "set-storage-state",
+  storage: mode === "memory"
+    ? { mode: "memory", reason: "IndexedDB is unavailable" }
+    : { mode: "indexeddb" }
+});
 let deferredEventsReleased = false;
 window.__appendDeferredWorkbenchEvents = () => {
   if (deferredEventsReleased) return 0;

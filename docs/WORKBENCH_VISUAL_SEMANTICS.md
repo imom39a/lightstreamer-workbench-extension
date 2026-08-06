@@ -70,7 +70,7 @@ The persistent operating strip presents independent noun/value pairs in a stable
 
 For example: `Capture RUNNING · Coverage LIMITED · View FROZEN · 2,418 newer`.
 
-Coverage limitations name the affected observation and provide a nearby diagnostics route. Capture can continue while Coverage is limited and while the Evidence view is Frozen. Storage fallback or retained-history pressure appears as another named condition only when it affects a developer decision; it does not become a decorative health meter.
+Coverage limitations name the affected observation and provide a nearby diagnostics route. Capture can continue while Coverage is limited and while the Evidence view is Frozen. Storage fallback or retained-history pressure appears as another named condition only when it affects a developer decision; it does not change Observation Coverage or become a decorative health meter.
 
 ## Scope and runtime lifecycle
 
@@ -109,7 +109,7 @@ Use an em dash only for not applicable. Use the literal word `unknown` when Work
 
 ## Context and diagnostics
 
-Context expands concise ledger values into explicit property names. It answers Source, Phase, COMMAND operation, runtime lifecycle, object identity, changed fields, observation path, and evidence limitations without requiring the developer to decode row styling.
+Context expands concise ledger values into explicit property names. It answers Source, Phase, COMMAND operation, runtime lifecycle, object identity, changed fields, observation path, and evidence limitations without requiring the developer to decode row styling. Session- and runtime-level diagnostics remain outside Context in the global footer so selection changes cannot hide them or cause duplicate cards.
 
 Diagnostics follow a stable grammar:
 
@@ -120,7 +120,7 @@ Diagnostics follow a stable grammar:
 - Error identifies an invalid or failed condition that prevents the current action or proves an operation failure.
 - Blocking is a consequence, not a replacement severity. Name both, such as `ERROR · Invalid JSON` and `Review blocked`.
 
-Do not promote every diagnostic into a banner. Use the smallest persistent placement that remains visible at its decision boundary.
+Render each session- or runtime-level diagnostic once in the global footer. Do not promote the same cause into additional Ordered Evidence or Context banners. Workflow-local validation, stale-target conditions, and Injection Outcomes remain at their own decision boundary.
 
 ## Raw evidence
 

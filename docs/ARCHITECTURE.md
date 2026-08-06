@@ -789,6 +789,8 @@ The runtime owns:
 - raw Evidence, scoped export, responsive-layout restoration identities, and session operations;
 - exactly one Local Injection Source/Draft/target/review/execution/outcome lifecycle.
 
+Storage mode and retained-history capacity are independent of Observation Coverage. If IndexedDB initialization fails, the mount selects the in-memory Event History and the runtime emits one storage diagnostic; it does not override Capture coverage.
+
 ### Scoped Evidence Workspace
 
 The accepted workspace has three semantic responsibilities rather than permanent feature views:
@@ -798,6 +800,8 @@ The accepted workspace has three semantic responsibilities rather than permanent
 3. **Context** explains the active runtime object or selected Evidence and provides complete raw Evidence, named COMMAND projections, scoped export, session operations, and the contextual entry to Local Injection.
 
 Elastic Triad presentation moves, collapses, or temporarily promotes these responsibilities across wide, normal, shallow, and compact geometry without reconstructing semantic state. Scope, Evidence focus, selection, Filter, Find, Live/Frozen position, Context, and a safe Draft restore by stable identity.
+
+The global footer sits outside those three responsibilities and renders each session- or runtime-level diagnostic once with severity, consequence, and recovery guidance. Ordered Evidence and Context do not duplicate those diagnostics; workflow-local validation and outcomes remain at their own decision boundaries.
 
 ### COMMAND Projections
 
