@@ -544,6 +544,8 @@ class Runtime implements WorkbenchRuntime {
   private version = 0;
   private disposed = false;
   private queryGeneration = 0;
+  private evidenceQueryPending = false;
+  private passiveRefreshPending = false;
   private selectionLookupGeneration = 0;
   private frameHandle: unknown | null = null;
   private fallbackHandle: unknown | null = null;
@@ -1851,6 +1853,10 @@ class Runtime implements WorkbenchRuntime {
     source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility",
     offset = 0
   ): void {
+    if (source === "passive" && this.evidenceQueryPending) {
+      this.passiveRefreshPending = true;
+      return;
+    }
     this.reconcileScopeIdentity();
     const generation = ++this.queryGeneration;
     const topology = this.topologyProjection.snapshot();
@@ -1864,6 +1870,7 @@ class Runtime implements WorkbenchRuntime {
       this.clearFindResults();
     }
     let completedSynchronously = false;
+    this.evidenceQueryPending = true;
     this.history
       .queryEvents({
         filters,
@@ -1877,6 +1884,7 @@ class Runtime implements WorkbenchRuntime {
           if (this.disposed || generation !== this.queryGeneration) {
             return;
           }
+          this.evidenceQueryPending = false;
           this.evidenceLoading = false;
           this.liveEvidence = freezeEvidence(
             result.events,
@@ -1899,17 +1907,21 @@ class Runtime implements WorkbenchRuntime {
           }
           if (source === "initial") {
             this.snapshot = this.createSnapshot();
+            this.drainPassiveRefresh();
             return;
           }
           if (!this.visible) {
             this.hiddenDirty = true;
+            this.drainPassiveRefresh();
             return;
           }
           this.publish();
+          this.drainPassiveRefresh();
         },
         () => {
           completedSynchronously = true;
           if (this.disposed || generation !== this.queryGeneration) return;
+          this.evidenceQueryPending = false;
           if (changesEvidenceIdentity || this.evidenceLoading) {
             this.evidenceLoading = false;
             this.liveEvidence = emptyEvidence;
@@ -1917,6 +1929,7 @@ class Runtime implements WorkbenchRuntime {
             if (this.visible) this.publish();
             else this.hiddenDirty = true;
           }
+          this.drainPassiveRefresh();
         }
       );
     if (
@@ -1928,6 +1941,12 @@ class Runtime implements WorkbenchRuntime {
       if (changesEvidenceIdentity) this.evidenceLoading = true;
       this.publish();
     }
+  }
+
+  private drainPassiveRefresh(): void {
+    if (!this.passiveRefreshPending || this.disposed || !this.visible) return;
+    this.passiveRefreshPending = false;
+    this.refreshEvidence("passive");
   }
 
   private hydrateProjections(): void {

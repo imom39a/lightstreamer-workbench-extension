@@ -454,6 +454,79 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
+  it("coalesces live Capture behind an in-flight identity query without leaving Evidence loading", async () => {
+    const base = createInMemoryEventHistory();
+    appendTopologyJourney(
+      base,
+      {
+        clientId: "streaming-client",
+        sessionId: "streaming-session",
+        subscriptionId: "streaming-subscription",
+        itemName: "streaming-item",
+        listenerId: "streaming-listener"
+      },
+      100
+    );
+    let deferBounded = false;
+    const pending: Array<{ resolve(): void }> = [];
+    const history = {
+      ...base,
+      queryEvents(query?: Parameters<typeof base.queryEvents>[0]) {
+        if (!deferBounded || query?.limit === undefined) return base.queryEvents(query);
+        const promise = new Promise<Awaited<ReturnType<ReturnType<typeof base.queryEvents>["toPromise"]>>>((resolve) => {
+          pending.push({ resolve: () => void base.queryEvents(query).toPromise().then(resolve) });
+        });
+        return {
+          receive(onValue: (value: Awaited<typeof promise>) => void, onError: (error: unknown) => void) {
+            void promise.then(onValue, onError);
+          },
+          toPromise() {
+            return promise;
+          }
+        };
+      }
+    };
+    const scheduler = createScheduler();
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const client = runtime
+      .getSnapshot()
+      .scope.nodes.find(({ kind, label }) => kind === "client" && label === "streaming-client");
+    deferBounded = true;
+    runtime.dispatch({ type: "set-scope", scopeId: client?.id ?? null });
+    expect(runtime.getSnapshot().evidence.loading).toBe(true);
+
+    history.append({
+      ...event("streaming-client-106", "streaming-item"),
+      client: {
+        id: "streaming-client",
+        status: "CONNECTED:WS-STREAMING",
+        sessionId: "streaming-session"
+      },
+      subscription: {
+        id: "streaming-subscription",
+        mode: "MERGE",
+        items: ["streaming-item"],
+        active: true,
+        subscribed: true
+      },
+      listener: { id: "streaming-listener", callbacks: ["onItemUpdate"] }
+    });
+    await flushStoreNotifications();
+    scheduler.flushFrame();
+    expect(pending).toHaveLength(1);
+    pending.shift()?.resolve();
+    await flushStoreNotifications();
+
+    expect(runtime.getSnapshot().evidence.loading).toBe(false);
+    const resolvedEventIds = runtime.getSnapshot().evidence.events.map(({ id }) => id);
+    expect(resolvedEventIds).not.toHaveLength(0);
+    expect(pending).toHaveLength(1);
+    pending.shift()?.resolve();
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toContain("streaming-client-106");
+    runtime.dispose();
+  });
+
   it("batches passive Capture publications into one frame while retaining the newest matching window", async () => {
     const history = createInMemoryEventHistory();
     const scheduler = createScheduler();
