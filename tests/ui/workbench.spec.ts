@@ -389,6 +389,9 @@ test("Workbench exposes selected captured Local Injection through the visible Co
 
     const createDraft = page.getByRole("button", { name: "Create Local Injection Draft" });
     await expect(createDraft).toBeVisible();
+    await expect(createDraft).toBeEnabled();
+    await expect(createDraft).toHaveAccessibleName("Create Local Injection Draft");
+    await expect(createDraft).toHaveCSS("border-top-style", "solid");
     await createDraft.focus();
     await expect(createDraft).toBeFocused();
     await createDraft.click();
@@ -916,6 +919,66 @@ test("Workbench keeps active capture without selection and selected Local Eviden
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench visibly distinguishes an unavailable Local Injection Draft action", async ({ page }, testInfo) => {
+  const cases = [
+    ["normal-light", { width: 900, height: 700 }, "light", false],
+    ["compact-dark", { width: 563, height: 700 }, "dark", true],
+    ["shallow-dark", { width: 900, height: 320 }, "dark", false],
+    ["wide-light", { width: 1440, height: 900 }, "light", false]
+  ] as const;
+
+  for (const [name, viewport, theme, openContext] of cases) {
+    await openScenario(page, "selected-local-evidence", viewport, theme);
+    if (openContext) await page.getByRole("button", { name: "Open selected Context" }).click();
+
+    const unavailableDraft = page.locator('button[aria-describedby="workbench-local-injection-unavailable-reason"]');
+    const reason = page.locator("#workbench-local-injection-unavailable-reason");
+    await expect(unavailableDraft).toBeDisabled();
+    await expect(unavailableDraft).toHaveAccessibleName("Create Local Injection Draft · Unavailable");
+    await expect(reason).toHaveText("Selected Evidence is not a compatible captured Item Update.");
+
+    const appearance = await unavailableDraft.evaluate((button) => {
+      const enabledButton = [...document.querySelectorAll("button")]
+        .find((candidate) => candidate.textContent?.trim() === "Open complete raw");
+      if (!enabledButton) throw new Error("Missing enabled comparison action.");
+      const unavailable = getComputedStyle(button);
+      const enabled = getComputedStyle(enabledButton);
+      return {
+        backgroundIsDistinct: unavailable.backgroundColor !== enabled.backgroundColor,
+        borderStyle: unavailable.borderTopStyle,
+        colorIsDistinct: unavailable.color !== enabled.color,
+        cursor: unavailable.cursor,
+        opacity: unavailable.opacity
+      };
+    });
+    expect(appearance).toEqual({
+      backgroundIsDistinct: true,
+      borderStyle: "dashed",
+      colorIsDistinct: true,
+      cursor: "not-allowed",
+      opacity: "1"
+    });
+
+    const contextHeaderAction = page
+      .locator(".workbench-react__context")
+      .getByRole("button", { name: openContext ? "Back to Evidence" : "Collapse Context", exact: true });
+    await contextHeaderAction.focus();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Open complete raw" })).toBeFocused();
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `unavailable-local-injection-${name}`);
+  }
+
+  await openScenario(page, "selected-local-evidence", { width: 900, height: 700 }, "light");
+  await page.emulateMedia({ forcedColors: "active" });
+  const forcedColorsDraft = page.locator('button[aria-describedby="workbench-local-injection-unavailable-reason"]');
+  await expect(forcedColorsDraft).toHaveAccessibleName("Create Local Injection Draft · Unavailable");
+  await expect(forcedColorsDraft).toHaveCSS("border-top-style", "dashed");
+  await expect(page.locator("#workbench-local-injection-unavailable-reason")).toBeVisible();
+  await attachNamedScenarioScreenshot(page, testInfo, "unavailable-local-injection-forced-colors");
 });
 
 test("Workbench preserves structural selection contrast in forced colors", async ({ page }, testInfo) => {

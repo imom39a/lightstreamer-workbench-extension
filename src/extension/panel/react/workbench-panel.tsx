@@ -1322,10 +1322,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
                 {selected ? <>
                   <button
                     type="button"
+                    className={!canCreateLocalInjectionDraft ? "workbench-react__context-action--unavailable" : undefined}
                     disabled={!canCreateLocalInjectionDraft}
                     aria-describedby={!canCreateLocalInjectionDraft ? "workbench-local-injection-unavailable-reason" : undefined}
                     onClick={() => dispatch(runtime, { type: "begin-local-injection-from-selection" })}
-                  >Create Local Injection Draft</button>
+                  >Create Local Injection Draft{!canCreateLocalInjectionDraft ? " · Unavailable" : ""}</button>
                   {!canCreateLocalInjectionDraft && snapshot.localInjection.availability.selectedUpdate.reason
                     ? <span className="workbench-react__action-reason" id="workbench-local-injection-unavailable-reason">{snapshot.localInjection.availability.selectedUpdate.reason}</span>
                     : null}
