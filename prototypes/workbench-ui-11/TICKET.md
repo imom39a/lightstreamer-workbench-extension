@@ -107,7 +107,7 @@ Do **not** add or reposition a toolbar, redesign Scope, add a `Chars`/Length col
 
 ## Source
 
-- Local disposable design evidence: `prototypes/workbench-ui-11/` (Variant A is today’s ledger; Variant B changes only the ledger to the surgical JSON console).
+- [Disposable design evidence on `main`](https://github.com/imom39a/lightstreamer-workbench-extension/tree/main/prototypes/workbench-ui-11) (Variant A is today’s ledger; Variant B changes only the ledger to the surgical JSON console).
 - [Workbench UI Standard](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/docs/WORKBENCH_UI_STANDARD.md)
 - [Current EvidenceRow presentation](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/src/extension/panel/react/workbench-panel.tsx#L175)
 - [Existing per-event presentation cache](https://github.com/imom39a/lightstreamer-workbench-extension/blob/main/src/extension/panel/workbench-runtime.ts#L2080)
