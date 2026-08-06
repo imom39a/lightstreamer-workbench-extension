@@ -27,7 +27,8 @@ compact `563×700` captured Draft (Light), shallow `900×320` authored
 Review (Dark), and wide `1440×900` COMMAND comparison (Light). Four field-UX
 states cover complete retained Find at normal geometry (Dark), long identities
 at compact geometry (Light), reversible More actions at shallow geometry
-(Dark), and a matching COMMAND projection summary at wide geometry (Light).
+(Dark), and a matching COMMAND projection summary in runtime-object Context at
+wide geometry (Light).
 `npm run test:ui` can only compare those images.
 Use `npm run test:ui:update` for a deliberate baseline creation or update and
 record the inspected artifacts and reason in the Project item or pull request.

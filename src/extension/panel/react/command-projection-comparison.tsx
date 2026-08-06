@@ -43,7 +43,7 @@ function ProjectionColumn({ projection }: Readonly<{ projection: WorkbenchComman
   </section>;
 }
 
-/** Compact Context treatment that keeps both projection contracts without duplicating matching rows. */
+/** Runtime-object Context treatment that keeps both projection contracts without duplicating matching rows. */
 export function CommandProjectionContextSummary({
   projections,
   hasSupportingLocalEvidence,

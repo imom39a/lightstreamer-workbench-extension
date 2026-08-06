@@ -317,7 +317,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("does not offer unrelated Local Evidence when a divergent projection has no retained contributor", async () => {
+  it("does not offer unrelated Local Evidence from Selected Evidence or the promoted comparison", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const base = snapshot({
@@ -347,7 +347,7 @@ describe("React Workbench Diagnose panel", () => {
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
-    expect(rootElement.textContent).toContain("Projections differ");
+    expect(rootElement.querySelector('[aria-label="COMMAND projection summary"]')).toBeNull();
     expect(
       Array.from(rootElement.querySelectorAll("button")).some(
         (button) => button.textContent === "Reveal supporting Evidence"
@@ -383,8 +383,8 @@ describe("React Workbench Diagnose panel", () => {
     expect(document.querySelector('[data-evidence-id="evt-1"]')?.getAttribute("tabindex")).toBe("-1");
     expect(rootElement.textContent).toContain("SERVER");
     expect(rootElement.textContent).toContain("View FOLLOW LIVE");
-    expect(rootElement.textContent).toContain("Observed Server COMMAND State");
-    expect(rootElement.textContent).toContain("Local Effective COMMAND State");
+    expect(rootElement.querySelector('[aria-label="COMMAND projection summary"]')).toBeNull();
+    expect(rootElement.textContent).toContain("Compare current Scope COMMAND projections");
 
     await act(async () => root.unmount());
   });
@@ -477,7 +477,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("renders retained selected Item Update fields after Evidence metadata and before the COMMAND projection summary", async () => {
+  it("keeps retained selected Item Update Context focused on that Evidence", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const base = snapshot();
@@ -507,9 +507,69 @@ describe("React Workbench Diagnose panel", () => {
     expect(selectedUpdate?.textContent).toContain("JSON string");
     expect(selectedUpdate?.textContent).toContain('"flight": "DL42"');
     expect(selectedUpdate?.textContent).toContain("{nope");
-    expect(selectedUpdate?.compareDocumentPosition(projection!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(projection).toBeNull();
     expect(contextFields?.compareDocumentPosition(selectedUpdate!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(selectedUpdate?.querySelector("pre")?.parentElement?.className).not.toContain("scroll");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the COMMAND projection summary in runtime-object Context", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const runtime = createTestRuntime({
+      ...base,
+      selectionEventId: null,
+      evidence: {
+        ...base.evidence,
+        selectedEventId: null
+      },
+      context: {
+        kind: "runtime",
+        title: "Inspected page",
+        fields: [["Scope type", "Inspected page"]],
+        selectedUpdate: null
+      }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const projection = rootElement.querySelector<HTMLElement>('[aria-label="COMMAND projection summary"]');
+    expect(projection).not.toBeNull();
+    expect(projection?.textContent).toContain("Observed Server COMMAND State");
+    expect(projection?.textContent).toContain("Local Effective COMMAND State");
+    expect(projection?.textContent).toContain("Neither projection is Authoritative COMMAND State.");
+
+    await act(async () => root.unmount());
+  });
+
+  it("does not offer COMMAND projection Context for unrelated selected Evidence", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const runtime = createTestRuntime({
+      ...base,
+      evidence: {
+        ...base.evidence,
+        events: base.evidence.events.map((event) =>
+          event.id === "evt-2"
+            ? { ...event, command: null, commandKey: null, kind: "Session lifecycle" }
+            : event
+        )
+      },
+      context: {
+        kind: "evidence",
+        title: "evt-2 · Session lifecycle",
+        fields: [["Source", "RUNTIME"]],
+        selectedUpdate: null
+      }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    expect(rootElement.querySelector('[aria-label="COMMAND projection summary"]')).toBeNull();
+    expect(rootElement.textContent).not.toContain("Compare current Scope COMMAND projections");
 
     await act(async () => root.unmount());
   });

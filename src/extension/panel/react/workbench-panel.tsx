@@ -1313,15 +1313,20 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
               {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__diagnostic" key={`${diagnostic.title}-${index}`}><strong>{diagnostic.severity} · {diagnostic.title}</strong><span>{diagnostic.detail}</span>{diagnostic.recovery ? <button type="button" onClick={() => dispatch(runtime, { type: "open-diagnostics" })}>{diagnostic.recovery}</button> : null}</section>)}
-              <CommandProjectionContextSummary
+              {!selected ? <CommandProjectionContextSummary
                 projections={snapshot.commandProjections}
                 hasSupportingLocalEvidence={Boolean(supportingProjectionEvidenceId)}
                 compareButtonRef={commandProjectionTrigger}
                 onCompare={openCommandProjectionComparison}
                 onRevealEvidence={revealSupportingProjectionEvidence}
-              />
+              /> : null}
               <div className="workbench-react__context-actions">
                 {selected ? <>
+                  {selected.command ? <button
+                    ref={commandProjectionTrigger}
+                    type="button"
+                    onClick={openCommandProjectionComparison}
+                  >Compare current Scope COMMAND projections</button> : null}
                   <button
                     type="button"
                     disabled={!canCreateLocalInjectionDraft}

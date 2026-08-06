@@ -126,8 +126,8 @@ test("Workbench keeps selected Evidence, roving focus, and distinct COMMAND proj
   await expect(page.getByText("Capture RUNNING", { exact: true })).toBeVisible();
   await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Scope", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Observed Server COMMAND State" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Local Effective COMMAND State" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Compare current Scope COMMAND projections" })).toBeVisible();
 
   const initialRow = page.locator('[data-evidence-id="scenario-event-3"]');
   const normalRowHeight = await initialRow.evaluate((row) => row.getBoundingClientRect().height);
@@ -161,14 +161,11 @@ test("Workbench promotes distinct COMMAND projections and restores the investiga
   await expect(contextSummary.getByLabel("Local Effective COMMAND State")).toContainText(
     "Server Updates plus successfully delivered Local Injected Updates"
   );
-  await expect(contextSummary).toContainText("Observed Server COMMAND State");
-  await expect(contextSummary).toContainText("Captured Server Updates only");
-  await expect(contextSummary).toContainText("Local Effective COMMAND State");
-  await expect(contextSummary).toContainText("Server Updates plus successfully delivered Local Injected Updates");
   await expect(contextSummary).toContainText("Matching projections");
-  await expect(contextSummary.locator("li")).toHaveCount(0);
   await expect(contextSummary).toContainText("Neither projection is Authoritative COMMAND State.");
-  const compare = page.getByRole("button", { name: "Compare COMMAND projections" });
+  await page.locator('[data-evidence-id="scenario-event-3"]').click();
+  await expect(contextSummary).toHaveCount(0);
+  const compare = page.getByRole("button", { name: "Compare current Scope COMMAND projections" });
   await compare.focus();
   await page.keyboard.press("Enter");
   const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
@@ -190,8 +187,9 @@ test("Workbench promotes distinct COMMAND projections and restores the investiga
   await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toHaveAttribute("aria-selected", "true");
 
   await openScenario(page, "command-projection-matching", { width: 563, height: 700 }, "light");
+  await page.locator('[data-evidence-id="scenario-event-3"]').click();
   await page.getByRole("button", { name: "Open selected Context" }).click();
-  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  await page.getByRole("button", { name: "Compare current Scope COMMAND projections" }).click();
   const compactComparison = page.getByRole("region", { name: "COMMAND projection comparison" });
   const compactColumns = await compactComparison.locator(".workbench-react__projection-column").evaluateAll((columns) =>
     columns.map((column) => ({ top: column.getBoundingClientRect().top, width: column.getBoundingClientRect().width }))
@@ -206,7 +204,8 @@ test("Workbench promotes distinct COMMAND projections and restores the investiga
   await expect(page.locator('[data-evidence-id="scenario-event-3"]')).toBeFocused();
 
   await openScenario(page, "command-projection-matching", { width: 900, height: 320 }, "light");
-  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  await page.locator('[data-evidence-id="scenario-event-3"]').click();
+  await page.getByRole("button", { name: "Compare current Scope COMMAND projections" }).click();
   const shallowComparison = page.getByRole("region", { name: "COMMAND projection comparison" });
   await expect(shallowComparison).toBeVisible();
   const shallowColumns = await shallowComparison.locator(".workbench-react__projection-column").evaluateAll((columns) =>
@@ -238,7 +237,7 @@ test("Workbench restores the Evidence anchor after COMMAND projection comparison
   const beforeScrollTop = await grid.evaluate((ledger) => ledger.scrollTop);
   expect(beforeScrollTop).toBeGreaterThan(0);
 
-  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  await page.getByRole("button", { name: "Compare current Scope COMMAND projections" }).click();
   await page.getByRole("button", { name: "Back to Evidence" }).click();
 
   await expect.poll(() => grid.evaluate((ledger) => ledger.scrollTop)).toBe(beforeScrollTop);
@@ -252,7 +251,7 @@ test("Workbench restores the Evidence anchor after COMMAND projection comparison
 
 test("Workbench explains Local-only COMMAND projection differences without changing the observed projection", async ({ page }, testInfo) => {
   await openScenario(page, "command-projection-before-local", { width: 1440, height: 900 }, "dark");
-  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  await page.getByRole("button", { name: "Compare current Scope COMMAND projections" }).click();
   const observedBeforeDelivery = await page.getByLabel("Observed Server COMMAND State").textContent();
 
   await openScenario(page, "command-projection-local-difference", { width: 1440, height: 900 }, "dark");
@@ -262,11 +261,8 @@ test("Workbench explains Local-only COMMAND projection differences without chang
   const originatingEvidence = page.locator('[data-evidence-id="event-5"]');
   await expect(originatingEvidence).toHaveAttribute("aria-selected", "true");
   await expect(page.locator(".workbench-react__evidence-row").filter({ hasText: "LOCAL" })).not.toHaveCount(0);
-  const divergentSummary = page.getByRole("region", { name: "COMMAND projection summary" });
-  await expect(divergentSummary).toContainText("Projections differ");
-  await expect(divergentSummary).toContainText("successful Local Injected Update");
-  await expect(divergentSummary.getByRole("button", { name: "Reveal supporting Evidence" })).toBeVisible();
-  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Compare current Scope COMMAND projections" }).click();
 
   const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
   await expect(comparison.getByText("Why different?", { exact: true })).toBeVisible();
@@ -284,7 +280,7 @@ test("Workbench explains Local-only COMMAND projection differences without chang
   await expect(originatingEvidence).toBeFocused();
   await expect(supportingLocalEvidence).toHaveAttribute("aria-selected", "false");
 
-  await page.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  await page.getByRole("button", { name: "Compare current Scope COMMAND projections" }).click();
   const reopenedComparison = page.getByRole("region", { name: "COMMAND projection comparison" });
   await reopenedComparison.getByRole("button", { name: "Reveal Evidence" }).focus();
   await page.keyboard.press("Enter");
@@ -304,11 +300,8 @@ test("Workbench omits false supporting Evidence routes when Local Evidence reten
 
   const unrelatedPriorLocal = page.locator('[data-evidence-id="retained-prior-local-evidence"]');
   await expect(unrelatedPriorLocal).toBeVisible();
-  const summary = page.getByRole("region", { name: "COMMAND projection summary" });
-  await expect(summary).toContainText("Projections differ");
-  await expect(summary.getByRole("button", { name: "Reveal supporting Evidence" })).toHaveCount(0);
-
-  await summary.getByRole("button", { name: "Compare COMMAND projections" }).click();
+  await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Compare current Scope COMMAND projections" }).click();
   const comparison = page.getByRole("region", { name: "COMMAND projection comparison" });
   await expect(comparison.getByText("Why different?", { exact: true })).toBeVisible();
   await expect(comparison.getByRole("button", { name: "Reveal Evidence" })).toHaveCount(0);
@@ -1251,12 +1244,8 @@ test("Workbench exposes selected Item Update fields after Evidence metadata and 
   await expect(selectedUpdate.getByText("JSON string", { exact: true })).toHaveCount(1);
   await expect(selectedUpdate).toContainText('"selected": false');
   await expect(selectedUpdate).toContainText('{"passenger":');
-  await expect(context.getByText("Observed Server COMMAND State", { exact: true })).toBeVisible();
-  await expect(context.getByText("Local Effective COMMAND State", { exact: true })).toBeVisible();
-  expect(await selectedUpdate.evaluate((node) => {
-    const projection = node.parentElement?.querySelector(".workbench-react__projection-summary");
-    return projection ? node.getBoundingClientRect().top < projection.getBoundingClientRect().top : false;
-  })).toBe(true);
+  await expect(context.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
+  await expect(context.getByRole("button", { name: "Compare current Scope COMMAND projections" })).toBeVisible();
   expect(await contextFields.evaluate((fields, update) =>
     Boolean(fields.compareDocumentPosition(update as Node) & Node.DOCUMENT_POSITION_FOLLOWING),
     await selectedUpdate.elementHandle()
@@ -1640,8 +1629,8 @@ test("Workbench keeps delivered, failed, partial, and unknown Local Injection ou
       await draft.getByRole("button", { name: "Finish Local Injection" }).click();
       await expect(page.locator(".workbench-react__evidence-row").filter({ hasText: "LOCAL" })).not.toHaveCount(0);
       await expect(page.locator('[data-evidence-id="event-5"]')).toBeFocused();
-      await expect(page.getByRole("heading", { name: "Local Effective COMMAND State" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Observed Server COMMAND State" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Compare current Scope COMMAND projections" })).toBeVisible();
     }
   }
 

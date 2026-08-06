@@ -209,7 +209,6 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return {
         id,
         initialEvents: serverOnlyCanonical,
-        selectedEventId: "scenario-event-3",
         captureStatus: "capturing"
       };
     case "command-projection-local-difference":

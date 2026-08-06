@@ -157,9 +157,9 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       expect(reactProof.evidence).toContain("SERVER");
       expect(reactProof.evidence).toContain("ADD");
       expect(reactProof.context).toContain("fixture-message.TICKER");
-      expect(reactProof.observed).toContain("Captured Server Updates only");
-      expect(reactProof.observed).not.toContain("fixture-message.TICKER");
-      await pressContextPanelButton(panelCdp, "Compare COMMAND projections");
+      expect(reactProof.context).toContain("Compare current Scope COMMAND projections");
+      expect(reactProof.observed).toBe("");
+      await pressContextPanelButton(panelCdp, "Compare current Scope COMMAND projections");
       await waitForCondition(
         panelCdp,
         `document.querySelector('[aria-label="COMMAND projection comparison"]') &&
@@ -298,10 +298,12 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
           [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
             .some((row) => [...row.querySelectorAll('[role="gridcell"]')]
               .some((cell) => cell.textContent?.trim() === "LOCAL")) &&
-          document.querySelector('[aria-label="COMMAND projection summary"]')?.textContent
-            ?.includes("Projections differ")
+          !document.querySelector('[aria-label="COMMAND projection summary"]') &&
+          [...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.trim() === "Compare current Scope COMMAND projections"
+          )
         `,
-        "React Evidence and the concise COMMAND summary to reflect the delivered Local Injection"
+        "React Evidence to reflect the delivered Local Injection without a projection summary in Selected Evidence"
       );
       const localEvidenceProof = await evaluateByValue<string>(
         panelCdp,
@@ -311,7 +313,7 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       );
       expect(localEvidenceProof).toContain("LOCAL");
       expect(localEvidenceProof).toContain("UPDATE");
-      await pressContextPanelButton(panelCdp, "Compare COMMAND projections");
+      await pressContextPanelButton(panelCdp, "Compare current Scope COMMAND projections");
       await waitForCondition(
         panelCdp,
         `document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
@@ -407,12 +409,14 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
             .filter((row) => [...row.querySelectorAll('[role="gridcell"]')]
               .some((cell) => cell.textContent?.trim() === "LOCAL"));
           return localRows.length === 2 &&
-            document.querySelector('[aria-label="COMMAND projection summary"]')?.textContent
-              ?.includes("Projections differ");
+            !document.querySelector('[aria-label="COMMAND projection summary"]') &&
+            [...document.querySelectorAll("button")].some(
+              (button) => button.textContent?.trim() === "Compare current Scope COMMAND projections"
+            );
         })()`,
-        "the authored Local Evidence and concise divergent COMMAND summary"
+        "the authored Local Evidence without a projection summary in Selected Evidence"
       );
-      await pressContextPanelButton(panelCdp, "Compare COMMAND projections");
+      await pressContextPanelButton(panelCdp, "Compare current Scope COMMAND projections");
       await waitForCondition(
         panelCdp,
         `document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent
