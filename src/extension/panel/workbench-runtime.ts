@@ -2445,7 +2445,7 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Inspect the affected Session and wait for recovery or reconnect the inspected page"
       });
     }
-    if (capture.coverage !== "USEFUL") {
+    if (capture.coverage !== "USEFUL" && this.captureStatus !== "bridge disconnected") {
       diagnostics.push({
         severity: capture.coverage === "UNAVAILABLE" ? "Error" : "Warning",
         title: `Coverage ${capture.coverage}`,

@@ -8,6 +8,7 @@ const browserDiagnostics = new WeakMap<Page, string[]>();
 declare global {
   interface Window {
     axe: typeof axe;
+    __setWorkbenchStorageMode: (mode: "indexeddb" | "memory") => void;
   }
 }
 
@@ -1054,6 +1055,23 @@ test("Workbench retains ordered Evidence while a typed Session recovery is in pr
   await attachScenarioScreenshot(page, testInfo);
 });
 
+test("Workbench preserves footer focus when a passive diagnostic resolves", async ({
+  page
+}, testInfo) => {
+  await openScenario(page, "memory-fallback", { width: 900, height: 700 }, "dark");
+  const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+
+  await diagnostics.focus();
+  await expect(diagnostics).toBeFocused();
+  await page.evaluate(() => window.__setWorkbenchStorageMode("indexeddb"));
+
+  await expect(page.getByText("Warning · In-memory event history", { exact: true })).toHaveCount(0);
+  await expect(diagnostics).toBeFocused();
+  await expect(diagnostics).toHaveAttribute("tabindex", "-1");
+  await expect(diagnostics).toHaveCSS("outline-style", "solid");
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
 test("Workbench keeps a retired Session readable, scoped, and explicitly read-only", async ({
   page
 }, testInfo) => {
@@ -1134,11 +1152,24 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
   await openScenario(page, "disconnected", { width: 900, height: 320 }, "light");
   await expect(page.getByText("Capture STOPPED", { exact: true })).toBeVisible();
   const disconnectedDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
-  await expect(disconnectedDiagnostics.getByText(/Capture bridge disconnected/)).toBeVisible();
-  await page.getByRole("button", { name: "Freeze Evidence" }).focus();
-  await page.keyboard.press("Shift+Tab");
+  await expect(disconnectedDiagnostics.getByText(/cannot observe new inspected-page activity/)).toBeVisible();
+  await expect(disconnectedDiagnostics.getByText("Warning · Coverage LIMITED", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Open complete raw" }).focus();
+  await page.keyboard.press("Tab");
   await expect(disconnectedDiagnostics).toBeFocused();
   await expect(disconnectedDiagnostics).toHaveCSS("outline-style", "solid");
+  await expect.poll(() => disconnectedDiagnostics.evaluate((region) => {
+    const regionRect = region.getBoundingClientRect();
+    return [...region.querySelectorAll<HTMLElement>(".workbench-react__status-diagnostic")]
+      .every((diagnostic) => diagnostic.getBoundingClientRect().bottom <= regionRect.bottom);
+  })).toBe(true);
+  await expect.poll(() => page.getByLabel("Ordered Evidence").evaluate((evidence) => {
+    const evidenceRect = evidence.getBoundingClientRect();
+    return [...evidence.querySelectorAll<HTMLElement>(".workbench-react__evidence-row")].filter((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.height > 0 && rect.top >= evidenceRect.top && rect.bottom <= evidenceRect.bottom;
+    }).length;
+  })).toBeGreaterThanOrEqual(2);
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
 

@@ -1465,7 +1465,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("names disconnected, recovering, limited-Coverage, and in-memory fallback boundaries", () => {
+  it("consolidates disconnected Capture without hiding independent recovery and storage boundaries", () => {
     const history = createInMemoryEventHistory();
     history.append(
       topologyEvent("recovering-1", "client-status", {
@@ -1494,10 +1494,11 @@ describe("WorkbenchRuntime", () => {
       expect.arrayContaining([
         "Capture disconnected",
         "Session recovering",
-        "Coverage LIMITED",
         "In-memory event history"
       ])
     );
+    expect(runtime.getSnapshot().capture.coverage).toBe("LIMITED");
+    expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain("Coverage LIMITED");
     expect(runtime.getSnapshot().diagnostics.find(({ title }) => title === "Session recovering"))
       .toMatchObject({ affected: "Session S-1" });
 
