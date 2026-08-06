@@ -400,12 +400,15 @@ describe("production panel mount wiring", () => {
     });
     await flushPanel();
 
-    expect(root.textContent).toContain("Coverage LIMITED");
-    expect(root.textContent).toContain(
-      "IndexedDB is unavailable. Evidence is held in memory for this DevTools session."
-    );
-    expect(root.textContent).toContain("closing it clears the in-memory history");
-    expect(root.textContent).toContain("In-memory event history");
+    const footerDiagnostics = root.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
+    const storageDetail = "IndexedDB is unavailable. Evidence remains available only while this panel session stays open.";
+
+    expect(root.textContent).toContain("Coverage USEFUL");
+    expect(root.textContent).not.toContain("Coverage LIMITED");
+    expect(footerDiagnostics?.textContent).toContain("Warning · In-memory event history");
+    expect(footerDiagnostics?.textContent).toContain(storageDetail);
+    expect(footerDiagnostics?.textContent).toContain("Recovery: Restore IndexedDB availability and reopen DevTools");
+    expect(root.textContent?.split(storageDetail)).toHaveLength(2);
     await clickButton(root, "More actions");
     expect(root.textContent).toContain(
       "current DevTools session history uses in-memory fallback"

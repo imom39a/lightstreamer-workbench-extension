@@ -422,7 +422,6 @@ export type WorkbenchCommand =
   | { type: "close-command-projection-comparison" }
   | { type: "open-context" }
   | { type: "open-scope" }
-  | { type: "open-diagnostics" }
   | { type: "open-raw-evidence"; eventId: string }
   | { type: "export-scope" }
   | { type: "open-actions" }
@@ -868,10 +867,6 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "open-scope":
         this.contextId = "context:scope";
-        this.publish();
-        return;
-      case "open-diagnostics":
-        this.contextId = "context:diagnostics";
         this.publish();
         return;
       case "open-raw-evidence":

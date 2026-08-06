@@ -191,8 +191,8 @@ Focused Compact and shallow surfaces keep Back, current state, and the consequen
 
 ### Diagnostics and export
 
-- Material degraded state remains concise in the operating/status region with a directly named action.
-- Concise diagnostic explanation stays in Context; complete diagnostic evidence promotes.
+- Material degraded state remains concise in the operating/status region with direct recovery guidance.
+- The global footer owns each session- or runtime-level diagnostic once across every geometry; Ordered Evidence and Context do not repeat it. Complete diagnostic evidence may still promote when a dedicated investigation needs more than the footer grammar.
 - Initial export choices may stay in Context; substantial preview/review promotes.
 - Scope, version, privacy boundary, unconditional credential exclusion, and the final download action remain fixed and reachable.
 - Failure preserves the originating investigation and current configuration.

@@ -79,6 +79,20 @@ describe("Workbench visual-evidence runner", () => {
           theme: "dark",
           prototype: { variant: "A", state: "selected", frame: "wide", setup: "selected-json" },
           production: { scenario: "local-injection-json", setup: "none" }
+        },
+        {
+          id: "normal-limited-capture-light",
+          viewport: { width: 900, height: 700 },
+          theme: "light",
+          prototype: { variant: "C", state: "coverage", frame: "normal", setup: "none" },
+          production: { scenario: "limited-capture", setup: "none" }
+        },
+        {
+          id: "compact-memory-fallback-dark",
+          viewport: { width: 563, height: 700 },
+          theme: "dark",
+          prototype: { variant: "C", state: "storage", frame: "compact", setup: "none" },
+          production: { scenario: "memory-fallback", setup: "none" }
         }
       ]
     });

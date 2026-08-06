@@ -91,6 +91,7 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 - Reserve generic selection fill plus a leading marker for selection and an independent outline for focus.
 - Pair every material diagnostic with severity text, affected Evidence or object, consequence, and one relevant inspection or recovery route.
 - Keep raw JSON syntax styling free of Workbench provenance, mutability, validation, and COMMAND meaning. Place those semantics outside the document.
+- Consolidate session- and runtime-level diagnostics in the global footer and render each cause once. Do not repeat the same diagnostic in Ordered Evidence or Context; keep workflow-local validation and outcomes at their own decision boundary.
 - Use sentence case, active voice, Lightstreamer-native terms, and direct recovery guidance. Avoid card dashboards, badge necklaces, hover-only meaning, decorative metrics, and private icon vocabularies.
 - Preserve the same meaning in Dark, Light, Follow DevTools, zoom, grayscale, and forced-colors conditions.
 

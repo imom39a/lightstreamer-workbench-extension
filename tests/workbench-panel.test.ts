@@ -432,7 +432,7 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
-  it("makes degraded Capture useful by naming the affected observation and recovery route", async () => {
+  it("renders a degraded Capture diagnostic once in the global footer", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");
     const runtime = createTestRuntime(
@@ -442,17 +442,28 @@ describe("React Workbench Diagnose panel", () => {
           coverage: "LIMITED",
           detail: "Capture attached after this Subscription began. Earlier Snapshot evidence may be incomplete.",
           recovery: "Open diagnostics"
-        }
+        },
+        diagnostics: [{
+          severity: "Warning",
+          title: "Coverage LIMITED",
+          detail: "Capture attached after this Subscription began. Earlier Snapshot evidence may be incomplete.",
+          recovery: "Reload the inspected page with DevTools open"
+        }]
       })
     );
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
+    const footerDiagnostics = document.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
+    const diagnosticDetail = "Capture attached after this Subscription began. Earlier Snapshot evidence may be incomplete.";
+
     expect(rootElement.textContent).toContain("Coverage LIMITED");
-    expect(rootElement.textContent).toContain("Earlier Snapshot evidence may be incomplete.");
-    expect(document.querySelector<HTMLButtonElement>("[data-action='open-diagnostics']")?.textContent).toBe(
-      "Open diagnostics"
-    );
+    expect(footerDiagnostics?.textContent).toContain("Warning · Coverage LIMITED");
+    expect(footerDiagnostics?.textContent).toContain(diagnosticDetail);
+    expect(footerDiagnostics?.textContent).toContain("Recovery: Reload the inspected page with DevTools open");
+    expect(rootElement.textContent?.split(diagnosticDetail)).toHaveLength(2);
+    expect(document.querySelector(".workbench-react__evidence .workbench-react__condition--warning")).toBeNull();
+    expect(document.querySelector(".workbench-react__context .workbench-react__diagnostic")).toBeNull();
 
     await act(async () => root.unmount());
   });
