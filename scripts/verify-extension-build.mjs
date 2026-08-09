@@ -68,6 +68,11 @@ for (const [file, source] of sources) {
   if (/@babel\/standalone|jsxDEV\s*\(/.test(source)) {
     failures.push(`${file} contains a runtime JSX transformer`);
   }
+  if (
+    /google-analytics\.com|googletagmanager|lsew\.analytics\.(?:consent|client-id)|VITE_LSEW_GA|analytics_enabled/.test(source)
+  ) {
+    failures.push(`${file} contains analytics transport or identifier residue`);
+  }
 }
 
 const panelPath = "extension/panel/index.js";

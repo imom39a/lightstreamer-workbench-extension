@@ -6,6 +6,9 @@ Scope: the shipped Lightstreamer Workbench Chrome DevTools panel before the
 `workbench-ui` redesign. This document records evidence and constraints; it
 does not choose the replacement information architecture.
 
+Historical note: this audit describes the pre-2.0 panel, including the optional
+analytics control that version 2 later retired.
+
 ## Executive assessment
 
 The current panel has strong debugging capabilities and unusually good
@@ -72,7 +75,7 @@ human success criteria used to judge prototypes.
 
 - Capture/bridge status, retained-event count, filtered count, and a
   high-volume retention warning.
-- Theme override, optional analytics consent/control, and destructive
+- Theme override, the then-current optional analytics consent/control, and destructive
   current-session event clearing.
 - Session-scoped ordered event history using IndexedDB with an in-memory
   fallback.

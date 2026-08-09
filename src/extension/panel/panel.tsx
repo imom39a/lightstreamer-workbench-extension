@@ -6,9 +6,8 @@ import {
   createIndexedDbEventHistory,
   type EventHistory
 } from "../../core/event-history";
-import { createDisabledAnalytics, type WorkbenchAnalytics } from "../analytics";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
-import { createBrowserPanelAnalytics } from "./panel-analytics";
+import { clearLegacyPanelStorage } from "./legacy-storage";
 import { WorkbenchPanel } from "./react/workbench-panel";
 import { createThemeManager, type ThemeManager } from "./theme";
 import {
@@ -20,7 +19,6 @@ import {
 export type WorkbenchPanelMountOptions = {
   createIndexedDbHistory?: typeof createIndexedDbEventHistory;
   createInMemoryHistory?: typeof createInMemoryEventHistory;
-  createAnalytics?: () => WorkbenchAnalytics;
   createRuntime?: typeof createWorkbenchRuntime;
   connectBridge?: typeof connectPanelBridge;
 };
@@ -33,7 +31,6 @@ export function mountWorkbenchPanel(
 ): DisposeWorkbenchPanel {
   const createIndexedHistory = options.createIndexedDbHistory ?? createIndexedDbEventHistory;
   const createMemoryHistory = options.createInMemoryHistory ?? createInMemoryEventHistory;
-  const createAnalytics = options.createAnalytics ?? createBrowserPanelAnalytics;
   const createRuntime = options.createRuntime ?? createWorkbenchRuntime;
   const connectBridgeClient = options.connectBridge ?? connectPanelBridge;
   let visible = true;
@@ -47,6 +44,8 @@ export function mountWorkbenchPanel(
     target: root,
     documentElement: document.documentElement
   });
+
+  clearLegacyPanelStorage(window.localStorage);
 
   root.textContent = "Initializing event storage...";
   window.addEventListener("message", onVisibilityMessage);
@@ -105,7 +104,6 @@ export function mountWorkbenchPanel(
       history,
       visible,
       theme: themeManager.preference,
-      analytics: safelyCreateAnalytics(createAnalytics),
       localInjectionExecutor,
       storage: storageLimited
         ? { mode: "memory", reason: "IndexedDB is unavailable" }
@@ -159,12 +157,4 @@ function bindRuntime(runtime: WorkbenchRuntime, themeManager: ThemeManager): Wor
     },
     dispose: runtime.dispose.bind(runtime)
   };
-}
-
-function safelyCreateAnalytics(createAnalytics: () => WorkbenchAnalytics): WorkbenchAnalytics {
-  try {
-    return createAnalytics();
-  } catch {
-    return createDisabledAnalytics();
-  }
 }

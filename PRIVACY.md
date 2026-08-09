@@ -1,56 +1,57 @@
 # Privacy Policy
 
-Lightstreamer Workbench is a Chrome DevTools extension for inspecting Lightstreamer Web Client behavior in the currently inspected browser tab.
+Lightstreamer Workbench is a Chrome DevTools extension for inspecting Lightstreamer Web Client behavior in the currently inspected browser tab. This policy also covers the public Lightstreamer Workbench website.
 
-## Data Collection
+Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
-Captured Lightstreamer clients, Sessions, Subscriptions, Item Updates, field values, COMMAND keys, diagnostics, Injection Sources, and Injection Drafts are processed locally in the browser extension context for the current inspected tab/session.
+## Version status
 
-When the Lightstreamer Web Client exposes a client IP address, page-world instrumentation irreversibly masks it before constructing the Capture message. The exact address never crosses the inspected-page Capture boundary, is never available to the Workbench, and cannot be restored with a UI toggle. Client IP addresses are never included in analytics; any future export feature must preserve this pre-boundary masking rule.
+The Chrome Web Store currently serves version `0.1.5` while version `2.0.0` completes release verification.
 
-The extension offers optional usage analytics to help the maintainers understand which workbench features are useful and where coarse failures occur. Analytics is off until the user accepts the prominent disclosure inside the DevTools panel.
+- **Version 2.0 and later:** no product analytics, tracking, advertising, account sign-in, or remote error logging. On startup, 2.0 removes the legacy analytics consent and random installation identifier used by an earlier release.
+- **Version 0.1.5:** may offer the legacy optional product analytics described below. It remains off unless the user explicitly accepts its in-panel disclosure.
+- **Public website:** static HTML and CSS with no analytics, cookies, executable JavaScript, advertising, account sign-in, or remote error logging.
 
-When enabled, the extension may send these allowlisted events to a dedicated Google Analytics 4 property:
+## Inspected-page data
 
-- DevTools panel views and whether Lightstreamer activity was detected.
-- Whether Ordered Evidence search was used, without the search text.
-- Local Injection entry category, listener/wire target category, edited/not-edited flag, and success or coarse failure category.
-- A session summary with the captured-Evidence total converted to a broad bucket, plus whether Evidence search or Local Injection was used.
-- Historical analytics retained by Google may contain the former coarse schema names from releases before the Scoped Evidence Workspace cutover. The current extension does not emit those retired event names.
-- Extension version, a random installation identifier, session timing fields, and standard request/device information received by Google when processing an HTTPS request.
+Captured Lightstreamer clients, Sessions, Subscriptions, Item Updates, field values, COMMAND keys, diagnostics, Injection Sources, and Injection Drafts are processed locally in the browser extension context for the current inspected tab and DevTools session.
 
-The analytics path never receives inspected-page URLs, Lightstreamer Server addresses, adapter sets, client/Subscription/listener IDs, item/field/key names, captured values, search text, Injection Sources, Injection Drafts, raw error messages, stack traces, cookies, account details, or a Google user ID. Advertising consent is explicitly denied in every request, personalized advertising is disabled, and the data is used only to improve the extension.
+When the Lightstreamer Web Client exposes a client IP address, page-world instrumentation irreversibly masks it before constructing the Capture message. The exact address never crosses the inspected-page Capture boundary, is never available to Workbench, and cannot be restored with a UI toggle.
 
-The project does not sell user data or use analytics data for advertising.
+Workbench does not send inspected-page URLs, Lightstreamer Server addresses, adapter sets, client, Subscription, listener, item, field, or key identifiers, captured values, search text, Injection Sources, Injection Drafts, raw errors, stack traces, cookies, account details, or other captured Evidence to the maintainers or an analytics service.
 
-## Storage
+## Local storage and exports
 
-Version 1 stores captured event data locally for the current DevTools/tab session. The panel may use temporary IndexedDB-backed storage so high-volume sessions can be queried without keeping every row in the DOM, but it resets that session storage on panel startup and clears it during normal panel teardown. If Chrome or DevTools exits abruptly before teardown completes, leftover temporary data is cleared the next time the panel starts for that inspected tab.
+Version 2 stores current-DevTools-session Evidence in temporary IndexedDB-backed ordered batches, with an in-memory fallback when IndexedDB is unavailable. Workbench resets its session storage on panel startup and clears it during normal panel teardown. If Chrome or DevTools exits before teardown completes, leftover temporary data is cleared the next time the panel starts for that inspected tab.
 
-The extension may use normal Chrome extension runtime state required to connect the DevTools panel, background service worker, content script, and inspected page. This runtime state is local to the browser. If analytics is enabled, the extension also stores the consent choice and a randomly generated analytics installation identifier in extension-local storage. It does not fingerprint the device.
+Versioned Topology JSON and offline HTML exports are deliberate user downloads. Workbench excludes connection credentials and masks client IP addresses before they enter Capture, but an export can still contain application data selected by the user. Review every export before sharing it.
 
-Turning analytics off from the panel removes the random installation identifier, records the opt-out locally, and blocks all future analytics requests. Re-enabling analytics requires another explicit action.
+The extension also uses local runtime state needed to connect the DevTools panel, background service worker, content script, and inspected page. It does not use cross-session capture as application state.
 
-## Network Access
+## Network access
 
-The extension does not send captured Lightstreamer event data to a maintainer-operated backend.
+Version 2 does not contact a maintainer-operated service or analytics provider. If the inspected page communicates with Lightstreamer servers or other application services, that traffic belongs to the inspected page, not to Workbench.
 
-After opt-in only, bundled extension code sends the allowlisted usage events above directly to Google Analytics over HTTPS using the Google Analytics Measurement Protocol. The extension does not load remote analytics scripts or executable code. Google processes that data under the [Google Privacy Policy](https://policies.google.com/privacy).
+Local Injection delivers a deliberate update only through captured listener callbacks or the inspected page's local delivery path. It does not contact the Lightstreamer Server. Planned Server Injection will send a reviewed Client Message through the inspected client's normal `sendMessage` path; it will not directly inject an inbound server update.
 
-If the inspected page itself communicates with Lightstreamer servers or other application services, that traffic belongs to the inspected page, not to this extension.
+## Legacy 0.1.5 analytics disclosure
+
+An official 0.1.5 build may contain optional Google Analytics 4 Measurement Protocol support. It is off until the user accepts the prominent panel disclosure. When enabled, its allowlist is limited to panel use, whether Lightstreamer activity was detected, whether Evidence search or Local Injection was used, Local Injection entry, target, edit, and coarse outcome categories, a broad captured-Evidence count bucket, extension version, session timing, and a random installation identifier.
+
+The legacy path never receives inspected-page or captured Lightstreamer data, search text, Injection content, raw errors, or a Google user ID. Advertising consent is denied, credentials and referrer data are omitted by the request, and the project does not sell the data or use it for advertising. Turning analytics off deletes the random identifier and blocks later analytics requests. This path adds no Chrome permission and, after opt-in only, sends directly to `https://www.google-analytics.com/mp/collect`. Google processes that data under the [Google Privacy Policy](https://policies.google.com/privacy).
+
+Version 2 removes the analytics UI, event code, configuration, network transport, and stored identifier.
 
 ## Permissions
 
-The extension requests page access so it can instrument the inspected page's official Lightstreamer Web Client runtime before application code creates clients or subscriptions. This access is used for local debugging in Chrome DevTools.
-
-Analytics adds no Chrome permission. Its consented HTTPS requests go only to `https://www.google-analytics.com/mp/collect`.
+Workbench requests page access so it can instrument the inspected page's official Lightstreamer Web Client runtime before application code creates clients or Subscriptions. This access is used for developer-controlled debugging in Chrome DevTools.
 
 Permission changes must be documented in pull requests and release notes because expanded extension permissions affect user trust and Chrome Web Store review.
 
-## User Responsibility
+## User responsibility
 
-Use the extension only on pages you are authorized to debug. Do not attach raw production payloads, screenshots with secrets, customer data, tokens, cookies, or private URLs to public GitHub issues or pull requests.
+Use Workbench only on pages you are authorized to debug. Do not attach raw production payloads, exports, screenshots with secrets, customer data, tokens, cookies, or private URLs to public issues or pull requests.
 
 ## Changes
 
-Privacy-impacting changes require maintainer review before merge and must be reflected in this file, the Chrome Web Store privacy fields, and release notes before publication.
+Privacy-impacting changes require maintainer review before merge and must be reflected in this policy, Chrome Web Store privacy fields, and release notes before publication.

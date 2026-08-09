@@ -6,8 +6,8 @@ type VisualCase = Readonly<{
   id: string;
   viewport: { width: number; height: number };
   theme: "dark" | "light";
-  prototype: { variant: string; state: string; frame: string; setup: string };
-  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions" };
+  prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
+  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -115,12 +115,28 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expect(page.locator('[data-find-current="true"]')).toBeVisible();
       return;
     }
-    case "more-actions": {
+    case "more-actions-help": {
       const more = page.getByRole("button", { name: "More actions" });
       await expectVisibleKeyboardTarget(page, more);
       await page.keyboard.press("Enter");
-      await expect(page.getByRole("region", { name: "Session operations" })).toBeVisible();
+      const operations = page.getByRole("region", { name: "Session operations" });
+      await expect(operations).toBeVisible();
       await expect(page.getByRole("button", { name: "Back to prior investigation" })).toBeVisible();
+      const help = operations.getByRole("heading", { name: "Help & resources" });
+      const documentation = operations.getByRole("link", { name: "Documentation" });
+      const clear = operations.getByRole("button", { name: "Clear retained Evidence…" });
+      await clear.scrollIntoViewIfNeeded();
+      await expectVisibleKeyboardTarget(page, clear);
+      await page.keyboard.press("Tab");
+      await expect(documentation).toBeFocused();
+      await expect(help).toBeInViewport();
+      await expect(documentation).toBeInViewport();
+      await expect(operations.getByRole("link", { name: "Privacy" })).toBeInViewport();
+      await expect(operations.getByRole("link", { name: "Support" })).toBeInViewport();
+      await expect.poll(() => documentation.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return `${style.outlineStyle} ${style.outlineWidth}`;
+      })).toBe("solid 2px");
       return;
     }
   }

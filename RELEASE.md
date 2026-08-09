@@ -39,26 +39,11 @@ npm run release:package -- --skip-build
 
 The package step fails if `package.json` and `public/manifest.json` do not use the same version. Before every store update, bump both versions and rebuild.
 
-## Optional Usage Analytics Configuration
+## No-analytics release invariant
 
-Official builds can enable the consent-based GA4 Measurement Protocol integration with:
+Version 2 official builds contain no product analytics, tracking transport, remote error logging, or persistent analytics identifier. `npm run build` audits the compiled extension for retired endpoints, configuration names, and identifier keys. The panel mount also clears legacy 0.1.x consent and identifier records without affecting investigation state when storage is unavailable.
 
-```text
-VITE_LSEW_GA_MEASUREMENT_ID=G-...
-VITE_LSEW_GA_API_SECRET=...
-```
-
-Use `.env.analytics.example` as the field-name reference. Put local values in ignored `.env.local` or supply them as protected CI/release environment variables. Builds without either value keep the analytics disclosure, identifier creation, and network transport disabled.
-
-Use a dedicated GA4 property, web stream, and Measurement Protocol secret for this extension. The stream must not be shared with the Chrome Web Store-managed listing analytics property or another product. A Measurement Protocol secret is embedded in the packaged extension and can be extracted, so monitor the stream for spam and rotate only this dedicated secret if it is abused. Never commit the populated values.
-
-Before an analytics-enabled release:
-
-1. Keep Google signals, advertising personalization, and data sharing not required for the product disabled.
-2. Configure the shortest practical event-data retention and register only the coarse custom dimensions documented in [docs/ANALYTICS.md](docs/ANALYTICS.md).
-3. Build with the official stream values and confirm the ZIP contains no remote analytics script.
-4. Test first-run decline, explicit allow, event delivery, opt-out, identifier removal, and the post-opt-out network block.
-5. Reconcile `PRIVACY.md`, `store-listing/LISTING.md`, the in-panel disclosure, and Chrome Web Store privacy declarations.
+Any future off-device product data path requires a new explicit design decision, maintainer approval, policy and Store disclosure changes, and release-specific tests before code lands. Release credentials or environment variables must never be used to bypass this invariant.
 
 ## Store Listing Assets
 
@@ -68,7 +53,7 @@ Source-controlled listing copy, screenshots, icon assets, promo tiles, privacy n
 store-listing/
 ```
 
-Regenerate the screenshots after UI changes and before each Chrome Web Store release. This also refreshes derived GitHub Pages real-app preview images and the GitHub social preview under `docs/assets/`, while keeping the stable brand artwork in place:
+Regenerate the screenshots after UI changes and before each Chrome Web Store release. This also refreshes the real-app images under `docs/assets/` that the static site build copies into its isolated artifact:
 
 ```bash
 npm run store:assets
@@ -76,9 +61,11 @@ npm run store:assets
 
 ## GitHub Pages
 
-The public GitHub Pages site lives in `docs/`. Publishing a GitHub release runs `.github/workflows/pages.yml`, compares the release tag with the previous reachable tag, and deploys through GitHub Pages only when `docs/**` changed.
+The public GitHub Pages source lives in `site/`, with policy content sourced from `PRIVACY.md` and `SECURITY.md`. `npm run site:build` writes the isolated, ignored `site-dist/` artifact; `npm run site:check` verifies all stable routes, internal links, local assets, canonical URLs, and the absence of executable tracking code.
 
-Repository Settings > Pages must use `GitHub Actions` as the build and deployment source. Manual workflow dispatch uses the same `docs/**` change detection gate.
+Pull requests that change the site run the validation job. A push to `main` affecting site inputs builds and deploys only `site-dist/` through `.github/workflows/pages.yml`; repository documents and source files are never uploaded as public site routes. Manual workflow dispatch uses the same build and check path.
+
+Repository Settings > Pages must use `GitHub Actions` as the build and deployment source. Keep the existing `https://imom39a.github.io/lightstreamer-workbench-extension/` URL; 2.0 does not introduce a custom domain.
 
 ## Optional CRX
 

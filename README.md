@@ -2,7 +2,7 @@
 
 Lightstreamer Workbench is an open-source Chrome DevTools extension for debugging web applications that use the official Lightstreamer Web Client. It captures clients, subscriptions, item updates, snapshots, and COMMAND-mode key lifecycles so developers can diagnose streaming behavior and perform deliberate Local Injections without backend access.
 
-[Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) | [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf) | [Source](https://github.com/imom39a/lightstreamer-workbench-extension/) | [Contributing](CONTRIBUTING.md) | [Privacy](PRIVACY.md) | [Security](SECURITY.md) | [Release notes and publishing](RELEASE.md)
+[Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) | [Documentation](https://imom39a.github.io/lightstreamer-workbench-extension/docs/) | [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf) | [Source](https://github.com/imom39a/lightstreamer-workbench-extension/) | [Privacy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) | [Security](https://imom39a.github.io/lightstreamer-workbench-extension/security/) | [Support](https://imom39a.github.io/lightstreamer-workbench-extension/support/)
 
 <p align="center">
   <img src="docs/assets/mascot.png" alt="Lightstreamer Workbench mascot" width="180">
@@ -10,9 +10,9 @@ Lightstreamer Workbench is an open-source Chrome DevTools extension for debuggin
 
 ## Project Status
 
-Version `0.1.5` is the current release. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf), or build from source and load the generated `dist/` directory as an unpacked extension.
+Version `2.0.0` is being prepared as the first public unified-workspace release. The Chrome Web Store currently serves `0.1.5` until the verified 2.0 package completes review and staged rollout. Install the current release from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf), or build 2.0 from source and load the generated `dist/` directory as an unpacked extension.
 
-The first release focuses on local, current-session debugging for the inspected tab. The UI and internal event envelope may evolve as more Lightstreamer workflows are validated.
+Version 2 focuses on local, current-session debugging for the inspected tab through one unified Scoped Evidence Workspace. The public [roadmap](https://imom39a.github.io/lightstreamer-workbench-extension/roadmap/) separates near-term opportunities from exploratory work without promising dates.
 
 ## What The Extension Does
 
@@ -35,7 +35,7 @@ The first release focuses on local, current-session debugging for the inspected 
 - It does not create a Lightstreamer client, call `connect()` or `subscribe()`, or establish a server session; capture only observes clients and WebSockets owned by the inspected page.
 - It does not provide app-specific interpretation rules in the core product.
 - It does not treat arbitrary WebSocket protocols as first-class Lightstreamer domain models.
-- It does not enable optional product analytics unless the user accepts the in-panel disclosure.
+- It does not include product analytics, tracking, advertising, account sign-in, or remote error logging.
 
 ## Who This Helps
 
@@ -67,21 +67,22 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 ## Documentation
 
 - [Project site](https://imom39a.github.io/lightstreamer-workbench-extension/) - public GitHub Pages site and product overview.
+- [Public documentation](https://imom39a.github.io/lightstreamer-workbench-extension/docs/) - install, workspace, Evidence, COMMAND projection, Local Injection, export, and troubleshooting guides.
+- [Roadmap](https://imom39a.github.io/lightstreamer-workbench-extension/roadmap/) and [release notes](https://imom39a.github.io/lightstreamer-workbench-extension/releases/) - public product direction and version history.
+- [Privacy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/), [security](https://imom39a.github.io/lightstreamer-workbench-extension/security/), and [support](https://imom39a.github.io/lightstreamer-workbench-extension/support/) - stable customer-facing policies and reporting routes.
 - [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf) - official extension listing.
 - [Source repository](https://github.com/imom39a/lightstreamer-workbench-extension/) - source code, issues, and pull requests.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - contributor workflow, local setup, architecture, tests, and pull request process.
 - [RELEASE.md](RELEASE.md) - release packaging, Chrome Web Store publishing, GitHub Pages deployment, and maintainer-only release flow.
 - [MAINTAINERS.md](MAINTAINERS.md) - maintainer roles, official distribution boundaries, and release authority.
-- [PRIVACY.md](PRIVACY.md) - extension privacy behavior and Chrome Web Store privacy language.
-- [docs/ANALYTICS.md](docs/ANALYTICS.md) - opt-in event dictionary, GA4 custom definitions, and product-improvement reports.
-- [SECURITY.md](SECURITY.md) - security reporting path and sensitive-data guidance.
+- [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) - repository sources used to build the matching first-party policy routes.
 - [store-listing/](store-listing/) - Chrome Web Store listing copy, screenshots, icons, promo assets, and reviewer notes.
 
 ## Privacy And Safety
 
 Lightstreamer Workbench keeps captured event data in temporary local storage for the current DevTools/tab session; that data is not transmitted off-device by the extension. Lightstreamer-provided client IP addresses are irreversibly masked before they cross the inspected-page capture boundary, so the panel never receives or offers a toggle for the exact address. Retired structural Scope remains readable historical Evidence only.
 
-Official builds may offer optional, opt-in Google Analytics for coarse product usage such as panel activation, Lightstreamer detection, Evidence search, Local Injection entry/target/outcome categories, and a bucketed event count. The extension creates a random analytics installation ID and sends requests only after the user accepts the prominent panel disclosure. Opt-out deletes that ID and blocks future analytics requests. Analytics adds no Chrome permission and never receives inspected-page URLs or captured Lightstreamer content; see [PRIVACY.md](PRIVACY.md) for the exact allowlist.
+Version 2 removes the earlier optional analytics UI, event code, configuration, network transport, and random installation identifier. On startup it clears the two legacy 0.1.x preference/identifier records. The public website is static HTML and CSS with no analytics, cookies, or executable JavaScript. The [public privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) distinguishes this behavior from the current 0.1.5 Store build during prelaunch.
 
 The extension requests broad page access because it must instrument the inspected page's Lightstreamer Web Client runtime before application code creates clients or subscriptions. Use it only on pages you are authorized to debug, and avoid sharing screenshots or issue logs that contain production secrets, customer data, tokens, or proprietary event payloads.
 

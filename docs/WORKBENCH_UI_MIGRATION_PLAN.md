@@ -2,9 +2,13 @@
 
 Status: **completed through Slice 3 cutover, 2026-08-05**
 
+Historical note (2026-08-09): version 2 subsequently retired product analytics.
+References below to analytics describe the parity target during the original UI
+cutover, not current product behavior.
+
 This document records the completed move from the feature-first DOM renderer to the accepted [integrated Workbench direction](../prototypes/workbench-ui-10/README.md). The original slice gates and fallback reasoning remain as implementation history; the current production state is authoritative wherever it differs from an earlier slice description.
 
-The migration preserves Lightstreamer and extension semantics. It replaces the panel renderer and its state boundary; it does not reinterpret Capture, COMMAND state, Local Injection, storage, privacy, export, or analytics.
+The migration preserved the Lightstreamer and extension semantics that existed at cutover. It replaced the panel renderer and its state boundary without reinterpreting Capture, COMMAND state, Local Injection, storage, privacy, export, or the then-current analytics behavior.
 
 ## Outcome
 
@@ -136,14 +140,14 @@ This slice established the read-only Diagnose journey before Local Injection was
 - high-volume Frozen history and accurate filtered newer counts;
 - Capture limited, disconnected, recovering, retired-Scope, and in-memory-fallback states with safe conclusions and nearby recovery;
 - scoped versioned JSON and offline HTML export with current redaction and credential rules;
-- theme preference, current retention/clear behavior, session teardown, analytics consent, and failure isolation.
+- theme preference, current retention/clear behavior, session teardown, the then-current analytics consent, and failure isolation.
 
 ### Completed implementation sequence
 
 1. Added the stable bootstrap, temporary candidate-build boundary, scenario adapter, React root, and the smallest `WorkbenchRuntime` that rendered a truthful empty or Capture-orientation state.
 2. Brought Capture operation, Coverage, Topology, and Scope into the runtime with the operating strip and Scope picker.
 3. Brought history querying, bounded Evidence, Filter, Find, selection, Context, and Live/Frozen behavior into the same runtime slice.
-4. Added raw Evidence, COMMAND projections, diagnostics, high-volume/degraded behavior, export, theme, retention/clear, and analytics consent.
+4. Added raw Evidence, COMMAND projections, diagnostics, high-volume/degraded behavior, export, theme, retention/clear, and the then-current analytics consent.
 5. Completed the Slice 1 verification packet and established the React bundle, startup, long-task, and memory baseline.
 
 Each extraction landed with a developer-visible React behavior and its scenario. No foundation-only refactor or speculative shared-component library was introduced.

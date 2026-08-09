@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Lightstreamer Workbench",
-  "version": "0.1.5",
-  "description": "Chrome DevTools panel for inspecting Lightstreamer Web Client activity.",
+  "version": "2.0.0",
+  "description": "Unified Chrome DevTools workspace for inspecting Lightstreamer Web Client activity.",
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",

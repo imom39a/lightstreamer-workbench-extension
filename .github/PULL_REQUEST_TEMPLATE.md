@@ -61,7 +61,7 @@ Commands run:
 ## Extension Safety Checklist
 
 - [ ] No secrets, credentials, private URLs, or production payloads are committed.
-- [ ] Any off-device analytics, logging, or event upload is explicitly consented, narrowly allowlisted, tested, and documented; inspected-page capture data stays local.
+- [ ] The change adds no product analytics, tracking, remote logging, or off-device event upload; any proposed exception has a separately approved design and matching policy/store updates.
 - [ ] New permissions or host-access changes are explained.
 - [ ] Local Injected Updates remain clearly marked and local to the inspected page workflow.
 - [ ] Persistent storage behavior is unchanged or explicitly documented.

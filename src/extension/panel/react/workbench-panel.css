@@ -45,7 +45,7 @@
 }
 .workbench-react button { padding: 2px 8px; }
 .workbench-react button:hover { border-color: var(--wb-border-strong); }
-.workbench-react button:focus-visible, .workbench-react input:focus-visible, .workbench-react [tabindex]:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: -2px; }
+.workbench-react button:focus-visible, .workbench-react input:focus-visible, .workbench-react a:focus-visible, .workbench-react [tabindex]:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: -2px; }
 .workbench-react strong, .workbench-react b { font-weight: 650; }
 .workbench-react code, .workbench-react time { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
@@ -270,6 +270,9 @@
 .workbench-react__operations h3 { margin: 0; font-size: 12px; }
 .workbench-react__operations p, .workbench-react__export p { margin: 0; color: var(--wb-muted); }
 .workbench-react__operations section > div, .workbench-react__export > label { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.workbench-react__resource-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.workbench-react__resource-link { border: 1px solid var(--wb-border-strong); background: var(--wb-raised); color: var(--wb-text); padding: 3px 7px; text-decoration: none; }
+.workbench-react__resource-link:hover { border-color: var(--wb-accent); color: var(--wb-accent); }
 .workbench-react__confirmation { display: grid; gap: 7px; border-left: 3px solid var(--wb-warning); background: var(--wb-warning-soft); color: var(--wb-text); padding: 8px; }
 .workbench-react__confirmation > div { display: flex; flex-wrap: wrap; gap: 6px; }
 .workbench-react__export fieldset { min-width: 0; }

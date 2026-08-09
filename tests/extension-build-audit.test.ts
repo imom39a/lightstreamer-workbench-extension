@@ -57,6 +57,17 @@ describe("release extension build audit", () => {
     expect(result.output).toContain("legacy panel compatibility residue");
     expect(result.output).toContain("new Function");
   });
+
+  it("rejects analytics transport and persistent analytics identifiers", async () => {
+    const dist = await createDist({
+      panelSource: '"useSyncExternalStore";import("../../assets/local-injection-document.js");"https://www.google-analytics.com/mp/collect";"lsew.analytics.client-id.v1"'
+    });
+
+    const result = await runAudit(dist);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("analytics transport or identifier residue");
+  });
 });
 
 async function createDist(options: { panelSource?: string } = {}): Promise<string> {
