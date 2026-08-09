@@ -1,8 +1,33 @@
-name: Deploy GitHub Pages
+name: Build and deploy public site
 
 on:
-  release:
-    types: [published]
+  pull_request:
+    paths:
+      - ".github/workflows/pages.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "PRIVACY.md"
+      - "SECURITY.md"
+      - "site/**"
+      - "scripts/build-site.mjs"
+      - "scripts/check-site.mjs"
+      - "scripts/site-server.mjs"
+      - "playwright.site.config.ts"
+      - "tests/site/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/pages.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "PRIVACY.md"
+      - "SECURITY.md"
+      - "site/**"
+      - "scripts/build-site.mjs"
+      - "scripts/check-site.mjs"
+      - "scripts/site-server.mjs"
+      - "playwright.site.config.ts"
+      - "tests/site/**"
   workflow_dispatch:
 
 permissions:
@@ -10,113 +35,44 @@ permissions:
 
 concurrency:
   group: github-pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  detect-pages-changes:
-    name: Detect Pages changes
-    runs-on: ubuntu-latest
-    outputs:
-      should_deploy: ${{ steps.detect.outputs.should_deploy }}
-      comparison: ${{ steps.detect.outputs.comparison }}
-      skip_reason: ${{ steps.detect.outputs.skip_reason }}
+  build:
+    name: Validate public site
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout release ref
+      - name: Checkout source
         uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
         with:
-          fetch-depth: 0
-          ref: ${{ github.event.release.tag_name || github.ref }}
-
-      - name: Detect docs changes
-        id: detect
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          set -euo pipefail
-
-          git fetch --force --tags
-
-          current_ref="${RELEASE_TAG:-$GITHUB_REF_NAME}"
-          current_sha="$(git rev-parse HEAD)"
-          previous_tag="$(git describe --tags --abbrev=0 "${current_sha}^" 2>/dev/null || true)"
-          should_deploy=false
-          comparison=""
-          changed_files=""
-          skip_reason=""
-
-          if [[ "$current_ref" == v* ]]; then
-            comparison="blocked-v-ref:${current_ref}"
-            skip_reason="GitHub Pages deployments are skipped for v* refs."
-          elif [ ! -d docs ]; then
-            comparison="missing-docs:${current_ref}"
-          elif [ -z "$previous_tag" ]; then
-            comparison="initial:${current_ref}"
-            changed_files="$(git ls-files docs)"
-            if [ -n "$changed_files" ]; then
-              should_deploy=true
-            fi
-          else
-            comparison="${previous_tag}..${current_ref}"
-            changed_files="$(git diff --name-only "$previous_tag" "$current_sha" -- docs)"
-            if [ -n "$changed_files" ]; then
-              should_deploy=true
-            fi
-          fi
-
-          {
-            echo "should_deploy=$should_deploy"
-            echo "comparison=$comparison"
-            echo "skip_reason=$skip_reason"
-            echo "changed_files<<EOF"
-            printf '%s\n' "$changed_files"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "### GitHub Pages deployment"
-            echo ""
-            echo "- Comparison: \`$comparison\`"
-            echo "- Deploy: \`$should_deploy\`"
-            echo ""
-            if [ -n "$skip_reason" ]; then
-              echo "Skipped: $skip_reason"
-            elif [ -n "$changed_files" ]; then
-              echo "Changed Pages files:"
-              echo '```text'
-              printf '%s\n' "$changed_files"
-              echo '```'
-            else
-              echo "No \`docs/**\` changes detected."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install browser for public-site verification
+        run: npx playwright install --with-deps chromium
+      - name: Build and verify the public-only artifact
+        run: npm run test:site
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site-dist
 
   deploy:
-    name: Deploy Pages
-    needs: detect-pages-changes
-    if: needs.detect-pages-changes.outputs.should_deploy == 'true' && startsWith(github.ref_name, 'v') == false
-    runs-on: ubuntu-latest
+    name: Deploy GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
     permissions:
-      contents: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout release ref
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.release.tag_name || github.ref }}
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: docs
-
       - name: Deploy Pages
         id: deployment
         uses: actions/deploy-pages@v4

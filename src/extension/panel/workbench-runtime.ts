@@ -29,14 +29,6 @@ import {
   type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
-import {
-  createDisabledAnalytics,
-  eventCountBucket,
-  type AnalyticsConsent,
-  type AnalyticsLocalInjectionOutcome,
-  type WorkbenchAnalytics,
-  type WorkbenchAnalyticsEvent
-} from "../analytics";
 import { createTopologyProjection } from "./topology-projection";
 import {
   selectedUpdateSnapshot,
@@ -153,13 +145,6 @@ export type WorkbenchRetentionSnapshot = Readonly<{
   warningActive: boolean;
   clearState: "idle" | "confirming" | "clearing" | "error";
   clearError?: string;
-}>;
-
-export type WorkbenchAnalyticsSnapshot = Readonly<{
-  available: boolean;
-  consent: AnalyticsConsent;
-  pending: boolean;
-  error?: string;
 }>;
 
 export type WorkbenchExportSnapshot = Readonly<{
@@ -366,7 +351,6 @@ export type WorkbenchSnapshot = Readonly<{
   diagnostics: readonly WorkbenchDiagnostic[];
   storage: WorkbenchStorageSnapshot;
   retention: WorkbenchRetentionSnapshot;
-  analytics: WorkbenchAnalyticsSnapshot;
   export: WorkbenchExportSnapshot;
   evidenceCopy: WorkbenchEvidenceCopySnapshot;
   localInjection: WorkbenchLocalInjectionSnapshot;
@@ -385,7 +369,6 @@ export type WorkbenchCommand =
   | { type: "request-clear-history" }
   | { type: "cancel-clear-history" }
   | { type: "confirm-clear-history" }
-  | { type: "set-analytics-consent"; consent: Exclude<AnalyticsConsent, "unknown"> }
   | { type: "set-export-redactions"; redactions: readonly TopologySensitiveCategory[] }
   | { type: "set-export-complete-evidence"; complete: boolean }
   | { type: "set-filters"; filters: EventFilterState }
@@ -459,7 +442,6 @@ export type WorkbenchRuntimeOptions = {
   captureStatus?: CaptureStatus;
   capture?: Partial<WorkbenchCaptureSnapshot>;
   storage?: WorkbenchStorageSnapshot;
-  analytics?: WorkbenchAnalytics;
   normalizer?: EventNormalizer;
   windowSize?: number;
   scheduler?: WorkbenchRuntimeScheduler;
@@ -515,7 +497,6 @@ class Runtime implements WorkbenchRuntime {
   private readonly retainedLocalEvidenceIds = new Set<string>();
   private readonly topologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
-  private readonly analytics: WorkbenchAnalytics;
   private readonly unsubscribeHistory: () => void;
   private visible: boolean;
   private theme: "auto" | "dark" | "light";
@@ -561,14 +542,6 @@ class Runtime implements WorkbenchRuntime {
   private clearState: WorkbenchRetentionSnapshot["clearState"] = "idle";
   private clearError: string | null = null;
   private clearedSelectionEventId: string | null = null;
-  private analyticsConsent: AnalyticsConsent;
-  private analyticsPending = false;
-  private analyticsError: string | null = null;
-  private analyticsDetected = false;
-  private analyticsSearchUsed = false;
-  private analyticsLocalInjectionUsed = false;
-  private analyticsCapturedEventCount = 0;
-  private analyticsSummarySent = false;
   private exportRedactions = new Set<TopologySensitiveCategory>();
   private exportCompleteEvidence = false;
   private evidenceCopy: WorkbenchEvidenceCopySnapshot = Object.freeze({
@@ -615,8 +588,6 @@ class Runtime implements WorkbenchRuntime {
     this.normalizer = options.normalizer ?? createEventNormalizer();
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
     this.storage = options.storage ?? { mode: "indexeddb" };
-    this.analytics = options.analytics ?? createDisabledAnalytics();
-    this.analyticsConsent = this.analytics.getConsent();
     this.snapshot = this.createSnapshot();
 
     this.refreshEvidence("initial");
@@ -624,7 +595,6 @@ class Runtime implements WorkbenchRuntime {
       this.handleHistoryChange(change, stats)
     );
     this.hydrateProjections();
-    this.trackAnalytics({ name: "panel_view" });
   }
 
   readonly getSnapshot = (): WorkbenchSnapshot => {
@@ -693,9 +663,6 @@ class Runtime implements WorkbenchRuntime {
       case "confirm-clear-history":
         this.clearHistory();
         return;
-      case "set-analytics-consent":
-        this.setAnalyticsConsent(command.consent);
-        return;
       case "set-export-redactions":
         this.exportRedactions = new Set(
           command.redactions.filter((category) =>
@@ -713,7 +680,6 @@ class Runtime implements WorkbenchRuntime {
       case "set-filters":
         this.invalidateEvidenceCopy();
         this.filters = { ...command.filters };
-        this.recordAnalyticsSearch(command.filters.query ?? "");
         this.refreshEvidence("filter");
         return;
       case "clear-filters":
@@ -745,7 +711,6 @@ class Runtime implements WorkbenchRuntime {
       }
       case "set-find":
         this.find = command.value;
-        this.recordAnalyticsSearch(command.value);
         this.refreshFindResults(false);
         return;
       case "find-next":
@@ -970,7 +935,6 @@ class Runtime implements WorkbenchRuntime {
     if (this.disposed) {
       return;
     }
-    this.flushAnalyticsSummary();
     this.disposed = true;
     this.cancelPassivePublication();
     this.unsubscribeHistory();
@@ -1161,69 +1125,6 @@ class Runtime implements WorkbenchRuntime {
     );
   }
 
-  private setAnalyticsConsent(consent: Exclude<AnalyticsConsent, "unknown">): void {
-    if (this.analyticsPending) return;
-    if (!this.analytics.available) {
-      this.analyticsError = "Usage analytics is unavailable in this build. Nothing was sent.";
-      this.publish();
-      return;
-    }
-    this.analyticsPending = true;
-    this.analyticsError = null;
-    this.publish();
-    void this.analytics
-      .setConsent(consent)
-      .then((updated) => {
-        if (this.disposed) return;
-        if (!updated) {
-          this.analyticsError = "Usage analytics is unavailable in this build. Nothing was sent.";
-          return;
-        }
-        this.analyticsConsent = consent;
-        this.analyticsDetected = false;
-        this.analyticsSearchUsed = false;
-        this.analyticsLocalInjectionUsed = false;
-        this.analyticsCapturedEventCount = 0;
-        this.analyticsSummarySent = false;
-        if (consent === "granted") {
-          this.trackAnalytics({ name: "analytics_enabled" });
-          if (this.visible) this.trackAnalytics({ name: "panel_view" });
-        }
-      })
-      .catch(() => {
-        if (!this.disposed) {
-          this.analyticsError = "Usage analytics could not be updated. Nothing was sent.";
-        }
-      })
-      .finally(() => {
-        if (this.disposed) return;
-        this.analyticsPending = false;
-        this.publish();
-      });
-  }
-
-  private recordAnalyticsSearch(value: string): void {
-    if (value.trim() === "" || this.analyticsSearchUsed) return;
-    this.analyticsSearchUsed = true;
-    this.trackAnalytics({ name: "search_used" });
-  }
-
-  private trackAnalytics(event: WorkbenchAnalyticsEvent): void {
-    if (!this.analytics.available || this.analyticsConsent !== "granted") return;
-    void this.analytics.track(event).catch(() => undefined);
-  }
-
-  private flushAnalyticsSummary(): void {
-    if (this.analyticsSummarySent || this.analyticsConsent !== "granted") return;
-    this.analyticsSummarySent = true;
-    this.trackAnalytics({
-      name: "session_summary",
-      eventCountBucket: eventCountBucket(this.analyticsCapturedEventCount),
-      searchUsed: this.analyticsSearchUsed,
-      localInjectionUsed: this.analyticsLocalInjectionUsed
-    });
-  }
-
   private prepareExport(): void {
     const topology = this.topologyProjection.snapshot();
     const scopedTopology = topologyStateForScope(topology, this.scopeId);
@@ -1255,7 +1156,6 @@ class Runtime implements WorkbenchRuntime {
     }
 
     this.hiddenDirty = false;
-    this.trackAnalytics({ name: "panel_view" });
     this.refreshEvidence("visibility");
   }
 
@@ -1272,11 +1172,6 @@ class Runtime implements WorkbenchRuntime {
       this.topologyProjection.clear();
     } else {
       const events = change.type === "append" ? [change.event] : change.events;
-      this.analyticsCapturedEventCount += events.length;
-      if (!this.analyticsDetected && events.length > 0) {
-        this.analyticsDetected = true;
-        this.trackAnalytics({ name: "lightstreamer_detected" });
-      }
       for (const event of events) {
         this.commandStateProjections.apply(event);
         if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
@@ -1539,14 +1434,12 @@ class Runtime implements WorkbenchRuntime {
     const currentFingerprint = this.localInjectionFingerprint(draft);
     if (!localInjectionReady(draft)) {
       const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
-      this.recordAnalyticsLocalInjectionAttempt(draft);
       draft.executionId = executionId;
       draft.phase = "outcome";
       draft.outcome = blockedLocalInjectionOutcome(
         executionId,
         draft.targetDiagnostics[0]?.message ?? "The protected Local Injection target changed after Review."
       );
-      this.recordAnalyticsLocalInjectionResult(draft, draft.outcome);
       this.publish();
       return;
     }
@@ -1557,7 +1450,6 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
 
-    this.recordAnalyticsLocalInjectionAttempt(draft);
     const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
     const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, draft.document);
     const request: LocalInjectionExecutionRequest = Object.freeze({
@@ -1656,31 +1548,7 @@ class Runtime implements WorkbenchRuntime {
     if (!draft || draft.phase !== "pending" || draft.executionId !== executionId || draft.outcome) return;
     draft.outcome = Object.freeze(outcome);
     draft.phase = "outcome";
-    this.recordAnalyticsLocalInjectionResult(draft, outcome);
     this.publish();
-  }
-
-  private recordAnalyticsLocalInjectionAttempt(draft: LocalInjectionDraftState): void {
-    this.analyticsLocalInjectionUsed = true;
-    this.trackAnalytics({
-      name: "local_injection_attempt",
-      surface: draft.anchor.sourceKind === "authored" ? "command_scope" : "selected_evidence",
-      target: draft.anchor.executionTarget === "captured-wire" ? "wire" : "listener",
-      edited: draft.sourceRawText === null || draft.rawText !== draft.sourceRawText
-    });
-  }
-
-  private recordAnalyticsLocalInjectionResult(
-    draft: LocalInjectionDraftState,
-    outcome: WorkbenchLocalInjectionOutcome
-  ): void {
-    this.trackAnalytics({
-      name: "local_injection_result",
-      surface: draft.anchor.sourceKind === "authored" ? "command_scope" : "selected_evidence",
-      target: draft.anchor.executionTarget === "captured-wire" ? "wire" : "listener",
-      edited: draft.sourceRawText === null || draft.rawText !== draft.sourceRawText,
-      outcome: analyticsLocalInjectionOutcome(outcome)
-    });
   }
 
   private refreshLocalInjectionValidation(draft: LocalInjectionDraftState): void {
@@ -2047,12 +1915,6 @@ class Runtime implements WorkbenchRuntime {
       diagnostics: this.diagnosticSnapshot(scope),
       storage: Object.freeze({ ...this.storage }),
       retention: this.retentionSnapshot(),
-      analytics: Object.freeze({
-        available: this.analytics.available,
-        consent: this.analyticsConsent,
-        pending: this.analyticsPending,
-        ...(this.analyticsError ? { error: this.analyticsError } : {})
-      }),
       export: this.exportSnapshot(),
       evidenceCopy: this.evidenceCopy,
       localInjection: this.localInjectionSnapshot(),
@@ -2495,15 +2357,6 @@ class Runtime implements WorkbenchRuntime {
         affected: "Current panel session",
         detail: this.clearError,
         recovery: "Try clearing history again"
-      });
-    }
-    if (this.analyticsError) {
-      diagnostics.push({
-        severity: "Warning",
-        title: "Analytics preference unchanged",
-        affected: "Usage analytics preference",
-        detail: this.analyticsError,
-        recovery: "Review the analytics preference and try again"
       });
     }
     return Object.freeze(diagnostics.map((diagnostic) => Object.freeze(diagnostic)));
@@ -3042,27 +2895,6 @@ function localInjectionOutcomeFromResult(
     detail: result.error ?? "The local delivery target rejected the update.",
     ...counts
   });
-}
-
-function analyticsLocalInjectionOutcome(
-  outcome: WorkbenchLocalInjectionOutcome
-): AnalyticsLocalInjectionOutcome {
-  if (outcome.disposition === "partial") return "partial";
-  if (outcome.disposition === "acknowledgement-unknown") return "acknowledgement_unknown";
-  switch (outcome.status) {
-    case "success":
-      return "success";
-    case "stale-target":
-      return "stale_target";
-    case "listener-error":
-      return "listener_error";
-    case "wire-error":
-      return "wire_error";
-    case "bridge-error":
-      return "bridge_error";
-    case "acknowledgement-unknown":
-      return "acknowledgement_unknown";
-  }
 }
 
 function localInjectionResultConfirmsDelivery(

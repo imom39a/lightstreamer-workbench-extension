@@ -1,6 +1,6 @@
 {
   "name": "lightstreamer-workbench",
-  "version": "0.1.5",
+  "version": "2.0.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -9,6 +9,10 @@
   },
   "scripts": {
     "build": "node scripts/build-extension.mjs",
+    "site:build": "node scripts/build-site.mjs",
+    "site:check": "npm run site:build && node scripts/check-site.mjs",
+    "site:serve": "node scripts/site-server.mjs",
+    "test:site": "npm run site:check && playwright test --config playwright.site.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "benchmark:panel": "vitest bench --run",
@@ -61,6 +65,7 @@
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^27.2.0",
     "lightstreamer-client-web": "^9.2.3",
+    "marked": "^16.4.2",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "vitest": "^4.0.14",

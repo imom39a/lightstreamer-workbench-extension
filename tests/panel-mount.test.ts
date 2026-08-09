@@ -15,7 +15,6 @@ import {
   createInMemoryEventHistory,
   type EventHistory
 } from "../src/core/event-history";
-import { type WorkbenchAnalytics } from "../src/extension/analytics";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import {
   THEME_STORAGE_KEY,
@@ -89,8 +88,11 @@ describe("production panel mount wiring", () => {
     document.documentElement.removeAttribute("data-theme");
     const themeValues = new Map<string, string>();
     vi.stubGlobal("localStorage", {
+      get length() { return themeValues.size; },
+      key: vi.fn((index: number) => Array.from(themeValues.keys())[index] ?? null),
       getItem: vi.fn((key: string) => themeValues.get(key) ?? null),
-      setItem: vi.fn((key: string, value: string) => themeValues.set(key, value))
+      setItem: vi.fn((key: string, value: string) => themeValues.set(key, value)),
+      removeItem: vi.fn((key: string) => themeValues.delete(key))
     });
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       callback(performance.now());
@@ -331,55 +333,56 @@ describe("production panel mount wiring", () => {
     expect(closeHistory).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the production analytics boundary for consent without affecting investigation", async () => {
+  it("removes legacy telemetry state while keeping first-party resources available", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
-    const analytics: WorkbenchAnalytics = {
-      available: true,
-      getConsent: vi.fn((): "unknown" => "unknown"),
-      setConsent: vi.fn(async () => true),
-      track: vi.fn(async () => undefined)
-    };
+    localStorage.setItem("lsew.analytics.consent.v1", "granted");
+    localStorage.setItem("lsew.analytics.client-id.v1", "legacy-client");
+    localStorage.setItem(THEME_STORAGE_KEY, "dark");
     (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: { inspectedWindow: { tabId: 61 } }
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
       createIndexedDbHistory: async () => history,
-      createInMemoryHistory: createInMemoryEventHistory,
-      createAnalytics: () => analytics
+      createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
 
+    expect(localStorage.getItem("lsew.analytics.consent.v1")).toBeNull();
+    expect(localStorage.getItem("lsew.analytics.client-id.v1")).toBeNull();
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
     await clickButton(root, "More actions");
-    expect(root.textContent).toContain("Usage analytics is off until you choose to enable it.");
-
-    await clickButton(root, "Enable analytics");
-    expect(analytics.setConsent).toHaveBeenCalledWith("granted");
-    expect(root.textContent).toContain("Anonymous usage analytics is enabled.");
+    expect(root.textContent).toContain("Help & resources");
+    expect(root.querySelector<HTMLAnchorElement>('.workbench-react__resource-link[href="https://imom39a.github.io/lightstreamer-workbench-extension/docs/"]')).not.toBeNull();
+    expect(root.textContent).not.toContain("Usage analytics");
 
     dispose();
   });
 
-  it("keeps the panel usable when analytics construction fails", async () => {
+  it("keeps the panel usable when legacy storage cleanup is unavailable", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
+    vi.stubGlobal("localStorage", {
+      get length() { throw new Error("storage unavailable"); },
+      key: vi.fn(() => null),
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn()
+    });
     (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: { inspectedWindow: { tabId: 62 } }
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
       createIndexedDbHistory: async () => history,
-      createInMemoryHistory: createInMemoryEventHistory,
-      createAnalytics() {
-        throw new Error("analytics configuration unavailable");
-      }
+      createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
 
     expect(root.textContent).toContain("Ordered Evidence");
     await clickButton(root, "More actions");
-    expect(root.textContent).toContain("Usage analytics is unavailable in this build. Nothing is sent.");
+    expect(root.textContent).toContain("Help & resources");
 
     dispose();
   });

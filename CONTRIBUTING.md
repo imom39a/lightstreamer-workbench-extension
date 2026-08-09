@@ -5,7 +5,7 @@ Thank you for helping improve Lightstreamer Workbench. This project is a Chrome 
 ## Ground Rules
 
 - Keep the core model Lightstreamer-native. Do not add app-specific business objects to core capture, normalization, or COMMAND state modules.
-- Preserve the captured-data privacy boundary. Inspected URLs, Lightstreamer addresses, captured values/identifiers, search text, Injection Drafts, and raw errors must stay local. Changes to the opt-in analytics allowlist, remote logging, account sign-in, or any other off-device upload require an explicit design discussion.
+- Preserve the captured-data privacy boundary. Inspected URLs, Lightstreamer addresses, captured values/identifiers, search text, Injection Drafts, and raw errors must stay local. Product analytics, remote logging, account sign-in, or any other off-device upload require an explicit design decision, policy update, and maintainer approval before implementation.
 - Treat Local Injection as local delivery through a captured listener or captured WebSocket. Do not imply that either path injects data into the real Lightstreamer Server stream.
 - Respect the official distribution boundary. Source forks are allowed under the project license, but the official Chrome Web Store item is published by maintainers only.
 - Prefer focused pull requests with clear user impact and test coverage.
@@ -77,8 +77,6 @@ Package for local Chrome loading:
 ```bash
 npm run release:package
 ```
-
-Analytics is disabled when the two build variables are absent. To exercise the consent UI and transport locally, copy `.env.analytics.example` to an ignored `.env.local` and use a dedicated GA4 web stream and Measurement Protocol secret. Never use a secret shared with another product. Measurement Protocol secrets are embedded in built client code, so they must be treated as dedicated, revocable anti-spam credentials rather than confidential server credentials.
 
 Then load the extension:
 
@@ -206,7 +204,7 @@ Reviewers should look for:
 - Correctness of Lightstreamer semantics, especially COMMAND ADD/UPDATE/DELETE and snapshot handling.
 - Extension-context boundaries across injected script, content script, background service worker, and DevTools panel.
 - Privacy regressions, expanded permissions, remote calls, or persistence changes.
-- Analytics changes that bypass consent, expand the typed coarse-event allowlist, retain an identifier after opt-out, or expose captured/search/error data.
+- Analytics, tracking, remote logging, or other off-device data paths introduced without an explicit approved design and matching policy/store disclosures.
 - Clear synthetic event labeling and local-only behavior.
 - Tests that cover the changed behavior at the right layer.
 

@@ -28,11 +28,11 @@ SVG sources:
 - `source/small-promo-tile.svg` - editable promo layout reference
 - `source/marquee-promo-tile.svg` - editable promo layout reference
 
-Generated page artwork:
+Generated product/site artwork:
 
 - `../docs/assets/brand-hero-ai.png` - AI-generated original hero artwork
 - `../docs/assets/mascot.png` - AI-generated original transparent mascot cutout
-- `../docs/assets/github-social-preview.png` - 1280x640 GitHub repository social preview image
+- `../site/assets/og.png` - 1280x640 public-site social card
 - `../docs/assets/real-app-gallery.png` - annotated feature walkthrough generated from the current COMMAND-state screenshot
 - `../docs/assets/app-command-projections.png` - web-ready real app screenshot generated from `screenshots/01-command-projections-context.png`
 - `../docs/assets/app-ordered-evidence-context.png` - web-ready real app screenshot generated from `screenshots/02-ordered-evidence-context.png`
@@ -46,7 +46,7 @@ npm run store:assets
 
 The screenshot generator bundles the real panel component, seeds deterministic Lightstreamer COMMAND events, and captures 1280x800 Chrome screenshots. Set `CHROME_PATH` if Chrome is not in a standard location.
 
-Icons are generated from `source/icon.svg` with ImageMagick. Promo tiles and the GitHub repository social preview are raster-composed by `scripts/generate-store-listing-assets.mjs` from `../docs/assets/brand-hero-ai.png`, the generated 128px icon, and crisp text overlays. The same script also derives real-app GitHub Pages images from the current release screenshots, so rerun it after UI changes and before every store release. Keep `docs/assets/` available when regenerating store assets.
+Icons are generated from `source/icon.svg` with ImageMagick. Promo tiles are raster-composed by `scripts/generate-store-listing-assets.mjs` from the maintained brand artwork, generated icon, and crisp text overlays. The same script derives web-ready real-app images from the current release screenshots. The public-site social card is generated separately from the stabilized site design and stored at `site/assets/og.png`. Keep `docs/assets/` available when regenerating store assets because the static site build copies the current product screenshots from there.
 
 For icon-only regeneration:
 

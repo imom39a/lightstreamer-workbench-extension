@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "@playwright/test";
 import { Browser, Cache } from "@puppeteer/browsers";
+import axe from "axe-core";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactRoot = resolve(projectRoot, "test-results/workbench-visual-qa");
@@ -71,7 +72,7 @@ try {
   for (const scenario of scenarios) {
     const reference = await capturePrototype(browser, scenario);
     const current = await captureProduction(browser, scenario);
-    const comparison = await createDiff(browser, reference, current, scenario.viewport);
+    const comparison = await createDiff(browser, reference, current.png, scenario.viewport);
     const paths = {
       reference: join(artifactRoot, "reference", `${scenario.id}.png`),
       current: join(artifactRoot, "current", `${scenario.id}.png`),
@@ -79,12 +80,13 @@ try {
     };
     await Promise.all([
       writeFile(paths.reference, reference),
-      writeFile(paths.current, current),
+      writeFile(paths.current, current.png),
       writeFile(paths.diff, comparison.png)
     ]);
     results.push({
       ...scenario,
       artifacts: Object.fromEntries(Object.entries(paths).map(([key, path]) => [key, relative(projectRoot, path)])),
+      checks: current.checks,
       changedPixels: comparison.changedPixels,
       totalPixels: comparison.totalPixels,
       changedRatio: comparison.changedPixels / comparison.totalPixels
@@ -100,6 +102,26 @@ try {
       reference: "accepted prototypes/workbench-ui-10",
       current: "production Workbench scenario harness using shipped panel root document",
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
+    },
+    review: {
+      classification: "Material UI",
+      changedWorkflow: "Session operations now exposes first-party Documentation, Privacy, and Support links in a subordinate Help & resources section.",
+      acceptanceCriteria: [
+        "Help & resources is visually subordinate to retained-Evidence and destructive session operations.",
+        "Documentation, Privacy, and Support are readable, fully visible, and reachable by keyboard in normal, compact, and shallow geometry.",
+        "Each resource opens the canonical first-party site in a separate tab without replacing the DevTools investigation.",
+        "The changed workflow has no serious or critical axe violations, browser diagnostics, clipping, or horizontal shell overflow."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: "Each Help scenario focuses Clear retained Evidence, advances with Tab to Documentation, verifies its visible 2px focus outline, and keeps Help, Privacy, and Support within the viewport.",
+      baselineIntent: "Replace the retired shallow More-actions baseline with a Help-focused shallow baseline and add normal and compact Help-focused baselines. No unrelated baseline change is intended."
     },
     durationMs: Date.now() - startedAt,
     scenarios: results
@@ -136,6 +158,10 @@ async function capturePrototype(runningBrowser, scenario) {
     const workbench = page.locator(".workbench");
     await workbench.waitFor({ state: "visible" });
     await assertPrototypeSetup(page, workbench, scenario.prototype.setup);
+    if (scenario.production.setup === "more-actions-help") {
+      const body = page.locator(".context-body");
+      await body.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    }
     await page.evaluate(() => document.fonts.ready);
     return await workbench.screenshot({ animations: "disabled", caret: "hide" });
   } finally {
@@ -198,6 +224,11 @@ async function assertPrototypeSetup(page, workbench, setup) {
 async function captureProduction(runningBrowser, scenario) {
   const context = await runningBrowser.newContext({ viewport: scenario.viewport, colorScheme: scenario.theme });
   const page = await context.newPage();
+  const browserDiagnostics = [];
+  page.on("console", (message) => {
+    if (message.type() === "warning" || message.type() === "error") browserDiagnostics.push(`[console:${message.type()}] ${message.text()}`);
+  });
+  page.on("pageerror", (error) => browserDiagnostics.push(`[pageerror] ${error.message}`));
   try {
     const query = new URLSearchParams({ scenario: scenario.production.scenario, theme: scenario.theme });
     await page.goto(`http://127.0.0.1:${panelPort}/?${query}`, { waitUntil: "networkidle" });
@@ -213,7 +244,58 @@ async function captureProduction(runningBrowser, scenario) {
     if (dimensions.width !== dimensions.viewportWidth || dimensions.height !== dimensions.viewportHeight) {
       throw new Error(`Production Workbench must fill its shipped root: ${JSON.stringify(dimensions)}`);
     }
-    return await workbench.screenshot({ animations: "disabled", caret: "hide" });
+    const horizontalOverflow = await workbench.evaluate((element) => ({
+      shell: element.scrollWidth > element.clientWidth,
+      document: document.documentElement.scrollWidth > document.documentElement.clientWidth
+    }));
+    if (horizontalOverflow.shell || horizontalOverflow.document) {
+      throw new Error(`Production Workbench has horizontal overflow: ${JSON.stringify(horizontalOverflow)}`);
+    }
+    let accessibility = null;
+    let helpResources = null;
+    if (scenario.production.setup === "more-actions-help") {
+      await page.addScriptTag({ content: axe.source });
+      const seriousOrCriticalViolations = await page.evaluate(async () => {
+        const result = await window.axe.run(document, { resultTypes: ["violations"] });
+        return result.violations
+          .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
+          .map((violation) => ({ id: violation.id, impact: violation.impact, help: violation.help }));
+      });
+      if (seriousOrCriticalViolations.length) {
+        throw new Error(`Help resources has serious or critical axe violations: ${JSON.stringify(seriousOrCriticalViolations)}`);
+      }
+      accessibility = { seriousOrCriticalViolations };
+      helpResources = await page.getByRole("navigation", { name: "Help and resources" }).evaluate((navigation) => {
+        const inViewport = (element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight;
+        };
+        const links = Array.from(navigation.querySelectorAll("a"));
+        const owner = navigation.closest(".workbench-react__context-body");
+        const focusedStyle = document.activeElement instanceof Element ? getComputedStyle(document.activeElement) : null;
+        return {
+          focusedLink: document.activeElement?.textContent?.trim() ?? null,
+          focusedOutline: focusedStyle ? `${focusedStyle.outlineStyle} ${focusedStyle.outlineWidth}` : null,
+          allLinksInViewport: links.every(inViewport),
+          links: links.map((link) => ({
+            name: link.textContent?.trim() ?? "",
+            href: link.href,
+            target: link.target,
+            rel: link.rel
+          })),
+          scrollOwner: owner instanceof HTMLElement ? {
+            scrollTop: owner.scrollTop,
+            clientHeight: owner.clientHeight,
+            scrollHeight: owner.scrollHeight
+          } : null
+        };
+      });
+    }
+    if (browserDiagnostics.length) throw new Error(`Production Workbench emitted browser diagnostics: ${browserDiagnostics.join("\n")}`);
+    return {
+      png: await workbench.screenshot({ animations: "disabled", caret: "hide" }),
+      checks: { browserDiagnostics, horizontalOverflow, accessibility, helpResources }
+    };
   } finally {
     await context.close();
   }
@@ -273,10 +355,39 @@ async function prepareProductionState(page, setup) {
     await page.locator('[data-find-current="true"]').waitFor();
     return;
   }
-  if (setup === "more-actions") {
-    await page.getByRole("button", { name: "More actions" }).click();
-    await page.getByRole("region", { name: "Session operations" }).waitFor();
+  if (setup === "more-actions-help") {
+    const more = page.getByRole("button", { name: "More actions" });
+    await more.focus();
+    await page.keyboard.press("Enter");
+    const operations = page.getByRole("region", { name: "Session operations" });
+    await operations.waitFor();
     await page.getByRole("button", { name: "Back to prior investigation" }).waitFor();
+    const documentation = operations.getByRole("link", { name: "Documentation" });
+    const clear = operations.getByRole("button", { name: "Clear retained Evidence…" });
+    await clear.scrollIntoViewIfNeeded();
+    await clear.focus();
+    await page.keyboard.press("Tab");
+    if (!await documentation.evaluate((element) => element === document.activeElement)) {
+      throw new Error("Documentation was not the next keyboard target after Clear retained Evidence.");
+    }
+    const visibility = await operations.evaluate((element) => {
+      const inViewport = (target) => {
+        const rect = target.getBoundingClientRect();
+        return rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight;
+      };
+      const heading = Array.from(element.querySelectorAll("h3")).find((candidate) => candidate.textContent?.trim() === "Help & resources");
+      const links = Array.from(element.querySelectorAll("nav[aria-label='Help and resources'] a"));
+      const documentation = links[0];
+      const focusStyle = documentation ? getComputedStyle(documentation) : null;
+      return {
+        heading: Boolean(heading && inViewport(heading)),
+        links: links.length === 3 && links.every(inViewport),
+        focusOutline: focusStyle ? `${focusStyle.outlineStyle} ${focusStyle.outlineWidth}` : null
+      };
+    });
+    if (!visibility.heading || !visibility.links || visibility.focusOutline !== "solid 2px") {
+      throw new Error(`Help resources are not fully visible after keyboard navigation: ${JSON.stringify(visibility)}`);
+    }
     return;
   }
   throw new Error(`Unknown production visual setup: ${setup}`);

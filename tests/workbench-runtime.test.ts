@@ -5,11 +5,6 @@ import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { createInMemoryEventHistory, createIndexedDbEventHistory } from "../src/core/event-history";
 import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
 import { createCaptureMessage } from "../src/bridge/messages";
-import {
-  type AnalyticsConsent,
-  type WorkbenchAnalytics,
-  type WorkbenchAnalyticsEvent
-} from "../src/extension/analytics";
 import { createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
 import { getPanelScenario } from "./support/panel-scenarios";
 
@@ -103,25 +98,6 @@ function topologyEvent(
     },
     listener: { id: "orders-listener", callbacks: ["onItemUpdate"] },
     ...overrides
-  };
-}
-
-function createAnalytics(initialConsent: AnalyticsConsent): WorkbenchAnalytics & {
-  events: WorkbenchAnalyticsEvent[];
-} {
-  let consent = initialConsent;
-  const events: WorkbenchAnalyticsEvent[] = [];
-  return {
-    available: true,
-    events,
-    getConsent: () => consent,
-    setConsent: vi.fn(async (next) => {
-      consent = next;
-      return true;
-    }),
-    track: vi.fn(async (tracked) => {
-      events.push(tracked);
-    })
   };
 }
 
@@ -1528,65 +1504,6 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().diagnostics).toContainEqual(
       expect.objectContaining({ title: "Selected Evidence cleared" })
     );
-    runtime.dispose();
-  });
-
-  it("owns analytics consent and preserves coarse allowlisted event meanings", async () => {
-    const analytics = createAnalytics("unknown");
-    const runtime = createWorkbenchRuntime({ analytics });
-    expect(runtime.getSnapshot().analytics).toMatchObject({
-      available: true,
-      consent: "unknown",
-      pending: false
-    });
-
-    runtime.dispatch({ type: "set-analytics-consent", consent: "granted" });
-    await flushStoreNotifications();
-    runtime.dispatch({ type: "set-find", value: "customer-secret" });
-    runtime.dispatch({
-      type: "ingest-capture-message",
-      message: createCaptureMessage("item-update", {
-        item: { name: "private-item" },
-        update: { fields: { private: "secret" } }
-      })
-    });
-    await flushStoreNotifications();
-    runtime.dispose();
-
-    expect(analytics.events.map(({ name }) => name)).toEqual([
-      "analytics_enabled",
-      "panel_view",
-      "search_used",
-      "lightstreamer_detected",
-      "session_summary"
-    ]);
-    expect(JSON.stringify(analytics.events)).not.toContain("customer-secret");
-    expect(JSON.stringify(analytics.events)).not.toContain("private-item");
-    expect(JSON.stringify(analytics.events)).not.toMatch(/replay/i);
-  });
-
-  it("isolates analytics transport and consent failures from investigation state", async () => {
-    const analytics: WorkbenchAnalytics = {
-      available: true,
-      getConsent: () => "unknown",
-      setConsent: vi.fn(async () => {
-        throw new Error("preference transport unavailable");
-      }),
-      track: vi.fn(async () => {
-        throw new Error("collection transport unavailable");
-      })
-    };
-    const runtime = createWorkbenchRuntime({ analytics });
-
-    runtime.dispatch({ type: "set-analytics-consent", consent: "granted" });
-    await flushStoreNotifications();
-
-    expect(runtime.getSnapshot().analytics).toMatchObject({
-      consent: "unknown",
-      pending: false,
-      error: "Usage analytics could not be updated. Nothing was sent."
-    });
-    expect(runtime.getSnapshot().evidence.events).toEqual([]);
     runtime.dispose();
   });
 

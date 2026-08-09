@@ -460,6 +460,19 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   await expect(operations).toContainText("4,000 retained");
   await expect(operations).toContainText("4,000 captured");
   await expect(operations).toContainText("60 currently shown");
+  await expect(operations).not.toContainText("Usage analytics");
+  await expect(operations.getByRole("link", { name: "Documentation" })).toHaveAttribute(
+    "href",
+    "https://imom39a.github.io/lightstreamer-workbench-extension/docs/"
+  );
+  await expect(operations.getByRole("link", { name: "Privacy" })).toHaveAttribute(
+    "href",
+    "https://imom39a.github.io/lightstreamer-workbench-extension/privacy/"
+  );
+  await expect(operations.getByRole("link", { name: "Support" })).toHaveAttribute(
+    "href",
+    "https://imom39a.github.io/lightstreamer-workbench-extension/support/"
+  );
   const clear = operations.getByRole("button", { name: "Clear retained Evidence…" });
   await expect(clear).toBeVisible();
   await clear.click();
@@ -499,6 +512,20 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
     await page.keyboard.press("Enter");
     const back = page.getByRole("button", { name: "Back to prior investigation" });
     await expect(back).toBeVisible();
+    const documentation = page.getByRole("link", { name: "Documentation" });
+    const clearRetained = page.getByRole("button", { name: "Clear retained Evidence…" });
+    await clearRetained.scrollIntoViewIfNeeded();
+    await clearRetained.focus();
+    await page.keyboard.press("Tab");
+    await expect(documentation).toBeFocused();
+    await expect(documentation).toBeInViewport();
+    await expect(page.getByRole("heading", { name: "Help & resources" })).toBeInViewport();
+    await expect(page.getByRole("link", { name: "Privacy" })).toBeInViewport();
+    await expect(page.getByRole("link", { name: "Support" })).toBeInViewport();
+    await expect.poll(() => documentation.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return `${style.outlineStyle} ${style.outlineWidth}`;
+    })).toBe("solid 2px");
     if (viewport.width === 563) {
       const compactTheme = page.getByLabel("Panel theme");
       await expect(compactTheme).toBeVisible();

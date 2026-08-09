@@ -19,7 +19,7 @@ The architecture is event-driven and split across Chrome extension execution con
 - [Local Injection Delivery Architecture](#local-injection-delivery-architecture)
 - [Panel UI Architecture](#panel-ui-architecture)
 - [Panel Presentation Seams](#panel-presentation-seams)
-- [Optional Usage Analytics](#optional-usage-analytics)
+- [Remote Data Boundary](#remote-data-boundary)
 - [Lightstreamer Fixture](#lightstreamer-fixture)
 - [Testing Architecture](#testing-architecture)
 - [Extension Points](#extension-points)
@@ -33,7 +33,7 @@ The project is designed around these concrete implementation goals:
 - Run entirely inside a Chrome DevTools extension for the inspected tab.
 - Install instrumentation at `document_start` so clients, subscriptions, and listeners can be wrapped before application code uses them.
 - Preserve application behavior while observing constructor calls, lifecycle methods, listener callbacks, and selected wire-level fallback frames.
-- Keep capture data local to the browser extension session; optional analytics may receive only a separate typed coarse-event allowlist after explicit consent.
+- Keep Capture and product-usage data local to the browser extension session; version 2 has no analytics, tracking, or remote error transport.
 - Support backend-free Local Injection through captured listener callbacks and local TLCP delivery on captured page WebSockets.
 - Mark successful Local Injected Updates in the normalized event stream and UI.
 
@@ -47,7 +47,7 @@ The extension runs in four active JavaScript contexts plus optional test fixture
 | Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` Capture events to the extension runtime and retain the internal compatibility relay for Local Injection delivery. |
 | Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by tab and route Capture messages from content scripts to the right panel; retain compatibility routing for Local Injection when direct inspected-page evaluation is unavailable. |
 | DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Workbench` DevTools panel. |
-| DevTools panel UI | `src/extension/panel/panel.tsx`, `src/extension/panel/workbench-runtime.ts`, `src/extension/panel/react/`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Mount the React Scoped Evidence Workspace, own session history and investigation state, expose exactly one Local Injection Draft, call the local-delivery bridge, and gate optional coarse analytics behind in-product consent. |
+| DevTools panel UI | `src/extension/panel/panel.tsx`, `src/extension/panel/workbench-runtime.ts`, `src/extension/panel/react/`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Mount the React Scoped Evidence Workspace, own session history and investigation state, expose exactly one Local Injection Draft, call the local-delivery bridge, clear retired 0.1.x telemetry state, and expose first-party Help links. |
 
 ```mermaid
 flowchart LR
@@ -94,6 +94,7 @@ flowchart LR
 |-- fixtures/
 |   `-- lightstreamer/
 |-- scripts/
+|-- site/
 |-- docs/
 |-- store-listing/
 |-- release/
@@ -108,8 +109,7 @@ flowchart LR
 | `src/injected/` | Code that must run in the inspected page `MAIN` world so it can patch page-owned Lightstreamer constructors and listener objects. |
 | `src/content/` | Isolated content-script bridge between `window.postMessage` in the page and Chrome extension messaging APIs. |
 | `src/extension/` | Extension runtime code: MV3 service worker and DevTools panel registration. |
-| `src/extension/analytics.ts` | Consent persistence, strict coarse-event serialization, and direct CORS-safe GA4 Measurement Protocol transport. It has no capture-envelope input. |
-| `src/extension/panel/` | React panel mount, framework-independent `WorkbenchRuntime`, Scoped Evidence Workspace presentation, bridge client, HTML entry, theme, analytics boundary, and export presentation. |
+| `src/extension/panel/` | React panel mount, framework-independent `WorkbenchRuntime`, Scoped Evidence Workspace presentation, bridge client, HTML entry, theme, legacy-storage cleanup, first-party resources, and export presentation. |
 | `src/core/` | Runtime-independent domain logic: event envelopes, normalization, filtering, storage, COMMAND state reduction, Injection Drafts, synthetic events, and Lightstreamer-like structural types. |
 | `src/core/indexeddb/` | IndexedDB schema/open/delete helpers for event storage. |
 | `tests/` | Vitest unit and jsdom integration tests for bridge, instrumentation, core reducers, `WorkbenchRuntime`, React presentation, storage, and Local Injection, plus browser and official-client proofs. |
@@ -117,7 +117,8 @@ flowchart LR
 | `scripts/` | Build, extension packaging, Chrome Web Store, store asset, and Lightstreamer fixture helper scripts. |
 | `public/` | Static extension manifest, DevTools loader HTML, and icons copied into `dist/`. |
 | `dist/` | Generated extension output loaded by Chrome as an unpacked extension. |
-| `docs/` | GitHub Pages product site assets and project documentation. |
+| `site/` | Source content, styles, and route configuration for the isolated static GitHub Pages artifact. |
+| `docs/` | Project architecture, product contracts, agent instructions, research, and shared generated image assets. It is not deployed as the site root. |
 | `store-listing/` | Chrome Web Store listing copy and media assets. |
 | `release/` | Packaged release artifacts. |
 
@@ -774,9 +775,9 @@ Draft validation remains a core boundary even though the user-facing document is
 
 ## Panel UI Architecture
 
-The production panel is the React **Scoped Evidence Workspace**. `src/extension/panel/bootstrap.ts` mounts one root through `mountWorkbenchPanel()` in `src/extension/panel/panel.tsx`. The mount owns IndexedDB initialization with an in-memory fallback, bridge and visibility wiring, theme and analytics construction, the React root, and idempotent teardown.
+The production panel is the React **Scoped Evidence Workspace**. `src/extension/panel/bootstrap.ts` mounts one root through `mountWorkbenchPanel()` in `src/extension/panel/panel.tsx`. The mount owns IndexedDB initialization with an in-memory fallback, bridge and visibility wiring, theme state, cleanup of retired 0.1.x telemetry records, the React root, and idempotent teardown.
 
-`src/extension/panel/workbench-runtime.ts` is the framework-independent state boundary. React reads its cached immutable snapshots through `useSyncExternalStore` and sends typed `WorkbenchCommand` values through `dispatch()`. Components never subscribe directly to Capture, history, bridge, or analytics services.
+`src/extension/panel/workbench-runtime.ts` is the framework-independent state boundary. React reads its cached immutable snapshots through `useSyncExternalStore` and sends typed `WorkbenchCommand` values through `dispatch()`. Components never subscribe directly to Capture, history, or bridge services.
 
 ### Panel State Ownership
 
@@ -826,8 +827,8 @@ The production seams keep domain/runtime state deeper than React presentation:
 
 | Module | Owns | Boundary |
 | --- | --- | --- |
-| `panel.tsx` | Production mount, storage fallback, bridge/theme/analytics wiring, visibility, React root, and teardown | One `WorkbenchRuntime` and one React root per panel session |
-| `workbench-runtime.ts` | Investigation state, history queries, projections, Draft lifecycle, export state, analytics dispatch, and publication cadence | Cached immutable snapshots plus typed commands |
+| `panel.tsx` | Production mount, storage fallback, bridge/theme wiring, legacy-storage cleanup, visibility, React root, and teardown | One `WorkbenchRuntime` and one React root per panel session |
+| `workbench-runtime.ts` | Investigation state, history queries, projections, Draft lifecycle, export state, and publication cadence | Cached immutable snapshots plus typed commands |
 | `react/workbench-panel.tsx` | Scoped Evidence Workspace geometry, accessible composites, focus/restoration, and semantic controls | Snapshot rendering and command dispatch only |
 | `react/local-injection-document.tsx` | Promoted Draft, Source comparison, Review, and outcome presentation | Runtime-owned Draft semantics and target protection |
 | `react/local-injection-code-editor.tsx` | CodeMirror document state and editor-local interaction | Runtime-owned JSON text and diagnostics |
@@ -838,26 +839,13 @@ The production seams keep domain/runtime state deeper than React presentation:
 
 Developer commands publish synchronously. Passive Capture updates enter history and projections immediately, then `WorkbenchRuntime` publishes at most one cached snapshot per animation frame with a timeout fallback. Publications stop while the panel is hidden and resume with one consolidated snapshot. React keys semantic objects by stable identities; layout effects restore focus, pane sizes, scroll anchors, and the active Draft without allowing passive Capture to move the investigation.
 
-## Optional Usage Analytics
+## Remote Data Boundary
 
-`src/extension/analytics.ts` is a deliberately separate boundary from Capture normalization and storage. Its public `track()` input is a closed TypeScript union of coarse product actions; it never accepts a `CaptureMessage`, `LightstreamerEventEnvelope`, Injection Draft, search string, URL, or raw error.
+Version 2 contains no product analytics, usage tracking, remote error logging, account sign-in, or maintainer-operated backend. No runtime command, snapshot, or React control exposes an off-device product-data path. The compiled-build audit rejects the retired collection endpoint, configuration names, event marker, and persistent identifier keys.
 
-```mermaid
-flowchart LR
-  User["User presses Allow analytics"] --> Consent["Persist granted consent + random installation ID"]
-  Panel["Panel coarse actions"] --> Allowlist["Typed runtime allowlist"]
-  Consent --> Allowlist
-  Allowlist --> MP["Bundled GA4 Measurement Protocol transport"]
-  MP --> GA["Dedicated GA4 property"]
-  Capture["Captured Lightstreamer envelopes"] -. "no analytics API path" .-> Allowlist
-  OptOut["User turns analytics off"] --> Stop["Delete ID + block future requests"]
-```
+`src/extension/panel/legacy-storage.ts` enumerates extension-local storage on panel mount and removes the retired 0.1.x consent and client-identifier records by their scoped suffixes. It does not create or replace an identifier, and failure to access storage cannot prevent the panel from mounting. Theme preference remains unrelated and is preserved.
 
-The transport sends one event per HTTPS request with advertising consent denied, credentials omitted, no referrer, and no retry path. Failures are swallowed so analytics cannot change Capture, storage, rendering, or Local Injection behavior. The random client ID is created only after consent. Session summaries use broad count buckets rather than exact high-volume totals.
-
-The transport uses a simple CORS content type accepted by the GA4 Measurement Protocol endpoint, so analytics adds no Chrome permission. Opt-out persists `denied`, deletes the local client ID, and prevents all later transport calls.
-
-Vite reads the dedicated stream's measurement ID and Measurement Protocol secret from `VITE_LSEW_GA_MEASUREMENT_ID` and `VITE_LSEW_GA_API_SECRET`. If either is absent or invalid, the integration reports itself unavailable and the panel renders no analytics UI or transport. No remote script is loaded.
+Captured Evidence can leave the panel only through an explicit user-created scoped export. The export boundary excludes credentials, supports additional redactions, and creates a local download; it does not upload the document.
 
 ## Lightstreamer Fixture
 
@@ -922,10 +910,10 @@ Coverage is organized by architectural boundary:
 | `tests/command-draft.test.ts` | Context-bound new COMMAND drafts, schema validation, and synthetic event conversion. |
 | `tests/synthetic-event.test.ts` | Synthetic envelope creation from successful reinjection results. |
 | `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, direct reinjection, request-scoped missing-global recovery, version-skew relay fallback, and timeout/error behavior. |
-| `tests/workbench-runtime.test.ts` | Cached snapshot ownership, Scope/Evidence/Context independence, bounded history, projections, storage fallback, export, analytics, passive publication, and disposal. |
+| `tests/workbench-runtime.test.ts` | Cached snapshot ownership, Scope/Evidence/Context independence, bounded history, projections, storage fallback, export, passive publication, and disposal. |
 | `tests/workbench-local-injection-runtime.test.ts` | Both Local Injection entry paths, exactly-one-Draft protection, validation, Review, stale targets, pending locks, truthful outcomes, and COMMAND projection effects. |
 | `tests/react-workbench-panel.test.ts` | React semantic rendering, accessible composites, command dispatch, responsive restoration, and Local Injection presentation. |
-| `tests/react-panel-renderer.test.ts` | Production mount wiring, storage fallback, bridge delivery, visibility, theme, analytics, and teardown. |
+| `tests/panel-mount.test.ts` | Production mount wiring, storage fallback, bridge delivery, visibility, theme, retired telemetry cleanup, first-party resources, and teardown. |
 | `tests/panel-scenarios.test.ts` | Renderer-neutral deterministic Capture and topology scenario fixtures shared by runtime and performance checks. |
 | `tests/ui/workbench.spec.ts` | Browser-level Diagnose, Scope, Evidence, Context, geometry, keyboard, accessibility, export, and single-Draft Local Injection journeys. |
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
@@ -982,7 +970,7 @@ Release packaging uses `scripts/package-extension.mjs`, which by default runs ty
 Follow the accepted deep runtime boundary:
 
 1. Add observable semantic state and typed commands to `WorkbenchRuntime` only when the workflow requires them.
-2. Keep Capture, history, bridge, projection, export, analytics, and Injection Draft semantics framework-independent.
+2. Keep Capture, history, bridge, projection, export, and Injection Draft semantics framework-independent.
 3. Render immutable snapshots in the smallest focused React surface and preserve Scope, Evidence, Context, focus, scroll, and Draft restoration identities.
 4. Keep consequential actions contextual, keyboard reachable, and explicit about target and effect.
 5. Add runtime tests first, then React semantic tests and proportional browser scenarios under the Workbench UI standard.

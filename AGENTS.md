@@ -11,13 +11,13 @@ The tool is generic developer infrastructure, not an application-specific debugg
 ### Constraints
 
 - **Runtime target**: Chrome extension with a DevTools panel - debugging should live next to the inspected page's runtime state.
-- **Lightstreamer target**: Official Lightstreamer Web Client only for v1 - client API instrumentation is more reliable than generic WebSocket inference.
-- **Injection boundary**: v1 supports backend-free Local Injection. Planned Server Injection sends a Client Message through the inspected Lightstreamer client's normal `sendMessage` path in the context of its current Session; it does not directly introduce an inbound update into the server stream.
+- **Lightstreamer target**: Official Lightstreamer Web Client only for v2 - client API instrumentation is more reliable than generic WebSocket inference.
+- **Injection boundary**: v2 supports backend-free Local Injection. Planned Server Injection sends a Client Message through the inspected Lightstreamer client's normal `sendMessage` path in the context of its current Session; it does not directly introduce an inbound update into the server stream.
 - **Capture semantics**: Capture is observational - Workbench never alters or suppresses the application's original Item Update or Client Message. Mutation applies to a separate Injection Draft.
 - **COMMAND state projections**: Observed Server COMMAND State uses captured Server Updates only. Local Effective COMMAND State additionally applies successful Local Injected Updates for the Subscription.
 - **Storage**: Current-DevTools-session history uses ordered IndexedDB batches with an in-memory fallback and is cleared on session teardown. Versioned Topology exports are deliberate user downloads, not persistent application state.
 - **Domain model**: Lightstreamer-native primitives first - app-specific adapters must not constrain the generic core.
-- **Security posture**: Developer-controlled tool for inspected pages - Local Injected Updates must be marked, but v1 does not require an explicit injection-mode safety toggle. Server Updates can be attributed to Workbench only when the application supports attribution metadata.
+- **Security posture**: Developer-controlled tool for inspected pages - Local Injected Updates must be marked, but v2 does not require an explicit injection-mode safety toggle. Server Updates can be attributed to Workbench only when the application supports attribution metadata.
 
 ## Technology Stack
 
@@ -30,7 +30,7 @@ The tool is generic developer infrastructure, not an application-specific debugg
 | Chrome content scripts with MAIN-world injection | Current Chrome platform | Patch page-owned Lightstreamer constructors/listeners before app code uses them | Official content script isolated worlds cannot directly patch page globals unless a MAIN-world script is injected |
 | TypeScript | Current stable at implementation | Strongly typed event envelope, Lightstreamer adapters, state reconstruction | The product depends on precise protocol and object-shape handling |
 | Official Lightstreamer Web Client API instrumentation | Lightstreamer Web Client 9.x docs verified | Capture clients, subscriptions, item updates, client messages, listener callbacks, snapshot status, and COMMAND values | Higher signal than raw WebSocket capture because it exposes subscription semantics directly |
-| In-memory event store | v1 internal module | Current-tab event capture and query | Matches the v1 decision to avoid persistence/export complexity |
+| Session-scoped Event History | v2 internal module | Ordered current-tab Capture and query through temporary IndexedDB batches with an in-memory fallback | Keeps high-volume Evidence local and bounded to the current DevTools session |
 ### Supporting Libraries
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|

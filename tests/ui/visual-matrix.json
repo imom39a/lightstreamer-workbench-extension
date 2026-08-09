@@ -42,11 +42,25 @@
     "production": { "scenario": "frozen-high-volume", "setup": "none" }
   },
   {
-    "id": "shallow-more-actions-dark",
+    "id": "normal-help-resources-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "more-actions" },
+    "production": { "scenario": "live-selected", "setup": "more-actions-help" }
+  },
+  {
+    "id": "compact-help-resources-dark",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "more-actions", "surface": "context" },
+    "production": { "scenario": "live-selected", "setup": "more-actions-help" }
+  },
+  {
+    "id": "shallow-help-resources-dark",
     "viewport": { "width": 900, "height": 320 },
     "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "more-actions" },
-    "production": { "scenario": "live-selected", "setup": "more-actions" }
+    "production": { "scenario": "live-selected", "setup": "more-actions-help" }
   },
   {
     "id": "wide-matching-summary-light",

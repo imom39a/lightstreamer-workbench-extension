@@ -173,7 +173,6 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       warningActive: false,
       clearState: "idle"
     },
-    analytics: { available: false, consent: "unknown", pending: false },
     export: {
       activeScopeId: "page",
       redactions: [],
@@ -776,6 +775,16 @@ describe("React Workbench Diagnose panel", () => {
     await click("Newest");
     await click("More actions");
     await act(async () => runtime.setSnapshot(operationsSnapshot));
+    const resourceLinks = Object.fromEntries(
+      Array.from(document.querySelectorAll<HTMLAnchorElement>(".workbench-react__resource-link"))
+        .map((link) => [link.textContent, link.href])
+    );
+    expect(resourceLinks).toEqual({
+      Documentation: "https://imom39a.github.io/lightstreamer-workbench-extension/docs/",
+      Privacy: "https://imom39a.github.io/lightstreamer-workbench-extension/privacy/",
+      Support: "https://imom39a.github.io/lightstreamer-workbench-extension/support/"
+    });
+    expect(document.body.textContent).not.toContain("Usage analytics");
     await click("Copy complete scoped Evidence");
     expect(runtime.commands).toEqual(expect.arrayContaining([
       { type: "show-oldest-evidence" },
