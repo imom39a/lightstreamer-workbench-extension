@@ -28,7 +28,7 @@ const pages = [
   page("docs/troubleshooting.md", "docs/troubleshooting/index.html", "Troubleshooting", "Resolve missing Capture, limited coverage, retired targets, and storage fallback.", "docs"),
   page("docs/faq.md", "docs/faq/index.html", "Frequently asked questions", "Answers about supported clients, Capture, COMMAND state, Local Injection, and storage.", "docs"),
   page("roadmap.md", "roadmap/index.html", "Roadmap", "Near-term and exploratory opportunities for Lightstreamer Workbench.", "page"),
-  page("releases.md", "releases/index.html", "Release notes", "Lightstreamer Workbench 2.0 preview notes and the 0.1.x release archive.", "page"),
+  page("releases.md", "releases/index.html", "Release notes", "What shipped in the current Lightstreamer Workbench 2.0 release.", "page"),
   page("support.md", "support/index.html", "Support", "Get help, report a bug, request a feature, or ask a question.", "page")
 ];
 
@@ -56,6 +56,7 @@ await Promise.all([
   copy("docs/assets/app-ordered-evidence-context.png", "assets/app-ordered-evidence-context.png"),
   copy("docs/assets/app-command-projections.png", "assets/app-command-projections.png"),
   copy("docs/assets/app-local-injection-editor.png", "assets/app-local-injection-editor.png"),
+  copy("docs/assets/real-app-gallery.png", "assets/real-app-gallery.png"),
   copy("site/assets/og.png", "assets/og.png")
 ]);
 
@@ -153,7 +154,7 @@ function renderDocument(definition, body) {
 }
 
 function renderReleaseBanner() {
-  return `<aside class="release-banner" aria-label="Release status"><strong>Workbench 2.0 is coming.</strong><span>The Chrome Web Store currently serves version 0.1.5.</span><a href="${sitePath("releases/")}">Preview 2.0</a></aside>`;
+  return `<aside class="release-banner" aria-label="Release status"><strong>Workbench 2.0 is available.</strong><span>The unified Scoped Evidence Workspace is live in the Chrome Web Store.</span><a href="${CHROME_WEB_STORE_URL}" target="_blank" rel="noopener noreferrer">Install 2.0</a></aside>`;
 }
 
 function renderHeader(currentOutput) {
@@ -164,7 +165,7 @@ function renderHeader(currentOutput) {
     ["Releases", sitePath("releases/"), currentOutput.startsWith("releases/")],
     ["GitHub", GITHUB_REPOSITORY_URL, false]
   ];
-  return `<header class="site-header"><div class="site-header__inner"><a class="brand" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="38" height="38"><span>Lightstreamer Workbench</span></a><nav aria-label="Primary">${nav.map(([label, href, current]) => `<a href="${href}"${current ? ' aria-current="page"' : ""}${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav><a class="button button--compact" href="${CHROME_WEB_STORE_URL}" target="_blank" rel="noopener noreferrer">Add current version</a></div></header>`;
+  return `<header class="site-header"><div class="site-header__inner"><a class="brand" href="${sitePath()}"><img src="${sitePath("assets/logo.svg")}" alt="" width="38" height="38"><span>Lightstreamer Workbench</span></a><nav aria-label="Primary">${nav.map(([label, href, current]) => `<a href="${href}"${current ? ' aria-current="page"' : ""}${String(href).startsWith("http") ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`).join("")}</nav><a class="button button--compact" href="${CHROME_WEB_STORE_URL}" target="_blank" rel="noopener noreferrer">Add Workbench 2.0</a></div></header>`;
 }
 
 function renderArticleIntro(definition) {

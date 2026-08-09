@@ -1,6 +1,4 @@
-Workbench 2.0 is a Chrome DevTools extension for inspecting applications that use the official Lightstreamer Web Client. These preview guides describe the unified workspace currently being prepared for public release.
-
-> **Preview documentation:** the Chrome Web Store currently serves version 0.1.5. The guides lose their preview label when 2.0.0 becomes publicly installable.
+Workbench 2.0 is a Chrome DevTools extension for inspecting applications that use the official Lightstreamer Web Client. These guides cover the unified Scoped Evidence Workspace available from the Chrome Web Store.
 
 ## Start here
 

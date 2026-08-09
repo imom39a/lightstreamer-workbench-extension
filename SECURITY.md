@@ -6,14 +6,13 @@ Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extensio
 
 ## Supported versions
 
-Security fixes target the current Chrome Web Store release and the current `main` branch. During the 2.0 prelaunch, that means:
+Security fixes target the current Chrome Web Store release and the current `main` branch:
 
 | Version | Status |
 | --- | --- |
-| `2.0.x` | Release candidate; fixes land before public release |
-| `0.1.x` | Current public release |
+| `2.0.x` | Current public release; supported |
 
-After 2.0 reaches the Chrome Web Store, 2.0 becomes the supported public line and 0.1.x receives no routine fixes.
+Older releases receive no routine fixes. Upgrade to the latest Chrome Web Store version before reporting a vulnerability unless the issue specifically concerns the upgrade path.
 
 ## Report a vulnerability
 

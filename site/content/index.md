@@ -4,14 +4,14 @@
     <h1>Debug Lightstreamer where it runs.</h1>
     <p class="lede">Lightstreamer Workbench brings Runtime Scope, chronological Evidence, and precise Context into one continuous workspace—then lets you reproduce COMMAND behavior locally without waiting for the backend.</p>
     <div class="hero__actions">
-      <a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Add current version</a>
-      <a class="button button--secondary" href="{{site}}docs/">Explore the 2.0 preview</a>
+      <a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Add Workbench 2.0</a>
+      <a class="button button--secondary" href="{{site}}docs/">Read the 2.0 docs</a>
     </div>
-    <p class="hero__note"><strong>Version 2.0 is coming soon.</strong> The Store currently serves 0.1.5 while the rebuilt workspace completes release verification.</p>
+    <p class="hero__note"><strong>Version 2.0 is live.</strong> Install the unified Scoped Evidence Workspace from the Chrome Web Store.</p>
   </div>
   <figure class="product-frame product-frame--hero">
     <figcaption><span></span><span></span><span></span><strong>Lightstreamer Workbench</strong></figcaption>
-    <img src="{{site}}assets/app-ordered-evidence-context.png" alt="Lightstreamer Workbench showing Runtime Scope, Ordered Evidence, and selected Evidence Context in one DevTools workspace." width="960" height="600" fetchpriority="high">
+    <img src="{{site}}assets/app-command-projections.png" alt="Lightstreamer Workbench showing Runtime Scope, Ordered Evidence, and selected Evidence Context in one DevTools workspace." width="960" height="600" fetchpriority="high">
   </figure>
 </section>
 
@@ -54,7 +54,7 @@
     <a href="{{site}}docs/command-state/">Read the COMMAND projection guide →</a>
   </div>
   <figure class="product-frame">
-    <img src="{{site}}assets/app-command-projections.png" alt="Workbench Context comparing Observed Server COMMAND State and Local Effective COMMAND State." width="960" height="600" loading="lazy">
+    <img src="{{site}}assets/real-app-gallery.png" alt="Annotated Workbench COMMAND state walkthrough showing active keys, changed fields, and the Local Injection path." width="1400" height="900" loading="lazy">
   </figure>
 </section>
 
@@ -106,5 +106,5 @@
 <section class="final-cta">
   <span class="eyebrow">Ready when the stream is not</span>
   <h2>Bring the next Lightstreamer investigation into DevTools.</h2>
-  <div class="inline-actions"><a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Add current version</a><a class="button button--secondary" href="{{site}}docs/getting-started/">Get started</a></div>
+  <div class="inline-actions"><a class="button" href="{{store}}" target="_blank" rel="noopener noreferrer">Add Workbench 2.0</a><a class="button button--secondary" href="{{site}}docs/getting-started/">Get started</a></div>
 </section>

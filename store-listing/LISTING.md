@@ -70,10 +70,12 @@ This extension is intended for developers and QA engineers who need to understan
 
 ## Screenshot Upload Order
 
+Remove every legacy screenshot that shows the retired three-section interface before uploading this 2.0 set.
+
 1. `screenshots/01-command-projections-context.png`
    - Caption: Context compares Observed Server and Local Effective COMMAND State while Runtime Scope keeps the active Subscription visible.
 2. `screenshots/02-ordered-evidence-context.png`
-   - Caption: Ordered Evidence preserves chronological Capture detail, Find and Filter state, and selected-Evidence Context in one workspace.
+   - Caption: Complete raw Evidence preserves the immutable captured envelope, provenance, and Lightstreamer-native runtime context for detailed inspection.
 3. `screenshots/03-local-injection-editor.png`
    - Caption: One Local Injection Draft provides raw JSON editing, validation, and an immutable Source/Draft comparison before Review.
 

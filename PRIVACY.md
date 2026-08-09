@@ -4,12 +4,11 @@ Lightstreamer Workbench is a Chrome DevTools extension for inspecting Lightstrea
 
 Canonical policy URL: https://imom39a.github.io/lightstreamer-workbench-extension/privacy/
 
-## Version status
+## Current release
 
-The Chrome Web Store currently serves version `0.1.5` while version `2.0.0` completes release verification.
+The Chrome Web Store serves version `2.0.0`, the unified Scoped Evidence Workspace release.
 
-- **Version 2.0 and later:** no product analytics, tracking, advertising, account sign-in, or remote error logging. On startup, 2.0 removes the legacy analytics consent and random installation identifier used by an earlier release.
-- **Version 0.1.5:** may offer the legacy optional product analytics described below. It remains off unless the user explicitly accepts its in-panel disclosure.
+- **Current Chrome Web Store release:** no product analytics, tracking, advertising, account sign-in, or remote error logging. On startup, 2.0 removes retired analytics consent and random installation identifier records left by earlier versions.
 - **Public website:** static HTML and CSS with no analytics, cookies, executable JavaScript, advertising, account sign-in, or remote error logging.
 
 ## Inspected-page data
@@ -33,14 +32,6 @@ The extension also uses local runtime state needed to connect the DevTools panel
 Version 2 does not contact a maintainer-operated service or analytics provider. If the inspected page communicates with Lightstreamer servers or other application services, that traffic belongs to the inspected page, not to Workbench.
 
 Local Injection delivers a deliberate update only through captured listener callbacks or the inspected page's local delivery path. It does not contact the Lightstreamer Server. Planned Server Injection will send a reviewed Client Message through the inspected client's normal `sendMessage` path; it will not directly inject an inbound server update.
-
-## Legacy 0.1.5 analytics disclosure
-
-An official 0.1.5 build may contain optional Google Analytics 4 Measurement Protocol support. It is off until the user accepts the prominent panel disclosure. When enabled, its allowlist is limited to panel use, whether Lightstreamer activity was detected, whether Evidence search or Local Injection was used, Local Injection entry, target, edit, and coarse outcome categories, a broad captured-Evidence count bucket, extension version, session timing, and a random installation identifier.
-
-The legacy path never receives inspected-page or captured Lightstreamer data, search text, Injection content, raw errors, or a Google user ID. Advertising consent is denied, credentials and referrer data are omitted by the request, and the project does not sell the data or use it for advertising. Turning analytics off deletes the random identifier and blocks later analytics requests. This path adds no Chrome permission and, after opt-in only, sends directly to `https://www.google-analytics.com/mp/collect`. Google processes that data under the [Google Privacy Policy](https://policies.google.com/privacy).
-
-Version 2 removes the analytics UI, event code, configuration, network transport, and stored identifier.
 
 ## Permissions
 

@@ -10,7 +10,7 @@ Lightstreamer Workbench is an open-source Chrome DevTools extension for debuggin
 
 ## Project Status
 
-Version `2.0.0` is being prepared as the first public unified-workspace release. The Chrome Web Store currently serves `0.1.5` until the verified 2.0 package completes review and staged rollout. Install the current release from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf), or build 2.0 from source and load the generated `dist/` directory as an unpacked extension.
+Version `2.0.0` is the current public release and the first version of the unified Scoped Evidence Workspace. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf), or build it from source and load the generated `dist/` directory as an unpacked extension.
 
 Version 2 focuses on local, current-session debugging for the inspected tab through one unified Scoped Evidence Workspace. The public [roadmap](https://imom39a.github.io/lightstreamer-workbench-extension/roadmap/) separates near-term opportunities from exploratory work without promising dates.
 
@@ -82,7 +82,7 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 
 Lightstreamer Workbench keeps captured event data in temporary local storage for the current DevTools/tab session; that data is not transmitted off-device by the extension. Lightstreamer-provided client IP addresses are irreversibly masked before they cross the inspected-page capture boundary, so the panel never receives or offers a toggle for the exact address. Retired structural Scope remains readable historical Evidence only.
 
-Version 2 removes the earlier optional analytics UI, event code, configuration, network transport, and random installation identifier. On startup it clears the two legacy 0.1.x preference/identifier records. The public website is static HTML and CSS with no analytics, cookies, or executable JavaScript. The [public privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) distinguishes this behavior from the current 0.1.5 Store build during prelaunch.
+Version 2 contains no product analytics UI, event code, configuration, network transport, or persistent installation identifier. On startup it clears retired preference and identifier records left by earlier versions. The public website is static HTML and CSS with no analytics, cookies, or executable JavaScript. The [public privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) documents the current release behavior.
 
 The extension requests broad page access because it must instrument the inspected page's Lightstreamer Web Client runtime before application code creates clients or subscriptions. Use it only on pages you are authorized to debug, and avoid sharing screenshots or issue logs that contain production secrets, customer data, tokens, or proprietary event payloads.
 

@@ -58,6 +58,7 @@ test("every stable public route is isolated, canonical, and navigable", async ({
     );
     await expect(page.locator("script"), route).toHaveCount(0);
     await expect(page.locator('a[href*="/blob/main/PRIVACY.md"], a[href*="/blob/main/SECURITY.md"], a[href*="/blob/main/README.md"], a[href*="/blob/main/RELEASE.md"]'), route).toHaveCount(0);
+    await expect(page.locator("body"), route).not.toContainText(/coming soon|prelaunch|preview documentation|0\.1\.5/i);
   }
 });
 
@@ -66,11 +67,11 @@ test("desktop home tells the unified 2.0 story without overflow", async ({ page 
   await page.goto("");
 
   await expect(page.getByRole("heading", { name: "Debug Lightstreamer where it runs." })).toBeVisible();
-  await expect(page.getByText("Workbench 2.0 is coming.")).toBeVisible();
+  await expect(page.getByText("Workbench 2.0 is available.")).toBeVisible();
   await expect(page.getByRole("img", { name: /Runtime Scope, Ordered Evidence/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Scope, Evidence, and Context stay together." })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Client Messages and Server Injection" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Explore the 2.0 preview" })).toHaveAttribute(
+  await expect(page.getByRole("link", { name: "Read the 2.0 docs" })).toHaveAttribute(
     "href",
     "/lightstreamer-workbench-extension/docs/"
   );
@@ -84,7 +85,7 @@ test("mobile home and documentation keep navigation and calls to action usable",
   await page.goto("");
 
   await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Add current version" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "Add Workbench 2.0" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Debug Lightstreamer where it runs." })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
@@ -107,7 +108,7 @@ test("customer policy and support routes stay first-party", async ({ page }) => 
 
   await page.goto("privacy/");
   await expect(page.getByRole("heading", { name: "Privacy policy" })).toBeVisible();
-  await expect(page.getByText("Version 2.0 and later:")).toBeVisible();
+  await expect(page.getByText("Current Chrome Web Store release:")).toBeVisible();
   await expect(page.getByText("Public website:")).toBeVisible();
   await expect(page.locator('a[href*="PRIVACY.md"], a[href*="SECURITY.md"]')).toHaveCount(0);
 });
