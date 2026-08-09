@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PROTOTYPE — Event History acceptance state machine</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        color: #172033;
+        background: #f3f5f8;
+        --accent: #3157c8;
+        --accent-soft: #e8edff;
+        --line: #d9dee8;
+        --muted: #5d687b;
+        --danger: #a23737;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      button {
+        font: inherit;
+      }
+      main {
+        width: min(1180px, calc(100% - 32px));
+        margin: 28px auto 48px;
+      }
+      header,
+      section {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+      }
+      header {
+        padding: 24px 28px;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+      h1 {
+        margin-bottom: 8px;
+        font-size: 1.65rem;
+      }
+      h2 {
+        font-size: 1.05rem;
+      }
+      h3 {
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      p {
+        color: var(--muted);
+        line-height: 1.55;
+      }
+      code {
+        background: #eef1f6;
+        padding: 2px 5px;
+        border-radius: 4px;
+      }
+      .flag {
+        color: var(--danger);
+        font-weight: 750;
+        letter-spacing: 0.04em;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+        gap: 18px;
+        margin-top: 18px;
+      }
+      section {
+        padding: 20px;
+      }
+      .state-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .fact {
+        min-height: 74px;
+        padding: 11px 12px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: #fbfcfe;
+      }
+      .fact span {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--muted);
+        font-size: 0.73rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .fact strong {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+      .wide {
+        grid-column: span 2;
+      }
+      .change {
+        margin: 14px 0 0;
+        padding: 12px 14px;
+        border-left: 4px solid var(--accent);
+        background: var(--accent-soft);
+        color: #263b82;
+      }
+      .collections {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .collection {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+      }
+      .collection ul,
+      .log {
+        margin: 0;
+        padding-left: 20px;
+        color: var(--muted);
+      }
+      .collection li,
+      .log li {
+        margin: 5px 0;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      button {
+        border: 1px solid #b9c2d3;
+        border-radius: 8px;
+        padding: 8px 11px;
+        background: #fff;
+        color: #1d2940;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      button:focus-visible {
+        outline: 3px solid #8da5f3;
+        outline-offset: 2px;
+      }
+      button.primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      button.danger {
+        color: var(--danger);
+        border-color: #d8aaaa;
+      }
+      .walkthroughs {
+        margin-top: 18px;
+      }
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
+      .tabs button[aria-selected="true"] {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+        color: #263b82;
+      }
+      .scenario {
+        padding-top: 16px;
+      }
+      .steps {
+        display: grid;
+        gap: 9px;
+      }
+      .step {
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+      }
+      .step-number {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: #edf0f6;
+        font-weight: 750;
+      }
+      .step p {
+        margin: 2px 0 0;
+        font-size: 0.86rem;
+      }
+      .step.done {
+        opacity: 0.58;
+      }
+      .step.current {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px var(--accent-soft);
+      }
+      .step button:disabled {
+        cursor: default;
+        opacity: 0.45;
+      }
+      .log {
+        max-height: 290px;
+        overflow: auto;
+      }
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+        .state-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 560px) {
+        main {
+          width: min(100% - 18px, 1180px);
+          margin-top: 10px;
+        }
+        header,
+        section {
+          border-radius: 10px;
+          padding: 16px;
+        }
+        .state-grid,
+        .collections {
+          grid-template-columns: 1fr;
+        }
+        .wide {
+          grid-column: auto;
+        }
+        .step {
+          grid-template-columns: 28px 1fr;
+        }
+        .step button {
+          grid-column: 2;
+          justify-self: start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="flag">THROWAWAY LOGIC PROTOTYPE</div>
+        <h1>When does a captured event become Evidence?</h1>
+        <p>
+          This demo tests one question: can one Event History state machine own
+          startup fallback, commit acceptance, Clear, failure, overload, and
+          teardown while exposing only domain facts to Workbench? It uses memory
+          only. It does not model IndexedDB mechanics or production UI.
+        </p>
+      </header>
+
+      <div class="layout">
+        <section aria-labelledby="state-title">
+          <h2 id="state-title">Current Event History state</h2>
+          <div id="state" class="state-grid"></div>
+          <p id="change" class="change" aria-live="polite"></p>
+          <div class="collections">
+            <div class="collection">
+              <h3>Captured events awaiting acceptance</h3>
+              <ul id="pending"></ul>
+            </div>
+            <div class="collection">
+              <h3>Post-Clear-cut events</h3>
+              <ul id="after-cut"></ul>
+            </div>
+            <div class="collection">
+              <h3>Retained Evidence</h3>
+              <ul id="evidence"></ul>
+            </div>
+            <div class="collection">
+              <h3>Evidence-derived projections</h3>
+              <ul id="projections"></ul>
+            </div>
+          </div>
+        </section>
+
+        <section aria-labelledby="actions-title">
+          <h2 id="actions-title">Free play</h2>
+          <p>
+            All actions stay available. The state machine rejects actions that
+            are not legal in the current state.
+          </p>
+          <div id="actions" class="actions"></div>
+          <h2 style="margin-top: 24px">History of actions</h2>
+          <ol id="log" class="log"></ol>
+        </section>
+      </div>
+
+      <section class="walkthroughs" aria-labelledby="walkthrough-title">
+        <h2 id="walkthrough-title">Guided edge cases</h2>
+        <div
+          id="tabs"
+          class="tabs"
+          role="tablist"
+          aria-label="Event History scenarios"
+        ></div>
+        <div id="scenario" class="scenario"></div>
+      </section>
+    </main>
+
+    <script>
+      const HistoryModel = (() => {
+        const initial = () => ({
+          phase: "OPENING",
+          adapter: "NOT SELECTED",
+          historyCapacity: "NOT ESTABLISHED",
+          captureOperation: "IDLE",
+          observationCoverage: "USEFUL",
+          historyInterval: 0,
+          nextObservedSequence: 1,
+          nextEvidenceSequence: 1,
+          committedEvidenceBoundary: null,
+          retainedEvidence: [],
+          awaitingAcceptance: [],
+          afterClearCut: [],
+          clear: { state: "IDLE", cutAfterObservedSequence: null, error: null },
+          stopped: null,
+          localInjectionOutcome: "NONE",
+          projections: { topologyEvidence: 0, localCommandEvidence: 0 },
+          lastChange: "The panel is opening Event History.",
+          log: ["Event History started opening."],
+        });
+
+        const withLog = (state, change) => ({
+          ...state,
+          lastChange: change,
+          log: [...state.log, change],
+        });
+
+        const reject = (state, reason) =>
+          withLog(state, `Action rejected: ${reason}`);
+
+        const canObserve = (state) =>
+          state.phase === "RUNNING" || state.phase === "CLEARING";
+
+        const queueCapturedEvent = (state, source) => {
+          if (!canObserve(state))
+            return reject(state, "Capture is not running.");
+          const candidate = {
+            observedSequence: state.nextObservedSequence,
+            source,
+            label:
+              source === "LOCAL"
+                ? "Delivered Local Injection"
+                : "Captured Server activity",
+          };
+          const afterCut = state.phase === "CLEARING";
+          return withLog(
+            {
+              ...state,
+              nextObservedSequence: state.nextObservedSequence + 1,
+              awaitingAcceptance: afterCut
+                ? state.awaitingAcceptance
+                : [...state.awaitingAcceptance, candidate],
+              afterClearCut: afterCut
+                ? [...state.afterClearCut, candidate]
+                : state.afterClearCut,
+              localInjectionOutcome:
+                source === "LOCAL"
+                  ? "DELIVERED LOCALLY"
+                  : state.localInjectionOutcome,
+            },
+            afterCut
+              ? `${candidate.label} occurred after the Clear cut. It waits for the next History Interval.`
+              : `${candidate.label} is awaiting Evidence acceptance.`,
+          );
+        };
+
+        const stopAtBoundary = (state, reason, detail) =>
+          withLog(
+            {
+              ...state,
+              phase: "STOPPED",
+              captureOperation: "STOPPED",
+              observationCoverage: "LIMITED",
+              awaitingAcceptance: [],
+              afterClearCut: [],
+              clear:
+                state.phase === "CLEARING"
+                  ? { ...state.clear, state: "FAILED", error: detail }
+                  : state.clear,
+              stopped: {
+                reason,
+                committedEvidenceBoundary: state.committedEvidenceBoundary,
+                rejectedCapturedCount:
+                  state.awaitingAcceptance.length + state.afterClearCut.length,
+              },
+            },
+            `${detail} Capture stopped at the prior Committed Evidence Boundary.`,
+          );
+
+        const reduce = (state, action) => {
+          switch (action.type) {
+            case "RESET":
+              return initial();
+            case "OPEN_PRIMARY":
+              if (state.phase !== "OPENING")
+                return reject(state, "Event History already opened.");
+              return withLog(
+                {
+                  ...state,
+                  phase: "RUNNING",
+                  adapter: "INDEXEDDB",
+                  historyCapacity: "NORMAL",
+                  captureOperation: "RUNNING",
+                  historyInterval: 1,
+                },
+                "Primary Event History opened. Capture can begin.",
+              );
+            case "OPEN_FALLBACK":
+              if (state.phase !== "OPENING")
+                return reject(state, "Event History already opened.");
+              return withLog(
+                {
+                  ...state,
+                  phase: "RUNNING",
+                  adapter: "MEMORY",
+                  historyCapacity: "LOWER",
+                  captureOperation: "RUNNING",
+                  historyInterval: 1,
+                },
+                "Primary startup failed. Memory Event History opened with lower History Capacity and unchanged Observation Coverage.",
+              );
+            case "OBSERVE_SERVER":
+              return queueCapturedEvent(state, "SERVER");
+            case "DELIVER_LOCAL":
+              return queueCapturedEvent(state, "LOCAL");
+            case "COMMIT": {
+              if (state.phase !== "RUNNING" && state.phase !== "CLEARING") {
+                return reject(
+                  state,
+                  "Event History cannot accept a batch now.",
+                );
+              }
+              if (state.awaitingAcceptance.length === 0) {
+                return reject(
+                  state,
+                  "No captured event is awaiting acceptance before the Clear cut.",
+                );
+              }
+              const accepted = state.awaitingAcceptance.map(
+                (candidate, index) => ({
+                  ...candidate,
+                  evidenceSequence: state.nextEvidenceSequence + index,
+                  historyInterval: state.historyInterval,
+                }),
+              );
+              const localCount = accepted.filter(
+                ({ source }) => source === "LOCAL",
+              ).length;
+              const last = accepted.at(-1);
+              return withLog(
+                {
+                  ...state,
+                  nextEvidenceSequence:
+                    state.nextEvidenceSequence + accepted.length,
+                  committedEvidenceBoundary: last.evidenceSequence,
+                  retainedEvidence: [...state.retainedEvidence, ...accepted],
+                  awaitingAcceptance: [],
+                  projections: {
+                    topologyEvidence:
+                      state.projections.topologyEvidence + accepted.length,
+                    localCommandEvidence:
+                      state.projections.localCommandEvidence + localCount,
+                  },
+                },
+                `${accepted.length} captured event${accepted.length === 1 ? " became" : "s became"} Evidence atomically. Projections advanced from committed Evidence.`,
+              );
+            }
+            case "FAIL_BATCH":
+              if (state.awaitingAcceptance.length === 0)
+                return reject(state, "No batch is awaiting acceptance.");
+              return stopAtBoundary(
+                state,
+                "JOURNAL FAILURE",
+                "The whole pending batch failed. No member became Evidence.",
+              );
+            case "OVERLOAD":
+              if (!canObserve(state))
+                return reject(state, "Capture is not running.");
+              return stopAtBoundary(
+                state,
+                "OVERLOAD",
+                "History Capacity was exceeded. No waiting event became Evidence.",
+              );
+            case "REQUEST_CLEAR":
+              if (state.phase !== "RUNNING")
+                return reject(state, "Clear requires running Event History.");
+              return withLog(
+                {
+                  ...state,
+                  phase: "CLEARING",
+                  clear: {
+                    state: "WAITING FOR PRE-CUT ACCEPTANCE",
+                    cutAfterObservedSequence: state.nextObservedSequence - 1,
+                    error: null,
+                  },
+                },
+                `Clear cut recorded after captured event ${state.nextObservedSequence - 1}. Later captured events wait for the next History Interval.`,
+              );
+            case "COMPLETE_CLEAR":
+              if (state.phase !== "CLEARING")
+                return reject(state, "No Clear is active.");
+              if (state.awaitingAcceptance.length > 0)
+                return reject(
+                  state,
+                  "Pre-cut captured events must settle before Clear completes.",
+                );
+              return withLog(
+                {
+                  ...state,
+                  phase: "RUNNING",
+                  historyInterval: state.historyInterval + 1,
+                  committedEvidenceBoundary: null,
+                  retainedEvidence: [],
+                  awaitingAcceptance: state.afterClearCut,
+                  afterClearCut: [],
+                  projections: { topologyEvidence: 0, localCommandEvidence: 0 },
+                  clear: {
+                    state: "IDLE",
+                    cutAfterObservedSequence: null,
+                    error: null,
+                  },
+                },
+                "Clear completed atomically. Old Evidence and projections were removed. Post-cut captured events now await acceptance in a new History Interval.",
+              );
+            case "FAIL_CLEAR":
+              if (state.phase !== "CLEARING")
+                return reject(state, "No Clear is active.");
+              if (state.awaitingAcceptance.length > 0)
+                return reject(
+                  state,
+                  "This action models Clear failure after pre-cut acceptance settles.",
+                );
+              return withLog(
+                {
+                  ...state,
+                  phase: "RUNNING",
+                  awaitingAcceptance: state.afterClearCut,
+                  afterClearCut: [],
+                  clear: {
+                    state: "FAILED",
+                    cutAfterObservedSequence: null,
+                    error: "Clear could not be confirmed.",
+                  },
+                },
+                "Clear failed atomically. The prior History Interval and Retained Range remain. Capture can continue in that interval.",
+              );
+            case "CLOSE":
+              if (state.phase === "CLOSED")
+                return reject(state, "Panel teardown already completed.");
+              return withLog(
+                {
+                  ...state,
+                  phase: "CLOSED",
+                  adapter: "RELEASED",
+                  captureOperation: "STOPPED",
+                  observationCoverage: "UNAVAILABLE",
+                  committedEvidenceBoundary: null,
+                  retainedEvidence: [],
+                  awaitingAcceptance: [],
+                  afterClearCut: [],
+                  projections: { topologyEvidence: 0, localCommandEvidence: 0 },
+                  clear: {
+                    state: "IDLE",
+                    cutAfterObservedSequence: null,
+                    error: null,
+                  },
+                  stopped: {
+                    reason: "PANEL TEARDOWN",
+                    committedEvidenceBoundary: null,
+                    rejectedCapturedCount: 0,
+                  },
+                },
+                "Panel teardown ended the History Interval and Workbench ownership of its Evidence.",
+              );
+            default:
+              return reject(state, `Unknown action ${action.type}.`);
+          }
+        };
+
+        return Object.freeze({ initial, reduce });
+      })();
+
+      const actionDefinitions = [
+        ["OPEN_PRIMARY", "Open primary", "primary"],
+        ["OPEN_FALLBACK", "Use memory fallback", ""],
+        ["OBSERVE_SERVER", "Capture Server activity", ""],
+        ["DELIVER_LOCAL", "Deliver Local Injection", ""],
+        ["COMMIT", "Commit pending batch", "primary"],
+        ["FAIL_BATCH", "Fail pending batch", "danger"],
+        ["OVERLOAD", "Reach overload", "danger"],
+        ["REQUEST_CLEAR", "Request Clear", ""],
+        ["COMPLETE_CLEAR", "Complete Clear", "primary"],
+        ["FAIL_CLEAR", "Fail Clear", "danger"],
+        ["CLOSE", "End panel", "danger"],
+        ["RESET", "Reset demo", ""],
+      ];
+
+      const scenarios = [
+        {
+          id: "commit",
+          name: "Commit acceptance",
+          description:
+            "Watch a captured event remain outside Evidence and projections until its whole batch commits.",
+          steps: [
+            [
+              "OPEN_PRIMARY",
+              "Open Event History",
+              "The primary adapter becomes an internal fact.",
+            ],
+            [
+              "OBSERVE_SERVER",
+              "Capture one Server event",
+              "The captured event waits. It is not Evidence.",
+            ],
+            [
+              "COMMIT",
+              "Commit the batch",
+              "The event becomes Evidence and both committed boundary and Topology projection advance.",
+            ],
+          ],
+        },
+        {
+          id: "fallback",
+          name: "Startup fallback",
+          description:
+            "Check that memory fallback lowers History Capacity without changing Observation Coverage.",
+          steps: [
+            [
+              "OPEN_FALLBACK",
+              "Open the memory fallback",
+              "Coverage stays USEFUL while History Capacity becomes LOWER.",
+            ],
+            [
+              "OBSERVE_SERVER",
+              "Capture one Server event",
+              "The same acceptance model applies to the fallback.",
+            ],
+            [
+              "COMMIT",
+              "Commit the batch",
+              "Complete History advances through the new boundary.",
+            ],
+          ],
+        },
+        {
+          id: "failure",
+          name: "Journal failure",
+          description:
+            "See the fail-closed result when a whole batch cannot become Evidence.",
+          steps: [
+            [
+              "OPEN_PRIMARY",
+              "Open Event History",
+              "Capture starts with an empty boundary.",
+            ],
+            [
+              "OBSERVE_SERVER",
+              "Capture one Server event",
+              "The event waits outside projections.",
+            ],
+            [
+              "FAIL_BATCH",
+              "Fail the batch",
+              "Capture stops. The boundary and retained Evidence do not advance.",
+            ],
+          ],
+        },
+        {
+          id: "clear",
+          name: "Explicit Clear cut",
+          description:
+            "Put activity on both sides of Clear and verify that only post-cut activity enters the new History Interval.",
+          steps: [
+            [
+              "OPEN_PRIMARY",
+              "Open Event History",
+              "History Interval 1 begins.",
+            ],
+            [
+              "OBSERVE_SERVER",
+              "Capture a pre-cut event",
+              "This event is before the future Clear cut.",
+            ],
+            [
+              "REQUEST_CLEAR",
+              "Record the Clear cut",
+              "The cut fixes which captured events belong before Clear.",
+            ],
+            [
+              "OBSERVE_SERVER",
+              "Capture a post-cut event",
+              "This event waits for the next History Interval.",
+            ],
+            [
+              "COMMIT",
+              "Accept the pre-cut batch",
+              "The pre-cut event settles before Clear.",
+            ],
+            [
+              "COMPLETE_CLEAR",
+              "Complete Clear",
+              "Interval 1 and its projections disappear. The post-cut event moves to Interval 2.",
+            ],
+            [
+              "COMMIT",
+              "Accept the post-cut event",
+              "Only this event becomes retained Evidence in Interval 2.",
+            ],
+          ],
+        },
+        {
+          id: "local",
+          name: "Local delivery, record failure",
+          description:
+            "Keep the Local Injection Outcome truthful when its event cannot become Evidence.",
+          steps: [
+            [
+              "OPEN_PRIMARY",
+              "Open Event History",
+              "Capture can accept Evidence.",
+            ],
+            [
+              "DELIVER_LOCAL",
+              "Deliver a Local Injection",
+              "The outcome is DELIVERED LOCALLY, but its event still awaits acceptance.",
+            ],
+            [
+              "FAIL_BATCH",
+              "Fail history acceptance",
+              "The outcome stays delivered. No Local Evidence or COMMAND projection appears.",
+            ],
+          ],
+        },
+        {
+          id: "clear-failure",
+          name: "Clear failure",
+          description:
+            "Check the proposed recovery when Clear itself fails after all pre-cut work settles.",
+          steps: [
+            [
+              "OPEN_PRIMARY",
+              "Open Event History",
+              "History Interval 1 begins.",
+            ],
+            [
+              "OBSERVE_SERVER",
+              "Capture one event",
+              "The event waits for acceptance.",
+            ],
+            [
+              "COMMIT",
+              "Commit the event",
+              "The Retained Range now contains Evidence.",
+            ],
+            [
+              "REQUEST_CLEAR",
+              "Request Clear",
+              "The interval is still owned until Clear succeeds.",
+            ],
+            [
+              "FAIL_CLEAR",
+              "Abort Clear",
+              "The old interval and range remain. This prototype lets Capture continue for you to judge.",
+            ],
+          ],
+        },
+        {
+          id: "overload",
+          name: "Overload stop",
+          description:
+            "Check that overload stops Capture without dropping retained Evidence or advancing the boundary.",
+          steps: [
+            ["OPEN_PRIMARY", "Open Event History", "History starts normally."],
+            [
+              "OBSERVE_SERVER",
+              "Capture a waiting event",
+              "The event is not Evidence.",
+            ],
+            [
+              "OVERLOAD",
+              "Reach History Capacity",
+              "Capture stops at the prior boundary and Coverage becomes LIMITED.",
+            ],
+          ],
+        },
+      ];
+
+      let state = HistoryModel.initial();
+      let activeScenario = scenarios[0];
+      let activeStep = 0;
+
+      const stateElement = document.querySelector("#state");
+      const changeElement = document.querySelector("#change");
+      const pendingElement = document.querySelector("#pending");
+      const afterCutElement = document.querySelector("#after-cut");
+      const evidenceElement = document.querySelector("#evidence");
+      const projectionsElement = document.querySelector("#projections");
+      const logElement = document.querySelector("#log");
+      const actionsElement = document.querySelector("#actions");
+      const tabsElement = document.querySelector("#tabs");
+      const scenarioElement = document.querySelector("#scenario");
+
+      function dispatch(action, fromWalkthrough = false) {
+        state = HistoryModel.reduce(state, action);
+        if (fromWalkthrough && !state.lastChange.startsWith("Action rejected:"))
+          activeStep += 1;
+        render();
+      }
+
+      function fact(label, value, wide = false) {
+        return `<div class="fact${wide ? " wide" : ""}"><span>${label}</span><strong>${value}</strong></div>`;
+      }
+
+      function list(element, entries, emptyText, renderEntry) {
+        element.innerHTML = entries.length
+          ? entries.map((entry) => `<li>${renderEntry(entry)}</li>`).join("")
+          : `<li>${emptyText}</li>`;
+      }
+
+      function renderState() {
+        const range = state.retainedEvidence.length
+          ? `${state.retainedEvidence[0].evidenceSequence}–${state.retainedEvidence.at(-1).evidenceSequence}`
+          : "EMPTY";
+        const stop = state.stopped
+          ? `${state.stopped.reason} at ${state.stopped.committedEvidenceBoundary ?? "empty boundary"}`
+          : "NONE";
+        stateElement.innerHTML = [
+          fact("Module phase", state.phase),
+          fact("Internal adapter", state.adapter),
+          fact("History Capacity", state.historyCapacity),
+          fact("Capture Operation", state.captureOperation),
+          fact("Observation Coverage", state.observationCoverage),
+          fact("History Interval", state.historyInterval || "NOT STARTED"),
+          fact(
+            "Committed Evidence Boundary",
+            state.committedEvidenceBoundary ?? "EMPTY",
+          ),
+          fact("Retained Range", range),
+          fact("Clear", state.clear.state, true),
+          fact("Local Injection Outcome", state.localInjectionOutcome, true),
+          fact("Stopped history", stop, true),
+        ].join("");
+        changeElement.textContent = state.lastChange;
+        list(
+          pendingElement,
+          state.awaitingAcceptance,
+          "None",
+          (entry) => `Observed ${entry.observedSequence}: ${entry.label}`,
+        );
+        list(
+          afterCutElement,
+          state.afterClearCut,
+          "None",
+          (entry) => `Observed ${entry.observedSequence}: ${entry.label}`,
+        );
+        list(
+          evidenceElement,
+          state.retainedEvidence,
+          "No retained Evidence",
+          (entry) =>
+            `Evidence ${entry.evidenceSequence}: ${entry.label} · Interval ${entry.historyInterval}`,
+        );
+        projectionsElement.innerHTML = [
+          `<li>Topology: ${state.projections.topologyEvidence} committed event(s)</li>`,
+          `<li>Local Effective COMMAND State: ${state.projections.localCommandEvidence} Local event(s)</li>`,
+        ].join("");
+        logElement.innerHTML = state.log
+          .map((entry) => `<li>${entry}</li>`)
+          .join("");
+        logElement.scrollTop = logElement.scrollHeight;
+      }
+
+      function renderActions() {
+        actionsElement.innerHTML = "";
+        for (const [type, label, className] of actionDefinitions) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = label;
+          button.className = className;
+          button.addEventListener("click", () => dispatch({ type }));
+          actionsElement.append(button);
+        }
+      }
+
+      function startScenario(scenario) {
+        activeScenario = scenario;
+        activeStep = 0;
+        state = HistoryModel.initial();
+        state = HistoryModel.reduce(state, { type: "RESET" });
+        render();
+      }
+
+      function renderWalkthrough() {
+        tabsElement.innerHTML = "";
+        for (const scenario of scenarios) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.role = "tab";
+          button.setAttribute(
+            "aria-selected",
+            String(scenario.id === activeScenario.id),
+          );
+          button.textContent = scenario.name;
+          button.addEventListener("click", () => startScenario(scenario));
+          tabsElement.append(button);
+        }
+
+        scenarioElement.innerHTML = `<h3>${activeScenario.name}</h3><p>${activeScenario.description}</p><div class="steps"></div>`;
+        const stepsElement = scenarioElement.querySelector(".steps");
+        activeScenario.steps.forEach(([type, label, note], index) => {
+          const row = document.createElement("div");
+          row.className = `step${index < activeStep ? " done" : index === activeStep ? " current" : ""}`;
+          row.innerHTML = `<div class="step-number">${index + 1}</div><div><strong>${label}</strong><p>${note}</p></div>`;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = index < activeStep ? "Done" : "Do this";
+          button.disabled = index !== activeStep;
+          button.addEventListener("click", () => dispatch({ type }, true));
+          row.append(button);
+          stepsElement.append(row);
+        });
+        if (activeStep >= activeScenario.steps.length) {
+          const done = document.createElement("p");
+          done.className = "change";
+          done.textContent =
+            "Walkthrough complete. Inspect the final state, or use Free play to challenge it.";
+          scenarioElement.append(done);
+        }
+      }
+
+      function render() {
+        renderState();
+        renderWalkthrough();
+      }
+
+      renderActions();
+      render();
+    </script>
+  </body>
+</html>

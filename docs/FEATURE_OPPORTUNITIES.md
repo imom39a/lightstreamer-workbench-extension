@@ -1,737 +1,626 @@
-# Lightstreamer Developer Tooling Feature Opportunities
+# Lightstreamer Workbench Feature Opportunities
 
-Research date: 2026-07-28
+Original source review: 2026-07-28
+
+Reassessment date: 2026-08-09
+
+Status: product opportunity assessment, not an implementation commitment
 
 ## Recommendation
 
-The next evolution of Lightstreamer Workbench should be a developer observability and correctness suite, not only a larger event viewer.
+The redesign is complete. Workbench now has a stable product shape: compact live-session orientation, focused investigation in a **Scoped Evidence Workspace**, and deliberate scoped action. The next evolution should deepen that operating model rather than rebuild the old feature-first panel under new labels.
 
-The highest-value direction is:
+The highest-value direction is now:
 
-1. Make the current capture easy to navigate under real production volume.
-2. Explain client, session, subscription, snapshot, filtering, and recovery behavior.
-3. Turn captured sequences into deterministic, backend-free reproduction scenarios.
-4. Add specialized tools for two-level COMMAND, client messages, QoS, and protocol-level incidents.
+1. Make Event History acceptance, completeness, Clear, overload, and failure boundaries explicit and fail closed.
+2. Make existing Evidence faster to narrow and more conclusive through contextual facets, changed-field and delivery inspection, diagnostics, connection recovery, and snapshot explanation.
+3. Add first-class Client Message Capture and the planned Server Injection workflow through the inspected client's normal `sendMessage` path.
+4. Design multi-event Local Injection as a real scenario model before adding any batch or run-all UI to the current one-Draft workflow.
+5. Add deeper QoS, mode, two-level COMMAND, listener, and protocol diagnostics only after the primary Diagnose and Injection journeys remain coherent under the extra evidence.
 
-The public Web Client API should remain the primary source of truth. Raw TLCP and internal client logs are valuable for difficult incidents, but should be supplemental, opt-in diagnostics.
+The public Lightstreamer Web Client API remains the semantic source of truth. Raw TLCP and client logs are valuable opt-in evidence for difficult incidents, but they remain supplemental. Every new UI capability must fit Scope, Ordered Evidence, Context, a bounded transient, or a temporary promoted document unless it passes the permanent-surface gate in the [Workbench UI Standard](WORKBENCH_UI_STANDARD.md).
+
+## What the Redesign Changed
+
+The prior list treated Timeline, Topology, COMMAND State, diagnostics, and replay-like tooling as candidate feature destinations. That is no longer the product architecture.
+
+The accepted contracts now require:
+
+- Ordered Evidence to remain the dominant working surface.
+- Structural Topology to choose Scope rather than compete as a peer destination.
+- Runtime and selected-Evidence explanation to live in Context.
+- COMMAND projections, raw evidence, export, and Injection to open contextually while preserving the investigation.
+- Scope, Filter, Find, selection, focus, Capture Operation, Observation Coverage, History Capacity, and Live/Frozen position to remain distinct.
+- Exactly one target-anchored Local Injection Draft today. A future Draft Set does not imply ordering, timing, shared targets, or multi-event execution.
+- New permanent surfaces and shared UI abstractions to pass the explicit evidence and maintainer-approval gates.
+
+Consequently, this reassessment removes already-shipped foundations, narrows several oversized proposals into contextual lenses, and demotes controls whose main use case is already solved by Frozen Evidence and durable current-session history.
 
 ## Current Product Baseline
 
-The extension already provides a strong foundation:
+The redesigned production panel now provides:
 
-- Client, subscription, listener, item-update, snapshot, lost-update, and COMMAND lifecycle capture.
-- Searchable Timeline with normalized and raw event data.
-- COMMAND state reconstruction with active rows, deleted keys, lifecycle history, provenance, and diagnostics.
-- Single-event replay, mutation, new COMMAND update creation, and local listener or captured-WebSocket reinjection.
-- WebSocket/TLCP fallback when the public Web Client constructors are unavailable.
-- Session-local IndexedDB storage with an in-memory fallback and high-volume rendering.
+- A React **Scoped Evidence Workspace** with structural Page → client → Session → Subscription → item → listener Scope.
+- Live and retired runtime structure, Session recovery epochs, bounded historical Sessions, subscription configuration, duplicate/overlap findings, snapshot phase, listener and delivery counts, and COMMAND generation summaries.
+- Complete ordered current-session Evidence backed by IndexedDB in bounded batches, with an in-memory fallback, bounded query windows, high-volume navigation, and deliberate Clear.
+- Independent Scope, text Filter, Find, Evidence selection, Context, and Live/Frozen state. Frozen Evidence continues Capture and reports newer matching Evidence.
+- Full retained-Evidence copy plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in complete evidence, category redaction, and unconditional credential exclusion.
+- Named **Observed Server COMMAND State** and **Local Effective COMMAND State** projections.
+- Exactly one protected Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, optional Source comparison, validation, Review, explicit local delivery, persistent outcome, and marked Local Evidence.
+- Primary public-API instrumentation plus WebSocket/TLCP fallback, including documented connection and subscription metadata, `onPropertyChange`, real maximum frequency, and second-level COMMAND error/loss callbacks.
+- A single global footer for session- and runtime-level diagnostics, with workflow-local validation and outcomes kept at their decision boundaries.
 
-The most important current gaps are:
+The most important remaining gaps are:
 
-- Client diagnostics capture only `onStatusChange`; the extension does not capture `onServerError`, `onPropertyChange`, or `onServerKeepalive`.
-- Subscription capture omits requested and real max frequency, buffer size, selector, active/subscribed state, and two-level COMMAND configuration and callbacks.
-- Only COMMAND has a dedicated state model; MERGE, DISTINCT, and RAW are Timeline-only.
-- Outbound `sendMessage` operations and their outcomes are not represented as first-class events.
-- Replay handles individual updates rather than editable, timed event sequences.
-- Structured filters exist in the store but are not exposed as faceted Timeline controls.
-- There is no pause/resume, retention policy, trace export/import, watchpoint, or cross-capture comparison workflow.
+- The Event History vocabulary now defines Evidence acceptance, a Committed Evidence Boundary, History Intervals, Complete History, and History Capacity; these concepts still need one explicit production state machine and fail-closed contract across Capture, storage, projections, Clear, and Local Injection evidence retention.
+- `ClientListener.onServerError` and `onServerKeepalive` are not captured as first-class Evidence.
+- `LightstreamerClient.sendMessage` calls and `ClientMessageListener` outcomes are not captured, so Captured Client Messages and Server Injection are not yet available.
+- The filter engine supports structured fields, but the redesigned panel primarily exposes Scope and free-text filtering rather than contextual facets and clickable values.
+- Selected Item Update Context shows resolved fields but does not yet make changed fields, per-listener Update Deliveries, JSON Patch evidence, and value ambiguity equally easy to inspect.
+- Snapshot, connection recovery, subscription configuration, and duplicate data exist, but most higher-order explanations remain facts rather than conclusions.
+- Only COMMAND has reconstructed state. MERGE, DISTINCT, and RAW remain ordered Evidence without point-in-time state lenses.
+- Export exists; import, offline investigation, fixture generation, and cross-capture comparison do not.
+- Local Injection executes one Draft at a time. No accepted domain or failure model yet exists for a timed multi-event scenario.
 
-Relevant implementation seams:
+Relevant implementation and product seams:
 
-- Capture callbacks: `src/injected/lightstreamer-instrumentation.ts:105`
-- Client wrapping: `src/injected/lightstreamer-instrumentation.ts:1283`
-- Event model: `src/core/event-envelope.ts:7`
-- Capture kinds: `src/bridge/messages.ts:21`
-- Store query/index support: `src/core/event-filter.ts:4` and `src/core/indexeddb/event-db.ts:20`
-- Architecture extension guide: `docs/ARCHITECTURE.md:919`
+- [Domain language](../CONTEXT.md)
+- [Workbench UI Standard](WORKBENCH_UI_STANDARD.md)
+- [Canonical Developer Journeys](CANONICAL_DEVELOPER_JOURNEYS.md)
+- [Workspace information architecture](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md)
+- [Production UI migration record](WORKBENCH_UI_MIGRATION_PLAN.md)
+- [Architecture and extension guide](ARCHITECTURE.md)
+- [Capture message contract](../src/bridge/messages.ts)
+- [Page instrumentation](../src/injected/lightstreamer-instrumentation.ts)
+- [Event History seam](../src/core/event-history.ts)
+- [Workbench runtime](../src/extension/panel/workbench-runtime.ts)
+- [Event History workload evidence](research/event-history-workload-evidence.md)
 
 ## Prioritization Model
 
-The ranking uses four factors:
+**Developer usefulness is the primary ranking.** The score combines:
 
-- **Developer value**: how much debugging time the feature can save.
-- **Usability**: how often it is useful and how little setup it requires.
-- **Product fit**: how well it reinforces Lightstreamer-native, local-first DevTools workflows.
-- **Effort**: relative implementation size in the current architecture.
+- how broadly the opportunity applies across generic Lightstreamer applications;
+- how often a developer is likely to need it;
+- how much investigation or reproduction time it saves;
+- how directly it helps the developer reach a supported conclusion or deliberate outcome.
 
-Effort estimates:
+The score does not include implementation effort, current readiness, or architectural dependency. It is directional rather than a measured product metric:
 
-- **S**: localized UI or aggregation work using existing capture data.
-- **M**: new capture fields/kinds plus reducers and UI.
-- **L**: a new workflow spanning instrumentation, state, bridge, UI, and browser verification.
+- **5.0**: core to nearly every investigation or reproduction workflow;
+- **4.5–4.9**: high-value across a primary journey;
+- **4.0–4.4**: strong value for a narrower recurring workflow;
+- **3.5–3.9**: specialist or conditional value;
+- **3.0–3.4**: specialized ecosystem value.
 
-## Prioritized Feature Backlog
+Equal scores are ordered by the accepted journey priority—Diagnose before Local Injection, then advanced workflows—and by breadth across operators.
 
-| Rank | Feature | Developer value | Usability | Effort | Priority |
-| ---: | --- | :---: | :---: | :---: | :---: |
-| 1 | Client, session, and subscription topology inspector | 5/5 | 5/5 | M | P0 |
-| 2 | Unified diagnostics center and contextual error explainer | 5/5 | 5/5 | S-M | P0 |
-| 3 | Multi-event scenario recorder and deterministic local replay | 5/5 | 4/5 | M-L | P0 |
-| 4 | Connection, transport, rebind, and recovery timeline | 5/5 | 4/5 | M | P0 |
-| 5 | Snapshot bootstrap visualizer and correctness checker | 5/5 | 5/5 | S-M | P0 |
-| 6 | Faceted Timeline filters and clickable filter chips | 4.5/5 | 5/5 | S | P0 |
-| 7 | Subscription semantics inspector and configuration linter | 5/5 | 4/5 | M | P0 |
-| 8 | Filtering, frequency, bandwidth, buffer, and loss profiler | 4.5/5 | 4/5 | M | P0 |
-| 9 | Capture freeze, pause/resume, and retention controls | 4/5 | 5/5 | S-M | P0 |
-| 10 | Conditional event breakpoints and watch rules | 4.5/5 | 5/5 | M | P0 |
-| 11 | MERGE, DISTINCT, and RAW state views with time travel | 4.5/5 | 4/5 | M-L | P1 |
-| 12 | Two-level COMMAND dependency graph and merged-row inspector | 5/5 | 4/5 | L | P1 |
-| 13 | Redacted trace export/import and test-fixture generation | 5/5 | 4/5 | M | P1 |
-| 14 | Field provenance, value semantics, and JSON Patch inspector | 4.5/5 | 4/5 | M | P1 |
-| 15 | Client-to-server message sequence waterfall | 4/5 | 4/5 | M | P1 |
-| 16 | Listener performance, exception, and duplicate-listener profiler | 4/5 | 4/5 | M | P1 |
-| 17 | Correlated Lightstreamer client-log and TLCP console | 4/5 | 3/5 | M-L | P1 |
-| 18 | Multi-client, version, duplicate-session, and churn audit | 4/5 | 4/5 | M | P1 |
-| 19 | Cross-frame, worker, HTTP transport, and bundled-client coverage monitor | 4/5 | 3/5 | L | P2 |
-| 20 | Guarded live QoS and transport tuning lab | 4/5 | 3/5 | M-L | P2 |
-| 21 | Mobile Push Notification workbench | 3.5/5 | 3/5 | L | P2 |
-| 22 | Cross-capture comparison and regression diff | 4/5 | 4/5 | M | P2 |
+**Build order is separate.** It is a dependency-safe topological order. Among opportunities whose dependencies are already satisfied, higher developer usefulness comes first. A lower-ranked prerequisite may therefore build earlier than a more useful dependent feature. The [delivery increments](#suggested-delivery-increments) follow that build order.
 
-## P0: Highest-Value Features
+Effort includes the implementation and the proportional evidence required by the UI standard:
 
-### 1. Client, Session, and Subscription Topology Inspector
+- **S**: localized aggregation or contextual UI using existing Capture.
+- **M**: a new capture field/kind, reducer, contextual lens, and browser verification.
+- **L**: a workflow spanning instrumentation, history, runtime, bridge, UI, privacy, and failure semantics.
+- **Design gate**: implementation must wait for an explicit domain and interaction decision; a prototype alone is not acceptance.
 
-Create a tree or master-detail view:
+## Developer Usefulness Ranking
 
-```text
-page
-  client
-    session
-      subscription
-        item
-          listener
-```
+| Usefulness rank | Opportunity | Developer usefulness | Current state | Effort | Priority |
+| ---: | --- | :---: | --- | :---: | :---: |
+| 1 | Contextual faceted Evidence filtering | 5.0/5 | Filter engine exists; UI partial | S-M | P0 |
+| 2 | Changed-field, delivery, provenance, and value-semantics inspection | 4.9/5 | Capture partial; Context partial | M | P0 |
+| 3 | Contextual Lightstreamer diagnostics and subscription linting | 4.9/5 | Operational diagnostics exist; semantic explanation partial | M | P0 |
+| 4 | Connection, transport, recovery, and Session-epoch lens | 4.8/5 | Topology facts exist; correlated lens absent | M | P0 |
+| 5 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Single Draft exists; scenario semantics undecided | L + design gate | P0 |
+| 6 | Snapshot bootstrap and resubscription correctness lens | 4.7/5 | Snapshot phases exist; explanation partial | M | P0 |
+| 7 | Captured Client Messages and deliberate Server Injection | 4.6/5 | Planned, not implemented | L | P0 |
+| 8 | Committed Evidence Boundary and fail-closed History Capacity | 4.5/5 | Foundation defined, production contract incomplete | M-L | P0 |
+| 9 | Filtering, frequency, bandwidth, buffer, and loss profiler | 4.4/5 | Metadata exists; profiler absent | M | P1 |
+| 10 | Watch rules and conditional listener breakpoints | 4.3/5 | Not implemented | M | P1 |
+| 11 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 4.3/5 | COMMAND only | M-L | P1 |
+| 12 | Two-level COMMAND dependency and merged-row inspector | 4.2/5 | Capture/summary partial; deep inspection absent | M-L | P1 |
+| 13 | Capture import, offline investigation, and fixture generation | 4.2/5 | Export exists; reverse workflow absent | M-L | P1 |
+| 14 | Listener performance, exception, and registration-churn profiler | 4.0/5 | Counts exist; timing and exceptions absent | M | P1 |
+| 15 | Correlated Lightstreamer client-log and TLCP evidence | 3.9/5 | Wire fallback partial; opt-in console absent | M-L | P1 |
+| 16 | Multi-client, version, duplicate-session, and churn audit | 3.9/5 | Duplicate/overlap and Session history partial | M | P1 |
+| 17 | Cross-capture comparison and regression diff | 3.8/5 | Depends on import | M | P2 |
+| 18 | Cross-frame, worker, HTTP transport, and bundled-client coverage | 3.7/5 | Limited coverage reporting exists | L | P2 |
+| 19 | Guarded live QoS and transport tuning lab | 3.5/5 | Not implemented; consequential | M-L | P2 |
+| 20 | Mobile Push Notification Workbench | 3.0/5 | Not implemented; specialized | L | P2 |
 
-Show:
+## Dependency-Safe Build Order
 
-- Client library version when discoverable, instrumentation source, and coverage status.
-- Server address, Adapter Set, client status, transport, session ID, server instance, server socket name, and masked client IP.
-- Requested and real bandwidth plus keepalive, retry, stalled, reconnect, and recovery settings.
-- Active versus server-established subscriptions.
-- Mode, item list/group, field list/schema, Data Adapter, selector, snapshot request, buffer, requested/real frequency, and listener count.
-- Update counts, first-update time, last-update time, snapshot phase, errors, and lost-update count.
+This is the execution order for incremental delivery. Do not start an opportunity before its listed dependencies and design gates are complete. Work at the same satisfied dependency layer may proceed independently, but the higher-usefulness item should be selected first when capacity is limited.
 
-Why it helps:
+| Build order | Opportunity | Depends on | Delivery increment |
+| ---: | --- | --- | :---: |
+| 1 | Committed Evidence Boundary and fail-closed History Capacity | Existing Event History vocabulary and workload evidence | A |
+| 2 | Contextual faceted Evidence filtering | 1 | B |
+| 3 | Changed-field, delivery, provenance, and value-semantics inspection | 1 | B |
+| 4 | Contextual Lightstreamer diagnostics and subscription linting | 1 | B |
+| 5 | Connection, transport, recovery, and Session-epoch lens | 1, 4 | B |
+| 6 | Snapshot bootstrap and resubscription correctness lens | 1, 3, 4 | B |
+| 7 | Captured Client Messages and deliberate Server Injection | 1, 4, existing one-Draft contract, accepted Server Injection ADRs | C |
+| 8 | Deterministic multi-event Local Injection scenarios | 1, 2, 3, 4, accepted Scenario domain and interaction model | D |
+| 9 | Filtering, frequency, bandwidth, buffer, and loss profiler | 1, 4, 5 | E |
+| 10 | Watch rules and conditional listener breakpoints | 1, 2, 4 | E |
+| 11 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 1, 3, 6 | E |
+| 12 | Two-level COMMAND dependency and merged-row inspector | 1, 3, 4, 6 | E |
+| 13 | Capture import, offline investigation, and fixture generation | 1; Scenario fixture generation also requires 8 | E |
+| 14 | Listener performance, exception, and registration-churn profiler | 1, 3 | E |
+| 15 | Correlated Lightstreamer client-log and TLCP evidence | 1, 4, 5 | E |
+| 16 | Multi-client, version, duplicate-session, and churn audit | 1, 4, 5 | E |
+| 17 | Cross-capture comparison and regression diff | 13 | F |
+| 18 | Cross-frame, worker, HTTP transport, and bundled-client coverage | 1, 4 | F |
+| 19 | Guarded live QoS and transport tuning lab | 5, 9 | F |
+| 20 | Mobile Push Notification Workbench | 1, 4 | F |
 
-- It answers the first questions in nearly every incident: "Which client is this?", "What is actually connected?", "Which subscriptions are live?", and "What configuration did the server accept?"
-- It makes multiple clients and duplicate subscriptions immediately visible.
-- It gives the rest of the proposed diagnostics a stable navigation model.
+Opportunity headings below carry the build number, not the usefulness rank. The two tables above are authoritative: feature names identify the work, developer usefulness determines value rank, and build order determines safe execution sequence.
 
-Implementation notes:
+## P0 Opportunity Details
 
-- Read `connectionDetails` and `connectionOptions` through their public getters.
-- Capture values immediately on property-change callbacks because listener notifications are asynchronous.
-- Never capture passwords. Mask IPs and redact authorization-like headers by default.
-- Internal two-level subscriptions are not returned by `LightstreamerClient.getSubscriptions()`, so represent them through the inferred graph described later.
+### Build 1 — Committed Evidence Boundary and Fail-Closed History Capacity
 
-Official basis:
+Create one Event History state machine that owns:
 
-- [LightstreamerClient](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/LightstreamerClient.html)
-- [ConnectionDetails](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ConnectionDetails.html)
-- [ConnectionOptions](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ConnectionOptions.html)
-- [Subscription](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/Subscription.html)
+- primary-versus-fallback adapter selection;
+- Capture Operation and the ability to accept new captured events;
+- pending batch acceptance and contiguous Evidence sequencing;
+- the Committed Evidence Boundary and Retained Range;
+- explicit History Interval cuts for Clear;
+- capacity exhaustion, journal failure, Clear failure, and teardown;
+- publication of accepted Evidence to Topology and COMMAND projections.
 
-### 2. Unified Diagnostics Center and Contextual Error Explainer
+Required outcomes:
 
-Normalize the following into one searchable problem stream:
+- A captured event becomes Evidence only after its whole accepted batch commits.
+- Only Evidence advances Topology or COMMAND projections.
+- A journal failure or exceeded History Capacity stops acceptance at the prior committed boundary; it never drops an event silently and continues claiming Complete History.
+- Memory fallback lowers History Capacity without automatically lowering Observation Coverage.
+- Clear establishes an exact cut. Pre-cut acceptance settles before the old History Interval is removed, while post-cut events belong only to the new interval.
+- A Local Injection may truthfully remain `DELIVERED LOCALLY` if retaining its synthetic event fails, but no Local Evidence or projection change may be manufactured from an unaccepted event.
+- Material state reaches the existing operating strip or diagnostic footer without exposing IndexedDB mechanics as product language.
 
-- Client/session errors.
-- Subscription errors.
-- Second-level COMMAND subscription errors.
-- Lost-update notifications.
-- Snapshot anomalies.
-- COMMAND semantic diagnostics.
-- Client-message outcomes.
-- Instrumentation coverage warnings.
+Why first:
 
-Each diagnostic should include:
+- Every additional capture kind, scenario, import, projection, and profiler depends on trustworthy ordered Evidence.
+- The workload measurements show that large JSON bursts can create long pending ages and material queued bytes. Capacity and overload need explicit behavior rather than an implicit performance assumption.
 
-- Severity and affected client/subscription/item/key.
-- Original code and message.
-- Plain-language explanation.
-- Likely subsystem: credentials, Adapter Set, Data Adapter, group/schema, selector, mode, license, routing/affinity, server, or client parsing.
-- Suggested next check and a link to the relevant official documentation.
+This opportunity does not introduce rolling retention or a permanent history dashboard. The throwaway [Event History state-machine prototype](../prototypes/event-history-03/event-history-state-machine.html) is decision evidence only.
 
-Examples:
+### Build 2 — Contextual Faceted Evidence Filtering
 
-- `15` or `16`: COMMAND schema is missing `key` or `command`.
-- `17`: invalid Data Adapter or no default Data Adapter.
-- `21`, `22`, or `23`: invalid group/schema combination.
-- `24`: subscription mode not allowed for an item.
-- `26` or `27`: unfiltered dispatch refused because of a frequency limit or prefilter.
-- Client error `21`: a bind reached the wrong server instance, suggesting load-balancer affinity or routing trouble.
-- `61`: server response parsing failure.
-- `66` or `68`: Metadata Adapter or server-side internal failure.
+Expose the structured filters already supported by Event History:
+
+- client, Session, Subscription, mode, event kind, item, listener, COMMAND key and operation;
+- snapshot/live, Server/Local, and listener/wire source;
+- inbound/outbound once Client Messages exist;
+- captured error/loss code or severity once it is normalized onto the corresponding Evidence.
+
+Required behavior:
+
+- Clicking a meaningful value in Evidence or Context offers an explicit include/exclude filter action.
+- Active criteria, shown/total counts, and one-step reset remain visible.
+- “Only this key,” “Only this listener,” and “Events around this error” preserve current Scope and selection.
+- Scope, Filter, and Find remain separate. Find navigates matches and never silently changes the visible set.
+- A filtered-out selected event remains recoverable through the existing reveal-or-clear-selection pattern.
+
+This replaces the old “faceted Timeline” proposal. It deepens Ordered Evidence and does not add a query-builder destination or permanent chip bar at every geometry.
+
+### Build 3 — Changed-Field, Delivery, Provenance, and Value-Semantics Inspection
+
+Make a selected Item Update answer four questions without opening raw JSON:
+
+1. What full field values were observed?
+2. Which fields changed in this Logical Update?
+3. Which listeners received Update Deliveries, in what order, and through which capture path?
+4. Which distinctions are provable versus ambiguous?
+
+Show contextually:
+
+- full fields, changed fields, and captured JSON Patch values;
+- Logical Update identity versus each Update Delivery and metric-owner limitations;
+- snapshot/live and Server/Local provenance;
+- first-level versus second-level origin where available;
+- inherited or previously observed state only when a mode reducer proves it;
+- explicit `unknown`, `unavailable`, `redacted`, `inferred`, and not-applicable states.
+
+Important limitation:
+
+- At the public API level, `null` may represent an explicit null, a value not yet received, or COMMAND delete context. Say “ambiguous null” unless command, prior-state, or optional wire evidence resolves it.
+
+JSON Patch remains a specialist sub-lens. Verify that applying a patch to the previous JSON produces the captured result when both sides are actually available; do not imply that every delta or field has a reconstructible patch.
+
+### Build 4 — Contextual Lightstreamer Diagnostics and Subscription Linting
+
+Extend the existing diagnostic footer and runtime dossiers rather than create a permanent Diagnostics Center.
+
+Capture and explain:
+
+- `ClientListener.onServerError` and `onServerKeepalive`;
+- subscription and second-level subscription errors;
+- lost-update notifications and snapshot anomalies;
+- COMMAND semantic warnings;
+- Client Message outcomes after **Captured Client Messages and Deliberate Server Injection**;
+- instrumentation, history-capacity, and coverage limitations;
+- suspicious configuration, exact duplicates, overlaps, and churn.
+
+Each diagnostic must identify:
+
+- severity and affected runtime object or Evidence;
+- original code and safely handled message where available;
+- what Workbench observed;
+- the consequence for the current conclusion;
+- one relevant inspection or recovery route.
+
+Subscription linting should explain:
+
+- RAW snapshot restrictions;
+- buffer constraints for filtered MERGE/DISTINCT subscriptions;
+- COMMAND `key` and `command` requirements;
+- two-level COMMAND constraints and field conflicts;
+- active versus server-established state;
+- suspicious mode/item overlaps and unfiltered-frequency refusal conditions.
 
 Correctness limits:
 
-- Codes less than or equal to zero may be application-specific Metadata Adapter codes.
-- Some server-initiated close codes intentionally have limited detail.
-- A lost-update callback is not evidence of every update filtered or conflated by the server.
+- Non-positive server codes may be application-specific.
+- Some server-initiated closes deliberately expose limited detail.
+- A lost-update callback does not enumerate every update filtered or conflated by the server.
+- A warning remains evidence-based guidance, not proof that an unusual configuration is wrong.
 
-Official basis:
+### Build 5 — Connection, Transport, Recovery, and Session-Epoch Lens
 
-- [ClientListener](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ClientListener.html)
-- [SubscriptionListener](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/SubscriptionListener.html)
-- [ClientMessageListener](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ClientMessageListener.html)
+Provide a contextual client or Session lens over existing ordered Evidence:
 
-### 3. Multi-Event Scenario Recorder and Deterministic Local Replay
+- `CONNECTING`, streaming/polling transport, `STALLED`, recovery, retry, and disconnected intervals;
+- time in each state;
+- Session identity, server instance, socket name, masked client-IP change, and connection epochs;
+- recovery attempts versus replacement Sessions;
+- transport fallback or switch and resubscription boundaries;
+- correlated server errors, keepalives, silence, and property changes.
 
-Extend the current one-event reinjection into a scenario workbench:
+Useful conclusions include repeated recovery loops, a new Session after failed recovery, transport churn, and server-instance changes consistent with affinity trouble.
 
-- Select a Timeline range or events matching a filter.
-- Preserve relative timing or normalize it.
-- Step, play, pause, change speed, loop, and stop.
-- Reorder, duplicate, remove, and mutate events.
-- Edit snapshot flags, changed fields, COMMAND keys/commands, and timing.
-- Save named checkpoints inside the current session.
-- Show target availability and page acknowledgement per step.
-- Add assertions such as "key exists", "field equals value", "diagnostic appears", or "listener completed without throwing".
+Do not claim that a high-level recovery status proves the exact progressive position resumed. Exact proof requires optional protocol evidence.
 
-Support all compatible update modes rather than COMMAND only. A later increment can also replay captured listener callbacks such as end-of-snapshot and clear-snapshot.
+### Build 6 — Snapshot Bootstrap and Resubscription Correctness Lens
 
-Why it helps:
-
-- It directly delivers the product's core value: reproducing hard server event sequences without backend access.
-- It turns production-only race conditions into repeatable local test cases.
-- It reuses the existing draft, target, bridge, synthetic event, and acknowledgement paths.
-
-Boundary:
-
-- Replay remains local to captured page listeners or a captured page WebSocket.
-- It must never imply injection into the real Lightstreamer server stream.
-
-### 4. Connection, Transport, Rebind, and Recovery Timeline
-
-Create a client swimlane that shows:
-
-- `CONNECTING`, stream sensing, WS/HTTP streaming, WS/HTTP polling, `STALLED`, recovery, retry, and disconnected states.
-- Time spent in each state.
-- Server keepalives and periods of silence.
-- Session ID, server instance, socket name, and client-IP changes.
-- Recovery attempts versus new-session retries.
-- Transport fallback or switch.
-- Resubscription epochs and the point where prior subscription state becomes invalid.
-- Correlated server errors and configuration changes.
-
-Useful derived diagnostics:
-
-- Repeated streaming-to-polling switches.
-- Recovery loops or unusually long recovery attempts.
-- New session after a failed recovery.
-- Session/server-instance mismatch suggesting cluster-affinity trouble.
-- CPU-heavy startup or slow callback periods near transport fallback.
-
-Correctness limit:
-
-- A high-level status transition can show that recovery was attempted, but it cannot prove the exact TLCP progressive position that was resumed. Exact proof belongs in the optional protocol view.
-
-Official basis:
-
-- [ClientListener status model](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ClientListener.html)
-- [ConnectionOptions](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ConnectionOptions.html)
-- [TLCP 2.5.0](https://www.lightstreamer.com/tlcp-2.5.0)
-
-### 5. Snapshot Bootstrap Visualizer and Correctness Checker
-
-Give each subscribed item a visible phase:
+Build on the shipped per-item snapshot phase and explain:
 
 ```text
-waiting -> snapshot -> snapshot complete -> live -> cleared
+waiting -> snapshot -> complete -> live -> cleared
 ```
-
-Explain mode-specific behavior:
-
-- MERGE: at most one snapshot update per item and no end-of-snapshot callback.
-- DISTINCT: zero or more snapshot events followed by end-of-snapshot.
-- COMMAND: snapshot `ADD` operations for active keys followed by end-of-snapshot.
-- RAW: no snapshot.
-- An end-of-snapshot notification may represent an empty snapshot.
-- Clear-snapshot empties COMMAND state or invalidates the prior DISTINCT list.
 
 Show:
 
-- Requested snapshot setting and DISTINCT requested history length.
-- Snapshot start, row/event count, duration, end, clear, and first live update.
-- Items still waiting for an expected snapshot.
-- Snapshot/live provenance on every field or COMMAND key.
-- New snapshot epochs after resubscription or recovery.
+- requested snapshot setting and DISTINCT history length;
+- snapshot count, duration, end, clear, and first live update;
+- empty snapshots and items still waiting for expected completion;
+- the Session/subscription epoch to which the phase belongs;
+- snapshot/live provenance on relevant Evidence;
+- reset and new bootstrap after resubscription or Session replacement.
 
-Two-level caveat:
+Mode-specific limits:
 
-- First-level COMMAND end-of-snapshot does not mean all second-level MERGE snapshots are complete. Second-level snapshot updates can arrive before or after it.
+- MERGE has at most one snapshot update per item and no end-of-snapshot callback.
+- DISTINCT may have zero or more snapshot events followed by end-of-snapshot.
+- COMMAND snapshot is formed from `ADD` operations for active keys.
+- RAW has no snapshot.
+- First-level COMMAND end-of-snapshot does not prove that every second-level MERGE snapshot is complete.
 
-Official basis:
+This is an item/Subscription Context lens with related Evidence actions, not a new Snapshot destination.
 
-- [SubscriptionListener](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/SubscriptionListener.html)
-- [ItemUpdate](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ItemUpdate.html)
-- [General Concepts](https://lightstreamer.com/docs/ls-server/latest/General%20Concepts.pdf)
+### Build 7 — Captured Client Messages and Deliberate Server Injection
 
-### 6. Faceted Timeline Filters and Clickable Filter Chips
+Instrument `LightstreamerClient.sendMessage` and the associated `ClientMessageListener` as first-class outbound Evidence:
 
-Expose the structured filtering already supported by the core store:
+- immutable Captured Client Message;
+- client and current Session identity;
+- message sequence, delay timeout, and enqueue-while-disconnected choice;
+- processed, denied, discarded, error, aborted, and unknown outcomes;
+- call-to-outcome timing and connection/recovery context.
 
-- Client and subscription.
-- Mode.
-- Event kind.
-- Item.
-- COMMAND key and command.
-- Snapshot/live.
-- Server/synthetic.
-- Listener/wire capture source.
-- Error or diagnostic severity.
-- Inbound/outbound once client messages are captured.
+Then add the planned Server Injection workflow:
 
-Usability behaviors:
+- Start from an immutable Captured Client Message or explicitly author a Client Message against one live client and Session.
+- Copy it into a separate Injection Draft; never edit or suppress the application's original message.
+- Reuse the one-active-Draft boundary. Starting Server Injection must not silently replace or coexist ambiguously with an active Local Injection Draft.
+- Keep message, sequence, timeout, enqueue behavior, target client, and Session protected and reviewable at the correct boundary.
+- Send exactly once through the inspected client's normal `sendMessage` path.
+- Preserve `Unknown` as a terminal outcome. Never automatically retry; a deliberate Repeat Injection is a separate action with duplicate-effect guidance.
+- Treat Observed Server COMMAND State as advisory only when an application-specific message is understood to represent a COMMAND action.
+- Correlate later Server Updates only when application-supported Injection Attribution makes the causal link provable.
 
-- Clicking a value in a row or detail pane adds a filter chip.
-- Chips are individually removable.
-- Include/exclude mode is explicit.
-- "Only this key", "Only this subscription", and "Events around this error" are one click.
-- Show result counts before applying expensive text searches.
+Presentation consequence:
 
-This is the smallest high-impact feature because the IndexedDB metadata and structured-filter types already exist.
+- Outbound Evidence joins the existing ordered ledger.
+- A sequence waterfall is a contextual lens for a client, Session, sequence, or selected message—not a new peer destination.
+- Message bodies are arbitrary application data. Keep them local, make exposure deliberate, and include them in export redaction controls before any sharing workflow claims support.
 
-### 7. Subscription Semantics Inspector and Configuration Linter
+Boundary:
 
-Explain the effective contract of every subscription and flag likely mistakes:
+- Server Injection sends a Client Message. It does not create an inbound Item Update, contact a Data Adapter directly, or generically translate an Item Update into a Client Message.
 
-- RAW cannot request a snapshot.
-- Buffer size is configurable only for filtered MERGE or DISTINCT subscriptions.
-- COMMAND requires `key` and `command`.
-- Two-level behavior is valid only for COMMAND.
-- Second-level items are implicit MERGE subscriptions with snapshot.
-- First- and second-level field-name conflicts make the second-level value positional-only.
-- Conflicting MERGE, DISTINCT, and COMMAND requests for the same literal item are suspicious; RAW is the compatible alternate family.
-- An unfiltered request can be refused when a server-side frequency limit or prefilter exists.
-- Item groups, field schemas, selectors, and mode authorization remain server-defined and cannot always be validated before the response.
+Accepted decisions: [observational Capture](adr/0001-keep-capture-observational.md), [unknown outcome handling](adr/0003-do-not-automatically-retry-unknown-server-injections.md), [Client Message boundary](adr/0004-send-server-injections-as-client-messages.md), and [advisory COMMAND state](adr/0005-treat-observed-command-state-as-advisory.md).
 
-Also distinguish:
+### Build 8 — Deterministic Multi-Event Local Injection Scenarios
 
-- `isActive()`: the subscription was activated on a client.
-- `isSubscribed()`: the server has established it.
+Preserve the current one-Draft contract until the product explicitly decides a scenario model.
 
-Official basis:
+The design gate must resolve:
 
-- [Subscription](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/Subscription.html)
-- [General Concepts: modes, filtering, and buffers](https://lightstreamer.com/docs/ls-server/latest/General%20Concepts.pdf)
+- explicit membership: which captured or authored updates belong to a Scenario;
+- whether all members must share one Subscription target;
+- ordering, relative timing, normalized timing, and clock behavior;
+- editing, duplication, removal, stepping, pausing, cancellation, and looping;
+- target retirement between steps;
+- partial delivery and listener failure semantics;
+- whether assertions observe Workbench Evidence, application callbacks, or both;
+- how each Injection, outcome, and resulting Local Evidence remains independently traceable.
 
-### 8. Filtering, Frequency, Bandwidth, Buffer, and Loss Profiler
+Only after those decisions should implementation consider:
 
-Display per client and subscription:
+- selecting an explicit Evidence range or filtered set;
+- independent Source/Draft models per member;
+- step, play, pause, speed, and stop;
+- per-step target availability and outcome;
+- session-local named checkpoints;
+- assertions such as “key exists,” “field equals,” or “diagnostic appears.”
 
-- Requested versus real maximum bandwidth.
-- Requested versus real maximum frequency.
-- Measured callback frequency by subscription, item, and COMMAND key.
-- Filtered versus unfiltered request.
-- Requested/default buffer size.
-- Update counts and changed-field density.
-- Approximate payload bytes where measurable.
-- Lost-update counts and affected intervals.
-- Snapshot and live rates separately.
+Guardrails:
 
-Useful conclusions:
+- Visible Evidence is never implicit Scenario membership.
+- A future Draft Set is not automatically a queue.
+- Current Source comparison, validation, undo, Review, target, and outcome remain per Draft.
+- Every execution remains Local Injection and never implies that an Item Update entered the server stream.
 
-- The server applied a lower frequency than requested.
-- A session-wide bandwidth cap coincides with lower observed rates.
-- An unfiltered subscription reported actual lost updates.
-- A listener is receiving an unsustainable callback rate.
+## P1 Opportunity Details
 
-Do not claim:
+### Build 9 — Filtering, Frequency, Bandwidth, Buffer, and Loss Profiler
 
-- An exact source-to-client conflation ratio. Filtered suppression can be intentional and silent.
-- Per-item server frequency from `onRealMaxFrequency`; it reports the maximum among the subscription's items.
-- Server queue occupancy; the public Web Client API does not expose it.
-- End-to-end latency unless the application payload contains a trustworthy source timestamp.
+For a client or Subscription, compare requested and real bandwidth/frequency with measured callback rates, changed-field density, approximate payload bytes, lost-update intervals, and snapshot/live rates.
 
-Official basis:
+Do not claim an exact source-to-client conflation ratio, per-item server frequency from a Subscription-wide callback, server queue occupancy, or end-to-end latency without a trustworthy application timestamp.
 
-- [Subscription frequency and buffer APIs](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/Subscription.html)
-- [ConnectionOptions bandwidth APIs](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ConnectionOptions.html)
-- [General Concepts: bandwidth and frequency management](https://lightstreamer.com/docs/ls-server/latest/General%20Concepts.pdf)
+### Build 10 — Watch Rules and Conditional Listener Breakpoints
 
-### 9. Capture Freeze, Pause/Resume, and Retention Controls
+Define rules over status, error, Subscription, mode, item, listener, key, command, snapshot/live phase, field change/value/threshold, lost updates, or diagnostic severity.
 
-Provide separate controls:
+Safe actions can freeze Evidence, pin the triggering event, increment a counter, or open Context. Pausing JavaScript with `debugger` is opt-in and must state whether it occurs before or after the application listener. Capture must remain observational and listener exceptions must still propagate normally.
 
-- **Freeze view**: stop rerendering while continuing to capture.
-- **Pause capture**: stop retaining new events and show how many were skipped.
-- **Resume**: start a new visible capture epoch.
-- **Retention policy**: keep all, keep the latest count, or keep a rolling time window.
-- **Pinned-event protection**: do not prune pinned events or scenario inputs.
+### Build 11 — MERGE, DISTINCT, and RAW State Reconstruction With Point-in-Time Inspection
 
-Why it helps:
-
-- High-volume sessions become usable without repeatedly clearing all evidence.
-- Freeze-view avoids confusing moving selections while an incident is active.
-- Explicit skipped-event counts prevent a paused trace from being mistaken for a complete trace.
-
-### 10. Conditional Event Breakpoints and Watch Rules
-
-Let developers define rules on:
-
-- Client status or server error.
-- Subscription, mode, item, listener, key, or command.
-- Snapshot/live phase.
-- A field changed, matched a value, crossed a numeric threshold, or matched a regular expression.
-- Lost updates or a diagnostic severity.
-
-Actions:
-
-- Pause JavaScript with `debugger` immediately before the application listener runs.
-- Freeze the Workbench view.
-- Pin the event.
-- Start or stop a scenario recording window.
-- Increment a watch counter without interrupting the page.
-
-Implementation guardrail:
-
-- Pausing is opt-in and should be available as "before listener" or "after listener".
-- Listener exceptions and application behavior must still propagate exactly as they do without the extension.
-
-## P1: Diagnostic Depth and Team Workflows
-
-### 11. MERGE, DISTINCT, and RAW State Views With Time Travel
-
-Build reducers analogous to the existing COMMAND index:
+Add contextual reducers rather than permanent mode views:
 
 - MERGE: current field state per item plus field history.
-- DISTINCT: ordered event history, snapshot segment, live segment, and clear-snapshot boundaries.
-- RAW: exact delivered order with no reconstructed state claim.
-- All modes: scrub to an event and compare state before/after it.
+- DISTINCT: ordered snapshot/live segments and clear boundaries.
+- RAW: exact delivered order with no reconstructed-state claim.
+- All modes: inspect state immediately before and after selected Evidence.
 
-This turns the extension from a COMMAND-specific state workbench into a complete Lightstreamer mode debugger.
+Time travel is a lens anchored to Scope and Evidence selection. It must state where Capture began too late or a boundary makes reconstruction incomplete.
 
-### 12. Two-Level COMMAND Dependency Graph and Merged-Row Inspector
+### Build 12 — Two-Level COMMAND Dependency and Merged-Row Inspector
 
-Render:
+Explain the relationship:
 
 ```text
 first-level COMMAND item -> key -> implicit second-level MERGE item
 ```
 
-Show:
+Show first- and second-level fields with provenance, Data Adapters, automatic subscribe/unsubscribe behavior, second-level loss/errors, field-name conflicts, current merged row, and the key's lifecycle. Internal second-level subscriptions remain Evidence attached to structural Scope; they do not become ordinary Topology nodes or pretend to be returned by `getSubscriptions()`.
 
-- Automatic second-level subscribe on `ADD` and unsubscribe on `DELETE`.
-- First-level and second-level fields with clear provenance.
-- First-level and second-level Data Adapters.
-- Current merged row and per-key lifecycle.
-- Second-level lost updates and subscription errors.
-- Field-name conflicts and positional resolution.
+### Build 13 — Capture Import, Offline Investigation, and Fixture Generation
 
-Important details:
+Extend the versioned export schema into an explicit imported-capture identity and offline investigation mode. Imported Evidence must be read-only, visibly separate from live Capture, and incapable of becoming a live Injection Target without an explicit compatible current-runtime selection.
 
-- Internal second-level subscriptions are deliberately omitted from `LightstreamerClient.getSubscriptions()`.
-- A second-level update appears through the union of fields and carries `command=UPDATE`.
-- Second-level snapshot updates can occur on either side of first-level end-of-snapshot.
+First decide whether the existing structural snapshot schema is sufficient or a separate complete-capture bundle is required. Do not silently reinterpret a versioned Topology export as a lossless trace.
 
-Official basis:
+Useful generators:
 
-- [Subscription two-level behavior](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/Subscription.html)
-- [SubscriptionListener second-level callbacks](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/SubscriptionListener.html)
-- [ItemUpdate two-level semantics](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ItemUpdate.html)
+- Vitest `ItemUpdate`-like fixture;
+- JSON Scenario input after Scenario semantics are accepted;
+- minimal TypeScript Subscription configuration;
+- Markdown incident summary with scope, limitations, diagnostics, and timing.
 
-### 13. Redacted Trace Export/Import and Test-Fixture Generation
+Import requires schema migration, provenance, corruption handling, payload-size limits, and privacy review. It must not turn IndexedDB into implicit cross-session persistence.
 
-Export a versioned capture bundle containing:
+### Build 14 — Listener Performance, Exception, and Registration-Churn Profiler
 
-- Normalized events.
-- Optional raw diagnostics.
-- Client/subscription topology.
-- Capture epochs and skipped-event markers.
-- Scenarios and watch rules.
-- Extension and discoverable Web Client versions.
+Measure synchronous callback duration, count/average/p95/max by listener and Subscription, exceptions recorded before rethrow, duplicate registration, add/remove churn, and optional Long Task correlation.
 
-Before download:
+Use it to explain browser-side processing cost and duplicate Update Deliveries. Never call it end-to-end latency without a reliable source timestamp.
 
-- Preview all potentially sensitive fields.
-- Offer field-name, value, item, key, URL, message, IP, and header redaction.
-- Exclude passwords and authorization-like values unconditionally.
-
-Import should support offline inspection and local scenario editing without contacting a server.
-
-Developer-focused generators:
-
-- Vitest fixture using `ItemUpdate`-like values.
-- JSON scenario for Workbench replay.
-- Minimal TypeScript subscription configuration.
-- Markdown incident summary with diagnostics and timings.
-
-### 14. Field Provenance, Value Semantics, and JSON Patch Inspector
-
-For each field show:
-
-- Current resolved value.
-- Value changed in this update.
-- Inherited from prior state.
-- Never observed.
-- Cleared by COMMAND `DELETE`.
-- First-level or second-level origin.
-- JSON Patch and the reconstructed before/after JSON.
-
-Important limitation:
-
-- At the public API level, `null` may mean explicit null, no value received yet, or a COMMAND delete context. The UI should say "ambiguous null" unless prior state, command context, or optional wire provenance resolves it.
-
-JSON Patch tooling:
-
-- Pretty-print changed paths.
-- Verify that applying the patch to the previous JSON produces the received value.
-- Compare full-value size with patch size.
-- Explain when JSON Patch is unavailable. It is conditional and is not available for RAW mode.
-
-Official basis:
-
-- [ItemUpdate](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ItemUpdate.html)
-- [General Concepts: delta delivery and modes](https://lightstreamer.com/docs/ls-server/latest/General%20Concepts.pdf)
-
-### 15. Client-to-Server Message Sequence Waterfall
-
-Instrument `LightstreamerClient.sendMessage` and its listener:
-
-- Outbound message call, masked payload, sequence, delay timeout, and enqueue-while-disconnected setting.
-- Processed, denied, discarded, error, or aborted outcome.
-- Call-to-outcome latency.
-- Lanes grouped by sequence.
-- Whether an aborted message was probably put on the network.
-- Correlation with connection/recovery state.
-
-Correctness limits:
-
-- `onProcessed` proves successful Metadata Adapter handling, not a later business effect.
-- `onAbort(sentOnNetwork=true)` does not prove that the server received or processed the message.
-- Message sequence order is unrelated to COMMAND cross-key update order.
-- Default `UNORDERED_MESSAGES` does not provide strict ordering.
-
-Privacy:
-
-- Message bodies are arbitrary application data. Mask by default and require explicit reveal/export.
-
-Official basis:
-
-- [LightstreamerClient.sendMessage](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/LightstreamerClient.html)
-- [ClientMessageListener](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/ClientMessageListener.html)
-
-### 16. Listener Performance, Exception, and Duplicate-Listener Profiler
-
-Measure:
-
-- Synchronous callback duration.
-- Count, average, p95, and maximum duration by listener/subscription.
-- Callback exceptions with stack traces, recorded before rethrowing.
-- Duplicate listener registration.
-- Listener add/remove churn.
-- Event-loop lag and long-task correlation.
-
-Use it to explain:
-
-- UI jank during update bursts.
-- Slow processing near streaming-to-polling fallback.
-- Duplicate application updates caused by duplicate listener registration.
-- Listeners that were added repeatedly but not removed.
-
-Do not call the result end-to-end latency; the browser does not know when the Data Adapter originated an update unless a reliable application timestamp is present.
-
-### 17. Correlated Lightstreamer Client-Log and TLCP Console
+### Build 15 — Correlated Lightstreamer Client-Log and TLCP Evidence
 
 Offer two opt-in levels:
 
-1. Official client logging, filterable by stream, protocol, session, requests, subscriptions, messages, and actions.
-2. Decoded TLCP frames correlated with API-level events.
+1. official client logs, correlated by client, Session, request, Subscription, and Client Message;
+2. decoded TLCP evidence correlated with semantic Evidence.
 
-The advanced wire view can explain:
+The advanced lens may explain `SUBOK`, `SUBCMD`, `EOS`, `CS`, `OV`, `PROBE`, `LOOP`, request acknowledgements, recovery `PROG`, message completion, and wire encodings.
 
-- `SUBOK`, `SUBCMD`, `EOS`, `CS`, `OV`, and updates.
-- `PROBE`, `LOOP`, and stream endings.
-- Request acknowledgement and errors.
-- Recovery `PROG` positions.
-- Message completion/failure.
-- Wire-level unchanged, null, empty-string, and delta encodings.
+Detect the negotiated protocol version, treat decoding as stateful, tee rather than silently replace the application's logger provider, keep raw logging off by default, and redact credentials and application data from shared artifacts.
 
-Guardrails:
+### Build 16 — Multi-Client, Version, Duplicate-Session, and Churn Audit
 
-- Detect the negotiated protocol version; do not assume every client uses TLCP 2.5.0.
-- TLCP decoding is stateful.
-- Tee an application's logger provider rather than silently replacing it.
-- Keep raw logging disabled by default.
-- Redact credentials, headers, messages, item data, and addresses.
-- Continue to treat the public API as the semantic source of truth.
+Extend the shipped duplicate/overlap and historical-Session facts to detect mixed discoverable Web Client versions, repeated client/session creation, repeated subscribe/unsubscribe cycles, duplicate listeners, and unusually high counts.
 
-Official basis:
+All findings remain heuristic. Multiple clients, overlapping Subscriptions, and churn can be intentional. Do not introduce a connection-sharing controller.
 
-- [LightstreamerClient logging categories](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/LightstreamerClient.html)
-- [LoggerProvider](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/LoggerProvider.html)
-- [TLCP 2.5.0](https://www.lightstreamer.com/tlcp-2.5.0)
+## P2 Opportunity Details
 
-### 18. Multi-Client, Version, Duplicate-Session, and Churn Audit
+### Build 17 — Cross-Capture Comparison and Regression Diff
 
-Detect and explain:
+After import exists, compare two captures by client/connection configuration, Subscription sets, snapshot duration/completeness, diagnostics, loss, update rate, changed-field density, COMMAND end state, and Scenario outcomes. Primary uses are working-versus-broken, before-versus-after upgrade, and production-versus-local reproduction.
 
-- Multiple clients with the same server/Adapter Set/user fingerprint.
-- Mixed discoverable Web Client versions.
-- Duplicate or overlapping subscriptions.
-- Repeated subscribe/unsubscribe cycles.
-- Multiple listeners registered on the same subscription.
-- Unusually high client/session counts.
+### Build 18 — Cross-Frame, Worker, HTTP Transport, and Bundled-Client Coverage
 
-All findings should be heuristic warnings because multiple clients and overlapping subscriptions can be intentional.
+Expand Observation Coverage reporting across same-origin/cross-origin frames, workers, ESM/bundled constructors, HTTP streaming/polling, and WebSocket fallback. Report what was observed and what may have been missed; never present an absent hook as proof that no client exists.
 
-Do not propose a new connection-sharing controller. Modern Web Client 9 no longer exposes the older sharing surface; the official changelog says it was discontinued because of increasing browser security restrictions.
+### Build 19 — Guarded Live QoS and Transport Tuning Lab
 
-Official basis:
+Allow explicit, reversible experiments with requested maximum frequency, requested session bandwidth, or forced transport where the public API permits it. Keep inspection read-only by default, state that each change performs a real client control operation, retain the observed baseline, and never imply that the client can raise a server-enforced limit.
 
-- [Web Client changelog](https://github.com/Lightstreamer/Lightstreamer-lib-client-haxe/blob/main/CHANGELOG-Web.md)
+### Build 20 — Mobile Push Notification Workbench
 
-## P2: Specialized or Guarded Features
+For applications using the optional MPN module, inspect device registration/suspension, MPN Subscription inventory, triggers, notification format, modification/unsubscription, and errors. This remains specialized and license-dependent.
 
-### 19. Cross-Frame, Worker, HTTP Transport, and Bundled-Client Coverage Monitor
+## Disposition of the 2026-07-28 Backlog
 
-Show a capability report:
+| Previous opportunity | Reassessment |
+| --- | --- |
+| Client, Session, and Subscription Topology Inspector | Shipped as structural Scope and runtime Context; removed from backlog. |
+| Unified Diagnostics Center | Keep the diagnostic work as **Contextual Lightstreamer Diagnostics and Subscription Linting**; reject a permanent Center. |
+| Multi-Event Scenario Recorder and Deterministic Local Replay | Keep the value as **Deterministic Multi-Event Local Injection Scenarios**, replace replay language, and require an explicit Scenario design gate. |
+| Connection, Transport, Rebind, and Recovery Timeline | Keep as the contextual **Connection, Transport, Recovery, and Session-Epoch Lens**. |
+| Snapshot Bootstrap Visualizer and Correctness Checker | Snapshot phase shipped; keep the higher-order **Snapshot Bootstrap and Resubscription Correctness Lens**. |
+| Faceted Timeline Filters and Clickable Filter Chips | Core filter support partially shipped; adapt it into **Contextual Faceted Evidence Filtering**. |
+| Subscription Semantics Inspector and Configuration Linter | Inspector facts shipped; merge the remaining explanation into **Contextual Lightstreamer Diagnostics and Subscription Linting**. |
+| Filtering, Frequency, Bandwidth, Buffer, and Loss Profiler | Still valuable as the profiler of the same name. |
+| Capture Freeze, Pause/Resume, and Retention Controls | Freeze and complete session-local history shipped. Do not prioritize pause/rolling retention without measured capacity pressure and a new completeness decision. |
+| Conditional Event Breakpoints and Watch Rules | Still valuable as **Watch Rules and Conditional Listener Breakpoints**. |
+| MERGE, DISTINCT, and RAW State Views With Time Travel | Keep reducers and point-in-time value as contextual state reconstruction; reject peer views. |
+| Two-Level COMMAND Dependency Graph and Merged-Row Inspector | Capture and summaries partially shipped; keep the remaining depth in **Two-Level COMMAND Dependency and Merged-Row Inspector**. |
+| Redacted Trace Export/Import and Test-Fixture Generation | Credential-safe scoped snapshot export shipped; a general trace schema, import, offline investigation, and generators remain in **Capture Import, Offline Investigation, and Fixture Generation**. |
+| Field Provenance, Value Semantics, and JSON Patch Inspector | Elevated because the redesigned Context should make selected Evidence conclusive; retained as **Changed-Field, Delivery, Provenance, and Value-Semantics Inspection**. |
+| Client-to-Server Message Sequence Waterfall | Expanded into **Captured Client Messages and Deliberate Server Injection**; the waterfall becomes one contextual lens. |
+| Listener Performance, Exception, and Duplicate-Listener Profiler | Still valuable as **Listener Performance, Exception, and Registration-Churn Profiler**. |
+| Correlated Lightstreamer Client-Log and TLCP Console | Keep as **Correlated Lightstreamer Client-Log and TLCP Evidence**, an opt-in contextual lens. |
+| Multi-Client, Version, Duplicate-Session, and Churn Audit | Partially shipped; keep the remaining heuristics under the same opportunity. |
+| Cross-Frame, Worker, HTTP Transport, and Bundled-Client Coverage Monitor | Still specialized and foundationally expensive; retain as **Cross-Frame, Worker, HTTP Transport, and Bundled-Client Coverage**. |
+| Guarded Live QoS and Transport Tuning Lab | Still guarded and lower priority. |
+| Mobile Push Notification Workbench | Still specialized. |
+| Cross-Capture Comparison and Regression Diff | Keep after import. |
 
-- MAIN-world constructor hooks found or not found.
-- Global, namespace, ESM/bundled, iframe, worker, WebSocket, HTTP streaming, and polling coverage.
-- Captured versus possibly missed clients/subscriptions.
-- Web Client version when discoverable.
-- Reason for API capture versus wire fallback.
-
-This is important for trust in the tool, but implementation is foundational and browser-context heavy.
-
-### 20. Guarded Live QoS and Transport Tuning Lab
-
-Allow explicit, reversible experiments:
-
-- Lower or restore active requested max frequency where the API permits.
-- Lower or restore requested session bandwidth.
-- Force a transport and compare status/recovery behavior.
-- Compare callback rate, changed-field density, bytes, and UI responsiveness before and after.
-
-Guardrails:
-
-- Read-only by default.
-- Clearly state that changes issue real client control operations to the server.
-- Snapshot, buffer, item, field, selector, and two-level changes require an inactive subscription and should not be silently applied.
-- Do not offer active transitions to or from `unfiltered`.
-- Always retain and offer restoration of the observed baseline.
-- Never imply the client can raise a server-enforced limit.
-
-### 21. Mobile Push Notification Workbench
-
-For applications that use the optional MPN module:
-
-- Device registration and suspension state.
-- MPN subscription inventory and status.
-- Trigger and notification-format inspection.
-- Subscription, modification, unsubscription, and registration errors.
-- Correlation between real-time subscription fields and resulting MPN configuration.
-
-This is valuable but specialized and license-dependent, so it should follow the more universal client and subscription tooling.
-
-### 22. Cross-Capture Comparison and Regression Diff
-
-After trace import/export exists, compare two captures:
-
-- Client/connection configuration.
-- Subscription sets and schemas.
-- Snapshot duration and completeness.
-- Error/loss counts.
-- Update rates and changed-field density.
-- COMMAND end state.
-- Scenario outcome.
-
-Primary workflows:
-
-- Working versus broken environment.
-- Before versus after client/server upgrade.
-- Baseline versus performance regression.
-- Production trace versus local reproduction.
+**Committed Evidence Boundary and Fail-Closed History Capacity** was added after the redesign and high-volume history work made the Evidence-acceptance and capacity boundary explicit.
 
 ## Suggested Delivery Increments
 
-### Increment A: Make Capture Navigable and Explainable
+### Increment A: Make Evidence Acceptance Truthful
 
-1. Faceted Timeline filters.
-2. Freeze, pause/resume, skipped-event markers, and retention limits.
-3. Client/session/subscription topology inspector.
-4. Capture the missing client listener callbacks and connection properties.
-5. Capture full subscription configuration and real max frequency.
-6. Unified error explanations.
-7. Snapshot phase visualizer.
+1. Implement the single Event History state machine and Committed Evidence Boundary.
+2. Make projections consume accepted Evidence only.
+3. Define fail-closed journal/capacity behavior and exact Clear cuts.
+4. Surface only material Capture Operation, Observation Coverage, History Capacity, and completeness consequences.
+5. Prove sustained, burst, failure, Clear, fallback, and teardown cases.
 
-This increment has the best ratio of developer value to implementation risk.
+### Increment B: Make the Redesigned Diagnose Journey Conclusive
 
-### Increment B: Make Failures Reproducible
+1. Contextual filter facets and click-to-filter actions.
+2. Changed fields, delivery identity, provenance, and value semantics.
+3. Missing client callbacks and normalized diagnostic explanations.
+4. Subscription linting.
+5. Connection/recovery and snapshot correctness lenses.
 
-1. Multi-event scenario recorder and replay.
-2. Conditional breakpoints and watch rules.
-3. MERGE, DISTINCT, and RAW state reducers with time travel.
-4. Redacted export/import.
-5. Test-fixture generation.
+### Increment C: Complete the Planned Server Boundary
 
-This increment strengthens the product's main differentiator: reproducing streaming behavior without backend cooperation.
+1. Capture Client Messages and every listener outcome observationally.
+2. Add outbound Evidence filters, Context, privacy handling, and export redaction.
+3. Extend the single protected Injection Draft boundary to Client Messages and reviewed `sendMessage` execution.
+4. Prove processed, denied, discarded, error, aborted, stale-Session, and unknown outcomes.
+5. Add explicit Repeat Injection handling without automatic retry.
 
-### Increment C: Add Deep Lightstreamer Diagnostics
+### Increment D: Design and Build Multi-Event Local Scenarios
 
-1. QoS, filtering, bandwidth, and loss profiler.
-2. Two-level COMMAND graph.
-3. Client-message waterfall.
-4. Field provenance and JSON Patch tooling.
-5. Listener profiler.
-6. Opt-in client logs and correlated TLCP.
+1. Resolve Scenario membership, target, clock, partial-outcome, cancellation, and assertion semantics.
+2. Prototype materially different models and amend domain/UI contracts where required.
+3. Add independent Draft models only after the execution model is accepted.
+4. Implement stepping before timed automation.
+5. Prove target retirement and failure between steps before adding loop or speed controls.
 
-### Increment D: Expand Coverage and Specialized Workflows
+### Increment E: Add Deep Diagnostics and Sharing
 
-1. Iframes, workers, HTTP streaming/polling, and bundled-client coverage.
-2. Live tuning lab.
-3. MPN workbench.
-4. Cross-capture comparison.
+1. QoS/loss profiler.
+2. Watch rules and conditional listener breakpoints.
+3. Mode reducers and point-in-time state.
+4. Two-level COMMAND inspection.
+5. Import, offline investigation, and fixture generation.
+6. Listener profiling, client logs/TLCP, and broader client audits.
 
-## Capture Surface Changes Required
+### Increment F: Expand Coverage and Specialized Workflows
 
-| Area | Additions |
+1. Cross-capture comparison.
+2. Frames, workers, HTTP transports, and bundled clients.
+3. Guarded live tuning.
+4. MPN tooling.
+
+## Capture and State Changes Required
+
+| Area | Additions or changes |
 | --- | --- |
-| Client listener | `onServerError`, `onPropertyChange`, `onServerKeepalive` |
-| Connection details | Session ID, server instance, server socket, masked client IP, user-presence marker |
-| Connection options | Requested/real bandwidth, keepalive, idle/polling, retry, stalled, reconnect, recovery, forced transport, slowing |
-| Subscription metadata | Requested buffer, requested max frequency, selector, active/subscribed, second-level fields/schema/Data Adapter |
-| Subscription listener | `onRealMaxFrequency`, `onCommandSecondLevelItemLostUpdates`, `onCommandSecondLevelSubscriptionError` |
-| Outbound client API | `sendMessage` call and all `ClientMessageListener` outcomes |
-| Event envelope | First-class outbound direction, connection/session data, QoS data, diagnostic codes, capture epochs |
-| State | Subscription epochs plus MERGE, DISTINCT, RAW, snapshot, connection, and scenario reducers |
-| Storage/UI | Structured diagnostic and QoS indexes, faceted filters, retention metadata, imported-capture identity |
+| Event History | Explicit pending/accepted states, Evidence sequence, Committed Evidence Boundary, History Interval, exact Clear cut, capacity/failure stop, adapter-independent state contract |
+| Client listener | `onServerError` and `onServerKeepalive`; retain synchronous property reads in `onPropertyChange` |
+| Outbound client API | `sendMessage` call, protected arguments, and every `ClientMessageListener` outcome |
+| Event envelope | First-class Captured Client Message and Injection outcome data; accepted Evidence identity/sequence and History Interval |
+| Connection/snapshot state | Correlated status intervals, transport and Session epochs, snapshot bootstrap epochs and completeness limits |
+| Mode state | MERGE, DISTINCT, RAW, two-level COMMAND, and optional point-in-time reducers |
+| Query/indexes | Diagnostic severity/code, outbound sequence/outcome, QoS metrics, imported-capture identity |
+| Runtime/UI | Contextual lenses and typed commands inside the existing Scope/Evidence/Context model; no feature-first peer navigation |
 
 ## Correctness and Product Guardrails
 
-The UI should never make these claims:
+Workbench must not claim:
 
-- "Every missing source update was lost." Filtered conflation and suppression can be intentional and silent.
-- "COMMAND events preserve order across keys." Per-key lifecycle is the dependable model; cross-key order is not generally guaranteed.
-- "End-of-snapshot means every two-level row is complete." Second-level MERGE snapshots can arrive before or after first-level end-of-snapshot.
-- "A null API value was explicitly sent." Null has multiple meanings without enough context or wire provenance.
-- "Internal second-level subscriptions should appear in `getSubscriptions()`." The API intentionally excludes them.
-- "A recovery status proves the exact resumed position." Exact proof requires protocol/session-progress correlation.
-- "Raw capture enables real server-stream injection." Synthetic reinjection remains local.
+- that a captured event is Evidence before acceptance completes;
+- Complete History beyond its History Interval and Committed Evidence Boundary;
+- that History Capacity, Observation Coverage, Capture Operation, or Live/Frozen position are the same state;
+- that every missing source update was lost rather than filtered or conflated;
+- that COMMAND operations preserve a dependable order across keys;
+- that end-of-snapshot proves every two-level row is complete;
+- that a null API value was explicitly sent without enough context;
+- that internal second-level Subscriptions should appear in `getSubscriptions()`;
+- that recovery status proves an exact resumed progressive position;
+- that Local Injection enters the Lightstreamer Server update stream;
+- that Server Injection directly creates an inbound Item Update;
+- that a processed Client Message proves a downstream business effect;
+- that a later Server Update was caused by Server Injection without Injection Attribution;
+- that an Unknown Server Injection Outcome is safe to retry automatically.
 
-Product boundaries to keep:
+Product boundaries to preserve:
 
-- Lightstreamer-native primitives, not application-specific domain models.
+- Lightstreamer-native primitives before optional application-specific adapters.
 - Official Web Client API instrumentation first.
-- Raw TLCP as diagnostics, not the only source of truth.
-- In-memory/session-local data by default.
-- No automatic transmission of captured values.
-- No real server event injection.
-- Read-only inspection by default; any live client/server control operation must be explicit and reversible.
+- Raw TLCP as supplemental diagnostics.
+- Current-session operational storage, not implicit cross-session persistence.
+- Observational Capture and immutable Evidence.
+- Explicitly marked Local Evidence and separate COMMAND projections.
+- One protected Local Injection Draft until a separate Scenario decision changes that contract.
+- Consequential client/server operations explicit, reviewed, and scoped.
+- No permanent surface or navigation category without the accepted UI gate.
 
-## Features Not Recommended as Near-Term Core
+## Not Recommended as Near-Term Core
 
+- Reintroducing permanent Timeline, Topology, COMMAND State, Diagnostics, Snapshot, or Message peer destinations.
 - A generic WebSocket inspector.
-- Real server or Data Adapter injection.
-- A privileged server-monitoring/JMX dashboard inside the browser extension.
+- Direct server-stream or Data Adapter Item Update injection.
+- A generic Item-Update-to-Client-Message translator.
+- Treating visible or selected Evidence as implicit Scenario membership.
+- Adding “run all” to the current one-Draft editor before Scenario semantics exist.
+- Pause Capture or rolling retention as a substitute for Frozen Evidence and capacity work.
+- Cross-session Capture persistence without a separate privacy, pruning, schema, and user-control decision.
+- A privileged server-monitoring/JMX dashboard in the browser extension.
 - Always-on DEBUG protocol logging.
-- Automatic live mutation of transport, frequency, bandwidth, subscription, or connection options.
+- Automatic live mutation of transport, frequency, bandwidth, Subscription, or connection settings.
 - A connection-sharing controller.
-- Application-specific business-object interpretation in the core event model.
+- Application-specific business-object interpretation in the core model.
 
-## Official Documentation Reviewed
+## Evidence Used for This Reassessment
+
+Repository decisions and implementation:
+
+- [Domain language](../CONTEXT.md)
+- [Canonical Developer Journeys](CANONICAL_DEVELOPER_JOURNEYS.md)
+- [Workspace Information Architecture](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md)
+- [Workbench UI Standard](WORKBENCH_UI_STANDARD.md)
+- [Production UI Migration Plan](WORKBENCH_UI_MIGRATION_PLAN.md)
+- [Architecture](ARCHITECTURE.md)
+- [Raw-JSON Local Injection editor research](research/local-injection-json-editor-patterns.md)
+- [Event History workload facts](research/event-history-workload-facts.md)
+- [Accepted ADRs](adr/)
+
+Official product sources retained from the original review:
 
 - [Lightstreamer Web Client 9.2.3 API](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/index.html)
 - [LightstreamerClient](https://sdk.lightstreamer.com/ls-web-client/9.2.3/api/LightstreamerClient.html)
