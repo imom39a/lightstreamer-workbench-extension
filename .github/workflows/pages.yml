@@ -57,7 +57,7 @@ jobs:
         run: npm run test:site
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site-dist
 
@@ -67,6 +67,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       pages: write
       id-token: write
     environment:
@@ -75,4 +76,4 @@ jobs:
     steps:
       - name: Deploy Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
