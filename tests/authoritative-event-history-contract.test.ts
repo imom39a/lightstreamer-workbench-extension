@@ -72,6 +72,40 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
         ok: true,
         value: { total: 3, evidence: [expect.objectContaining({ eventId: "beta" })] }
       });
+      await expect(history.read({ order: "desc", offsetFromNewest: 1, limit: 2 })).resolves.toMatchObject({
+        ok: true,
+        value: {
+          evidence: [expect.objectContaining({ eventId: "beta" }), expect.objectContaining({ eventId: "alpha" })]
+        }
+      });
+
+      const checkpoint = {
+        kind: "topology-checkpoint" as const,
+        id: "checkpoint-filtered",
+        checkpoint: { pageEpoch: "epoch-command" }
+      };
+      await history.offer(checkpoint).settled;
+      await expect(history.read({ filters: { mode: "COMMAND" } })).resolves.toMatchObject({
+        ok: true,
+        value: { total: 2, evidence: [expect.objectContaining({ eventId: "alpha" }), expect.objectContaining({ eventId: "beta" })] }
+      });
+      await expect(history.read({ filters: { query: "epoch-command" } })).resolves.toMatchObject({
+        ok: true,
+        value: { total: 1, evidence: [expect.objectContaining({ eventId: "checkpoint-filtered" })] }
+      });
+      await expect(history.read({ filters: { query: "not-present" } })).resolves.toMatchObject({
+        ok: true,
+        value: { total: 0, evidence: [] }
+      });
+
+      const firstRead = await history.read({});
+      const firstInterval = firstRead.ok ? firstRead.value.interval.id : "";
+      await history.clear();
+      await history.offer(candidate("after-clear")).settled;
+      await expect(history.read({ intervalId: firstInterval })).resolves.toMatchObject({
+        ok: true,
+        value: { total: 0, evidence: [] }
+      });
       await history.close();
     });
   });

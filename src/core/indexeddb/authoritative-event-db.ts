@@ -4,6 +4,7 @@ export const AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION = 1;
 export const AUTHORITATIVE_EVENT_CONTROL_KEY = "control";
 
 const INDEXEDDB_REQUEST_TIMEOUT_MS = 2_000;
+export const AUTHORITATIVE_EVENT_DB_STARTUP_RECORD_LIMIT = 10_000;
 
 export const AUTHORITATIVE_EVENT_STORE_NAMES = {
   historyControl: "historyControl",
@@ -84,19 +85,42 @@ export function deleteAuthoritativeEventDatabase(name = AUTHORITATIVE_EVENT_DB_N
 
 function inspectDatabaseVersion(name: string): Promise<number> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const request = indexedDB.open(name);
+    const timeout = globalThis.setTimeout(() => {
+      settleReject(new AuthoritativeDatabaseOpenError("OPEN_FAILED", `Inspecting ${name} timed out.`));
+    }, INDEXEDDB_REQUEST_TIMEOUT_MS);
+
+    function settleResolve(version: number): void {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timeout);
+      resolve(version);
+    }
+
+    function settleReject(error: AuthoritativeDatabaseOpenError): void {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timeout);
+      reject(error);
+    }
+
     request.onsuccess = () => {
       const database = request.result;
+      if (settled) {
+        database.close();
+        return;
+      }
       const version = database.version;
       database.close();
-      resolve(version);
+      settleResolve(version);
     };
-    request.onerror = () => reject(new AuthoritativeDatabaseOpenError(
+    request.onerror = () => settleReject(new AuthoritativeDatabaseOpenError(
       "OPEN_FAILED",
       `Failed to inspect ${name}.`,
       request.error
     ));
-    request.onblocked = () => reject(new AuthoritativeDatabaseOpenError(
+    request.onblocked = () => settleReject(new AuthoritativeDatabaseOpenError(
       "OPEN_FAILED",
       `Inspecting ${name} was blocked.`
     ));
@@ -144,10 +168,42 @@ function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> 
     ));
     request.onsuccess = () => {
       const database = request.result;
+      if (settled) {
+        database.close();
+        return;
+      }
       database.onversionchange = () => database.close();
-      settleResolve({ db: database, name });
+      try {
+        validateAuthoritativeDatabaseShape(database);
+        settleResolve({ db: database, name });
+      } catch (error) {
+        database.close();
+        settleReject(new AuthoritativeDatabaseOpenError("OPEN_FAILED", `Database ${name} has an unsupported shape.`, error));
+      }
     };
   });
+}
+
+function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
+  const stores = [...database.objectStoreNames].sort();
+  const expectedStores = [AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl].sort();
+  if (stores.length !== expectedStores.length || stores.some((name, index) => name !== expectedStores[index])) {
+    throw new Error("Authoritative Event History requires exactly the historyControl and evidence stores.");
+  }
+  const transaction = database.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl], "readonly");
+  const control = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl);
+  if (control.keyPath !== "key") throw new Error("The historyControl store must be keyed by key.");
+  const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+  if (evidence.keyPath !== "sequence") throw new Error("The evidence store must be keyed by sequence.");
+  const indexes = [...evidence.indexNames].sort();
+  if (indexes.length !== 2 || indexes[0] !== "eventIdentity" || indexes[1] !== "facets") {
+    throw new Error("The evidence store must have exactly the eventIdentity and facets indexes.");
+  }
+  const identity = evidence.index("eventIdentity");
+  const facets = evidence.index("facets");
+  if (identity.keyPath !== "eventId" || !identity.unique || facets.keyPath !== "facets" || !facets.multiEntry) {
+    throw new Error("The evidence indexes do not match the authoritative schema.");
+  }
 }
 
 function upgradeAuthoritativeDatabase(

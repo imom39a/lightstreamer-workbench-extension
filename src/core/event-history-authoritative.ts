@@ -1,5 +1,6 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { createEventSearchText, type EventFilterState, matchesEventFilters } from "./event-filter";
+import { serializeJournalEvidenceCandidate } from "./event-history-serialization";
 
 /** A normalized Capture event or a validated topology checkpoint staged for acceptance. */
 export type TopologyCheckpointEvidenceCandidate = Readonly<{
@@ -599,16 +600,14 @@ function candidateId(candidate: EvidenceCandidate): string {
   return candidate.id;
 }
 
-function selectEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
+export function selectEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
   return evidence.filter((entry) => {
     if (query.afterSequence !== undefined && entry.sequence <= query.afterSequence) return false;
     if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
-    if (query.filters && entry.candidate.kind !== "topology-checkpoint" && !matchesEventFilters(entry.candidate, query.filters)) {
-      return false;
-    }
+    if (query.filters && !matchesCandidateFilters(entry.candidate, query.filters)) return false;
     if (query.find) {
       const text = entry.candidate.kind === "topology-checkpoint"
-        ? JSON.stringify(entry.candidate).toLowerCase()
+        ? serializeJournalEvidenceCandidate(entry.candidate).payload.toLowerCase()
         : createEventSearchText(entry.candidate).toLowerCase();
       if (!text.includes(query.find.trim().toLowerCase())) return false;
     }
@@ -616,15 +615,24 @@ function selectEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQ
   });
 }
 
-function pageEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
-  const ordered = query.order === "desc" ? [...evidence].reverse() : [...evidence];
+export function pageEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
   const offset = Math.max(0, Math.floor(query.offsetFromNewest ?? 0));
   if (query.offsetFromNewest !== undefined) {
-    const start = Math.max(0, ordered.length - offset - (query.limit ?? ordered.length));
-    const end = ordered.length - offset;
-    return ordered.slice(start, query.limit === undefined ? end : Math.min(end, start + query.limit));
+    const newestFirst = [...evidence].reverse();
+    const page = newestFirst.slice(offset, query.limit === undefined ? undefined : offset + Math.max(0, query.limit));
+    return query.order === "desc" ? page : page.reverse();
   }
+  const ordered = query.order === "desc" ? [...evidence].reverse() : [...evidence];
   return query.limit === undefined ? ordered : ordered.slice(0, Math.max(0, query.limit));
+}
+
+function matchesCandidateFilters(candidate: EvidenceCandidate, filters: EventFilterState): boolean {
+  if (candidate.kind !== "topology-checkpoint") return matchesEventFilters(candidate, filters);
+
+  if (filters.query && !serializeJournalEvidenceCandidate(candidate).payload.toLowerCase().includes(filters.query.trim().toLowerCase())) {
+    return false;
+  }
+  return !Object.entries(filters).some(([key, value]) => key !== "query" && value !== undefined && value !== "");
 }
 
 function toRef(evidence: CommittedEvidence): EvidenceRef {

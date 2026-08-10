@@ -2,6 +2,7 @@ import {
   AUTHORITATIVE_EVENT_CONTROL_KEY,
   AUTHORITATIVE_EVENT_STORE_NAMES,
   authoritativeEventDatabaseName,
+  AUTHORITATIVE_EVENT_DB_STARTUP_RECORD_LIMIT,
   openAuthoritativeEventDatabase,
   type AuthoritativeEventDatabase
 } from "./indexeddb/authoritative-event-db";
@@ -23,9 +24,10 @@ import {
   type HistoryPublication,
   type HistoryStatus,
   type Outcome,
-  type CloseResult
+  type CloseResult,
+  pageEvidence,
+  selectEvidence
 } from "./event-history-authoritative";
-import { createEventSearchText, matchesEventFilters } from "./event-filter";
 
 export const AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT = 256;
 export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 1_048_576;
@@ -81,8 +83,13 @@ export async function createIndexedDbEventHistory(
 ): Promise<EventHistory> {
   const panelSessionId = options.panelSessionId ?? `session-${Math.random().toString(36).slice(2)}`;
   const database = await openAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
-  const loaded = await loadJournal(database, panelSessionId);
-  return createHistory(database, loaded);
+  try {
+    const loaded = await loadJournal(database, panelSessionId);
+    return createHistory(database, loaded);
+  } catch (error) {
+    database.db.close();
+    throw error;
+  }
 }
 
 type LoadedJournal = {
@@ -221,27 +228,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
   function read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>> {
     if (phase === "CLOSED") return Promise.resolve({ ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed.") });
-    const intervalSnapshot = [...committed];
-    const selected = intervalSnapshot.filter((entry) => {
-      if (query.afterSequence !== undefined && entry.sequence <= query.afterSequence) return false;
-      if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
-      if (query.filters && entry.candidate.kind !== "topology-checkpoint" && !matchesEventFilters(entry.candidate, query.filters)) return false;
-      const searchText = entry.candidate.kind === "topology-checkpoint"
-        ? JSON.stringify(entry.candidate).toLowerCase()
-        : createEventSearchText(entry.candidate).toLowerCase();
-      if (query.find && !searchText.includes(query.find.trim().toLowerCase())) return false;
-      return true;
-    });
-    const ordered = query.order === "desc" ? [...selected].reverse() : selected;
-    const offset = Math.max(0, Math.floor(query.offsetFromNewest ?? 0));
-    let evidence = ordered;
-    if (query.offsetFromNewest !== undefined) {
-      const end = ordered.length - offset;
-      const start = Math.max(0, end - (query.limit ?? ordered.length));
-      evidence = ordered.slice(start, query.limit === undefined ? end : Math.min(end, start + query.limit));
-    } else if (query.limit !== undefined) {
-      evidence = ordered.slice(0, Math.max(0, query.limit));
-    }
+    const intervalSnapshot = committed.filter((entry) => entry.intervalId === (query.intervalId ?? interval.id));
+    const selected = selectEvidence(intervalSnapshot, query);
+    const evidence = pageEvidence(selected, query);
     return Promise.resolve({ ok: true, value: deepFreeze({ interval, evidence: [...evidence], total: selected.length, committedEvidenceBoundary, retainedRange: intervalSnapshot.length ? { first: toRef(intervalSnapshot[0]), last: toRef(intervalSnapshot.at(-1)!) } : null }) });
   }
 
@@ -336,16 +325,22 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readonly");
-  const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY));
-  const records = await requestToPromise<EvidenceRecord[]>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).getAll());
-  await transactionDone(transaction);
-  if (!control) {
-    const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
-    await writeControl(database, createControl(panelSessionId, interval, 1, null, null, 0, 0));
-    return { panelSessionId, interval, committed: [], nextSequence: 1, retainedBytes: 0, committedEvidenceBoundary: null };
+  try {
+    const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
+    const records = await readEvidenceRecords(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence));
+    await transactionDone(transaction, "loading Event History");
+    validateJournalRecords(panelSessionId, control, records);
+    if (!control) {
+      const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
+      await writeControl(database, createControl(panelSessionId, interval, 1, null, null, 0, 0));
+      return { panelSessionId, interval, committed: [], nextSequence: 1, retainedBytes: 0, committedEvidenceBoundary: null };
+    }
+    const committed = records.sort((left, right) => left.sequence - right.sequence).map(toCommittedEvidenceFromRecord);
+    return { panelSessionId, interval: control.interval, committed, nextSequence: control.nextSequence, retainedBytes: control.replayPayloadBytes, committedEvidenceBoundary: control.committedEvidenceBoundary };
+  } catch (error) {
+    try { transaction.abort(); } catch { /* the transaction may already be complete */ }
+    throw error;
   }
-  const committed = records.sort((left, right) => left.sequence - right.sequence).map(toCommittedEvidenceFromRecord);
-  return { panelSessionId: control.panelSessionId, interval: control.interval, committed, nextSequence: control.nextSequence, retainedBytes: control.replayPayloadBytes, committedEvidenceBoundary: control.committedEvidenceBoundary };
 }
 
 async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previous: readonly CommittedEvidence[], evidence: readonly CommittedEvidence[], replayPayloadBytes: number): Promise<void> {
@@ -357,14 +352,115 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
   }
   const next = evidence.at(-1) ? evidence.at(-1)!.sequence + 1 : nextSequence;
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, next, evidence.at(-1) ? toRef(evidence.at(-1)!) : previous.at(-1) ? toRef(previous.at(-1)!) : null, previous.length ? { first: toRef(previous[0]), last: toRef(evidence.at(-1) ?? previous.at(-1)!) } : evidence.length ? { first: toRef(evidence[0]), last: toRef(evidence.at(-1)!) } : null, previous.length + evidence.length, replayPayloadBytes));
-  await transactionDone(transaction);
+  await transactionDone(transaction, "committing Evidence");
 }
 
 async function clearJournal(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, nextSequence, boundary, null, 0, 0));
-  await transactionDone(transaction);
+  await transactionDone(transaction, "clearing Event History");
+}
+
+function readEvidenceRecords(store: IDBObjectStore): Promise<EvidenceRecord[]> {
+  return new Promise((resolve, reject) => {
+    const records: EvidenceRecord[] = [];
+    const request = store.openCursor();
+    const timeout = globalThis.setTimeout(() => reject(new Error("Timed out while loading Event History evidence.")), 2_000);
+    const settle = (callback: () => void) => {
+      globalThis.clearTimeout(timeout);
+      callback();
+    };
+    request.onerror = () => settle(() => reject(request.error ?? new Error("IndexedDB evidence load failed.")));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        settle(() => resolve(records));
+        return;
+      }
+      records.push(cursor.value as EvidenceRecord);
+      if (records.length > AUTHORITATIVE_EVENT_DB_STARTUP_RECORD_LIMIT) {
+        settle(() => reject(new Error("IndexedDB Event History exceeds the bounded startup load.")));
+        return;
+      }
+      cursor.continue();
+    };
+  });
+}
+
+function validateJournalRecords(panelSessionId: string, control: ControlRecord | undefined, records: readonly EvidenceRecord[]): void {
+  if (!control) {
+    if (records.length > 0) throw new Error("Evidence residue exists without a history control record.");
+    return;
+  }
+  assertExactKeys(control, ["committedEvidenceBoundary", "interval", "key", "nextSequence", "panelSessionId", "recordVersion", "retainedCount", "retainedRange", "replayPayloadBytes", "schemaVersion"]);
+  if (control.key !== AUTHORITATIVE_EVENT_CONTROL_KEY || control.schemaVersion !== 2 || control.recordVersion !== 1 || control.panelSessionId !== panelSessionId) {
+    throw new Error("The history control record does not match the authoritative schema or Panel Session.");
+  }
+  if (!isInterval(control.interval) || control.interval.id !== `${panelSessionId}:interval-${control.interval.ordinal}`) {
+    throw new Error("The history control interval is incoherent.");
+  }
+  if (!Number.isSafeInteger(control.nextSequence) || control.nextSequence < 1 || !Number.isSafeInteger(control.retainedCount) || control.retainedCount < 0 || !Number.isSafeInteger(control.replayPayloadBytes) || control.replayPayloadBytes < 0) {
+    throw new Error("The history control counters are incoherent.");
+  }
+
+  const ordered = [...records].sort((left, right) => left.sequence - right.sequence);
+  let payloadBytes = 0;
+  for (let index = 0; index < ordered.length; index += 1) {
+    const record = ordered[index];
+    assertExactKeys(record, ["eventId", "facets", "intervalId", "replayPayload", "sequence", "serializedBytes"]);
+    if (record.intervalId !== control.interval.id || typeof record.eventId !== "string" || record.eventId.length === 0 || !Number.isSafeInteger(record.sequence) || record.sequence < 1 || (index > 0 && record.sequence !== ordered[index - 1].sequence + 1) || typeof record.replayPayload !== "string" || !Number.isSafeInteger(record.serializedBytes) || record.serializedBytes < 0 || !Array.isArray(record.facets) || record.facets.some((facetValue) => typeof facetValue !== "string")) {
+      throw new Error("An evidence record is incoherent with the history control record.");
+    }
+    const candidate = copyCandidate(deserializeJournalEvidenceCandidate(record.replayPayload));
+    const serialized = serializeJournalEvidenceCandidate(candidate);
+    if (candidate.id !== record.eventId || serialized.payload !== record.replayPayload || serialized.bytes !== record.serializedBytes || JSON.stringify(exactFacets(candidate)) !== JSON.stringify(record.facets)) {
+      throw new Error("An evidence record does not match its replay payload or facets.");
+    }
+    payloadBytes += record.serializedBytes;
+  }
+  if (control.retainedCount !== ordered.length || control.replayPayloadBytes !== payloadBytes) {
+    throw new Error("The history control totals do not match its evidence records.");
+  }
+  const last = ordered.at(-1);
+  const expectedNext = last ? last.sequence + 1 : control.committedEvidenceBoundary ? control.committedEvidenceBoundary.sequence + 1 : 1;
+  if (control.nextSequence !== expectedNext) throw new Error("The history control next sequence is incoherent.");
+  const expectedRange = ordered.length ? { first: evidenceRef(ordered[0]), last: evidenceRef(last!) } : null;
+  if (control.committedEvidenceBoundary !== null) assertRef(control.committedEvidenceBoundary);
+  if (control.retainedRange !== null) {
+    assertRef(control.retainedRange.first);
+    assertRef(control.retainedRange.last);
+  }
+  if (!sameRange(control.retainedRange, expectedRange)) throw new Error("The history control retained range is incoherent.");
+  if (last) {
+    if (!sameRef(control.committedEvidenceBoundary, evidenceRef(last))) throw new Error("The history control committed boundary is incoherent.");
+  }
+}
+
+function assertExactKeys(value: object, keys: readonly string[]): void {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new Error("An authoritative IndexedDB record has an unexpected schema.");
+}
+
+function isInterval(value: unknown): value is HistoryInterval {
+  return Boolean(value && typeof value === "object" && Object.keys(value).sort().join(",") === "id,ordinal" && typeof (value as HistoryInterval).id === "string" && Number.isSafeInteger((value as HistoryInterval).ordinal) && (value as HistoryInterval).ordinal > 0);
+}
+
+function assertRef(value: EvidenceRef): void {
+  if (!value || Object.keys(value).sort().join(",") !== "eventId,intervalId,sequence" || typeof value.intervalId !== "string" || !Number.isSafeInteger(value.sequence) || value.sequence < 1 || typeof value.eventId !== "string" || value.eventId.length === 0) throw new Error("An Evidence reference is incoherent.");
+}
+
+function evidenceRef(record: EvidenceRecord): EvidenceRef {
+  return { intervalId: record.intervalId, sequence: record.sequence, eventId: record.eventId };
+}
+
+function sameRef(left: EvidenceRef | null, right: EvidenceRef | null): boolean {
+  return left === null || right === null ? left === right : left.intervalId === right.intervalId && left.sequence === right.sequence && left.eventId === right.eventId;
+}
+
+function sameRange(left: { first: EvidenceRef; last: EvidenceRef } | null, right: { first: EvidenceRef; last: EvidenceRef } | null): boolean {
+  return left === null || right === null ? left === right : sameRef(left.first, right.first) && sameRef(left.last, right.last);
 }
 
 function createControl(panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null, range: { first: EvidenceRef; last: EvidenceRef } | null, retainedCount: number, replayPayloadBytes: number): ControlRecord {
@@ -374,7 +470,7 @@ function createControl(panelSessionId: string, interval: HistoryInterval, nextSe
 async function writeControl(database: AuthoritativeEventDatabase, control: ControlRecord): Promise<void> {
   const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(control);
-  await transactionDone(transaction);
+  await transactionDone(transaction, "initializing Event History");
 }
 
 function exactFacets(candidate: EvidenceCandidate): string[] {
@@ -411,18 +507,31 @@ function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
   return deepFreeze(structuredClone(candidate));
 }
 
-function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
+function requestToPromise<T>(request: IDBRequest<T>, operation: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
+    const timeout = globalThis.setTimeout(() => reject(new Error(`Timed out while ${operation}.`)), 2_000);
+    const settle = (callback: () => void) => {
+      globalThis.clearTimeout(timeout);
+      callback();
+    };
+    request.onsuccess = () => settle(() => resolve(request.result));
+    request.onerror = () => settle(() => reject(request.error ?? new Error("IndexedDB request failed.")));
   });
 }
 
-function transactionDone(transaction: IDBTransaction): Promise<void> {
+function transactionDone(transaction: IDBTransaction, operation: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed."));
-    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted."));
+    const timeout = globalThis.setTimeout(() => {
+      try { transaction.abort(); } catch { /* the transaction may already be complete */ }
+      reject(new Error(`Timed out while ${operation}.`));
+    }, 2_000);
+    const settle = (callback: () => void) => {
+      globalThis.clearTimeout(timeout);
+      callback();
+    };
+    transaction.oncomplete = () => settle(resolve);
+    transaction.onerror = () => settle(() => reject(transaction.error ?? new Error("IndexedDB transaction failed.")));
+    transaction.onabort = () => settle(() => reject(transaction.error ?? new Error("IndexedDB transaction aborted.")));
   });
 }
 

@@ -1,4 +1,4 @@
-import { IDBDatabase, IDBFactory } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -68,8 +68,10 @@ describe("IndexedDB authoritative EventHistory", () => {
     const history = await freshHistory("indexed-batches");
     const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
     const publications: string[] = [];
+    const publicationBatchSizes: number[] = [];
     history.follow({ from: "NOW" }, (publication) => {
       if (publication.type === "committed-evidence") {
+        publicationBatchSizes.push(publication.evidence.length);
         publications.push(...publication.evidence.map((entry) => entry.eventId));
       }
     });
@@ -81,8 +83,97 @@ describe("IndexedDB authoritative EventHistory", () => {
 
     const writeTransactions = transactionSpy.mock.calls.filter(([, mode]) => mode === "readwrite");
     expect(writeTransactions).toHaveLength(3);
+    expect(publicationBatchSizes).toEqual([256, 256, 88]);
     expect(publications).toEqual(Array.from({ length: 600 }, (_, index) => `event-${index}`));
     transactionSpy.mockRestore();
+    await history.close();
+  });
+
+  it("rolls back a failed batch and stops the queued tail at the prior boundary", async () => {
+    const history = await freshHistory("indexed-abort-tail");
+    await history.offer(candidate("already-committed")).settled;
+    const failedBatch = [history.offer(candidate("already-committed")), history.offer(candidate("same-batch-new"))];
+    const tail = history.offer(candidate("tail-after-abort"));
+
+    const failedResults = await Promise.all(failedBatch.map((receipt) => receipt.settled));
+    expect(failedResults).toHaveLength(2);
+    for (const result of failedResults) {
+      expect(result).toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" }, committedEvidenceBoundary: { sequence: 1 } });
+    }
+    await expect(tail.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" },
+      committedEvidenceBoundary: { sequence: 1, eventId: "already-committed" }
+    });
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { total: 1, evidence: [expect.objectContaining({ eventId: "already-committed" })] }
+    });
+    expect(history.offer(candidate("after-stop")).intake).toBe("REFUSED");
+    await history.close();
+  });
+
+  it("keeps an oversized candidate alone and starts a new transaction at the soft byte target", async () => {
+    const history = await freshHistory("indexed-byte-batches");
+    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
+    const large = (id: string, size: number): EvidenceCandidate => candidate(id, {
+      raw: { payload: "x".repeat(size) }
+    } as Partial<EvidenceCandidate>);
+
+    const receipts = [
+      history.offer(large("large-one", 600_000)),
+      history.offer(large("large-two", 600_000)),
+      history.offer(large("oversized", 1_100_000)),
+      history.offer(candidate("after-oversized"))
+    ];
+    await Promise.all(receipts.map((receipt) => receipt.settled));
+
+    const writeTransactions = transactionSpy.mock.calls.filter(([, mode]) => mode === "readwrite");
+    expect(writeTransactions).toHaveLength(4);
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: {
+        evidence: [
+          expect.objectContaining({ eventId: "large-one" }),
+          expect.objectContaining({ eventId: "large-two" }),
+          expect.objectContaining({ eventId: "oversized" }),
+          expect.objectContaining({ eventId: "after-oversized" })
+        ]
+      }
+    });
+    transactionSpy.mockRestore();
+    await history.close();
+  });
+
+  it("keeps only one IndexedDB write transaction in flight and reads the prior snapshot while it is stalled", async () => {
+    const history = await freshHistory("indexed-stalled-transaction");
+    const originalAdd = IDBObjectStore.prototype.add;
+    let inFlight = 0;
+    let maximumInFlight = 0;
+    let resolveSnapshot!: (value: Promise<unknown>) => void;
+    const snapshotReady = new Promise<Promise<unknown>>((resolve) => { resolveSnapshot = resolve; });
+    const addSpy = vi.spyOn(IDBObjectStore.prototype, "add").mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = originalAdd.apply(this, args);
+      if (this.name === "evidence") {
+        inFlight += 1;
+        maximumInFlight = Math.max(maximumInFlight, inFlight);
+        request.addEventListener("success", () => {
+          inFlight -= 1;
+        }, { once: true });
+        resolveSnapshot(history.read({}));
+      }
+      return request;
+    });
+
+    const first = history.offer(candidate("stalled"));
+    const priorSnapshot = await snapshotReady;
+    expect(priorSnapshot).toMatchObject({
+      ok: true,
+      value: { evidence: [], committedEvidenceBoundary: null }
+    });
+    await expect(first.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    expect(maximumInFlight).toBe(1);
+    addSpy.mockRestore();
     await history.close();
   });
 
@@ -220,5 +311,99 @@ describe("IndexedDB authoritative EventHistory", () => {
       fallback: "UNKNOWN_NEWER_SCHEMA"
     });
     await fallback.close();
+  });
+
+  it("falls back instead of mixing evidence residue with a missing control record", async () => {
+    const panelSessionId = "indexed-missing-control";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const name = authoritativeEventDatabaseName(panelSessionId);
+    const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
+    request.onupgradeneeded = () => {
+      const evidence = request.result.createObjectStore("evidence", { keyPath: "sequence" });
+      evidence.createIndex("eventIdentity", "eventId", { unique: true });
+      evidence.createIndex("facets", "facets", { multiEntry: true });
+      request.result.createObjectStore("historyControl", { keyPath: "key" });
+    };
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("evidence", "readwrite");
+    transaction.objectStore("evidence").put({
+      intervalId: `${panelSessionId}:interval-1`,
+      sequence: 1,
+      eventId: "residue",
+      replayPayload: serializeJournalEvidenceCandidate(candidate("residue")).payload,
+      serializedBytes: 1,
+      facets: []
+    });
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+
+    const history = await openEventHistory({ panelSessionId });
+    let initialStatus: unknown;
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") initialStatus = publication.status;
+    });
+    expect(initialStatus).toMatchObject({ capacity: { tier: "LOWER" }, fallback: "PRIMARY_JOURNAL_UNAVAILABLE" });
+    await history.close();
+  });
+
+  it("falls back when control totals disagree with an otherwise valid evidence record", async () => {
+    const panelSessionId = "indexed-incoherent-control";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const name = authoritativeEventDatabaseName(panelSessionId);
+    const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
+    request.onupgradeneeded = () => {
+      const evidence = request.result.createObjectStore("evidence", { keyPath: "sequence" });
+      evidence.createIndex("eventIdentity", "eventId", { unique: true });
+      evidence.createIndex("facets", "facets", { multiEntry: true });
+      request.result.createObjectStore("historyControl", { keyPath: "key" });
+    };
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const interval = { id: `${panelSessionId}:interval-1`, ordinal: 1 };
+    const serialized = serializeJournalEvidenceCandidate(candidate("coherent-record"));
+    const transaction = database.transaction(["historyControl", "evidence"], "readwrite");
+    transaction.objectStore("evidence").put({
+      intervalId: interval.id,
+      sequence: 1,
+      eventId: "coherent-record",
+      replayPayload: serialized.payload,
+      serializedBytes: serialized.bytes,
+      facets: []
+    });
+    transaction.objectStore("historyControl").put({
+      key: "control",
+      schemaVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+      recordVersion: 1,
+      panelSessionId,
+      interval,
+      nextSequence: 2,
+      committedEvidenceBoundary: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" },
+      retainedRange: { first: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" }, last: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" } },
+      retainedCount: 0,
+      replayPayloadBytes: serialized.bytes
+    });
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+
+    const history = await openEventHistory({ panelSessionId });
+    let initialStatus: unknown;
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") initialStatus = publication.status;
+    });
+    expect(initialStatus).toMatchObject({ capacity: { tier: "LOWER" }, fallback: "PRIMARY_JOURNAL_UNAVAILABLE" });
+    await history.close();
   });
 });
