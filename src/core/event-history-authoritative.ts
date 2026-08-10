@@ -189,6 +189,7 @@ export type OpenEventHistoryOptions = Readonly<{
 
 type HistoryJournal = {
   commitBatch(batch: readonly PendingCandidate[]): Promise<void>;
+  persistTerminalIntent(terminal: HistoryTerminalDiagnostic): Promise<void>;
   finalizeTerminal(terminal: HistoryTerminalDiagnostic): Promise<void>;
   clear(): Promise<void>;
   close(): Promise<void>;
@@ -221,6 +222,8 @@ type MemoryEventHistoryOptions = Readonly<{
   commitBatch?: (batch: readonly EvidenceCandidate[]) => Promise<void>;
   clearJournal?: () => Promise<void>;
   closeJournal?: () => Promise<void>;
+  persistTerminalIntent?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
+  finalizeTerminal?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
   capacityTier?: HistoryCapacityTier;
   fallback?: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
   failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
@@ -268,7 +271,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       await options.failure?.commitBatch?.(batch.map((entry) => entry.candidate));
       await options.commitBatch?.(batch.map((entry) => entry.candidate));
     },
-    async finalizeTerminal() {},
+    async persistTerminalIntent(terminal) { await options.persistTerminalIntent?.(terminal); },
+    async finalizeTerminal(terminal) { await options.finalizeTerminal?.(terminal); },
     async clear() { await options.clearJournal?.(); },
     async close() { await options.closeJournal?.(); }
   };
@@ -312,6 +316,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   let terminalSettled: Promise<void> | null = null;
   let resolveTerminalSettled: (() => void) | null = null;
   let terminalPersistenceFailed = false;
+  let terminalIntentGeneration = 0;
   let lastNearLimit = false;
 
   function measurements(): HistoryPressureMeasurements {
@@ -399,7 +404,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       rejectedBytes += bytes;
     }
     const receiptProblem = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
-    const completion = terminalSettled;
+    const completion = terminalFinalization ?? terminalPersistence ?? terminalSettled;
     const settled = completion
       ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary }))
       : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
@@ -413,17 +418,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
 
   function finishTerminal(): void {
     if (phase !== "DRAINING_TO_STOP" || processing || pending.length > 0 || inFlight.length > 0 || terminal || terminalFinalization || !trigger || !terminalSettled) return;
-    terminalFinalization = terminalSettled.then(async () => {
+    terminalFinalization = (terminalPersistence ?? terminalSettled).then(async () => {
       if (terminalPersistenceFailed || phase !== "DRAINING_TO_STOP" || !trigger) return;
       const finalized = terminalDiagnostic();
-      if (persistedTerminal && JSON.stringify(persistedTerminal) === JSON.stringify(finalized)) {
-        terminal = finalized;
-        phase = "STOPPED";
-        const issue = terminalProblem(trigger);
-        publish({ type: "terminal", terminal, status: status(issue) });
-        publish({ type: "status", status: status(issue), problem: issue });
-        return;
-      }
       try {
         await journal.finalizeTerminal(finalized);
       } catch (error) {
@@ -472,26 +469,29 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     terminalPersistenceFailed = true;
     const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
     trigger = makeTrigger(reason, "JOURNAL", trigger?.firstMissingEventId ?? null);
-    phase = "STOPPED";
     const issue = terminalProblem(trigger);
     publish({ type: "status", status: status(issue), problem: issue });
   }
 
   function startTerminalPersistence(): void {
-    if (terminalPersistence || !trigger) return;
+    if (!trigger) return;
     ensureTerminalSettled();
-    const initial = terminalDiagnostic();
-    terminalPersistence = Promise.resolve()
-      .then(() => journal.finalizeTerminal(initial))
+    const intent = terminalDiagnostic();
+    const generation = ++terminalIntentGeneration;
+    const previous = terminalPersistence ?? Promise.resolve();
+    terminalPersistence = previous
+      .then(() => journal.persistTerminalIntent(intent))
       .then(() => {
-        persistedTerminal = initial;
+        persistedTerminal = intent;
       })
       .catch((error) => {
         failTerminalPersistence(error);
       })
       .finally(() => {
-        resolveTerminalSettled?.();
-        resolveTerminalSettled = null;
+        if (generation === terminalIntentGeneration) {
+          resolveTerminalSettled?.();
+          resolveTerminalSettled = null;
+        }
       });
   }
 
@@ -542,7 +542,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       rejectedBytes += bytes;
       beginDrain(failure.reason, failure.dimension, copied.id);
       const receiptProblem = terminalProblem(trigger!);
-      const completion = terminalSettled;
+      const completion = terminalFinalization ?? terminalPersistence ?? terminalSettled;
       const settled = completion
         ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary }))
         : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
@@ -709,7 +709,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     closing = true;
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
     ageTimer = null;
-    closePromise = waitForIdle().then(async () => {
+    closePromise = waitForIdle().then(() => waitForTerminalQuiescence()).then(async () => {
       try {
         await journal.clear();
         await journal.close();
@@ -748,6 +748,19 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       return Promise.resolve();
     }
     return new Promise((resolve) => idleWaiters.push(resolve));
+  }
+
+  async function waitForTerminalQuiescence(): Promise<void> {
+    while (phase === "DRAINING_TO_STOP") {
+      finishTerminal();
+      if (terminalPersistenceFailed) return;
+      const completion = terminalFinalization ?? terminalPersistence ?? terminalSettled;
+      if (!completion) return;
+      await completion;
+      if (phase === "DRAINING_TO_STOP" && !terminalFinalization && !terminalPersistence && terminalSettled) {
+        finishTerminal();
+      }
+    }
   }
 
   function resolveIdleWaiters(): void {

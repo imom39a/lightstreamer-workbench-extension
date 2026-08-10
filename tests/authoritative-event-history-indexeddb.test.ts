@@ -142,8 +142,39 @@ describe("IndexedDB authoritative EventHistory", () => {
       "sequence",
       "serializedBytes"
     ]);
+    expect((record as { accountedBytes: number }).accountedBytes).toBe(
+      (record as { serializedBytes: number }).serializedBytes + 8
+    );
     expect((record as { accountedBytes: number }).accountedBytes).toBe((control as { accountedBytes: number }).accountedBytes);
     database.close();
+    await history.close();
+  });
+
+  it("rejects a record whose accounted bytes do not include the exact v1 frame", async () => {
+    const panelSessionId = "indexed-invalid-accounted-frame";
+    const history = await freshHistory(panelSessionId);
+    await expect(history.offer(candidate("invalid-frame-source")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+
+    const request = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
+    const database = await requestValue(request);
+    const transaction = database.transaction("evidence", "readwrite");
+    const store = transaction.objectStore("evidence");
+    const record = await requestValue(store.get(1));
+    store.put({ ...(record as Record<string, unknown>), accountedBytes: (record as { accountedBytes: number }).accountedBytes - 1 });
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+
+    const reopened = await openEventHistory({ panelSessionId });
+    let status: unknown;
+    reopened.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") status = publication.status;
+    });
+    expect(status).toMatchObject({ capacity: { tier: "LOWER" }, fallback: "PRIMARY_JOURNAL_UNAVAILABLE" });
+    await reopened.close();
     await history.close();
   });
 

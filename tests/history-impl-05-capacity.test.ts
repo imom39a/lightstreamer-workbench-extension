@@ -72,6 +72,22 @@ async function indexedHistory(id: string, options: Record<string, unknown> = {})
   return openEventHistory({ panelSessionId: id, ...options } as never);
 }
 
+async function readIndexedControl(id: string): Promise<Record<string, unknown>> {
+  const request = indexedDB.open(authoritativeEventDatabaseName(id));
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  const transaction = database.transaction("historyControl", "readonly");
+  const controlRequest = transaction.objectStore("historyControl").get("control");
+  const control = await new Promise<Record<string, unknown>>((resolve, reject) => {
+    controlRequest.onsuccess = () => resolve(controlRequest.result as Record<string, unknown>);
+    controlRequest.onerror = () => reject(controlRequest.error);
+  });
+  database.close();
+  return control;
+}
+
 function collect(history: EventHistory): HistoryPublication[] {
   const publications: HistoryPublication[] = [];
   history.follow({ from: "NOW" }, (publication) => publications.push(publication));
@@ -571,7 +587,9 @@ it("preserves IndexedDB accounted bytes through reopen", async () => {
     byteEstimator: () => 17,
     capacity: { maxRetainedBytes: 1_000 }
   });
-  await expect(history.offer(candidate("accounted")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+  const accountedCandidate = candidate("accounted");
+  await expect(history.offer(accountedCandidate).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+  const canonicalAccountedBytes = serializeJournalEvidenceCandidate(accountedCandidate).bytes + 8;
 
   const reopened = await openEventHistory({
     panelSessionId,
@@ -585,7 +603,7 @@ it("preserves IndexedDB accounted bytes through reopen", async () => {
   expect(reopenedStatus).toMatchObject({
     capacity: {
       tier: "NORMAL",
-      measurements: { retainedCount: 1, retainedBytes: 17 }
+      measurements: { retainedCount: 1, retainedBytes: canonicalAccountedBytes }
     }
   });
   await reopened.close();
@@ -709,4 +727,106 @@ it("reopens a journal-failed IndexedDB history with terminal diagnostics and no 
   });
   await reopened.close();
   await history.close();
+});
+
+it("recovers a durable draining intent from the advanced durable boundary", async () => {
+  const panelSessionId = "impl-05-reopen-draining-boundary";
+  let releaseFinalization!: () => void;
+  let finalizationStarted!: () => void;
+  const finalizationGate = new Promise<void>((resolve) => { releaseFinalization = resolve; });
+  const finalizationStartedPromise = new Promise<void>((resolve) => { finalizationStarted = resolve; });
+  const history = await indexedHistory(panelSessionId, {
+    capacity: { maxRetainedCount: 2, maxRetainedBytes: 1_000_000 },
+    finalizeTerminal: async () => {
+      finalizationStarted();
+      await finalizationGate;
+    }
+  });
+  await expect(history.offer(candidate("durable-prior")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+  const advanced = history.offer(candidate("durable-advanced"));
+  const crossing = history.offer(candidate("durable-crossing"));
+  expect(crossing.intake).toBe("REFUSED");
+  await finalizationStartedPromise;
+
+  const control = await readIndexedControl(panelSessionId);
+  expect(control).toMatchObject({
+    phase: "DRAINING_TO_STOP",
+    committedEvidenceBoundary: { sequence: 2, eventId: "durable-advanced" },
+    terminal: { committedEvidenceBoundary: { sequence: 1, eventId: "durable-prior" } }
+  });
+
+  const reopened = await openEventHistory({ panelSessionId });
+  let reopenedStatus: unknown;
+  reopened.follow({ from: "NOW" }, (publication) => {
+    if (publication.type === "status") reopenedStatus = publication.status;
+  });
+  expect(reopenedStatus).toMatchObject({
+    phase: "STOPPED",
+    terminal: {
+      reason: "RETAINED_COUNT_LIMIT",
+      committedEvidenceBoundary: { sequence: 2, eventId: "durable-advanced" },
+      retainedRange: {
+        first: { sequence: 1, eventId: "durable-prior" },
+        last: { sequence: 2, eventId: "durable-advanced" }
+      }
+    }
+  });
+
+  releaseFinalization();
+  await expect(advanced.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+  await expect(crossing.settled).resolves.toMatchObject({ problem: { code: "RETAINED_COUNT_LIMIT" } });
+  await history.close();
+  await reopened.close();
+});
+
+it("does not let Close erase the journal while terminal finalization is in flight", async () => {
+  const order: string[] = [];
+  let releaseFinalization!: () => void;
+  let finalizationStarted!: () => void;
+  const finalizationGate = new Promise<void>((resolve) => { releaseFinalization = resolve; });
+  const finalizationStartedPromise = new Promise<void>((resolve) => { finalizationStarted = resolve; });
+  const history = await createMemoryEventHistoryForTests({
+    panelSessionId: "impl-05-close-terminal-race",
+    capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 },
+    finalizeTerminal: async () => {
+      order.push("finalize-start");
+      finalizationStarted();
+      await finalizationGate;
+      order.push("finalize-end");
+    },
+    clearJournal: async () => { order.push("clear"); }
+  });
+  await history.offer(candidate("close-prior")).settled;
+  const crossing = history.offer(candidate("close-crossing"));
+  await finalizationStartedPromise;
+  const closing = history.close();
+  await Promise.resolve();
+  expect(order).toEqual(["finalize-start"]);
+  releaseFinalization();
+  await expect(crossing.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE" });
+  await expect(closing).resolves.toMatchObject({ ok: true });
+  expect(order).toEqual(["finalize-start", "finalize-end", "clear"]);
+});
+
+it("keeps a terminal-finalization failure fail-closed across reopen", async () => {
+  const panelSessionId = "impl-05-reopen-terminal-failure";
+  const history = await indexedHistory(panelSessionId, {
+    capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 },
+    finalizeTerminal: () => { throw new Error("terminal finalization unavailable"); }
+  });
+  await expect(history.offer(candidate("terminal-failure-prior")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+  const crossing = history.offer(candidate("terminal-failure-crossing"));
+  await expect(crossing.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "RETAINED_COUNT_LIMIT" } });
+
+  const reopened = await openEventHistory({ panelSessionId });
+  let reopenedStatus: unknown;
+  reopened.follow({ from: "NOW" }, (publication) => {
+    if (publication.type === "status") reopenedStatus = publication.status;
+  });
+  expect(reopenedStatus).toMatchObject({
+    phase: "STOPPED",
+    terminal: { committedEvidenceBoundary: { sequence: 1, eventId: "terminal-failure-prior" } }
+  });
+  await history.close();
+  await reopened.close();
 });
