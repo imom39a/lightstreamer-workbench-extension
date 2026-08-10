@@ -50,6 +50,7 @@ describe("guarded Panel Session journal cleanup", () => {
     vi.stubGlobal("indexedDB", indexedDb);
     vi.stubGlobal("navigator", { locks: createLockManager() });
     const futureSchemaName = eventDatabaseName(panelC);
+    const futureLegacyName = "lsew-events-1700000000001";
     const request = indexedDb.open(futureSchemaName, 3);
     await new Promise<void>((resolve, reject) => {
       request.onupgradeneeded = () => undefined;
@@ -59,6 +60,15 @@ describe("guarded Panel Session journal cleanup", () => {
       };
       request.onerror = () => reject(request.error);
     });
+    const legacyRequest = indexedDb.open(futureLegacyName, 3);
+    await new Promise<void>((resolve, reject) => {
+      legacyRequest.onupgradeneeded = () => undefined;
+      legacyRequest.onsuccess = () => {
+        legacyRequest.result.close();
+        resolve();
+      };
+      legacyRequest.onerror = () => reject(legacyRequest.error);
+    });
 
     const result = await sweepAbandonedPanelJournals();
 
@@ -66,11 +76,57 @@ describe("guarded Panel Session journal cleanup", () => {
       confirmed: false,
       deleted: [],
       skippedActive: [],
-      preservedUnknown: [futureSchemaName]
+      preservedUnknown: [futureSchemaName, futureLegacyName]
     });
     expect(await indexedDb.databases()).toEqual([
-      { name: futureSchemaName, version: 3 }
+      { name: futureSchemaName, version: 3 },
+      { name: futureLegacyName, version: 3 }
     ]);
+  });
+
+  it("deletes pre-Panel Session numeric journals but preserves unrecognized legacy names", async () => {
+    const indexedDb = new IDBFactory();
+    vi.stubGlobal("indexedDB", indexedDb);
+    vi.stubGlobal("navigator", { locks: createLockManager() });
+    const legacyName = "lsew-events-1700000000000";
+    const unrecognizedName = "lsew-events-1700000000000-copy";
+    const legacy = await openEventDatabase(legacyName);
+    if (!legacy.ok) throw legacy.error;
+    legacy.database.db.close();
+    const unrecognized = await openEventDatabase(unrecognizedName);
+    if (!unrecognized.ok) throw unrecognized.error;
+    unrecognized.database.db.close();
+
+    const result = await sweepAbandonedPanelJournals();
+
+    expect(result).toMatchObject({
+      confirmed: true,
+      deleted: [legacyName],
+      skippedActive: [],
+      preservedUnknown: [unrecognizedName]
+    });
+    expect(await indexedDb.databases()).toEqual([{ name: unrecognizedName, version: 2 }]);
+  });
+
+  it("keeps the ownership lock through the owned database handle close", async () => {
+    const indexedDb = new IDBFactory();
+    const locks = createLockManager();
+    vi.stubGlobal("indexedDB", indexedDb);
+    vi.stubGlobal("navigator", { locks });
+    const name = eventDatabaseName(panelA);
+    const opened = await openEventDatabase(name, panelA);
+    if (!opened.ok) throw opened.error;
+
+    const originalClose = opened.database.db.close.bind(opened.database.db);
+    const close = vi.spyOn(opened.database.db, "close").mockImplementation(() => {
+      expect(locks.isHeld(`lsew:event-journal:${name}`)).toBe(true);
+      originalClose();
+    });
+
+    await opened.database.releaseOwnership();
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(locks.isHeld(`lsew:event-journal:${name}`)).toBe(false);
   });
 
   it("does not expose a database until its ownership lock is acquired", async () => {
@@ -97,7 +153,7 @@ describe("guarded Panel Session journal cleanup", () => {
     }
   });
 
-  it("releases ownership before closing so a later sweep can remove the journal", async () => {
+  it("clears and closes a journal so a later sweep can remove it", async () => {
     const indexedDb = new IDBFactory();
     vi.stubGlobal("indexedDB", indexedDb);
     vi.stubGlobal("navigator", { locks: createLockManager() });
@@ -207,7 +263,7 @@ async function writeOwnership(name: string, generation: string, ownerId: string)
   opened.database.db.close();
 }
 
-function createLockManager(): LockManager {
+function createLockManager(): LockManager & { isHeld(name: string): boolean } {
   const owners = new Map<string, () => void>();
   return {
     request(name, optionsOrCallback, maybeCallback) {
@@ -232,8 +288,11 @@ function createLockManager(): LockManager {
     },
     query() {
       return Promise.resolve({ held: {}, pending: {} });
+    },
+    isHeld(name: string) {
+      return owners.has(name);
     }
-  } as LockManager;
+  } as LockManager & { isHeld(name: string): boolean };
 }
 
 function createGatedLockManager(): LockManager & { release(): void } {

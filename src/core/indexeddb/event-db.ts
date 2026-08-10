@@ -3,6 +3,8 @@ export const DEFAULT_EVENT_DB_NAME = "lsew-events-session";
 export const PANEL_EVENT_DB_PREFIX = "lsew-events-panel-";
 export const PANEL_EVENT_DB_GENERATION = "v1";
 export const PANEL_JOURNAL_OWNERSHIP_GENERATION = "panel-session-v1";
+const EVENT_DB_NAMESPACE_PREFIX = "lsew-events-";
+const LEGACY_EVENT_DB_PATTERN = /^lsew-events-[0-9]+$/;
 const PANEL_JOURNAL_LOCK_PREFIX = "lsew:event-journal:";
 const INDEXEDDB_REQUEST_TIMEOUT_MS = 2000;
 
@@ -65,7 +67,7 @@ export function openEventDatabase(
 function openDatabase(
   name: string,
   ownerId?: string,
-  releaseLock: (() => void) | null = null
+  releaseLock: (() => Promise<void>) | null = null
 ): Promise<EventDatabaseOpenResult> {
 
   return new Promise((resolve) => {
@@ -85,7 +87,7 @@ function openDatabase(
       settled = true;
       globalThis.clearTimeout(timeout);
       if (!result.ok) {
-        releaseLock?.();
+        void releaseLock?.();
       }
       resolve(result);
     }
@@ -134,7 +136,7 @@ function openDatabase(
         database: {
           db,
           name,
-          releaseOwnership: () => releaseOwnership(db, name, ownerId, releaseLock)
+          releaseOwnership: () => releaseOwnership(db, ownerId, releaseLock)
         }
       });
     };
@@ -205,9 +207,12 @@ export async function sweepAbandonedPanelJournals(): Promise<PanelJournalCleanup
   };
   for (const entry of await indexedDB.databases()) {
     const name = entry.name;
-    if (!name?.startsWith(PANEL_EVENT_DB_PREFIX)) continue;
-    if (panelJournalGeneration(name) !== PANEL_EVENT_DB_GENERATION) {
-      result.preservedUnknown.push(name);
+    if (!name) continue;
+    const recognizedGeneration = recognizedJournalGeneration(name);
+    if (!recognizedGeneration) {
+      if (name.startsWith(EVENT_DB_NAMESPACE_PREFIX)) {
+        result.preservedUnknown.push(name);
+      }
       continue;
     }
     const lockResult = await withAvailableLock(name, async () => {
@@ -234,10 +239,12 @@ export async function sweepAbandonedPanelJournals(): Promise<PanelJournalCleanup
   return result;
 }
 
-function panelJournalGeneration(name: string): string | null {
+function recognizedJournalGeneration(name: string): string | null {
+  if (LEGACY_EVENT_DB_PATTERN.test(name)) return "legacy";
   if (!name.startsWith(PANEL_EVENT_DB_PREFIX)) return null;
   const suffix = name.slice(PANEL_EVENT_DB_PREFIX.length);
-  return suffix.split("-", 1)[0] ?? null;
+  const generation = suffix.split("-", 1)[0] ?? null;
+  return generation === PANEL_EVENT_DB_GENERATION ? generation : null;
 }
 
 async function claimOwnership(db: IDBDatabase, name: string, ownerId: string): Promise<void> {
@@ -260,9 +267,8 @@ async function claimOwnership(db: IDBDatabase, name: string, ownerId: string): P
 
 async function releaseOwnership(
   db: IDBDatabase,
-  name: string,
   ownerId: string | undefined,
-  releaseLock: (() => void) | null
+  releaseLock: (() => Promise<void>) | null
 ): Promise<void> {
   if (!ownerId) return;
   try {
@@ -272,7 +278,11 @@ async function releaseOwnership(
       await transactionDone(transaction);
     }
   } finally {
-    releaseLock?.();
+    try {
+      db.close();
+    } finally {
+      await releaseLock?.();
+    }
   }
 }
 
@@ -321,7 +331,7 @@ function panelJournalLocks(): LockManager | null {
   return locks && typeof locks.request === "function" ? locks : null;
 }
 
-function acquireOwnershipLock(name: string): Promise<() => void> {
+function acquireOwnershipLock(name: string): Promise<() => Promise<void>> {
   const locks = panelJournalLocks();
   if (!locks) {
     return Promise.reject(new Error("Panel Session journal coordination is unavailable."));
@@ -329,8 +339,12 @@ function acquireOwnershipLock(name: string): Promise<() => void> {
   return new Promise((resolve, reject) => {
     let finished = false;
     let releaseHeld!: () => void;
+    let resolveLockFinished!: () => void;
     const held = new Promise<void>((resolveHeld) => {
       releaseHeld = resolveHeld;
+    });
+    const lockFinished = new Promise<void>((resolveFinished) => {
+      resolveLockFinished = resolveFinished;
     });
     const timeout = globalThis.setTimeout(() => {
       finished = true;
@@ -349,17 +363,24 @@ function acquireOwnershipLock(name: string): Promise<() => void> {
         }
         finished = true;
         globalThis.clearTimeout(timeout);
-        const release = () => releaseHeld();
+        const release = () => {
+          releaseHeld();
+          return lockFinished;
+        };
         resolve(release);
         await held;
       })
-      .catch((error) => {
-        if (!finished) {
-          finished = true;
-          globalThis.clearTimeout(timeout);
-          reject(error);
+      .then(
+        () => resolveLockFinished(),
+        (error) => {
+          resolveLockFinished();
+          if (!finished) {
+            finished = true;
+            globalThis.clearTimeout(timeout);
+            reject(error);
+          }
         }
-      });
+      )
   });
 }
 

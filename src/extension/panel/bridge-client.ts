@@ -241,7 +241,7 @@ function reinjectThroughInspectedPage(
     };
     timer = setTimeout(() => {
       if (legacyRequestStarted) {
-        cleanupLegacyPageReinjection(requestId);
+        cleanupLegacyPageReinjection(panelSessionId, requestId);
       }
       finish(
         createAcknowledgementUnknownResult(
@@ -266,7 +266,7 @@ function reinjectThroughInspectedPage(
             }
             if (exceptionInfo?.isError || exceptionInfo?.isException) {
               if (legacyRequestStarted) {
-                cleanupLegacyPageReinjection(requestId);
+                cleanupLegacyPageReinjection(panelSessionId, requestId);
               }
               finish(
                 createAcknowledgementUnknownResult(
@@ -299,7 +299,7 @@ function reinjectThroughInspectedPage(
               legacyRequestStarted = true;
               pollTimer = setTimeout(() => {
                 pollTimer = null;
-                evaluate(legacyPageReinjectionResultExpression(requestId));
+                evaluate(legacyPageReinjectionResultExpression(panelSessionId, requestId));
               }, LEGACY_PAGE_REINJECT_POLL_MS);
               return;
             }
@@ -311,7 +311,7 @@ function reinjectThroughInspectedPage(
             };
             if (!isPanelReinjectResultMessage(message) || message.result.requestId !== requestId) {
               if (legacyRequestStarted) {
-                cleanupLegacyPageReinjection(requestId);
+                cleanupLegacyPageReinjection(panelSessionId, requestId);
               }
               finish(
                 createAcknowledgementUnknownResult(
@@ -327,7 +327,7 @@ function reinjectThroughInspectedPage(
         );
       } catch (error) {
         if (legacyRequestStarted) {
-          cleanupLegacyPageReinjection(requestId);
+          cleanupLegacyPageReinjection(panelSessionId, requestId);
         }
         finish(
           createBridgeErrorResult(
@@ -349,7 +349,7 @@ export function pageReinjectionExpression(
   draft: ReinjectionDraftPayload
 ): string {
   const bridgeName = JSON.stringify(PAGE_REINJECTION_BRIDGE_GLOBAL);
-  const stateName = JSON.stringify(legacyPageReinjectionStateName(requestId));
+  const stateName = JSON.stringify(legacyPageReinjectionStateName(panelSessionId, requestId));
   const serializedRequestId = JSON.stringify(requestId);
   const serializedPanelSessionId = JSON.stringify(panelSessionId);
   const serializedDraft = JSON.stringify(draft);
@@ -451,8 +451,11 @@ export function pageReinjectionExpression(
   })()`;
 }
 
-function legacyPageReinjectionResultExpression(requestId: string): string {
-  const stateName = JSON.stringify(legacyPageReinjectionStateName(requestId));
+function legacyPageReinjectionResultExpression(
+  panelSessionId: PanelSessionId,
+  requestId: string
+): string {
+  const stateName = JSON.stringify(legacyPageReinjectionStateName(panelSessionId, requestId));
   return `(() => {
     const stateName = ${stateName};
     const state = globalThis[stateName];
@@ -469,8 +472,8 @@ function legacyPageReinjectionResultExpression(requestId: string): string {
   })()`;
 }
 
-function cleanupLegacyPageReinjection(requestId: string): void {
-  const stateName = JSON.stringify(legacyPageReinjectionStateName(requestId));
+function cleanupLegacyPageReinjection(panelSessionId: PanelSessionId, requestId: string): void {
+  const stateName = JSON.stringify(legacyPageReinjectionStateName(panelSessionId, requestId));
   try {
     chrome.devtools.inspectedWindow.eval(
       `(() => {
@@ -485,8 +488,8 @@ function cleanupLegacyPageReinjection(requestId: string): void {
   }
 }
 
-function legacyPageReinjectionStateName(requestId: string): string {
-  return `${LEGACY_PAGE_REINJECT_STATE_PREFIX}${requestId}`;
+function legacyPageReinjectionStateName(panelSessionId: PanelSessionId, requestId: string): string {
+  return `${LEGACY_PAGE_REINJECT_STATE_PREFIX}${JSON.stringify([panelSessionId, requestId])}`;
 }
 
 function readPageReinjectionEvaluation(value: unknown): PageReinjectionEvaluation | null {

@@ -1,6 +1,6 @@
 # Architecture
 
-Lightstreamer Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current DevTools session, reconstructs client/session/subscription topology and COMMAND-mode state, and lets developers perform deliberate Local Injections through captured listener callbacks or captured Lightstreamer WebSocket paths.
+Lightstreamer Workbench is a Chrome Manifest V3 DevTools extension that instruments the inspected page, captures Lightstreamer Web Client activity, normalizes it into internal event envelopes, stores it for the current Panel Session, reconstructs client/session/subscription topology and COMMAND-mode state, and lets developers perform deliberate Local Injections through captured listener callbacks or captured Lightstreamer WebSocket paths.
 
 The architecture is event-driven and split across Chrome extension execution contexts. Page-owned code is observed in the page `MAIN` world, Capture messages cross the isolated content-script boundary, the service worker routes them by inspected tab and Panel Session identity, and a framework-independent `WorkbenchRuntime` owns panel investigation state. React renders the Scoped Evidence Workspace from immutable runtime snapshots. Local Injection prefers a versioned MAIN-world capability invoked directly with `chrome.devtools.inspectedWindow.eval`. If that global capability is absent after an extension refresh, the panel reuses the page's request-scoped message handler directly; version-skewed or otherwise unavailable page contexts retain the compatibility runtime relay.
 
@@ -477,17 +477,17 @@ Both stores retain accepted events in capture order and coalesce burst work into
 
 The panel overlays a bounded 60-event live tail on the latest durable page so current activity remains visible while an IndexedDB batch is committing. Latest-page reconciliation is single-flight: activity during an active query marks it dirty and causes one follow-up query, rather than invalidating every completed query. The overlay is presentation-only; every accepted event still follows the ordered durable history path.
 
-Each `mountWorkbenchPanel()` allocates a cryptographically random Panel Session identity before starting storage or bridge work. It calls `createPanelEventStore()` with that identity:
+Each `mountWorkbenchPanel()` allocates a cryptographically random Panel Session identity before starting storage or bridge work. It calls `createIndexedDbEventHistory()` with that identity:
 
 ```ts
-createIndexedDbEventStore({
+createIndexedDbEventHistory({
   sessionId: panelSessionId,
   reset: true,
   clearOnClose: true
 })
 ```
 
-If IndexedDB startup, ownership coordination, or guarded cleanup cannot be confirmed, the panel logs the error and falls back to `createEventStore()` for the remainder of that Panel Session. There is no mid-session migration. The panel also closes the event store on `dispose`, `pagehide`, and `beforeunload`; IndexedDB-backed stores created with `clearOnClose` drain accepted writes, clear the current session, release the Panel Session ownership lock, and close the connection before teardown completes.
+If IndexedDB startup, ownership coordination, or guarded cleanup cannot be confirmed, the panel logs the error and falls back to `createInMemoryEventHistory()` for the remainder of that Panel Session. There is no mid-session migration. The panel also closes the event store on `dispose`, `pagehide`, and `beforeunload`; IndexedDB-backed stores created with `clearOnClose` drain accepted writes, clear the current session, remove the ownership marker, close the owned database handle, and then release the Panel Session ownership lock before teardown completes.
 
 ### IndexedDB Schema
 
@@ -502,7 +502,7 @@ Object stores:
 | `eventSearchTokens` | `[token, seq]` | Stores tokenized text search metadata for future query acceleration; has `token` and `seq` indexes. |
 | `ownership` | `key` | Stores the recognized Panel Session ownership generation and owner marker. |
 
-Panel journals coordinate through a Web Lock named for the database. The lock is acquired before an owned database is claimed or exposed, and remains held until controlled close releases the marker and lock. Startup cleanup enumerates only temporary names, acquires each lock non-blockingly, skips active owners, deletes recognized `v1` orphans (including a crash before the ownership row was written), and preserves unknown name generations or marker generations. If IndexedDB database enumeration or Web Locks are unavailable, startup selects the in-memory journal instead of making an unsafe cleanup claim.
+Panel journals coordinate through a Web Lock named for the database. The lock is acquired before an owned database is claimed or exposed, and remains held until controlled close removes the marker and closes the owned handle; only then is the lock released. Startup cleanup enumerates temporary names from the current Panel Session generation and the pre-Panel Session numeric form `^lsew-events-[0-9]+$`, acquires each lock non-blockingly, skips active owners, deletes recognized orphans (including a crash before the ownership row was written), and preserves unreadable databases, unknown name generations, or unknown marker generations. If IndexedDB database enumeration or Web Locks are unavailable, startup selects the in-memory journal instead of making an unsafe cleanup claim.
 
 `src/core/event-repository.ts` handles IndexedDB queries by:
 
@@ -987,7 +987,7 @@ Follow the accepted deep runtime boundary:
 - The injected script must remain self-contained after esbuild bundling because it runs as a manifest content script in the page `MAIN` world.
 - The content bridge validates both capture messages and reinjection result messages before forwarding.
 - The service worker routes panel registrations by `(tabId, PanelSessionId)`. Unscoped live Capture broadcasts to every registered panel for the inspected tab; panel-scoped replay, topology checkpoints, status, and Injection results go only to the matching Panel Session. Capture messages without a sender tab ID are ignored.
-- Each panel owns a temporary Panel Session journal named from its Panel Session identity. Startup performs guarded cleanup only for recognized journal generations, preserves active owners and unknown future generations, and selects the in-memory journal when IndexedDB enumeration or Web Lock coordination is unavailable. Normal teardown drains and clears that Panel Session journal before releasing ownership; a new panel never resets another panel's inspected-tab history.
+- Each panel owns a temporary Panel Session journal named from its Panel Session identity. Startup performs guarded cleanup for the recognized Panel Session generation and pre-Panel Session numeric journals, preserves active owners, unreadable databases, and unknown future generations, and selects the in-memory journal when IndexedDB enumeration or Web Lock coordination is unavailable. Normal teardown drains and clears that Panel Session journal, removes its marker, closes its handle, and then releases ownership; a new panel never resets another panel's inspected-tab history.
 - Active wire fallback subscriptions can receive a Local Injection through their captured page WebSocket even when no listener target was captured. Closed, deleted, unsubscribed, or handed-off targets return `stale-target` without dispatch.
 - Local Injected Update Evidence is appended to panel history only after page-side delivery reports success. Unavailable, stale, rejected, partial, or acknowledgement-unknown targets never create successful Local Evidence.
 - `dist/` is generated output. Architecture changes should be made in `src/`, `public/`, or `scripts/`, then rebuilt.
