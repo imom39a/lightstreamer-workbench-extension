@@ -1023,7 +1023,7 @@ describe("IndexedDB authoritative EventHistory", () => {
   it("keeps the prior interval when Clear cannot be confirmed", async () => {
     const history = await freshIndexedHistory("indexed-clear-unconfirmed", {
       clearJournal: async () => {
-        throw new Error("clear unavailable");
+        return false;
       }
     });
     await expect(history.offer(candidate("retained")).settled).resolves.toMatchObject({

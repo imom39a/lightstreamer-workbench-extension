@@ -27,7 +27,7 @@ function candidate(id: string): LightstreamerEventEnvelope {
 }
 
 type HistoryLifecycleOptions = Readonly<{
-  clearJournal?: () => Promise<void>;
+  clearJournal?: () => Promise<void | boolean> | boolean;
   closeJournal?: () => Promise<void>;
 }>;
 
@@ -153,7 +153,7 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
     it("propagates Clear-confirmation failures without stopping intake", async () => {
       const history = await createHistory({
         clearJournal: async () => {
-          throw new Error("clear failed");
+          return false;
         }
       });
       await history.offer(candidate("clear-failing")).settled;
