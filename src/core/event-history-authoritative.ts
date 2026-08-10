@@ -601,18 +601,20 @@ function candidateId(candidate: EvidenceCandidate): string {
 }
 
 export function selectEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
-  return evidence.filter((entry) => {
-    if (query.afterSequence !== undefined && entry.sequence <= query.afterSequence) return false;
-    if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
-    if (query.filters && !matchesCandidateFilters(entry.candidate, query.filters)) return false;
-    if (query.find) {
-      const text = entry.candidate.kind === "topology-checkpoint"
-        ? serializeJournalEvidenceCandidate(entry.candidate).payload.toLowerCase()
-        : createEventSearchText(entry.candidate).toLowerCase();
-      if (!text.includes(query.find.trim().toLowerCase())) return false;
-    }
-    return true;
-  });
+  return evidence.filter((entry) => matchesEvidenceQuery(entry, query));
+}
+
+export function matchesEvidenceQuery(entry: CommittedEvidence, query: EvidenceQuery): boolean {
+  if (query.afterSequence !== undefined && entry.sequence <= query.afterSequence) return false;
+  if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
+  if (query.filters && !matchesCandidateFilters(entry.candidate, query.filters)) return false;
+  if (query.find) {
+    const text = entry.candidate.kind === "topology-checkpoint"
+      ? serializeJournalEvidenceCandidate(entry.candidate).payload.toLowerCase()
+      : createEventSearchText(entry.candidate).toLowerCase();
+    if (!text.includes(query.find.trim().toLowerCase())) return false;
+  }
+  return true;
 }
 
 export function pageEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {

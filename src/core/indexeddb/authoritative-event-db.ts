@@ -4,8 +4,6 @@ export const AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION = 1;
 export const AUTHORITATIVE_EVENT_CONTROL_KEY = "control";
 
 const INDEXEDDB_REQUEST_TIMEOUT_MS = 2_000;
-export const AUTHORITATIVE_EVENT_DB_STARTUP_RECORD_LIMIT = 10_000;
-
 export const AUTHORITATIVE_EVENT_STORE_NAMES = {
   historyControl: "historyControl",
   evidence: "evidence"

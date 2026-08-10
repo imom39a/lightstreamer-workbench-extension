@@ -1,4 +1,4 @@
-import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBCursor, IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -219,6 +219,105 @@ describe("IndexedDB authoritative EventHistory", () => {
       ok: true,
       value: { evidence: [expect.objectContaining({ eventId: "three" })], total: 1 }
     });
+    await history.close();
+  });
+
+  it("uses journal cursors for reads and interval replay instead of materializing a mirror", async () => {
+    const history = await freshHistory("indexed-cursor-reads");
+    await history.offer(candidate("cursor-event")).settled;
+    const openCursorSpy = vi.spyOn(IDBObjectStore.prototype, "openCursor");
+    const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll");
+
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [expect.objectContaining({ eventId: "cursor-event" })] }
+    });
+    const replayed: string[] = [];
+    const unsubscribe = history.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
+      if (publication.type === "committed-evidence") {
+        replayed.push(...publication.evidence.map((entry) => entry.eventId));
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(openCursorSpy).toHaveBeenCalled();
+    expect(getAllSpy).not.toHaveBeenCalled();
+    expect(replayed).toEqual(["cursor-event"]);
+    unsubscribe();
+    openCursorSpy.mockRestore();
+    getAllSpy.mockRestore();
+    await history.close();
+  });
+
+  it("validates startup through a cursor without getAll and hands replay to live Capture exactly once", async () => {
+    const panelSessionId = "indexed-replay-handoff";
+    const history = await freshHistory(panelSessionId);
+    for (let index = 0; index < 600; index += 1) await history.offer(candidate(`replay-${index}`)).settled;
+
+    const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll");
+    const reopened = await openEventHistory({ panelSessionId });
+    expect(getAllSpy).not.toHaveBeenCalled();
+
+    const received: string[] = [];
+    const unsubscribe = reopened.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
+      if (publication.type === "committed-evidence") received.push(...publication.evidence.map((entry) => entry.eventId));
+    });
+    const live = reopened.offer(candidate("replay-live"));
+    await expect(live.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 601 } });
+    await vi.waitFor(() => expect(received).toHaveLength(601));
+    expect(received).toEqual([...Array.from({ length: 600 }, (_, index) => `replay-${index}`), "replay-live"]);
+
+    unsubscribe();
+    getAllSpy.mockRestore();
+    await reopened.close();
+    await history.close();
+  });
+
+  it("latches a stalled read cursor to the boundary, excluding a post-latch commit", async () => {
+    const history = await freshHistory("indexed-stalled-read-cursor");
+    await history.offer(candidate("before-latch")).settled;
+    const originalContinue = IDBCursor.prototype.continue;
+    let heldCursor: IDBCursor | null = null;
+    let releaseHeldCursor!: () => void;
+    const held = new Promise<void>((resolve) => { releaseHeldCursor = resolve; });
+    const continueSpy = vi.spyOn(IDBCursor.prototype, "continue").mockImplementation(function (this: IDBCursor, key?: IDBValidKey) {
+      if (heldCursor === null && (this.source as IDBObjectStore).name === "evidence") {
+        heldCursor = this;
+        releaseHeldCursor();
+        return;
+      }
+      return originalContinue.call(this, key);
+    });
+
+    const readPromise = history.read({});
+    await held;
+    const postLatch = history.offer(candidate("after-latch"));
+    releaseHeldCursor();
+    originalContinue.call(heldCursor!);
+    await expect(postLatch.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    await expect(readPromise).resolves.toMatchObject({
+      ok: true,
+      value: { total: 1, evidence: [expect.objectContaining({ eventId: "before-latch" })], committedEvidenceBoundary: { sequence: 1 } }
+    });
+    continueSpy.mockRestore();
+    await history.close();
+  });
+
+  it("isolates observer failure and unsubscribe during journal replay", async () => {
+    const history = await freshHistory("indexed-observer-isolation");
+    await history.offer(candidate("observer-event")).settled;
+    const failing = vi.fn(() => { throw new Error("observer failure"); });
+    const healthy: string[] = [];
+    history.follow({ from: "CURRENT_INTERVAL_START" }, failing);
+    const unsubscribe = history.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
+      if (publication.type === "committed-evidence") healthy.push(...publication.evidence.map((entry) => entry.eventId));
+    });
+    unsubscribe();
+    await history.offer(candidate("after-unsubscribe")).settled;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(failing).toHaveBeenCalled();
+    expect(healthy).toEqual([]);
     await history.close();
   });
 

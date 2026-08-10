@@ -18,6 +18,7 @@ bench(
     await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(sessionId));
     const history = await createAuthoritativeIndexedDbEventHistory({ panelSessionId: sessionId });
     const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
+    const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll");
     const publicationSizes: number[] = [];
     history.follow({ from: "NOW" }, (publication) => {
       if (publication.type === "committed-evidence") publicationSizes.push(publication.evidence.length);
@@ -38,10 +39,12 @@ bench(
       expect(retained.ok && retained.value.evidence.at(-1)?.eventId).toBe(`authoritative-capture-${CAPTURE_COUNT - 1}`);
       expect(publicationSizes.reduce((total, size) => total + size, 0)).toBe(CAPTURE_COUNT);
       expect(transactionSpy.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(Math.ceil(CAPTURE_COUNT / 256));
+      expect(getAllSpy).not.toHaveBeenCalled();
       expect(durationMs).toBeLessThan(MAX_DURATION_MS);
     } finally {
       await history.close();
       transactionSpy.mockRestore();
+      getAllSpy.mockRestore();
       await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(sessionId));
     }
   },
