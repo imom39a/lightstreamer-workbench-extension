@@ -1,4 +1,5 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
+import { createEventSearchText, type EventFilterState, matchesEventFilters } from "./event-filter";
 
 /** A normalized Capture event or a validated topology checkpoint staged for acceptance. */
 export type TopologyCheckpointEvidenceCandidate = Readonly<{
@@ -57,11 +58,17 @@ export type EvidenceQuery = Readonly<{
   intervalId?: string;
   afterSequence?: number;
   limit?: number;
+  offsetFromNewest?: number;
+  order?: "asc" | "desc";
+  filters?: EventFilterState;
+  find?: string;
+  eventId?: string;
 }>;
 
 export type EvidenceRead = Readonly<{
   interval: HistoryInterval;
   evidence: readonly CommittedEvidence[];
+  total: number;
   committedEvidenceBoundary: EvidenceRef | null;
   retainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }> | null;
 }>;
@@ -79,7 +86,7 @@ export type HistoryStatus = Readonly<{
     tier: HistoryCapacityTier;
     state: HistoryCapacityState;
   }>;
-  fallback: "PRIMARY_JOURNAL_UNAVAILABLE" | null;
+  fallback: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
   captured: number;
   awaitingAcceptance: number;
   accepted: number;
@@ -161,22 +168,31 @@ type MemoryEventHistoryOptions = Readonly<{
   clearJournal?: () => Promise<void>;
   closeJournal?: () => Promise<void>;
   capacityTier?: HistoryCapacityTier;
-  fallback?: "PRIMARY_JOURNAL_UNAVAILABLE" | null;
+  fallback?: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
 }>;
 
 /**
- * Opens the dormant contract implementation. IndexedDB selection is deliberately
- * deferred to the integration train; this slice exposes the lower-capacity memory
- * adapter through the final public seam.
+ * Opens the dormant contract implementation. The primary IndexedDB journal is
+ * selected before the first offer; startup failure selects the lower-capacity
+ * memory journal for the rest of this Panel Session.
  */
 export async function openEventHistory(
   options: OpenEventHistoryOptions = {}
 ): Promise<EventHistory> {
-  return createMemoryHistory({
-    panelSessionId: options.panelSessionId,
-    capacityTier: "LOWER",
-    fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
-  });
+  try {
+    const { createIndexedDbEventHistory } = await import("./event-history-indexeddb");
+    return await createIndexedDbEventHistory({ panelSessionId: options.panelSessionId });
+  } catch (error) {
+    const fallback =
+      error && typeof error === "object" && "code" in error && error.code === "UNKNOWN_NEWER_SCHEMA"
+        ? "UNKNOWN_NEWER_SCHEMA"
+        : "PRIMARY_JOURNAL_UNAVAILABLE";
+    return createMemoryHistory({
+      panelSessionId: options.panelSessionId,
+      capacityTier: "LOWER",
+      fallback
+    });
+  }
 }
 
 /** @internal Test-only adapter seam for deterministic commit and lifecycle timing. */
@@ -386,10 +402,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       });
     }
     const intervalEvidence = committed.filter((entry) => entry.intervalId === (query.intervalId ?? interval.id));
-    const snapshot = intervalEvidence.filter(
-      (entry) => query.afterSequence === undefined || entry.sequence > query.afterSequence
-    );
-    const evidence = query.limit === undefined ? snapshot : snapshot.slice(0, Math.max(0, query.limit));
+    const snapshot = selectEvidence(intervalEvidence, query);
+    const evidence = pageEvidence(snapshot, query);
     const retainedRange = intervalEvidence.length
       ? {
           first: toRef(intervalEvidence[0]),
@@ -401,6 +415,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       value: deepFreeze({
         interval,
         evidence: [...evidence],
+        total: snapshot.length,
         committedEvidenceBoundary,
         retainedRange
       })
@@ -582,6 +597,34 @@ function createInterval(sessionId: string, ordinal: number): HistoryInterval {
 
 function candidateId(candidate: EvidenceCandidate): string {
   return candidate.id;
+}
+
+function selectEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
+  return evidence.filter((entry) => {
+    if (query.afterSequence !== undefined && entry.sequence <= query.afterSequence) return false;
+    if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
+    if (query.filters && entry.candidate.kind !== "topology-checkpoint" && !matchesEventFilters(entry.candidate, query.filters)) {
+      return false;
+    }
+    if (query.find) {
+      const text = entry.candidate.kind === "topology-checkpoint"
+        ? JSON.stringify(entry.candidate).toLowerCase()
+        : createEventSearchText(entry.candidate).toLowerCase();
+      if (!text.includes(query.find.trim().toLowerCase())) return false;
+    }
+    return true;
+  });
+}
+
+function pageEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
+  const ordered = query.order === "desc" ? [...evidence].reverse() : [...evidence];
+  const offset = Math.max(0, Math.floor(query.offsetFromNewest ?? 0));
+  if (query.offsetFromNewest !== undefined) {
+    const start = Math.max(0, ordered.length - offset - (query.limit ?? ordered.length));
+    const end = ordered.length - offset;
+    return ordered.slice(start, query.limit === undefined ? end : Math.min(end, start + query.limit));
+  }
+  return query.limit === undefined ? ordered : ordered.slice(0, Math.max(0, query.limit));
 }
 
 function toRef(evidence: CommittedEvidence): EvidenceRef {
