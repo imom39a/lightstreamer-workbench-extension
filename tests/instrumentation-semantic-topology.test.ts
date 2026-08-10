@@ -20,7 +20,7 @@ import { createTopologyStructuredSnapshot } from "../src/extension/panel/topolog
 import { renderTopologyHtmlReport } from "../src/extension/panel/topology-html-report";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
-const PANEL_SESSION_ID = "panel-semantic-topology";
+const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000015";
 
 class SemanticClient {
   status = "CONNECTED:WS-STREAMING";

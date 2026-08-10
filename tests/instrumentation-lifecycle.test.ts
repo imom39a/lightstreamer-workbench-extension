@@ -14,7 +14,7 @@ import { reduceCommandState } from "../src/core/command-state";
 import { createEventNormalizer } from "../src/core/event-normalizer";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
-const PANEL_SESSION_ID = "panel-instrumentation-lifecycle";
+const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000018";
 
 class FakeLightstreamerClient {
   connectCalls = 0;

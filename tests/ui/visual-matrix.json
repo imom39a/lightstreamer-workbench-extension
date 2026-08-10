@@ -87,8 +87,8 @@
     "id": "compact-memory-fallback-dark",
     "viewport": { "width": 563, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "none" },
-    "production": { "scenario": "memory-fallback", "setup": "none" }
+    "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "memory-operations", "surface": "context" },
+    "production": { "scenario": "memory-fallback", "setup": "memory-operations" }
   },
   {
     "id": "shallow-disconnected-dark",
@@ -103,5 +103,19 @@
     "theme": "light",
     "prototype": { "variant": "C", "state": "recovering", "frame": "wide", "setup": "none" },
     "production": { "scenario": "recovering", "setup": "none" }
+  },
+  {
+    "id": "compact-clear-confirmation-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "clear-confirmation", "surface": "context" },
+    "production": { "scenario": "live-selected", "setup": "clear-confirmation" }
+  },
+  {
+    "id": "normal-clear-confirmation-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "clear-confirmation", "surface": "context" },
+    "production": { "scenario": "live-selected", "setup": "clear-confirmation" }
   }
 ]

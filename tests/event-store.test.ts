@@ -124,9 +124,9 @@ describe("event store", () => {
   });
 
   it("queries IndexedDB-backed events through derived indexes and token search", async () => {
-    const sessionId = "event-store-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const store = await createIndexedDbEventStore({ sessionId, warningThreshold: 2 });
+    const panelSessionId = "event-store-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const store = await createIndexedDbEventStore({ panelSessionId, warningThreshold: 2 });
 
     await store.append({
       ...event("event-1"),
@@ -175,14 +175,14 @@ describe("event store", () => {
     await store.clear();
     await expect(store.count()).resolves.toBe(0);
     store.close?.();
-    await deleteEventDatabase(eventDatabaseName(sessionId));
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
   });
 
   it("keeps structural residual filtering and bounded totals in parity across memory and IndexedDB", async () => {
-    const sessionId = "event-store-structural-filter-parity-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
+    const panelSessionId = "event-store-structural-filter-parity-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
     const memory = createEventStore();
-    const indexed = await createIndexedDbEventStore({ sessionId });
+    const indexed = await createIndexedDbEventStore({ panelSessionId });
     const events = [
       {
         ...event("structural-1"),
@@ -234,13 +234,13 @@ describe("event store", () => {
 
     getSpy.mockRestore();
     indexed.close?.();
-    await deleteEventDatabase(eventDatabaseName(sessionId));
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
   });
 
   it("keeps topology in subscriber memory but never crosses the repository boundary", async () => {
-    const sessionId = "event-store-topology-boundary-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const store = await createIndexedDbEventStore({ sessionId });
+    const panelSessionId = "event-store-topology-boundary-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const store = await createIndexedDbEventStore({ panelSessionId });
     const topology: TopologyObservation = {
       version: TOPOLOGY_OBSERVATION_VERSION,
       kind: "item-update",
@@ -298,14 +298,14 @@ describe("event store", () => {
       expect(queried.events[0]).not.toHaveProperty("topology");
     } finally {
       await store.close?.();
-      await deleteEventDatabase(eventDatabaseName(sessionId));
+      await deleteEventDatabase(eventDatabaseName(panelSessionId));
     }
   });
 
   it("sanitizes semantic evidence at the direct IndexedDB repository boundary", async () => {
-    const sessionId = "event-repository-semantic-boundary-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const repository = await createIndexedDbEventRepository(sessionId);
+    const panelSessionId = "event-repository-semantic-boundary-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const repository = await createIndexedDbEventRepository(panelSessionId);
     const original: LightstreamerEventEnvelope = {
       ...event("direct-repository-event"),
       client: {
@@ -343,48 +343,48 @@ describe("event store", () => {
       expect(stored?.subscription).not.toHaveProperty("semanticValueStates");
     } finally {
       repository.close();
-      await deleteEventDatabase(eventDatabaseName(sessionId));
+      await deleteEventDatabase(eventDatabaseName(panelSessionId));
     }
   });
 
   it("can reset an IndexedDB-backed session on startup", async () => {
-    const sessionId = "event-store-reset-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const firstStore = await createIndexedDbEventStore({ sessionId });
+    const panelSessionId = "event-store-reset-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const firstStore = await createIndexedDbEventStore({ panelSessionId });
 
     await firstStore.append(event("event-1"));
     await expect(firstStore.count()).resolves.toBe(1);
     firstStore.close?.();
 
-    const resetStore = await createIndexedDbEventStore({ sessionId, reset: true });
+    const resetStore = await createIndexedDbEventStore({ panelSessionId, reset: true });
     await expect(resetStore.count()).resolves.toBe(0);
 
     resetStore.close?.();
-    await deleteEventDatabase(eventDatabaseName(sessionId));
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
   });
 
   it("clears an IndexedDB-backed session when close cleanup is enabled", async () => {
-    const sessionId = "event-store-close-cleanup-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const store = await createIndexedDbEventStore({ sessionId, clearOnClose: true });
+    const panelSessionId = "event-store-close-cleanup-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const store = await createIndexedDbEventStore({ panelSessionId, clearOnClose: true });
 
     await store.append(event("event-1"));
     await expect(store.count()).resolves.toBe(1);
 
     await store.close?.();
 
-    const reopenedStore = await createIndexedDbEventStore({ sessionId });
+    const reopenedStore = await createIndexedDbEventStore({ panelSessionId });
     await expect(reopenedStore.count()).resolves.toBe(0);
 
     reopenedStore.close?.();
-    await deleteEventDatabase(eventDatabaseName(sessionId));
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
   });
 
   it("pages unfiltered IndexedDB queries without reading every metadata row", async () => {
-    const sessionId = "event-store-cursor-page-test";
+    const panelSessionId = "event-store-cursor-page-test";
     const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll");
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const store = await createIndexedDbEventStore({ sessionId });
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const store = await createIndexedDbEventStore({ panelSessionId });
 
     try {
       await store.append(event("event-1"));
@@ -399,14 +399,14 @@ describe("event store", () => {
     } finally {
       getAllSpy.mockRestore();
       store.close?.();
-      await deleteEventDatabase(eventDatabaseName(sessionId));
+      await deleteEventDatabase(eventDatabaseName(panelSessionId));
     }
   });
 
   it("reads an unfiltered IndexedDB count, page, and hydration from one transaction snapshot", async () => {
-    const sessionId = "event-store-consistent-page-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const store = await createIndexedDbEventStore({ sessionId });
+    const panelSessionId = "event-store-consistent-page-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const store = await createIndexedDbEventStore({ panelSessionId });
     const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
 
     try {
@@ -426,14 +426,14 @@ describe("event store", () => {
     } finally {
       transactionSpy.mockRestore();
       store.close?.();
-      await deleteEventDatabase(eventDatabaseName(sessionId));
+      await deleteEventDatabase(eventDatabaseName(panelSessionId));
     }
   });
 
   it("reads filtered IndexedDB metadata, total, page, and hydration from one transaction snapshot", async () => {
-    const sessionId = "event-store-consistent-filtered-page-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const store = await createIndexedDbEventStore({ sessionId });
+    const panelSessionId = "event-store-consistent-filtered-page-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const store = await createIndexedDbEventStore({ panelSessionId });
     const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
 
     try {
@@ -466,14 +466,14 @@ describe("event store", () => {
     } finally {
       transactionSpy.mockRestore();
       store.close?.();
-      await deleteEventDatabase(eventDatabaseName(sessionId));
+      await deleteEventDatabase(eventDatabaseName(panelSessionId));
     }
   });
 
   it("reads full-text IndexedDB matches, total, page, and hydration from one transaction snapshot", async () => {
-    const sessionId = "event-store-consistent-full-text-page-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const store = await createIndexedDbEventStore({ sessionId });
+    const panelSessionId = "event-store-consistent-full-text-page-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const store = await createIndexedDbEventStore({ panelSessionId });
     const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
 
     try {
@@ -506,24 +506,24 @@ describe("event store", () => {
     } finally {
       transactionSpy.mockRestore();
       store.close?.();
-      await deleteEventDatabase(eventDatabaseName(sessionId));
+      await deleteEventDatabase(eventDatabaseName(panelSessionId));
     }
   });
 
   it("resets an IndexedDB-backed session while another connection is still open", async () => {
-    const sessionId = "event-store-open-reset-test";
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const firstStore = await createIndexedDbEventStore({ sessionId });
+    const panelSessionId = "event-store-open-reset-test";
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
+    const firstStore = await createIndexedDbEventStore({ panelSessionId });
 
     await firstStore.append(event("event-1"));
     await expect(firstStore.count()).resolves.toBe(1);
 
-    const resetStore = await createIndexedDbEventStore({ sessionId, reset: true });
+    const resetStore = await createIndexedDbEventStore({ panelSessionId, reset: true });
     await expect(resetStore.count()).resolves.toBe(0);
     await expect(firstStore.count()).resolves.toBe(0);
 
     firstStore.close?.();
     resetStore.close?.();
-    await deleteEventDatabase(eventDatabaseName(sessionId));
+    await deleteEventDatabase(eventDatabaseName(panelSessionId));
   });
 });

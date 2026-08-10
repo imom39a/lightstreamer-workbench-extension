@@ -54,7 +54,7 @@ describe("Panel Session mount lifecycle", () => {
 
     expect(createIdentity).toHaveBeenCalledTimes(1);
     expect(createHistory).toHaveBeenCalledWith({
-      sessionId: "panel-00000000-0000-4000-8000-000000000011",
+      panelSessionId: "panel-00000000-0000-4000-8000-000000000011",
       reset: true,
       clearOnClose: true
     });

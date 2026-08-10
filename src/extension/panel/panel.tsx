@@ -80,7 +80,7 @@ export function mountWorkbenchPanel(
     let storageLimited = false;
     try {
       history = await createIndexedHistory({
-        sessionId: panelSessionId,
+        panelSessionId,
         reset: true,
         clearOnClose: true
       });
@@ -100,6 +100,7 @@ export function mountWorkbenchPanel(
         if (!bridge) {
           return Promise.resolve({
             requestId: request.executionId,
+            panelSessionId,
             ok: false,
             status: "bridge-error",
             timestamp: Date.now(),

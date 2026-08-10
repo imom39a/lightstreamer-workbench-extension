@@ -2095,7 +2095,7 @@ describe("WorkbenchRuntime", () => {
     const sessionId = "workbench-complete-find";
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await deleteEventDatabase(eventDatabaseName(sessionId));
-    const history = await createIndexedDbEventHistory({ sessionId, reset: true, batchSize: 64 });
+    const history = await createIndexedDbEventHistory({ panelSessionId: sessionId, reset: true, batchSize: 64 });
     try {
       await Promise.all(Array.from({ length: 180 }, (_, index) => {
         const number = index + 1;

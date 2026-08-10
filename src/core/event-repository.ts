@@ -32,7 +32,7 @@ export type EventRepository = {
   getEventById(id: string): Promise<LightstreamerEventEnvelope | null>;
   countEvents(): Promise<number>;
   clear(): Promise<void>;
-  close(): void | Promise<void>;
+  close(): void;
 };
 
 type EventRecord = {
@@ -83,13 +83,9 @@ const FILTER_INDEXES: Array<{
 ];
 
 export async function createIndexedDbEventRepository(
-  sessionId?: string | number | null
+  panelSessionId?: string | number | null
 ): Promise<EventRepository> {
-  const databaseName = eventDatabaseName(sessionId);
-  const result = await openEventDatabase(
-    databaseName,
-    typeof sessionId === "string" && sessionId.startsWith("panel-") ? sessionId : undefined
-  );
+  const result = await openEventDatabase(eventDatabaseName(panelSessionId));
   if (!result.ok) {
     throw result.error;
   }
@@ -188,12 +184,8 @@ class IndexedDbEventRepository implements EventRepository {
     await transactionDone(transaction);
   }
 
-  async close(): Promise<void> {
-    try {
-      await this.database.releaseOwnership();
-    } finally {
-      this.database.db.close();
-    }
+  close(): void {
+    this.database.db.close();
   }
 
   private async queryFilteredEvents(

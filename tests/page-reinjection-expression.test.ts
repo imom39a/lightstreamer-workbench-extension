@@ -7,7 +7,7 @@ import { pageReinjectionExpression } from "../src/extension/panel/bridge-client"
 describe("inspected-page reinjection result correlation", () => {
   it("rejects wrong outer and wrong nested Panel Session identities", () => {
     const sandbox = createPageSandbox();
-    const expression = pageReinjectionExpression("request-1", "panel-a", {
+    const expression = pageReinjectionExpression("request-1", "panel-00000000-0000-4000-8000-0000000000a1", {
       sourceEventId: "event-1",
       executionTarget: "captured-wire",
       target: { subscriptionId: "subscription-1", listenerId: null },
@@ -23,62 +23,62 @@ describe("inspected-page reinjection result correlation", () => {
     expect(vm.runInNewContext(expression, sandbox)).toMatchObject({ bridgeState: "pending" });
     sandbox.emit({
       type: RUNTIME_REINJECT_RESULT,
-      panelSessionId: "panel-b",
-      result: { requestId: "request-1", panelSessionId: "panel-a", ok: true, status: "success", timestamp: 1 }
+      panelSessionId: "panel-00000000-0000-4000-8000-0000000000b2",
+      result: { requestId: "request-1", panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1", ok: true, status: "success", timestamp: 1 }
     });
     expect(vm.runInNewContext(expression, sandbox)).toMatchObject({ bridgeState: "pending" });
 
     sandbox.emit({
       type: RUNTIME_REINJECT_RESULT,
-      panelSessionId: "panel-a",
-      result: { requestId: "request-1", panelSessionId: "panel-b", ok: true, status: "success", timestamp: 1 }
+      panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1",
+      result: { requestId: "request-1", panelSessionId: "panel-00000000-0000-4000-8000-0000000000b2", ok: true, status: "success", timestamp: 1 }
     });
     expect(vm.runInNewContext(expression, sandbox)).toMatchObject({ bridgeState: "pending" });
 
     sandbox.emit({
       type: RUNTIME_REINJECT_RESULT,
-      panelSessionId: "panel-a",
-      result: { requestId: "request-1", panelSessionId: "panel-a", ok: true, status: "success", timestamp: 1 }
+      panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1",
+      result: { requestId: "request-1", panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1", ok: true, status: "success", timestamp: 1 }
     });
     expect(vm.runInNewContext(expression, sandbox)).toEqual({
       bridgeState: "result",
-      result: { requestId: "request-1", panelSessionId: "panel-a", ok: true, status: "success", timestamp: 1 }
+      result: { requestId: "request-1", panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1", ok: true, status: "success", timestamp: 1 }
     });
   });
 
   it("keeps the same request independent for two Panel Sessions", () => {
     const sandbox = createPageSandbox();
     const requestId = "request-shared";
-    const panelAExpression = pageReinjectionExpression(requestId, "panel-a", createDraft());
-    const panelBExpression = pageReinjectionExpression(requestId, "panel-b", createDraft());
+    const panelAExpression = pageReinjectionExpression(requestId, "panel-00000000-0000-4000-8000-0000000000a1", createDraft());
+    const panelBExpression = pageReinjectionExpression(requestId, "panel-00000000-0000-4000-8000-0000000000b2", createDraft());
 
     expect(vm.runInNewContext(panelAExpression, sandbox)).toEqual({ bridgeState: "pending" });
     expect(vm.runInNewContext(panelBExpression, sandbox)).toEqual({ bridgeState: "pending" });
     expect(sandbox.postedMessages).toHaveLength(2);
     expect(sandbox.postedMessages).toEqual([
-      expect.objectContaining({ requestId, panelSessionId: "panel-a" }),
-      expect.objectContaining({ requestId, panelSessionId: "panel-b" })
+      expect.objectContaining({ requestId, panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1" }),
+      expect.objectContaining({ requestId, panelSessionId: "panel-00000000-0000-4000-8000-0000000000b2" })
     ]);
 
     sandbox.emit({
       type: RUNTIME_REINJECT_RESULT,
-      panelSessionId: "panel-a",
-      result: { requestId, panelSessionId: "panel-a", ok: true, status: "success", timestamp: 1 }
+      panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1",
+      result: { requestId, panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1", ok: true, status: "success", timestamp: 1 }
     });
     expect(vm.runInNewContext(panelAExpression, sandbox)).toEqual({
       bridgeState: "result",
-      result: { requestId, panelSessionId: "panel-a", ok: true, status: "success", timestamp: 1 }
+      result: { requestId, panelSessionId: "panel-00000000-0000-4000-8000-0000000000a1", ok: true, status: "success", timestamp: 1 }
     });
     expect(vm.runInNewContext(panelBExpression, sandbox)).toEqual({ bridgeState: "pending" });
 
     sandbox.emit({
       type: RUNTIME_REINJECT_RESULT,
-      panelSessionId: "panel-b",
-      result: { requestId, panelSessionId: "panel-b", ok: true, status: "success", timestamp: 2 }
+      panelSessionId: "panel-00000000-0000-4000-8000-0000000000b2",
+      result: { requestId, panelSessionId: "panel-00000000-0000-4000-8000-0000000000b2", ok: true, status: "success", timestamp: 2 }
     });
     expect(vm.runInNewContext(panelBExpression, sandbox)).toEqual({
       bridgeState: "result",
-      result: { requestId, panelSessionId: "panel-b", ok: true, status: "success", timestamp: 2 }
+      result: { requestId, panelSessionId: "panel-00000000-0000-4000-8000-0000000000b2", ok: true, status: "success", timestamp: 2 }
     });
   });
 });

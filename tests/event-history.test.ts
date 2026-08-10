@@ -27,6 +27,29 @@ function event(id: string): LightstreamerEventEnvelope {
 }
 
 describe("event history", () => {
+  it("isolates temporary Event History by Panel Session identity", async () => {
+    const panelA = "panel-00000000-0000-4000-8000-0000000000a1";
+    const panelB = "panel-00000000-0000-4000-8000-0000000000b2";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+
+    expect(eventDatabaseName(panelA)).toBe(`lsew-events-${panelA}`);
+    expect(eventDatabaseName(panelA)).not.toBe(eventDatabaseName(panelB));
+
+    const first = await createIndexedDbEventHistory({ panelSessionId: panelA, reset: true, clearOnClose: true });
+    const second = await createIndexedDbEventHistory({ panelSessionId: panelB, reset: true, clearOnClose: true });
+    await first.append(event("panel-a-event")).toPromise();
+    await second.append(event("panel-b-event")).toPromise();
+
+    await first.clear().toPromise();
+    await first.close().toPromise();
+    await expect(second.list().toPromise()).resolves.toMatchObject([
+      expect.objectContaining({ id: "panel-b-event" })
+    ]);
+    await second.close().toPromise();
+    await deleteEventDatabase(eventDatabaseName(panelA));
+    await deleteEventDatabase(eventDatabaseName(panelB));
+  });
+
   it("retains a high-volume capture in order with bounded subscriber work", async () => {
     const history = createInMemoryEventHistory({ batchSize: 256 });
     const notificationSizes: number[] = [];
@@ -142,7 +165,7 @@ describe("event history", () => {
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await deleteEventDatabase(eventDatabaseName(sessionId));
     const history = await createIndexedDbEventHistory({
-      sessionId,
+      panelSessionId: sessionId,
       reset: true,
       batchSize: 2
     });
@@ -163,7 +186,7 @@ describe("event history", () => {
       await expect(retained.toPromise()).resolves.toMatchObject({ id: "retained-before-close" });
       await expect(closed.toPromise()).resolves.toBeUndefined();
 
-      const reopened = await createIndexedDbEventHistory({ sessionId });
+      const reopened = await createIndexedDbEventHistory({ panelSessionId: sessionId });
       await expect(reopened.list().toPromise()).resolves.toMatchObject([
         expect.objectContaining({ id: "retained-before-close" })
       ]);
@@ -209,7 +232,7 @@ describe("event history", () => {
   it("uses the same completion contract over IndexedDB", async () => {
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     const history = await createIndexedDbEventHistory({
-      sessionId: "event-history-contract",
+      panelSessionId: "event-history-contract",
       reset: true
     });
 

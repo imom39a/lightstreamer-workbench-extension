@@ -428,14 +428,20 @@ test("Workbench keeps low-frequency session controls and scoped export deliberat
   await expect(page.getByText("This removes retained Evidence from this Panel Session and cannot be undone.", { exact: true })).toBeVisible();
   const confirmation = operations.locator(".workbench-react__confirmation");
   const contextBody = page.locator(".workbench-react__context-body");
+  const clearEvents = confirmation.getByRole("button", { name: "Clear retained events" });
+  const keepEvidence = confirmation.getByRole("button", { name: "Keep Evidence" });
+  await expect(clearEvents).not.toBeFocused();
   const initialContextScrollTop = await contextBody.evaluate((element) => element.scrollTop);
   await contextBody.hover();
   await page.mouse.wheel(0, 500);
   await expect.poll(() => contextBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(initialContextScrollTop);
-  const clearEvents = confirmation.getByRole("button", { name: "Clear retained events" });
-  const keepEvidence = confirmation.getByRole("button", { name: "Keep Evidence" });
-  await clearEvents.focus();
+  await page.keyboard.press("Tab");
   await expect(clearEvents).toBeFocused();
+  const clearFocusStyle = await clearEvents.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset };
+  });
+  expect(clearFocusStyle).toEqual({ outlineStyle: "solid", outlineWidth: "3px", outlineOffset: "2px" });
   const confirmationViewport = await contextBody.evaluate((owner) => {
     const element = owner.querySelector<HTMLElement>(".workbench-react__confirmation");
     if (!element) throw new Error("Session operations confirmation is missing.");

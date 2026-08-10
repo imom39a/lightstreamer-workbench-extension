@@ -12,7 +12,7 @@ import {
   type ReinjectionDraftPayload
 } from "../src/bridge/messages";
 
-const PANEL_SESSION_ID = "panel-capture-sync";
+const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000010";
 
 describe("active subscription capture synchronization bridge", () => {
   afterEach(() => {

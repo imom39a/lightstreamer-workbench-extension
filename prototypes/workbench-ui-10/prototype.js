@@ -287,7 +287,7 @@ function renderContextPane() {
   const selected = ["retained-find", "long-identities"].includes(state.visualSetup)
     ? HIGH_VOLUME_SELECTED_EVENT
     : EVENTS.find((event) => event.id === state.selected);
-  if (state.visualSetup === "more-actions") return renderSessionOperations();
+  if (["more-actions", "clear-confirmation", "memory-operations"].includes(state.visualSetup)) return renderSessionOperations();
   if (state.visualSetup === "selected-json") return renderEvidenceContext(JSON_STRING_EVENT);
   if (state.variant === "C") return renderRecoveryContext(selected);
   if (!selected) return renderDossier();
@@ -317,9 +317,11 @@ function renderEvidenceContext(event) {
 }
 
 function renderSessionOperations() {
+  const memory = state.visualSetup === "memory-operations";
+  const confirmation = state.visualSetup === "clear-confirmation";
   return `<aside class="pane context-pane" aria-label="Session operations">
     <header><div><small>Session operations</small><strong>Session operations</strong></div><button>Back to prior investigation</button></header>
-    <div class="context-body prototype-operations"><p>The current DevTools session history uses <strong>IndexedDB</strong> and is cleared when this DevTools session closes.</p><section><strong>Retained Evidence copy</strong><p>6 captured · 6 retained · 6 currently shown for the active Scope and Filter.</p><button>Copy complete scoped Evidence</button></section><section><strong>Clear retained Evidence</strong><p>Clear all retained Evidence for this DevTools session.</p><button>Clear retained Evidence…</button></section><section><strong>Scoped export</strong><p>Prepare a versioned download for the current Scope.</p><button>Export Scope…</button></section></div>
+    <div class="context-body prototype-operations"><p>The current Panel Session history uses <strong>${memory ? "in-memory fallback" : "IndexedDB"}</strong> and is cleared when this Panel Session closes.</p><section><strong>Retained Evidence copy</strong><p>6 captured · 6 retained · 6 currently shown for the active Scope and Filter.</p><button>Copy complete scoped Evidence</button></section><section class="operations-danger"><strong>Clear retained Evidence</strong><p>Clear all 6 retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>${confirmation ? `<div class="confirmation"><strong>Clear all 6 retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button class="confirmation-primary">Clear retained events</button><button>Keep Evidence</button></div></div>` : `<button>Clear retained Evidence…</button>`}</section><section><strong>Scoped export</strong><p>Prepare a versioned download for the current Scope.</p><button>Export Scope…</button></section></div>
   </aside>`;
 }
 

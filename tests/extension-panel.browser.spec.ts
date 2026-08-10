@@ -253,7 +253,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       );
       assert.match(proof.scope, /Inspected page/);
       assert.ok(
-        proof.databases.some((database) => database.name?.includes("lsew-events-panel-v1-panel-")),
+        proof.databases.some((database) => database.name?.includes("lsew-events-panel-")),
         "Each panel should own a temporary Panel Session journal."
       );
     }
@@ -263,7 +263,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
           .flatMap((proof) => proof.databases.map((database) => database.name))
           .filter(
             (name): name is string =>
-              name?.startsWith("lsew-events-panel-v1-panel-") ?? false
+              name?.startsWith("lsew-events-panel-") ?? false
           )
       )
     ];

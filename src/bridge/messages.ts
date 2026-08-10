@@ -43,6 +43,11 @@ export const PAGE_REINJECTION_BRIDGE_VERSION = 2 as const;
 
 export type PanelSessionId = string;
 
+export type InjectionCorrelation = Readonly<{
+  panelSessionId: PanelSessionId;
+  requestId: string;
+}>;
+
 /**
  * A Panel Session identity is allocated by the panel mount before any bridge
  * or Event History work begins. It is intentionally independent from tab
@@ -283,24 +288,18 @@ export type ReinjectionRequestMessage =
   | ContentReinjectRequestMessage
   | PageReinjectRequestMessage;
 
-export type PanelReinjectRequestMessage = {
+export type PanelReinjectRequestMessage = InjectionCorrelation & {
   type: typeof PANEL_REINJECT_REQUEST;
-  requestId: string;
-  panelSessionId: PanelSessionId;
   draft: ReinjectionDraftPayload;
 };
 
-export type ContentReinjectRequestMessage = {
+export type ContentReinjectRequestMessage = InjectionCorrelation & {
   type: typeof CONTENT_REINJECT_REQUEST;
-  requestId: string;
-  panelSessionId: PanelSessionId;
   draft: ReinjectionDraftPayload;
 };
 
-export type PageReinjectRequestMessage = {
+export type PageReinjectRequestMessage = InjectionCorrelation & {
   type: typeof PAGE_REINJECT_REQUEST;
-  requestId: string;
-  panelSessionId: PanelSessionId;
   draft: ReinjectionDraftPayload;
 };
 
@@ -322,9 +321,7 @@ export type ReinjectionResultStatus =
   | "bridge-error"
   | "acknowledgement-unknown";
 
-export type ReinjectionResult = {
-  requestId: string;
-  panelSessionId?: PanelSessionId;
+export type ReinjectionResult = InjectionCorrelation & {
   ok: boolean;
   status: ReinjectionResultStatus;
   timestamp: number;
@@ -348,6 +345,15 @@ export type ContentReinjectResultMessage = {
 
 export type PanelReinjectResultMessage = {
   type: typeof PANEL_REINJECT_RESULT;
+  panelSessionId: PanelSessionId;
+  result: ReinjectionResult;
+};
+
+type ReinjectionResultEnvelope = {
+  type:
+    | typeof RUNTIME_REINJECT_RESULT
+    | typeof CONTENT_REINJECT_RESULT
+    | typeof PANEL_REINJECT_RESULT;
   panelSessionId: PanelSessionId;
   result: ReinjectionResult;
 };
@@ -604,8 +610,7 @@ export function isPanelReinjectRequestMessage(value: unknown): value is PanelRei
   return (
     isRecord(value) &&
     value.type === PANEL_REINJECT_REQUEST &&
-    isNonEmptyString(value.requestId) &&
-    isPanelSessionId(value.panelSessionId) &&
+    isInjectionCorrelation(value) &&
     isReinjectionDraftPayload(value.draft)
   );
 }
@@ -616,8 +621,7 @@ export function isContentReinjectRequestMessage(
   return (
     isRecord(value) &&
     value.type === CONTENT_REINJECT_REQUEST &&
-    isNonEmptyString(value.requestId) &&
-    isPanelSessionId(value.panelSessionId) &&
+    isInjectionCorrelation(value) &&
     isReinjectionDraftPayload(value.draft)
   );
 }
@@ -626,8 +630,7 @@ export function isPageReinjectRequestMessage(value: unknown): value is PageReinj
   return (
     isRecord(value) &&
     value.type === PAGE_REINJECT_REQUEST &&
-    isNonEmptyString(value.requestId) &&
-    isPanelSessionId(value.panelSessionId) &&
+    isInjectionCorrelation(value) &&
     isReinjectionDraftPayload(value.draft)
   );
 }
@@ -729,31 +732,26 @@ export function topologySyncUtf8Bytes(value: TopologySyncFrame | TopologyAbsolut
 export function isRuntimeReinjectResultMessage(
   value: unknown
 ): value is RuntimeReinjectResultMessage {
-  return (
-    isRecord(value) &&
-    value.type === RUNTIME_REINJECT_RESULT &&
-    isPanelSessionId(value.panelSessionId) &&
-    isReinjectionResult(value.result) &&
-    value.result.panelSessionId === value.panelSessionId
-  );
+  return isReinjectionResultEnvelope(value, RUNTIME_REINJECT_RESULT);
 }
 
 export function isContentReinjectResultMessage(
   value: unknown
 ): value is ContentReinjectResultMessage {
-  return (
-    isRecord(value) &&
-    value.type === CONTENT_REINJECT_RESULT &&
-    isPanelSessionId(value.panelSessionId) &&
-    isReinjectionResult(value.result) &&
-    value.result.panelSessionId === value.panelSessionId
-  );
+  return isReinjectionResultEnvelope(value, CONTENT_REINJECT_RESULT);
 }
 
 export function isPanelReinjectResultMessage(value: unknown): value is PanelReinjectResultMessage {
+  return isReinjectionResultEnvelope(value, PANEL_REINJECT_RESULT);
+}
+
+function isReinjectionResultEnvelope(
+  value: unknown,
+  type: ReinjectionResultEnvelope["type"]
+): value is ReinjectionResultEnvelope {
   return (
     isRecord(value) &&
-    value.type === PANEL_REINJECT_RESULT &&
+    value.type === type &&
     isPanelSessionId(value.panelSessionId) &&
     isReinjectionResult(value.result) &&
     value.result.panelSessionId === value.panelSessionId
@@ -761,7 +759,13 @@ export function isPanelReinjectResultMessage(value: unknown): value is PanelRein
 }
 
 export function isPanelSessionId(value: unknown): value is PanelSessionId {
-  return typeof value === "string" && /^panel-[A-Za-z0-9_-]{1,120}$/.test(value);
+  return typeof value === "string" && /^panel-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+}
+
+export function isInjectionCorrelation(
+  value: unknown
+): value is InjectionCorrelation & Record<string, unknown> {
+  return isRecord(value) && isPanelSessionId(value.panelSessionId) && isNonEmptyString(value.requestId);
 }
 
 function isCaptureStatus(value: unknown): value is CaptureStatus {
@@ -796,7 +800,7 @@ function isReinjectionResult(value: unknown): value is ReinjectionResult {
   }
 
   if (!(
-    isNonEmptyString(value.requestId) &&
+    isInjectionCorrelation(value) &&
     typeof value.ok === "boolean" &&
     isReinjectionResultStatus(value.status) &&
     typeof value.timestamp === "number" &&

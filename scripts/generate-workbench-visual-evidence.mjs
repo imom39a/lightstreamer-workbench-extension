@@ -120,8 +120,8 @@ try {
         checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "Each Session operations scenario reaches Clear retained Evidence by keyboard, preserves the existing focus route through the subordinate resources, and keeps the changed scope copy visible in normal, compact, and shallow geometry.",
-      baselineIntent: "Update exactly 14 affected scenario baselines on each platform (28 committed PNG files total) across compact, normal, shallow, and wide Session operations or healthy-footer states whose visible copy changes to Panel Session scope; no layout, styling, interaction, or unrelated baseline change is intended. The normal-limited-capture Darwin/Linux pair remains unchanged because its diagnostic copy is unaffected."
+      keyboardAndFocus: "Clear confirmation is not auto-focused. Each focused-confirmation capture opens the confirmation, uses physical Tab navigation to reach Clear retained events, records the active element and its button-level focus ring, and verifies the action is unobscured without horizontal overflow. Memory-fallback captures use the existing keyboard route to Session operations and visibly identify in-memory backing and Panel Session close clearing.",
+      baselineIntent: "Update only copy-focused Material UI evidence: the existing compact-memory-fallback-dark Darwin/Linux pair and the new compact-clear-confirmation-light and normal-clear-confirmation-dark Darwin/Linux pairs. The changed scenarios cover compact, normal, shallow, and wide affected copy states as applicable; the limited-capture Darwin/Linux pair remains unchanged."
     },
     durationMs: Date.now() - startedAt,
     scenarios: results
@@ -176,6 +176,8 @@ async function assertPrototypeSetup(page, workbench, setup) {
     "authored-review": ["topology-small-subscription", "None · newly authored", "visual-review"],
     "command-comparison": ["Why matching?", "scenario-subscription-1 / scenario.snapshot-basic / alpha"],
     "more-actions": ["Session operations", "Copy complete scoped Evidence"],
+    "memory-operations": ["in-memory fallback", "Panel Session closes."],
+    "clear-confirmation": ["Clear retained events", "This removes retained Evidence from this Panel Session and cannot be undone."],
     "matching-summary": ["Matching projections", "Neither projection is Authoritative COMMAND State."],
     "selected-json": ["json-string-event", "JSON string", "AIRPORT-02"]
   }[setup];
@@ -219,6 +221,26 @@ async function assertPrototypeSetup(page, workbench, setup) {
       if (!text.includes(marker)) throw new Error(`Long-identity prototype is missing ${JSON.stringify(marker)}.`);
     }
   }
+  if (setup === "clear-confirmation") {
+    const clear = workbench.getByRole("button", { name: "Clear retained events" });
+    if (await clear.evaluate((element) => element === document.activeElement)) {
+      throw new Error("Prototype Clear retained events must not be auto-focused.");
+    }
+    let reached = false;
+    for (let index = 0; index < 40; index += 1) {
+      await page.keyboard.press("Tab");
+      if (await clear.evaluate((element) => element === document.activeElement)) {
+        reached = true;
+        break;
+      }
+    }
+    if (!reached) throw new Error("Prototype Clear retained events was not reached by physical Tab navigation.");
+    const style = await clear.evaluate((element) => {
+      const computed = getComputedStyle(element);
+      return `${computed.outlineStyle} ${computed.outlineWidth} ${computed.outlineOffset}`;
+    });
+    if (style !== "solid 3px 2px") throw new Error(`Prototype Clear focus treatment is ${style}.`);
+  }
 }
 
 async function captureProduction(runningBrowser, scenario) {
@@ -253,7 +275,9 @@ async function captureProduction(runningBrowser, scenario) {
     }
     let accessibility = null;
     let helpResources = null;
-    if (scenario.production.setup === "more-actions-help") {
+    let focusEvidence = null;
+    let memoryEvidence = null;
+    if (["more-actions-help", "clear-confirmation", "memory-operations"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -265,6 +289,8 @@ async function captureProduction(runningBrowser, scenario) {
         throw new Error(`Help resources has serious or critical axe violations: ${JSON.stringify(seriousOrCriticalViolations)}`);
       }
       accessibility = { seriousOrCriticalViolations };
+    }
+    if (scenario.production.setup === "more-actions-help") {
       helpResources = await page.getByRole("navigation", { name: "Help and resources" }).evaluate((navigation) => {
         const inViewport = (element) => {
           const rect = element.getBoundingClientRect();
@@ -291,10 +317,36 @@ async function captureProduction(runningBrowser, scenario) {
         };
       });
     }
+    if (scenario.production.setup === "clear-confirmation") {
+      focusEvidence = await page.getByRole("region", { name: "Session operations" }).evaluate((operations) => {
+        const clear = Array.from(operations.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Clear retained events");
+        const keep = Array.from(operations.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Keep Evidence");
+        const owner = operations.closest(".workbench-react__context-body");
+        if (!(clear instanceof HTMLElement) || !(keep instanceof HTMLElement) || !(owner instanceof HTMLElement)) {
+          throw new Error("Clear confirmation evidence controls are missing.");
+        }
+        const clearStyle = getComputedStyle(clear);
+        const keepStyle = getComputedStyle(keep);
+        const rect = clear.getBoundingClientRect();
+        return {
+          activeElement: document.activeElement?.textContent?.trim() ?? null,
+          clearFocused: document.activeElement === clear,
+          clearFocusStyle: `${clearStyle.outlineStyle} ${clearStyle.outlineWidth} ${clearStyle.outlineOffset}`,
+          keepFocusStyle: `${keepStyle.outlineStyle} ${keepStyle.outlineWidth} ${keepStyle.outlineOffset}`,
+          scrollTop: owner.scrollTop,
+          clearVisible: rect.top >= 0 && rect.bottom <= window.innerHeight,
+          clearUnobscured: clear.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)),
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+        };
+      });
+    }
+    if (scenario.production.setup === "memory-operations") {
+      memoryEvidence = await page.getByRole("region", { name: "Session operations" }).innerText();
+    }
     if (browserDiagnostics.length) throw new Error(`Production Workbench emitted browser diagnostics: ${browserDiagnostics.join("\n")}`);
     return {
       png: await workbench.screenshot({ animations: "disabled", caret: "hide" }),
-      checks: { browserDiagnostics, horizontalOverflow, accessibility, helpResources }
+      checks: { browserDiagnostics, horizontalOverflow, accessibility, helpResources, focusEvidence, memoryEvidence }
     };
   } finally {
     await context.close();
@@ -390,7 +442,52 @@ async function prepareProductionState(page, setup) {
     }
     return;
   }
+  if (setup === "memory-operations") {
+    const more = page.getByRole("button", { name: "More actions" });
+    await tabTo(page, more);
+    await page.keyboard.press("Enter");
+    const operations = page.getByRole("region", { name: "Session operations" });
+    await operations.waitFor();
+    const text = await operations.innerText();
+    if (!text.includes("in-memory fallback") || !text.includes("cleared when this Panel Session closes")) {
+      throw new Error("Memory fallback Session operations copy is incomplete.");
+    }
+    return;
+  }
+  if (setup === "clear-confirmation") {
+    const more = page.getByRole("button", { name: "More actions" });
+    await tabTo(page, more);
+    await page.keyboard.press("Enter");
+    const operations = page.getByRole("region", { name: "Session operations" });
+    await operations.waitFor();
+    await operations.getByRole("button", { name: "Clear retained Evidence…" }).click();
+    const clear = operations.getByRole("button", { name: "Clear retained events" });
+    if (await clear.evaluate((element) => element === document.activeElement)) {
+      throw new Error("Production Clear retained events must not be auto-focused.");
+    }
+    const owner = page.locator(".workbench-react__context-body");
+    const before = await owner.evaluate((element) => element.scrollTop);
+    await owner.hover();
+    await page.mouse.wheel(0, 500);
+    await page.waitForFunction((initial) => {
+      const element = document.querySelector(".workbench-react__context-body");
+      return element instanceof HTMLElement && element.scrollTop > initial;
+    }, before);
+    await page.keyboard.press("Tab");
+    if (!await clear.evaluate((element) => element === document.activeElement)) {
+      throw new Error("Production Clear retained events was not reached by physical Tab navigation.");
+    }
+    return;
+  }
   throw new Error(`Unknown production visual setup: ${setup}`);
+}
+
+async function tabTo(page, target, maximumTabs = 40) {
+  for (let index = 0; index < maximumTabs; index += 1) {
+    await page.keyboard.press("Tab");
+    if (await target.evaluate((element) => element === document.activeElement)) return index + 1;
+  }
+  throw new Error(`Physical Tab navigation did not reach ${await target.getAttribute("aria-label") ?? "the requested control"}.`);
 }
 
 async function createDiff(runningBrowser, reference, current, viewport) {

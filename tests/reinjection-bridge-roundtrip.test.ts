@@ -13,7 +13,7 @@ import {
   type ReinjectionDraftPayload
 } from "../src/bridge/messages";
 
-const PANEL_SESSION_ID = "panel-reinjection-roundtrip";
+const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000013";
 
 describe("reinjection bridge round trip", () => {
   afterEach(() => {
@@ -387,7 +387,7 @@ describe("reinjection bridge round trip", () => {
     });
 
     notifyConnect?.(secondPort);
-    secondPortListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: "panel-reinjection-second" });
+    secondPortListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: "panel-00000000-0000-4000-8000-000000000014" });
     const result = {
       requestId: "originating-panel-1",
       panelSessionId: PANEL_SESSION_ID,

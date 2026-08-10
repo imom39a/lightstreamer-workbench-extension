@@ -76,7 +76,7 @@ describe("bounded atomic topology synchronization", () => {
     const metadata = {
       version: TOPOLOGY_SYNC_VERSION,
       syncId: "empty",
-      panelSessionId: "panel-topology-sync",
+      panelSessionId: "panel-00000000-0000-4000-8000-000000000012",
       pageEpoch: "page-a",
       cutoffCaptureSequence: 0,
       chunkCount: 0,

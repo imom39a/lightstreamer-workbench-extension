@@ -7,7 +7,7 @@ type VisualCase = Readonly<{
   viewport: { width: number; height: number };
   theme: "dark" | "light";
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" };
+  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -137,6 +137,48 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         const style = getComputedStyle(element);
         return `${style.outlineStyle} ${style.outlineWidth}`;
       })).toBe("solid 2px");
+      return;
+    }
+    case "memory-operations": {
+      const more = page.getByRole("button", { name: "More actions" });
+      await expectVisibleKeyboardTarget(page, more);
+      await page.keyboard.press("Enter");
+      const operations = page.getByRole("region", { name: "Session operations" });
+      await expect(operations).toContainText("current Panel Session history uses in-memory fallback");
+      await expect(operations).toContainText("cleared when this Panel Session closes");
+      return;
+    }
+    case "clear-confirmation": {
+      const more = page.getByRole("button", { name: "More actions" });
+      await expectVisibleKeyboardTarget(page, more);
+      await page.keyboard.press("Enter");
+      const operations = page.getByRole("region", { name: "Session operations" });
+      const trigger = operations.getByRole("button", { name: "Clear retained Evidence…" });
+      await trigger.click();
+      const clear = operations.getByRole("button", { name: "Clear retained events" });
+      const keep = operations.getByRole("button", { name: "Keep Evidence" });
+      await expect(clear).not.toBeFocused();
+      const owner = page.locator(".workbench-react__context-body");
+      const before = await owner.evaluate((element) => element.scrollTop);
+      await owner.hover();
+      await page.mouse.wheel(0, 500);
+      await expect.poll(() => owner.evaluate((element) => element.scrollTop)).toBeGreaterThan(before);
+      await page.keyboard.press("Tab");
+      await expect(clear).toBeFocused();
+      await expect(keep).toBeVisible();
+      await expect.poll(() => clear.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`;
+      })).toBe("solid 3px 2px");
+      const geometry = await clear.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)),
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+        };
+      });
+      expect(geometry).toEqual({ visible: true, unobscured: true, horizontalOverflow: false });
       return;
     }
   }

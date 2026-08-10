@@ -15,7 +15,7 @@ import {
 import { createTopologySyncCoordinator } from "../src/core/topology-sync";
 import { connectPanelBridge } from "../src/extension/panel/bridge-client";
 
-const PANEL_SESSION_ID = "panel-topology-sync";
+const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000012";
 const frame = {
   type: TOPOLOGY_SYNC_BEGIN,
   version: TOPOLOGY_SYNC_VERSION,

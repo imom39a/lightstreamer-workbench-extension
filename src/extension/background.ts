@@ -187,15 +187,16 @@ function registerPanel(
   if (current && current.tabId === tabId && current.panelSessionId === panelSessionId) {
     return;
   }
-  if (current && (current.tabId !== tabId || current.panelSessionId !== panelSessionId)) {
-    removeRegistration(current);
+  if (current) {
+    return;
+  }
+  for (const registrations of panelPortsByTab.values()) {
+    if (registrations.has(panelSessionId)) {
+      return;
+    }
   }
   const registration: PanelRegistration = { tabId, panelSessionId, port };
   const registrations = panelPortsByTab.get(tabId) ?? new Map<PanelSessionId, PanelRegistration>();
-  const previous = registrations.get(panelSessionId);
-  if (previous && previous.port !== port) {
-    removeRegistration(previous);
-  }
   registrations.set(panelSessionId, registration);
   panelPortsByTab.set(tabId, registrations);
   registrationByPort.set(port, registration);

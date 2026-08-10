@@ -35,7 +35,7 @@ import {
 } from "../src/bridge/messages";
 import { createStableIdAllocator } from "../src/core/ids";
 
-const PANEL_SESSION_ID = "panel-test-validation";
+const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000016";
 
 describe("bridge capture message validation", () => {
   it("accepts valid client and subscription lifecycle messages", () => {

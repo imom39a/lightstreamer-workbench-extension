@@ -337,16 +337,16 @@ clear-snapshot
 | `PANEL_REGISTER_MESSAGE` | panel to service worker | Register one port under `tabId` and its unique Panel Session identity. |
 | `PANEL_STATUS_MESSAGE` | service worker to panel | Report bridge lifecycle status. |
 | `PANEL_CAPTURE_MESSAGE` | service worker to panel | Deliver a capture message to one Panel Session when scoped, or broadcast the live Capture to every registered Panel Session for the inspected tab. |
-| `PANEL_REINJECT_REQUEST` | panel to service worker | Carry a serialized Injection Draft over the compatibility path. |
-| `CONTENT_REINJECT_REQUEST` | service worker to content script | Forward that compatibility request to the inspected tab. |
-| `PAGE_REINJECT_REQUEST` | content script to page | Ask MAIN-world instrumentation to use the selected captured listener or wire target. |
-| `RUNTIME_REINJECT_RESULT` | page to content script | Return the internally named page-side delivery result. |
+| `PANEL_REINJECT_REQUEST` | panel to service worker | Carry a validated `InjectionCorrelation` (`panelSessionId`, `requestId`) and serialized Injection Draft over the compatibility path. |
+| `CONTENT_REINJECT_REQUEST` | service worker to content script | Forward the same validated correlation and request to the inspected tab. |
+| `PAGE_REINJECT_REQUEST` | content script to page | Ask MAIN-world instrumentation to use the selected captured listener or wire target with the same correlation. |
+| `RUNTIME_REINJECT_RESULT` | page to content script | Return the validated page-side delivery result with the correlated request. |
 | `CONTENT_REINJECT_RESULT` | content script to service worker | Relay a compatibility-path page result independently of the original response channel. |
-| `PANEL_REINJECT_RESULT` | service worker to panel | Return the internally named delivery result to the panel. |
+| `PANEL_REINJECT_RESULT` | service worker to panel | Return the result only to the matching `(tabId, panelSessionId, requestId)` request. |
 
 The `PANEL_REINJECT_REQUEST` → `CONTENT_REINJECT_REQUEST` → `PAGE_REINJECT_REQUEST` message chain remains a compatibility fallback. Local Injection first calls the versioned `__LSEW_REINJECTION_BRIDGE__` MAIN-world capability directly. When that global is missing but the already-loaded page still has an earlier message handler, the panel creates a request-scoped result slot and `MessageChannel` in the inspected page, sends `PAGE_REINJECT_REQUEST` there, and polls only for the correlated result. This avoids depending on an orphaned content-script acknowledgement and does not retry an already-started request. If the page capability is version-skewed or the direct page mechanism cannot start, the panel sends the same validated request through the compatibility runtime chain. The content script also transfers a request-scoped `MessagePort` with its page request. The page validates the serialized Draft before touching a listener or WebSocket, and the panel validates the returned result before updating Workbench state.
 
-Every routed panel envelope carries the Panel Session identity at its outer boundary; Capture and reinjection results also validate any nested identity before delivery. A mismatched outer/inner identity is rejected rather than repaired with the panel's expected value. Topology synchronization uses the same canonical `panelSessionId` in `TopologySyncMetadata`, so a checkpoint cannot cross panel owners while live, unscoped Capture remains visible to all panels on the same inspected tab.
+Every routed panel envelope carries the Panel Session identity at its outer boundary; Local Injection requests and results use the shared validated `InjectionCorrelation` contract, and results validate exact outer/nested identity and request matching before delivery. A mismatched outer/inner identity is rejected rather than repaired with the panel's expected value. Planned Server Injection must reuse this same correlation contract for its future request/result path; it adds no implemented UI or transport here. Topology synchronization uses the same canonical `panelSessionId` in `TopologySyncMetadata`, so a checkpoint cannot cross panel owners while live, unscoped Capture remains visible to all panels on the same inspected tab.
 
 The MAIN-world handler also publishes `RUNTIME_REINJECT_RESULT` on `window` for compatibility with older content scripts. For extension-reload compatibility, the content script returns the first valid result from either page channel through both the open `sendResponse` channel and `CONTENT_REINJECT_RESULT`. The service worker accepts either protocol, correlates the result by inspected tab and request ID to the panel port that originated it, and removes the pending request on first delivery so redundant feedback cannot produce duplicate panel results.
 
@@ -481,17 +481,17 @@ Each `mountWorkbenchPanel()` allocates a cryptographically random Panel Session 
 
 ```ts
 createIndexedDbEventHistory({
-  sessionId: panelSessionId,
+  panelSessionId,
   reset: true,
   clearOnClose: true
 })
 ```
 
-If IndexedDB startup, ownership coordination, or guarded cleanup cannot be confirmed, the panel logs the error and falls back to `createInMemoryEventHistory()` for the remainder of that Panel Session. There is no mid-session migration. The panel also closes the event store on `dispose`, `pagehide`, and `beforeunload`; IndexedDB-backed stores created with `clearOnClose` drain accepted writes, clear the current session, remove the ownership marker, close the owned database handle, and then release the Panel Session ownership lock before teardown completes.
+If IndexedDB startup cannot be confirmed, the panel logs the error and falls back to `createInMemoryEventHistory()` for the remainder of that Panel Session. There is no mid-session migration. The panel closes Event History on `dispose` and the actual `pagehide` lifecycle event; IndexedDB-backed history created with `clearOnClose` drains accepted writes, clears that Panel Session's temporary history, and closes its handle before teardown completes.
 
 ### IndexedDB Schema
 
-`src/core/indexeddb/event-db.ts` uses schema version `2` and default database name `lsew-events-session`. Panel Session names are generated as `lsew-events-panel-v1-{sanitizedPanelSessionId}`; the `v1` segment is a recognized cleanup generation and is part of the temporary database identity.
+`src/core/indexeddb/event-db.ts` uses schema version `1` and the default database name `lsew-events-session`. Panel Session temporary names are generated as `lsew-events-{sanitizedPanelSessionId}` so separate mounted Panel Sessions do not share a backing database.
 
 Object stores:
 
@@ -500,9 +500,6 @@ Object stores:
 | `events` | auto-increment `seq` | Stores `{ id, envelope }`; has unique `id` index. |
 | `eventMeta` | `seq` | Stores denormalized filter fields such as kind, subscription ID, mode, item, command key, command value, snapshot, and synthetic marker. |
 | `eventSearchTokens` | `[token, seq]` | Stores tokenized text search metadata for future query acceleration; has `token` and `seq` indexes. |
-| `ownership` | `key` | Stores the recognized Panel Session ownership generation and owner marker. |
-
-Panel journals coordinate through a Web Lock named for the database. The lock is acquired before an owned database is claimed or exposed, and remains held until controlled close removes the marker and closes the owned handle; only then is the lock released. Startup cleanup enumerates temporary names from the current Panel Session generation and the pre-Panel Session numeric form `^lsew-events-[0-9]+$`, acquires each lock non-blockingly, skips active owners, deletes recognized orphans (including a crash before the ownership row was written), and preserves unreadable databases, unknown name generations, or unknown marker generations. If IndexedDB database enumeration or Web Locks are unavailable, startup selects the in-memory journal instead of making an unsafe cleanup claim.
 
 `src/core/event-repository.ts` handles IndexedDB queries by:
 
@@ -679,7 +676,7 @@ Each active row keeps origin provenance and latest provenance separately. Delete
 
 ## Local Injection Delivery Architecture
 
-Local Injection never injects data into a real Lightstreamer Server stream. It creates one protected, target-anchored Injection Draft and has two explicit inspected-page delivery paths. Existing source and bridge identifiers use `reinjection` for protocol continuity; that internal term does not name the user-facing workflow.
+Local Injection never injects data into a real Lightstreamer Server stream. It creates one protected, target-anchored Injection Draft and has two explicit inspected-page delivery paths. Existing source and bridge identifiers use `reinjection` for protocol continuity; that internal term does not name the user-facing workflow. Every implemented Local Injection request and result carries the validated `InjectionCorrelation` of `panelSessionId` plus `requestId`; future planned Server Injection requests and results must reuse that same contract.
 
 1. The injected script captures original `onItemUpdate` callbacks and active Lightstreamer WebSocket subscription schemas.
 2. `WorkbenchRuntime` creates exactly one `ReinjectionDraft` from an immutable Injection Source or a live COMMAND scope, then owns its text, validation, Review state, protected target, pending execution, and outcome.
@@ -986,8 +983,8 @@ Follow the accepted deep runtime boundary:
 - The source of truth for shared cross-context payloads is `src/bridge/messages.ts`; both the direct page capability and compatibility message path validate drafts and results at runtime boundaries.
 - The injected script must remain self-contained after esbuild bundling because it runs as a manifest content script in the page `MAIN` world.
 - The content bridge validates both capture messages and reinjection result messages before forwarding.
-- The service worker routes panel registrations by `(tabId, PanelSessionId)`. Unscoped live Capture broadcasts to every registered panel for the inspected tab; panel-scoped replay, topology checkpoints, status, and Injection results go only to the matching Panel Session. Capture messages without a sender tab ID are ignored.
-- Each panel owns a temporary Panel Session journal named from its Panel Session identity. Startup performs guarded cleanup for the recognized Panel Session generation and pre-Panel Session numeric journals, preserves active owners, unreadable databases, and unknown future generations, and selects the in-memory journal when IndexedDB enumeration or Web Lock coordination is unavailable. Normal teardown drains and clears that Panel Session journal, removes its marker, closes its handle, and then releases ownership; a new panel never resets another panel's inspected-tab history.
+- The service worker routes panel registrations by `(tabId, panelSessionId)`. Unscoped live Capture broadcasts to every registered panel for the inspected tab; panel-scoped replay, topology checkpoints, status, and Injection results go only to the matching Panel Session and request correlation. Capture messages without a sender tab ID are ignored.
+- Each panel owns temporary Event History named from its Panel Session identity. IndexedDB failure falls back to `createInMemoryEventHistory()` for that Panel Session; normal teardown drains and clears the Panel Session history and closes its handle on `dispose`/`pagehide`. A new panel never resets another panel's inspected-tab history.
 - Active wire fallback subscriptions can receive a Local Injection through their captured page WebSocket even when no listener target was captured. Closed, deleted, unsubscribed, or handed-off targets return `stale-target` without dispatch.
 - Local Injected Update Evidence is appended to panel history only after page-side delivery reports success. Unavailable, stale, rejected, partial, or acknowledgement-unknown targets never create successful Local Evidence.
 - `dist/` is generated output. Architecture changes should be made in `src/`, `public/`, or `scripts/`, then rebuilt.

@@ -28,7 +28,7 @@ import {
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const PANEL_SESSION_ID = "panel-mount-session";
+const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000011";
 
 type FakePort = {
   postedMessages: unknown[];
@@ -116,6 +116,7 @@ describe("production panel mount wiring", () => {
     const request = createLocalInjectionExecutionRequest();
     const bridgeResult = {
       requestId: "bridge-request-1",
+      panelSessionId: "panel-00000000-0000-4000-8000-000000000011",
       ok: true,
       status: "success" as const,
       timestamp: 123,
@@ -277,7 +278,7 @@ describe("production panel mount wiring", () => {
     await flushPanel();
 
     expect(createIndexedDbHistory).toHaveBeenCalledWith({
-      sessionId: PANEL_SESSION_ID,
+      panelSessionId: PANEL_SESSION_ID,
       reset: true,
       clearOnClose: true
     });

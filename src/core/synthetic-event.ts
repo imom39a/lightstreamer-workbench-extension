@@ -9,7 +9,7 @@ import {
 
 export function createSyntheticEventFromDraft(
   draft: ReinjectionDraft,
-  result: ReinjectionResult,
+  result: Pick<ReinjectionResult, "requestId" | "status" | "timestamp" | "ok">,
   executionTarget: ReinjectionExecutionTarget = "captured-listener"
 ): LightstreamerEventEnvelope {
   const timestamp = result.timestamp || Date.now();

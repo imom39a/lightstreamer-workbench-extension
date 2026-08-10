@@ -9,7 +9,6 @@ import {
   type EventRepository,
   createIndexedDbEventRepository
 } from "./event-repository";
-import { sweepAbandonedPanelJournals } from "./indexeddb/event-db";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -72,7 +71,7 @@ export type EventStoreOptions = {
 };
 
 export type IndexedDbEventStoreOptions = EventStoreOptions & {
-  sessionId?: string | number | null;
+  panelSessionId?: string | number | null;
   reset?: boolean;
   clearOnClose?: boolean;
 };
@@ -246,16 +245,7 @@ export function createEventStore(options: EventStoreOptions = {}): InMemoryEvent
 export async function createIndexedDbEventStore(
   options: IndexedDbEventStoreOptions = {}
 ): Promise<EventStore> {
-  if (typeof options.sessionId === "string" && options.sessionId.startsWith("panel-")) {
-    if (typeof globalThis.navigator?.locks?.request !== "function") {
-      throw new Error("Panel Session journal coordination is unavailable.");
-    }
-    const cleanup = await sweepAbandonedPanelJournals();
-    if (!cleanup.confirmed) {
-      throw new Error("Could not confirm guarded Panel Session journal cleanup.");
-    }
-  }
-  const repository = await createIndexedDbEventRepository(options.sessionId);
+  const repository = await createIndexedDbEventRepository(options.panelSessionId);
   if (options.reset) {
     await repository.clear();
   }
@@ -466,7 +456,7 @@ export function createRepositoryEventStore(
           }
         } finally {
           listeners.clear();
-          await repository.close();
+          repository.close();
         }
       });
       return closePromise;

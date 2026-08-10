@@ -556,11 +556,11 @@ function createRequestId() {
 function createBridgeErrorResult(
   requestId: string,
   error: string,
-  panelSessionId?: PanelSessionId
+  panelSessionId: PanelSessionId
 ): ReinjectionResult {
   return {
     requestId,
-    ...(panelSessionId ? { panelSessionId } : {}),
+    panelSessionId,
     ok: false,
     status: "bridge-error",
     timestamp: Date.now(),
@@ -571,11 +571,11 @@ function createBridgeErrorResult(
 function createAcknowledgementUnknownResult(
   requestId: string,
   error: string,
-  panelSessionId?: PanelSessionId
+  panelSessionId: PanelSessionId
 ): ReinjectionResult {
   return {
     requestId,
-    ...(panelSessionId ? { panelSessionId } : {}),
+    panelSessionId,
     ok: false,
     status: "acknowledgement-unknown",
     timestamp: Date.now(),

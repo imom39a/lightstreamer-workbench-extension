@@ -10,7 +10,7 @@ import {
 import { type ReinjectionDraft } from "../src/core/reinjection-draft";
 import { connectPanelBridge as connectPanelBridgeImpl } from "../src/extension/panel/bridge-client";
 
-const PANEL_SESSION_ID = "panel-bridge-client";
+const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000017";
 
 function connectPanelBridge(handlers: Parameters<typeof connectPanelBridgeImpl>[0]) {
   return connectPanelBridgeImpl(handlers, PANEL_SESSION_ID);
