@@ -45,7 +45,7 @@ const startedAt = Date.now();
 
 try {
   await rm(artifactRoot, { recursive: true, force: true });
-  await Promise.all(["reference", "current", "diff"].map((directory) =>
+  await Promise.all(["reference", "current", "diff", "contact-sheets"].map((directory) =>
     mkdir(join(artifactRoot, directory), { recursive: true })
   ));
 
@@ -92,6 +92,7 @@ try {
       changedRatio: comparison.changedPixels / comparison.totalPixels
     });
   }
+  const contactSheets = await createContactSheets(browser, results);
   const manifestPath = join(artifactRoot, "manifest.json");
   await writeFile(manifestPath, `${JSON.stringify({
     schemaVersion: 1,
@@ -103,6 +104,7 @@ try {
       current: "production Workbench scenario harness using shipped panel root document",
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
+    contactSheets,
     review: {
       classification: "Material UI",
       changedWorkflow: "Session operations and the global footer now identify retained Evidence as owned by the current Panel Session, including its backing, close lifecycle, Clear scope, and irreversible consequence.",
@@ -140,6 +142,108 @@ try {
 
 function publicMatrix() {
   return { artifactRoot: "test-results/workbench-visual-qa", scenarios };
+}
+
+async function createContactSheets(runningBrowser, results) {
+  const affectedIds = [
+    "compact-clear-confirmation-light",
+    "normal-clear-confirmation-dark",
+    "compact-memory-fallback-dark"
+  ];
+  const affected = affectedIds.map((id) => results.find((result) => result.id === id)).filter(Boolean);
+  if (affected.length !== affectedIds.length) {
+    throw new Error(`Contact-sheet scenarios are incomplete: ${affectedIds.join(", ")}`);
+  }
+  const output = {};
+  for (const view of ["reference", "current", "diff"]) {
+    output[view] = await writeContactSheet(
+      runningBrowser,
+      affected,
+      [view],
+      `contact-sheets/affected-${view}.png`
+    );
+  }
+  output.combined = await writeContactSheet(
+    runningBrowser,
+    affected,
+    ["reference", "current", "diff"],
+    "contact-sheets/affected-reference-current-diff.png"
+  );
+  return output;
+}
+
+async function writeContactSheet(runningBrowser, results, views, relativePath) {
+  const images = [];
+  for (const result of results) {
+    for (const view of views) {
+      const imagePath = resolve(projectRoot, result.artifacts[view]);
+      const bytes = await readFile(imagePath);
+      images.push({
+        scenario: result.id,
+        view,
+        dataUrl: `data:image/png;base64,${bytes.toString("base64")}`
+      });
+    }
+  }
+  const context = await runningBrowser.newContext({ viewport: { width: 1600, height: 1200 } });
+  const page = await context.newPage();
+  try {
+    const dataUrl = await page.evaluate(async ({ images: entries, columns }) => {
+      const tileWidth = 450;
+      const tileHeight = 395;
+      const headerHeight = 36;
+      const gap = 12;
+      const margin = 18;
+      const rows = Math.ceil(entries.length / columns);
+      const canvas = document.createElement("canvas");
+      canvas.width = margin * 2 + columns * tileWidth + (columns - 1) * gap;
+      canvas.height = margin * 2 + rows * tileHeight + (rows - 1) * gap;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Contact-sheet canvas is unavailable.");
+      context.fillStyle = "#f7f7f7";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.font = "600 14px system-ui, sans-serif";
+      context.textBaseline = "middle";
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        const image = new Image();
+        image.src = entry.dataUrl;
+        await image.decode();
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        const x = margin + column * (tileWidth + gap);
+        const y = margin + row * (tileHeight + gap);
+        context.fillStyle = "#ffffff";
+        context.fillRect(x, y, tileWidth, tileHeight);
+        context.strokeStyle = "#a7a7a7";
+        context.strokeRect(x + 0.5, y + 0.5, tileWidth - 1, tileHeight - 1);
+        context.fillStyle = "#202020";
+        context.fillText(`${entry.scenario} · ${entry.view}`, x + 10, y + headerHeight / 2);
+        const imageBox = {
+          x: x + 8,
+          y: y + headerHeight + 8,
+          width: tileWidth - 16,
+          height: tileHeight - headerHeight - 16
+        };
+        const scale = Math.min(imageBox.width / image.naturalWidth, imageBox.height / image.naturalHeight);
+        const width = image.naturalWidth * scale;
+        const height = image.naturalHeight * scale;
+        context.drawImage(
+          image,
+          imageBox.x + (imageBox.width - width) / 2,
+          imageBox.y + (imageBox.height - height) / 2,
+          width,
+          height
+        );
+      }
+      return canvas.toDataURL("image/png");
+    }, { images, columns: views.length });
+    const outputPath = join(artifactRoot, relativePath);
+    await writeFile(outputPath, Buffer.from(dataUrl.split(",", 2)[1], "base64"));
+    return relative(projectRoot, outputPath);
+  } finally {
+    await context.close();
+  }
 }
 
 async function capturePrototype(runningBrowser, scenario) {

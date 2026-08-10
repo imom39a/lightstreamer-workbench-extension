@@ -21,12 +21,16 @@ Create a packet from deterministic local scenarios containing:
   intentionally changed.
 
 The maintained packet command is `npm run test:ui:visual`. It writes
-`test-results/workbench-visual-qa/reference/`, `current/`, `diff/`, and a
-manifest that identifies the accepted prototype state, production scenario,
-viewport, theme, and pixel-delta summary. The visual diff is an inspectable
-reference delta, not a parity threshold: compare hierarchy, reachability,
-protected Local Injection boundaries, and semantic meaning against the
-accepted prototype and UI standard.
+`test-results/workbench-visual-qa/reference/`, `current/`, `diff/`,
+`contact-sheets/`, and a manifest that identifies the accepted prototype
+state, production scenario, viewport, theme, pixel-delta summary, and contact
+sheet paths. The visual diff is an inspectable reference delta, not a parity
+threshold: compare hierarchy, reachability, protected Local Injection
+boundaries, and semantic meaning against the accepted prototype and UI
+standard. The affected Material UI scenarios are also arranged in labeled
+reference/current/diff contact sheets so an independent reviewer can inspect
+the compact focused confirmation, normal focused confirmation, and compact
+memory-fallback states without opening each artifact separately.
 
 The reviewer checks clipping, reachability, discoverability, accessible names
 and state labels, visual hierarchy, empty states, high-volume states, offline
