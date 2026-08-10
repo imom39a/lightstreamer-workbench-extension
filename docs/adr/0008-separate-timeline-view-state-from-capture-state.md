@@ -6,7 +6,7 @@ status: accepted
 
 The Timeline has an explicit Live or Frozen view state that is independent of whether Capture is active. Live follows the newest matching activity, while Frozen anchors a historical window and counts newer matching events without pausing Capture; event-detail selection is pinned independently from both states. This lets a developer investigate history without accidentally changing observation behavior or losing the current context.
 
-Live/Frozen consumes committed EventHistory publication and remains independent of Capture Operation and Observation Coverage.
+Live/Frozen consumes committed `EventHistory` publication and remains independent of Capture Operation and Observation Coverage.
 
 ## Considered Options
 
