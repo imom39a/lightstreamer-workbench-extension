@@ -61,7 +61,9 @@ describe("Panel Session mount lifecycle", () => {
     expect(connectBridge.mock.calls[0]?.[1]).toBe(
       "panel-00000000-0000-4000-8000-000000000011"
     );
-    firstDispose();
+    await act(async () => {
+      firstDispose();
+    });
 
     const secondDispose = mountWorkbenchPanel(document.querySelector("#app")!, {
       createPanelSessionId: createIdentity,
@@ -74,7 +76,9 @@ describe("Panel Session mount lifecycle", () => {
     expect(connectBridge.mock.calls[1]?.[1]).toBe(
       "panel-00000000-0000-4000-8000-000000000012"
     );
-    secondDispose();
+    await act(async () => {
+      secondDispose();
+    });
   });
 });
 

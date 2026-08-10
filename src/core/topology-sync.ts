@@ -350,6 +350,7 @@ function sameMetadata(
 ): boolean {
   return (
     begin.syncId === frame.syncId &&
+    begin.panelSessionId === frame.panelSessionId &&
     begin.pageEpoch === frame.pageEpoch &&
     begin.cutoffCaptureSequence === frame.cutoffCaptureSequence &&
     begin.chunkCount === frame.chunkCount &&

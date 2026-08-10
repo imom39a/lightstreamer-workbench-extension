@@ -510,6 +510,7 @@ function createTopologyGuardrailSyncFrames(
   const metadata = {
     version: TOPOLOGY_SYNC_VERSION,
     syncId: options.syncId,
+    panelSessionId: "panel-scenario",
     pageEpoch: options.pageEpoch,
     cutoffCaptureSequence: records.at(-1)?.captureSequence ?? 0,
     chunkCount: 1,

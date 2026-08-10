@@ -51,6 +51,7 @@ function frames(
   const metadata = {
     version: TOPOLOGY_SYNC_VERSION,
     syncId,
+    panelSessionId: "panel-topology-sync",
     pageEpoch: "page-a",
     cutoffCaptureSequence,
     chunkCount: 1,
@@ -75,6 +76,7 @@ describe("bounded atomic topology synchronization", () => {
     const metadata = {
       version: TOPOLOGY_SYNC_VERSION,
       syncId: "empty",
+      panelSessionId: "panel-topology-sync",
       pageEpoch: "page-a",
       cutoffCaptureSequence: 0,
       chunkCount: 0,
@@ -263,6 +265,23 @@ describe("bounded atomic topology synchronization", () => {
     expect(coordinator.status()).toMatchObject({ state: "staging", retry: false });
     expect(coordinator.complete(active.complete)).toEqual({ accepted: true });
     expect(coordinator.snapshot().records.map((entry) => entry.id)).toContain("checkpoint");
+  });
+
+  it("rejects mixed Panel Session frames as conflicting metadata", () => {
+    const coordinator = createTopologySyncCoordinator("page-a");
+    const active = frames([record("checkpoint", 5)], "active");
+    const otherPanel = {
+      ...active.chunk,
+      panelSessionId: "panel-other"
+    } satisfies TopologySyncChunkFrame;
+
+    expect(coordinator.begin(active.begin)).toEqual({ accepted: true });
+    expect(coordinator.acceptChunk(otherPanel)).toEqual({
+      accepted: false,
+      reason: "unknown-or-conflicting-chunk"
+    });
+    expect(coordinator.acceptChunk(active.chunk)).toEqual({ accepted: true });
+    expect(coordinator.complete(active.complete)).toEqual({ accepted: true });
   });
 
   it("rejects an older checkpoint without replacing current state or disturbing a newer stage", () => {

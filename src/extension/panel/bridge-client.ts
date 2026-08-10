@@ -33,7 +33,6 @@ export type PanelBridgeHandlers = {
 };
 
 export type PanelBridgeConnection = {
-  readonly panelSessionId?: PanelSessionId;
   reinjectDraft(
     draft: ReinjectionDraft,
     executionTarget?: PageReinjectionExecutionTarget
@@ -59,7 +58,6 @@ export function connectPanelBridge(
   if (typeof chrome === "undefined" || !chrome.runtime?.connect || !chrome.devtools) {
     handlers.onStatusChange("bridge disconnected");
     return {
-      panelSessionId,
       reinjectDraft() {
         return Promise.resolve(createBridgeErrorResult(createRequestId(), "Bridge is disconnected.", panelSessionId));
       },
@@ -138,7 +136,6 @@ export function connectPanelBridge(
   connect();
 
   return {
-    panelSessionId,
     reinjectDraft(draft, executionTarget = "captured-listener") {
       const requestId = createRequestId();
       const payload = serializeDraft(draft, executionTarget);
@@ -346,7 +343,7 @@ function reinjectThroughInspectedPage(
   });
 }
 
-function pageReinjectionExpression(
+export function pageReinjectionExpression(
   requestId: string,
   panelSessionId: PanelSessionId,
   draft: ReinjectionDraftPayload
@@ -401,6 +398,8 @@ function pageReinjectionExpression(
       if (
         !value ||
         value.type !== ${pageResultType} ||
+        value.panelSessionId !== ${serializedPanelSessionId} ||
+        value.result?.panelSessionId !== ${serializedPanelSessionId} ||
         value.result?.requestId !== ${serializedRequestId}
       ) {
         return;

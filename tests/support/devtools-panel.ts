@@ -1,4 +1,5 @@
 export type BrowserTarget = {
+  id?: string;
   type?: string;
   url?: string;
   webSocketDebuggerUrl?: string;

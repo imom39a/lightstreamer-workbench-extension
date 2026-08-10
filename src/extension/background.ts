@@ -184,6 +184,9 @@ function registerPanel(
   panelSessionId: PanelSessionId
 ): void {
   const current = registrationByPort.get(port);
+  if (current && current.tabId === tabId && current.panelSessionId === panelSessionId) {
+    return;
+  }
   if (current && (current.tabId !== tabId || current.panelSessionId !== panelSessionId)) {
     removeRegistration(current);
   }

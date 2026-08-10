@@ -8,6 +8,7 @@ import {
   PAGE_CAPTURE_SYNC_REQUEST,
   PANEL_REINJECT_REQUEST,
   PANEL_REINJECT_RESULT,
+  PANEL_CAPTURE_MESSAGE,
   PANEL_VISIBILITY_MESSAGE,
   RUNTIME_REINJECT_RESULT,
   TOPOLOGY_LIMITS,
@@ -26,6 +27,7 @@ import {
   isPageCaptureSyncRequestMessage,
   isPanelReinjectRequestMessage,
   isPanelReinjectResultMessage,
+  isPanelCaptureMessage,
   isPanelVisibilityMessage,
   isRuntimeReinjectResultMessage,
   isTopologyObservation,
@@ -76,6 +78,32 @@ describe("bridge capture message validation", () => {
         payload: { client: { id: "client-1" }, callback: () => null }
       })
     ).toBe(false);
+  });
+
+  it("rejects missing, malformed, and mismatched Panel Session capture envelopes", () => {
+    const message = createCaptureMessage("client-created", { client: { id: "client-1" } });
+    expect(isPanelCaptureMessage({ type: PANEL_CAPTURE_MESSAGE, message })).toBe(false);
+    expect(
+      isPanelCaptureMessage({
+        type: PANEL_CAPTURE_MESSAGE,
+        panelSessionId: "not-a-panel-id",
+        message
+      })
+    ).toBe(false);
+    expect(
+      isPanelCaptureMessage({
+        type: PANEL_CAPTURE_MESSAGE,
+        panelSessionId: PANEL_SESSION_ID,
+        message: { ...message, panelSessionId: "panel-other" }
+      })
+    ).toBe(false);
+    expect(
+      isPanelCaptureMessage({
+        type: PANEL_CAPTURE_MESSAGE,
+        panelSessionId: PANEL_SESSION_ID,
+        message: { ...message, panelSessionId: PANEL_SESSION_ID }
+      })
+    ).toBe(true);
   });
 });
 
@@ -151,6 +179,7 @@ describe("semantic topology trust-boundary validation", () => {
           type: TOPOLOGY_SYNC_CHUNK,
           version: TOPOLOGY_SYNC_VERSION,
           syncId: "malformed-fact",
+          panelSessionId: PANEL_SESSION_ID,
           pageEpoch: "page-a",
           cutoffCaptureSequence: 20,
           chunkCount: 1,
@@ -181,17 +210,19 @@ describe("semantic topology trust-boundary validation", () => {
       recordCount: 1,
       coverage: { status: "complete" as const, getters: {} }
     };
-    expect(isTopologySyncFrame({ type: TOPOLOGY_SYNC_BEGIN, ...metadata })).toBe(true);
+    expect(isTopologySyncFrame({ type: TOPOLOGY_SYNC_BEGIN, ...metadata, panelSessionId: PANEL_SESSION_ID })).toBe(true);
+    expect(isTopologySyncFrame({ type: TOPOLOGY_SYNC_BEGIN, ...metadata })).toBe(false);
     expect(
       isTopologySyncFrame({
         type: TOPOLOGY_SYNC_CHUNK,
         ...metadata,
+        panelSessionId: PANEL_SESSION_ID,
         chunkIndex: 0,
         records: [{ kind: "page", id: "page-a", pageEpoch: "page-a", captureSequence: 20 }]
       })
     ).toBe(true);
     expect(
-      isTopologySyncFrame({ ...metadata, type: TOPOLOGY_SYNC_BEGIN, chunkCount: TOPOLOGY_SYNC_LIMITS.maxChunks + 1 })
+      isTopologySyncFrame({ ...metadata, type: TOPOLOGY_SYNC_BEGIN, panelSessionId: PANEL_SESSION_ID, chunkCount: TOPOLOGY_SYNC_LIMITS.maxChunks + 1 })
     ).toBe(false);
   });
 
@@ -206,17 +237,19 @@ describe("semantic topology trust-boundary validation", () => {
       coverage: { status: "complete" as const, getters: {} }
     };
 
-    expect(isTopologySyncFrame({ type: TOPOLOGY_SYNC_BEGIN, ...emptyMetadata })).toBe(true);
+    expect(isTopologySyncFrame({ type: TOPOLOGY_SYNC_BEGIN, ...emptyMetadata, panelSessionId: PANEL_SESSION_ID })).toBe(true);
     expect(
       isTopologySyncFrame({
         type: "lsew:topology-sync-complete",
-        ...emptyMetadata
+        ...emptyMetadata,
+        panelSessionId: PANEL_SESSION_ID
       })
     ).toBe(true);
     expect(
       isTopologySyncFrame({
         type: TOPOLOGY_SYNC_BEGIN,
         ...emptyMetadata,
+        panelSessionId: PANEL_SESSION_ID,
         cutoffCaptureSequence: -1
       })
     ).toBe(false);
@@ -224,6 +257,7 @@ describe("semantic topology trust-boundary validation", () => {
       isTopologySyncFrame({
         type: TOPOLOGY_SYNC_BEGIN,
         ...emptyMetadata,
+        panelSessionId: PANEL_SESSION_ID,
         chunkCount: 1,
         recordCount: 1
       })
@@ -232,6 +266,7 @@ describe("semantic topology trust-boundary validation", () => {
       isTopologySyncFrame({
         type: TOPOLOGY_SYNC_CHUNK,
         ...emptyMetadata,
+        panelSessionId: PANEL_SESSION_ID,
         chunkCount: 1,
         recordCount: 1,
         chunkIndex: 0,

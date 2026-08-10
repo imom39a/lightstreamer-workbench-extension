@@ -178,7 +178,7 @@ async function waitForFixture(cdp: CdpClient): Promise<void> {
   await waitForCondition(
     cdp,
     `
-      globalThis.__LSEW_REINJECTION_BRIDGE__?.version === 1 &&
+      globalThis.__LSEW_REINJECTION_BRIDGE__?.version === 2 &&
       document.querySelector("#connection-state")?.textContent === "SUBSCRIBED" &&
       document.querySelector("#message-text")?.textContent === ${JSON.stringify(initialMessage)} &&
       Number(document.querySelector("#update-count")?.textContent) === 1

@@ -156,7 +156,7 @@ describe("production panel mount wiring", () => {
     await expect(executor?.execute(request)).resolves.toEqual(bridgeResult);
     expect(reinjectDraft).toHaveBeenCalledWith(request.draft, "captured-listener");
 
-    dispose();
+    await disposePanel(dispose);
   });
 
   it("starts from the developer's persisted theme preference", async () => {
@@ -180,7 +180,7 @@ describe("production panel mount wiring", () => {
     expect(root.dataset.theme).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
 
-    dispose();
+    await disposePanel(dispose);
   });
 
   it("persists a developer's theme change and applies it immediately", async () => {
@@ -209,7 +209,7 @@ describe("production panel mount wiring", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
 
-    dispose();
+    await disposePanel(dispose);
   });
 
   it("follows the live DevTools theme in Auto and disposes the theme listener", async () => {
@@ -249,8 +249,8 @@ describe("production panel mount wiring", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(root.querySelector<HTMLSelectElement>("#workbench-theme")?.value).toBe("auto");
 
-    dispose();
-    dispose();
+    await disposePanel(dispose);
+    await disposePanel(dispose);
     installedHandler?.("default");
 
     expect(root.dataset.theme).toBe("dark");
@@ -338,8 +338,8 @@ describe("production panel mount wiring", () => {
     expect(root.textContent).toContain("mount-item");
     expect(root.textContent).toContain("Coverage LIMITED");
 
-    dispose();
-    dispose();
+    await disposePanel(dispose);
+    await disposePanel(dispose);
     await flushPanel();
 
     expect(root.textContent).toBe("");
@@ -371,7 +371,7 @@ describe("production panel mount wiring", () => {
     expect(root.querySelector<HTMLAnchorElement>('.workbench-react__resource-link[href="https://imom39a.github.io/lightstreamer-workbench-extension/docs/"]')).not.toBeNull();
     expect(root.textContent).not.toContain("Usage analytics");
 
-    dispose();
+    await disposePanel(dispose);
   });
 
   it("keeps the panel usable when legacy storage cleanup is unavailable", async () => {
@@ -398,7 +398,7 @@ describe("production panel mount wiring", () => {
     await clickButton(root, "More actions");
     expect(root.textContent).toContain("Help & resources");
 
-    dispose();
+    await disposePanel(dispose);
   });
 
   it("states the storage limitation when IndexedDB falls back to session memory", async () => {
@@ -436,7 +436,7 @@ describe("production panel mount wiring", () => {
       storageError
     );
 
-    dispose();
+    await disposePanel(dispose);
     await flushPanel();
     expect(closeHistory).toHaveBeenCalledTimes(1);
   });
@@ -457,8 +457,8 @@ describe("production panel mount wiring", () => {
       createInMemoryHistory: createInMemoryEventHistory
     });
 
-    dispose();
-    dispose();
+    await disposePanel(dispose);
+    await disposePanel(dispose);
     pendingHistory.resolve(history);
     await flushPanel();
 
@@ -498,6 +498,13 @@ async function flushPanel(): Promise<void> {
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function disposePanel(dispose: () => void): Promise<void> {
+  await act(async () => {
+    dispose();
+    await Promise.resolve();
   });
 }
 

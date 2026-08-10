@@ -346,7 +346,7 @@ describe("panel bridge client", () => {
     const port = createFakePort();
     const staleReinject = vi.fn();
     (globalThis as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] = {
-      version: PAGE_REINJECTION_BRIDGE_VERSION + 1,
+      version: PAGE_REINJECTION_BRIDGE_VERSION - 1,
       reinject: staleReinject
     };
     const evaluate = vi.fn(

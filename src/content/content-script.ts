@@ -10,7 +10,6 @@ import {
   isContentCaptureSyncRequestMessage,
   isContentReinjectRequestMessage,
   isRuntimeReinjectResultMessage,
-  isPanelSessionId,
   isTopologySyncFrame
 } from "../bridge/messages";
 
@@ -26,9 +25,7 @@ window.addEventListener("message", (event) => {
   }
 
   if (isCaptureMessage(event.data)) {
-    const panelSessionId = isPanelSessionId(event.data.panelSessionId)
-      ? event.data.panelSessionId
-      : undefined;
+    const panelSessionId = event.data.panelSessionId;
     chrome.runtime.sendMessage({
       type: RUNTIME_CAPTURE_MESSAGE,
       ...(panelSessionId ? { panelSessionId } : {}),
@@ -38,10 +35,7 @@ window.addEventListener("message", (event) => {
   }
 
   if (isTopologySyncFrame(event.data)) {
-    const panelSessionId = (event.data as typeof event.data & { panelSessionId?: string }).panelSessionId;
-    if (!isPanelSessionId(panelSessionId)) {
-      return;
-    }
+    const panelSessionId = event.data.panelSessionId;
     chrome.runtime.sendMessage({
       type: RUNTIME_TOPOLOGY_SYNC_FRAME,
       panelSessionId,

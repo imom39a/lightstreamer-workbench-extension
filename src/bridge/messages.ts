@@ -1,7 +1,7 @@
 export const CAPTURE_NAMESPACE = "__LSEW_CAPTURE__" as const;
 export const CAPTURE_VERSION = 1 as const;
 export const TOPOLOGY_OBSERVATION_VERSION = 1 as const;
-export const TOPOLOGY_SYNC_VERSION = 1 as const;
+export const TOPOLOGY_SYNC_VERSION = 2 as const;
 
 export const TOPOLOGY_LIMITS = Object.freeze({
   valueString: 4_096,
@@ -39,7 +39,7 @@ export const RUNTIME_REINJECT_RESULT = "lsew:runtime-reinject-result" as const;
 export const PANEL_REINJECT_RESULT = "lsew:panel-reinject-result" as const;
 export const PANEL_VISIBILITY_MESSAGE = "lsew:panel-visibility" as const;
 export const PAGE_REINJECTION_BRIDGE_GLOBAL = "__LSEW_REINJECTION_BRIDGE__" as const;
-export const PAGE_REINJECTION_BRIDGE_VERSION = 1 as const;
+export const PAGE_REINJECTION_BRIDGE_VERSION = 2 as const;
 
 export type PanelSessionId = string;
 
@@ -230,9 +230,10 @@ export type TopologyAbsoluteRecord = {
   values?: JsonObject;
 };
 
-type TopologySyncMetadata = {
+export type TopologySyncMetadata = {
   version: typeof TOPOLOGY_SYNC_VERSION;
   syncId: string;
+  panelSessionId: PanelSessionId;
   pageEpoch: string;
   cutoffCaptureSequence: number;
   chunkCount: number;
@@ -528,11 +529,14 @@ export function isPanelStatusMessage(value: unknown): value is PanelStatusMessag
 }
 
 export function isPanelCaptureMessage(value: unknown): value is PanelCaptureMessage {
+  const nestedPanelSessionId =
+    isRecord(value) && isRecord(value.message) ? value.message.panelSessionId : undefined;
   return (
     isRecord(value) &&
     value.type === PANEL_CAPTURE_MESSAGE &&
     isPanelSessionId(value.panelSessionId) &&
-    isCaptureMessage(value.message)
+    isCaptureMessage(value.message) &&
+    (nestedPanelSessionId === undefined || nestedPanelSessionId === value.panelSessionId)
   );
 }
 
@@ -641,6 +645,7 @@ export function isPageCaptureSyncRequestMessage(
 }
 
 export function isTopologySyncFrame(value: unknown): value is TopologySyncFrame {
+  const panelSessionId = isRecord(value) ? value.panelSessionId : undefined;
   if (
     !isRecord(value) ||
     value.version !== TOPOLOGY_SYNC_VERSION ||
@@ -654,7 +659,8 @@ export function isTopologySyncFrame(value: unknown): value is TopologySyncFrame 
     (value.cutoffCaptureSequence === 0 &&
       (value.chunkCount !== 0 || value.recordCount !== 0)) ||
     !isTopologyCoverage(value.coverage) ||
-    !isWithinTopologyByteLimit(value)
+    !isWithinTopologyByteLimit(value) ||
+    !isPanelSessionId(panelSessionId)
   ) {
     return false;
   }

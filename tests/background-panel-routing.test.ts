@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   PANEL_CAPTURE_MESSAGE,
+  CONTENT_REINJECT_REQUEST,
   PANEL_PORT_NAME,
   PANEL_REGISTER_MESSAGE,
   PANEL_REINJECT_REQUEST,
@@ -185,6 +186,51 @@ describe("Panel Session background routing", () => {
     expect(resultCount()).toBe(1);
     onMessage?.({ type: "lsew:content-reinject-result", panelSessionId: panelA, result: { requestId: "request-detached", panelSessionId: panelA, ok: true, status: "success", timestamp: 2 } }, { tab: { id: 7 } } as chrome.runtime.MessageSender);
     expect(resultCount()).toBe(1);
+  });
+
+  it("keeps duplicate registration idempotent so disconnect removes pending work", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    const firstMessages: unknown[] = [];
+    const first = fakePort(firstMessages);
+    let oldResponseCallback: ((response?: unknown) => void) | undefined;
+    const sendMessage = vi.fn((_tabId: number, message: unknown, callback?: (response?: unknown) => void) => {
+      if ((message as { type?: unknown }).type === CONTENT_REINJECT_REQUEST) {
+        oldResponseCallback = callback;
+      }
+    });
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      () => undefined,
+      sendMessage
+    );
+    await import("../src/extension/background");
+    onConnect?.(first.port);
+    first.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    first.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    first.listeners[0]({
+      type: PANEL_REINJECT_REQUEST,
+      panelSessionId: panelA,
+      requestId: "request-duplicate-registration",
+      draft: validDraft()
+    });
+
+    first.port.disconnect();
+    oldResponseCallback?.({
+      requestId: "request-duplicate-registration",
+      panelSessionId: panelA,
+      ok: true,
+      status: "success",
+      timestamp: 1
+    });
+
+    expect(
+      sendMessage.mock.calls.filter(([_, message]) =>
+        (message as { type?: unknown }).type === CONTENT_REINJECT_REQUEST
+      )
+    ).toHaveLength(1);
+    expect(firstMessages).not.toContainEqual(
+      expect.objectContaining({ type: PANEL_REINJECT_RESULT })
+    );
   });
 
   it("delivers an injection result exactly once to its originating Panel Session", async () => {
