@@ -48,7 +48,7 @@ export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 1_048_576;
 type ControlRecord = {
   key: typeof AUTHORITATIVE_EVENT_CONTROL_KEY;
   schemaVersion: number;
-  recordVersion: 1;
+  recordVersion: 2;
   panelSessionId: string;
   interval: HistoryInterval;
   nextSequence: number;
@@ -56,6 +56,7 @@ type ControlRecord = {
   retainedRange: { first: EvidenceRef; last: EvidenceRef } | null;
   retainedCount: number;
   replayPayloadBytes: number;
+  accountedBytes: number;
 };
 
 type EvidenceRecord = {
@@ -64,6 +65,7 @@ type EvidenceRecord = {
   eventId: string;
   replayPayload: string;
   serializedBytes: number;
+  accountedBytes: number;
   facets: string[];
 };
 
@@ -208,7 +210,11 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return deepFreeze({ code, message, ...extras });
   }
   function terminalProblem(triggerValue: HistoryTrigger): HistoryProblem {
-    return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.`, { reason: triggerValue.reason, dimension: triggerValue.dimension });
+    return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.`, {
+      reason: triggerValue.reason,
+      dimension: triggerValue.dimension,
+      ...(terminal ? { terminal } : {})
+    });
   }
   function pressureChanged(): void {
     const near = pressureFor(limits, measurements()).nearLimit;
@@ -245,12 +251,27 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     publish({ type: "status", status: status(terminalProblem(trigger)) });
     finishTerminal();
   }
-  function refuseStopped(): CaptureReceipt {
+  function noteFirstMissingEvent(candidate: EvidenceCandidate): void {
+    const id = candidateIdIfPresent(candidate);
+    if (!terminal && trigger && trigger.firstMissingEventId === null && id !== null) {
+      trigger = deepFreeze({ ...trigger, firstMissingEventId: id });
+    }
+  }
+
+  function refusedCandidateBytes(candidate: EvidenceCandidate): number {
+    try {
+      return estimateHistoryCandidateBytes(copyCandidate(candidate), options.byteEstimator);
+    } catch {
+      return 0;
+    }
+  }
+
+  function refuseStopped(candidate: EvidenceCandidate): CaptureReceipt {
     notAccepted += 1;
+    noteFirstMissingEvent(candidate);
+    rejectedBytes += refusedCandidateBytes(candidate);
     rejectedCount += 1;
-    const issue = terminal
-      ? problem(terminal.reason, `Event History stopped because ${terminal.reason}.`, { reason: terminal.reason, dimension: terminal.dimension, terminal })
-      : trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
+    const issue = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary: currentBoundary() }) };
   }
   function refuseClosed(): CaptureReceipt {
@@ -268,13 +289,13 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       ageTimer = null;
       pressureChanged();
       const currentAge = measurements().oldestPendingAgeMs;
-      if (pendingAgeFailure(limits, currentAge)) beginDrain("PENDING_AGE_LIMIT", "PENDING_AGE", oldest.candidate.id);
+      if (pendingAgeFailure(limits, currentAge)) beginDrain("PENDING_AGE_LIMIT", "PENDING_AGE", null);
       else scheduleAgeCheck();
     }, delay);
   }
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
     if (phase === "CLOSED" || closing) return refuseClosed();
-    if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return refuseStopped();
+    if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return refuseStopped(candidate);
     let copied: EvidenceCandidate;
     let serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
     let bytes: number;
@@ -320,13 +341,14 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     try {
       while (pending.length > 0 && (phase === "RUNNING" || phase === "DRAINING_TO_STOP")) {
         const batch: Pending[] = [];
-        let batchBytes = 0;
+        let batchSerializedBytes = 0;
         while (pending.length > 0 && batch.length < AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT) {
           const next = pending[0];
-          if (batch.length > 0 && batchBytes + next.serialized.bytes > AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES) break;
+          if (batch.length > 0 && batchSerializedBytes + next.serialized.bytes > AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES) break;
           batch.push(pending.shift()!);
-          batchBytes += next.serialized.bytes;
+          batchSerializedBytes += next.serialized.bytes;
         }
+        const batchAccountedBytes = batch.reduce((sum, entry) => sum + entry.bytes, 0);
         inFlight.push(...batch);
         const evidence = batch.map((entry, index) => toCommittedEvidence(entry.candidate, interval, nextSequence + index));
         try {
@@ -340,28 +362,28 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             retainedRange,
             retainedCount,
             evidence,
-            retainedBytes + batchBytes
+            retainedBytes + batchSerializedBytes,
+            retainedBytes + batchAccountedBytes,
+            batch.map((entry) => entry.bytes)
           );
         } catch (error) {
           const reason: HistoryTerminalReason = isQuotaError(error) ? "QUOTA_EXCEEDED" : "JOURNAL_COMMIT_FAILED";
           const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null);
           trigger = failedTrigger;
           phase = "DRAINING_TO_STOP";
-          const rejected = [...batch, ...pending.splice(0)];
+          const discarded = [...batch, ...pending.splice(0)];
           inFlight.length = 0;
-          notAccepted += rejected.length;
-          rejectedCount += rejected.length;
-          rejectedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
-          discardedCount += rejected.length;
-          discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
-          for (const entry of rejected) entry.resolve({ outcome: "NOT_EVIDENCE", problem: terminalProblem(failedTrigger), committedEvidenceBoundary: currentBoundary() });
+          notAccepted += discarded.length;
+          discardedCount += discarded.length;
+          discardedBytes += discarded.reduce((sum, entry) => sum + entry.bytes, 0);
+          for (const entry of discarded) entry.resolve({ outcome: "NOT_EVIDENCE", problem: terminalProblem(failedTrigger), committedEvidenceBoundary: currentBoundary() });
           finishTerminal();
           break;
         }
         nextSequence += evidence.length;
         inFlight.length = 0;
         committedEvidenceBoundary = toRef(evidence.at(-1)!);
-        retainedBytes += batch.reduce((sum, entry) => sum + entry.bytes, 0);
+        retainedBytes += batchAccountedBytes;
         retainedCount += evidence.length;
         retainedRange = retainedRange
           ? { first: retainedRange.first, last: committedEvidenceBoundary }
@@ -574,14 +596,14 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     await transactionDone(transaction, "loading Event History");
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
-      await writeControl(database, createControl(panelSessionId, interval, 1, null, null, 0, 0));
+      await writeControl(database, createControl(panelSessionId, interval, 1, null, null, 0, 0, 0));
       return { panelSessionId, interval, nextSequence: 1, retainedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null };
     }
     return {
       panelSessionId,
       interval: control.interval,
       nextSequence: control.nextSequence,
-      retainedBytes: control.replayPayloadBytes,
+      retainedBytes: control.accountedBytes,
       retainedCount: control.retainedCount,
       retainedRange: control.retainedRange,
       committedEvidenceBoundary: control.committedEvidenceBoundary
@@ -592,12 +614,12 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
   }
 }
 
-async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, evidence: readonly CommittedEvidence[], replayPayloadBytes: number): Promise<void> {
+async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, evidence: readonly CommittedEvidence[], replayPayloadBytes: number, accountedBytes: number, evidenceAccountedBytes: readonly number[]): Promise<void> {
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readwrite");
   const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
-  for (const entry of evidence) {
+  for (const [index, entry] of evidence.entries()) {
     const serialized = serializeJournalEvidenceCandidate(entry.candidate);
-    store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
+    store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: evidenceAccountedBytes[index], facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
   }
   const next = evidence.at(-1) ? evidence.at(-1)!.sequence + 1 : nextSequence;
   const last = evidence.at(-1);
@@ -607,14 +629,14 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
     : evidence.length
       ? { first: toRef(evidence[0]), last: toRef(last!) }
       : null;
-  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, next, boundary, range, previousCount + evidence.length, replayPayloadBytes));
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, next, boundary, range, previousCount + evidence.length, replayPayloadBytes, accountedBytes));
   await transactionDone(transaction, "committing Evidence");
 }
 
 async function clearJournal(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
-  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, nextSequence, boundary, null, 0, 0));
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, nextSequence, boundary, null, 0, 0, 0));
   await transactionDone(transaction, "clearing Event History");
 }
 
@@ -624,14 +646,14 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
       if (count > 0) throw new Error("Evidence residue exists without a history control record.");
     });
   }
-  assertExactKeys(control, ["committedEvidenceBoundary", "interval", "key", "nextSequence", "panelSessionId", "recordVersion", "retainedCount", "retainedRange", "replayPayloadBytes", "schemaVersion"]);
-  if (control.key !== AUTHORITATIVE_EVENT_CONTROL_KEY || control.schemaVersion !== 2 || control.recordVersion !== 1 || control.panelSessionId !== panelSessionId) {
+  assertExactKeys(control, ["accountedBytes", "committedEvidenceBoundary", "interval", "key", "nextSequence", "panelSessionId", "recordVersion", "retainedCount", "retainedRange", "replayPayloadBytes", "schemaVersion"]);
+  if (control.key !== AUTHORITATIVE_EVENT_CONTROL_KEY || control.schemaVersion !== 2 || control.recordVersion !== 2 || control.panelSessionId !== panelSessionId) {
     throw new Error("The history control record does not match the authoritative schema or Panel Session.");
   }
   if (!isInterval(control.interval) || control.interval.id !== `${panelSessionId}:interval-${control.interval.ordinal}`) {
     throw new Error("The history control interval is incoherent.");
   }
-  if (!Number.isSafeInteger(control.nextSequence) || control.nextSequence < 1 || !Number.isSafeInteger(control.retainedCount) || control.retainedCount < 0 || !Number.isSafeInteger(control.replayPayloadBytes) || control.replayPayloadBytes < 0) {
+  if (!Number.isSafeInteger(control.nextSequence) || control.nextSequence < 1 || !Number.isSafeInteger(control.retainedCount) || control.retainedCount < 0 || !Number.isSafeInteger(control.replayPayloadBytes) || control.replayPayloadBytes < 0 || !Number.isSafeInteger(control.accountedBytes) || control.accountedBytes < 0) {
     throw new Error("The history control counters are incoherent.");
   }
 
@@ -642,6 +664,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
   }
   let count = 0;
   let payloadBytes = 0;
+  let accountedBytes = 0;
   let previous: EvidenceRecord | null = null;
   let first: EvidenceRef | null = null;
   let last: EvidenceRef | null = null;
@@ -653,7 +676,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
       if (!cursor) {
         const expectedNext = last ? last.sequence + 1 : control.committedEvidenceBoundary ? control.committedEvidenceBoundary.sequence + 1 : 1;
         const expectedRange = first && last ? { first, last } : null;
-        if (control.retainedCount !== count || control.replayPayloadBytes !== payloadBytes || control.nextSequence !== expectedNext || !sameRange(control.retainedRange, expectedRange)) {
+        if (control.retainedCount !== count || control.replayPayloadBytes !== payloadBytes || control.accountedBytes !== accountedBytes || control.nextSequence !== expectedNext || !sameRange(control.retainedRange, expectedRange)) {
           reject(new Error("The history control totals or range do not match its evidence records."));
           return;
         }
@@ -680,8 +703,8 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
       }
       const record = cursor.value as EvidenceRecord;
       try {
-        assertExactKeys(record, ["eventId", "facets", "intervalId", "replayPayload", "sequence", "serializedBytes"]);
-        if (record.intervalId !== control.interval.id || typeof record.eventId !== "string" || record.eventId.length === 0 || !Number.isSafeInteger(record.sequence) || record.sequence < 1 || (previous !== null && record.sequence !== previous.sequence + 1) || typeof record.replayPayload !== "string" || !Number.isSafeInteger(record.serializedBytes) || record.serializedBytes < 0 || !Array.isArray(record.facets) || record.facets.some((facetValue) => typeof facetValue !== "string")) {
+        assertExactKeys(record, ["accountedBytes", "eventId", "facets", "intervalId", "replayPayload", "sequence", "serializedBytes"]);
+        if (record.intervalId !== control.interval.id || typeof record.eventId !== "string" || record.eventId.length === 0 || !Number.isSafeInteger(record.sequence) || record.sequence < 1 || (previous !== null && record.sequence !== previous.sequence + 1) || typeof record.replayPayload !== "string" || !Number.isSafeInteger(record.serializedBytes) || record.serializedBytes < 0 || !Number.isSafeInteger(record.accountedBytes) || record.accountedBytes < 0 || !Array.isArray(record.facets) || record.facets.some((facetValue) => typeof facetValue !== "string")) {
           throw new Error("An evidence record is incoherent with the history control record.");
         }
         const candidate = copyCandidate(deserializeJournalEvidenceCandidate(record.replayPayload));
@@ -695,6 +718,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
         previous = record;
         count += 1;
         payloadBytes += record.serializedBytes;
+        accountedBytes += record.accountedBytes;
         cursor.continue();
       } catch (error) {
         reject(error);
@@ -829,8 +853,8 @@ function sameRange(left: { first: EvidenceRef; last: EvidenceRef } | null, right
   return left === null || right === null ? left === right : sameRef(left.first, right.first) && sameRef(left.last, right.last);
 }
 
-function createControl(panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null, range: { first: EvidenceRef; last: EvidenceRef } | null, retainedCount: number, replayPayloadBytes: number): ControlRecord {
-  return { key: AUTHORITATIVE_EVENT_CONTROL_KEY, schemaVersion: 2, recordVersion: 1, panelSessionId, interval, nextSequence, committedEvidenceBoundary: boundary, retainedRange: range, retainedCount, replayPayloadBytes };
+function createControl(panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null, range: { first: EvidenceRef; last: EvidenceRef } | null, retainedCount: number, replayPayloadBytes: number, accountedBytes: number): ControlRecord {
+  return { key: AUTHORITATIVE_EVENT_CONTROL_KEY, schemaVersion: 2, recordVersion: 2, panelSessionId, interval, nextSequence, committedEvidenceBoundary: boundary, retainedRange: range, retainedCount, replayPayloadBytes, accountedBytes };
 }
 
 async function writeControl(database: AuthoritativeEventDatabase, control: ControlRecord): Promise<void> {
@@ -871,6 +895,12 @@ function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
   if (!candidate || typeof candidate !== "object" || typeof candidate.id !== "string" || candidate.id.length === 0) throw new Error("Candidate must have a stable event ID.");
   if (candidate.kind === "topology-checkpoint" && !candidate.checkpoint) throw new Error("Topology checkpoint candidate is incomplete.");
   return deepFreeze(structuredClone(candidate));
+}
+
+function candidateIdIfPresent(candidate: unknown): string | null {
+  return candidate && typeof candidate === "object" && "id" in candidate && typeof candidate.id === "string" && candidate.id.length > 0
+    ? candidate.id
+    : null;
 }
 
 function isQuotaError(error: unknown): boolean {

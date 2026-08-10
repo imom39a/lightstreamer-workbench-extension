@@ -355,17 +355,35 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   }
 
   function terminalProblem(triggerValue: HistoryTrigger): HistoryProblem {
-    return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.`, { reason: triggerValue.reason, dimension: triggerValue.dimension });
+    return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.`, {
+      reason: triggerValue.reason,
+      dimension: triggerValue.dimension,
+      ...(terminal ? { terminal } : {})
+    });
   }
 
-  function refuseStopped(): CaptureReceipt {
+  function noteFirstMissingEvent(candidate: EvidenceCandidate): void {
+    const id = candidateIdIfPresent(candidate);
+    if (!terminal && trigger && trigger.firstMissingEventId === null && id !== null) {
+      trigger = deepFreeze({ ...trigger, firstMissingEventId: id });
+    }
+  }
+
+  function refusedCandidateBytes(candidate: EvidenceCandidate): number {
+    try {
+      return estimateHistoryCandidateBytes(copyCandidate(candidate), options.byteEstimator);
+    } catch {
+      return 0;
+    }
+  }
+
+  function refuseStopped(candidate: EvidenceCandidate): CaptureReceipt {
     notAccepted += 1;
-    const bytes = 0;
+    noteFirstMissingEvent(candidate);
+    const bytes = refusedCandidateBytes(candidate);
     rejectedCount += 1;
     rejectedBytes += bytes;
-    const issue = terminal
-      ? problem(terminal.reason, `Event History stopped because ${terminal.reason}.`, { reason: terminal.reason, dimension: terminal.dimension, terminal })
-      : trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
+    const issue = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
   }
 
@@ -418,14 +436,14 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       ageTimer = null;
       pressureChanged();
       const currentAge = measurements().oldestPendingAgeMs;
-      if (pendingAgeFailure(limits, currentAge)) beginDrain("PENDING_AGE_LIMIT", "PENDING_AGE", oldest.candidate.id);
+      if (pendingAgeFailure(limits, currentAge)) beginDrain("PENDING_AGE_LIMIT", "PENDING_AGE", null);
       else scheduleAgeCheck();
     }, delay);
   }
 
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
     if (phase === "CLOSED" || closing) return refuseClosed();
-    if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return refuseStopped();
+    if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return refuseStopped(candidate);
     let copied: EvidenceCandidate;
     let bytes: number;
     try {
@@ -475,14 +493,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
           const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
           const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null);
           trigger = failedTrigger;
-          const rejected = [...batch, ...pending.splice(0)];
+          const discarded = [...batch, ...pending.splice(0)];
           inFlight.length = 0;
-          notAccepted += rejected.length;
-          rejectedCount += rejected.length;
-          rejectedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
-          discardedCount += rejected.length;
-          discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
-          for (const entry of rejected) entry.resolve({ outcome: "NOT_EVIDENCE", problem: terminalProblem(failedTrigger), committedEvidenceBoundary });
+          notAccepted += discarded.length;
+          discardedCount += discarded.length;
+          discardedBytes += discarded.reduce((sum, entry) => sum + entry.bytes, 0);
+          for (const entry of discarded) entry.resolve({ outcome: "NOT_EVIDENCE", problem: terminalProblem(failedTrigger), committedEvidenceBoundary });
           phase = "DRAINING_TO_STOP";
           finishTerminal();
           break;
@@ -717,6 +733,12 @@ function createInterval(sessionId: string, ordinal: number): HistoryInterval {
 
 function candidateId(candidate: EvidenceCandidate): string {
   return candidate.id;
+}
+
+function candidateIdIfPresent(candidate: unknown): string | null {
+  return candidate && typeof candidate === "object" && "id" in candidate && typeof candidate.id === "string" && candidate.id.length > 0
+    ? candidate.id
+    : null;
 }
 
 export function selectEvidence(evidence: readonly CommittedEvidence[], query: EvidenceQuery): CommittedEvidence[] {
