@@ -98,6 +98,8 @@ type Subscriber = {
 export type IndexedDbEventHistoryOptions = Readonly<{
   panelSessionId?: string;
   capacityTier?: HistoryCapacityTier;
+  clearJournal?: () => Promise<void | boolean> | void | boolean;
+  closeJournal?: () => Promise<void>;
   failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
   commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void>;
   finalizeTerminal?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
@@ -151,6 +153,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   const subscribers = new Set<Subscriber>();
   const pending: Pending[] = [];
   const inFlight: Pending[] = [];
+  const postClearPending: Pending[] = [];
   const terminalReceipts: Pending[] = [];
   const committedReceipts: Array<{ entry: Pending; evidence: EvidenceRef }> = [];
   const idleWaiters: Array<() => void> = [];
@@ -179,6 +182,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let clearPromise: Promise<Outcome<ClearResult>> | null = null;
   let lastClearResult: ClearResult | null = null;
   let closePromise: Promise<Outcome<CloseResult>> | null = null;
+  let lastCloseResult: CloseResult | null = null;
+  let clearInProgress = false;
   let trigger: HistoryTrigger | null = terminal ? triggerFromTerminal(terminal) : null;
   let persistedTerminal: HistoryTerminalDiagnostic | undefined = terminal;
   let terminalPersistence: Promise<void> | null = null;
@@ -196,7 +201,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function currentBoundary(): EvidenceRef | null { return committedEvidenceBoundary; }
   function currentRange(): { first: EvidenceRef; last: EvidenceRef } | null { return retainedRange; }
   function measurements(): HistoryPressureMeasurements {
-    const awaiting = [...inFlight, ...pending].sort((left, right) => left.ordinal - right.ordinal);
+    const awaiting = [...inFlight, ...pending, ...postClearPending].sort((left, right) => left.ordinal - right.ordinal);
     const oldest = awaiting[0];
     return Object.freeze({
       retainedCount,
@@ -206,6 +211,49 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       oldestPendingAgeMs: oldest ? Math.max(0, clock() - oldest.offeredAt) : null
     });
   }
+
+  function clearQueueForCandidate(): Pending[] {
+    return clearInProgress ? postClearPending : pending;
+  }
+
+  function rejoinPostClearQueue(): void {
+    if (postClearPending.length === 0) return;
+    pending.push(...postClearPending.splice(0));
+    clearInProgress = false;
+    if (clearPromise) return;
+    scheduleAgeCheck();
+    pressureChanged();
+    lastClearResult = null;
+    if (pending.length > 0) {
+      schedule();
+    }
+  }
+
+  function resolveTerminalReceipts(issue: HistoryProblem): void {
+    for (const entry of terminalReceipts.splice(0)) {
+      entry.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary });
+    }
+  }
+
+  function rejectPostClearDuringClearFailure(issue: HistoryProblem): void {
+    const rejected = [...postClearPending, ...pending];
+    postClearPending.length = 0;
+    if (rejected.length === 0) {
+      return;
+    }
+    pending.length = 0;
+    notAccepted += rejected.length;
+    discardedCount += rejected.length;
+    discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
+    terminalReceipts.push(...rejected);
+    const completion = terminalFinalization ?? terminalSettled;
+    if (completion) {
+      void completion.then(() => resolveTerminalReceipts(issue));
+      return;
+    }
+    resolveTerminalReceipts(issue);
+  }
+
   function status(problemValue?: HistoryProblem): HistoryStatus {
     const pressure = pressureFor(limits, measurements());
     const value: HistoryStatus = deepFreeze({
@@ -217,7 +265,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       capacity: { tier: capacityTier, state: phase !== "RUNNING" ? "EXHAUSTED" as const : pressure.nearLimit ? "NEAR_LIMIT" as const : "AVAILABLE" as const, limits, measurements: pressure.measurements },
       fallback: null,
       captured,
-      awaitingAcceptance: pending.length + inFlight.length,
+      awaitingAcceptance: pending.length + postClearPending.length + inFlight.length,
       accepted,
       notAccepted,
       retained: retainedCount,
@@ -428,10 +476,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     const settled = new Promise<ReceiptResult>((finish) => { resolve = finish; });
     const ordinal = captured + 1;
     captured += 1;
-    pending.push({ ordinal, candidate: copied, serialized, bytes, offeredAt: clock(), resolve });
+    clearQueueForCandidate().push({ ordinal, candidate: copied, serialized, bytes, offeredAt: clock(), resolve });
     scheduleAgeCheck();
     pressureChanged();
-    schedule();
+    if (!clearInProgress) schedule();
     return { intake: "QUEUED", settled };
   }
 
@@ -535,6 +583,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
   function read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>> {
     if (phase === "CLOSED") return Promise.resolve({ ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed.") });
+    if (clearInProgress || closing) {
+      return Promise.resolve({ ok: false, problem: problem("CLEAR_IN_PROGRESS", "A History Interval clear is currently pending.") });
+    }
     const latch = latchForCurrentInterval();
     const requestedIntervalId = query.intervalId ?? latch.interval.id;
     if (requestedIntervalId !== latch.interval.id || latch.retainedRange === null) {
@@ -563,19 +614,47 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
   function clear(): Promise<Outcome<ClearResult>> {
     if (clearPromise) return clearPromise;
-    if (lastClearResult && retainedCount === 0 && pending.length === 0) return Promise.resolve({ ok: true, value: lastClearResult });
+    if (closing || phase === "CLOSED") {
+      return Promise.resolve({ ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed and cannot be cleared.") });
+    }
+    if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") {
+      return Promise.resolve({ ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") });
+    }
+    if (lastClearResult && retainedCount === 0 && pending.length === 0 && postClearPending.length === 0 && inFlight.length === 0) {
+      return Promise.resolve({ ok: true, value: lastClearResult });
+    }
+    clearInProgress = true;
     clearPromise = waitForIdle().then(async () => {
-      if (phase === "CLOSED") return { ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed.") };
+      if (phase === "CLOSED") return { ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed and cannot be cleared.") };
       if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return { ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") };
       const previousInterval = interval;
       const nextInterval = Object.freeze({ id: `${loaded.panelSessionId}:interval-${previousInterval.ordinal + 1}`, ordinal: previousInterval.ordinal + 1 });
       try {
+        const applied = await options.clearJournal?.();
+        if (applied === false) {
+          const issue = problem("CLEAR_FAILED", "The History Interval could not be cleared.");
+          rejoinPostClearQueue();
+          lastClearResult = null;
+          publish({ type: "status", status: status(issue), problem: issue });
+          return { ok: false, problem: issue };
+        }
         await clearJournal(database, loaded.panelSessionId, nextInterval, nextSequence, committedEvidenceBoundary);
       } catch (error) {
-        const issue = problem("CLEAR_FAILED", error instanceof Error ? error.message : "The History Interval could not be cleared.");
+        const clearFailureProblem = problem("HISTORY_STOPPED", error instanceof Error ? error.message : "The History Interval could not be cleared.");
+        if (phase === "RUNNING" && !terminal) {
+          phase = "DRAINING_TO_STOP";
+          trigger = makeTrigger("JOURNAL_COMMIT_FAILED", "JOURNAL", null);
+          rejectPostClearDuringClearFailure(terminalProblem(trigger));
+          startTerminalPersistence();
+          finishTerminal();
+        } else {
+          rejoinPostClearQueue();
+        }
+        const issue = problem("CLEAR_FAILED", clearFailureProblem.message);
         publish({ type: "status", status: status(issue), problem: issue });
         return { ok: false, problem: issue };
       }
+      clearInProgress = false;
       interval = nextInterval;
       retainedCount = 0;
       retainedRange = null;
@@ -589,33 +668,65 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       publish(deepFreeze({ type: "interval-cleared" as const, previousInterval, interval, status: status() }));
       return { ok: true, value: result };
     });
-    void clearPromise.finally(() => { clearPromise = null; });
+    void clearPromise.finally(() => {
+      clearInProgress = false;
+      clearPromise = null;
+      if (pending.length > 0 && !clearInProgress) {
+        schedule();
+      }
+    });
     return clearPromise;
   }
 
   function close(): Promise<Outcome<CloseResult>> {
     if (closePromise) return closePromise;
-    if (phase === "CLOSED") return Promise.resolve({ ok: true, value: closeResult() });
+    if (clearPromise) {
+      return clearPromise.then(() => close());
+    }
+    if (phase === "CLOSED") {
+      const result = lastCloseResult ?? closeResult();
+      return Promise.resolve({ ok: true, value: result });
+    }
     closing = true;
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
     ageTimer = null;
     closePromise = waitForIdle().then(() => waitForTerminalQuiescence()).then(async () => {
       const finalCommittedEvidenceBoundary = currentBoundary();
+      let dataDisposition: CloseResult["dataDisposition"] = "ERASURE_UNCONFIRMED";
+      let cleanupDisposition: CloseResult["cleanupDisposition"] = "DEFERRED";
       try {
-        await clearJournal(database, loaded.panelSessionId, interval, nextSequence, committedEvidenceBoundary);
-        database.db.close();
+        const applied = await options.clearJournal?.();
+        if (applied !== false) {
+          await clearJournal(database, loaded.panelSessionId, interval, nextSequence, committedEvidenceBoundary);
+          dataDisposition = "ERASED";
+          await options.closeJournal?.();
+          database.db.close();
+          cleanupDisposition = "COMPLETE";
+        }
       } catch (error) {
         phase = "CLOSED";
-        return { ok: false, problem: problem("CLOSE_FAILED", error instanceof Error ? error.message : "Event History cleanup could not be confirmed.") };
+        const issue = problem(
+          "CLOSE_FAILED",
+          error instanceof Error ? error.message : "Event History cleanup could not be confirmed."
+        );
+        publish({ type: "status", status: status(issue), problem: issue });
+        const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
+        lastCloseResult = result;
+        return { ok: false, problem: issue, value: result };
       }
       phase = "CLOSED";
       retainedCount = 0;
       retainedRange = null;
       replayPayloadBytes = 0;
       retainedBytes = 0;
-      const result = deepFreeze({ finalCommittedEvidenceBoundary, dataDisposition: "ERASED" as const, cleanupDisposition: "COMPLETE" as const });
+      const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
+      lastCloseResult = result;
       publish({ type: "closed", result });
       return { ok: true, value: result };
+    });
+    void closePromise.finally(() => {
+      closePromise = null;
+      phase = "CLOSED";
     });
     return closePromise;
   }
@@ -726,8 +837,16 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     for (const resolve of idleWaiters.splice(0)) resolve();
   }
 
-  function closeResult(): CloseResult {
-    return deepFreeze({ finalCommittedEvidenceBoundary: currentBoundary(), dataDisposition: "ERASED" as const, cleanupDisposition: "COMPLETE" as const });
+  function closeResult(values: {
+    finalCommittedEvidenceBoundary?: EvidenceRef | null;
+    dataDisposition?: CloseResult["dataDisposition"];
+    cleanupDisposition?: CloseResult["cleanupDisposition"];
+  } = {}): CloseResult {
+    return deepFreeze({
+      finalCommittedEvidenceBoundary: values.finalCommittedEvidenceBoundary ?? currentBoundary(),
+      dataDisposition: values.dataDisposition ?? "ERASURE_UNCONFIRMED",
+      cleanupDisposition: values.cleanupDisposition ?? "DEFERRED"
+    });
   }
 
   return { offer, read, clear, follow, close };

@@ -275,7 +275,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     async persistTerminalIntent(terminal) { await options.persistTerminalIntent?.(terminal); },
     async finalizeTerminal(terminal) { await options.finalizeTerminal?.(terminal); },
     async clear() {
-      return await options.clearJournal?.();
+      await options.clearJournal?.();
     },
     async close() { await options.closeJournal?.(); }
   };
@@ -748,12 +748,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       const previousInterval = interval;
       const nextInterval = createInterval(sessionId, intervalOrdinal + 1);
       try {
-        const applied = await journal.clear();
+        const applied = await options.clearJournal?.();
         if (applied === false) {
           const issue = problem("CLEAR_FAILED", "The History Interval could not be cleared.");
           rejoinPostClearQueue();
           lastClearResult = null;
-            publish({ type: "status", status: status(issue), problem: issue });
+          publish({ type: "status", status: status(issue), problem: issue });
           return { ok: false, problem: issue };
         }
         intervalOrdinal += 1;
@@ -822,7 +822,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       let dataDisposition: CloseResult["dataDisposition"] = "ERASURE_UNCONFIRMED";
       let cleanupDisposition: CloseResult["cleanupDisposition"] = "DEFERRED";
       try {
-        const applied = await journal.clear();
+        const applied = await options.clearJournal?.();
         if (applied !== false) {
           dataDisposition = "ERASED";
           await journal.close();
@@ -839,12 +839,17 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         lastCloseResult = result;
         return { ok: false, problem: issue, value: result };
       }
-        if (clearInProgress) {
-          publish({ type: "status", status: status(issue), problem: issue });
-          const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
-          lastCloseResult = result;
-          return { ok: false, problem: problem("CLOSE_FAILED", "Event History clear is in progress."), value: result };
-        }
+      if (clearInProgress) {
+        const issue = problem("CLOSE_FAILED", "Event History clear is in progress.");
+        publish({ type: "status", status: status(issue), problem: issue });
+        const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
+        lastCloseResult = result;
+        return {
+          ok: false,
+          problem: issue,
+          value: result
+        };
+      }
         const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
         committed.length = 0;
         retainedBytes = 0;

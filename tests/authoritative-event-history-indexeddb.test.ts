@@ -8,9 +8,10 @@ import {
 } from "../src/core/indexeddb/authoritative-event-db";
 import {
   openEventHistory,
-  type EvidenceCandidate
+  type EvidenceCandidate,
+  type HistoryPublication
 } from "../src/core/event-history-authoritative";
-import { transactionDone } from "../src/core/event-history-indexeddb";
+import { createIndexedDbEventHistory, transactionDone, type IndexedDbEventHistoryOptions } from "../src/core/event-history-indexeddb";
 import { serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 
 function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): EvidenceCandidate {
@@ -69,6 +70,15 @@ async function freshHistory(panelSessionId: string) {
   Reflect.set(globalThis, "indexedDB", new IDBFactory());
   await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
   return openEventHistory({ panelSessionId });
+}
+
+async function freshIndexedHistory(
+  panelSessionId: string,
+  options: Omit<IndexedDbEventHistoryOptions, "panelSessionId"> = {}
+): Promise<Awaited<ReturnType<typeof createIndexedDbEventHistory>>> {
+  Reflect.set(globalThis, "indexedDB", new IDBFactory());
+  await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
+  return createIndexedDbEventHistory({ panelSessionId, ...options });
 }
 
 describe("IndexedDB authoritative EventHistory", () => {
@@ -935,6 +945,106 @@ describe("IndexedDB authoritative EventHistory", () => {
       if (publication.type === "status") initialStatus = publication.status;
     });
     expect(initialStatus).toMatchObject({ capacity: { tier: "LOWER" }, fallback: "PRIMARY_JOURNAL_UNAVAILABLE" });
+    await history.close();
+  });
+
+  it("keeps the prior interval when Clear cannot be confirmed", async () => {
+    const history = await freshIndexedHistory("indexed-clear-unconfirmed", {
+      clearJournal: async () => {
+        throw new Error("clear unavailable");
+      }
+    });
+    await expect(history.offer(candidate("retained")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1, eventId: "retained" }
+    });
+
+    const publications: unknown[] = [];
+    history.follow({ from: "NOW" }, (publication: HistoryPublication) => publications.push(publication));
+    await expect(history.clear()).resolves.toMatchObject({
+      ok: false,
+      problem: { code: "CLEAR_FAILED" }
+    });
+    expect(publications).toContainEqual(
+      expect.objectContaining({
+        type: "status",
+        problem: expect.objectContaining({ code: "CLEAR_FAILED" })
+      })
+    );
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [expect.objectContaining({ eventId: "retained" })] }
+    });
+    await history.close();
+  });
+
+  it("terminalizes a clear failure and rejects clear-window capture", async () => {
+    const panelSessionId = "indexed-clear-terminal";
+    let release!: () => void;
+    let clearStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      clearStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const history = await freshIndexedHistory(panelSessionId, {
+      clearJournal: async () => {
+        clearStarted();
+        await gate;
+        throw new Error("clear unavailable");
+      }
+    });
+
+    await expect(history.offer(candidate("pre-clear")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1 }
+    });
+    const phases: string[] = [];
+    history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
+      if (publication.type === "status") {
+        phases.push(publication.status.phase);
+      }
+    });
+    const clear = history.clear();
+    await started;
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: false,
+      problem: { code: "CLEAR_IN_PROGRESS" }
+    });
+    const duringClear = history.offer(candidate("during-clear"));
+    const afterWindow = history.offer(candidate("after-window"));
+    expect(duringClear.intake).toBe("QUEUED");
+    expect(afterWindow.intake).toBe("QUEUED");
+    release();
+
+    await expect(clear).resolves.toMatchObject({
+      ok: false,
+      problem: { code: "CLEAR_FAILED" }
+    });
+    expect(phases).toContain("DRAINING_TO_STOP");
+    await expect(duringClear.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" }
+    });
+    await expect(afterWindow.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" }
+    });
+    const postTerminal = history.offer(candidate("post-terminal"));
+    expect(postTerminal.intake).toBe("REFUSED");
+    await expect(postTerminal.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" }
+    });
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: {
+        interval: { id: `${panelSessionId}:interval-1` },
+        evidence: [{ eventId: "pre-clear", sequence: 1 }],
+        committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+      }
+    });
     await history.close();
   });
 });
