@@ -182,7 +182,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let clearPromise: Promise<Outcome<ClearResult>> | null = null;
   let lastClearResult: ClearResult | null = null;
   let closePromise: Promise<Outcome<CloseResult>> | null = null;
-  let lastCloseResult: CloseResult | null = null;
+  let lastCloseOutcome: Outcome<CloseResult> | null = null;
   let clearInProgress = false;
   let trigger: HistoryTrigger | null = terminal ? triggerFromTerminal(terminal) : null;
   let persistedTerminal: HistoryTerminalDiagnostic | undefined = terminal;
@@ -681,11 +681,12 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function close(): Promise<Outcome<CloseResult>> {
     if (closePromise) return closePromise;
     if (clearPromise) {
+      closing = true;
       return clearPromise.then(() => close());
     }
     if (phase === "CLOSED") {
-      const result = lastCloseResult ?? closeResult();
-      return Promise.resolve({ ok: true, value: result });
+      const result = lastCloseOutcome ?? { ok: true, value: closeResult() };
+      return Promise.resolve(result);
     }
     closing = true;
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
@@ -711,8 +712,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         );
         publish({ type: "status", status: status(issue), problem: issue });
         const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
-        lastCloseResult = result;
-        return { ok: false, problem: issue, value: result };
+        const outcome = { ok: false, problem: issue, value: result } as Outcome<CloseResult>;
+        lastCloseOutcome = outcome;
+        return outcome;
       }
       phase = "CLOSED";
       retainedCount = 0;
@@ -720,9 +722,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       replayPayloadBytes = 0;
       retainedBytes = 0;
       const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
-      lastCloseResult = result;
+      const outcome = { ok: true, value: result } as Outcome<CloseResult>;
+      lastCloseOutcome = outcome;
       publish({ type: "closed", result });
-      return { ok: true, value: result };
+      return outcome;
     });
     void closePromise.finally(() => {
       closePromise = null;

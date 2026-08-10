@@ -160,6 +160,57 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("returns identical outcomes for repeated failed close attempts", async () => {
+    const history = await freshIndexedHistory("indexed-close-failed", {
+      clearJournal: async () => {
+        throw new Error("close unavailable");
+      }
+    });
+    const firstClose = await history.close();
+    const repeatedClose = await history.close();
+    expect(firstClose).toMatchObject({ ok: false, problem: { code: "CLOSE_FAILED" } });
+    expect(repeatedClose).toEqual(firstClose);
+  });
+
+  it("cuts intake immediately when close is requested during clear", async () => {
+    const panelSessionId = "indexed-close-during-clear-cuts-intake";
+    let clearStarted!: () => void;
+    let clearCalls = 0;
+    const started = new Promise<void>((resolve) => {
+      clearStarted = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const history = await freshIndexedHistory(panelSessionId, {
+      clearJournal: async () => {
+        clearCalls += 1;
+        if (clearCalls === 1) {
+          clearStarted();
+          await gate;
+        }
+      }
+    });
+
+    await expect(history.offer(candidate("pre-clear")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1 }
+    });
+    const clear = history.clear();
+    await started;
+    const close = history.close();
+    const duringClear = history.offer(candidate("during-clear"));
+    expect(duringClear.intake).toBe("REFUSED");
+    await expect(duringClear.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "HISTORY_CLOSED" }
+    });
+    release();
+    await expect(clear).resolves.toMatchObject({ ok: true });
+    await expect(close).resolves.toMatchObject({ ok: true });
+  });
+
   it("rejects a record whose accounted bytes do not include the exact v1 frame", async () => {
     const panelSessionId = "indexed-invalid-accounted-frame";
     const history = await freshHistory(panelSessionId);
@@ -1008,12 +1059,20 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     const clear = history.clear();
     await started;
+    let duringClearSettlementCount = 0;
+    let afterWindowSettlementCount = 0;
     await expect(history.read({})).resolves.toMatchObject({
       ok: false,
       problem: { code: "CLEAR_IN_PROGRESS" }
     });
     const duringClear = history.offer(candidate("during-clear"));
     const afterWindow = history.offer(candidate("after-window"));
+    void duringClear.settled.finally(() => {
+      duringClearSettlementCount += 1;
+    });
+    void afterWindow.settled.finally(() => {
+      afterWindowSettlementCount += 1;
+    });
     expect(duringClear.intake).toBe("QUEUED");
     expect(afterWindow.intake).toBe("QUEUED");
     release();
@@ -1031,6 +1090,8 @@ describe("IndexedDB authoritative EventHistory", () => {
       outcome: "NOT_EVIDENCE",
       problem: { code: "JOURNAL_COMMIT_FAILED" }
     });
+    expect(duringClearSettlementCount).toBe(1);
+    expect(afterWindowSettlementCount).toBe(1);
     const postTerminal = history.offer(candidate("post-terminal"));
     expect(postTerminal.intake).toBe("REFUSED");
     await expect(postTerminal.settled).resolves.toMatchObject({

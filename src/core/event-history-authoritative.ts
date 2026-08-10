@@ -311,7 +311,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   let closing = false;
   let clearPromise: Promise<Outcome<ClearResult>> | null = null;
   let lastClearResult: ClearResult | null = null;
-  let lastCloseResult: CloseResult | null = null;
+  let lastCloseOutcome: Outcome<CloseResult> | null = null;
   let closePromise: Promise<Outcome<CloseResult>> | null = null;
   let clearInProgress = false;
   let trigger: HistoryTrigger | null = null;
@@ -808,11 +808,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       return closePromise;
     }
     if (clearPromise) {
+      closing = true;
       return clearPromise.then(() => close());
     }
     if (phase === "CLOSED") {
-      const result = closeResult();
-      return Promise.resolve({ ok: true, value: result });
+      const result = lastCloseOutcome ?? { ok: true, value: closeResult() };
+      return Promise.resolve(result);
     }
     closing = true;
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
@@ -836,27 +837,26 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         phase = "CLOSED";
         publish({ type: "status", status: status(issue), problem: issue });
         const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
-        lastCloseResult = result;
-        return { ok: false, problem: issue, value: result };
+        const outcome = { ok: false, problem: issue, value: result } as Outcome<CloseResult>;
+        lastCloseOutcome = outcome;
+        return outcome;
       }
       if (clearInProgress) {
         const issue = problem("CLOSE_FAILED", "Event History clear is in progress.");
         publish({ type: "status", status: status(issue), problem: issue });
         const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
-        lastCloseResult = result;
-        return {
-          ok: false,
-          problem: issue,
-          value: result
-        };
+        const outcome = { ok: false, problem: issue, value: result } as Outcome<CloseResult>;
+        lastCloseOutcome = outcome;
+        return outcome;
       }
         const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
         committed.length = 0;
         retainedBytes = 0;
         phase = "CLOSED";
-        lastCloseResult = result;
+        const outcome = { ok: true, value: result } as Outcome<CloseResult>;
+        lastCloseOutcome = outcome;
         publish(deepFreeze({ type: "closed" as const, result }));
-        return { ok: true, value: result };
+        return outcome;
       });
       return closePromise;
     }

@@ -14,6 +14,59 @@ function candidate(id: string): EvidenceCandidate {
 }
 
 describe("history-impl-06 memory contract", () => {
+  it("returns identical outcomes for repeated failed close attempts", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      clearJournal: async () => {
+        throw new Error("close unavailable");
+      }
+    });
+    const firstClose = await history.close();
+    const repeatedClose = await history.close();
+
+    expect(firstClose).toMatchObject({ ok: false, problem: { code: "CLOSE_FAILED" } });
+    expect(repeatedClose).toEqual(firstClose);
+  });
+
+  it("cuts intake immediately when close is requested during clear", async () => {
+    const panelSessionId = "impl-06-close-during-clear-cuts-intake";
+    let clearStarted!: () => void;
+    let clearCalls = 0;
+    const started = new Promise<void>((resolve) => {
+      clearStarted = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId,
+      clearJournal: async () => {
+        clearCalls += 1;
+        if (clearCalls === 1) {
+          clearStarted();
+          await gate;
+        }
+      }
+    });
+
+    await expect(history.offer(candidate("pre-clear")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1 }
+    });
+    const clear = history.clear();
+    await started;
+    const close = history.close();
+    const duringClear = history.offer(candidate("during-clear"));
+    expect(duringClear.intake).toBe("REFUSED");
+    await expect(duringClear.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "HISTORY_CLOSED" }
+    });
+    release();
+    await expect(clear).resolves.toMatchObject({ ok: true });
+    await expect(close).resolves.toMatchObject({ ok: true });
+  });
+
   it("continues in the prior interval when clear uncertainty is explicit", async () => {
     const panelSessionId = "impl-06-clear-uncertain";
     let release!: () => void;
@@ -110,6 +163,14 @@ describe("history-impl-06 memory contract", () => {
     });
     const duringClear = history.offer(candidate("during-clear"));
     const afterWindow = history.offer(candidate("after-window"));
+    let duringClearSettlementCount = 0;
+    let afterWindowSettlementCount = 0;
+    void duringClear.settled.finally(() => {
+      duringClearSettlementCount += 1;
+    });
+    void afterWindow.settled.finally(() => {
+      afterWindowSettlementCount += 1;
+    });
     expect(duringClear.intake).toBe("QUEUED");
     expect(afterWindow.intake).toBe("QUEUED");
     release();
@@ -127,6 +188,8 @@ describe("history-impl-06 memory contract", () => {
       outcome: "NOT_EVIDENCE",
       problem: { code: "JOURNAL_COMMIT_FAILED" }
     });
+    expect(duringClearSettlementCount).toBe(1);
+    expect(afterWindowSettlementCount).toBe(1);
     const postTerminal = history.offer(candidate("post-terminal"));
     expect(postTerminal.intake).toBe("REFUSED");
     await expect(postTerminal.settled).resolves.toMatchObject({
