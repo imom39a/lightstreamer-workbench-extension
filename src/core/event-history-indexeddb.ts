@@ -272,12 +272,19 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       publish({ type: "terminal", terminal, status: status(issue) });
       publish({ type: "status", status: status(issue), problem: issue });
     }).finally(() => {
+      signalTerminalSettled();
       terminalFinalization = null;
     });
   }
   function ensureTerminalSettled(): void {
     if (terminalSettled) return;
     terminalSettled = new Promise<void>((resolve) => { resolveTerminalSettled = resolve; });
+  }
+
+  function signalTerminalSettled(): void {
+    if (!resolveTerminalSettled) return;
+    resolveTerminalSettled();
+    resolveTerminalSettled = null;
   }
 
   function terminalDiagnostic(): HistoryTerminalDiagnostic {
@@ -305,6 +312,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     trigger = makeTrigger(reason, "JOURNAL", trigger?.firstMissingEventId ?? null);
     const issue = terminalProblem(trigger);
     publish({ type: "status", status: status(issue), problem: issue });
+    signalTerminalSettled();
   }
 
   function startTerminalPersistence(): void {
@@ -320,16 +328,12 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         intent
       ))
       .then(() => {
-        persistedTerminal = intent;
+        if (generation === terminalIntentGeneration) {
+          persistedTerminal = intent;
+        }
       })
       .catch((error) => {
         failTerminalPersistence(error);
-      })
-      .finally(() => {
-        if (generation === terminalIntentGeneration) {
-          resolveTerminalSettled?.();
-          resolveTerminalSettled = null;
-        }
       });
   }
   function beginDrain(reason: HistoryTerminalReason, dimension: HistoryCapacityDimension | "JOURNAL", firstMissingEventId: string | null): void {
@@ -367,7 +371,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       rejectedCount += 1;
     }
     const receiptProblem = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
-    const completion = terminalFinalization ?? terminalPersistence ?? terminalSettled;
+    const completion = terminalFinalization ?? terminalSettled;
     const settled = completion
       ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() }))
       : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() });
@@ -414,7 +418,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       rejectedBytes += bytes;
       beginDrain(failure.reason, failure.dimension, copied.id);
       const receiptProblem = terminalProblem(trigger!);
-      const completion = terminalFinalization ?? terminalPersistence ?? terminalSettled;
+      const completion = terminalFinalization ?? terminalSettled;
       const settled = completion
         ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() }))
         : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() });
@@ -708,7 +712,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     while (phase === "DRAINING_TO_STOP") {
       finishTerminal();
       if (terminalPersistenceFailed) return;
-      const completion = terminalFinalization ?? terminalPersistence ?? terminalSettled;
+      const completion = terminalFinalization ?? terminalSettled;
       if (!completion) return;
       await completion;
       if (phase === "DRAINING_TO_STOP" && !terminalFinalization && !terminalPersistence && terminalSettled) {

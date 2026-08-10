@@ -194,10 +194,49 @@ describe.each([
 
     expect(second.intake).toBe("QUEUED");
     expect(crossing.intake).toBe("REFUSED");
-    await expect(crossing.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE" });
     release();
+    await expect(crossing.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE" });
     await expect(first.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
     await expect(second.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    await history.close();
+  });
+
+  it("defers crossed offer settlement until terminal boundary advances", async () => {
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const history = await create({
+      capacity: { maxRetainedCount: 2, maxRetainedBytes: 1_000_000 },
+      commitBatch: async () => {
+        started();
+        await gate;
+      }
+    });
+
+    const first = history.offer(candidate("prefix-one"));
+    const second = history.offer(candidate("prefix-two"));
+    await startedPromise;
+    const crossing = history.offer(candidate("crossing"));
+    expect(first.intake).toBe("QUEUED");
+    expect(second.intake).toBe("QUEUED");
+    expect(crossing.intake).toBe("REFUSED");
+
+    let crossingSettled = false;
+    void crossing.settled.then(() => {
+      crossingSettled = true;
+    });
+    await Promise.resolve();
+    expect(crossingSettled).toBe(false);
+
+    release();
+    await Promise.all([first.settled, second.settled, crossing.settled]);
+    await expect(crossing.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT", dimension: "RETAINED_COUNT" },
+      committedEvidenceBoundary: { sequence: 2, eventId: "prefix-two" }
+    });
+    expect(crossingSettled).toBe(true);
     await history.close();
   });
 
@@ -218,10 +257,10 @@ describe.each([
     expect(second.intake).toBe("QUEUED");
     const crossing = history.offer(candidate("crossing"));
     expect(crossing.intake).toBe("REFUSED");
+    release();
     await expect(crossing.settled).resolves.toMatchObject({
       problem: { code, dimension }
     });
-    release();
     await Promise.all([first.settled, second.settled]);
     await history.close();
   });
