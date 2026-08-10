@@ -1036,12 +1036,12 @@ function toRef(evidence: CommittedEvidence): EvidenceRef {
   });
 }
 
-function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
+export function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
   if (!candidate || typeof candidate !== "object") {
     throw new Error("Candidate must be an object.");
   }
   if (candidate.kind === "topology-checkpoint") {
-    if (!candidate.id || typeof candidate.id !== "string" || !candidate.checkpoint) {
+    if (!isTopologyCheckpointEvidenceCandidate(candidate)) {
       throw new Error("Topology checkpoint candidate is incomplete.");
     }
     return deepFreeze(structuredClone(candidate));
@@ -1050,6 +1050,31 @@ function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
     throw new Error("Capture candidate must have a stable event ID.");
   }
   return deepFreeze(structuredClone(candidate));
+}
+
+function isTopologyCheckpointEvidenceCandidate(candidate: unknown): candidate is TopologyCheckpointEvidenceCandidate {
+  if (!candidate || typeof candidate !== "object") {
+    return false;
+  }
+  const checkpointCandidate = candidate as {
+    kind?: unknown;
+    id?: unknown;
+    checkpoint?: unknown;
+  };
+  return (
+    checkpointCandidate.kind === "topology-checkpoint" &&
+    typeof checkpointCandidate.id === "string" &&
+    checkpointCandidate.id.length > 0 &&
+    isPlainRecord(checkpointCandidate.checkpoint)
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function nextId(): string {

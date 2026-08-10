@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   createMemoryEventHistoryForTests,
   openEventHistory,
+  type EvidenceCandidate,
   type EventHistory
 } from "../src/core/event-history-authoritative";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
@@ -25,7 +26,12 @@ function candidate(id: string): LightstreamerEventEnvelope {
   };
 }
 
-type HistoryFactory = () => Promise<EventHistory>;
+type HistoryLifecycleOptions = Readonly<{
+  clearJournal?: () => Promise<void>;
+  closeJournal?: () => Promise<void>;
+}>;
+
+type HistoryFactory = (options?: HistoryLifecycleOptions) => Promise<EventHistory>;
 
 function sharedContract(name: string, createHistory: HistoryFactory): void {
   describe(`${name} authoritative EventHistory contract`, () => {
@@ -55,6 +61,22 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
         }
       });
       expect(publications).toEqual(["contract-1", "contract-2"]);
+      await history.close();
+    });
+
+    it("rejects malformed Topology Checkpoint candidates before admission", async () => {
+      const history = await createHistory();
+      const malformedCandidates = [
+        { kind: "topology-checkpoint", id: "", checkpoint: { pageEpoch: "invalid-id" } } as EvidenceCandidate,
+        { kind: "topology-checkpoint", id: "malformed-shape", checkpoint: [] as unknown as Record<string, unknown> } as EvidenceCandidate,
+        { kind: "topology-checkpoint", id: "malformed-shape", checkpoint: "invalid" as unknown as Record<string, unknown> } as EvidenceCandidate
+      ];
+      for (const malformed of malformedCandidates) {
+        await expect(history.offer(malformed).settled).resolves.toMatchObject({
+          outcome: "NOT_EVIDENCE",
+          problem: { code: "INVALID_CANDIDATE" }
+        });
+      }
       await history.close();
     });
 
@@ -128,6 +150,42 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
       await history.close();
     });
 
+    it("propagates Clear-confirmation failures without stopping intake", async () => {
+      const history = await createHistory({
+        clearJournal: async () => {
+          throw new Error("clear failed");
+        }
+      });
+      await history.offer(candidate("clear-failing")).settled;
+      const publications: unknown[] = [];
+      history.follow({ from: "NOW" }, (publication) => publications.push(publication));
+      const clearResult = await history.clear();
+      expect(clearResult).toMatchObject({ ok: false, problem: { code: "CLEAR_FAILED" } });
+      expect(publications).toContainEqual(expect.objectContaining({ type: "status", problem: expect.objectContaining({ code: "CLEAR_FAILED" }) }));
+      await expect(history.read({})).resolves.toMatchObject({
+        ok: true,
+        value: { evidence: [expect.objectContaining({ eventId: "clear-failing" })] }
+      });
+      await expect(history.offer(candidate("after-failed-clear")).settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 2 }
+      });
+      await history.close();
+    });
+
+    it("reports close failure consistently and refuses post-close offers", async () => {
+      const history = await createHistory({
+        closeJournal: async () => {
+          throw new Error("close failed");
+        }
+      });
+      await history.offer(candidate("close-failing")).settled;
+      const closeResult = await history.close();
+      expect(closeResult).toMatchObject({ ok: false, problem: { code: "CLOSE_FAILED" } });
+      expect(history.offer(candidate("after-close-fail")).intake).toBe("REFUSED");
+      await history.close();
+    });
+
     it("Finds canonical replay key order case-insensitively across adapters", async () => {
       const history = await createHistory();
       await historyFactoryOfferAndReadCanonicalReplay(history);
@@ -151,10 +209,10 @@ async function historyFactoryOfferAndReadCanonicalReplay(history: EventHistory):
   await history.close();
 }
 
-sharedContract("memory", () => createMemoryEventHistoryForTests());
-sharedContract("fake IndexedDB", async () => {
+sharedContract("memory", (options = {}) => createMemoryEventHistoryForTests(options));
+sharedContract("fake IndexedDB", async (options = {}) => {
   const panelSessionId = "shared-contract-indexeddb";
   Reflect.set(globalThis, "indexedDB", new IDBFactory());
   await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
-  return openEventHistory({ panelSessionId });
+  return openEventHistory({ panelSessionId, ...options });
 });

@@ -39,12 +39,13 @@ import {
   type HistoryStatus,
   type Outcome,
   type CloseResult,
+  copyCandidate,
   matchesEvidenceQuery,
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
 
 export const AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT = 256;
-export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 1_048_576;
+export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 2_097_152;
 
 type ControlRecord = {
   key: typeof AUTHORITATIVE_EVENT_CONTROL_KEY;
@@ -103,6 +104,8 @@ export type IndexedDbEventHistoryOptions = Readonly<{
   failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
   commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void>;
   finalizeTerminal?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
+  clearJournal?: () => void | Promise<void>;
+  closeJournal?: () => void | Promise<void>;
 }> & HistoryCapacityOptions;
 
 export async function createIndexedDbEventHistory(
@@ -988,7 +991,7 @@ async function finalizeTerminal(
   await transactionDone(transaction, "finalizing Event History terminal state");
 }
 
-async function clearJournal(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
+async function clearJournalRecords(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, null, 0, 0, 0));
@@ -1321,12 +1324,6 @@ function toCommittedEvidenceFromRecord(record: EvidenceRecord): CommittedEvidenc
 
 function toRef(evidence: CommittedEvidence): EvidenceRef {
   return deepFreeze({ intervalId: evidence.intervalId, sequence: evidence.sequence, eventId: evidence.eventId });
-}
-
-function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
-  if (!candidate || typeof candidate !== "object" || typeof candidate.id !== "string" || candidate.id.length === 0) throw new Error("Candidate must have a stable event ID.");
-  if (candidate.kind === "topology-checkpoint" && !candidate.checkpoint) throw new Error("Topology checkpoint candidate is incomplete.");
-  return deepFreeze(structuredClone(candidate));
 }
 
 function candidateIdIfPresent(candidate: unknown): string | null {

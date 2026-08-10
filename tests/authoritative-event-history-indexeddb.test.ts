@@ -415,7 +415,8 @@ describe("IndexedDB authoritative EventHistory", () => {
   });
 
   it("keeps an oversized candidate alone and starts a new transaction at the soft byte target", async () => {
-    const history = await freshHistory("indexed-byte-batches");
+    const panelSessionId = "indexed-byte-batches";
+    const history = await freshHistory(panelSessionId);
     const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
     const large = (id: string, size: number): EvidenceCandidate => candidate(id, {
       raw: { payload: "x".repeat(size) }
@@ -424,13 +425,13 @@ describe("IndexedDB authoritative EventHistory", () => {
     const receipts = [
       history.offer(large("large-one", 600_000)),
       history.offer(large("large-two", 600_000)),
-      history.offer(large("oversized", 1_100_000)),
+      history.offer(large("oversized", 2_200_000)),
       history.offer(candidate("after-oversized"))
     ];
     await Promise.all(receipts.map((receipt) => receipt.settled));
 
     const writeTransactions = transactionSpy.mock.calls.filter(([, mode]) => mode === "readwrite");
-    expect(writeTransactions).toHaveLength(4);
+    expect(writeTransactions).toHaveLength(3);
     await expect(history.read({})).resolves.toMatchObject({
       ok: true,
       value: {
@@ -441,6 +442,26 @@ describe("IndexedDB authoritative EventHistory", () => {
           expect.objectContaining({ eventId: "after-oversized" })
         ]
       }
+    });
+    const database = await requestValue(indexedDB.open(authoritativeEventDatabaseName(panelSessionId)));
+    const controlTransaction = database.transaction("historyControl", "readonly");
+    const control = await requestValue(controlTransaction.objectStore("historyControl").get("control"));
+    const evidenceTransaction = database.transaction("evidence", "readonly");
+    const evidenceRecords = await Promise.all(
+      [1, 2, 3, 4].map((sequence) => requestValue(evidenceTransaction.objectStore("evidence").get(sequence)))
+    );
+    database.close();
+    const totalSerializedBytes = evidenceRecords.reduce(
+      (total, record) => total + ((record as { serializedBytes: number }).serializedBytes ?? 0),
+      0
+    );
+    const totalAccountedBytes = evidenceRecords.reduce(
+      (total, record) => total + ((record as { accountedBytes: number }).accountedBytes ?? 0),
+      0
+    );
+    expect(control).toMatchObject({
+      replayPayloadBytes: totalSerializedBytes,
+      accountedBytes: totalAccountedBytes
     });
     transactionSpy.mockRestore();
     await history.close();
