@@ -94,6 +94,25 @@ describe("commit-authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("reports the full retained interval for a paged read", async () => {
+    const history = await openEventHistory({ panelSessionId: "retained-range" });
+    await history.offer(candidate("first")).settled;
+    await history.offer(candidate("second")).settled;
+
+    await expect(history.read({ afterSequence: 1, limit: 1 })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        evidence: [expect.objectContaining({ sequence: 2, eventId: "second" })],
+        committedEvidenceBoundary: expect.objectContaining({ sequence: 2, eventId: "second" }),
+        retainedRange: {
+          first: expect.objectContaining({ sequence: 1, eventId: "first" }),
+          last: expect.objectContaining({ sequence: 2, eventId: "second" })
+        }
+      }
+    });
+    await history.close();
+  });
+
   it("replays a committed prefix and delivers a concurrent commit once", async () => {
     const history = await createMemoryEventHistoryForTests();
     await history.offer(candidate("before-1")).settled;

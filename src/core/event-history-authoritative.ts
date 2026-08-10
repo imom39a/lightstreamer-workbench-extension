@@ -385,14 +385,15 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         problem: problem("HISTORY_CLOSED", "Event History is closed.")
       });
     }
-    const snapshot = committed
-      .filter((entry) => entry.intervalId === (query.intervalId ?? interval.id))
-      .filter((entry) => query.afterSequence === undefined || entry.sequence > query.afterSequence);
+    const intervalEvidence = committed.filter((entry) => entry.intervalId === (query.intervalId ?? interval.id));
+    const snapshot = intervalEvidence.filter(
+      (entry) => query.afterSequence === undefined || entry.sequence > query.afterSequence
+    );
     const evidence = query.limit === undefined ? snapshot : snapshot.slice(0, Math.max(0, query.limit));
-    const retainedRange = snapshot.length
+    const retainedRange = intervalEvidence.length
       ? {
-          first: toRef(snapshot[0]),
-          last: toRef(snapshot[snapshot.length - 1])
+          first: toRef(intervalEvidence[0]),
+          last: toRef(intervalEvidence[intervalEvidence.length - 1])
         }
       : null;
     return Promise.resolve({
