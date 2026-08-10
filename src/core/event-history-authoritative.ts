@@ -417,6 +417,16 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     return { intake: "REFUSED", settled };
   }
 
+  function clearBlockedProblem(): HistoryProblem {
+    if (trigger) {
+      return terminalProblem(trigger);
+    }
+    if (terminal) {
+      return problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.", { terminal });
+    }
+    return problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.");
+  }
+
   function refuseClosed(): CaptureReceipt {
     notAccepted += 1;
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: problem("HISTORY_CLOSED", "Event History is closed and cannot accept Capture."), committedEvidenceBoundary }) };
@@ -448,7 +458,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     }
   }
 
-  function rejectPostClearDuringClearFailure(issue: HistoryProblem): void {
+  function rejectPostClearDuringClearFailure(issue: HistoryProblem, settleNow: boolean = false): void {
     const rejected = [...postClearPending, ...pending];
     postClearPending.length = 0;
     if (rejected.length === 0) {
@@ -460,6 +470,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
     terminalReceipts.push(...rejected);
     const completion = terminalFinalization ?? terminalSettled;
+    if (settleNow || !completion) {
+      resolveTerminalReceipts(issue);
+      return;
+    }
     if (completion) {
       void completion.then(() => resolveTerminalReceipts(issue));
       return;
@@ -743,6 +757,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         return { ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed and cannot be cleared.") };
       }
       if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") {
+        rejectPostClearDuringClearFailure(clearBlockedProblem(), true);
         return { ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") };
       }
       const previousInterval = interval;

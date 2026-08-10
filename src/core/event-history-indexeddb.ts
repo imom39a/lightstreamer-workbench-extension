@@ -235,7 +235,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     }
   }
 
-  function rejectPostClearDuringClearFailure(issue: HistoryProblem): void {
+  function rejectPostClearDuringClearFailure(issue: HistoryProblem, settleNow: boolean = false): void {
     const rejected = [...postClearPending, ...pending];
     postClearPending.length = 0;
     if (rejected.length === 0) {
@@ -247,6 +247,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
     terminalReceipts.push(...rejected);
     const completion = terminalFinalization ?? terminalSettled;
+    if (settleNow || !completion) {
+      resolveTerminalReceipts(issue);
+      return;
+    }
     if (completion) {
       void completion.then(() => resolveTerminalReceipts(issue));
       return;
@@ -428,6 +432,15 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function refuseClosed(): CaptureReceipt {
     notAccepted += 1;
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: problem("HISTORY_CLOSED", "Event History is closed."), committedEvidenceBoundary: currentBoundary() }) };
+  }
+  function clearBlockedProblem(): HistoryProblem {
+    if (trigger) {
+      return terminalProblem(trigger);
+    }
+    if (terminal) {
+      return problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.", { terminal });
+    }
+    return problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.");
   }
   function scheduleAgeCheck(): void {
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
@@ -618,6 +631,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       return Promise.resolve({ ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed and cannot be cleared.") });
     }
     if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") {
+      rejectPostClearDuringClearFailure(clearBlockedProblem(), true);
       return Promise.resolve({ ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") });
     }
     if (lastClearResult && retainedCount === 0 && pending.length === 0 && postClearPending.length === 0 && inFlight.length === 0) {
@@ -626,7 +640,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     clearInProgress = true;
     clearPromise = waitForIdle().then(async () => {
       if (phase === "CLOSED") return { ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed and cannot be cleared.") };
-      if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return { ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") };
+      if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") {
+        rejectPostClearDuringClearFailure(clearBlockedProblem(), true);
+        return { ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") };
+      }
       const previousInterval = interval;
       const nextInterval = Object.freeze({ id: `${loaded.panelSessionId}:interval-${previousInterval.ordinal + 1}`, ordinal: previousInterval.ordinal + 1 });
       try {

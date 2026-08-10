@@ -1108,4 +1108,80 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     await history.close();
   });
+
+  it("settles clear-window captures as terminal when commit fails while clear waits", async () => {
+    const panelSessionId = "indexed-clear-waiting-commit-fails";
+    let release!: () => void;
+    let commitStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      commitStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const phases: string[] = [];
+    const history = await freshIndexedHistory(panelSessionId, {
+      commitBatch: async (batch) => {
+        if (batch.some((entry) => entry.id === "in-flight")) {
+          commitStarted();
+          await gate;
+          throw new Error("commit failed");
+        }
+      }
+    });
+
+    await expect(history.offer(candidate("pre-clear")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1, eventId: "pre-clear" }
+    });
+    const inFlight = history.offer(candidate("in-flight"));
+    await started;
+    history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
+      if (publication.type === "status") {
+        phases.push(publication.status.phase);
+      }
+    });
+    const clear = history.clear();
+    const duringClear = history.offer(candidate("during-clear"));
+    expect(duringClear.intake).toBe("QUEUED");
+    await expect(history.read({})).resolves.toMatchObject({ ok: false, problem: { code: "CLEAR_IN_PROGRESS" } });
+
+    let duringClearSettledCount = 0;
+    let inFlightSettledCount = 0;
+    void duringClear.settled.finally(() => { duringClearSettledCount += 1; });
+    void inFlight.settled.finally(() => { inFlightSettledCount += 1; });
+
+    release();
+    await expect(clear).resolves.toMatchObject({
+      ok: false,
+      problem: { code: "HISTORY_STOPPED" }
+    });
+    await expect(inFlight.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" },
+      committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+    });
+    await expect(duringClear.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" },
+      committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+    });
+    expect(inFlightSettledCount).toBe(1);
+    expect(duringClearSettledCount).toBe(1);
+    const postTerminal = history.offer(candidate("post-terminal"));
+    expect(postTerminal.intake).toBe("REFUSED");
+    await expect(postTerminal.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" }
+    });
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: {
+        interval: { id: `${panelSessionId}:interval-1` },
+        evidence: [{ eventId: "pre-clear", sequence: 1 }],
+        committedEvidenceBoundary: { sequence: 1, eventId: "pre-clear" }
+      }
+    });
+    await history.close();
+  });
 });
