@@ -189,6 +189,7 @@ export type OpenEventHistoryOptions = Readonly<{
 
 type HistoryJournal = {
   commitBatch(batch: readonly PendingCandidate[]): Promise<void>;
+  finalizeTerminal(terminal: HistoryTerminalDiagnostic): Promise<void>;
   clear(): Promise<void>;
   close(): Promise<void>;
 };
@@ -267,6 +268,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       await options.failure?.commitBatch?.(batch.map((entry) => entry.candidate));
       await options.commitBatch?.(batch.map((entry) => entry.candidate));
     },
+    async finalizeTerminal() {},
     async clear() { await options.clearJournal?.(); },
     async close() { await options.closeJournal?.(); }
   };
@@ -279,6 +281,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   const committed: CommittedEvidence[] = [];
   const pending: PendingCandidate[] = [];
   const inFlight: PendingCandidate[] = [];
+  const terminalReceipts: PendingCandidate[] = [];
+  const committedReceipts: Array<{ entry: PendingCandidate; evidence: EvidenceRef }> = [];
   const idleWaiters: Array<() => void> = [];
   let intervalOrdinal = 1;
   let interval = createInterval(sessionId, intervalOrdinal);
@@ -302,6 +306,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   let closePromise: Promise<Outcome<CloseResult>> | null = null;
   let trigger: HistoryTrigger | null = null;
   let terminal: HistoryTerminalDiagnostic | undefined;
+  let persistedTerminal: HistoryTerminalDiagnostic | undefined;
+  let terminalPersistence: Promise<void> | null = null;
+  let terminalFinalization: Promise<void> | null = null;
+  let terminalSettled: Promise<void> | null = null;
+  let resolveTerminalSettled: (() => void) | null = null;
+  let terminalPersistenceFailed = false;
   let lastNearLimit = false;
 
   function measurements(): HistoryPressureMeasurements {
@@ -358,7 +368,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.`, {
       reason: triggerValue.reason,
       dimension: triggerValue.dimension,
-      ...(terminal ? { terminal } : {})
+      ...(terminal ?? persistedTerminal ? { terminal: terminal ?? persistedTerminal } : {})
     });
   }
 
@@ -388,8 +398,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       rejectedCount += 1;
       rejectedBytes += bytes;
     }
-    const issue = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
-    return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
+    const receiptProblem = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
+    const completion = terminalSettled;
+    const settled = completion
+      ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary }))
+      : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
+    return { intake: "REFUSED", settled };
   }
 
   function refuseClosed(): CaptureReceipt {
@@ -398,12 +412,44 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   }
 
   function finishTerminal(): void {
-    if (phase !== "DRAINING_TO_STOP" || processing || pending.length > 0 || inFlight.length > 0 || terminal) return;
-    phase = "STOPPED";
-    if (!trigger) return;
+    if (phase !== "DRAINING_TO_STOP" || processing || pending.length > 0 || inFlight.length > 0 || terminal || terminalFinalization || !trigger || !terminalSettled) return;
+    terminalFinalization = terminalSettled.then(async () => {
+      if (terminalPersistenceFailed || phase !== "DRAINING_TO_STOP" || !trigger) return;
+      const finalized = terminalDiagnostic();
+      if (persistedTerminal && JSON.stringify(persistedTerminal) === JSON.stringify(finalized)) {
+        terminal = finalized;
+        phase = "STOPPED";
+        const issue = terminalProblem(trigger);
+        publish({ type: "terminal", terminal, status: status(issue) });
+        publish({ type: "status", status: status(issue), problem: issue });
+        return;
+      }
+      try {
+        await journal.finalizeTerminal(finalized);
+      } catch (error) {
+        failTerminalPersistence(error);
+        return;
+      }
+      persistedTerminal = finalized;
+      terminal = finalized;
+      phase = "STOPPED";
+      const issue = terminalProblem(trigger);
+      publish({ type: "terminal", terminal, status: status(issue) });
+      publish({ type: "status", status: status(issue), problem: issue });
+    }).finally(() => {
+      terminalFinalization = null;
+    });
+  }
+
+  function ensureTerminalSettled(): void {
+    if (terminalSettled) return;
+    terminalSettled = new Promise<void>((resolve) => { resolveTerminalSettled = resolve; });
+  }
+
+  function terminalDiagnostic(): HistoryTerminalDiagnostic {
+    if (!trigger) throw new Error("Cannot create a terminal diagnostic without a trigger.");
     const intervalEvidence = committed.filter((entry) => entry.intervalId === interval.id);
-    const retainedRange = intervalEvidence.length ? { first: toRef(intervalEvidence[0]), last: toRef(intervalEvidence.at(-1)!) } : null;
-    terminal = deepFreeze({
+    return deepFreeze({
       reason: trigger.reason,
       dimension: trigger.dimension,
       tier: trigger.tier,
@@ -411,22 +457,51 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       triggerInterval: trigger.interval,
       interval,
       committedEvidenceBoundary,
-      retainedRange,
+      retainedRange: intervalEvidence.length
+        ? { first: toRef(intervalEvidence[0]), last: toRef(intervalEvidence.at(-1)!) }
+        : null,
       firstMissingEventId: trigger.firstMissingEventId,
       rejected: { count: rejectedCount, bytes: rejectedBytes },
       discarded: { count: discardedCount, bytes: discardedBytes },
       triggerMeasurements: trigger.measurements
     });
+  }
+
+  function failTerminalPersistence(error: unknown): void {
+    if (terminalPersistenceFailed) return;
+    terminalPersistenceFailed = true;
+    const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
+    trigger = makeTrigger(reason, "JOURNAL", trigger?.firstMissingEventId ?? null);
+    phase = "STOPPED";
     const issue = terminalProblem(trigger);
-    publish({ type: "terminal", terminal, status: status(issue) });
     publish({ type: "status", status: status(issue), problem: issue });
+  }
+
+  function startTerminalPersistence(): void {
+    if (terminalPersistence || !trigger) return;
+    ensureTerminalSettled();
+    const initial = terminalDiagnostic();
+    terminalPersistence = Promise.resolve()
+      .then(() => journal.finalizeTerminal(initial))
+      .then(() => {
+        persistedTerminal = initial;
+      })
+      .catch((error) => {
+        failTerminalPersistence(error);
+      })
+      .finally(() => {
+        resolveTerminalSettled?.();
+        resolveTerminalSettled = null;
+      });
   }
 
   function beginDrain(reason: HistoryTerminalReason, dimension: HistoryCapacityDimension | "JOURNAL", firstMissingEventId: string | null): void {
     if (phase === "STOPPED" || phase === "CLOSED") return;
     phase = "DRAINING_TO_STOP";
+    ensureTerminalSettled();
     trigger = makeTrigger(reason, dimension, firstMissingEventId);
     publish({ type: "status", status: status(terminalProblem(trigger)) });
+    startTerminalPersistence();
     finishTerminal();
   }
 
@@ -466,8 +541,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       rejectedCount += 1;
       rejectedBytes += bytes;
       beginDrain(failure.reason, failure.dimension, copied.id);
-      const issue = terminalProblem(trigger!);
-      return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
+      const receiptProblem = terminalProblem(trigger!);
+      const completion = terminalSettled;
+      const settled = completion
+        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary }))
+        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
+      return { intake: "REFUSED", settled };
     }
     let resolveReceipt!: (result: ReceiptResult) => void;
     const settled = new Promise<ReceiptResult>((resolve) => { resolveReceipt = resolve; });
@@ -498,13 +577,15 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
           const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
           const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null);
           trigger = failedTrigger;
+          ensureTerminalSettled();
           const discarded = [...batch, ...pending.splice(0)];
           inFlight.length = 0;
           notAccepted += discarded.length;
           discardedCount += discarded.length;
           discardedBytes += discarded.reduce((sum, entry) => sum + entry.bytes, 0);
-          for (const entry of discarded) entry.resolve({ outcome: "NOT_EVIDENCE", problem: terminalProblem(failedTrigger), committedEvidenceBoundary });
+          terminalReceipts.push(...discarded);
           phase = "DRAINING_TO_STOP";
+          startTerminalPersistence();
           finishTerminal();
           break;
         }
@@ -518,7 +599,11 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         accepted += evidence.length;
         committedEvidenceBoundary = toRef(evidence.at(-1)!);
         publish(deepFreeze({ type: "committed-evidence" as const, interval, evidence, committedEvidenceBoundary }));
-        for (const [index, entry] of batch.entries()) entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: toRef(evidence[index]) });
+        for (const [index, entry] of batch.entries()) {
+          const reference = toRef(evidence[index]);
+          if (phase === "DRAINING_TO_STOP") committedReceipts.push({ entry, evidence: reference });
+          else entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: reference });
+        }
         scheduleAgeCheck();
         pressureChanged();
       }
@@ -526,6 +611,14 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       processing = false;
       if (pending.length > 0 && phase === "RUNNING") scheduleProcessing();
       finishTerminal();
+      const completion = terminalFinalization ?? terminalSettled;
+      const settleReceipts = () => {
+        for (const { entry, evidence } of committedReceipts.splice(0)) entry.resolve({ outcome: "BECAME_EVIDENCE", evidence });
+        const issue = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
+        for (const entry of terminalReceipts.splice(0)) entry.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary });
+      };
+      if (completion) void completion.then(settleReceipts);
+      else settleReceipts();
       resolveIdleWaiters();
     }
   }

@@ -12,6 +12,8 @@ import {
   type HistoryPublication
 } from "../src/core/event-history-authoritative";
 import { historyCapacityLimits } from "../src/core/event-history-capacity";
+import { estimateHistoryCandidateBytes } from "../src/core/event-history-capacity";
+import { serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 import {
   authoritativeEventDatabaseName,
   deleteAuthoritativeEventDatabase
@@ -131,6 +133,25 @@ describe.each([
         firstMissingEventId: "three"
       })
     }));
+    await history.close();
+  });
+
+  it("uses canonical replay payload plus logical framing for exact retained equality and crossing", async () => {
+    const framed = candidate("canonical-frame");
+    const expectedBytes = estimateHistoryCandidateBytes(framed);
+    expect(expectedBytes).toBe(serializeJournalEvidenceCandidate(framed).bytes + 8);
+    const history = await create({ capacity: { maxRetainedCount: 10, maxRetainedBytes: expectedBytes } });
+    const publications = collect(history);
+
+    await expect(history.offer(framed).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "status",
+      status: expect.objectContaining({ capacity: expect.objectContaining({ measurements: expect.objectContaining({ retainedBytes: expectedBytes }) }) })
+    }));
+    const crossing = history.offer(candidate("canonical-crossing"));
+    expect(crossing.intake).toBe("REFUSED");
+    await expect(crossing.settled).resolves.toMatchObject({ problem: { code: "RETAINED_BYTE_LIMIT", dimension: "RETAINED_BYTES" } });
+    expect(publications.filter((entry) => entry.type === "terminal")).toHaveLength(1);
     await history.close();
   });
 
@@ -607,5 +628,85 @@ it("applies the pending-age proactive drain once in IndexedDB", async () => {
       firstMissingEventId: "age-crossing"
     })
   }));
+  await history.close();
+});
+
+it("reopens a proactively stopped IndexedDB journal as STOPPED with its durable diagnostic", async () => {
+  const panelSessionId = "impl-05-reopen-proactive-stop";
+  const history = await indexedHistory(panelSessionId, {
+    capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
+  });
+  await expect(history.offer(candidate("proactive-retained")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+  const crossing = history.offer(candidate("proactive-crossing"));
+  await expect(crossing.settled).resolves.toMatchObject({
+    outcome: "NOT_EVIDENCE",
+    problem: { code: "RETAINED_COUNT_LIMIT", dimension: "RETAINED_COUNT" }
+  });
+
+  const reopened = await openEventHistory({ panelSessionId });
+  let reopenedStatus: unknown;
+  const publications = collect(reopened);
+  reopened.follow({ from: "NOW" }, (publication) => {
+    if (publication.type === "status") reopenedStatus = publication.status;
+  });
+  expect(reopenedStatus).toMatchObject({
+    phase: "STOPPED",
+    captureOperation: "STOPPED",
+    terminal: {
+      reason: "RETAINED_COUNT_LIMIT",
+      firstMissingEventId: "proactive-crossing",
+      committedEvidenceBoundary: { sequence: 1, eventId: "proactive-retained" }
+    }
+  });
+  expect(publications.filter((entry) => entry.type === "terminal")).toHaveLength(0);
+  await expect(reopened.clear()).resolves.toMatchObject({ ok: false, problem: { code: "HISTORY_STOPPED" } });
+  const afterReopen = reopened.offer(candidate("after-proactive-reopen"));
+  expect(afterReopen.intake).toBe("REFUSED");
+  await expect(afterReopen.settled).resolves.toMatchObject({ problem: { code: "RETAINED_COUNT_LIMIT" } });
+  await expect(reopened.read({})).resolves.toMatchObject({
+    ok: true,
+    value: { evidence: [expect.objectContaining({ sequence: 1, eventId: "proactive-retained" })], committedEvidenceBoundary: { sequence: 1 } }
+  });
+  await reopened.close();
+  await history.close();
+});
+
+it("reopens a journal-failed IndexedDB history with terminal diagnostics and no new sequence", async () => {
+  const panelSessionId = "impl-05-reopen-journal-failure";
+  const history = await indexedHistory(panelSessionId, {
+    commitBatch: async (batch: readonly EvidenceCandidate[]) => {
+      if (batch.some((entry) => entry.id === "reopen-fails")) throw new Error("reopen journal failure");
+    }
+  });
+  await expect(history.offer(candidate("reopen-prior")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+  const failed = history.offer(candidate("reopen-fails"));
+  const tail = history.offer(candidate("reopen-tail"));
+  await expect(failed.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
+  await expect(tail.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
+
+  const reopened = await openEventHistory({ panelSessionId });
+  let reopenedStatus: unknown;
+  reopened.follow({ from: "NOW" }, (publication) => {
+    if (publication.type === "status") reopenedStatus = publication.status;
+  });
+  expect(reopenedStatus).toMatchObject({
+    phase: "STOPPED",
+    terminal: {
+      reason: "JOURNAL_COMMIT_FAILED",
+      dimension: "JOURNAL",
+      firstMissingEventId: "reopen-fails",
+      rejected: { count: 0, bytes: 0 },
+      discarded: { count: 2 },
+      committedEvidenceBoundary: { sequence: 1, eventId: "reopen-prior" }
+    }
+  });
+  const afterReopen = reopened.offer(candidate("reopen-after-stop"));
+  expect(afterReopen.intake).toBe("REFUSED");
+  await expect(afterReopen.settled).resolves.toMatchObject({ problem: { code: "JOURNAL_COMMIT_FAILED" } });
+  await expect(reopened.read({})).resolves.toMatchObject({
+    ok: true,
+    value: { evidence: [expect.objectContaining({ sequence: 1, eventId: "reopen-prior" })], committedEvidenceBoundary: { sequence: 1 } }
+  });
+  await reopened.close();
   await history.close();
 });

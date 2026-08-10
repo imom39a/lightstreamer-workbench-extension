@@ -16,7 +16,7 @@ Event History chooses exactly one startup journal implementation before the firs
 
 There is no mid-session journal implementation switch. A journal failure does not silently move a running Event History to the memory journal implementation.
 
-Count and retained-byte capacity are independent, and the first limit reached controls admission. Equality is allowed; an offer is refused when accepting it would exceed either limit. A MiB is 1,048,576 bytes. Retained serialized bytes are the UTF-8 size of the canonical replay-complete journal payload and stable record framing, including projection-relevant Topology and value-state facts and Topology Checkpoint Evidence facts. They exclude derived facets, indexes, and filesystem amplification; capacity never uses sanitized export bytes.
+Count and retained-byte capacity are independent, and the first limit reached controls admission. Equality is allowed; an offer is refused when accepting it would exceed either limit. A MiB is 1,048,576 bytes. Retained serialized bytes are the UTF-8 size of the canonical replay-complete journal payload plus one deterministic logical record frame. The v1 logical frame is eight bytes: a four-byte payload length followed by a four-byte framing-version value. This framing is computed synchronously before admission and is shared by the memory and IndexedDB journals. It includes projection-relevant Topology and value-state facts and Topology Checkpoint Evidence facts. It excludes derived facets, indexes, and filesystem amplification; capacity never uses sanitized export bytes.
 
 | Journal implementation tier | Maximum Evidence count | Maximum retained serialized bytes | Meaning |
 | --- | ---: | ---: | --- |
@@ -25,7 +25,7 @@ Count and retained-byte capacity are independent, and the first limit reached co
 
 `NEAR_LIMIT` begins when either retained dimension reaches 80% of its hard limit. It returns to `AVAILABLE` only when every retained and pending pressure dimension is below its warning threshold. A warning does not refuse an offer.
 
-Pending backlog pressure uses the same canonical replay-complete journal payload and framing bytes for Evidence candidates awaiting acceptance, plus a monotonic oldest-pending age:
+Pending backlog pressure uses the same canonical replay-complete journal payload and eight-byte logical framing bytes for Evidence candidates awaiting acceptance, plus a monotonic oldest-pending age:
 
 | Journal implementation tier | Pending-byte warning | Pending-byte stop | Age warning | Pending-age stop |
 | --- | ---: | ---: | ---: | ---: |

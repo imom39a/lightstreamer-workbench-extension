@@ -6,6 +6,26 @@ export type SerializedJournalEvidence = Readonly<{
 }>;
 
 /**
+ * Logical journal framing is part of History Capacity, but is not an
+ * IndexedDB storage-layout estimate. The frame is a four-byte payload length
+ * followed by a four-byte framing version. Both are stable for every journal
+ * implementation and can be computed synchronously before admission.
+ */
+export const JOURNAL_LOGICAL_FRAME_VERSION = 1;
+export const JOURNAL_LOGICAL_FRAME_BYTES = Uint32Array.BYTES_PER_ELEMENT * 2;
+
+export function journalAccountedBytes(payloadBytes: number): number {
+  if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0) {
+    throw new Error("Journal payload bytes must be a non-negative safe integer.");
+  }
+  const accountedBytes = payloadBytes + JOURNAL_LOGICAL_FRAME_BYTES;
+  if (!Number.isSafeInteger(accountedBytes)) {
+    throw new Error("Journal accounted bytes exceed the safe integer range.");
+  }
+  return accountedBytes;
+}
+
+/**
  * The journal serializer is deliberately replay-complete. It preserves the
  * candidate's topology and semantic facts; export sanitization belongs to the
  * versioned topology-export serializer and is never used for acceptance.

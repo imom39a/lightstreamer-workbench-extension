@@ -48,9 +48,11 @@ export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 1_048_576;
 type ControlRecord = {
   key: typeof AUTHORITATIVE_EVENT_CONTROL_KEY;
   schemaVersion: number;
-  recordVersion: 2;
+  recordVersion: 3;
   panelSessionId: string;
   interval: HistoryInterval;
+  phase: "RUNNING" | "STOPPED";
+  terminal: HistoryTerminalDiagnostic | null;
   nextSequence: number;
   committedEvidenceBoundary: EvidenceRef | null;
   retainedRange: { first: EvidenceRef; last: EvidenceRef } | null;
@@ -116,6 +118,8 @@ export async function createIndexedDbEventHistory(
 type LoadedJournal = {
   panelSessionId: string;
   interval: HistoryInterval;
+  phase: "RUNNING" | "STOPPED";
+  terminal: HistoryTerminalDiagnostic | null;
   nextSequence: number;
   replayPayloadBytes: number;
   retainedBytes: number;
@@ -144,8 +148,12 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   const subscribers = new Set<Subscriber>();
   const pending: Pending[] = [];
   const inFlight: Pending[] = [];
+  const terminalReceipts: Pending[] = [];
+  const committedReceipts: Array<{ entry: Pending; evidence: EvidenceRef }> = [];
   const idleWaiters: Array<() => void> = [];
   let interval = loaded.interval;
+  let phase: HistoryStatus["phase"] = loaded.phase;
+  let terminal: HistoryTerminalDiagnostic | undefined = loaded.terminal ?? undefined;
   let nextSequence = loaded.nextSequence;
   let committedEvidenceBoundary = loaded.committedEvidenceBoundary;
   let replayPayloadBytes = loaded.replayPayloadBytes;
@@ -164,12 +172,16 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let scheduled = false;
   let ageTimer: unknown = null;
   let closing = false;
-  let phase: HistoryStatus["phase"] = "RUNNING";
   let clearPromise: Promise<Outcome<ClearResult>> | null = null;
   let lastClearResult: ClearResult | null = null;
   let closePromise: Promise<Outcome<CloseResult>> | null = null;
-  let trigger: HistoryTrigger | null = null;
-  let terminal: HistoryTerminalDiagnostic | undefined;
+  let trigger: HistoryTrigger | null = terminal ? triggerFromTerminal(terminal) : null;
+  let persistedTerminal: HistoryTerminalDiagnostic | undefined = terminal;
+  let terminalPersistence: Promise<void> | null = null;
+  let terminalFinalization: Promise<void> | null = null;
+  let terminalSettled: Promise<void> | null = null;
+  let resolveTerminalSettled: (() => void) | null = null;
+  let terminalPersistenceFailed = false;
   let lastNearLimit = false;
   const capacityTier = options.capacityTier ?? "NORMAL";
   const limits = historyCapacityLimits(capacityTier, options.capacity);
@@ -215,7 +227,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.`, {
       reason: triggerValue.reason,
       dimension: triggerValue.dimension,
-      ...(terminal ? { terminal } : {})
+      ...(terminal ?? persistedTerminal ? { terminal: terminal ?? persistedTerminal } : {})
     });
   }
   function pressureChanged(): void {
@@ -226,9 +238,53 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return deepFreeze({ reason, dimension, tier: capacityTier, triggerTime: clock(), interval, firstMissingEventId, measurements: measurements() });
   }
   function finishTerminal(): void {
-    if (phase !== "DRAINING_TO_STOP" || processing || pending.length > 0 || inFlight.length > 0 || terminal || !trigger) return;
-    phase = "STOPPED";
-    terminal = deepFreeze({
+    if (phase !== "DRAINING_TO_STOP" || processing || pending.length > 0 || inFlight.length > 0 || terminal || terminalFinalization || !trigger || !terminalSettled) return;
+    terminalFinalization = terminalSettled.then(async () => {
+      if (terminalPersistenceFailed || phase !== "DRAINING_TO_STOP" || !trigger) return;
+      const finalized = terminalDiagnostic();
+      if (persistedTerminal && JSON.stringify(persistedTerminal) === JSON.stringify(finalized)) {
+        terminal = finalized;
+        phase = "STOPPED";
+        const issue = terminalProblem(trigger);
+        publish({ type: "terminal", terminal, status: status(issue) });
+        publish({ type: "status", status: status(issue), problem: issue });
+        return;
+      }
+      try {
+        await finalizeTerminal(
+          database,
+          loaded.panelSessionId,
+          interval,
+          nextSequence,
+          committedEvidenceBoundary,
+          retainedRange,
+          retainedCount,
+          replayPayloadBytes,
+          retainedBytes,
+          finalized
+        );
+      } catch (error) {
+        failTerminalPersistence(error);
+        return;
+      }
+      persistedTerminal = finalized;
+      terminal = finalized;
+      phase = "STOPPED";
+      const issue = terminalProblem(trigger);
+      publish({ type: "terminal", terminal, status: status(issue) });
+      publish({ type: "status", status: status(issue), problem: issue });
+    }).finally(() => {
+      terminalFinalization = null;
+    });
+  }
+  function ensureTerminalSettled(): void {
+    if (terminalSettled) return;
+    terminalSettled = new Promise<void>((resolve) => { resolveTerminalSettled = resolve; });
+  }
+
+  function terminalDiagnostic(): HistoryTerminalDiagnostic {
+    if (!trigger) throw new Error("Cannot create a terminal diagnostic without a trigger.");
+    return deepFreeze({
       reason: trigger.reason,
       dimension: trigger.dimension,
       tier: trigger.tier,
@@ -242,15 +298,64 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       discarded: { count: discardedCount, bytes: discardedBytes },
       triggerMeasurements: trigger.measurements
     });
+  }
+
+  function failTerminalPersistence(error: unknown): void {
+    if (terminalPersistenceFailed) return;
+    terminalPersistenceFailed = true;
+    const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
+    trigger = makeTrigger(reason, "JOURNAL", trigger?.firstMissingEventId ?? null);
+    phase = "STOPPED";
     const issue = terminalProblem(trigger);
-    publish({ type: "terminal", terminal, status: status(issue) });
     publish({ type: "status", status: status(issue), problem: issue });
+  }
+
+  function startTerminalPersistence(): void {
+    if (terminalPersistence || !trigger) return;
+    ensureTerminalSettled();
+    const initial = terminalDiagnostic();
+    terminalPersistence = Promise.resolve()
+      .then(async () => {
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            await finalizeTerminal(
+              database,
+              loaded.panelSessionId,
+              interval,
+              nextSequence,
+              committedEvidenceBoundary,
+              retainedRange,
+              retainedCount,
+              replayPayloadBytes,
+              retainedBytes,
+              initial
+            );
+            return;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        throw lastError;
+      })
+      .then(() => {
+        persistedTerminal = initial;
+      })
+      .catch((error) => {
+        failTerminalPersistence(error);
+      })
+      .finally(() => {
+        resolveTerminalSettled?.();
+        resolveTerminalSettled = null;
+      });
   }
   function beginDrain(reason: HistoryTerminalReason, dimension: HistoryCapacityDimension | "JOURNAL", firstMissingEventId: string | null): void {
     if (phase === "STOPPED" || phase === "CLOSED") return;
     phase = "DRAINING_TO_STOP";
+    ensureTerminalSettled();
     trigger = makeTrigger(reason, dimension, firstMissingEventId);
     publish({ type: "status", status: status(terminalProblem(trigger)) });
+    startTerminalPersistence();
     finishTerminal();
   }
   function noteFirstMissingEvent(candidate: EvidenceCandidate): void {
@@ -278,8 +383,12 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       rejectedBytes += refusedCandidateBytes(candidate);
       rejectedCount += 1;
     }
-    const issue = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
-    return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary: currentBoundary() }) };
+    const receiptProblem = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
+    const completion = terminalSettled;
+    const settled = completion
+      ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() }))
+      : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() });
+    return { intake: "REFUSED", settled };
   }
   function refuseClosed(): CaptureReceipt {
     notAccepted += 1;
@@ -321,7 +430,12 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       rejectedCount += 1;
       rejectedBytes += bytes;
       beginDrain(failure.reason, failure.dimension, copied.id);
-      return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: terminalProblem(trigger!), committedEvidenceBoundary: currentBoundary() }) };
+      const receiptProblem = terminalProblem(trigger!);
+      const completion = terminalSettled;
+      const settled = completion
+        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() }))
+        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() });
+      return { intake: "REFUSED", settled };
     }
     let resolve!: (result: ReceiptResult) => void;
     const settled = new Promise<ReceiptResult>((finish) => { resolve = finish; });
@@ -362,6 +476,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         try {
           await options.failure?.commitBatch?.(batch.map((entry) => entry.candidate));
           await options.commitBatch?.(batch.map((entry) => entry.candidate));
+          const controlPhase = phase === "RUNNING" ? "RUNNING" as const : "STOPPED" as const;
+          const controlTerminal = controlPhase === "STOPPED" ? (persistedTerminal ?? terminalDiagnostic()) : null;
           await commitBatch(
             database,
             loaded.panelSessionId,
@@ -372,19 +488,23 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             evidence,
             replayPayloadBytes + batchSerializedBytes,
             retainedBytes + batchAccountedBytes,
-            batch.map((entry) => entry.bytes)
+            batch.map((entry) => entry.bytes),
+            controlPhase,
+            controlTerminal
           );
         } catch (error) {
           const reason: HistoryTerminalReason = isQuotaError(error) ? "QUOTA_EXCEEDED" : "JOURNAL_COMMIT_FAILED";
           const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null);
           trigger = failedTrigger;
           phase = "DRAINING_TO_STOP";
+          ensureTerminalSettled();
           const discarded = [...batch, ...pending.splice(0)];
           inFlight.length = 0;
           notAccepted += discarded.length;
           discardedCount += discarded.length;
           discardedBytes += discarded.reduce((sum, entry) => sum + entry.bytes, 0);
-          for (const entry of discarded) entry.resolve({ outcome: "NOT_EVIDENCE", problem: terminalProblem(failedTrigger), committedEvidenceBoundary: currentBoundary() });
+          terminalReceipts.push(...discarded);
+          startTerminalPersistence();
           finishTerminal();
           break;
         }
@@ -401,7 +521,11 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         accepted += evidence.length;
         const boundary = currentBoundary()!;
         publish(deepFreeze({ type: "committed-evidence" as const, interval, evidence, committedEvidenceBoundary: boundary }));
-        for (const [index, entry] of batch.entries()) entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: toRef(evidence[index]) });
+        for (const [index, entry] of batch.entries()) {
+          const reference = toRef(evidence[index]);
+          if (phase === "DRAINING_TO_STOP") committedReceipts.push({ entry, evidence: reference });
+          else entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: reference });
+        }
         scheduleAgeCheck();
         pressureChanged();
       }
@@ -409,6 +533,14 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       processing = false;
       if (pending.length > 0 && phase === "RUNNING") schedule();
       finishTerminal();
+      const completion = terminalFinalization ?? terminalSettled;
+      const settleReceipts = () => {
+        for (const { entry, evidence } of committedReceipts.splice(0)) entry.resolve({ outcome: "BECAME_EVIDENCE", evidence });
+        const issue = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
+        for (const entry of terminalReceipts.splice(0)) entry.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary: currentBoundary() });
+      };
+      if (completion) void completion.then(settleReceipts);
+      else settleReceipts();
       resolveIdleWaiters();
     }
   }
@@ -607,12 +739,14 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     await transactionDone(transaction, "loading Event History");
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
-      await writeControl(database, createControl(panelSessionId, interval, 1, null, null, 0, 0, 0));
-      return { panelSessionId, interval, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null };
+      await writeControl(database, createControl(panelSessionId, interval, "RUNNING", null, 1, null, null, 0, 0, 0));
+      return { panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null };
     }
     return {
       panelSessionId,
       interval: control.interval,
+      phase: control.phase,
+      terminal: control.terminal,
       nextSequence: control.nextSequence,
       replayPayloadBytes: control.replayPayloadBytes,
       retainedBytes: control.accountedBytes,
@@ -626,7 +760,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
   }
 }
 
-async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, evidence: readonly CommittedEvidence[], replayPayloadBytes: number, accountedBytes: number, evidenceAccountedBytes: readonly number[]): Promise<void> {
+async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, evidence: readonly CommittedEvidence[], replayPayloadBytes: number, accountedBytes: number, evidenceAccountedBytes: readonly number[], phase: "RUNNING" | "STOPPED", terminal: HistoryTerminalDiagnostic | null): Promise<void> {
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readwrite");
   const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
   for (const [index, entry] of evidence.entries()) {
@@ -641,14 +775,33 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
     : evidence.length
       ? { first: toRef(evidence[0]), last: toRef(last!) }
       : null;
-  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, next, boundary, range, previousCount + evidence.length, replayPayloadBytes, accountedBytes));
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, phase, terminal, next, boundary, range, previousCount + evidence.length, replayPayloadBytes, accountedBytes));
   await transactionDone(transaction, "committing Evidence");
+}
+
+async function finalizeTerminal(
+  database: AuthoritativeEventDatabase,
+  panelSessionId: string,
+  interval: HistoryInterval,
+  nextSequence: number,
+  boundary: EvidenceRef | null,
+  range: { first: EvidenceRef; last: EvidenceRef } | null,
+  retainedCount: number,
+  replayPayloadBytes: number,
+  accountedBytes: number,
+  terminal: HistoryTerminalDiagnostic
+): Promise<void> {
+  const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, "readwrite");
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(
+    createControl(panelSessionId, interval, "STOPPED", terminal, nextSequence, boundary, range, retainedCount, replayPayloadBytes, accountedBytes)
+  );
+  await transactionDone(transaction, "finalizing Event History terminal state");
 }
 
 async function clearJournal(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
-  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, nextSequence, boundary, null, 0, 0, 0));
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, null, 0, 0, 0));
   await transactionDone(transaction, "clearing Event History");
 }
 
@@ -661,10 +814,17 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
   if ((control as { recordVersion?: unknown }).recordVersion === 1) {
     throw new Error("The Event History recordVersion 1 is legacy and is not recovered across Panel Sessions.");
   }
-  assertExactKeys(control, ["accountedBytes", "committedEvidenceBoundary", "interval", "key", "nextSequence", "panelSessionId", "recordVersion", "retainedCount", "retainedRange", "replayPayloadBytes", "schemaVersion"]);
-  if (control.key !== AUTHORITATIVE_EVENT_CONTROL_KEY || control.schemaVersion !== 2 || control.recordVersion !== 2 || control.panelSessionId !== panelSessionId) {
+  if ((control as { recordVersion?: unknown }).recordVersion === 2) {
+    throw new Error("The Event History recordVersion 2 lacks durable terminal state and is not recovered across Panel Sessions.");
+  }
+  assertExactKeys(control, ["accountedBytes", "committedEvidenceBoundary", "interval", "key", "nextSequence", "panelSessionId", "phase", "recordVersion", "retainedCount", "retainedRange", "replayPayloadBytes", "schemaVersion", "terminal"]);
+  if (control.key !== AUTHORITATIVE_EVENT_CONTROL_KEY || control.schemaVersion !== 2 || control.recordVersion !== 3 || control.panelSessionId !== panelSessionId) {
     throw new Error("The history control record does not match the authoritative schema or Panel Session.");
   }
+  if ((control.phase !== "RUNNING" && control.phase !== "STOPPED") || (control.phase === "RUNNING") !== (control.terminal === null)) {
+    throw new Error("The history control terminal state is incoherent.");
+  }
+  if (control.terminal !== null) validateTerminalDiagnostic(panelSessionId, control.terminal);
   if (!isInterval(control.interval) || control.interval.id !== `${panelSessionId}:interval-${control.interval.ordinal}`) {
     throw new Error("The history control interval is incoherent.");
   }
@@ -856,6 +1016,60 @@ function assertRef(value: EvidenceRef): void {
   if (!value || Object.keys(value).sort().join(",") !== "eventId,intervalId,sequence" || typeof value.intervalId !== "string" || !Number.isSafeInteger(value.sequence) || value.sequence < 1 || typeof value.eventId !== "string" || value.eventId.length === 0) throw new Error("An Evidence reference is incoherent.");
 }
 
+function validateTerminalDiagnostic(panelSessionId: string, terminal: HistoryTerminalDiagnostic): void {
+  assertExactKeys(terminal, [
+    "committedEvidenceBoundary", "discarded", "dimension", "firstMissingEventId", "interval",
+    "reason", "rejected", "retainedRange", "tier", "triggerInterval", "triggerMeasurements", "triggerTime"
+  ]);
+  if (!isTerminalReason(terminal.reason) || !isTerminalDimension(terminal.dimension) || (terminal.tier !== "NORMAL" && terminal.tier !== "LOWER") || !Number.isFinite(terminal.triggerTime)) {
+    throw new Error("The history terminal diagnostic has invalid identity fields.");
+  }
+  if (!isInterval(terminal.interval) || terminal.interval.id !== `${panelSessionId}:interval-${terminal.interval.ordinal}` || !isInterval(terminal.triggerInterval) || terminal.triggerInterval.id !== `${panelSessionId}:interval-${terminal.triggerInterval.ordinal}`) {
+    throw new Error("The history terminal diagnostic intervals are incoherent.");
+  }
+  if (terminal.committedEvidenceBoundary !== null) assertRef(terminal.committedEvidenceBoundary);
+  if (terminal.retainedRange !== null) {
+    assertRef(terminal.retainedRange.first);
+    assertRef(terminal.retainedRange.last);
+  }
+  if (terminal.firstMissingEventId !== null && (typeof terminal.firstMissingEventId !== "string" || terminal.firstMissingEventId.length === 0)) {
+    throw new Error("The history terminal diagnostic first missing event is incoherent.");
+  }
+  validateTerminalTotals(terminal.rejected);
+  validateTerminalTotals(terminal.discarded);
+  assertExactKeys(terminal.triggerMeasurements, ["oldestPendingAgeMs", "pendingBytes", "pendingCount", "retainedBytes", "retainedCount"]);
+  if (!Number.isSafeInteger(terminal.triggerMeasurements.retainedCount) || terminal.triggerMeasurements.retainedCount < 0 || !Number.isSafeInteger(terminal.triggerMeasurements.retainedBytes) || terminal.triggerMeasurements.retainedBytes < 0 || !Number.isSafeInteger(terminal.triggerMeasurements.pendingCount) || terminal.triggerMeasurements.pendingCount < 0 || !Number.isSafeInteger(terminal.triggerMeasurements.pendingBytes) || terminal.triggerMeasurements.pendingBytes < 0 || (terminal.triggerMeasurements.oldestPendingAgeMs !== null && (!Number.isFinite(terminal.triggerMeasurements.oldestPendingAgeMs) || terminal.triggerMeasurements.oldestPendingAgeMs < 0))) {
+    throw new Error("The history terminal diagnostic measurements are incoherent.");
+  }
+}
+
+function validateTerminalTotals(value: { count: number; bytes: number }): void {
+  assertExactKeys(value, ["bytes", "count"]);
+  if (!Number.isSafeInteger(value.count) || value.count < 0 || !Number.isSafeInteger(value.bytes) || value.bytes < 0) {
+    throw new Error("The history terminal diagnostic totals are incoherent.");
+  }
+}
+
+function isTerminalReason(value: unknown): value is HistoryTerminalDiagnostic["reason"] {
+  return ["RETAINED_COUNT_LIMIT", "RETAINED_BYTE_LIMIT", "PENDING_BYTE_LIMIT", "PENDING_AGE_LIMIT", "QUOTA_EXCEEDED", "JOURNAL_COMMIT_FAILED"].includes(value as string);
+}
+
+function isTerminalDimension(value: unknown): value is HistoryTerminalDiagnostic["dimension"] {
+  return ["RETAINED_COUNT", "RETAINED_BYTES", "PENDING_BYTES", "PENDING_AGE", "JOURNAL"].includes(value as string);
+}
+
+function triggerFromTerminal(terminal: HistoryTerminalDiagnostic): HistoryTrigger {
+  return Object.freeze({
+    reason: terminal.reason,
+    dimension: terminal.dimension,
+    tier: terminal.tier,
+    triggerTime: terminal.triggerTime,
+    interval: terminal.triggerInterval,
+    firstMissingEventId: terminal.firstMissingEventId,
+    measurements: terminal.triggerMeasurements
+  });
+}
+
 function evidenceRef(record: EvidenceRecord): EvidenceRef {
   return { intervalId: record.intervalId, sequence: record.sequence, eventId: record.eventId };
 }
@@ -868,8 +1082,8 @@ function sameRange(left: { first: EvidenceRef; last: EvidenceRef } | null, right
   return left === null || right === null ? left === right : sameRef(left.first, right.first) && sameRef(left.last, right.last);
 }
 
-function createControl(panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null, range: { first: EvidenceRef; last: EvidenceRef } | null, retainedCount: number, replayPayloadBytes: number, accountedBytes: number): ControlRecord {
-  return { key: AUTHORITATIVE_EVENT_CONTROL_KEY, schemaVersion: 2, recordVersion: 2, panelSessionId, interval, nextSequence, committedEvidenceBoundary: boundary, retainedRange: range, retainedCount, replayPayloadBytes, accountedBytes };
+function createControl(panelSessionId: string, interval: HistoryInterval, phase: "RUNNING" | "STOPPED", terminal: HistoryTerminalDiagnostic | null, nextSequence: number, boundary: EvidenceRef | null, range: { first: EvidenceRef; last: EvidenceRef } | null, retainedCount: number, replayPayloadBytes: number, accountedBytes: number): ControlRecord {
+  return { key: AUTHORITATIVE_EVENT_CONTROL_KEY, schemaVersion: 2, recordVersion: 3, panelSessionId, interval, phase, terminal, nextSequence, committedEvidenceBoundary: boundary, retainedRange: range, retainedCount, replayPayloadBytes, accountedBytes };
 }
 
 async function writeControl(database: AuthoritativeEventDatabase, control: ControlRecord): Promise<void> {

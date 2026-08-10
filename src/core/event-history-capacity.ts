@@ -1,5 +1,8 @@
 import { type EvidenceCandidate } from "./event-history-authoritative";
-import { serializeJournalEvidenceCandidate } from "./event-history-serialization";
+import {
+  journalAccountedBytes,
+  serializeJournalEvidenceCandidate
+} from "./event-history-serialization";
 
 export const MIB = 1_048_576;
 
@@ -111,7 +114,11 @@ export function estimateHistoryCandidateBytes(
   candidate: EvidenceCandidate,
   estimator?: (candidate: EvidenceCandidate) => number
 ): number {
-  const bytes = estimator ? estimator(candidate) : serializeJournalEvidenceCandidate(candidate).bytes;
+  // The estimator remains a test-only seam for deterministic pressure tests.
+  // Production accounting always includes the canonical payload and frame.
+  const bytes = estimator
+    ? estimator(candidate)
+    : journalAccountedBytes(serializeJournalEvidenceCandidate(candidate).bytes);
   if (!Number.isSafeInteger(bytes) || bytes < 0) {
     throw new Error("The replay-payload byte estimator must return a non-negative safe integer.");
   }

@@ -105,7 +105,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     database.close();
   });
 
-  it("persists the v2 accounting fields as exact durable journal records", async () => {
+  it("persists the v3 accounting and terminal-state fields as exact durable journal records", async () => {
     const panelSessionId = "indexed-record-v2";
     const history = await freshHistory(panelSessionId);
     const offered = candidate("record-v2");
@@ -116,7 +116,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     const transaction = database.transaction(["historyControl", "evidence"], "readonly");
     const control = await requestValue(transaction.objectStore("historyControl").get("control"));
     const record = await requestValue(transaction.objectStore("evidence").get(1));
-    expect(control).toMatchObject({ recordVersion: 2, retainedCount: 1, accountedBytes: expect.any(Number) });
+    expect(control).toMatchObject({ recordVersion: 3, phase: "RUNNING", terminal: null, retainedCount: 1, accountedBytes: expect.any(Number) });
     expect(Object.keys(control as object).sort()).toEqual([
       "accountedBytes",
       "committedEvidenceBoundary",
@@ -124,11 +124,13 @@ describe("IndexedDB authoritative EventHistory", () => {
       "key",
       "nextSequence",
       "panelSessionId",
+      "phase",
       "recordVersion",
       "replayPayloadBytes",
       "retainedCount",
       "retainedRange",
-      "schemaVersion"
+      "schemaVersion",
+      "terminal"
     ]);
     expect(record).toMatchObject({ accountedBytes: expect.any(Number) });
     expect(Object.keys(record as object).sort()).toEqual([

@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   deserializeJournalEvidenceCandidate,
+  JOURNAL_LOGICAL_FRAME_BYTES,
+  JOURNAL_LOGICAL_FRAME_VERSION,
+  journalAccountedBytes,
   serializeJournalEvidenceCandidate
 } from "../src/core/event-history-serialization";
+import { estimateHistoryCandidateBytes } from "../src/core/event-history-capacity";
 import { type EvidenceCandidate } from "../src/core/event-history-authoritative";
 
 describe("journal replay serialization", () => {
@@ -30,5 +34,20 @@ describe("journal replay serialization", () => {
     expect(Object.is(values[4], -0)).toBe(true);
     expect(values[5]).toBe(7n);
     expect(serialized.bytes).toBe(new TextEncoder().encode(serialized.payload).byteLength);
+  });
+
+  it("uses one canonical logical frame for capacity accounting", () => {
+    const candidate: EvidenceCandidate = {
+      id: "framed-candidate",
+      kind: "topology-checkpoint",
+      checkpoint: { z: 1, a: "stable" }
+    };
+    const serialized = serializeJournalEvidenceCandidate(candidate);
+
+    expect(JOURNAL_LOGICAL_FRAME_VERSION).toBe(1);
+    expect(JOURNAL_LOGICAL_FRAME_BYTES).toBe(8);
+    expect(journalAccountedBytes(serialized.bytes)).toBe(serialized.bytes + 8);
+    expect(estimateHistoryCandidateBytes(candidate)).toBe(serialized.bytes + 8);
+    expect(serializeJournalEvidenceCandidate({ ...candidate, checkpoint: { a: "stable", z: 1 } }).payload).toBe(serialized.payload);
   });
 });
