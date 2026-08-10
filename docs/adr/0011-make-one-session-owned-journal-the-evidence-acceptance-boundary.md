@@ -49,7 +49,7 @@ The full replay-complete Topology Checkpoint Evidence payload counts toward reta
 
 For every supported shape, duration is bounded by accepted count and canonical replay-complete serialized bytes, not by wall-clock session length. The immediate burst is supported whenever enough History Interval capacity remains. The normal journal implementation envelope is 10,000 Evidence records or 64 MiB; the startup memory journal implementation envelope is 5,000 Evidence records or 32 MiB, with the first independent limit reached controlling admission.
 
-The visible-latency contract is defined as follows. `commit-to-visible` starts when `offer` receives the captured event and ends at the first animation frame whose rendered Committed Evidence Boundary includes it; rendering may coalesce committed batches. A hidden-panel run reports commit-to-publication instead and does not fabricate paint timing.
+The visible-latency contract is defined as follows. `offer-to-visible` starts when `offer` receives the captured event and ends at the first animation frame whose rendered Committed Evidence Boundary includes it; rendering may coalesce committed batches. A hidden-panel run reports `offer-to-publication` instead and does not fabricate paint timing.
 
 - Sustained visible Capture offer-to-visible p95 is at most 100 ms for the primary IndexedDB journal implementation and 50 ms for the startup memory journal implementation.
 - The final boundary of an immediate 1,692-event burst is visible within 30 seconds for the primary IndexedDB journal implementation and 1 second for the startup memory journal implementation.
