@@ -269,8 +269,13 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function refuseStopped(candidate: EvidenceCandidate): CaptureReceipt {
     notAccepted += 1;
     noteFirstMissingEvent(candidate);
-    rejectedBytes += refusedCandidateBytes(candidate);
-    rejectedCount += 1;
+    // The terminal publication is the immutable accounting snapshot for the
+    // stop boundary. Offers arriving after it are still refused, but cannot
+    // retroactively change that published diagnostic.
+    if (!terminal) {
+      rejectedBytes += refusedCandidateBytes(candidate);
+      rejectedCount += 1;
+    }
     const issue = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary: currentBoundary() }) };
   }
@@ -318,8 +323,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     }
     let resolve!: (result: ReceiptResult) => void;
     const settled = new Promise<ReceiptResult>((finish) => { resolve = finish; });
-    pending.push({ ordinal: captured + pending.length + 1, candidate: copied, serialized, bytes, offeredAt: clock(), resolve });
+    const ordinal = captured + 1;
     captured += 1;
+    pending.push({ ordinal, candidate: copied, serialized, bytes, offeredAt: clock(), resolve });
     scheduleAgeCheck();
     pressureChanged();
     schedule();
@@ -645,6 +651,9 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
     return requestToPromise<number>(store.count(), "checking for Evidence residue").then((count) => {
       if (count > 0) throw new Error("Evidence residue exists without a history control record.");
     });
+  }
+  if ((control as { recordVersion?: unknown }).recordVersion === 1) {
+    throw new Error("The Event History recordVersion 1 is legacy and is not recovered across Panel Sessions.");
   }
   assertExactKeys(control, ["accountedBytes", "committedEvidenceBoundary", "interval", "key", "nextSequence", "panelSessionId", "recordVersion", "retainedCount", "retainedRange", "replayPayloadBytes", "schemaVersion"]);
   if (control.key !== AUTHORITATIVE_EVENT_CONTROL_KEY || control.schemaVersion !== 2 || control.recordVersion !== 2 || control.panelSessionId !== panelSessionId) {

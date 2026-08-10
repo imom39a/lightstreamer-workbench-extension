@@ -381,8 +381,13 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     notAccepted += 1;
     noteFirstMissingEvent(candidate);
     const bytes = refusedCandidateBytes(candidate);
-    rejectedCount += 1;
-    rejectedBytes += bytes;
+    // The terminal publication is the immutable accounting snapshot for the
+    // stop boundary. Offers arriving after it are still refused, but cannot
+    // retroactively change that published diagnostic.
+    if (!terminal) {
+      rejectedCount += 1;
+      rejectedBytes += bytes;
+    }
     const issue = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
   }

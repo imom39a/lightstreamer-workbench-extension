@@ -25,6 +25,30 @@ function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): Evid
   } as EvidenceCandidate;
 }
 
+function itemUpdateFacets(): string[] {
+  return [
+    ["v1", "kind", "item-update"],
+    ["v1", "clientId", null],
+    ["v1", "sessionId", null],
+    ["v1", "subscriptionId", null],
+    ["v1", "mode", null],
+    ["v1", "item", null],
+    ["v1", "itemPosition", null],
+    ["v1", "listenerId", null],
+    ["v1", "key", null],
+    ["v1", "command", null],
+    ["v1", "snapshot", false],
+    ["v1", "synthetic", false]
+  ].map((value) => JSON.stringify(value));
+}
+
+function requestValue<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
 type TransactionHandlers = {
   oncomplete: (() => void) | null;
   onerror: (() => void) | null;
@@ -79,6 +103,46 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(evidence.index("eventIdentity").unique).toBe(true);
     expect(evidence.index("facets").multiEntry).toBe(true);
     database.close();
+  });
+
+  it("persists the v2 accounting fields as exact durable journal records", async () => {
+    const panelSessionId = "indexed-record-v2";
+    const history = await freshHistory(panelSessionId);
+    const offered = candidate("record-v2");
+    await expect(history.offer(offered).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+
+    const request = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
+    const database = await requestValue(request);
+    const transaction = database.transaction(["historyControl", "evidence"], "readonly");
+    const control = await requestValue(transaction.objectStore("historyControl").get("control"));
+    const record = await requestValue(transaction.objectStore("evidence").get(1));
+    expect(control).toMatchObject({ recordVersion: 2, retainedCount: 1, accountedBytes: expect.any(Number) });
+    expect(Object.keys(control as object).sort()).toEqual([
+      "accountedBytes",
+      "committedEvidenceBoundary",
+      "interval",
+      "key",
+      "nextSequence",
+      "panelSessionId",
+      "recordVersion",
+      "replayPayloadBytes",
+      "retainedCount",
+      "retainedRange",
+      "schemaVersion"
+    ]);
+    expect(record).toMatchObject({ accountedBytes: expect.any(Number) });
+    expect(Object.keys(record as object).sort()).toEqual([
+      "accountedBytes",
+      "eventId",
+      "facets",
+      "intervalId",
+      "replayPayload",
+      "sequence",
+      "serializedBytes"
+    ]);
+    expect((record as { accountedBytes: number }).accountedBytes).toBe((control as { accountedBytes: number }).accountedBytes);
+    database.close();
+    await history.close();
   });
 
   it("batches Capture-order writes at 256 candidates and publishes only after each transaction completes", async () => {
@@ -557,6 +621,10 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     expect(replacedStatus).toMatchObject({ capacity: { tier: "NORMAL" }, fallback: null });
     await replaced.close();
+    const replacedDatabase = await requestValue(indexedDB.open(knownName));
+    expect(replacedDatabase.version).toBe(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
+    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "historyControl"]);
+    replacedDatabase.close();
 
     const newerName = authoritativeEventDatabaseName("newer-schema");
     const newer = indexedDB.open(newerName, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 10);
@@ -575,6 +643,81 @@ describe("IndexedDB authoritative EventHistory", () => {
       fallback: "UNKNOWN_NEWER_SCHEMA"
     });
     await fallback.close();
+    const newerDatabase = await requestValue(indexedDB.open(newerName));
+    expect(newerDatabase.version).toBe(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 10);
+    newerDatabase.close();
+  });
+
+  it("does not recover recordVersion 1 data from a session-scoped journal", async () => {
+    const panelSessionId = "indexed-legacy-record-version";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const name = authoritativeEventDatabaseName(panelSessionId);
+    const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
+    request.onupgradeneeded = () => {
+      const evidence = request.result.createObjectStore("evidence", { keyPath: "sequence" });
+      evidence.createIndex("eventIdentity", "eventId", { unique: true });
+      evidence.createIndex("facets", "facets", { multiEntry: true });
+      request.result.createObjectStore("historyControl", { keyPath: "key" });
+    };
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const interval = { id: `${panelSessionId}:interval-1`, ordinal: 1 };
+    const serialized = serializeJournalEvidenceCandidate(candidate("legacy-record"));
+    const transaction = database.transaction(["historyControl", "evidence"], "readwrite");
+    transaction.objectStore("evidence").put({
+      intervalId: interval.id,
+      sequence: 1,
+      eventId: "legacy-record",
+      replayPayload: serialized.payload,
+      serializedBytes: serialized.bytes,
+      facets: itemUpdateFacets()
+    });
+    transaction.objectStore("historyControl").put({
+      key: "control",
+      schemaVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+      recordVersion: 1,
+      panelSessionId,
+      interval,
+      nextSequence: 2,
+      committedEvidenceBoundary: { intervalId: interval.id, sequence: 1, eventId: "legacy-record" },
+      retainedRange: {
+        first: { intervalId: interval.id, sequence: 1, eventId: "legacy-record" },
+        last: { intervalId: interval.id, sequence: 1, eventId: "legacy-record" }
+      },
+      retainedCount: 1,
+      replayPayloadBytes: serialized.bytes
+    });
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+
+    const history = await openEventHistory({ panelSessionId });
+    let initialStatus: unknown;
+    const publications: string[] = [];
+    history.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
+      if (publication.type === "status") initialStatus = publication.status;
+      if (publication.type === "committed-evidence") publications.push(...publication.evidence.map((entry) => entry.eventId));
+    });
+    expect(initialStatus).toMatchObject({
+      capacity: { tier: "LOWER" },
+      fallback: "PRIMARY_JOURNAL_UNAVAILABLE",
+      retained: 0
+    });
+    expect(publications).toEqual([]);
+    await expect(history.offer(candidate("fresh-memory-record")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1, eventId: "fresh-memory-record" }
+    });
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [expect.objectContaining({ eventId: "fresh-memory-record", sequence: 1 })] }
+    });
+    await history.close();
   });
 
   it("falls back instead of mixing evidence residue with a missing control record", async () => {
@@ -641,19 +784,21 @@ describe("IndexedDB authoritative EventHistory", () => {
       eventId: "coherent-record",
       replayPayload: serialized.payload,
       serializedBytes: serialized.bytes,
-      facets: []
+      accountedBytes: serialized.bytes,
+      facets: itemUpdateFacets()
     });
     transaction.objectStore("historyControl").put({
       key: "control",
       schemaVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
-      recordVersion: 1,
+      recordVersion: 2,
       panelSessionId,
       interval,
       nextSequence: 2,
       committedEvidenceBoundary: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" },
       retainedRange: { first: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" }, last: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" } },
       retainedCount: 0,
-      replayPayloadBytes: serialized.bytes
+      replayPayloadBytes: serialized.bytes,
+      accountedBytes: serialized.bytes
     });
     await new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve();
@@ -709,12 +854,13 @@ describe("IndexedDB authoritative EventHistory", () => {
       eventId: "invalid-sequence",
       replayPayload: serialized.payload,
       serializedBytes: serialized.bytes,
+      accountedBytes: serialized.bytes,
       facets
     });
     transaction.objectStore("historyControl").put({
       key: "control",
       schemaVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
-      recordVersion: 1,
+      recordVersion: 2,
       panelSessionId,
       interval,
       nextSequence: 3,
@@ -724,7 +870,8 @@ describe("IndexedDB authoritative EventHistory", () => {
         last: { intervalId: interval.id, sequence: 2, eventId: "invalid-sequence" }
       },
       retainedCount: 1,
-      replayPayloadBytes: serialized.bytes
+      replayPayloadBytes: serialized.bytes,
+      accountedBytes: serialized.bytes
     });
     await new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve();
