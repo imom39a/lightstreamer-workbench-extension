@@ -31,10 +31,10 @@ type TransactionHandlers = {
   onabort: (() => void) | null;
 };
 
-function transactionStub(abort: () => void): IDBTransaction & TransactionHandlers {
+function transactionStub(abort: () => void, error: Error | null = null): IDBTransaction & TransactionHandlers {
   return {
     abort: vi.fn(abort),
-    error: null,
+    error,
     oncomplete: null,
     onerror: null,
     onabort: null
@@ -180,25 +180,33 @@ describe("IndexedDB authoritative EventHistory", () => {
     }
   });
 
-  it("settles once when terminal transaction callbacks race", async () => {
-    const transaction = transactionStub(() => undefined);
+  it("waits for abort after a non-timeout transaction error and settles once", async () => {
+    const transactionError = new Error("IndexedDB transaction failed before abort.");
+    const transaction = transactionStub(() => undefined, transactionError);
     const completed = transactionDone(transaction, "committing Evidence", 10_000);
     const outcome: string[] = [];
+    let settlementCount = 0;
     void completed.then(
-      () => outcome.push("complete"),
-      (error: Error) => outcome.push(error.message)
+      () => { settlementCount += 1; outcome.push("complete"); },
+      (error: Error) => { settlementCount += 1; outcome.push(error.message); }
     );
 
     transaction.onerror?.();
+    await Promise.resolve();
+    expect(settlementCount).toBe(0);
+    expect(outcome).toEqual([]);
+
     transaction.onabort?.();
     transaction.oncomplete?.();
-    await expect(completed).rejects.toThrow(/transaction failed/i);
-    expect(outcome).toEqual(["IndexedDB transaction failed."]);
+    transaction.onerror?.();
+    await expect(completed).rejects.toBe(transactionError);
+    expect(settlementCount).toBe(1);
+    expect(outcome).toEqual([transactionError.message]);
   });
 
   it.each([
     ["complete", true],
-    ["error", false],
+    ["error-before-abort", false],
     ["abort", false]
   ] as const)("waits for the definitive %s event when timeout abort throws", async (terminal, succeeds) => {
     vi.useFakeTimers();
@@ -213,7 +221,12 @@ describe("IndexedDB authoritative EventHistory", () => {
       expect(settled).toBe(false);
 
       if (terminal === "complete") transaction.oncomplete?.();
-      if (terminal === "error") transaction.onerror?.();
+      if (terminal === "error-before-abort") {
+        transaction.onerror?.();
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        transaction.onabort?.();
+      }
       if (terminal === "abort") transaction.onabort?.();
 
       if (succeeds) await expect(completed).resolves.toBeUndefined();

@@ -762,6 +762,7 @@ export function transactionDone(transaction: IDBTransaction, operation: string, 
     let settled = false;
     let timedOut = false;
     let abortSucceeded = false;
+    let observedError: DOMException | null = null;
     const timeoutError = new Error(`Timed out while ${operation}.`);
     let timeout: ReturnType<typeof globalThis.setTimeout>;
     const settle = (callback: () => void) => {
@@ -780,10 +781,13 @@ export function transactionDone(transaction: IDBTransaction, operation: string, 
     }, timeoutMs);
     transaction.oncomplete = () => settle(resolve);
     transaction.onerror = () => {
-      if (timedOut && abortSucceeded) return;
-      settle(() => reject(transaction.error ?? (timedOut ? timeoutError : new Error("IndexedDB transaction failed."))));
+      observedError = transaction.error;
     };
-    transaction.onabort = () => settle(() => reject(transaction.error ?? (timedOut ? timeoutError : new Error("IndexedDB transaction aborted."))));
+    transaction.onabort = () => settle(() => reject(
+      transaction.error
+        ?? (timedOut && abortSucceeded ? timeoutError : observedError)
+        ?? (timedOut ? timeoutError : new Error("IndexedDB transaction aborted."))
+    ));
   });
 }
 
