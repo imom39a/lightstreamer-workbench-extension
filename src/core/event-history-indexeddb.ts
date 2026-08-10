@@ -117,6 +117,7 @@ type LoadedJournal = {
   panelSessionId: string;
   interval: HistoryInterval;
   nextSequence: number;
+  replayPayloadBytes: number;
   retainedBytes: number;
   retainedCount: number;
   retainedRange: { first: EvidenceRef; last: EvidenceRef } | null;
@@ -147,6 +148,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let interval = loaded.interval;
   let nextSequence = loaded.nextSequence;
   let committedEvidenceBoundary = loaded.committedEvidenceBoundary;
+  let replayPayloadBytes = loaded.replayPayloadBytes;
   let retainedBytes = loaded.retainedBytes;
   let retainedCount = loaded.retainedCount;
   let retainedRange = loaded.retainedRange;
@@ -368,7 +370,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             retainedRange,
             retainedCount,
             evidence,
-            retainedBytes + batchSerializedBytes,
+            replayPayloadBytes + batchSerializedBytes,
             retainedBytes + batchAccountedBytes,
             batch.map((entry) => entry.bytes)
           );
@@ -387,6 +389,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           break;
         }
         nextSequence += evidence.length;
+        replayPayloadBytes += batchSerializedBytes;
         inFlight.length = 0;
         committedEvidenceBoundary = toRef(evidence.at(-1)!);
         retainedBytes += batchAccountedBytes;
@@ -456,6 +459,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       interval = nextInterval;
       retainedCount = 0;
       retainedRange = null;
+      replayPayloadBytes = 0;
       retainedBytes = 0;
       lastNearLimit = false;
       generation += 1;
@@ -486,6 +490,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       phase = "CLOSED";
       retainedCount = 0;
       retainedRange = null;
+      replayPayloadBytes = 0;
       retainedBytes = 0;
       const result = deepFreeze({ finalCommittedEvidenceBoundary, dataDisposition: "ERASED" as const, cleanupDisposition: "COMPLETE" as const });
       publish({ type: "closed", result });
@@ -603,12 +608,13 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
       await writeControl(database, createControl(panelSessionId, interval, 1, null, null, 0, 0, 0));
-      return { panelSessionId, interval, nextSequence: 1, retainedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null };
+      return { panelSessionId, interval, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null };
     }
     return {
       panelSessionId,
       interval: control.interval,
       nextSequence: control.nextSequence,
+      replayPayloadBytes: control.replayPayloadBytes,
       retainedBytes: control.accountedBytes,
       retainedCount: control.retainedCount,
       retainedRange: control.retainedRange,

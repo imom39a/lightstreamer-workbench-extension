@@ -145,6 +145,22 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("preserves replay totals when a reopened journal receives another accounted-byte commit", async () => {
+    const panelSessionId = "indexed-reopen-accounting";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
+    const history = await openEventHistory({ panelSessionId, byteEstimator: () => 17 });
+    await expect(history.offer(candidate("first")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+
+    const reopened = await openEventHistory({ panelSessionId, byteEstimator: () => 99 });
+    await expect(reopened.offer(candidate("second")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+
+    const validated = await openEventHistory({ panelSessionId, byteEstimator: () => 99 });
+    await validated.close();
+    await reopened.close();
+    await history.close();
+  });
+
   it("batches Capture-order writes at 256 candidates and publishes only after each transaction completes", async () => {
     const history = await freshHistory("indexed-batches");
     const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction");
