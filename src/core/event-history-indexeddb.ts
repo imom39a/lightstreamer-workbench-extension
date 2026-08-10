@@ -104,8 +104,6 @@ export type IndexedDbEventHistoryOptions = Readonly<{
   failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
   commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void>;
   finalizeTerminal?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
-  clearJournal?: () => void | Promise<void>;
-  closeJournal?: () => void | Promise<void>;
 }> & HistoryCapacityOptions;
 
 export async function createIndexedDbEventHistory(
@@ -658,7 +656,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           publish({ type: "status", status: status(issue), problem: issue });
           return { ok: false, problem: issue };
         }
-        await clearJournal(database, loaded.panelSessionId, nextInterval, nextSequence, committedEvidenceBoundary);
+        await clearJournalRecords(database, loaded.panelSessionId, nextInterval, nextSequence, committedEvidenceBoundary);
       } catch (error) {
         const clearFailureProblem = problem("HISTORY_STOPPED", error instanceof Error ? error.message : "The History Interval could not be cleared.");
         if (phase === "RUNNING" && !terminal) {
@@ -718,7 +716,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       try {
         const applied = await options.clearJournal?.();
         if (applied !== false) {
-          await clearJournal(database, loaded.panelSessionId, interval, nextSequence, committedEvidenceBoundary);
+          await clearJournalRecords(database, loaded.panelSessionId, interval, nextSequence, committedEvidenceBoundary);
           dataDisposition = "ERASED";
           await options.closeJournal?.();
           database.db.close();
