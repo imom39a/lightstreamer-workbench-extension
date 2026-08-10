@@ -10,6 +10,7 @@ import {
   openEventHistory,
   type EvidenceCandidate
 } from "../src/core/event-history-authoritative";
+import { transactionDone } from "../src/core/event-history-indexeddb";
 import { serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 
 function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): EvidenceCandidate {
@@ -22,6 +23,22 @@ function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): Evid
     kind: "item-update",
     ...overrides
   } as EvidenceCandidate;
+}
+
+type TransactionHandlers = {
+  oncomplete: (() => void) | null;
+  onerror: (() => void) | null;
+  onabort: (() => void) | null;
+};
+
+function transactionStub(abort: () => void): IDBTransaction & TransactionHandlers {
+  return {
+    abort: vi.fn(abort),
+    error: null,
+    oncomplete: null,
+    onerror: null,
+    onabort: null
+  } as unknown as IDBTransaction & TransactionHandlers;
 }
 
 async function freshHistory(panelSessionId: string) {
@@ -111,6 +128,63 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     expect(history.offer(candidate("after-stop")).intake).toBe("REFUSED");
     await history.close();
+  });
+
+  it("waits for the abort event after a timeout before confirming an aborted transaction", async () => {
+    vi.useFakeTimers();
+    try {
+      let persisted = ["timeout-batch"];
+      const publications: string[] = [];
+      const transaction = transactionStub(() => { persisted = []; });
+      const completed = transactionDone(transaction, "committing Evidence", 10);
+      void completed.then(() => { publications.push("timeout-batch"); }, () => undefined);
+      let settled = false;
+      void completed.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(transaction.abort).toHaveBeenCalledTimes(1);
+      expect(persisted).toEqual([]);
+      expect(publications).toEqual([]);
+      expect(settled).toBe(false);
+
+      transaction.onabort?.();
+      await expect(completed).rejects.toThrow(/Timed out while committing Evidence/);
+      expect(publications).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["complete", true],
+    ["error", false],
+    ["abort", false]
+  ] as const)("waits for the definitive %s event when timeout abort throws", async (terminal, succeeds) => {
+    vi.useFakeTimers();
+    try {
+      const transaction = transactionStub(() => { throw new DOMException("Transaction is inactive.", "InvalidStateError"); });
+      const completed = transactionDone(transaction, "committing Evidence", 10);
+
+      await vi.advanceTimersByTimeAsync(10);
+      let settled = false;
+      void completed.then(() => { settled = true; }, () => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      if (terminal === "complete") transaction.oncomplete?.();
+      if (terminal === "error") transaction.onerror?.();
+      if (terminal === "abort") transaction.onabort?.();
+
+      if (succeeds) await expect(completed).resolves.toBeUndefined();
+      else await expect(completed).rejects.toThrow(/transaction (failed|aborted)|Timed out/i);
+
+      transaction.oncomplete?.();
+      transaction.onerror?.();
+      transaction.onabort?.();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps an oversized candidate alone and starts a new transaction at the soft byte target", async () => {

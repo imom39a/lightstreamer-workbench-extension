@@ -756,19 +756,27 @@ function requestToPromise<T>(request: IDBRequest<T>, operation: string): Promise
   });
 }
 
-function transactionDone(transaction: IDBTransaction, operation: string): Promise<void> {
+/** @internal Test-only timeout seam for deterministic IndexedDB transaction tests. */
+export function transactionDone(transaction: IDBTransaction, operation: string, timeoutMs = 2_000): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timeout = globalThis.setTimeout(() => {
-      try { transaction.abort(); } catch { /* the transaction may already be complete */ }
-      reject(new Error(`Timed out while ${operation}.`));
-    }, 2_000);
+    let settled = false;
+    let timedOut = false;
+    const timeoutError = new Error(`Timed out while ${operation}.`);
+    let timeout: ReturnType<typeof globalThis.setTimeout>;
     const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
       globalThis.clearTimeout(timeout);
       callback();
     };
+    timeout = globalThis.setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      try { transaction.abort(); } catch { /* the transaction may already be complete */ }
+    }, timeoutMs);
     transaction.oncomplete = () => settle(resolve);
-    transaction.onerror = () => settle(() => reject(transaction.error ?? new Error("IndexedDB transaction failed.")));
-    transaction.onabort = () => settle(() => reject(transaction.error ?? new Error("IndexedDB transaction aborted.")));
+    transaction.onerror = () => settle(() => reject(transaction.error ?? (timedOut ? timeoutError : new Error("IndexedDB transaction failed."))));
+    transaction.onabort = () => settle(() => reject(transaction.error ?? (timedOut ? timeoutError : new Error("IndexedDB transaction aborted."))));
   });
 }
 
