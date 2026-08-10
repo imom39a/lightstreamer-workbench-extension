@@ -1,6 +1,7 @@
 import {
   type CaptureMessage,
   type CaptureStatus,
+  type PanelSessionId,
   type PageReinjectionExecutionTarget,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
@@ -13,6 +14,7 @@ import {
   PANEL_REINJECT_REQUEST,
   PANEL_REINJECT_RESULT,
   RUNTIME_REINJECT_RESULT,
+  createPanelSessionId,
   isPanelCaptureMessage,
   isPanelTopologySyncFrameMessage,
   isPanelReinjectResultMessage,
@@ -31,6 +33,7 @@ export type PanelBridgeHandlers = {
 };
 
 export type PanelBridgeConnection = {
+  readonly panelSessionId?: PanelSessionId;
   reinjectDraft(
     draft: ReinjectionDraft,
     executionTarget?: PageReinjectionExecutionTarget
@@ -49,12 +52,16 @@ type PageReinjectionEvaluation =
   | { bridgeState: "pending" }
   | { bridgeState: "result"; result: unknown };
 
-export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeConnection {
+export function connectPanelBridge(
+  handlers: PanelBridgeHandlers,
+  panelSessionId: PanelSessionId = createPanelSessionId()
+): PanelBridgeConnection {
   if (typeof chrome === "undefined" || !chrome.runtime?.connect || !chrome.devtools) {
     handlers.onStatusChange("bridge disconnected");
     return {
+      panelSessionId,
       reinjectDraft() {
-        return Promise.resolve(createBridgeErrorResult(createRequestId(), "Bridge is disconnected."));
+        return Promise.resolve(createBridgeErrorResult(createRequestId(), "Bridge is disconnected.", panelSessionId));
       },
       disconnect() {}
     };
@@ -80,23 +87,22 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
     port = chrome.runtime.connect({ name: PANEL_PORT_NAME });
 
     port.onMessage.addListener((message) => {
-      if (isPanelStatusMessage(message)) {
+      if (isPanelStatusMessage(message) && message.panelSessionId === panelSessionId) {
         handlers.onStatusChange(message.status);
         return;
       }
 
-      if (isPanelCaptureMessage(message)) {
+      if (isPanelCaptureMessage(message) && message.panelSessionId === panelSessionId) {
         handlers.onCaptureMessage(message.message);
         return;
       }
 
-
-      if (isPanelTopologySyncFrameMessage(message)) {
+      if (isPanelTopologySyncFrameMessage(message) && message.panelSessionId === panelSessionId) {
         handlers.onTopologySyncFrame?.(message.frame);
         return;
       }
 
-      if (isPanelReinjectResultMessage(message)) {
+      if (isPanelReinjectResultMessage(message) && message.panelSessionId === panelSessionId) {
         const pending = pendingReinjections.get(message.result.requestId);
         if (!pending) {
           return;
@@ -122,7 +128,8 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
 
     port.postMessage({
       type: PANEL_REGISTER_MESSAGE,
-      tabId
+      tabId,
+      panelSessionId
     });
 
     handlers.onStatusChange("bridge connected");
@@ -131,19 +138,20 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
   connect();
 
   return {
+    panelSessionId,
     reinjectDraft(draft, executionTarget = "captured-listener") {
       const requestId = createRequestId();
       const payload = serializeDraft(draft, executionTarget);
       if (!payload) {
-        return Promise.resolve(createBridgeErrorResult(requestId, "Draft is not valid for reinjection."));
+        return Promise.resolve(createBridgeErrorResult(requestId, "Draft is not valid for reinjection.", panelSessionId));
       }
 
       if (!port) {
-        return Promise.resolve(createBridgeErrorResult(requestId, "Bridge is disconnected."));
+        return Promise.resolve(createBridgeErrorResult(requestId, "Bridge is disconnected.", panelSessionId));
       }
 
       if (typeof chrome.devtools.inspectedWindow.eval === "function") {
-        return reinjectThroughInspectedPage(requestId, payload).then((result) => {
+        return reinjectThroughInspectedPage(requestId, panelSessionId, payload).then((result) => {
           return result ?? reinjectThroughRuntime(requestId, payload);
         });
       }
@@ -167,7 +175,7 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
     payload: ReinjectionDraftPayload
   ): Promise<ReinjectionResult> {
     if (!port) {
-      return Promise.resolve(createBridgeErrorResult(requestId, "Bridge is disconnected."));
+      return Promise.resolve(createBridgeErrorResult(requestId, "Bridge is disconnected.", panelSessionId));
     }
 
     return new Promise((resolve) => {
@@ -176,7 +184,8 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
         resolve(
           createAcknowledgementUnknownResult(
             requestId,
-            "Timed out waiting for reinjection result."
+            "Timed out waiting for reinjection result.",
+            panelSessionId
           )
         );
       }, REINJECT_TIMEOUT_MS);
@@ -186,6 +195,7 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
         port?.postMessage({
           type: PANEL_REINJECT_REQUEST,
           requestId,
+          panelSessionId,
           draft: payload
         });
       } catch (error) {
@@ -194,7 +204,8 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
         resolve(
           createBridgeErrorResult(
             requestId,
-            error instanceof Error ? error.message : "Could not post the reinjection request."
+            error instanceof Error ? error.message : "Could not post the reinjection request.",
+            panelSessionId
           )
         );
       }
@@ -204,7 +215,7 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
   function resolvePendingWithAcknowledgementUnknown(error: string) {
     for (const [requestId, pending] of pendingReinjections.entries()) {
       clearTimeout(pending.timer);
-      pending.resolve(createAcknowledgementUnknownResult(requestId, error));
+      pending.resolve(createAcknowledgementUnknownResult(requestId, error, panelSessionId));
     }
     pendingReinjections.clear();
   }
@@ -212,6 +223,7 @@ export function connectPanelBridge(handlers: PanelBridgeHandlers): PanelBridgeCo
 
 function reinjectThroughInspectedPage(
   requestId: string,
+  panelSessionId: PanelSessionId,
   draft: ReinjectionDraftPayload
 ): Promise<ReinjectionResult | null> {
   return new Promise((resolve) => {
@@ -237,14 +249,15 @@ function reinjectThroughInspectedPage(
       finish(
         createAcknowledgementUnknownResult(
           requestId,
-          legacyRequestStarted
-            ? "Timed out waiting for the inspected-page reinjection result."
-            : "The DevTools page evaluation did not complete. Reload the inspected page and try again."
+            legacyRequestStarted
+              ? "Timed out waiting for the inspected-page reinjection result."
+              : "The DevTools page evaluation did not complete. Reload the inspected page and try again.",
+            panelSessionId
         )
       );
     }, INSPECTED_PAGE_EVAL_TIMEOUT_MS);
 
-    evaluate(pageReinjectionExpression(requestId, draft));
+    evaluate(pageReinjectionExpression(requestId, panelSessionId, draft));
 
     function evaluate(expression: string): void {
       try {
@@ -263,7 +276,8 @@ function reinjectThroughInspectedPage(
                   requestId,
                   exceptionInfo.description ||
                     exceptionInfo.value ||
-                    "The inspected page rejected the reinjection evaluation."
+                    "The inspected page rejected the reinjection evaluation.",
+                  panelSessionId
                 )
               );
               return;
@@ -275,7 +289,8 @@ function reinjectThroughInspectedPage(
                 finish(
                   createAcknowledgementUnknownResult(
                     requestId,
-                    "The inspected-page reinjection request lost its result channel. Reload the inspected page and capture a fresh update."
+                    "The inspected-page reinjection request lost its result channel. Reload the inspected page and capture a fresh update.",
+                    panelSessionId
                   )
                 );
                 return;
@@ -294,6 +309,7 @@ function reinjectThroughInspectedPage(
 
             const message = {
               type: PANEL_REINJECT_RESULT,
+              panelSessionId,
               result: evaluation?.bridgeState === "result" ? evaluation.result : undefined
             };
             if (!isPanelReinjectResultMessage(message) || message.result.requestId !== requestId) {
@@ -303,7 +319,8 @@ function reinjectThroughInspectedPage(
               finish(
                 createAcknowledgementUnknownResult(
                   requestId,
-                  "The inspected page reinjection bridge returned an invalid result. Reload the inspected page and capture a fresh update."
+                  "The inspected page reinjection bridge returned an invalid result. Reload the inspected page and capture a fresh update.",
+                  panelSessionId
                 )
               );
               return;
@@ -320,7 +337,8 @@ function reinjectThroughInspectedPage(
             requestId,
             error instanceof Error
               ? error.message
-              : "The inspected page reinjection evaluation could not be started."
+              : "The inspected page reinjection evaluation could not be started.",
+            panelSessionId
           )
         );
       }
@@ -330,11 +348,13 @@ function reinjectThroughInspectedPage(
 
 function pageReinjectionExpression(
   requestId: string,
+  panelSessionId: PanelSessionId,
   draft: ReinjectionDraftPayload
 ): string {
   const bridgeName = JSON.stringify(PAGE_REINJECTION_BRIDGE_GLOBAL);
   const stateName = JSON.stringify(legacyPageReinjectionStateName(requestId));
   const serializedRequestId = JSON.stringify(requestId);
+  const serializedPanelSessionId = JSON.stringify(panelSessionId);
   const serializedDraft = JSON.stringify(draft);
   const pageRequestType = JSON.stringify(PAGE_REINJECT_REQUEST);
   const pageResultType = JSON.stringify(RUNTIME_REINJECT_RESULT);
@@ -350,7 +370,7 @@ function pageReinjectionExpression(
       }
       return {
         bridgeState: "result",
-        result: bridge.reinject(${serializedRequestId}, ${serializedDraft})
+        result: bridge.reinject(${serializedRequestId}, ${serializedPanelSessionId}, ${serializedDraft})
       };
     }
     if (
@@ -411,6 +431,7 @@ function pageReinjectionExpression(
       const request = {
         type: ${pageRequestType},
         requestId: ${serializedRequestId},
+        panelSessionId: ${serializedPanelSessionId},
         draft: ${serializedDraft}
       };
       if (typeof host.MessageChannel === "function") {
@@ -530,9 +551,14 @@ function createRequestId() {
   return `reinject-${Date.now()}-${random}`;
 }
 
-function createBridgeErrorResult(requestId: string, error: string): ReinjectionResult {
+function createBridgeErrorResult(
+  requestId: string,
+  error: string,
+  panelSessionId?: PanelSessionId
+): ReinjectionResult {
   return {
     requestId,
+    ...(panelSessionId ? { panelSessionId } : {}),
     ok: false,
     status: "bridge-error",
     timestamp: Date.now(),
@@ -542,10 +568,12 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
 
 function createAcknowledgementUnknownResult(
   requestId: string,
-  error: string
+  error: string,
+  panelSessionId?: PanelSessionId
 ): ReinjectionResult {
   return {
     requestId,
+    ...(panelSessionId ? { panelSessionId } : {}),
     ok: false,
     status: "acknowledgement-unknown",
     timestamp: Date.now(),

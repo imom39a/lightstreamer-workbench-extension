@@ -10,6 +10,7 @@ import {
   isContentCaptureSyncRequestMessage,
   isContentReinjectRequestMessage,
   isRuntimeReinjectResultMessage,
+  isPanelSessionId,
   isTopologySyncFrame
 } from "../bridge/messages";
 
@@ -33,8 +34,13 @@ window.addEventListener("message", (event) => {
   }
 
   if (isTopologySyncFrame(event.data)) {
+    const panelSessionId = (event.data as typeof event.data & { panelSessionId?: string }).panelSessionId;
+    if (!isPanelSessionId(panelSessionId)) {
+      return;
+    }
     chrome.runtime.sendMessage({
       type: RUNTIME_TOPOLOGY_SYNC_FRAME,
+      panelSessionId,
       frame: event.data
     });
   }
@@ -43,7 +49,10 @@ window.addEventListener("message", (event) => {
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (isContentCaptureSyncRequestMessage(message)) {
-      window.postMessage({ type: PAGE_CAPTURE_SYNC_REQUEST }, "*");
+      window.postMessage({
+        type: PAGE_CAPTURE_SYNC_REQUEST,
+        panelSessionId: message.panelSessionId
+      }, "*");
       return false;
     }
 
@@ -51,7 +60,7 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
       return false;
     }
 
-    void forwardReinjectionToPage(message.requestId, message.draft).then((result) => {
+    void forwardReinjectionToPage(message.requestId, message.panelSessionId, message.draft).then((result) => {
       // Return the final result on the original channel for compatibility with
       // background workers that predate the detached result message.
       try {
@@ -65,6 +74,7 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
       chrome.runtime.sendMessage(
         {
           type: CONTENT_REINJECT_RESULT,
+          panelSessionId: message.panelSessionId,
           result
         },
         () => {
@@ -79,6 +89,7 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
 
 function forwardReinjectionToPage(
   requestId: string,
+  panelSessionId: string,
   draft: ReinjectionDraftPayload
 ): Promise<ReinjectionResult> {
   return new Promise((resolve) => {
@@ -88,6 +99,7 @@ function forwardReinjectionToPage(
       finish(
         createAcknowledgementUnknownResult(
           requestId,
+          panelSessionId,
           "Timed out waiting for page reinjection result."
         )
       );
@@ -108,6 +120,7 @@ function forwardReinjectionToPage(
     function acceptPageResult(value: unknown) {
       if (
         !isRuntimeReinjectResultMessage(value) ||
+        value.panelSessionId !== panelSessionId ||
         value.result.requestId !== requestId
       ) {
         return;
@@ -130,6 +143,7 @@ function forwardReinjectionToPage(
     const pageRequest = {
       type: PAGE_REINJECT_REQUEST,
       requestId,
+      panelSessionId,
       draft
     };
 
@@ -152,9 +166,14 @@ function forwardReinjectionToPage(
   });
 }
 
-function createBridgeErrorResult(requestId: string, error: string): ReinjectionResult {
+function createBridgeErrorResult(
+  requestId: string,
+  panelSessionId: string,
+  error: string
+): ReinjectionResult {
   return {
     requestId,
+    panelSessionId,
     ok: false,
     status: "bridge-error",
     timestamp: Date.now(),
@@ -164,10 +183,12 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
 
 function createAcknowledgementUnknownResult(
   requestId: string,
+  panelSessionId: string,
   error: string
 ): ReinjectionResult {
   return {
     requestId,
+    panelSessionId,
     ok: false,
     status: "acknowledgement-unknown",
     timestamp: Date.now(),

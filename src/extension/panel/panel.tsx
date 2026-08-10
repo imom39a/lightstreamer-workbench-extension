@@ -1,6 +1,10 @@
 import { createRoot } from "react-dom/client";
 
-import { isPanelVisibilityMessage } from "../../bridge/messages";
+import {
+  createPanelSessionId,
+  isPanelVisibilityMessage,
+  type PanelSessionId
+} from "../../bridge/messages";
 import {
   createInMemoryEventHistory,
   createIndexedDbEventHistory,
@@ -17,6 +21,7 @@ import {
 } from "./workbench-runtime";
 
 export type WorkbenchPanelMountOptions = {
+  createPanelSessionId?: () => PanelSessionId;
   createIndexedDbHistory?: typeof createIndexedDbEventHistory;
   createInMemoryHistory?: typeof createInMemoryEventHistory;
   createRuntime?: typeof createWorkbenchRuntime;
@@ -33,6 +38,10 @@ export function mountWorkbenchPanel(
   const createMemoryHistory = options.createInMemoryHistory ?? createInMemoryEventHistory;
   const createRuntime = options.createRuntime ?? createWorkbenchRuntime;
   const connectBridgeClient = options.connectBridge ?? connectPanelBridge;
+  // Allocate this before any asynchronous storage or bridge initialization.
+  // It survives reconnects and page epochs for this mount, while a remount
+  // necessarily creates a fresh owner identity.
+  const panelSessionId = (options.createPanelSessionId ?? createPanelSessionId)();
   let visible = true;
   let disposed = false;
   let historyClosed = false;
@@ -71,7 +80,7 @@ export function mountWorkbenchPanel(
     let storageLimited = false;
     try {
       history = await createIndexedHistory({
-        sessionId: chrome.devtools?.inspectedWindow?.tabId ?? Date.now(),
+        sessionId: panelSessionId,
         reset: true,
         clearOnClose: true
       });
@@ -122,7 +131,7 @@ export function mountWorkbenchPanel(
       onTopologySyncFrame(frame) {
         runtime?.dispatch({ type: "apply-topology-sync-frame", frame });
       }
-    });
+    }, panelSessionId);
   }
 
   function onVisibilityMessage(event: MessageEvent): void {

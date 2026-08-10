@@ -6,6 +6,7 @@ import {
   PANEL_REINJECT_RESULT,
   PANEL_STATUS_MESSAGE,
   PANEL_TOPOLOGY_SYNC_FRAME,
+  type PanelSessionId,
   type ReinjectionResult,
   isContentReinjectResultMessage,
   isPanelRegisterMessage,
@@ -15,13 +16,18 @@ import {
   isRuntimeTopologySyncFrameMessage
 } from "../bridge/messages";
 
-const panelPortsByTab = new Map<number, chrome.runtime.Port>();
-const tabByPort = new WeakMap<chrome.runtime.Port, number>();
+type PanelRegistration = {
+  tabId: number;
+  panelSessionId: PanelSessionId;
+  port: chrome.runtime.Port;
+};
+
+const panelPortsByTab = new Map<number, Map<PanelSessionId, PanelRegistration>>();
+const registrationByPort = new WeakMap<chrome.runtime.Port, PanelRegistration>();
 const pendingReinjections = new Map<
   string,
   {
-    tabId: number;
-    port: chrome.runtime.Port;
+    registration: PanelRegistration;
   }
 >();
 
@@ -32,13 +38,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onMessage.addListener((message) => {
     if (isPanelRegisterMessage(message)) {
-      panelPortsByTab.set(message.tabId, port);
-      tabByPort.set(port, message.tabId);
-      port.postMessage({
-        type: PANEL_STATUS_MESSAGE,
-        status: "bridge connected"
-      });
-      requestActiveSubscriptionSync(message.tabId);
+      registerPanel(port, message.tabId, message.panelSessionId);
       return;
     }
 
@@ -46,23 +46,32 @@ chrome.runtime.onConnect.addListener((port) => {
       return;
     }
 
-    const tabId = tabByPort.get(port);
-    if (tabId === undefined) {
+    const registration = registrationByPort.get(port);
+    if (
+      !registration ||
+      registration.panelSessionId !== message.panelSessionId
+    ) {
       port.postMessage({
         type: PANEL_REINJECT_RESULT,
-        result: createBridgeErrorResult(message.requestId, "Panel is not registered to an inspected tab.")
+        panelSessionId: message.panelSessionId,
+        result: createBridgeErrorResult(
+          message.requestId,
+          message.panelSessionId,
+          "Panel is not registered to an inspected tab."
+        )
       });
       return;
     }
 
-    pendingReinjections.set(pendingReinjectionKey(tabId, message.requestId), {
-      tabId,
-      port
-    });
+    pendingReinjections.set(
+      pendingReinjectionKey(registration.tabId, message.panelSessionId, message.requestId),
+      { registration }
+    );
     chrome.tabs.sendMessage(
-      tabId,
+      registration.tabId,
       {
         type: CONTENT_REINJECT_REQUEST,
+        panelSessionId: message.panelSessionId,
         requestId: message.requestId,
         draft: message.draft
       },
@@ -74,6 +83,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
         const resultMessage = {
           type: PANEL_REINJECT_RESULT,
+          panelSessionId: message.panelSessionId,
           result: response
         };
         if (
@@ -81,16 +91,17 @@ chrome.runtime.onConnect.addListener((port) => {
           isPanelReinjectResultMessage(resultMessage) &&
           resultMessage.result.requestId === message.requestId
         ) {
-          deliverReinjectionResult(tabId, resultMessage.result);
+          deliverReinjectionResult(registration, resultMessage.result);
           return;
         }
 
         deliverReinjectionResult(
-          tabId,
+          registration,
           runtimeError && !isMissingContentScriptReceiverError(runtimeError)
-            ? createAcknowledgementUnknownResult(message.requestId, runtimeError)
+            ? createAcknowledgementUnknownResult(message.requestId, message.panelSessionId, runtimeError)
             : createBridgeErrorResult(
                 message.requestId,
+                message.panelSessionId,
                 runtimeError ??
                   "Content script did not accept the reinjection request. Reload the inspected page and try again."
               )
@@ -100,15 +111,11 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 
   port.onDisconnect.addListener(() => {
-    const tabId = tabByPort.get(port);
-    if (tabId !== undefined && panelPortsByTab.get(tabId) === port) {
-      panelPortsByTab.delete(tabId);
+    const registration = registrationByPort.get(port);
+    if (!registration) {
+      return;
     }
-    for (const [key, pending] of pendingReinjections) {
-      if (pending.port === port) {
-        pendingReinjections.delete(key);
-      }
-    }
+    removeRegistration(registration);
   });
 });
 
@@ -118,7 +125,10 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     if (tabId === undefined) {
       return false;
     }
-    deliverReinjectionResult(tabId, message.result);
+    const registration = panelPortsByTab.get(tabId)?.get(message.panelSessionId);
+    if (registration) {
+      deliverReinjectionResult(registration, message.result);
+    }
     return false;
   }
 
@@ -127,8 +137,14 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     if (tabId === undefined) {
       return false;
     }
-    panelPortsByTab.get(tabId)?.postMessage({
+    const registrations = panelPortsByTab.get(tabId);
+    if (!registrations) {
+      return false;
+    }
+    const registration = registrations.get(message.panelSessionId);
+    registration?.port.postMessage({
       type: PANEL_TOPOLOGY_SYNC_FRAME,
+      panelSessionId: registration.panelSessionId,
       frame: message.frame
     });
     return false;
@@ -142,19 +158,69 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   if (tabId === undefined) {
     return false;
   }
-
-  const panelPort = panelPortsByTab.get(tabId);
-  panelPort?.postMessage({
-    type: PANEL_CAPTURE_MESSAGE,
-    message: message.message
-  });
+  for (const registration of panelPortsByTab.get(tabId)?.values() ?? []) {
+    registration.port.postMessage({
+      type: PANEL_CAPTURE_MESSAGE,
+      panelSessionId: registration.panelSessionId,
+      message: message.message
+    });
+  }
 
   return false;
 });
 
-function createBridgeErrorResult(requestId: string, error: string): ReinjectionResult {
+function registerPanel(
+  port: chrome.runtime.Port,
+  tabId: number,
+  panelSessionId: PanelSessionId
+): void {
+  const current = registrationByPort.get(port);
+  if (current && (current.tabId !== tabId || current.panelSessionId !== panelSessionId)) {
+    removeRegistration(current);
+  }
+  const registration: PanelRegistration = { tabId, panelSessionId, port };
+  const registrations = panelPortsByTab.get(tabId) ?? new Map<PanelSessionId, PanelRegistration>();
+  const previous = registrations.get(panelSessionId);
+  if (previous && previous.port !== port) {
+    removeRegistration(previous);
+  }
+  registrations.set(panelSessionId, registration);
+  panelPortsByTab.set(tabId, registrations);
+  registrationByPort.set(port, registration);
+  port.postMessage({
+    type: PANEL_STATUS_MESSAGE,
+    panelSessionId,
+    status: "bridge connected"
+  });
+  requestActiveSubscriptionSync(tabId, panelSessionId);
+}
+
+function removeRegistration(registration: PanelRegistration): void {
+  const registrations = panelPortsByTab.get(registration.tabId);
+  if (registrations?.get(registration.panelSessionId)?.port === registration.port) {
+    registrations.delete(registration.panelSessionId);
+    if (registrations.size === 0) {
+      panelPortsByTab.delete(registration.tabId);
+    }
+  }
+  if (registrationByPort.get(registration.port) === registration) {
+    registrationByPort.delete(registration.port);
+  }
+  for (const [key, pending] of pendingReinjections) {
+    if (pending.registration === registration) {
+      pendingReinjections.delete(key);
+    }
+  }
+}
+
+function createBridgeErrorResult(
+  requestId: string,
+  panelSessionId: PanelSessionId,
+  error: string
+): ReinjectionResult {
   return {
     requestId,
+    panelSessionId,
     ok: false,
     status: "bridge-error",
     timestamp: Date.now(),
@@ -164,10 +230,12 @@ function createBridgeErrorResult(requestId: string, error: string): ReinjectionR
 
 function createAcknowledgementUnknownResult(
   requestId: string,
+  panelSessionId: PanelSessionId,
   error: string
 ): ReinjectionResult {
   return {
     requestId,
+    panelSessionId,
     ok: false,
     status: "acknowledgement-unknown",
     timestamp: Date.now(),
@@ -183,27 +251,43 @@ function isMissingContentScriptReceiverError(error: string): boolean {
   );
 }
 
-function deliverReinjectionResult(tabId: number, result: ReinjectionResult): boolean {
-  const key = pendingReinjectionKey(tabId, result.requestId);
+function deliverReinjectionResult(
+  registration: PanelRegistration,
+  result: ReinjectionResult
+): boolean {
+  const key = pendingReinjectionKey(
+    registration.tabId,
+    registration.panelSessionId,
+    result.requestId
+  );
   const pending = pendingReinjections.get(key);
-  if (!pending || pending.tabId !== tabId) {
+  if (!pending || pending.registration.port !== registration.port) {
     return false;
   }
 
   pendingReinjections.delete(key);
-  pending.port.postMessage({
+  registration.port.postMessage({
     type: PANEL_REINJECT_RESULT,
+    panelSessionId: registration.panelSessionId,
     result
   });
   return true;
 }
 
-function pendingReinjectionKey(tabId: number, requestId: string): string {
-  return JSON.stringify([tabId, requestId]);
+function pendingReinjectionKey(
+  tabId: number,
+  panelSessionId: PanelSessionId,
+  requestId: string
+): string {
+  return JSON.stringify([tabId, panelSessionId, requestId]);
 }
 
-function requestActiveSubscriptionSync(tabId: number): void {
-  chrome.tabs.sendMessage(tabId, { type: CONTENT_CAPTURE_SYNC_REQUEST }, () => {
-    void chrome.runtime.lastError;
-  });
+function requestActiveSubscriptionSync(tabId: number, panelSessionId: PanelSessionId): void {
+  chrome.tabs.sendMessage(
+    tabId,
+    { type: CONTENT_CAPTURE_SYNC_REQUEST, panelSessionId },
+    () => {
+      void chrome.runtime.lastError;
+    }
+  );
 }

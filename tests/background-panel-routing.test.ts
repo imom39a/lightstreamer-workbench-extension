@@ -1,0 +1,193 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  PANEL_CAPTURE_MESSAGE,
+  PANEL_PORT_NAME,
+  PANEL_REGISTER_MESSAGE,
+  PANEL_REINJECT_REQUEST,
+  PANEL_REINJECT_RESULT,
+  RUNTIME_CAPTURE_MESSAGE,
+  RUNTIME_TOPOLOGY_SYNC_FRAME,
+  TOPOLOGY_SYNC_BEGIN,
+  TOPOLOGY_SYNC_VERSION,
+  createCaptureMessage
+} from "../src/bridge/messages";
+
+const panelA = "panel-00000000-0000-4000-8000-000000000001";
+const panelB = "panel-00000000-0000-4000-8000-000000000002";
+
+describe("Panel Session background routing", () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  it("broadcasts one tab's live Capture to both registered panels without replacement", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender) => boolean) | undefined;
+    const firstMessages: unknown[] = [];
+    const secondMessages: unknown[] = [];
+    const first = fakePort(firstMessages);
+    const second = fakePort(secondMessages);
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      (listener) => (onMessage = listener)
+    );
+
+    await import("../src/extension/background");
+    onConnect?.(first.port);
+    first.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    onConnect?.(second.port);
+    second.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelB });
+
+    const message = createCaptureMessage("client-created", { client: { id: "client-1" } });
+    onMessage?.(
+      { type: RUNTIME_CAPTURE_MESSAGE, message },
+      { tab: { id: 7 } } as chrome.runtime.MessageSender
+    );
+
+    expect(firstMessages).toContainEqual({
+      type: PANEL_CAPTURE_MESSAGE,
+      panelSessionId: panelA,
+      message
+    });
+    expect(secondMessages).toContainEqual({
+      type: PANEL_CAPTURE_MESSAGE,
+      panelSessionId: panelB,
+      message
+    });
+  });
+
+  it("delivers an injection result exactly once to its originating Panel Session", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender) => boolean) | undefined;
+    const firstMessages: unknown[] = [];
+    const secondMessages: unknown[] = [];
+    const first = fakePort(firstMessages);
+    const second = fakePort(secondMessages);
+    const sendMessage = vi.fn((_tabId: number, _message: unknown, callback?: (response?: unknown) => void) => {
+      callback?.({
+        requestId: "request-1",
+        panelSessionId: panelA,
+        ok: true,
+        status: "success",
+        timestamp: 1
+      });
+    });
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      (listener) => (onMessage = listener),
+      sendMessage
+    );
+
+    await import("../src/extension/background");
+    onConnect?.(first.port);
+    first.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    onConnect?.(second.port);
+    second.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelB });
+    first.listeners[0]({
+      type: PANEL_REINJECT_REQUEST,
+      panelSessionId: panelA,
+      requestId: "request-1",
+      draft: validDraft()
+    });
+
+    expect(firstMessages).toContainEqual({
+      type: PANEL_REINJECT_RESULT,
+      panelSessionId: panelA,
+      result: expect.objectContaining({ requestId: "request-1", panelSessionId: panelA })
+    });
+    expect(secondMessages).not.toContainEqual(
+      expect.objectContaining({ type: PANEL_REINJECT_RESULT, panelSessionId: panelA })
+    );
+    expect(sendMessage).toHaveBeenCalledWith(7, expect.objectContaining({ panelSessionId: panelA }), expect.any(Function));
+  });
+
+  it("targets a topology checkpoint to its requesting Panel Session", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender) => boolean) | undefined;
+    const firstMessages: unknown[] = [];
+    const secondMessages: unknown[] = [];
+    const first = fakePort(firstMessages);
+    const second = fakePort(secondMessages);
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      (listener) => (onMessage = listener)
+    );
+    await import("../src/extension/background");
+    onConnect?.(first.port);
+    first.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    onConnect?.(second.port);
+    second.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelB });
+
+    const frame = {
+      type: TOPOLOGY_SYNC_BEGIN,
+      version: TOPOLOGY_SYNC_VERSION,
+      syncId: "sync-1",
+      pageEpoch: "page-1",
+      panelSessionId: panelA,
+      cutoffCaptureSequence: 0,
+      chunkCount: 0,
+      recordCount: 0,
+      coverage: { status: "complete" as const, getters: {} }
+    };
+    onMessage?.(
+      { type: RUNTIME_TOPOLOGY_SYNC_FRAME, panelSessionId: panelA, frame },
+      { tab: { id: 7 } } as chrome.runtime.MessageSender
+    );
+
+    expect(firstMessages).toContainEqual({
+      type: "lsew:panel-topology-sync-frame",
+      panelSessionId: panelA,
+      frame
+    });
+    expect(secondMessages).not.toContainEqual(
+      expect.objectContaining({ type: "lsew:panel-topology-sync-frame" })
+    );
+  });
+});
+
+function fakePort(messages: unknown[]) {
+  const listeners: Array<(message: unknown) => void> = [];
+  const port = {
+    name: PANEL_PORT_NAME,
+    postMessage(message: unknown) {
+      messages.push(message);
+    },
+    onMessage: { addListener(listener: (message: unknown) => void) { listeners.push(listener); } },
+    onDisconnect: { addListener: vi.fn() }
+  } as unknown as chrome.runtime.Port;
+  return { port, listeners };
+}
+
+function fakeChrome(
+  register: (listener: (port: chrome.runtime.Port) => void) => void,
+  message: (listener: (value: unknown, sender: chrome.runtime.MessageSender) => boolean) => void,
+  sendMessage: ReturnType<typeof vi.fn> = vi.fn((_tabId: number, _message: unknown, callback?: () => void) => callback?.())
+) {
+  return {
+    runtime: {
+      lastError: undefined,
+      onConnect: { addListener: register },
+      onMessage: { addListener: message }
+    },
+    tabs: { sendMessage }
+  } as unknown as typeof chrome;
+}
+
+function validDraft() {
+  return {
+    sourceEventId: "event-1",
+    executionTarget: "captured-wire" as const,
+    target: { subscriptionId: "subscription-1", listenerId: null },
+    item: { name: "item-1", position: 1 },
+    command: "UPDATE",
+    key: "key-1",
+    fields: { value: 1 },
+    changedFields: { value: 1 },
+    isSnapshot: false,
+    provenance: { source: "test" }
+  };
+}

@@ -14,6 +14,7 @@ import {
   RUNTIME_REINJECT_RESULT,
   type ReinjectionDraftPayload,
   type ReinjectionResult,
+  type PanelSessionId,
   type TopologyEvidenceRecord,
   type TopologyCoverage,
   type TopologyAbsoluteRecord,
@@ -3246,7 +3247,7 @@ function installCaptureSyncHandler(host: LightstreamerHost, state: Instrumentati
       return;
     }
 
-    emitAbsoluteTopologyCheckpoint(host, state);
+    emitAbsoluteTopologyCheckpoint(host, state, event.data.panelSessionId);
 
     for (const [subscriptionId, rows] of state.commandReplayRows.entries()) {
       const activeSubscription = state.activeSubscriptions.get(subscriptionId);
@@ -3260,7 +3261,11 @@ function installCaptureSyncHandler(host: LightstreamerHost, state: Instrumentati
   });
 }
 
-function emitAbsoluteTopologyCheckpoint(host: LightstreamerHost, state: InstrumentationState): void {
+function emitAbsoluteTopologyCheckpoint(
+  host: LightstreamerHost,
+  state: InstrumentationState,
+  panelSessionId: PanelSessionId
+): void {
   try {
     const cutoffCaptureSequence = state.captureSequence;
     const records = Array.from(state.topologyRecords.values()).sort(topologyRecordSort);
@@ -3271,13 +3276,14 @@ function emitAbsoluteTopologyCheckpoint(host: LightstreamerHost, state: Instrume
       state.pageEpoch,
       cutoffCaptureSequence,
       aggregateTopologyCoverage(state),
-      state.topologyCoverage === "partial"
+      state.topologyCoverage === "partial",
+      panelSessionId
     );
     for (const frame of frames) {
       host.postMessage?.(frame, "*");
     }
   } catch (_error) {
-    emitPartialTopologyCheckpoint(host, state, "serialization-failed");
+    emitPartialTopologyCheckpoint(host, state, "serialization-failed", panelSessionId);
   }
 }
 
@@ -3287,7 +3293,8 @@ function packAbsoluteTopologyCheckpoint(
   pageEpoch: string,
   cutoffCaptureSequence: number,
   coverage: TopologyCoverage,
-  structuralPartial: boolean
+  structuralPartial: boolean,
+  panelSessionId: PanelSessionId
 ): TopologySyncFrame[] {
   if (structuralPartial || records.length > TOPOLOGY_SYNC_LIMITS.maxRecords) {
     return partialTopologyFrames(
@@ -3295,7 +3302,8 @@ function packAbsoluteTopologyCheckpoint(
       pageEpoch,
       cutoffCaptureSequence,
       "limit-exceeded",
-      coverage
+      coverage,
+      panelSessionId
     );
   }
   const recordChunks: TopologyAbsoluteRecord[][] = [];
@@ -3305,6 +3313,7 @@ function packAbsoluteTopologyCheckpoint(
   const metadata = {
     version: TOPOLOGY_SYNC_VERSION,
     syncId,
+    panelSessionId,
     pageEpoch,
     cutoffCaptureSequence,
     chunkCount: recordChunks.length,
@@ -3334,7 +3343,8 @@ function packAbsoluteTopologyCheckpoint(
       pageEpoch,
       cutoffCaptureSequence,
       "limit-exceeded",
-      coverage
+      coverage,
+      panelSessionId
     );
   }
   return frames;
@@ -3345,11 +3355,13 @@ function partialTopologyFrames(
   pageEpoch: string,
   cutoffCaptureSequence: number,
   reason: "limit-exceeded" | "serialization-failed",
-  aggregateCoverage: TopologyCoverage
+  aggregateCoverage: TopologyCoverage,
+  panelSessionId: PanelSessionId
 ): TopologySyncFrame[] {
   const metadata = {
     version: TOPOLOGY_SYNC_VERSION,
     syncId,
+    panelSessionId,
     pageEpoch,
     cutoffCaptureSequence,
     chunkCount: 0,
@@ -3369,7 +3381,8 @@ function partialTopologyFrames(
 function emitPartialTopologyCheckpoint(
   host: LightstreamerHost,
   state: InstrumentationState,
-  reason: "limit-exceeded" | "serialization-failed"
+  reason: "limit-exceeded" | "serialization-failed",
+  panelSessionId: PanelSessionId
 ): void {
   try {
     const cutoff = state.captureSequence;
@@ -3378,7 +3391,8 @@ function emitPartialTopologyCheckpoint(
       state.pageEpoch,
       cutoff,
       reason,
-      aggregateTopologyCoverage(state)
+      aggregateTopologyCoverage(state),
+      panelSessionId
     )) {
       host.postMessage?.(frame, "*");
     }
@@ -3410,19 +3424,21 @@ function installReinjectionHandler(
 ): void {
   const bridge = {
     version: PAGE_REINJECTION_BRIDGE_VERSION,
-    reinject(requestId: unknown, draft: unknown): ReinjectionResult {
+    reinject(requestId: unknown, panelSessionId: unknown, draft: unknown): ReinjectionResult {
       const message = {
         type: PAGE_REINJECT_REQUEST,
         requestId,
+        panelSessionId,
         draft
       };
       if (!isPageReinjectRequestMessage(message)) {
         return pageBridgeErrorResult(
           typeof requestId === "string" && requestId ? requestId : "invalid-request",
+          typeof panelSessionId === "string" ? panelSessionId : "invalid-panel",
           "The inspected page rejected an invalid reinjection request."
         );
       }
-      return reinjectDraft(message.requestId, message.draft, state);
+      return reinjectDraft(message.requestId, message.panelSessionId, message.draft, state);
     }
   };
 
@@ -3451,7 +3467,8 @@ function installReinjectionHandler(
 
     const resultMessage = {
       type: RUNTIME_REINJECT_RESULT,
-      result: bridge.reinject(event.data.requestId, event.data.draft)
+      result: bridge.reinject(event.data.requestId, event.data.panelSessionId, event.data.draft),
+      panelSessionId: event.data.panelSessionId
     };
     const responsePort = event.ports?.[0];
     if (responsePort) {
@@ -3467,9 +3484,14 @@ function installReinjectionHandler(
   });
 }
 
-function pageBridgeErrorResult(requestId: string, error: string): ReinjectionResult {
+function pageBridgeErrorResult(
+  requestId: string,
+  panelSessionId: PanelSessionId,
+  error: string
+): ReinjectionResult {
   return {
     requestId,
+    panelSessionId,
     ok: false,
     status: "bridge-error",
     timestamp: Date.now(),
@@ -3479,11 +3501,12 @@ function pageBridgeErrorResult(requestId: string, error: string): ReinjectionRes
 
 function reinjectDraft(
   requestId: string,
+  panelSessionId: PanelSessionId,
   draft: ReinjectionDraftPayload,
   state: InstrumentationState
 ): ReinjectionResult {
   if (draft.executionTarget === "captured-wire") {
-    return reinjectWireDraft(requestId, draft, state);
+    return reinjectWireDraft(requestId, panelSessionId, draft, state);
   }
 
   const delivery = state.localInjectionTargets.deliver(
@@ -3493,6 +3516,7 @@ function reinjectDraft(
   if (!delivery.ok && delivery.reason === "stale-target") {
     return {
       requestId,
+      panelSessionId,
       ok: false,
       status: "stale-target",
       timestamp: Date.now(),
@@ -3505,6 +3529,7 @@ function reinjectDraft(
   if (!delivery.ok) {
     return {
       requestId,
+      panelSessionId,
       ok: false,
       status: "listener-error",
       timestamp: Date.now(),
@@ -3516,6 +3541,7 @@ function reinjectDraft(
   }
   return {
     requestId,
+    panelSessionId,
     ok: true,
     status: "success",
     timestamp: Date.now(),
@@ -3527,6 +3553,7 @@ function reinjectDraft(
 
 function reinjectWireDraft(
   requestId: string,
+  panelSessionId: PanelSessionId,
   draft: ReinjectionDraftPayload,
   state: InstrumentationState
 ): ReinjectionResult {
@@ -3534,6 +3561,7 @@ function reinjectWireDraft(
   if (!target || target.subscription.ended || target.socket.readyState !== 1) {
     return {
       requestId,
+      panelSessionId,
       ok: false,
       status: "stale-target",
       timestamp: Date.now(),
@@ -3543,12 +3571,12 @@ function reinjectWireDraft(
 
   const itemPosition = draft.item.position;
   if (!itemPosition || itemPosition < 1) {
-    return wireErrorResult(requestId, "Captured wire item position is missing.");
+    return wireErrorResult(requestId, panelSessionId, "Captured wire item position is missing.");
   }
 
   const fieldNames = target.subscription.fieldNames;
   if (fieldNames.length === 0) {
-    return wireErrorResult(requestId, "Captured wire field schema is unavailable.");
+    return wireErrorResult(requestId, panelSessionId, "Captured wire field schema is unavailable.");
   }
 
   const draftFields: Record<string, string | number | boolean | null> = {
@@ -3566,6 +3594,7 @@ function reinjectWireDraft(
   if (unknownFields.length > 0) {
     return wireErrorResult(
       requestId,
+      panelSessionId,
       `Draft fields are not present in the captured wire schema: ${unknownFields.join(", ")}.`
     );
   }
@@ -3588,6 +3617,7 @@ function reinjectWireDraft(
     target.socket.dispatchEvent(messageEvent);
     return {
       requestId,
+      panelSessionId,
       ok: true,
       status: "success",
       timestamp: Date.now()
@@ -3595,6 +3625,7 @@ function reinjectWireDraft(
   } catch (error) {
     return wireErrorResult(
       requestId,
+      panelSessionId,
       error instanceof Error ? error.message.slice(0, 500) : "Wire replay failed."
     );
   } finally {
@@ -3620,9 +3651,14 @@ function webSocketOrigin(socket: WebSocket): string {
   }
 }
 
-function wireErrorResult(requestId: string, error: string): ReinjectionResult {
+function wireErrorResult(
+  requestId: string,
+  panelSessionId: PanelSessionId,
+  error: string
+): ReinjectionResult {
   return {
     requestId,
+    panelSessionId,
     ok: false,
     status: "wire-error",
     timestamp: Date.now(),

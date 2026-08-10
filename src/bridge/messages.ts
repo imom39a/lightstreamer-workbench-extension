@@ -41,6 +41,28 @@ export const PANEL_VISIBILITY_MESSAGE = "lsew:panel-visibility" as const;
 export const PAGE_REINJECTION_BRIDGE_GLOBAL = "__LSEW_REINJECTION_BRIDGE__" as const;
 export const PAGE_REINJECTION_BRIDGE_VERSION = 1 as const;
 
+export type PanelSessionId = string;
+
+/**
+ * A Panel Session identity is allocated by the panel mount before any bridge
+ * or Event History work begins. It is intentionally independent from tab
+ * identity: tab ids are routing metadata and can be reused by Chrome.
+ */
+export function createPanelSessionId(): PanelSessionId {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") {
+    return `panel-${cryptoApi.randomUUID()}`;
+  }
+  if (typeof cryptoApi?.getRandomValues === "function") {
+    const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    return `panel-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  throw new Error("A cryptographically secure random source is required for Panel Session identity.");
+}
+
 export const CAPTURE_KINDS = [
   "client-created",
   "client-status",
@@ -263,27 +285,32 @@ export type ReinjectionRequestMessage =
 export type PanelReinjectRequestMessage = {
   type: typeof PANEL_REINJECT_REQUEST;
   requestId: string;
+  panelSessionId: PanelSessionId;
   draft: ReinjectionDraftPayload;
 };
 
 export type ContentReinjectRequestMessage = {
   type: typeof CONTENT_REINJECT_REQUEST;
   requestId: string;
+  panelSessionId: PanelSessionId;
   draft: ReinjectionDraftPayload;
 };
 
 export type PageReinjectRequestMessage = {
   type: typeof PAGE_REINJECT_REQUEST;
   requestId: string;
+  panelSessionId: PanelSessionId;
   draft: ReinjectionDraftPayload;
 };
 
 export type ContentCaptureSyncRequestMessage = {
   type: typeof CONTENT_CAPTURE_SYNC_REQUEST;
+  panelSessionId: PanelSessionId;
 };
 
 export type PageCaptureSyncRequestMessage = {
   type: typeof PAGE_CAPTURE_SYNC_REQUEST;
+  panelSessionId: PanelSessionId;
 };
 
 export type ReinjectionResultStatus =
@@ -296,6 +323,7 @@ export type ReinjectionResultStatus =
 
 export type ReinjectionResult = {
   requestId: string;
+  panelSessionId?: PanelSessionId;
   ok: boolean;
   status: ReinjectionResultStatus;
   timestamp: number;
@@ -307,16 +335,19 @@ export type ReinjectionResult = {
 
 export type RuntimeReinjectResultMessage = {
   type: typeof RUNTIME_REINJECT_RESULT;
+  panelSessionId: PanelSessionId;
   result: ReinjectionResult;
 };
 
 export type ContentReinjectResultMessage = {
   type: typeof CONTENT_REINJECT_RESULT;
+  panelSessionId: PanelSessionId;
   result: ReinjectionResult;
 };
 
 export type PanelReinjectResultMessage = {
   type: typeof PANEL_REINJECT_RESULT;
+  panelSessionId: PanelSessionId;
   result: ReinjectionResult;
 };
 
@@ -336,26 +367,31 @@ export type RuntimeCaptureMessage = {
 
 export type RuntimeTopologySyncFrameMessage = {
   type: typeof RUNTIME_TOPOLOGY_SYNC_FRAME;
+  panelSessionId: PanelSessionId;
   frame: TopologySyncFrame;
 };
 
 export type PanelRegisterMessage = {
   type: typeof PANEL_REGISTER_MESSAGE;
   tabId: number;
+  panelSessionId: PanelSessionId;
 };
 
 export type PanelStatusMessage = {
   type: typeof PANEL_STATUS_MESSAGE;
+  panelSessionId: PanelSessionId;
   status: CaptureStatus;
 };
 
 export type PanelCaptureMessage = {
   type: typeof PANEL_CAPTURE_MESSAGE;
+  panelSessionId: PanelSessionId;
   message: CaptureMessage;
 };
 
 export type PanelTopologySyncFrameMessage = {
   type: typeof PANEL_TOPOLOGY_SYNC_FRAME;
+  panelSessionId: PanelSessionId;
   frame: TopologySyncFrame;
 };
 
@@ -397,6 +433,7 @@ export function isCaptureMessage(value: unknown): value is CaptureMessage {
     captureKindSet.has(value.kind) &&
     typeof value.timestamp === "number" &&
     Number.isFinite(value.timestamp) &&
+    (value.panelSessionId === undefined || isPanelSessionId(value.panelSessionId)) &&
     isRecord(value.payload) &&
     isJsonValue(value.payload) &&
     (value.topology === undefined ||
@@ -452,10 +489,15 @@ export function isRuntimeCaptureMessage(value: unknown): value is RuntimeCapture
 export function isRuntimeTopologySyncFrameMessage(
   value: unknown
 ): value is RuntimeTopologySyncFrameMessage {
+  const framePanelSessionId =
+    isRecord(value) && isRecord(value.frame) ? value.frame.panelSessionId : undefined;
   return (
     isRecord(value) &&
     value.type === RUNTIME_TOPOLOGY_SYNC_FRAME &&
-    isTopologySyncFrame(value.frame)
+    isPanelSessionId(value.panelSessionId) &&
+    isTopologySyncFrame(value.frame) &&
+    isPanelSessionId(framePanelSessionId) &&
+    framePanelSessionId === value.panelSessionId
   );
 }
 
@@ -464,7 +506,8 @@ export function isPanelRegisterMessage(value: unknown): value is PanelRegisterMe
     isRecord(value) &&
     value.type === PANEL_REGISTER_MESSAGE &&
     typeof value.tabId === "number" &&
-    Number.isInteger(value.tabId)
+    Number.isInteger(value.tabId) &&
+    isPanelSessionId(value.panelSessionId)
   );
 }
 
@@ -472,6 +515,7 @@ export function isPanelStatusMessage(value: unknown): value is PanelStatusMessag
   return (
     isRecord(value) &&
     value.type === PANEL_STATUS_MESSAGE &&
+    isPanelSessionId(value.panelSessionId) &&
     isCaptureStatus(value.status)
   );
 }
@@ -480,6 +524,7 @@ export function isPanelCaptureMessage(value: unknown): value is PanelCaptureMess
   return (
     isRecord(value) &&
     value.type === PANEL_CAPTURE_MESSAGE &&
+    isPanelSessionId(value.panelSessionId) &&
     isCaptureMessage(value.message)
   );
 }
@@ -487,10 +532,15 @@ export function isPanelCaptureMessage(value: unknown): value is PanelCaptureMess
 export function isPanelTopologySyncFrameMessage(
   value: unknown
 ): value is PanelTopologySyncFrameMessage {
+  const framePanelSessionId =
+    isRecord(value) && isRecord(value.frame) ? value.frame.panelSessionId : undefined;
   return (
     isRecord(value) &&
     value.type === PANEL_TOPOLOGY_SYNC_FRAME &&
-    isTopologySyncFrame(value.frame)
+    isPanelSessionId(value.panelSessionId) &&
+    isTopologySyncFrame(value.frame) &&
+    isPanelSessionId(framePanelSessionId) &&
+    framePanelSessionId === value.panelSessionId
   );
 }
 
@@ -544,6 +594,7 @@ export function isPanelReinjectRequestMessage(value: unknown): value is PanelRei
     isRecord(value) &&
     value.type === PANEL_REINJECT_REQUEST &&
     isNonEmptyString(value.requestId) &&
+    isPanelSessionId(value.panelSessionId) &&
     isReinjectionDraftPayload(value.draft)
   );
 }
@@ -555,6 +606,7 @@ export function isContentReinjectRequestMessage(
     isRecord(value) &&
     value.type === CONTENT_REINJECT_REQUEST &&
     isNonEmptyString(value.requestId) &&
+    isPanelSessionId(value.panelSessionId) &&
     isReinjectionDraftPayload(value.draft)
   );
 }
@@ -564,6 +616,7 @@ export function isPageReinjectRequestMessage(value: unknown): value is PageReinj
     isRecord(value) &&
     value.type === PAGE_REINJECT_REQUEST &&
     isNonEmptyString(value.requestId) &&
+    isPanelSessionId(value.panelSessionId) &&
     isReinjectionDraftPayload(value.draft)
   );
 }
@@ -571,13 +624,13 @@ export function isPageReinjectRequestMessage(value: unknown): value is PageReinj
 export function isContentCaptureSyncRequestMessage(
   value: unknown
 ): value is ContentCaptureSyncRequestMessage {
-  return isRecord(value) && value.type === CONTENT_CAPTURE_SYNC_REQUEST;
+  return isRecord(value) && value.type === CONTENT_CAPTURE_SYNC_REQUEST && isPanelSessionId(value.panelSessionId);
 }
 
 export function isPageCaptureSyncRequestMessage(
   value: unknown
 ): value is PageCaptureSyncRequestMessage {
-  return isRecord(value) && value.type === PAGE_CAPTURE_SYNC_REQUEST;
+  return isRecord(value) && value.type === PAGE_CAPTURE_SYNC_REQUEST && isPanelSessionId(value.panelSessionId);
 }
 
 export function isTopologySyncFrame(value: unknown): value is TopologySyncFrame {
@@ -666,7 +719,9 @@ export function isRuntimeReinjectResultMessage(
   return (
     isRecord(value) &&
     value.type === RUNTIME_REINJECT_RESULT &&
-    isReinjectionResult(value.result)
+    isPanelSessionId(value.panelSessionId) &&
+    isReinjectionResult(value.result) &&
+    value.result.panelSessionId === value.panelSessionId
   );
 }
 
@@ -676,7 +731,9 @@ export function isContentReinjectResultMessage(
   return (
     isRecord(value) &&
     value.type === CONTENT_REINJECT_RESULT &&
-    isReinjectionResult(value.result)
+    isPanelSessionId(value.panelSessionId) &&
+    isReinjectionResult(value.result) &&
+    value.result.panelSessionId === value.panelSessionId
   );
 }
 
@@ -684,8 +741,14 @@ export function isPanelReinjectResultMessage(value: unknown): value is PanelRein
   return (
     isRecord(value) &&
     value.type === PANEL_REINJECT_RESULT &&
-    isReinjectionResult(value.result)
+    isPanelSessionId(value.panelSessionId) &&
+    isReinjectionResult(value.result) &&
+    value.result.panelSessionId === value.panelSessionId
   );
+}
+
+export function isPanelSessionId(value: unknown): value is PanelSessionId {
+  return typeof value === "string" && /^panel-[A-Za-z0-9_-]{1,120}$/.test(value);
 }
 
 function isCaptureStatus(value: unknown): value is CaptureStatus {
