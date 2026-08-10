@@ -1,6 +1,34 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { type EventFilterState, matchesEventFilters } from "./event-filter";
 import { serializeJournalEvidenceCandidate } from "./event-history-serialization";
+import {
+  admissionFailure,
+  defaultHistoryTimer,
+  estimateHistoryCandidateBytes,
+  historyCapacityLimits,
+  pendingAgeFailure,
+  pressureFor,
+  type HistoryCapacityDimension,
+  type HistoryCapacityLimits,
+  type HistoryCapacityOptions,
+  type HistoryCapacityTier,
+  type HistoryPressureMeasurements,
+  type HistoryTrigger,
+  type HistoryTerminalReason
+} from "./event-history-capacity";
+
+export {
+  MIB,
+  HISTORY_CAPACITY_LIMITS,
+  type HistoryCapacityDimension,
+  type HistoryCapacityLimits,
+  type HistoryCapacityOptions,
+  type HistoryCapacityOverrides,
+  type HistoryCapacityTier,
+  type HistoryTimer,
+  type HistoryPressureMeasurements,
+  type HistoryTerminalReason
+} from "./event-history-capacity";
 
 /** A normalized Capture event or a validated topology checkpoint staged for acceptance. */
 export type TopologyCheckpointEvidenceCandidate = Readonly<{
@@ -31,12 +59,16 @@ export type HistoryProblemCode =
   | "HISTORY_STOPPED"
   | "HISTORY_CLOSED"
   | "JOURNAL_COMMIT_FAILED"
+  | HistoryTerminalReason
   | "CLEAR_FAILED"
   | "CLOSE_FAILED";
 
 export type HistoryProblem = Readonly<{
   code: HistoryProblemCode;
   message: string;
+  reason?: HistoryTerminalReason;
+  dimension?: HistoryCapacityDimension | "JOURNAL";
+  terminal?: HistoryTerminalDiagnostic;
 }>;
 
 export type Outcome<T> =
@@ -74,11 +106,25 @@ export type EvidenceRead = Readonly<{
   retainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }> | null;
 }>;
 
-export type HistoryCapacityTier = "NORMAL" | "LOWER";
 export type HistoryCapacityState = "AVAILABLE" | "NEAR_LIMIT" | "EXHAUSTED";
 
+export type HistoryTerminalDiagnostic = Readonly<{
+  reason: HistoryTerminalReason;
+  dimension: HistoryCapacityDimension | "JOURNAL";
+  tier: "NORMAL" | "LOWER";
+  triggerTime: number;
+  triggerInterval: HistoryInterval;
+  interval: HistoryInterval;
+  committedEvidenceBoundary: EvidenceRef | null;
+  retainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }> | null;
+  firstMissingEventId: string | null;
+  rejected: Readonly<{ count: number; bytes: number }>;
+  discarded: Readonly<{ count: number; bytes: number }>;
+  triggerMeasurements: HistoryPressureMeasurements;
+}>;
+
 export type HistoryStatus = Readonly<{
-  phase: "RUNNING" | "STOPPED" | "CLOSED";
+  phase: "RUNNING" | "DRAINING_TO_STOP" | "STOPPED" | "CLOSED";
   captureOperation: "RUNNING" | "STOPPED";
   interval: HistoryInterval;
   committedEvidenceBoundary: EvidenceRef | null;
@@ -86,6 +132,8 @@ export type HistoryStatus = Readonly<{
   capacity: Readonly<{
     tier: HistoryCapacityTier;
     state: HistoryCapacityState;
+    limits?: HistoryCapacityLimits;
+    measurements?: HistoryPressureMeasurements;
   }>;
   fallback: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
   captured: number;
@@ -93,6 +141,7 @@ export type HistoryStatus = Readonly<{
   accepted: number;
   notAccepted: number;
   retained: number;
+  terminal?: HistoryTerminalDiagnostic;
 }>;
 
 export type ClearResult = Readonly<{
@@ -120,7 +169,8 @@ export type HistoryPublication =
       interval: HistoryInterval;
       status: HistoryStatus;
     }>
-  | Readonly<{ type: "closed"; result: CloseResult }>;
+  | Readonly<{ type: "closed"; result: CloseResult }>
+  | Readonly<{ type: "terminal"; terminal: HistoryTerminalDiagnostic; status: HistoryStatus }>;
 
 export interface EventHistory {
   offer(candidate: EvidenceCandidate): CaptureReceipt;
@@ -135,7 +185,7 @@ export interface EventHistory {
 
 export type OpenEventHistoryOptions = Readonly<{
   panelSessionId?: string;
-}>;
+}> & HistoryCapacityOptions;
 
 type HistoryJournal = {
   commitBatch(batch: readonly PendingCandidate[]): Promise<void>;
@@ -146,6 +196,8 @@ type HistoryJournal = {
 type PendingCandidate = Readonly<{
   ordinal: number;
   candidate: EvidenceCandidate;
+  bytes: number;
+  offeredAt: number;
   resolve: (result: ReceiptResult) => void;
 }>;
 
@@ -170,7 +222,8 @@ type MemoryEventHistoryOptions = Readonly<{
   closeJournal?: () => Promise<void>;
   capacityTier?: HistoryCapacityTier;
   fallback?: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
-}>;
+  failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
+}> & HistoryCapacityOptions;
 
 /**
  * Opens the dormant contract implementation. The primary IndexedDB journal is
@@ -182,7 +235,7 @@ export async function openEventHistory(
 ): Promise<EventHistory> {
   try {
     const { createIndexedDbEventHistory } = await import("./event-history-indexeddb");
-    return await createIndexedDbEventHistory({ panelSessionId: options.panelSessionId });
+    return await createIndexedDbEventHistory(options);
   } catch (error) {
     const fallback =
       error && typeof error === "object" && "code" in error && error.code === "UNKNOWN_NEWER_SCHEMA"
@@ -191,7 +244,11 @@ export async function openEventHistory(
     return createMemoryHistory({
       panelSessionId: options.panelSessionId,
       capacityTier: "LOWER",
-      fallback
+      fallback,
+      clock: options.clock,
+      timer: options.timer,
+      byteEstimator: options.byteEstimator,
+      capacity: options.capacity
     });
   }
 }
@@ -207,192 +264,249 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   const sessionId = options.panelSessionId ?? `session-${nextId()}`;
   const journal: HistoryJournal = {
     async commitBatch(batch) {
+      await options.failure?.commitBatch?.(batch.map((entry) => entry.candidate));
       await options.commitBatch?.(batch.map((entry) => entry.candidate));
     },
-    async clear() {
-      await options.clearJournal?.();
-    },
-    async close() {
-      await options.closeJournal?.();
-    }
+    async clear() { await options.clearJournal?.(); },
+    async close() { await options.closeJournal?.(); }
   };
   const capacityTier = options.capacityTier ?? "NORMAL";
+  const limits = historyCapacityLimits(capacityTier, options.capacity);
+  const clock = options.clock ?? Date.now;
+  const timer = options.timer ?? defaultHistoryTimer();
   const fallback = options.fallback ?? null;
   const subscribers = new Set<Subscriber>();
   const committed: CommittedEvidence[] = [];
   const pending: PendingCandidate[] = [];
+  const inFlight: PendingCandidate[] = [];
   const idleWaiters: Array<() => void> = [];
   let intervalOrdinal = 1;
   let interval = createInterval(sessionId, intervalOrdinal);
   let nextCaptureOrdinal = 1;
   let nextEvidenceSequence = 1;
   let committedEvidenceBoundary: EvidenceRef | null = null;
+  let retainedBytes = 0;
   let accepted = 0;
   let notAccepted = 0;
+  let rejectedCount = 0;
+  let rejectedBytes = 0;
+  let discardedCount = 0;
+  let discardedBytes = 0;
   let processing = false;
   let scheduled = false;
+  let ageTimer: unknown = null;
   let phase: HistoryStatus["phase"] = "RUNNING";
   let closing = false;
   let clearPromise: Promise<Outcome<ClearResult>> | null = null;
   let lastClearResult: ClearResult | null = null;
   let closePromise: Promise<Outcome<CloseResult>> | null = null;
+  let trigger: HistoryTrigger | null = null;
+  let terminal: HistoryTerminalDiagnostic | undefined;
+  let lastNearLimit = false;
+
+  function measurements(): HistoryPressureMeasurements {
+    const awaiting = [...inFlight, ...pending].sort((left, right) => left.ordinal - right.ordinal);
+    const oldest = awaiting[0];
+    return Object.freeze({
+      retainedCount: committed.filter((entry) => entry.intervalId === interval.id).length,
+      retainedBytes,
+      pendingCount: awaiting.length,
+      pendingBytes: awaiting.reduce((total, entry) => total + entry.bytes, 0),
+      oldestPendingAgeMs: oldest ? Math.max(0, clock() - oldest.offeredAt) : null
+    });
+  }
 
   function status(problem?: HistoryProblem): HistoryStatus {
     const intervalEvidence = committed.filter((entry) => entry.intervalId === interval.id);
-    const retainedRange = intervalEvidence.length
-      ? {
-          first: toRef(intervalEvidence[0]),
-          last: toRef(intervalEvidence[intervalEvidence.length - 1])
-        }
-      : null;
+    const retainedRange = intervalEvidence.length ? { first: toRef(intervalEvidence[0]), last: toRef(intervalEvidence.at(-1)!) } : null;
+    const pressure = pressureFor(limits, measurements());
     const base: HistoryStatus = deepFreeze({
       phase,
       captureOperation: phase === "RUNNING" && !closing ? "RUNNING" : "STOPPED",
       interval,
       committedEvidenceBoundary,
       retainedRange,
-      capacity: {
-        tier: capacityTier,
-        state: phase === "STOPPED" ? "EXHAUSTED" : "AVAILABLE"
-      },
+      capacity: { tier: capacityTier, state: phase !== "RUNNING" ? "EXHAUSTED" : pressure.nearLimit ? "NEAR_LIMIT" : "AVAILABLE", limits, measurements: pressure.measurements },
       fallback,
       captured: nextCaptureOrdinal - 1,
-      awaitingAcceptance: pending.length,
+      awaitingAcceptance: pending.length + inFlight.length,
       accepted,
       notAccepted,
-      retained: intervalEvidence.length
+      retained: intervalEvidence.length,
+      ...(terminal ? { terminal } : {})
     });
     return problem ? deepFreeze({ ...base, problem }) as HistoryStatus : base;
   }
 
-  function problem(code: HistoryProblemCode, message: string): HistoryProblem {
-    return deepFreeze({ code, message });
+  function problem(code: HistoryProblemCode, message: string, extras: Partial<HistoryProblem> = {}): HistoryProblem {
+    return deepFreeze({ code, message, ...extras });
   }
 
-  function refusal(code: "HISTORY_STOPPED" | "HISTORY_CLOSED", message: string): CaptureReceipt {
+  function pressureChanged(): void {
+    const near = pressureFor(limits, measurements()).nearLimit;
+    if (near !== lastNearLimit) {
+      lastNearLimit = near;
+      publish({ type: "status", status: status() });
+    }
+  }
+
+  function makeTrigger(reason: HistoryTerminalReason, dimension: HistoryCapacityDimension | "JOURNAL", firstMissingEventId: string | null): HistoryTrigger {
+    return deepFreeze({ reason, dimension, tier: capacityTier, triggerTime: clock(), interval, firstMissingEventId, measurements: measurements() });
+  }
+
+  function terminalProblem(triggerValue: HistoryTrigger): HistoryProblem {
+    return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.`, { reason: triggerValue.reason, dimension: triggerValue.dimension });
+  }
+
+  function refuseStopped(): CaptureReceipt {
     notAccepted += 1;
-    const issue = problem(code, message);
-    return {
-      intake: "REFUSED",
-      settled: Promise.resolve({
-        outcome: "NOT_EVIDENCE",
-        problem: issue,
-        committedEvidenceBoundary
-      })
-    };
+    const bytes = 0;
+    rejectedCount += 1;
+    rejectedBytes += bytes;
+    const issue = terminal
+      ? problem(terminal.reason, `Event History stopped because ${terminal.reason}.`, { reason: terminal.reason, dimension: terminal.dimension, terminal })
+      : trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
+    return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
+  }
+
+  function refuseClosed(): CaptureReceipt {
+    notAccepted += 1;
+    return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: problem("HISTORY_CLOSED", "Event History is closed and cannot accept Capture."), committedEvidenceBoundary }) };
+  }
+
+  function finishTerminal(): void {
+    if (phase !== "DRAINING_TO_STOP" || processing || pending.length > 0 || inFlight.length > 0 || terminal) return;
+    phase = "STOPPED";
+    if (!trigger) return;
+    const intervalEvidence = committed.filter((entry) => entry.intervalId === interval.id);
+    const retainedRange = intervalEvidence.length ? { first: toRef(intervalEvidence[0]), last: toRef(intervalEvidence.at(-1)!) } : null;
+    terminal = deepFreeze({
+      reason: trigger.reason,
+      dimension: trigger.dimension,
+      tier: trigger.tier,
+      triggerTime: trigger.triggerTime,
+      triggerInterval: trigger.interval,
+      interval,
+      committedEvidenceBoundary,
+      retainedRange,
+      firstMissingEventId: trigger.firstMissingEventId,
+      rejected: { count: rejectedCount, bytes: rejectedBytes },
+      discarded: { count: discardedCount, bytes: discardedBytes },
+      triggerMeasurements: trigger.measurements
+    });
+    const issue = terminalProblem(trigger);
+    publish({ type: "terminal", terminal, status: status(issue) });
+    publish({ type: "status", status: status(issue), problem: issue });
+  }
+
+  function beginDrain(reason: HistoryTerminalReason, dimension: HistoryCapacityDimension | "JOURNAL", firstMissingEventId: string | null): void {
+    if (phase === "STOPPED" || phase === "CLOSED") return;
+    phase = "DRAINING_TO_STOP";
+    trigger = makeTrigger(reason, dimension, firstMissingEventId);
+    publish({ type: "status", status: status(terminalProblem(trigger)) });
+    finishTerminal();
+  }
+
+  function scheduleAgeCheck(): void {
+    if (ageTimer !== null) timer.clearTimeout(ageTimer);
+    ageTimer = null;
+    const oldest = [...inFlight, ...pending].sort((left, right) => left.ordinal - right.ordinal)[0];
+    if (!oldest || phase !== "RUNNING") return;
+    const age = Math.max(0, clock() - oldest.offeredAt);
+    const delay = Math.max(0, (age < limits.pendingAgeWarningMs ? limits.pendingAgeWarningMs : limits.pendingAgeStopMs) - age);
+    ageTimer = timer.setTimeout(() => {
+      ageTimer = null;
+      pressureChanged();
+      const currentAge = measurements().oldestPendingAgeMs;
+      if (pendingAgeFailure(limits, currentAge)) beginDrain("PENDING_AGE_LIMIT", "PENDING_AGE", oldest.candidate.id);
+      else scheduleAgeCheck();
+    }, delay);
   }
 
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
-    if (phase === "CLOSED" || closing) {
-      return refusal("HISTORY_CLOSED", "Event History is closed and cannot accept Capture.");
-    }
-    if (phase === "STOPPED") {
-      return refusal("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
-    }
-
+    if (phase === "CLOSED" || closing) return refuseClosed();
+    if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return refuseStopped();
     let copied: EvidenceCandidate;
+    let bytes: number;
     try {
       copied = copyCandidate(candidate);
+      bytes = estimateHistoryCandidateBytes(copied, options.byteEstimator);
     } catch (error) {
       notAccepted += 1;
-      const issue = problem(
-        "INVALID_CANDIDATE",
-        error instanceof Error ? error.message : "Candidate is not valid Evidence input."
-      );
-      return {
-        intake: "REFUSED",
-        settled: Promise.resolve({
-          outcome: "NOT_EVIDENCE",
-          problem: issue,
-          committedEvidenceBoundary
-        })
-      };
+      const issue = problem("INVALID_CANDIDATE", error instanceof Error ? error.message : "Candidate is not valid Evidence input.");
+      return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
     }
-
+    const current = measurements();
+    const failure = admissionFailure(limits, current, bytes);
+    if (failure) {
+      notAccepted += 1;
+      rejectedCount += 1;
+      rejectedBytes += bytes;
+      beginDrain(failure.reason, failure.dimension, copied.id);
+      const issue = terminalProblem(trigger!);
+      return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary }) };
+    }
     let resolveReceipt!: (result: ReceiptResult) => void;
-    const settled = new Promise<ReceiptResult>((resolve) => {
-      resolveReceipt = resolve;
-    });
-    pending.push({ ordinal: nextCaptureOrdinal++, candidate: copied, resolve: resolveReceipt });
+    const settled = new Promise<ReceiptResult>((resolve) => { resolveReceipt = resolve; });
+    pending.push({ ordinal: nextCaptureOrdinal++, candidate: copied, bytes, offeredAt: clock(), resolve: resolveReceipt });
     lastClearResult = null;
+    scheduleAgeCheck();
+    pressureChanged();
     scheduleProcessing();
     return { intake: "QUEUED", settled };
   }
 
   function scheduleProcessing(): void {
-    if (scheduled || processing || pending.length === 0) {
-      return;
-    }
+    if (scheduled || processing || pending.length === 0) return;
     scheduled = true;
-    queueMicrotask(() => {
-      scheduled = false;
-      void processPending();
-    });
+    queueMicrotask(() => { scheduled = false; void processPending(); });
   }
 
   async function processPending(): Promise<void> {
-    if (processing) {
-      return;
-    }
+    if (processing) return;
     processing = true;
     try {
-      while (pending.length > 0 && phase === "RUNNING") {
+      while (pending.length > 0 && (phase === "RUNNING" || phase === "DRAINING_TO_STOP")) {
         const batch = pending.splice(0);
+        inFlight.push(...batch);
         try {
           await journal.commitBatch(batch);
         } catch (error) {
-          const issue = problem(
-            "JOURNAL_COMMIT_FAILED",
-            error instanceof Error ? error.message : "The Evidence journal could not commit the batch."
-          );
-          stopAtBoundary(issue, batch);
+          const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
+          const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null);
+          trigger = failedTrigger;
+          const rejected = [...batch, ...pending.splice(0)];
+          inFlight.length = 0;
+          notAccepted += rejected.length;
+          rejectedCount += rejected.length;
+          rejectedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
+          discardedCount += rejected.length;
+          discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
+          for (const entry of rejected) entry.resolve({ outcome: "NOT_EVIDENCE", problem: terminalProblem(failedTrigger), committedEvidenceBoundary });
+          phase = "DRAINING_TO_STOP";
+          finishTerminal();
           break;
         }
-
         const evidence = batch.map((entry) => {
-          const reference = deepFreeze({
-            intervalId: interval.id,
-            sequence: nextEvidenceSequence++,
-            eventId: candidateId(entry.candidate)
-          });
+          const reference = deepFreeze({ intervalId: interval.id, sequence: nextEvidenceSequence++, eventId: candidateId(entry.candidate) });
           return deepFreeze({ ...reference, candidate: entry.candidate });
         });
+        inFlight.length = 0;
         committed.push(...evidence);
+        retainedBytes += batch.reduce((sum, entry) => sum + entry.bytes, 0);
         accepted += evidence.length;
-        committedEvidenceBoundary = toRef(evidence[evidence.length - 1]);
-        const publication = deepFreeze({
-          type: "committed-evidence" as const,
-          interval,
-          evidence,
-          committedEvidenceBoundary
-        });
-        publish(publication);
-        for (const [index, entry] of batch.entries()) {
-          entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: toRef(evidence[index]) });
-        }
+        committedEvidenceBoundary = toRef(evidence.at(-1)!);
+        publish(deepFreeze({ type: "committed-evidence" as const, interval, evidence, committedEvidenceBoundary }));
+        for (const [index, entry] of batch.entries()) entry.resolve({ outcome: "BECAME_EVIDENCE", evidence: toRef(evidence[index]) });
+        scheduleAgeCheck();
+        pressureChanged();
       }
     } finally {
       processing = false;
+      if (pending.length > 0 && phase === "RUNNING") scheduleProcessing();
+      finishTerminal();
       resolveIdleWaiters();
-      if (pending.length > 0 && phase === "RUNNING") {
-        scheduleProcessing();
-      }
     }
-  }
-
-  function stopAtBoundary(issue: HistoryProblem, failedBatch: readonly PendingCandidate[]): void {
-    phase = "STOPPED";
-    const rejected = [...failedBatch, ...pending.splice(0)];
-    notAccepted += rejected.length;
-    const boundary = committedEvidenceBoundary;
-    for (const entry of rejected) {
-      entry.resolve({
-        outcome: "NOT_EVIDENCE",
-        problem: issue,
-        committedEvidenceBoundary: boundary
-      });
-    }
-    publish({ type: "status", status: status(issue), problem: issue });
   }
 
   function read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>> {
@@ -434,7 +548,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       if (phase === "CLOSED") {
         return { ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed.") };
       }
-      if (phase === "STOPPED") {
+      if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") {
         return { ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") };
       }
       const previousInterval = interval;
@@ -449,7 +563,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         return { ok: false, problem: issue };
       }
       committed.length = 0;
+      retainedBytes = 0;
       interval = createInterval(sessionId, ++intervalOrdinal);
+      lastNearLimit = false;
       const result = deepFreeze({ previousInterval, interval });
       lastClearResult = result;
       publish(
@@ -477,6 +593,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       return Promise.resolve({ ok: true, value: result });
     }
     closing = true;
+    if (ageTimer !== null) timer.clearTimeout(ageTimer);
+    ageTimer = null;
     closePromise = waitForIdle().then(async () => {
       try {
         await journal.clear();
@@ -495,6 +613,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       }
       const result = closeResult();
       committed.length = 0;
+      retainedBytes = 0;
       phase = "CLOSED";
       publish(deepFreeze({ type: "closed" as const, result }));
       return { ok: true, value: result };
@@ -661,6 +780,12 @@ function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
 
 function nextId(): string {
   return Math.random().toString(36).slice(2);
+}
+
+function isQuotaError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { name?: unknown; code?: unknown };
+  return value.name === "QuotaExceededError" || value.code === "QUOTA_EXCEEDED";
 }
 
 function deepFreeze<T>(value: T): T {
