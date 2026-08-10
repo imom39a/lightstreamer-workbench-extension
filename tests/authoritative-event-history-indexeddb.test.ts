@@ -233,12 +233,15 @@ describe("IndexedDB authoritative EventHistory", () => {
       value: { evidence: [expect.objectContaining({ eventId: "cursor-event" })] }
     });
     const replayed: string[] = [];
+    let resolveReplay!: () => void;
+    const replayComplete = new Promise<void>((resolve) => { resolveReplay = resolve; });
     const unsubscribe = history.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
       if (publication.type === "committed-evidence") {
         replayed.push(...publication.evidence.map((entry) => entry.eventId));
+        resolveReplay();
       }
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await replayComplete;
 
     expect(openCursorSpy).toHaveBeenCalled();
     expect(getAllSpy).not.toHaveBeenCalled();
@@ -259,12 +262,17 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(getAllSpy).not.toHaveBeenCalled();
 
     const received: string[] = [];
+    let resolveReplay!: () => void;
+    const replayComplete = new Promise<void>((resolve) => { resolveReplay = resolve; });
     const unsubscribe = reopened.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
-      if (publication.type === "committed-evidence") received.push(...publication.evidence.map((entry) => entry.eventId));
+      if (publication.type === "committed-evidence") {
+        received.push(...publication.evidence.map((entry) => entry.eventId));
+        if (received.length === 601) resolveReplay();
+      }
     });
     const live = reopened.offer(candidate("replay-live"));
     await expect(live.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 601 } });
-    await vi.waitFor(() => expect(received).toHaveLength(601));
+    await replayComplete;
     expect(received).toEqual([...Array.from({ length: 600 }, (_, index) => `replay-${index}`), "replay-live"]);
 
     unsubscribe();
@@ -303,6 +311,37 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("does not resolve a read before its readonly transaction completes", async () => {
+    const history = await freshHistory("indexed-read-abort");
+    await history.offer(candidate("read-abort-before")).settled;
+    const originalOpenCursor = IDBObjectStore.prototype.openCursor;
+    const openCursorSpy = vi.spyOn(IDBObjectStore.prototype, "openCursor").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore["openCursor"]>
+    ) {
+      const request = originalOpenCursor.apply(this, args);
+      if (this.name === "evidence") {
+        request.addEventListener("success", () => {
+          if (request.result === null) {
+            queueMicrotask(() => {
+              try {
+                request.transaction?.abort();
+              } catch {
+                // The transaction may already have completed.
+              }
+            });
+          }
+        });
+      }
+      return request;
+    });
+
+    await expect(history.read({})).rejects.toThrow(/aborted|failed/i);
+
+    openCursorSpy.mockRestore();
+    await history.close();
+  });
+
   it("isolates observer failure and unsubscribe during journal replay", async () => {
     const history = await freshHistory("indexed-observer-isolation");
     await history.offer(candidate("observer-event")).settled;
@@ -314,7 +353,6 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     unsubscribe();
     await history.offer(candidate("after-unsubscribe")).settled;
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(failing).toHaveBeenCalled();
     expect(healthy).toEqual([]);
@@ -488,6 +526,77 @@ describe("IndexedDB authoritative EventHistory", () => {
       committedEvidenceBoundary: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" },
       retainedRange: { first: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" }, last: { intervalId: interval.id, sequence: 1, eventId: "coherent-record" } },
       retainedCount: 0,
+      replayPayloadBytes: serialized.bytes
+    });
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+
+    const history = await openEventHistory({ panelSessionId });
+    let initialStatus: unknown;
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") initialStatus = publication.status;
+    });
+    expect(initialStatus).toMatchObject({ capacity: { tier: "LOWER" }, fallback: "PRIMARY_JOURNAL_UNAVAILABLE" });
+    await history.close();
+  });
+
+  it("falls back when the first interval starts with a non-initial sequence", async () => {
+    const panelSessionId = "indexed-invalid-initial-sequence";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const name = authoritativeEventDatabaseName(panelSessionId);
+    const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
+    request.onupgradeneeded = () => {
+      const evidence = request.result.createObjectStore("evidence", { keyPath: "sequence" });
+      evidence.createIndex("eventIdentity", "eventId", { unique: true });
+      evidence.createIndex("facets", "facets", { multiEntry: true });
+      request.result.createObjectStore("historyControl", { keyPath: "key" });
+    };
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const interval = { id: `${panelSessionId}:interval-1`, ordinal: 1 };
+    const serialized = serializeJournalEvidenceCandidate(candidate("invalid-sequence"));
+    const facets = [
+      ["v1", "kind", "item-update"],
+      ["v1", "clientId", null],
+      ["v1", "sessionId", null],
+      ["v1", "subscriptionId", null],
+      ["v1", "mode", null],
+      ["v1", "item", null],
+      ["v1", "itemPosition", null],
+      ["v1", "listenerId", null],
+      ["v1", "key", null],
+      ["v1", "command", null],
+      ["v1", "snapshot", false],
+      ["v1", "synthetic", false]
+    ].map((value) => JSON.stringify(value));
+    const transaction = database.transaction(["historyControl", "evidence"], "readwrite");
+    transaction.objectStore("evidence").put({
+      intervalId: interval.id,
+      sequence: 2,
+      eventId: "invalid-sequence",
+      replayPayload: serialized.payload,
+      serializedBytes: serialized.bytes,
+      facets
+    });
+    transaction.objectStore("historyControl").put({
+      key: "control",
+      schemaVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+      recordVersion: 1,
+      panelSessionId,
+      interval,
+      nextSequence: 3,
+      committedEvidenceBoundary: { intervalId: interval.id, sequence: 2, eventId: "invalid-sequence" },
+      retainedRange: {
+        first: { intervalId: interval.id, sequence: 2, eventId: "invalid-sequence" },
+        last: { intervalId: interval.id, sequence: 2, eventId: "invalid-sequence" }
+      },
+      retainedCount: 1,
       replayPayloadBytes: serialized.bytes
     });
     await new Promise<void>((resolve, reject) => {

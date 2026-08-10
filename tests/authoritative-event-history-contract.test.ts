@@ -79,6 +79,25 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
         }
       });
 
+      const pagingCases = [
+        { query: { order: "asc" as const, limit: 2 }, ids: ["alpha", "beta"], total: 3 },
+        { query: { order: "desc" as const, limit: 2 }, ids: ["other", "beta"], total: 3 },
+        { query: { order: "asc" as const, offsetFromNewest: 0, limit: 2 }, ids: ["beta", "other"], total: 3 },
+        { query: { order: "asc" as const, offsetFromNewest: 1, limit: 2 }, ids: ["alpha", "beta"], total: 3 },
+        { query: { order: "desc" as const, offsetFromNewest: 1, limit: 2 }, ids: ["beta", "alpha"], total: 3 },
+        { query: { order: "desc" as const, afterSequence: 1, limit: 1 }, ids: ["other"], total: 2 },
+        { query: { order: "asc" as const, limit: 0 }, ids: [], total: 3 },
+        { query: { order: "asc" as const, offsetFromNewest: -1, limit: -1 }, ids: [], total: 3 }
+      ];
+      for (const pagingCase of pagingCases) {
+        const result = await history.read(pagingCase.query);
+        expect(result).toMatchObject({ ok: true });
+        if (result.ok) {
+          expect(result.value.total).toBe(pagingCase.total);
+          expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(pagingCase.ids);
+        }
+      }
+
       const checkpoint = {
         kind: "topology-checkpoint" as const,
         id: "checkpoint-filtered",

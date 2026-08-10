@@ -528,8 +528,22 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
           reject(new Error("The history control totals or range do not match its evidence records."));
           return;
         }
+        if (first && control.interval.ordinal === 1 && first.sequence !== 1) {
+          reject(new Error("The first retained Evidence sequence is incoherent with the Panel Session interval."));
+          return;
+        }
         if (last && !sameRef(control.committedEvidenceBoundary, last)) {
           reject(new Error("The history control committed boundary is incoherent."));
+          return;
+        }
+        if (control.committedEvidenceBoundary !== null) {
+          const boundaryOrdinal = intervalOrdinal(panelSessionId, control.committedEvidenceBoundary.intervalId);
+          if (boundaryOrdinal === null || boundaryOrdinal > control.interval.ordinal || (!first && boundaryOrdinal >= control.interval.ordinal)) {
+            reject(new Error("The history control committed boundary interval is incoherent."));
+            return;
+          }
+        } else if (control.interval.ordinal > 1 && control.nextSequence !== 1) {
+          reject(new Error("A non-initial History Interval must retain its panel-lifetime boundary."));
           return;
         }
         resolve();
@@ -565,19 +579,37 @@ type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, query: EvidenceQuery): Promise<JournalRead> {
   return new Promise((resolve, reject) => {
     const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
+    const completed = transactionDone(transaction, "reading Event History");
     const request = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).openCursor();
     const selected: CommittedEvidence[] = [];
     let total = 0;
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB Evidence read failed."));
+    let settled = false;
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      reject(error instanceof Error ? error : new Error("IndexedDB Evidence read failed."));
+    };
+    const finish = (): void => {
+      if (settled) return;
+      void completed.then(
+        () => {
+          if (settled) return;
+          settled = true;
+          resolve({ evidence: pageJournalSelection(selected, query, total), total });
+        },
+        fail
+      );
+    };
+    request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence read failed."));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) {
-        resolve({ evidence: pageJournalSelection(selected, query, total), total });
+        finish();
         return;
       }
       const record = cursor.value as EvidenceRecord;
       if (latch.retainedRange === null || record.sequence > latch.retainedRange.last.sequence) {
-        resolve({ evidence: pageJournalSelection(selected, query, total), total });
+        finish();
         return;
       }
       if (record.intervalId === latch.interval.id && record.sequence >= latch.retainedRange.first.sequence) {
@@ -589,8 +621,7 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
       }
       cursor.continue();
     };
-    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB Evidence read transaction failed."));
-    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB Evidence read transaction aborted."));
+    void completed.catch(fail);
   });
 }
 
@@ -644,6 +675,13 @@ function assertExactKeys(value: object, keys: readonly string[]): void {
 
 function isInterval(value: unknown): value is HistoryInterval {
   return Boolean(value && typeof value === "object" && Object.keys(value).sort().join(",") === "id,ordinal" && typeof (value as HistoryInterval).id === "string" && Number.isSafeInteger((value as HistoryInterval).ordinal) && (value as HistoryInterval).ordinal > 0);
+}
+
+function intervalOrdinal(panelSessionId: string, intervalId: string): number | null {
+  const prefix = `${panelSessionId}:interval-`;
+  if (!intervalId.startsWith(prefix)) return null;
+  const ordinal = Number(intervalId.slice(prefix.length));
+  return Number.isSafeInteger(ordinal) && ordinal > 0 ? ordinal : null;
 }
 
 function assertRef(value: EvidenceRef): void {
