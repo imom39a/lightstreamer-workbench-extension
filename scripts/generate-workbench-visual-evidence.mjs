@@ -105,11 +105,11 @@ try {
     },
     review: {
       classification: "Material UI",
-      changedWorkflow: "Session operations now exposes first-party Documentation, Privacy, and Support links in a subordinate Help & resources section.",
+      changedWorkflow: "Session operations and the global footer now identify retained Evidence as owned by the current Panel Session, including its backing, close lifecycle, Clear scope, and irreversible consequence.",
       acceptanceCriteria: [
-        "Help & resources is visually subordinate to retained-Evidence and destructive session operations.",
-        "Documentation, Privacy, and Support are readable, fully visible, and reachable by keyboard in normal, compact, and shallow geometry.",
-        "Each resource opens the canonical first-party site in a separate tab without replacing the DevTools investigation.",
+        "The current Panel Session history names its selected IndexedDB or in-memory backing and states that it is cleared when this Panel Session closes.",
+        "Clear retained Evidence names the retained count and current Panel Session scope, while stating that Scope and Filter do not limit the destructive action.",
+        "The confirmation names retained Evidence from this Panel Session and its irreversible consequence; the healthy footer states that Evidence is retained for this Panel Session.",
         "The changed workflow has no serious or critical axe violations, browser diagnostics, clipping, or horizontal shell overflow."
       ],
       browserResult: {
@@ -120,8 +120,8 @@ try {
         checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "Each Help scenario focuses Clear retained Evidence, advances with Tab to Documentation, verifies its visible 2px focus outline, and keeps Help, Privacy, and Support within the viewport.",
-      baselineIntent: "Replace the retired shallow More-actions baseline with a Help-focused shallow baseline and add normal and compact Help-focused baselines. No unrelated baseline change is intended."
+      keyboardAndFocus: "Each Session operations scenario reaches Clear retained Evidence by keyboard, preserves the existing focus route through the subordinate resources, and keeps the changed scope copy visible in normal, compact, and shallow geometry.",
+      baselineIntent: "Update exactly 14 affected scenario baselines on each platform (28 committed PNG files total) across compact, normal, shallow, and wide Session operations or healthy-footer states whose visible copy changes to Panel Session scope; no layout, styling, interaction, or unrelated baseline change is intended. The normal-limited-capture Darwin/Linux pair remains unchanged because its diagnostic copy is unaffected."
     },
     durationMs: Date.now() - startedAt,
     scenarios: results

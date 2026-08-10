@@ -418,10 +418,45 @@ test("Workbench keeps low-frequency session controls and scoped export deliberat
   await expect(moreActions).toHaveAttribute("aria-controls", "workbench-context");
   await moreActions.click();
   const operationsHeading = page.getByRole("heading", { name: "Session operations" });
+  const operations = page.getByRole("region", { name: "Session operations" });
   await expect(operationsHeading).toBeFocused();
   await expect(moreActions).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByText("Evidence is retained for this Panel Session.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Clear retained Evidence…" }).click();
-  await expect(page.getByText(/Clear all \d+ retained Evidence events for this DevTools session\?/)).toBeVisible();
+  await expect(page.getByText(/Clear all \d+ retained Evidence events for this Panel Session\?/)).toBeVisible();
+  await expect(operations.getByText(/Clear all \d+ retained Evidence events for this Panel Session\. Scope and Filter do not limit this destructive action\./)).toBeVisible();
+  await expect(page.getByText("This removes retained Evidence from this Panel Session and cannot be undone.", { exact: true })).toBeVisible();
+  const confirmation = operations.locator(".workbench-react__confirmation");
+  const contextBody = page.locator(".workbench-react__context-body");
+  const initialContextScrollTop = await contextBody.evaluate((element) => element.scrollTop);
+  await contextBody.hover();
+  await page.mouse.wheel(0, 500);
+  await expect.poll(() => contextBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(initialContextScrollTop);
+  const clearEvents = confirmation.getByRole("button", { name: "Clear retained events" });
+  const keepEvidence = confirmation.getByRole("button", { name: "Keep Evidence" });
+  await clearEvents.focus();
+  await expect(clearEvents).toBeFocused();
+  const confirmationViewport = await contextBody.evaluate((owner) => {
+    const element = owner.querySelector<HTMLElement>(".workbench-react__confirmation");
+    if (!element) throw new Error("Session operations confirmation is missing.");
+    const ownerRect = owner.getBoundingClientRect();
+    const elements = [element, ...Array.from(element.querySelectorAll("button"))];
+    const fullyVisible = elements.every((target) => {
+      const rect = target.getBoundingClientRect();
+      return rect.top >= ownerRect.top && rect.bottom <= ownerRect.bottom && rect.left >= ownerRect.left && rect.right <= ownerRect.right;
+    });
+    const focused = document.activeElement;
+    const focusedRect = focused instanceof HTMLElement ? focused.getBoundingClientRect() : null;
+    const focusedVisible = Boolean(focused instanceof HTMLElement && focusedRect && focusedRect.top >= ownerRect.top && focusedRect.bottom <= ownerRect.bottom && focusedRect.left >= ownerRect.left && focusedRect.right <= ownerRect.right && focused.contains(document.elementFromPoint(focusedRect.left + focusedRect.width / 2, focusedRect.top + focusedRect.height / 2)));
+    return {
+      fullyVisible,
+      focusedVisible,
+      horizontalOverflow: owner.scrollWidth > owner.clientWidth,
+      scrollTop: owner.scrollTop
+    };
+  });
+  expect(confirmationViewport).toMatchObject({ fullyVisible: true, focusedVisible: true, horizontalOverflow: false });
+  await expect(keepEvidence).toBeVisible();
   await page.getByRole("button", { name: "Keep Evidence" }).click();
 
   await page.getByRole("button", { name: "Export Scope…" }).click();
@@ -455,7 +490,7 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   await more.focus();
   await page.keyboard.press("Enter");
   const operations = page.getByRole("region", { name: "Session operations" });
-  await expect(operations).toContainText("current DevTools session history");
+  await expect(operations).toContainText("current Panel Session history");
   await expect(page.getByRole("button", { name: "Collapse Context" })).toHaveCount(0);
   await expect(operations).toContainText("4,000 retained");
   await expect(operations).toContainText("4,000 captured");
@@ -476,7 +511,8 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   const clear = operations.getByRole("button", { name: "Clear retained Evidence…" });
   await expect(clear).toBeVisible();
   await clear.click();
-  await expect(operations).toContainText("Clear all 4,000 retained Evidence events for this DevTools session?");
+  await expect(operations).toContainText("Clear all 4,000 retained Evidence events for this Panel Session?");
+  await expect(operations).toContainText("This removes retained Evidence from this Panel Session and cannot be undone.");
   await operations.getByRole("button", { name: "Keep Evidence" }).click();
 
   const operationsLayout = await operations.evaluate((element) => {

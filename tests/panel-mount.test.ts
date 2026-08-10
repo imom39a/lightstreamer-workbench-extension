@@ -429,7 +429,7 @@ describe("production panel mount wiring", () => {
     expect(root.textContent?.split(storageDetail)).toHaveLength(2);
     await clickButton(root, "More actions");
     expect(root.textContent).toContain(
-      "current DevTools session history uses in-memory fallback"
+      "current Panel Session history uses in-memory fallback"
     );
     expect(consoleError).toHaveBeenCalledWith(
       "Falling back to in-memory event storage.",
