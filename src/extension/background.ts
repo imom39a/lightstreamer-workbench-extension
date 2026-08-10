@@ -158,6 +158,15 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   if (tabId === undefined) {
     return false;
   }
+  if (message.panelSessionId) {
+    const registration = panelPortsByTab.get(tabId)?.get(message.panelSessionId);
+    registration?.port.postMessage({
+      type: PANEL_CAPTURE_MESSAGE,
+      panelSessionId: registration.panelSessionId,
+      message: message.message
+    });
+    return false;
+  }
   for (const registration of panelPortsByTab.get(tabId)?.values() ?? []) {
     registration.port.postMessage({
       type: PANEL_CAPTURE_MESSAGE,

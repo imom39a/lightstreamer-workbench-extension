@@ -74,6 +74,7 @@ type InstrumentationState = {
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
   emitLegacy(kind: CaptureKind, payload: CapturePayload): void;
+  emitLegacyToPanel(kind: CaptureKind, payload: CapturePayload, panelSessionId: PanelSessionId): void;
 };
 
 type MethodOwner = Record<string, unknown>;
@@ -239,6 +240,17 @@ export function installLightstreamerInstrumentation(
       try {
         const sanitizedPayload = sanitizeCapturePayload(payload);
         postMessage(createCaptureMessage(kind, sanitizedPayload));
+      } catch (_error) {
+        // Compatibility replay is optional and must remain fail-open.
+      }
+    },
+    emitLegacyToPanel(kind, payload, panelSessionId) {
+      try {
+        const sanitizedPayload = sanitizeCapturePayload(payload);
+        postMessage({
+          ...createCaptureMessage(kind, sanitizedPayload),
+          panelSessionId
+        });
       } catch (_error) {
         // Compatibility replay is optional and must remain fail-open.
       }
@@ -3255,7 +3267,11 @@ function installCaptureSyncHandler(host: LightstreamerHost, state: Instrumentati
         continue;
       }
       for (const row of Array.from(rows.values())) {
-        state.emitLegacy("item-update", commandReplayPayload(row, activeSubscription));
+        state.emitLegacyToPanel(
+          "item-update",
+          commandReplayPayload(row, activeSubscription),
+          event.data.panelSessionId
+        );
       }
     }
   });

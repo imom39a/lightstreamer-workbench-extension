@@ -42,22 +42,149 @@ describe("Panel Session background routing", () => {
     onConnect?.(second.port);
     second.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelB });
 
-    const message = createCaptureMessage("client-created", { client: { id: "client-1" } });
+    const firstCapture = createCaptureMessage("client-created", { client: { id: "client-1" } });
+    const secondCapture = createCaptureMessage("client-created", { client: { id: "client-2" } });
     onMessage?.(
-      { type: RUNTIME_CAPTURE_MESSAGE, message },
+      { type: RUNTIME_CAPTURE_MESSAGE, message: firstCapture },
+      { tab: { id: 7 } } as chrome.runtime.MessageSender
+    );
+    onMessage?.(
+      { type: RUNTIME_CAPTURE_MESSAGE, message: secondCapture },
       { tab: { id: 7 } } as chrome.runtime.MessageSender
     );
 
-    expect(firstMessages).toContainEqual({
-      type: PANEL_CAPTURE_MESSAGE,
-      panelSessionId: panelA,
-      message
-    });
+    expect(firstMessages.filter((message) => (message as { type?: unknown }).type === PANEL_CAPTURE_MESSAGE)).toEqual([
+      {
+        type: PANEL_CAPTURE_MESSAGE,
+        panelSessionId: panelA,
+        message: firstCapture
+      },
+      {
+        type: PANEL_CAPTURE_MESSAGE,
+        panelSessionId: panelA,
+        message: secondCapture
+      }
+    ]);
+    expect(secondMessages.filter((message) => (message as { type?: unknown }).type === PANEL_CAPTURE_MESSAGE)).toEqual([
+      {
+        type: PANEL_CAPTURE_MESSAGE,
+        panelSessionId: panelB,
+        message: firstCapture
+      },
+      {
+        type: PANEL_CAPTURE_MESSAGE,
+        panelSessionId: panelB,
+        message: secondCapture
+      }
+    ]);
+  });
+
+  it("isolates different tabs and removes only the disconnected registration", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender) => boolean) | undefined;
+    const firstMessages: unknown[] = [];
+    const secondMessages: unknown[] = [];
+    const otherTabMessages: unknown[] = [];
+    const first = fakePort(firstMessages);
+    const second = fakePort(secondMessages);
+    const otherTab = fakePort(otherTabMessages);
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      (listener) => (onMessage = listener)
+    );
+    await import("../src/extension/background");
+    onConnect?.(first.port);
+    first.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    onConnect?.(second.port);
+    second.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelB });
+    onConnect?.(otherTab.port);
+    otherTab.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 8, panelSessionId: "panel-00000000-0000-4000-8000-000000000003" });
+
+    first.port.disconnect();
+    const tabSevenCapture = createCaptureMessage("client-created", { client: { id: "tab-7" } });
+    onMessage?.({ type: RUNTIME_CAPTURE_MESSAGE, message: tabSevenCapture }, { tab: { id: 7 } } as chrome.runtime.MessageSender);
+    const tabEightCapture = createCaptureMessage("client-created", { client: { id: "tab-8" } });
+    onMessage?.({ type: RUNTIME_CAPTURE_MESSAGE, message: tabEightCapture }, { tab: { id: 8 } } as chrome.runtime.MessageSender);
+
+    expect(firstMessages.filter((message) => (message as { type?: unknown }).type === PANEL_CAPTURE_MESSAGE)).toHaveLength(0);
+    expect(secondMessages).toContainEqual({ type: PANEL_CAPTURE_MESSAGE, panelSessionId: panelB, message: tabSevenCapture });
+    expect(otherTabMessages).toContainEqual({ type: PANEL_CAPTURE_MESSAGE, panelSessionId: "panel-00000000-0000-4000-8000-000000000003", message: tabEightCapture });
+    expect(otherTabMessages).not.toContainEqual(expect.objectContaining({ message: tabSevenCapture }));
+  });
+
+  it("keeps sync replay request-scoped while subsequent live captures broadcast", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender) => boolean) | undefined;
+    const firstMessages: unknown[] = [];
+    const secondMessages: unknown[] = [];
+    const first = fakePort(firstMessages);
+    const second = fakePort(secondMessages);
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      (listener) => (onMessage = listener)
+    );
+    await import("../src/extension/background");
+    onConnect?.(first.port);
+    first.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    onConnect?.(second.port);
+    second.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelB });
+    const replay = createCaptureMessage("item-update", { update: { key: "replay" }, replay: true });
+    onMessage?.({ type: RUNTIME_CAPTURE_MESSAGE, panelSessionId: panelB, message: { ...replay, panelSessionId: panelB } }, { tab: { id: 7 } } as chrome.runtime.MessageSender);
+    const live = createCaptureMessage("item-update", { update: { key: "live" } });
+    onMessage?.({ type: RUNTIME_CAPTURE_MESSAGE, message: live }, { tab: { id: 7 } } as chrome.runtime.MessageSender);
+
+    expect(firstMessages).not.toContainEqual(expect.objectContaining({ message: replay }));
     expect(secondMessages).toContainEqual({
       type: PANEL_CAPTURE_MESSAGE,
       panelSessionId: panelB,
-      message
+      message: { ...replay, panelSessionId: panelB }
     });
+    expect(firstMessages).toContainEqual({ type: PANEL_CAPTURE_MESSAGE, panelSessionId: panelA, message: live });
+    expect(secondMessages).toContainEqual({ type: PANEL_CAPTURE_MESSAGE, panelSessionId: panelB, message: live });
+  });
+
+  it("rejects stale re-registration and does not strand the old nested registration", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender) => boolean) | undefined;
+    const messages: unknown[] = [];
+    const portState = fakePort(messages);
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      (listener) => (onMessage = listener)
+    );
+    await import("../src/extension/background");
+    onConnect?.(portState.port);
+    portState.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    portState.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 8, panelSessionId: panelB });
+    const tabSevenCapture = createCaptureMessage("client-created", { client: { id: "tab-7" } });
+    onMessage?.({ type: RUNTIME_CAPTURE_MESSAGE, message: tabSevenCapture }, { tab: { id: 7 } } as chrome.runtime.MessageSender);
+    const tabEightCapture = createCaptureMessage("client-created", { client: { id: "tab-8" } });
+    onMessage?.({ type: RUNTIME_CAPTURE_MESSAGE, message: tabEightCapture }, { tab: { id: 8 } } as chrome.runtime.MessageSender);
+    expect(messages).not.toContainEqual(expect.objectContaining({ message: tabSevenCapture }));
+    expect(messages).toContainEqual({ type: PANEL_CAPTURE_MESSAGE, panelSessionId: panelB, message: tabEightCapture });
+  });
+
+  it("does not deliver a detached injection result after the callback already completed", async () => {
+    let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
+    let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender) => boolean) | undefined;
+    const messages: unknown[] = [];
+    const portState = fakePort(messages);
+    const sendMessage = vi.fn((_tabId: number, _message: unknown, callback?: (response?: unknown) => void) => {
+      callback?.({ requestId: "request-detached", panelSessionId: panelA, ok: true, status: "success", timestamp: 1 });
+    });
+    (globalThis as { chrome: typeof chrome }).chrome = fakeChrome(
+      (listener) => (onConnect = listener),
+      (listener) => (onMessage = listener),
+      sendMessage
+    );
+    await import("../src/extension/background");
+    onConnect?.(portState.port);
+    portState.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
+    portState.listeners[0]({ type: PANEL_REINJECT_REQUEST, panelSessionId: panelA, requestId: "request-detached", draft: validDraft() });
+    const resultCount = () => messages.filter((message) => (message as { type?: unknown }).type === PANEL_REINJECT_RESULT).length;
+    expect(resultCount()).toBe(1);
+    onMessage?.({ type: "lsew:content-reinject-result", panelSessionId: panelA, result: { requestId: "request-detached", panelSessionId: panelA, ok: true, status: "success", timestamp: 2 } }, { tab: { id: 7 } } as chrome.runtime.MessageSender);
+    expect(resultCount()).toBe(1);
   });
 
   it("delivers an injection result exactly once to its originating Panel Session", async () => {
@@ -151,13 +278,17 @@ describe("Panel Session background routing", () => {
 
 function fakePort(messages: unknown[]) {
   const listeners: Array<(message: unknown) => void> = [];
+  const disconnectListeners: Array<() => void> = [];
   const port = {
     name: PANEL_PORT_NAME,
     postMessage(message: unknown) {
       messages.push(message);
     },
     onMessage: { addListener(listener: (message: unknown) => void) { listeners.push(listener); } },
-    onDisconnect: { addListener: vi.fn() }
+    onDisconnect: { addListener(listener: () => void) { disconnectListeners.push(listener); } },
+    disconnect() {
+      for (const listener of disconnectListeners) listener();
+    }
   } as unknown as chrome.runtime.Port;
   return { port, listeners };
 }

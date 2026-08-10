@@ -8,7 +8,13 @@ import {
   PANEL_REINJECT_RESULT
 } from "../src/bridge/messages";
 import { type ReinjectionDraft } from "../src/core/reinjection-draft";
-import { connectPanelBridge } from "../src/extension/panel/bridge-client";
+import { connectPanelBridge as connectPanelBridgeImpl } from "../src/extension/panel/bridge-client";
+
+const PANEL_SESSION_ID = "panel-bridge-client";
+
+function connectPanelBridge(handlers: Parameters<typeof connectPanelBridgeImpl>[0]) {
+  return connectPanelBridgeImpl(handlers, PANEL_SESSION_ID);
+}
 
 type FakePort = {
   postedMessages: unknown[];
@@ -88,7 +94,9 @@ describe("panel bridge client", () => {
     });
 
     expect(connect).toHaveBeenCalledTimes(1);
-    expect(ports[0].postedMessages).toEqual([{ type: PANEL_REGISTER_MESSAGE, tabId: 42 }]);
+    expect(ports[0].postedMessages).toEqual([
+      { type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID }
+    ]);
 
     ports[0].disconnect();
 
@@ -96,7 +104,9 @@ describe("panel bridge client", () => {
     vi.advanceTimersByTime(500);
 
     expect(connect).toHaveBeenCalledTimes(2);
-    expect(ports[1].postedMessages).toEqual([{ type: PANEL_REGISTER_MESSAGE, tabId: 42 }]);
+    expect(ports[1].postedMessages).toEqual([
+      { type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID }
+    ]);
 
     bridge.disconnect();
     ports[1].disconnect();
@@ -137,8 +147,10 @@ describe("panel bridge client", () => {
 
     port.messageListeners[0]({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: {
         requestId: request.requestId,
+        panelSessionId: PANEL_SESSION_ID,
         ok: true,
         status: "success",
         timestamp: 123
@@ -147,6 +159,7 @@ describe("panel bridge client", () => {
 
     await expect(resultPromise).resolves.toEqual({
       requestId: request.requestId,
+      panelSessionId: PANEL_SESSION_ID,
       ok: true,
       status: "success",
       timestamp: 123
@@ -159,10 +172,11 @@ describe("panel bridge client", () => {
     let deliveredDraft: unknown = null;
     (globalThis as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] = {
       version: PAGE_REINJECTION_BRIDGE_VERSION,
-      reinject(requestId: string, draft: unknown) {
+      reinject(requestId: string, _panelSessionId: string, draft: unknown) {
         deliveredDraft = draft;
         return {
           requestId,
+          panelSessionId: PANEL_SESSION_ID,
           ok: true,
           status: "success",
           timestamp: 1_784_737_272_925
@@ -274,6 +288,7 @@ describe("panel bridge client", () => {
                 bridgeState: "result",
                 result: {
                   requestId,
+                  panelSessionId: PANEL_SESSION_ID,
                   ok: true,
                   status: "success",
                   timestamp: 1_784_737_272_925
@@ -387,8 +402,10 @@ describe("panel bridge client", () => {
 
     port.messageListeners[0]({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: {
         requestId: request?.requestId,
+        panelSessionId: PANEL_SESSION_ID,
         ok: true,
         status: "success",
         timestamp: 456
@@ -619,8 +636,10 @@ describe("panel bridge client", () => {
 
     port.messageListeners[0]({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: {
         requestId: request.requestId,
+        panelSessionId: PANEL_SESSION_ID,
         ok: true,
         status: "success",
         timestamp: 234
@@ -681,8 +700,10 @@ describe("panel bridge client", () => {
 
     port.messageListeners[0]({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: {
         requestId: request.requestId,
+        panelSessionId: PANEL_SESSION_ID,
         ok: true,
         status: "success",
         timestamp: 345
@@ -731,8 +752,10 @@ describe("panel bridge client", () => {
 
     port.messageListeners[0]({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: {
         requestId: request.requestId,
+        panelSessionId: PANEL_SESSION_ID,
         ok: true,
         status: "success",
         timestamp: 456

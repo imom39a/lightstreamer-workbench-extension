@@ -28,6 +28,8 @@ import {
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const PANEL_SESSION_ID = "panel-mount-session";
+
 type FakePort = {
   postedMessages: unknown[];
   messageListeners: Array<(message: unknown) => void>;
@@ -269,16 +271,21 @@ describe("production panel mount wiring", () => {
 
     const dispose = mountWorkbenchPanel(root, {
       createIndexedDbHistory,
-      createInMemoryHistory: createInMemoryEventHistory
+      createInMemoryHistory: createInMemoryEventHistory,
+      createPanelSessionId: () => PANEL_SESSION_ID
     });
     await flushPanel();
 
     expect(createIndexedDbHistory).toHaveBeenCalledWith({
-      sessionId: 42,
+      sessionId: PANEL_SESSION_ID,
       reset: true,
       clearOnClose: true
     });
-    expect(port.postedMessages).toContainEqual({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    expect(port.postedMessages).toContainEqual({
+      type: PANEL_REGISTER_MESSAGE,
+      tabId: 42,
+      panelSessionId: PANEL_SESSION_ID
+    });
 
     window.dispatchEvent(
       new MessageEvent("message", {
@@ -286,9 +293,14 @@ describe("production panel mount wiring", () => {
         origin: window.location.origin
       })
     );
-    port.messageListeners[0]?.({ type: PANEL_STATUS_MESSAGE, status: "capturing" });
+    port.messageListeners[0]?.({
+      type: PANEL_STATUS_MESSAGE,
+      panelSessionId: PANEL_SESSION_ID,
+      status: "capturing"
+    });
     port.messageListeners[0]?.({
       type: PANEL_CAPTURE_MESSAGE,
+      panelSessionId: PANEL_SESSION_ID,
       message: createCaptureMessage("item-update", {
         client: { id: "client-mount" },
         subscription: { id: "subscription-mount", mode: "MERGE" },
@@ -306,8 +318,10 @@ describe("production panel mount wiring", () => {
         cutoffCaptureSequence: 0,
         chunkCount: 0,
         recordCount: 0,
-        coverage: { status: "partial", getters: {}, reason: "late-attachment" }
-      }
+        coverage: { status: "partial", getters: {}, reason: "late-attachment" },
+        panelSessionId: PANEL_SESSION_ID
+      },
+      panelSessionId: PANEL_SESSION_ID
     });
     await flushPanel();
 

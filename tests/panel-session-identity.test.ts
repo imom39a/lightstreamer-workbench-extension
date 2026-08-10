@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   PANEL_REGISTER_MESSAGE,
@@ -18,6 +18,12 @@ describe("Panel Session identity bridge boundary", () => {
     expect(first).toMatch(/^panel-[0-9a-f-]{36}$/);
     expect(second).toMatch(/^panel-[0-9a-f-]{36}$/);
     expect(second).not.toBe(first);
+  });
+
+  it("fails closed when the platform cryptographic source is unavailable", () => {
+    vi.stubGlobal("crypto", undefined);
+    expect(() => createPanelSessionId()).toThrow(/cryptographically secure random source/i);
+    vi.unstubAllGlobals();
   });
 
   it("requires the Panel Session identity on registration and injection correlation", () => {

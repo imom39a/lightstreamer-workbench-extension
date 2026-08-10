@@ -14,6 +14,8 @@ import { reduceCommandState } from "../src/core/command-state";
 import { createEventNormalizer } from "../src/core/event-normalizer";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
+const PANEL_SESSION_ID = "panel-instrumentation-lifecycle";
+
 class FakeLightstreamerClient {
   connectCalls = 0;
   disconnectCalls = 0;
@@ -861,6 +863,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         source: target,
         data: {
           type: PAGE_REINJECT_REQUEST,
+          panelSessionId: PANEL_SESSION_ID,
           requestId,
           draft: wireDraft(modelValues)
         }
@@ -899,11 +902,12 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     applicationFrames.length = 0;
     const directBridge = (target as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL] as {
       version: number;
-      reinject(requestId: string, draft: ReinjectionDraftPayload): ReinjectionResult;
+      reinject(requestId: string, panelSessionId: string, draft: ReinjectionDraftPayload): ReinjectionResult;
     };
     expect(directBridge.version).toBe(PAGE_REINJECTION_BRIDGE_VERSION);
     const directResult = directBridge.reinject(
       "wire-request-direct",
+      PANEL_SESSION_ID,
       wireDraft('{"messageText":"Direct inspected-page delivery"}')
     );
     expect(directResult).toMatchObject({
@@ -959,6 +963,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         source: target,
         data: {
           type: PAGE_REINJECT_REQUEST,
+          panelSessionId: PANEL_SESSION_ID,
           requestId: `stale-${retirement}`,
           draft: {
             sourceEventId: "event-17",
@@ -1099,7 +1104,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     for (const listener of messageListeners) {
       listener({
         source: target,
-        data: { type: "lsew:page-capture-sync-request" }
+        data: { type: "lsew:page-capture-sync-request", panelSessionId: PANEL_SESSION_ID }
       } as unknown as MessageEvent);
     }
     expect(messages).toEqual([]);
@@ -1274,7 +1279,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     for (const pageListener of messageListeners) {
       pageListener({
         source: target,
-        data: { type: "lsew:page-capture-sync-request" }
+        data: { type: "lsew:page-capture-sync-request", panelSessionId: PANEL_SESSION_ID }
       } as unknown as MessageEvent);
     }
     expect(
@@ -1470,7 +1475,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     for (const pageListener of messageListeners) {
       pageListener({
         source: target,
-        data: { type: "lsew:page-capture-sync-request" }
+        data: { type: "lsew:page-capture-sync-request", panelSessionId: PANEL_SESSION_ID }
       } as unknown as MessageEvent);
     }
 
@@ -1602,6 +1607,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       ports: [responsePort],
       data: {
         type: PAGE_REINJECT_REQUEST,
+          panelSessionId: PANEL_SESSION_ID,
         requestId: "request-1",
         draft: createValidPageDraft()
       }
@@ -1630,6 +1636,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     ).toBe(true);
     expect(responsePort.postMessage).toHaveBeenCalledWith({
       type: RUNTIME_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: expect.objectContaining({
         requestId: "request-1",
         ok: true,
@@ -1675,6 +1682,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       source: target,
       data: {
         type: PAGE_REINJECT_REQUEST,
+          panelSessionId: PANEL_SESSION_ID,
         requestId: "request-positional-fields",
         draft: createValidPageDraft()
       }
@@ -1723,6 +1731,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       source: target,
       data: {
         type: PAGE_REINJECT_REQUEST,
+          panelSessionId: PANEL_SESSION_ID,
         requestId: "request-merge",
         draft: {
           ...createValidPageDraft(),
@@ -1766,6 +1775,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       source: target,
       data: {
         type: PAGE_REINJECT_REQUEST,
+          panelSessionId: PANEL_SESSION_ID,
         requestId: "request-2",
         draft: createValidPageDraft()
       }
@@ -1808,6 +1818,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
       source: target,
       data: {
         type: PAGE_REINJECT_REQUEST,
+          panelSessionId: PANEL_SESSION_ID,
         requestId: "request-subscription-target",
         draft: createValidPageDraft()
       }
@@ -1847,6 +1858,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
         source: target,
         data: {
           type: PAGE_REINJECT_REQUEST,
+          panelSessionId: PANEL_SESSION_ID,
           requestId: "request-3",
           draft: createValidPageDraft()
         }
@@ -1860,6 +1872,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     );
     expect(result).toMatchObject({
       type: RUNTIME_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: {
         ok: false,
         status: "listener-error",

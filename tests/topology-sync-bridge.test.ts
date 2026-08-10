@@ -15,7 +15,8 @@ import {
 import { createTopologySyncCoordinator } from "../src/core/topology-sync";
 import { connectPanelBridge } from "../src/extension/panel/bridge-client";
 
-const frame: TopologySyncBeginFrame = {
+const PANEL_SESSION_ID = "panel-topology-sync";
+const frame = {
   type: TOPOLOGY_SYNC_BEGIN,
   version: TOPOLOGY_SYNC_VERSION,
   syncId: "sync-a",
@@ -23,8 +24,9 @@ const frame: TopologySyncBeginFrame = {
   cutoffCaptureSequence: 10,
   chunkCount: 0,
   recordCount: 0,
-  coverage: { status: "complete", getters: {} }
-};
+  coverage: { status: "complete", getters: {} },
+  panelSessionId: PANEL_SESSION_ID
+} as TopologySyncBeginFrame & { panelSessionId: string };
 
 describe("topology checkpoint bridge", () => {
   afterEach(() => {
@@ -42,7 +44,11 @@ describe("topology checkpoint bridge", () => {
 
     window.dispatchEvent(new MessageEvent("message", { source: window, data: frame }));
 
-    expect(sendMessage).toHaveBeenCalledWith({ type: RUNTIME_TOPOLOGY_SYNC_FRAME, frame });
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: RUNTIME_TOPOLOGY_SYNC_FRAME,
+      panelSessionId: PANEL_SESSION_ID,
+      frame
+    });
   });
 
   it("routes validated runtime checkpoint frames only to the registered tab panel", async () => {
@@ -69,14 +75,18 @@ describe("topology checkpoint bridge", () => {
     } as unknown as typeof chrome;
     await import("../src/extension/background");
     connectListener?.(port);
-    portMessages[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    portMessages[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID });
 
     runtimeListener?.(
-      { type: RUNTIME_TOPOLOGY_SYNC_FRAME, frame },
+      { type: RUNTIME_TOPOLOGY_SYNC_FRAME, panelSessionId: PANEL_SESSION_ID, frame },
       { tab: { id: 42 } as chrome.tabs.Tab }
     );
 
-    expect(port.postMessage).toHaveBeenCalledWith({ type: PANEL_TOPOLOGY_SYNC_FRAME, frame });
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: PANEL_TOPOLOGY_SYNC_FRAME,
+      panelSessionId: PANEL_SESSION_ID,
+      frame
+    });
   });
 
   it("delivers checkpoint frames through the optional panel bridge handler", () => {
@@ -96,9 +106,9 @@ describe("topology checkpoint bridge", () => {
       onStatusChange: vi.fn(),
       onCaptureMessage: vi.fn(),
       onTopologySyncFrame
-    });
+    }, PANEL_SESSION_ID);
 
-    messageListeners[0]({ type: PANEL_TOPOLOGY_SYNC_FRAME, frame });
+    messageListeners[0]({ type: PANEL_TOPOLOGY_SYNC_FRAME, panelSessionId: PANEL_SESSION_ID, frame });
 
     expect(onTopologySyncFrame).toHaveBeenCalledWith(frame);
     bridge.disconnect();
@@ -127,7 +137,8 @@ describe("topology checkpoint bridge", () => {
       cutoffCaptureSequence: 10,
       chunkCount: 1,
       recordCount: records.length,
-      coverage
+      coverage,
+      panelSessionId: PANEL_SESSION_ID
     };
     const frames = [
       { type: TOPOLOGY_SYNC_BEGIN, ...metadata },
@@ -154,10 +165,14 @@ describe("topology checkpoint bridge", () => {
         else if (received.type === TOPOLOGY_SYNC_CHUNK) coordinator.acceptChunk(received);
         else coordinator.complete(received);
       }
-    });
+    }, PANEL_SESSION_ID);
 
     for (const checkpointFrame of frames) {
-      messageListeners[0]({ type: PANEL_TOPOLOGY_SYNC_FRAME, frame: checkpointFrame });
+      messageListeners[0]({
+        type: PANEL_TOPOLOGY_SYNC_FRAME,
+        panelSessionId: PANEL_SESSION_ID,
+        frame: checkpointFrame
+      });
     }
 
     expect(coordinator.snapshot().records.map((entry) => entry.id)).toEqual([

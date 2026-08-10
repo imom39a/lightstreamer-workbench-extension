@@ -12,6 +12,8 @@ import {
   type ReinjectionDraftPayload
 } from "../src/bridge/messages";
 
+const PANEL_SESSION_ID = "panel-capture-sync";
+
 describe("active subscription capture synchronization bridge", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -55,11 +57,11 @@ describe("active subscription capture synchronization bridge", () => {
     const notifyConnect = connectListener as ((port: chrome.runtime.Port) => void) | null;
     expect(notifyConnect).not.toBeNull();
     notifyConnect?.(port);
-    portMessageListeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    portMessageListeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID });
 
     expect(sendMessage).toHaveBeenCalledWith(
       42,
-      { type: CONTENT_CAPTURE_SYNC_REQUEST },
+      { type: CONTENT_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID },
       expect.any(Function)
     );
   });
@@ -87,13 +89,16 @@ describe("active subscription capture synchronization bridge", () => {
       | null;
     expect(forwardRuntimeMessage).not.toBeNull();
     const asyncResponse = forwardRuntimeMessage?.(
-      { type: CONTENT_CAPTURE_SYNC_REQUEST },
+      { type: CONTENT_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID },
       {} as chrome.runtime.MessageSender,
       vi.fn()
     );
 
     expect(asyncResponse).toBe(false);
-    expect(postMessage).toHaveBeenCalledWith({ type: PAGE_CAPTURE_SYNC_REQUEST }, "*");
+    expect(postMessage).toHaveBeenCalledWith(
+      { type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID },
+      "*"
+    );
   });
 
   it("returns the final page result through both feedback protocols", async () => {
@@ -118,8 +123,10 @@ describe("active subscription capture synchronization bridge", () => {
           source: window,
           data: {
             type: RUNTIME_REINJECT_RESULT,
+            panelSessionId: PANEL_SESSION_ID,
             result: {
               requestId: (message as { requestId: string }).requestId,
+              panelSessionId: PANEL_SESSION_ID,
               ok: true,
               status: "success",
               timestamp: 1_784_737_272_925
@@ -151,6 +158,7 @@ describe("active subscription capture synchronization bridge", () => {
     const asyncResponse = forwardRuntimeMessage(
       {
         type: CONTENT_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "success-request",
         draft: wireDraft()
       },
@@ -165,6 +173,7 @@ describe("active subscription capture synchronization bridge", () => {
 
     const expectedResult = {
       requestId: "success-request",
+      panelSessionId: PANEL_SESSION_ID,
       ok: true,
       status: "success",
       timestamp: 1_784_737_272_925
@@ -173,6 +182,7 @@ describe("active subscription capture synchronization bridge", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       {
         type: CONTENT_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: expectedResult
       },
       expect.any(Function)
@@ -215,8 +225,10 @@ describe("active subscription capture synchronization bridge", () => {
         const responsePort = transfer?.[0] as unknown as TestMessagePort | undefined;
         responsePort?.postMessage({
           type: RUNTIME_REINJECT_RESULT,
+          panelSessionId: PANEL_SESSION_ID,
           result: {
             requestId: (message as { requestId: string }).requestId,
+            panelSessionId: PANEL_SESSION_ID,
             ok: true,
             status: "success",
             timestamp: 1_784_737_272_925
@@ -249,6 +261,7 @@ describe("active subscription capture synchronization bridge", () => {
     const asyncResponse = forwardRuntimeMessage(
       {
         type: CONTENT_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "request-scoped-channel",
         draft: wireDraft()
       },
@@ -263,6 +276,7 @@ describe("active subscription capture synchronization bridge", () => {
 
     const expectedResult = {
       requestId: "request-scoped-channel",
+      panelSessionId: PANEL_SESSION_ID,
       ok: true,
       status: "success",
       timestamp: 1_784_737_272_925
@@ -272,6 +286,7 @@ describe("active subscription capture synchronization bridge", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       {
         type: CONTENT_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: expectedResult
       },
       expect.any(Function)
@@ -311,6 +326,7 @@ describe("active subscription capture synchronization bridge", () => {
     const asyncResponse = forwardRuntimeMessage(
       {
         type: CONTENT_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "timeout-request",
         draft: wireDraft()
       },
@@ -334,8 +350,10 @@ describe("active subscription capture synchronization bridge", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       {
         type: CONTENT_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: expect.objectContaining({
           requestId: "timeout-request",
+          panelSessionId: PANEL_SESSION_ID,
           ok: false,
           status: "acknowledgement-unknown",
           error: "Timed out waiting for page reinjection result."

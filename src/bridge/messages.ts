@@ -358,10 +358,12 @@ export type CaptureMessage<K extends CaptureKind = CaptureKind> = {
   timestamp: number;
   payload: CapturePayload;
   topology?: TopologyObservation;
+  panelSessionId?: PanelSessionId;
 };
 
 export type RuntimeCaptureMessage = {
   type: typeof RUNTIME_CAPTURE_MESSAGE;
+  panelSessionId?: PanelSessionId;
   message: CaptureMessage;
 };
 
@@ -479,10 +481,15 @@ export function isTopologyObservation(value: unknown): value is TopologyObservat
 }
 
 export function isRuntimeCaptureMessage(value: unknown): value is RuntimeCaptureMessage {
+  const messagePanelSessionId =
+    isRecord(value) && isRecord(value.message) ? value.message.panelSessionId : undefined;
   return (
     isRecord(value) &&
     value.type === RUNTIME_CAPTURE_MESSAGE &&
-    isCaptureMessage(value.message)
+    (value.panelSessionId === undefined || isPanelSessionId(value.panelSessionId)) &&
+    isCaptureMessage(value.message) &&
+    (value.panelSessionId === messagePanelSessionId ||
+      (value.panelSessionId === undefined && messagePanelSessionId === undefined))
   );
 }
 

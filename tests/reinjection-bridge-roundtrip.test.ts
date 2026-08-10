@@ -13,6 +13,8 @@ import {
   type ReinjectionDraftPayload
 } from "../src/bridge/messages";
 
+const PANEL_SESSION_ID = "panel-reinjection-roundtrip";
+
 describe("reinjection bridge round trip", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -107,8 +109,10 @@ describe("reinjection bridge round trip", () => {
           source: window,
           data: {
             type: RUNTIME_REINJECT_RESULT,
+            panelSessionId: PANEL_SESSION_ID,
             result: {
               requestId: message.requestId,
+              panelSessionId: PANEL_SESSION_ID,
               ok: true,
               status: "success",
               timestamp: 1_784_737_272_925
@@ -121,9 +125,10 @@ describe("reinjection bridge round trip", () => {
     const notifyConnect = connectListener as ((port: chrome.runtime.Port) => void) | null;
     expect(notifyConnect).not.toBeNull();
     notifyConnect?.(port);
-    portMessageListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    portMessageListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID });
     portMessageListeners[0]?.({
       type: PANEL_REINJECT_REQUEST,
+      panelSessionId: PANEL_SESSION_ID,
       requestId: "roundtrip-1",
       draft: wireDraft()
     });
@@ -140,8 +145,10 @@ describe("reinjection bridge round trip", () => {
     );
     expect(panelMessages).toContainEqual({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: {
         requestId: "roundtrip-1",
+        panelSessionId: PANEL_SESSION_ID,
         ok: true,
         status: "success",
         timestamp: 1_784_737_272_925
@@ -168,6 +175,7 @@ describe("reinjection bridge round trip", () => {
     const panelMessages: unknown[] = [];
     const result = {
       requestId: "legacy-response-1",
+      panelSessionId: PANEL_SESSION_ID,
       ok: true,
       status: "success",
       timestamp: 1_784_737_272_925
@@ -223,15 +231,17 @@ describe("reinjection bridge round trip", () => {
     const notifyConnect = connectListener as ((port: chrome.runtime.Port) => void) | null;
     expect(notifyConnect).not.toBeNull();
     notifyConnect?.(port);
-    portMessageListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    portMessageListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID });
     portMessageListeners[0]?.({
       type: PANEL_REINJECT_REQUEST,
+      panelSessionId: PANEL_SESSION_ID,
       requestId: result.requestId,
       draft: wireDraft()
     });
 
     expect(panelMessages).toContainEqual({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result
     });
     expect(panelMessages).not.toContainEqual(
@@ -293,15 +303,17 @@ describe("reinjection bridge round trip", () => {
     await import("../src/extension/background");
     const notifyConnect = connectListener as ((port: chrome.runtime.Port) => void) | null;
     notifyConnect?.(port);
-    portMessageListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    portMessageListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID });
     portMessageListeners[0]?.({
       type: PANEL_REINJECT_REQUEST,
+      panelSessionId: PANEL_SESSION_ID,
       requestId: "ambiguous-background-result",
       draft: wireDraft()
     });
 
     expect(panelMessages).toContainEqual({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result: expect.objectContaining({
         requestId: "ambiguous-background-result",
         ok: false,
@@ -366,17 +378,19 @@ describe("reinjection bridge round trip", () => {
     const notifyConnect = connectListener as ((port: chrome.runtime.Port) => void) | null;
     expect(notifyConnect).not.toBeNull();
     notifyConnect?.(firstPort);
-    firstPortListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    firstPortListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID });
     firstPortListeners[0]?.({
       type: PANEL_REINJECT_REQUEST,
+      panelSessionId: PANEL_SESSION_ID,
       requestId: "originating-panel-1",
       draft: listenerDraft()
     });
 
     notifyConnect?.(secondPort);
-    secondPortListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42 });
+    secondPortListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: "panel-reinjection-second" });
     const result = {
       requestId: "originating-panel-1",
+      panelSessionId: PANEL_SESSION_ID,
       ok: false,
       status: "listener-error",
       timestamp: 1_784_737_272_925,
@@ -390,6 +404,7 @@ describe("reinjection bridge round trip", () => {
     forwardBackgroundMessage?.(
       {
         type: CONTENT_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result
       },
       { tab: { id: 42 } } as chrome.runtime.MessageSender,
@@ -398,6 +413,7 @@ describe("reinjection bridge round trip", () => {
 
     expect(firstPanelMessages).toContainEqual({
       type: PANEL_REINJECT_RESULT,
+      panelSessionId: PANEL_SESSION_ID,
       result
     });
     expect(secondPanelMessages).not.toContainEqual({

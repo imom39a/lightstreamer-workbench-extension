@@ -33,6 +33,8 @@ import {
 } from "../src/bridge/messages";
 import { createStableIdAllocator } from "../src/core/ids";
 
+const PANEL_SESSION_ID = "panel-test-validation";
+
 describe("bridge capture message validation", () => {
   it("accepts valid client and subscription lifecycle messages", () => {
     expect(
@@ -248,10 +250,10 @@ describe("semantic topology trust-boundary validation", () => {
 
 describe("bridge capture synchronization message validation", () => {
   it("accepts only the content and page active-subscription sync request types", () => {
-    expect(isContentCaptureSyncRequestMessage({ type: CONTENT_CAPTURE_SYNC_REQUEST })).toBe(true);
-    expect(isPageCaptureSyncRequestMessage({ type: PAGE_CAPTURE_SYNC_REQUEST })).toBe(true);
-    expect(isContentCaptureSyncRequestMessage({ type: PAGE_CAPTURE_SYNC_REQUEST })).toBe(false);
-    expect(isPageCaptureSyncRequestMessage({ type: CONTENT_CAPTURE_SYNC_REQUEST })).toBe(false);
+    expect(isContentCaptureSyncRequestMessage({ type: CONTENT_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID })).toBe(true);
+    expect(isPageCaptureSyncRequestMessage({ type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID })).toBe(true);
+    expect(isContentCaptureSyncRequestMessage({ type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID })).toBe(false);
+    expect(isPageCaptureSyncRequestMessage({ type: CONTENT_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID })).toBe(false);
   });
 });
 
@@ -275,6 +277,7 @@ describe("bridge reinjection message validation", () => {
     expect(
       isPanelReinjectRequestMessage({
         type: PANEL_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "request-1",
         draft: createValidReinjectionDraftPayload()
       })
@@ -291,6 +294,7 @@ describe("bridge reinjection message validation", () => {
     expect(
       isPanelReinjectRequestMessage({
         type: PANEL_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "request-merge",
         draft
       })
@@ -305,6 +309,7 @@ describe("bridge reinjection message validation", () => {
     expect(
       isPanelReinjectRequestMessage({
         type: PANEL_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "request-empty-command",
         draft
       })
@@ -318,6 +323,7 @@ describe("bridge reinjection message validation", () => {
     expect(
       isPanelReinjectRequestMessage({
         type: PANEL_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "request-1",
         draft
       })
@@ -331,6 +337,7 @@ describe("bridge reinjection message validation", () => {
     expect(
       isPanelReinjectRequestMessage({
         type: PANEL_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "request-subscription",
         draft
       })
@@ -345,6 +352,7 @@ describe("bridge reinjection message validation", () => {
     expect(
       isPanelReinjectRequestMessage({
         type: PANEL_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "request-wire",
         draft
       })
@@ -358,6 +366,7 @@ describe("bridge reinjection message validation", () => {
     expect(
       isPanelReinjectRequestMessage({
         type: PANEL_REINJECT_REQUEST,
+        panelSessionId: PANEL_SESSION_ID,
         requestId: "request-1",
         draft
       })
@@ -368,7 +377,9 @@ describe("bridge reinjection message validation", () => {
     expect(
       isRuntimeReinjectResultMessage({
         type: RUNTIME_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: {
+          panelSessionId: PANEL_SESSION_ID,
           requestId: "request-wire-error",
           ok: false,
           status: "wire-error",
@@ -383,7 +394,9 @@ describe("bridge reinjection message validation", () => {
     expect(
       isContentReinjectResultMessage({
         type: CONTENT_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: {
+          panelSessionId: PANEL_SESSION_ID,
           requestId: "request-relay",
           ok: true,
           status: "success",
@@ -394,7 +407,9 @@ describe("bridge reinjection message validation", () => {
     expect(
       isContentReinjectResultMessage({
         type: CONTENT_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: {
+          panelSessionId: PANEL_SESSION_ID,
           requestId: "request-relay",
           ok: false,
           status: "not-a-status",
@@ -406,6 +421,7 @@ describe("bridge reinjection message validation", () => {
 
   it("preserves coherent listener delivery counts and acknowledgement-unknown across every result boundary", () => {
     const partialResult = {
+      panelSessionId: PANEL_SESSION_ID,
       requestId: "request-partial",
       ok: false,
       status: "listener-error",
@@ -419,18 +435,21 @@ describe("bridge reinjection message validation", () => {
     expect(
       isRuntimeReinjectResultMessage({
         type: RUNTIME_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: partialResult
       })
     ).toBe(true);
     expect(
       isContentReinjectResultMessage({
         type: CONTENT_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: partialResult
       })
     ).toBe(true);
     expect(
       isPanelReinjectResultMessage({
         type: PANEL_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: partialResult
       })
     ).toBe(true);
@@ -438,7 +457,9 @@ describe("bridge reinjection message validation", () => {
     expect(
       isPanelReinjectResultMessage({
         type: PANEL_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
         result: {
+          panelSessionId: PANEL_SESSION_ID,
           requestId: "request-unknown",
           ok: false,
           status: "acknowledgement-unknown",
@@ -452,9 +473,11 @@ describe("bridge reinjection message validation", () => {
   it("rejects contradictory reinjection outcomes at the bridge boundary", () => {
     const wrap = (result: Record<string, unknown>) => ({
       type: PANEL_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
       result
     });
     const base = {
+      panelSessionId: PANEL_SESSION_ID,
       requestId: "request-invalid",
       ok: false,
       status: "listener-error",
@@ -489,7 +512,9 @@ describe("bridge reinjection message validation", () => {
   it("rejects a count-bearing success unless at least one attempted delivery fully succeeded", () => {
     const wrap = (attemptedCount: number, deliveredCount: number, failedCount: number) => ({
       type: PANEL_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
       result: {
+          panelSessionId: PANEL_SESSION_ID,
         requestId: "request-success-counts",
         ok: true,
         status: "success",

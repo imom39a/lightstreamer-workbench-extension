@@ -26,8 +26,12 @@ window.addEventListener("message", (event) => {
   }
 
   if (isCaptureMessage(event.data)) {
+    const panelSessionId = isPanelSessionId(event.data.panelSessionId)
+      ? event.data.panelSessionId
+      : undefined;
     chrome.runtime.sendMessage({
       type: RUNTIME_CAPTURE_MESSAGE,
+      ...(panelSessionId ? { panelSessionId } : {}),
       message: event.data
     });
     return;

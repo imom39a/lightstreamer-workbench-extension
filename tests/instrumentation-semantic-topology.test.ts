@@ -20,6 +20,8 @@ import { createTopologyStructuredSnapshot } from "../src/extension/panel/topolog
 import { renderTopologyHtmlReport } from "../src/extension/panel/topology-html-report";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
+const PANEL_SESSION_ID = "panel-semantic-topology";
+
 class SemanticClient {
   status = "CONNECTED:WS-STREAMING";
   sessionId: string | null = "session-a";
@@ -158,7 +160,7 @@ function syncRecords(
   for (const listener of listeners) {
     listener({
       source: host,
-      data: { type: PAGE_CAPTURE_SYNC_REQUEST }
+      data: { type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID }
     } as unknown as MessageEvent);
   }
   return (frames.find(
@@ -171,7 +173,7 @@ describe("semantic topology instrumentation", () => {
     const { host, messages, listeners, frames } = createSemanticHarness();
     const request = {
       source: host,
-      data: { type: PAGE_CAPTURE_SYNC_REQUEST }
+      data: { type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID }
     } as unknown as MessageEvent;
 
     for (const listener of listeners) listener(request);
@@ -325,7 +327,7 @@ describe("semantic topology instrumentation", () => {
     for (const listener of messageListeners) {
       listener({
         source: host,
-        data: { type: PAGE_CAPTURE_SYNC_REQUEST }
+        data: { type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID }
       } as unknown as MessageEvent);
     }
     expect(frames.length).toBeGreaterThan(0);
@@ -355,7 +357,7 @@ describe("semantic topology instrumentation", () => {
     for (const listener of listeners) {
       listener({
         source: host,
-        data: { type: PAGE_CAPTURE_SYNC_REQUEST }
+        data: { type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID }
       } as unknown as MessageEvent);
     }
 
@@ -567,7 +569,7 @@ describe("semantic topology instrumentation", () => {
     new host.LightstreamerClient();
     const request = {
       source: host,
-      data: { type: PAGE_CAPTURE_SYNC_REQUEST }
+      data: { type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID }
     } as unknown as MessageEvent;
 
     for (const listener of listeners) listener(request);
@@ -674,7 +676,7 @@ describe("semantic topology instrumentation", () => {
 
     const request = {
       source: host,
-      data: { type: PAGE_CAPTURE_SYNC_REQUEST }
+      data: { type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID }
     } as unknown as MessageEvent;
     for (const listener of listeners) listener(request);
     const records = (frames.find(
@@ -746,7 +748,7 @@ describe("semantic topology instrumentation", () => {
     for (const listener of listeners) {
       listener({
         source: host,
-        data: { type: PAGE_CAPTURE_SYNC_REQUEST }
+        data: { type: PAGE_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID }
       } as unknown as MessageEvent);
     }
 
