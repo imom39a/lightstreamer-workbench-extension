@@ -44,6 +44,10 @@ _Avoid_: Intercepted message
 An immutable event record after it has been accepted into ordered Event History. Only Evidence may influence Topology and COMMAND projections; a captured event awaiting acceptance is not Evidence.
 _Avoid_: Pending Evidence, accepted captured event, stored event
 
+**Topology Checkpoint Evidence**:
+An Evidence record containing one validated Workbench topology-synchronization outcome at a captured-sequence cutoff. It may rebuild Topology only after acceptance into Event History; staging frames are not Evidence and cannot affect projections.
+_Avoid_: Topology sync frame, cached topology, current topology
+
 **Event History**:
 The ordered collection of Evidence retained during one History Interval.
 _Avoid_: Event Store, Timeline history
@@ -56,8 +60,12 @@ _Avoid_: Latest captured event, storage cursor
 The contiguous span of Evidence currently available within a History Interval, bounded by its first and last Evidence sequences. An empty Event History has no Retained Range.
 _Avoid_: History completeness, visible window
 
+**Panel Session**:
+The lifetime of one mounted Workbench panel, which owns one Event History and may contain multiple History Intervals separated by Clear. Reloading or remounting the panel starts a new Panel Session and never recovers the prior one.
+_Avoid_: DevTools session, tab session, browser session
+
 **History Interval**:
-The period whose retained Evidence is considered together, beginning when a Workbench panel starts or Clear completes and ending when the next Clear completes or the panel ends.
+The period whose retained Evidence is considered together, beginning when a Panel Session starts or Clear completes and ending when the next Clear completes or the Panel Session ends.
 _Avoid_: DevTools session, storage lifetime
 
 **Complete History**:

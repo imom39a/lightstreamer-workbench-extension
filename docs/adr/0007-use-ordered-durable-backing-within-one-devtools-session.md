@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Use ordered durable backing within one DevTools session
+
+Superseded by [ADR 0011 — Make one session-owned journal the Evidence acceptance boundary](0011-make-one-session-owned-journal-the-evidence-acceptance-boundary.md).
 
 Workbench retains every accepted captured event exactly once and in capture order for the lifetime of the current DevTools session. It uses IndexedDB as operational backing, appends in bounded ordered batches, and falls back to in-memory history when IndexedDB is unavailable; it does not treat that backing store as cross-session product persistence. This preserves complete browsable Capture during sustained activity without introducing an implicit retention policy beyond the active debugging session.
 
