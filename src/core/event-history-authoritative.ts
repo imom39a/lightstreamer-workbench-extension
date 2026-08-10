@@ -58,6 +58,7 @@ export type HistoryProblemCode =
   | "INVALID_CANDIDATE"
   | "HISTORY_STOPPED"
   | "HISTORY_CLOSED"
+  | "CLEAR_IN_PROGRESS"
   | "JOURNAL_COMMIT_FAILED"
   | HistoryTerminalReason
   | "CLEAR_FAILED"
@@ -220,7 +221,7 @@ type Subscriber = {
 type MemoryEventHistoryOptions = Readonly<{
   panelSessionId?: string;
   commitBatch?: (batch: readonly EvidenceCandidate[]) => Promise<void>;
-  clearJournal?: () => Promise<void>;
+  clearJournal?: () => Promise<void | boolean> | void | boolean;
   closeJournal?: () => Promise<void>;
   persistTerminalIntent?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
   finalizeTerminal?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
@@ -273,7 +274,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     },
     async persistTerminalIntent(terminal) { await options.persistTerminalIntent?.(terminal); },
     async finalizeTerminal(terminal) { await options.finalizeTerminal?.(terminal); },
-    async clear() { await options.clearJournal?.(); },
+    async clear() {
+      return await options.clearJournal?.();
+    },
     async close() { await options.closeJournal?.(); }
   };
   const capacityTier = options.capacityTier ?? "NORMAL";
@@ -284,6 +287,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   const subscribers = new Set<Subscriber>();
   const committed: CommittedEvidence[] = [];
   const pending: PendingCandidate[] = [];
+  const postClearPending: PendingCandidate[] = [];
   const inFlight: PendingCandidate[] = [];
   const terminalReceipts: PendingCandidate[] = [];
   const committedReceipts: Array<{ entry: PendingCandidate; evidence: EvidenceRef }> = [];
@@ -307,7 +311,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   let closing = false;
   let clearPromise: Promise<Outcome<ClearResult>> | null = null;
   let lastClearResult: ClearResult | null = null;
+  let lastCloseResult: CloseResult | null = null;
   let closePromise: Promise<Outcome<CloseResult>> | null = null;
+  let clearInProgress = false;
   let trigger: HistoryTrigger | null = null;
   let terminal: HistoryTerminalDiagnostic | undefined;
   let persistedTerminal: HistoryTerminalDiagnostic | undefined;
@@ -320,7 +326,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   let lastNearLimit = false;
 
   function measurements(): HistoryPressureMeasurements {
-    const awaiting = [...inFlight, ...pending].sort((left, right) => left.ordinal - right.ordinal);
+    const awaiting = [...inFlight, ...pending, ...postClearPending].sort((left, right) => left.ordinal - right.ordinal);
     const oldest = awaiting[0];
     return Object.freeze({
       retainedCount: committed.filter((entry) => entry.intervalId === interval.id).length,
@@ -344,7 +350,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       capacity: { tier: capacityTier, state: phase !== "RUNNING" ? "EXHAUSTED" : pressure.nearLimit ? "NEAR_LIMIT" : "AVAILABLE", limits, measurements: pressure.measurements },
       fallback,
       captured: nextCaptureOrdinal - 1,
-      awaitingAcceptance: pending.length + inFlight.length,
+      awaitingAcceptance: pending.length + postClearPending.length + inFlight.length,
       accepted,
       notAccepted,
       retained: intervalEvidence.length,
@@ -414,6 +420,70 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   function refuseClosed(): CaptureReceipt {
     notAccepted += 1;
     return { intake: "REFUSED", settled: Promise.resolve({ outcome: "NOT_EVIDENCE", problem: problem("HISTORY_CLOSED", "Event History is closed and cannot accept Capture."), committedEvidenceBoundary }) };
+  }
+
+  function clearQueueForCandidate(): PendingCandidate[] {
+    return clearInProgress ? postClearPending : pending;
+  }
+
+  function rejoinPostClearQueue(): void {
+    if (postClearPending.length === 0) {
+      return;
+    }
+    pending.push(...postClearPending.splice(0));
+    if (clearInProgress) {
+      return;
+    }
+    scheduleAgeCheck();
+    pressureChanged();
+    lastClearResult = null;
+    if (pending.length > 0) {
+      scheduleProcessing();
+    }
+  }
+
+  function resolveTerminalReceipts(issue: HistoryProblem): void {
+    for (const entry of terminalReceipts.splice(0)) {
+      entry.resolve({ outcome: "NOT_EVIDENCE", problem: issue, committedEvidenceBoundary });
+    }
+  }
+
+  function rejectPostClearDuringClearFailure(issue: HistoryProblem): void {
+    const rejected = [...postClearPending, ...pending];
+    postClearPending.length = 0;
+    if (rejected.length === 0) {
+      return;
+    }
+    pending.length = 0;
+    notAccepted += rejected.length;
+    discardedCount += rejected.length;
+    discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
+    terminalReceipts.push(...rejected);
+    const completion = terminalFinalization ?? terminalSettled;
+    if (completion) {
+      void completion.then(() => resolveTerminalReceipts(issue));
+      return;
+    }
+    resolveTerminalReceipts(issue);
+  }
+
+  function offerForClearInProgress(candidate: EvidenceCandidate, bytes: number): CaptureReceipt {
+    let resolveReceipt!: (result: ReceiptResult) => void;
+    const settled = new Promise<ReceiptResult>((resolve) => { resolveReceipt = resolve; });
+    clearQueueForCandidate().push({
+      ordinal: nextCaptureOrdinal++,
+      candidate,
+      bytes,
+      offeredAt: clock(),
+      resolve: resolveReceipt
+    });
+    lastClearResult = null;
+    scheduleAgeCheck();
+    pressureChanged();
+    if (!clearInProgress) {
+      scheduleProcessing();
+    }
+    return { intake: "QUEUED", settled };
   }
 
   function finishTerminal(): void {
@@ -512,7 +582,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   function scheduleAgeCheck(): void {
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
     ageTimer = null;
-    const oldest = [...inFlight, ...pending].sort((left, right) => left.ordinal - right.ordinal)[0];
+    const oldest = [...inFlight, ...pending, ...postClearPending].sort((left, right) => left.ordinal - right.ordinal)[0];
     if (!oldest || phase !== "RUNNING") return;
     const age = Math.max(0, clock() - oldest.offeredAt);
     const delay = Math.max(0, (age < limits.pendingAgeWarningMs ? limits.pendingAgeWarningMs : limits.pendingAgeStopMs) - age);
@@ -552,14 +622,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
       return { intake: "REFUSED", settled };
     }
-    let resolveReceipt!: (result: ReceiptResult) => void;
-    const settled = new Promise<ReceiptResult>((resolve) => { resolveReceipt = resolve; });
-    pending.push({ ordinal: nextCaptureOrdinal++, candidate: copied, bytes, offeredAt: clock(), resolve: resolveReceipt });
-    lastClearResult = null;
-    scheduleAgeCheck();
-    pressureChanged();
-    scheduleProcessing();
-    return { intake: "QUEUED", settled };
+    return offerForClearInProgress(copied, bytes);
   }
 
   function scheduleProcessing(): void {
@@ -634,6 +697,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         problem: problem("HISTORY_CLOSED", "Event History is closed.")
       });
     }
+    if (clearInProgress || closing) {
+      return Promise.resolve({
+        ok: false,
+        problem: problem("CLEAR_IN_PROGRESS", "A History Interval clear is currently pending.")
+      });
+    }
     const intervalEvidence = committed.filter((entry) => entry.intervalId === (query.intervalId ?? interval.id));
     const snapshot = selectEvidence(intervalEvidence, query);
     const evidence = pageEvidence(snapshot, query);
@@ -659,45 +728,77 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     if (clearPromise) {
       return clearPromise;
     }
-    if (lastClearResult && committed.length === 0 && pending.length === 0) {
-      return Promise.resolve({ ok: true, value: lastClearResult });
+    if (closing || phase === "CLOSED") {
+      return Promise.resolve({ ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed and cannot be cleared.") });
     }
+    if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") {
+      return Promise.resolve({ ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") });
+    }
+    if (lastClearResult && committed.length === 0 && pending.length === 0 && postClearPending.length === 0 && inFlight.length === 0) {
+        return Promise.resolve({ ok: true, value: lastClearResult });
+      }
+    clearInProgress = true;
     clearPromise = waitForIdle().then(async () => {
       if (phase === "CLOSED") {
-        return { ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed.") };
+        return { ok: false, problem: problem("HISTORY_CLOSED", "Event History is closed and cannot be cleared.") };
       }
       if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") {
         return { ok: false, problem: problem("HISTORY_STOPPED", "Stopped Event History cannot be cleared.") };
       }
       const previousInterval = interval;
+      const nextInterval = createInterval(sessionId, intervalOrdinal + 1);
       try {
-        await journal.clear();
+        const applied = await journal.clear();
+        if (applied === false) {
+          const issue = problem("CLEAR_FAILED", "The History Interval could not be cleared.");
+          rejoinPostClearQueue();
+          lastClearResult = null;
+            publish({ type: "status", status: status(issue), problem: issue });
+          return { ok: false, problem: issue };
+        }
+        intervalOrdinal += 1;
+        interval = nextInterval;
+        committed.length = 0;
+        retainedBytes = 0;
+        lastNearLimit = false;
+        rejoinPostClearQueue();
+        clearInProgress = false;
+        const result = deepFreeze({ previousInterval, interval });
+        lastClearResult = result;
+        publish(
+          deepFreeze({
+            type: "interval-cleared" as const,
+            previousInterval,
+            interval,
+            status: status()
+          })
+        );
+        return { ok: true, value: result };
       } catch (error) {
-        const issue = problem(
-          "CLEAR_FAILED",
+        const clearFailureProblem = problem(
+          "HISTORY_STOPPED",
           error instanceof Error ? error.message : "The History Interval could not be cleared."
         );
+        if (phase === "RUNNING" && !terminal) {
+          phase = "DRAINING_TO_STOP";
+          trigger = makeTrigger("JOURNAL_COMMIT_FAILED", "JOURNAL", null);
+          rejectPostClearDuringClearFailure(terminalProblem(trigger));
+          startTerminalPersistence();
+          finishTerminal();
+        } else {
+          rejoinPostClearQueue();
+        }
+        const issue = problem("CLEAR_FAILED", clearFailureProblem.message);
         publish({ type: "status", status: status(issue), problem: issue });
         return { ok: false, problem: issue };
       }
-      committed.length = 0;
-      retainedBytes = 0;
-      interval = createInterval(sessionId, ++intervalOrdinal);
-      lastNearLimit = false;
-      const result = deepFreeze({ previousInterval, interval });
-      lastClearResult = result;
-      publish(
-        deepFreeze({
-          type: "interval-cleared" as const,
-          previousInterval,
-          interval,
-          status: status()
-        })
-      );
-      return { ok: true, value: result };
     });
     void clearPromise.finally(() => {
+      clearInProgress = false;
       clearPromise = null;
+      if (pending.length > 0 && !clearInProgress) {
+        scheduleProcessing();
+      }
     });
     return clearPromise;
   }
@@ -705,6 +806,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   function close(): Promise<Outcome<CloseResult>> {
     if (closePromise) {
       return closePromise;
+    }
+    if (clearPromise) {
+      return clearPromise.then(() => close());
     }
     if (phase === "CLOSED") {
       const result = closeResult();
@@ -714,9 +818,16 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
     ageTimer = null;
     closePromise = waitForIdle().then(() => waitForTerminalQuiescence()).then(async () => {
+      const finalCommittedEvidenceBoundary = committedEvidenceBoundary;
+      let dataDisposition: CloseResult["dataDisposition"] = "ERASURE_UNCONFIRMED";
+      let cleanupDisposition: CloseResult["cleanupDisposition"] = "DEFERRED";
       try {
-        await journal.clear();
-        await journal.close();
+        const applied = await journal.clear();
+        if (applied !== false) {
+          dataDisposition = "ERASED";
+          await journal.close();
+          cleanupDisposition = "COMPLETE";
+        }
       } catch (error) {
         const issue = problem(
           "CLOSE_FAILED",
@@ -724,26 +835,32 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         );
         phase = "CLOSED";
         publish({ type: "status", status: status(issue), problem: issue });
-        return {
-          ok: false,
-          problem: issue
-        };
+        const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
+        lastCloseResult = result;
+        return { ok: false, problem: issue, value: result };
       }
-      const result = closeResult();
-      committed.length = 0;
-      retainedBytes = 0;
-      phase = "CLOSED";
-      publish(deepFreeze({ type: "closed" as const, result }));
-      return { ok: true, value: result };
-    });
-    return closePromise;
-  }
+        if (clearInProgress) {
+          publish({ type: "status", status: status(issue), problem: issue });
+          const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
+          lastCloseResult = result;
+          return { ok: false, problem: problem("CLOSE_FAILED", "Event History clear is in progress."), value: result };
+        }
+        const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
+        committed.length = 0;
+        retainedBytes = 0;
+        phase = "CLOSED";
+        lastCloseResult = result;
+        publish(deepFreeze({ type: "closed" as const, result }));
+        return { ok: true, value: result };
+      });
+      return closePromise;
+    }
 
-  function closeResult(): CloseResult {
+  function closeResult(values: { finalCommittedEvidenceBoundary?: EvidenceRef | null; dataDisposition?: CloseResult["dataDisposition"]; cleanupDisposition?: CloseResult["cleanupDisposition"] } = {}): CloseResult {
     return deepFreeze({
-      finalCommittedEvidenceBoundary: committedEvidenceBoundary,
-      dataDisposition: "ERASED" as const,
-      cleanupDisposition: "COMPLETE" as const
+      finalCommittedEvidenceBoundary: values.finalCommittedEvidenceBoundary ?? committedEvidenceBoundary,
+      dataDisposition: values.dataDisposition ?? "ERASURE_UNCONFIRMED",
+      cleanupDisposition: values.cleanupDisposition ?? "DEFERRED"
     });
   }
 
