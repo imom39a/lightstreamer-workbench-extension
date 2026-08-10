@@ -127,7 +127,28 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
       });
       await history.close();
     });
+
+    it("Finds canonical replay key order case-insensitively across adapters", async () => {
+      const history = await createHistory();
+      await historyFactoryOfferAndReadCanonicalReplay(history);
+    });
   });
+}
+
+async function historyFactoryOfferAndReadCanonicalReplay(history: EventHistory): Promise<void> {
+  await history.offer({
+    ...candidate("canonical-order"),
+    raw: { zulu: "LAST", alpha: "FIRST" }
+  }).settled;
+
+  await expect(history.read({ find: '"ALPHA":"FIRST","ZULU":"LAST"' })).resolves.toMatchObject({
+    ok: true,
+    value: {
+      total: 1,
+      evidence: [expect.objectContaining({ eventId: "canonical-order" })]
+    }
+  });
+  await history.close();
 }
 
 sharedContract("memory", () => createMemoryEventHistoryForTests());

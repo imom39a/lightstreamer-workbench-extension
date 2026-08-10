@@ -156,6 +156,46 @@ describe("IndexedDB authoritative EventHistory", () => {
     }
   });
 
+  it("ignores an error after a successful timeout abort until abort is definitive", async () => {
+    vi.useFakeTimers();
+    try {
+      const transaction = transactionStub(() => undefined);
+      const completed = transactionDone(transaction, "committing Evidence", 10);
+      const outcome: string[] = [];
+      void completed.then(
+        () => outcome.push("complete"),
+        (error: Error) => outcome.push(error.message)
+      );
+
+      await vi.advanceTimersByTimeAsync(10);
+      transaction.onerror?.();
+      await Promise.resolve();
+      expect(outcome).toEqual([]);
+
+      transaction.onabort?.();
+      await expect(completed).rejects.toThrow(/Timed out while committing Evidence/);
+      expect(outcome).toEqual(["Timed out while committing Evidence."]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles once when terminal transaction callbacks race", async () => {
+    const transaction = transactionStub(() => undefined);
+    const completed = transactionDone(transaction, "committing Evidence", 10_000);
+    const outcome: string[] = [];
+    void completed.then(
+      () => outcome.push("complete"),
+      (error: Error) => outcome.push(error.message)
+    );
+
+    transaction.onerror?.();
+    transaction.onabort?.();
+    transaction.oncomplete?.();
+    await expect(completed).rejects.toThrow(/transaction failed/i);
+    expect(outcome).toEqual(["IndexedDB transaction failed."]);
+  });
+
   it.each([
     ["complete", true],
     ["error", false],

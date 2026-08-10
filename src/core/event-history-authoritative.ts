@@ -1,5 +1,5 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
-import { createEventSearchText, type EventFilterState, matchesEventFilters } from "./event-filter";
+import { type EventFilterState, matchesEventFilters } from "./event-filter";
 import { serializeJournalEvidenceCandidate } from "./event-history-serialization";
 
 /** A normalized Capture event or a validated topology checkpoint staged for acceptance. */
@@ -609,9 +609,7 @@ export function matchesEvidenceQuery(entry: CommittedEvidence, query: EvidenceQu
   if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
   if (query.filters && !matchesCandidateFilters(entry.candidate, query.filters)) return false;
   if (query.find) {
-    const text = entry.candidate.kind === "topology-checkpoint"
-      ? serializeJournalEvidenceCandidate(entry.candidate).payload.toLowerCase()
-      : createEventSearchText(entry.candidate).toLowerCase();
+    const text = serializeJournalEvidenceCandidate(entry.candidate).payload.toLowerCase();
     if (!text.includes(query.find.trim().toLowerCase())) return false;
   }
   return true;
