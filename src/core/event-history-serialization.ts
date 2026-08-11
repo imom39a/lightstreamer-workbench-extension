@@ -43,9 +43,14 @@ export function serializeJournalEvidenceCandidate(
 export function deserializeJournalEvidenceCandidate(payload: string): EvidenceCandidate {
   const parsed = JSON.parse(payload) as unknown;
   // The common Lightstreamer envelope is already JSON-native. Avoid walking
-  // and copying every nested payload a second time unless the replay framing
-  // actually contains one of the non-JSON values that needs decoding.
-  return payload.includes(`"${REPLAY_TAG}"`)
+  // and copying every nested payload a second time unless canonical replay
+  // framing actually contains the tag as an object key. JSON string content
+  // cannot create this unescaped token, so a tag-shaped ordinary string stays
+  // on the fast path. The persisted payload remains JSON-compatible for
+  // backward reads, so there is no separate non-lexical framing marker; the
+  // residual risk is limited to non-canonical hand-authored payloads that use
+  // this reserved object key and bypass the encoder.
+  return payload.includes(`"${REPLAY_TAG}":`)
     ? decode(parsed) as EvidenceCandidate
     : parsed as EvidenceCandidate;
 }

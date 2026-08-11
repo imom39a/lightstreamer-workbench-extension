@@ -665,9 +665,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     try {
       assertCandidate(candidate);
       serialized = serializeJournalEvidenceCandidate(candidate);
-      bytes = options.byteEstimator
-        ? options.byteEstimator(copyCandidate(candidate))
-        : journalAccountedBytes(serialized.bytes);
+      bytes = estimateHistoryCandidateBytes(candidate, options.byteEstimator, serialized.bytes);
     } catch (error) {
       notAccepted += 1;
       const issue = problem("INVALID_CANDIDATE", error instanceof Error ? error.message : "Candidate is not valid Evidence input.");

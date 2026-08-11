@@ -113,13 +113,16 @@ export function historyCapacityLimits(
 
 export function estimateHistoryCandidateBytes(
   candidate: EvidenceCandidate,
-  estimator?: (candidate: EvidenceCandidate) => number
+  estimator?: (candidate: EvidenceCandidate) => number,
+  serializedPayloadBytes?: number
 ): number {
   // The estimator remains a test-only seam for deterministic pressure tests.
   // Production accounting always includes the canonical payload and frame.
   const bytes = estimator
     ? estimator(candidate)
-    : journalAccountedBytes(serializeJournalEvidenceCandidate(candidate).bytes);
+    : journalAccountedBytes(
+        serializedPayloadBytes ?? serializeJournalEvidenceCandidate(candidate).bytes
+      );
   if (!Number.isSafeInteger(bytes) || bytes < 0) {
     throw new Error("The replay-payload byte estimator must return a non-negative safe integer.");
   }
