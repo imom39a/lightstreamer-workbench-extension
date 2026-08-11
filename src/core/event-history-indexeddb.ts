@@ -123,18 +123,20 @@ export async function createIndexedDbEventHistory(
   const runtime = authoritativeEventDatabaseRuntime(options.runtime);
   const databaseName = authoritativeEventDatabaseName(panelSessionId);
   const canonicalPanelSessionId = parseAuthoritativeEventDatabaseName(databaseName)?.panelSessionId ?? panelSessionId;
-  try {
-    await runStartupSweep(runtime, databaseName);
-  } catch (error) {
-    throw error instanceof AuthoritativeDatabaseOpenError
-      ? error
-      : new AuthoritativeDatabaseOpenError("STARTUP_SWEEP_FAILED", "Startup journal sweep failed.", error);
-  }
   const ownerName = authoritativeOwnershipLockName(databaseName);
   let releaseOwnership: (() => void) | null = null;
   const ownershipRelease = new Promise<void>((resolve) => {
     releaseOwnership = resolve;
   });
+  const startupSweep = async (): Promise<void> => {
+    try {
+      await runStartupSweep(runtime, databaseName);
+    } catch (error) {
+      throw error instanceof AuthoritativeDatabaseOpenError
+        ? error
+        : new AuthoritativeDatabaseOpenError("STARTUP_SWEEP_FAILED", "Startup journal sweep failed.", error);
+    }
+  };
 
   const closeCurrent = async (history: EventHistory, database: AuthoritativeEventDatabase): Promise<Outcome<CloseResult>> => {
     try {
@@ -164,6 +166,7 @@ export async function createIndexedDbEventHistory(
 
   const historyAcquisition = runtime.requestLock(ownerName, { mode: "exclusive", ifAvailable: true }, async () => {
     try {
+      await startupSweep();
       const database = await openAuthoritativeEventDatabase(databaseName);
       const loaded = await loadJournal(database, canonicalPanelSessionId);
       const closeJournal = async (): Promise<void> => {

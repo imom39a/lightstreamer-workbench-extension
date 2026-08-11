@@ -1626,6 +1626,51 @@ describe("IndexedDB authoritative EventHistory", () => {
     await recovered.close();
   });
 
+  it("claims self ownership before sweeping concurrent startups' preexisting journals", async () => {
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const firstPanelSessionId = "ownership-concurrent-first";
+    const secondPanelSessionId = "ownership-concurrent-second";
+    const firstDatabaseName = authoritativeEventDatabaseName(firstPanelSessionId);
+    const secondDatabaseName = authoritativeEventDatabaseName(secondPanelSessionId);
+    await Promise.all([
+      createModernJournal(firstPanelSessionId, 1),
+      createModernJournal(secondPanelSessionId, 1)
+    ]);
+
+    const activeLocks = new Set<string>();
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [
+        { name: firstDatabaseName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION },
+        { name: secondDatabaseName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION }
+      ]),
+      requestLock: vi.fn(async (name, _options, callback) => {
+        if (activeLocks.has(name)) return null;
+        activeLocks.add(name);
+        try {
+          return await callback();
+        } finally {
+          activeLocks.delete(name);
+        }
+      })
+    };
+
+    const [first, second] = await Promise.all([
+      openEventHistory({ panelSessionId: firstPanelSessionId, runtime }),
+      openEventHistory({ panelSessionId: secondPanelSessionId, runtime })
+    ]);
+
+    await expect(first.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [{ sequence: 1, eventId: "event-0" }] }
+    });
+    await expect(second.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [{ sequence: 1, eventId: "event-0" }] }
+    });
+
+    await Promise.all([first.close(), second.close()]);
+  });
+
   it("keeps orphan journals when cleanup lock cannot be acquired", async () => {
     const panelSessionId = "ownership-lock-blocked";
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
