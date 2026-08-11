@@ -83,6 +83,25 @@ describe("Event History performance checkpoint workload", () => {
     expect(scenario.liveCaptureMaxInterEventGapMs).toBeLessThanOrEqual(250);
     expect(scenario.liveCaptureRateEventsPerSecond).toBeGreaterThanOrEqual(50);
     expect(scenario.interleavedWhileStaging).toBe(true);
+    expect(scenario.observationProvenance).toBe("production-panel-committed-evidence-hook");
+    expect(scenario.productionObservedLiveEventIds).toEqual(scenario.liveCaptureEventIds);
+    expect(scenario.productionObservedLiveEventTimesMs).toHaveLength(scenario.liveCaptureEventIds.length);
+  });
+
+  it("cleans checkpoint panel resources after cancellation immediately after panel acquisition", async () => {
+    let thrown: unknown;
+    const guard = createHarnessStageGuard();
+    try {
+      await runCheckpointScenario("memory", "representative", null, guard, {
+        afterPanelMount: () => guard.invalidate()
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error & { message: string }).message).toContain("panel acquisition");
+    expect((thrown as Error & { cleanupEvidence: { closeAttempted: boolean; rootRemovalAttempted: boolean } }).cleanupEvidence)
+      .toMatchObject({ closeAttempted: true, rootRemovalAttempted: true });
   });
 
   const progress = (stage: string): HarnessProgressInput => ({

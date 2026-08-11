@@ -182,6 +182,9 @@ export type EventHistoryPerformanceCheckpointScenario = Readonly<{
   trafficBefore: number;
   trafficAfter: number;
   liveCaptureEventIds: readonly string[];
+  productionObservedLiveEventIds: readonly string[];
+  productionObservedLiveEventTimesMs: readonly number[];
+  observationProvenance: "production-panel-committed-evidence-hook";
   liveCaptureEventTimesMs: readonly number[];
   retainedEventIds: readonly string[];
   publishedEventIds: readonly string[];
@@ -468,6 +471,11 @@ function isCheckpointScenario(value: unknown): value is EventHistoryPerformanceC
     && Number.isSafeInteger(value.trafficAfter) && (value.trafficAfter as number) >= 1
     && Array.isArray(value.liveCaptureEventIds) && value.liveCaptureEventIds.length > 0
     && value.liveCaptureEventIds.every((id) => typeof id === "string" && id.length > 0)
+    && Array.isArray(value.productionObservedLiveEventIds) && value.productionObservedLiveEventIds.length > 0
+    && value.productionObservedLiveEventIds.every((id) => typeof id === "string" && id.length > 0)
+    && Array.isArray(value.productionObservedLiveEventTimesMs) && value.productionObservedLiveEventTimesMs.length > 0
+    && value.productionObservedLiveEventTimesMs.every((timestamp) => isFiniteNumber(timestamp) && timestamp >= 0)
+    && value.observationProvenance === "production-panel-committed-evidence-hook"
     && Array.isArray(value.liveCaptureEventTimesMs) && value.liveCaptureEventTimesMs.length > 0
     && value.liveCaptureEventTimesMs.every((timestamp) => isFiniteNumber(timestamp) && timestamp >= 0)
     && Array.isArray(value.retainedEventIds) && value.retainedEventIds.length > 0
@@ -535,6 +543,11 @@ function validateCheckpointScenarios(
     if (matches.length !== 2) failures.push(`Expected NORMAL and LOWER ${name} checkpoint scenarios.`);
     for (const scenario of matches) {
       const liveIdsUnique = new Set(scenario.liveCaptureEventIds).size === scenario.liveCaptureEventIds.length;
+      const productionLiveIdsMatch = identifiersMatch(scenario.productionObservedLiveEventIds, scenario.liveCaptureEventIds);
+      const productionLiveTimesMatch = scenario.productionObservedLiveEventTimesMs.length === scenario.liveCaptureEventIds.length;
+      const productionLiveTimesOrdered = scenario.productionObservedLiveEventTimesMs.every((timestamp, index) =>
+        index === 0 || timestamp >= scenario.productionObservedLiveEventTimesMs[index - 1]!
+      );
       const eventTimesOrdered = scenario.liveCaptureEventTimesMs.every((timestamp, index) =>
         index === 0 || timestamp >= scenario.liveCaptureEventTimesMs[index - 1]!
       );
@@ -567,6 +580,9 @@ function validateCheckpointScenarios(
         : 0;
       if (!scenario.accepted
         || scenario.liveCaptureCount !== scenario.liveCaptureEventIds.length
+        || !productionLiveIdsMatch
+        || !productionLiveTimesMatch
+        || !productionLiveTimesOrdered
         || scenario.liveCaptureEventTimesMs.length !== scenario.liveCaptureCount
         || !eventTimesOrdered
         || scenario.liveCaptureEventTimesMs[0]! < scenario.liveCaptureStartedAtMs
