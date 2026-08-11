@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   deserializeJournalEvidenceCandidate,
@@ -49,5 +49,22 @@ describe("journal replay serialization", () => {
     expect(journalAccountedBytes(serialized.bytes)).toBe(serialized.bytes + 8);
     expect(estimateHistoryCandidateBytes(candidate)).toBe(serialized.bytes + 8);
     expect(serializeJournalEvidenceCandidate({ ...candidate, checkpoint: { a: "stable", z: 1 } }).payload).toBe(serialized.payload);
+  });
+
+  it("does not recursively decode an ordinary JSON-rich replay payload", () => {
+    const candidate: EvidenceCandidate = {
+      id: "json-rich",
+      kind: "topology-checkpoint",
+      checkpoint: {
+        nested: { values: Array.from({ length: 32 }, (_, index) => ({ index, value: "payload" })) }
+      }
+    };
+    const serialized = serializeJournalEvidenceCandidate(candidate);
+    const fromEntries = vi.spyOn(Object, "fromEntries");
+
+    expect(deserializeJournalEvidenceCandidate(serialized.payload)).toEqual(candidate);
+    expect(fromEntries).not.toHaveBeenCalled();
+
+    fromEntries.mockRestore();
   });
 });

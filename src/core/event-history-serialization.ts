@@ -41,7 +41,13 @@ export function serializeJournalEvidenceCandidate(
 }
 
 export function deserializeJournalEvidenceCandidate(payload: string): EvidenceCandidate {
-  return decode(JSON.parse(payload)) as EvidenceCandidate;
+  const parsed = JSON.parse(payload) as unknown;
+  // The common Lightstreamer envelope is already JSON-native. Avoid walking
+  // and copying every nested payload a second time unless the replay framing
+  // actually contains one of the non-JSON values that needs decoding.
+  return payload.includes(`"${REPLAY_TAG}"`)
+    ? decode(parsed) as EvidenceCandidate
+    : parsed as EvidenceCandidate;
 }
 
 const REPLAY_TAG = "__lsewReplayTag";
