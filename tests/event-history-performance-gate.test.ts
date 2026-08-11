@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyEventHistoryPerformance,
   EVENT_HISTORY_PERFORMANCE_LIMITS,
+  validateEventHistoryPerformanceReference,
   type EventHistoryPerformanceCell,
   type EventHistoryPerformanceHeapSample,
   type EventHistoryPerformanceReference,
@@ -390,5 +391,16 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     expect(decision.verdict).toBe("FAIL");
     expect(decision.failures.some((failure) => failure.includes("pending") || failure.includes("disposition"))).toBe(true);
+  });
+
+  it("rejects a pending reference during preflight", () => {
+    expect(validateEventHistoryPerformanceReference({
+      referenceVersion: "history-impl-11-initial",
+      disposition: "PENDING_MAINTAINER_BASELINE",
+      rationale: "pending",
+      schemaVersion: 2,
+      environment: report().environment,
+      cells: report().cells
+    })).toBe(false);
   });
 });

@@ -316,6 +316,10 @@ export function classifyEventHistoryPerformance(
   return decision(failures, reviewReasons, expectedKeys.size, validReport.cells.length);
 }
 
+export function validateEventHistoryPerformanceReference(value: unknown): value is EventHistoryPerformanceReference {
+  return isPerformanceReference(value);
+}
+
 function decision(
   failures: readonly string[],
   reviewReasons: readonly string[],

@@ -35,7 +35,10 @@ async function main() {
   try {
     await mkdir(site, { recursive: true });
     await build({ entryPoints: [join(rootDir, "benchmarks/event-history-performance-gate.ts")], outfile: gateModulePath, bundle: true, format: "esm", platform: "node", target: "node20", logLevel: "silent" });
-    const { classifyEventHistoryPerformance } = await import(pathToFileURL(gateModulePath).href);
+    const { classifyEventHistoryPerformance, validateEventHistoryPerformanceReference } = await import(pathToFileURL(gateModulePath).href);
+    if (!validateEventHistoryPerformanceReference(reference)) {
+      throw new Error(`Pinned reference preflight failed: ${referencePath}`);
+    }
     await build({
       entryPoints: [join(rootDir, "benchmarks/event-history-performance-harness.ts")],
       outfile: join(site, "harness.js"),
