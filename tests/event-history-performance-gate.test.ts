@@ -43,15 +43,25 @@ function cell(
       findFullP95Ms: 20
     },
     longTasks: { supported: true, unattributed: 0, capture: [], commit: [], paint: [], query: [] },
-    storage: {
-      transactionCount: 1,
-      readwriteTransactionCount: 1,
-      readonlyTransactionCount: 0,
-      evidenceWriteCount: 1_692,
-      controlWriteCount: 1,
-      facetEntryCount: 1_692,
-      indexEntryCount: 3_384
-    },
+    storage: adapter === "indexeddb"
+      ? {
+          transactionCount: 1,
+          readwriteTransactionCount: 1,
+          readonlyTransactionCount: 0,
+          evidenceWriteCount: 1_692,
+          controlWriteCount: 1,
+          facetEntryCount: 1_692,
+          indexEntryCount: 3_384
+        }
+      : {
+          transactionCount: 0,
+          readwriteTransactionCount: 0,
+          readonlyTransactionCount: 0,
+          evidenceWriteCount: 0,
+          controlWriteCount: 0,
+          facetEntryCount: 0,
+          indexEntryCount: 0
+        },
     workloadFacts: {
       expectedCount: 1_692,
       offeredEventsPerSecond: 50,
@@ -100,6 +110,44 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
     source: { revision: "clean-reference-revision", dirty: false },
     environment: { chromeMajor: 151, platformClass: "darwin", architectureClass: "arm64", headless: false },
     cells,
+    terminalScenarios: ["indexeddb", "memory"].flatMap((adapter) => [
+      {
+        adapter: adapter as "indexeddb" | "memory",
+        trigger: "PENDING_BYTES" as const,
+        tier: adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const,
+        terminalReason: "PENDING_BYTE_LIMIT" as const,
+        acceptedCount: 16,
+        refusedCount: 1,
+        refusedEventIds: ["missing-bytes"],
+        firstMissingEventId: "missing-bytes",
+        committedBoundary: { sequence: 16, eventId: "accepted-16" },
+        terminalPublicationCount: 1,
+        finalBoundaryCorrect: true,
+        refusedIdentityCorrect: true,
+        exactOneTerminalPublication: true,
+        pressureTransitions: ["NEAR_LIMIT", "EXHAUSTED"]
+      },
+      {
+        adapter: adapter as "indexeddb" | "memory",
+        trigger: "PENDING_AGE" as const,
+        tier: adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const,
+        terminalReason: "PENDING_AGE_LIMIT" as const,
+        acceptedCount: 1,
+        refusedCount: 1,
+        refusedEventIds: ["missing-age"],
+        firstMissingEventId: null,
+        committedBoundary: { sequence: 1, eventId: "accepted-1" },
+        terminalPublicationCount: 1,
+        finalBoundaryCorrect: true,
+        refusedIdentityCorrect: true,
+        exactOneTerminalPublication: true,
+        pressureTransitions: ["NEAR_LIMIT", "EXHAUSTED"]
+      }
+    ]),
+    checkpointScenarios: ["indexeddb", "memory"].flatMap((adapter) => [
+      { name: "representative" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 1, canonicalBytes: 10_000, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true },
+      { name: "maximum-2MiB" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 1, canonicalBytes: 2 * 1_048_576, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true }
+    ]),
     heapSamples: [1, 2, 3].flatMap((index) => [heapSample("indexeddb", index), heapSample("memory", index)]),
     lifecycle: { retainedHeapBytes: [1, 2, 3], strictMonotonicGrowth: false },
     ...overrides
@@ -186,6 +234,20 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     expect(decision.verdict).toBe("FAIL");
     expect(decision.failures.some((failure) => failure.includes("Long Task telemetry"))).toBe(true);
+  });
+
+  it("fails measured IndexedDB amplification that is not internally coherent", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry, index) => index === 0
+        ? { ...entry, storage: { ...entry.storage, indexEntryCount: entry.storage.indexEntryCount + 1 } }
+        : entry)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("index amplification"))).toBe(true);
   });
 
   it("returns REVIEW for a comparable absolute pass that regresses over twenty percent", () => {

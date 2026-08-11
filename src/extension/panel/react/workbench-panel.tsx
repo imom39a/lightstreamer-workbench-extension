@@ -298,6 +298,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const evidenceRowActions = useRef<EvidenceRowActions>({ select: () => undefined });
   const evidenceLedger = useRef<HTMLDivElement | null>(null);
   const contextBody = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    if (!runtime.reportVisibleFrame) return;
+    const frame = window.requestAnimationFrame(() => runtime.reportVisibleFrame?.());
+    return () => window.cancelAnimationFrame(frame);
+  }, [runtime, snapshot.version]);
   const scopeTree = useRef<HTMLDivElement | null>(null);
   const scopeNodesById = useRef(new Map<string, HTMLButtonElement>());
   const scopeTreeActions = useRef<ScopeTreeActions>({

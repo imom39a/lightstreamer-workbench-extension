@@ -15,6 +15,7 @@ import {
   createInMemoryEventHistory,
   type EventHistory
 } from "../src/core/event-history-authoritative";
+import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import {
   THEME_STORAGE_KEY,
@@ -157,6 +158,30 @@ describe("production panel mount wiring", () => {
     await expect(executor?.execute(request)).resolves.toEqual(bridgeResult);
     expect(reinjectDraft).toHaveBeenCalledWith(request.draft, "captured-listener");
 
+    await disposePanel(dispose);
+  });
+
+  it("keeps the visible-frame reporter when production mount binds the runtime", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory({ panelSessionId: PANEL_SESSION_ID });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    const reportVisibleFrame = vi.spyOn(runtime, "reportVisibleFrame");
+    const bridge = { reinjectDraft: vi.fn(), disconnect: vi.fn() };
+    const createRuntime = vi.fn(() => runtime);
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory: async () => history,
+      createRuntime,
+      connectBridge: () => bridge
+    });
+    await flushPanel();
+    await act(async () => {
+      await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "mount-boundary")).settled;
+      await Promise.resolve();
+    });
+
+    expect(createRuntime).toHaveBeenCalledOnce();
+    expect(reportVisibleFrame).toHaveBeenCalled();
     await disposePanel(dispose);
   });
 

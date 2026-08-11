@@ -130,7 +130,6 @@ export function connectPanelBridge(
       panelSessionId
     });
 
-    handlers.onStatusChange("bridge connected");
   };
 
   connect();

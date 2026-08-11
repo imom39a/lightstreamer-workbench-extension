@@ -24,6 +24,9 @@ export const EVENT_HISTORY_PERFORMANCE_LIMITS = {
   }
 } as const;
 
+export const TERMINAL_PENDING_BYTE_EVENT_COUNT = 17;
+export const TERMINAL_PENDING_BYTE_ACCEPTED_COUNT = 16;
+
 export type EventHistoryPerformanceAdapter = "indexeddb" | "memory";
 export type EventHistoryPerformanceWorkload = "sustained" | "burst";
 export type EventHistoryPerformanceShape =
@@ -105,6 +108,33 @@ export type EventHistoryPerformanceHeapSample = Readonly<{
   postGcHeapDeltaBytes: number;
 }>;
 
+export type EventHistoryPerformanceTerminalScenario = Readonly<{
+  adapter: EventHistoryPerformanceAdapter;
+  trigger: "PENDING_BYTES" | "PENDING_AGE";
+  tier: "NORMAL" | "LOWER";
+  terminalReason: "PENDING_BYTE_LIMIT" | "PENDING_AGE_LIMIT";
+  acceptedCount: number;
+  refusedCount: number;
+  refusedEventIds: readonly string[];
+  firstMissingEventId: string | null;
+  committedBoundary: Readonly<{ sequence: number; eventId: string }> | null;
+  terminalPublicationCount: number;
+  finalBoundaryCorrect: boolean;
+  refusedIdentityCorrect: boolean;
+  exactOneTerminalPublication: boolean;
+  pressureTransitions: readonly string[];
+}>;
+
+export type EventHistoryPerformanceCheckpointScenario = Readonly<{
+  name: "representative" | "maximum-2MiB";
+  adapter: EventHistoryPerformanceAdapter;
+  accepted: boolean;
+  retained: number;
+  canonicalBytes: number;
+  committedBoundaryCorrect: boolean;
+  batchAcceptedAsOneOversizedUnit: boolean;
+}>;
+
 export type EventHistoryPerformanceEnvironment = Readonly<{
   chromeMajor: number;
   platformClass: string;
@@ -117,6 +147,8 @@ export type EventHistoryPerformanceReport = Readonly<{
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
   cells: readonly EventHistoryPerformanceCell[];
+  terminalScenarios: readonly EventHistoryPerformanceTerminalScenario[];
+  checkpointScenarios: readonly EventHistoryPerformanceCheckpointScenario[];
   heapSamples: readonly EventHistoryPerformanceHeapSample[];
   lifecycle: Readonly<{
     retainedHeapBytes: readonly number[];
@@ -186,6 +218,7 @@ export function classifyEventHistoryPerformance(
     samples.push(cell);
     cellsByKey.set(key, samples);
     validateCell(cell, failures);
+    validateStorageTelemetry(cell, failures);
   }
 
   for (const key of expectedKeys) {
@@ -262,6 +295,8 @@ export function classifyEventHistoryPerformance(
       }
     }
   }
+  validateTerminalScenarios(validReport.terminalScenarios, failures);
+  validateCheckpointScenarios(validReport.checkpointScenarios, failures);
   if (validReport.lifecycle.strictMonotonicGrowth) {
     failures.push("Panel Session lifecycle samples show strict monotonic retained-heap growth.");
   }
@@ -312,15 +347,90 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
   const source = value.source;
   const environment = value.environment;
   const lifecycle = value.lifecycle;
-  return value.schemaVersion === PERFORMANCE_GATE_SCHEMA_VERSION
+  const valid = value.schemaVersion === PERFORMANCE_GATE_SCHEMA_VERSION
     && isRecord(source) && typeof source.revision === "string" && source.revision.length > 0 && isBoolean(source.dirty)
     && isRecord(environment) && environment.chromeMajor === 151 && typeof environment.platformClass === "string"
     && typeof environment.architectureClass === "string" && environment.headless === false
     && Array.isArray(value.cells) && value.cells.every(isPerformanceCell)
+    && Array.isArray(value.terminalScenarios) && value.terminalScenarios.every(isTerminalScenario)
+    && Array.isArray(value.checkpointScenarios) && value.checkpointScenarios.every(isCheckpointScenario)
     && Array.isArray(value.heapSamples) && value.heapSamples.every(isHeapSample)
     && isRecord(lifecycle) && Array.isArray(lifecycle.retainedHeapBytes)
     && lifecycle.retainedHeapBytes.length === SAMPLE_COUNT && lifecycle.retainedHeapBytes.every(isFiniteNumber)
     && isBoolean(lifecycle.strictMonotonicGrowth);
+  return valid;
+}
+
+function isTerminalScenario(value: unknown): value is EventHistoryPerformanceTerminalScenario {
+  if (!isRecord(value) || !ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
+    || !["PENDING_BYTES", "PENDING_AGE"].includes(value.trigger as string)
+    || !["NORMAL", "LOWER"].includes(value.tier as string)
+    || !["PENDING_BYTE_LIMIT", "PENDING_AGE_LIMIT"].includes(value.terminalReason as string)
+    || !Number.isSafeInteger(value.acceptedCount) || (value.acceptedCount as number) < 0
+    || !Number.isSafeInteger(value.refusedCount) || (value.refusedCount as number) < 1
+    || !Array.isArray(value.refusedEventIds) || !value.refusedEventIds.every((id) => typeof id === "string" && id.length > 0)
+    || !(value.firstMissingEventId === null || typeof value.firstMissingEventId === "string")
+    || !Number.isSafeInteger(value.terminalPublicationCount) || (value.terminalPublicationCount as number) < 0
+    || !isBoolean(value.finalBoundaryCorrect) || !isBoolean(value.refusedIdentityCorrect)
+    || !isBoolean(value.exactOneTerminalPublication) || !Array.isArray(value.pressureTransitions)
+    || !value.pressureTransitions.every((entry) => typeof entry === "string")) return false;
+  if (value.committedBoundary !== null && (!isRecord(value.committedBoundary) || !Number.isSafeInteger(value.committedBoundary.sequence) || typeof value.committedBoundary.eventId !== "string")) return false;
+  return true;
+}
+
+function isCheckpointScenario(value: unknown): value is EventHistoryPerformanceCheckpointScenario {
+  return isRecord(value) && ["representative", "maximum-2MiB"].includes(value.name as string)
+    && ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
+    && isBoolean(value.accepted) && Number.isSafeInteger(value.retained) && (value.retained as number) >= 0
+    && Number.isSafeInteger(value.canonicalBytes) && (value.canonicalBytes as number) > 0
+    && isBoolean(value.committedBoundaryCorrect) && isBoolean(value.batchAcceptedAsOneOversizedUnit);
+}
+
+function validateTerminalScenarios(
+  scenarios: readonly EventHistoryPerformanceTerminalScenario[],
+  failures: string[]
+): void {
+  for (const adapter of ADAPTERS) for (const trigger of ["PENDING_BYTES", "PENDING_AGE"] as const) {
+    const matches = scenarios.filter((scenario) => scenario.adapter === adapter && scenario.trigger === trigger);
+    if (matches.length !== 1) {
+      failures.push(`Expected exactly one ${adapter}/${trigger} terminal scenario.`);
+      continue;
+    }
+    const scenario = matches[0]!;
+    if (scenario.terminalReason !== (trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT")) failures.push(`${adapter}/${trigger} reported the wrong terminal reason.`);
+    if (!scenario.finalBoundaryCorrect || !scenario.refusedIdentityCorrect || !scenario.exactOneTerminalPublication || scenario.terminalPublicationCount !== 1) failures.push(`${adapter}/${trigger} did not prove terminal identity, final boundary, and exactly-one publication.`);
+    if (scenario.refusedCount !== scenario.refusedEventIds.length || scenario.refusedCount < 1) failures.push(`${adapter}/${trigger} refused-event accounting is incomplete.`);
+    if (trigger === "PENDING_BYTES" && scenario.firstMissingEventId !== scenario.refusedEventIds[0]) failures.push(`${adapter}/${trigger} first missing event identity is incorrect.`);
+    if (trigger === "PENDING_BYTES" && (scenario.acceptedCount !== TERMINAL_PENDING_BYTE_ACCEPTED_COUNT || scenario.refusedCount !== TERMINAL_PENDING_BYTE_EVENT_COUNT - TERMINAL_PENDING_BYTE_ACCEPTED_COUNT)) failures.push(`${adapter}/${trigger} did not exercise the exact 17-event, 2 MiB checkpoint pressure workload.`);
+    if (trigger === "PENDING_AGE" && (scenario.acceptedCount !== 1 || scenario.refusedCount !== 1)) failures.push(`${adapter}/${trigger} did not exercise the exact one-accepted/one-refused age workload.`);
+  }
+}
+
+function validateCheckpointScenarios(
+  scenarios: readonly EventHistoryPerformanceCheckpointScenario[],
+  failures: string[]
+): void {
+  for (const name of ["representative", "maximum-2MiB"] as const) {
+    const matches = scenarios.filter((scenario) => scenario.name === name);
+    if (matches.length !== 2) failures.push(`Expected NORMAL and LOWER ${name} checkpoint scenarios.`);
+    for (const scenario of matches) {
+      if (!scenario.accepted || scenario.retained !== 1 || !scenario.committedBoundaryCorrect || !scenario.batchAcceptedAsOneOversizedUnit) failures.push(`${scenario.adapter}/${name} checkpoint evidence is incomplete.`);
+      if (name === "maximum-2MiB" && scenario.canonicalBytes < 2 * MIB) failures.push(`${scenario.adapter}/${name} is smaller than the required 2 MiB checkpoint.`);
+    }
+  }
+}
+
+function validateStorageTelemetry(cell: EventHistoryPerformanceCell, failures: string[]): void {
+  const label = cellLabel(cell);
+  const storage = cell.storage;
+  if (cell.adapter === "memory") {
+    if (Object.values(storage).some((value) => value !== 0)) failures.push(`${label} reported IndexedDB telemetry for the in-memory adapter.`);
+    return;
+  }
+  if (storage.evidenceWriteCount !== cell.accepted) failures.push(`${label} measured ${storage.evidenceWriteCount} evidence writes for ${cell.accepted} accepted events.`);
+  if (storage.indexEntryCount !== storage.evidenceWriteCount + storage.facetEntryCount) failures.push(`${label} measured index amplification does not equal event-identity plus facet entries.`);
+  if (storage.controlWriteCount !== storage.readwriteTransactionCount) failures.push(`${label} measured control writes do not match readwrite transaction count.`);
+  if (storage.transactionCount !== storage.readwriteTransactionCount + storage.readonlyTransactionCount) failures.push(`${label} measured transaction totals are incoherent.`);
 }
 
 function isPerformanceReference(value: unknown): value is EventHistoryPerformanceReference {

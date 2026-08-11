@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "referenceVersion": "history-impl-11-initial",
+  "disposition": "PENDING_MAINTAINER_BASELINE",
+  "environment": {
+    "chromeMajor": 151,
+    "platformClass": "darwin",
+    "architectureClass": "arm64"
+  },
+  "cells": []
+}

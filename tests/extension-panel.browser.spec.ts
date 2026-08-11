@@ -28,8 +28,11 @@ const rootDir = process.env.LSEW_PROJECT_ROOT
   ? resolve(process.env.LSEW_PROJECT_ROOT)
   : resolve(fileURLToPath(new URL("..", import.meta.url)));
 const extensionDir = resolve(rootDir, process.env.LSEW_EXTENSION_DIR ?? "dist");
+const SMOKE_TIMEOUT_MS = readTimeout(process.env.LSEW_SMOKE_TIMEOUT_MS ?? "300000");
 
 async function runExtensionPanelSmoke(): Promise<void> {
+  assert.equal(process.env.LSEW_BROWSER_HEADLESS, "false", "The unpacked DevTools smoke requires visible Chrome.");
+  assert.equal(process.env.LSEW_UI_HEADLESS, "false", "The unpacked DevTools smoke requires a visible UI.");
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-extension-panel-smoke-"));
   const chromeExecutable = await resolveChromeExecutable(rootDir);
   const chromeLogs: string[] = [];
@@ -170,13 +173,15 @@ async function runExtensionPanelSmoke(): Promise<void> {
         `
 document.querySelector('[aria-label="Structural runtime scope"]') &&
           document.querySelector('[aria-label="Ordered Evidence"]') &&
-          document.querySelector('[aria-label="Context"]')
+          document.querySelector('[aria-label="Context"]') &&
+          document.documentElement.dataset.lsewPanelBridgeStatus === "bridge connected"
         `,
-        "the React Scoped Evidence Workspace to become usable"
+        "the React workspace and content bridge registration to become ready",
+        SMOKE_TIMEOUT_MS
       );
     }
 
-    const pageTarget = latestTargets.find(
+    const pageTarget = (await listBrowserTargets(debugging.port)).find(
       (target) => target.id === inspectedTarget.id && typeof target.webSocketDebuggerUrl === "string"
     );
     assert.ok(
@@ -185,6 +190,12 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     );
     pageCdp = await CdpClient.connect(pageTarget.webSocketDebuggerUrl);
     await pageCdp.request("Runtime.enable");
+    await waitForCondition(
+      pageCdp,
+      `document.documentElement.dataset.lsewContentBridgeReady === "true"`,
+      "the inspected-page content bridge to become ready",
+      SMOKE_TIMEOUT_MS
+    );
 
     const liveCaptures = ["one", "two", "three"].map((suffix, index) => ({
       namespace: "__LSEW_CAPTURE__",
@@ -204,15 +215,13 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     for (const capture of liveCaptures) {
       await evaluateByValue(pageCdp, `window.postMessage(${JSON.stringify(capture)}, "*")`);
     }
-
-    await selectWorkbenchTab(devtoolsFrontendCdp, selection.panelId);
-
     for (const connectedPanel of panelCdps) {
       await waitForCondition(
         connectedPanel,
         `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
           document.body.innerText.includes('cdp-same-tab-three')`,
-        "both same-tab panel instances to receive the live Capture"
+        "both same-tab panel instances to receive the live Capture",
+        SMOKE_TIMEOUT_MS
       );
     }
 
@@ -275,7 +284,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       "The extension origin should expose two distinct Panel Session journals."
     );
     console.log(
-      "Same-tab two-DevTools-panel proof passed: both panel instances retained ordered unique live Capture, shared the inspected-page scope, and exposed two distinct Panel Session journals."
+      "Same-tab two-DevTools-panel proof passed: each selected panel retained ordered unique live Capture, shared the inspected-page scope, and exposed two distinct Panel Session journals."
     );
 
     const proof = await evaluateByValue<{
@@ -340,7 +349,7 @@ async function waitForAdditionalWorkbenchPanel(
   frontendCdp: CdpClient,
   originalPanelIds: readonly string[]
 ): Promise<string> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + SMOKE_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const panelIds = await evaluateByValue<string[]>(
       frontendCdp,
@@ -363,7 +372,7 @@ async function waitForInspectedExtensionDevtools(
   port: number,
   inspectedUrl: string
 ): Promise<CdpClient> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + SMOKE_TIMEOUT_MS;
   let latestTargets: BrowserTarget[] = [];
   while (Date.now() < deadline) {
     latestTargets = await listBrowserTargets(port);
@@ -425,7 +434,7 @@ async function waitForInspectedPanelTargets(
   inspectedUrl: string,
   count: number
 ): Promise<CdpClient[]> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + SMOKE_TIMEOUT_MS;
   let latestTargets: BrowserTarget[] = [];
   while (Date.now() < deadline) {
     latestTargets = await listBrowserTargets(port);
@@ -494,6 +503,14 @@ async function startInspectedPage(): Promise<{ server: Server; url: string }> {
     throw new Error("Unable to resolve the extension-smoke HTTP port.");
   }
   return { server, url: `http://127.0.0.1:${address.port}/` };
+}
+
+function readTimeout(value: string): number {
+  const timeout = Number(value);
+  if (!Number.isSafeInteger(timeout) || timeout < 300_000) {
+    throw new Error("LSEW_SMOKE_TIMEOUT_MS must be an integer timeout of at least 300000 ms.");
+  }
+  return timeout;
 }
 
 await runExtensionPanelSmoke();

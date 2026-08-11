@@ -9,6 +9,11 @@ import { build } from "esbuild";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(scriptDir, "..");
 const browserTest = join(rootDir, "tests", "extension-panel.browser.spec.ts");
+if (process.env.LSEW_BROWSER_HEADLESS !== "false" || process.env.LSEW_UI_HEADLESS !== "false") {
+  throw new Error(
+    "The unpacked DevTools smoke requires LSEW_BROWSER_HEADLESS=false and LSEW_UI_HEADLESS=false; refusing headless Chrome."
+  );
+}
 const temporaryRoot = await mkdtemp(
   join(rootDir, "tests", ".lsew-extension-panel-browser-test-")
 );

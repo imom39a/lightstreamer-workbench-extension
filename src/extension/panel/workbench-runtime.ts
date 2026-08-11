@@ -439,6 +439,8 @@ export interface WorkbenchRuntime {
   subscribe(listener: () => void): () => void;
   dispatch(command: WorkbenchCommand): void;
   dispose(): void;
+  /** Reports the first animation frame after the current committed boundary rendered. */
+  reportVisibleFrame?(): void;
 }
 
 export type WorkbenchRuntimeScheduler = {
@@ -447,6 +449,12 @@ export type WorkbenchRuntimeScheduler = {
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(handle: unknown): void;
 };
+
+/** Observational hooks used only by the deliberate real-Chrome performance gate. */
+export type WorkbenchRuntimePerformanceHooks = Readonly<{
+  onCommittedEvidenceBoundary?(boundary: EvidenceRef, timestampMs: number): void;
+  onVisibleFrame?(boundary: EvidenceRef, timestampMs: number, coveredBoundaries: readonly EvidenceRef[]): void;
+}>;
 
 export type WorkbenchRuntimeOptions = {
   history?: EventHistory;
@@ -459,6 +467,7 @@ export type WorkbenchRuntimeOptions = {
   windowSize?: number;
   scheduler?: WorkbenchRuntimeScheduler;
   localInjectionExecutor?: LocalInjectionExecutor;
+  performanceHooks?: WorkbenchRuntimePerformanceHooks;
 };
 
 type EvidenceData = {
@@ -506,6 +515,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
   private readonly normalizer: EventNormalizer;
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
+  private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
   private readonly retainedLocalEvidenceIds = new Set<string>();
@@ -546,6 +556,8 @@ class Runtime implements WorkbenchRuntime {
   private fallbackHandle: unknown | null = null;
   private hiddenDirty = false;
   private captureBoundary: WorkbenchCaptureSnapshot | null = null;
+  private committedEvidenceBoundary: EvidenceRef | null = null;
+  private pendingVisibleBoundaries: EvidenceRef[] = [];
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
   private historyCondition: WorkbenchHistoryCondition | null = null;
   private historyAnnouncement = "";
@@ -604,6 +616,7 @@ class Runtime implements WorkbenchRuntime {
     this.captureOverride = options.capture ?? {};
     this.normalizer = options.normalizer ?? createEventNormalizer();
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
+    this.performanceHooks = options.performanceHooks ?? null;
     this.storage = options.storage ?? { mode: "indexeddb" };
     this.evidencePipeline = bindCommittedEvidencePipeline({
       history: this.history,
@@ -629,6 +642,13 @@ class Runtime implements WorkbenchRuntime {
     return () => {
       this.listeners.delete(listener);
     };
+  };
+
+  readonly reportVisibleFrame = (): void => {
+    const boundary = this.committedEvidenceBoundary;
+    if (!boundary || !this.performanceHooks?.onVisibleFrame || this.pendingVisibleBoundaries.length === 0) return;
+    const coveredBoundaries = this.pendingVisibleBoundaries.splice(0);
+    this.performanceHooks.onVisibleFrame(boundary, performance.now(), coveredBoundaries);
   };
 
   dispatch(command: WorkbenchCommand): void {
@@ -1245,6 +1265,9 @@ class Runtime implements WorkbenchRuntime {
     if (this.disposed) {
       return;
     }
+    this.committedEvidenceBoundary = entry;
+    this.pendingVisibleBoundaries.push(entry);
+    this.performanceHooks?.onCommittedEvidenceBoundary?.(entry, performance.now());
     if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
       const syncId = topologyCheckpointSyncId(entry.candidate);
       if (syncId !== null) {

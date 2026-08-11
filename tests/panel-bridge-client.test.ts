@@ -4,6 +4,7 @@ import {
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
   PANEL_REGISTER_MESSAGE,
+  PANEL_STATUS_MESSAGE,
   PANEL_REINJECT_REQUEST,
   PANEL_REINJECT_RESULT
 } from "../src/bridge/messages";
@@ -63,6 +64,31 @@ describe("panel bridge client", () => {
     vi.restoreAllMocks();
     delete (globalThis as { chrome?: unknown }).chrome;
     delete (globalThis as Record<string, unknown>)[PAGE_REINJECTION_BRIDGE_GLOBAL];
+  });
+
+  it("does not report bridge readiness until the background registration is acknowledged", () => {
+    const port = createFakePort();
+    const statuses: string[] = [];
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 42 } },
+      runtime: { connect: vi.fn(() => port) }
+    } as unknown as typeof chrome;
+
+    const bridge = connectPanelBridge({
+      onStatusChange(status) {
+        statuses.push(status);
+      },
+      onCaptureMessage: vi.fn()
+    });
+
+    expect(statuses).toEqual([]);
+    port.messageListeners[0]({
+      type: PANEL_STATUS_MESSAGE,
+      panelSessionId: PANEL_SESSION_ID,
+      status: "bridge connected"
+    });
+    expect(statuses).toEqual(["bridge connected"]);
+    bridge.disconnect();
   });
 
   it("reconnects and re-registers the inspected tab after a port disconnect", () => {

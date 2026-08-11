@@ -316,6 +316,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let interval = loaded.interval;
   let phase: HistoryStatus["phase"] = loaded.phase;
   let terminal: HistoryTerminalDiagnostic | undefined = loaded.terminal ?? undefined;
+  let terminalFailureDetail: string | undefined;
   let nextSequence = loaded.nextSequence;
   let committedEvidenceBoundary = loaded.committedEvidenceBoundary;
   let replayPayloadBytes = loaded.replayPayloadBytes;
@@ -437,7 +438,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return deepFreeze({ code, message, ...extras });
   }
   function terminalProblem(triggerValue: HistoryTrigger): HistoryProblem {
-    return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.`, {
+    return problem(triggerValue.reason, `Event History stopped because ${triggerValue.reason}.${triggerValue.detail ? ` ${triggerValue.detail}` : terminalFailureDetail ? ` ${terminalFailureDetail}` : ""}`, {
       reason: triggerValue.reason,
       dimension: triggerValue.dimension,
       ...(terminal ?? persistedTerminal ? { terminal: terminal ?? persistedTerminal } : {})
@@ -447,8 +448,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     const near = pressureFor(limits, measurements()).nearLimit;
     if (near !== lastNearLimit) { lastNearLimit = near; publish({ type: "status", status: status() }); }
   }
-  function makeTrigger(reason: HistoryTerminalReason, dimension: HistoryCapacityDimension | "JOURNAL", firstMissingEventId: string | null): HistoryTrigger {
-    return deepFreeze({ reason, dimension, tier: capacityTier, triggerTime: clock(), interval, firstMissingEventId, measurements: measurements() });
+  function makeTrigger(reason: HistoryTerminalReason, dimension: HistoryCapacityDimension | "JOURNAL", firstMissingEventId: string | null, detail?: string): HistoryTrigger {
+    return deepFreeze({ reason, dimension, tier: capacityTier, triggerTime: clock(), interval, firstMissingEventId, measurements: measurements(), ...(detail ? { detail } : {}) });
   }
   function finishTerminal(): void {
     if (phase !== "DRAINING_TO_STOP" || processing || pending.length > 0 || inFlight.length > 0 || terminal || terminalFinalization || !trigger || !terminalSettled) return;
@@ -719,7 +720,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           );
         } catch (error) {
           const reason: HistoryTerminalReason = isQuotaError(error) ? "QUOTA_EXCEEDED" : "JOURNAL_COMMIT_FAILED";
-          const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null);
+          terminalFailureDetail = describeJournalError(error);
+          const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null, describeJournalError(error));
           trigger = failedTrigger;
           phase = "DRAINING_TO_STOP";
           ensureTerminalSettled();
@@ -1353,7 +1355,7 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
         }
         const matches = new Set<number>();
         sets.push(matches);
-        const request = store.index("facets").openCursor(IDBKeyRange.only(tokens[tokenIndex++]), query.order === "desc" ? "prev" : "next");
+        const request = store.index("facets").openCursor(exactFacetCursorKey(tokens[tokenIndex++]), query.order === "desc" ? "prev" : "next");
         request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence facet read failed."));
         request.onsuccess = () => {
           const cursor = request.result;
@@ -1381,7 +1383,7 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
       readFacetMatches(facetTokens);
       return;
     }
-    const unfilteredPage = query.find === undefined && !query.filters && query.afterSequence === undefined;
+    const unfilteredPage = query.candidateKind === undefined && query.find === undefined && !query.filters && query.afterSequence === undefined;
     const limit = query.limit === undefined ? null : Math.max(0, Math.floor(query.limit));
     const offset = query.offsetFromNewest === undefined ? 0 : Math.max(0, Math.floor(query.offsetFromNewest));
     const pageStop = unfilteredPage && limit !== null ? offset + limit : null;
@@ -1419,6 +1421,11 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
     };
     void completed.catch(fail);
   });
+}
+
+function exactFacetCursorKey(token: string): IDBKeyRange | string {
+  const keyRange = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
+  return keyRange ? keyRange.only(token) : token;
 }
 
 function exactFacetQueryTokens(query: EvidenceQuery): string[] {
@@ -1599,6 +1606,11 @@ function exactFacets(candidate: EvidenceCandidate): string[] {
   ];
 }
 
+/** The measured logical index fan-out for one persisted Evidence record. */
+export function authoritativeEventFacetCount(candidate: EvidenceCandidate): number {
+  return exactFacets(candidate).length;
+}
+
 function facet(name: string, value: unknown): string {
   return JSON.stringify(["v1", name, value]);
 }
@@ -1625,6 +1637,11 @@ function isQuotaError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const value = error as { name?: unknown; code?: unknown };
   return value.name === "QuotaExceededError" || value.code === "QUOTA_EXCEEDED";
+}
+
+function describeJournalError(error: unknown): string {
+  if (error instanceof Error) return `Journal cause ${error.name}: ${error.message}`;
+  return `Journal cause ${String(error)}`;
 }
 
 function requestToPromise<T>(request: IDBRequest<T>, operation: string): Promise<T> {

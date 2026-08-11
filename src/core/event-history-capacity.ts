@@ -68,6 +68,7 @@ export type HistoryTrigger = Readonly<{
   interval: Readonly<{ id: string; ordinal: number }>;
   firstMissingEventId: string | null;
   measurements: HistoryPressureMeasurements;
+  detail?: string;
 }>;
 
 const DEFAULTS: Record<HistoryCapacityTier, HistoryCapacityLimits> = {
@@ -145,12 +146,6 @@ export function admissionFailure(
 ): Readonly<{ reason: HistoryTerminalReason; dimension: HistoryCapacityDimension }> | null {
   const retainedCount = measurements.retainedCount + measurements.pendingCount + 1;
   const retainedBytes = measurements.retainedBytes + measurements.pendingBytes + candidateBytes;
-  if (retainedCount > limits.maxRetainedCount) {
-    return { reason: "RETAINED_COUNT_LIMIT", dimension: "RETAINED_COUNT" };
-  }
-  if (retainedBytes > limits.maxRetainedBytes) {
-    return { reason: "RETAINED_BYTE_LIMIT", dimension: "RETAINED_BYTES" };
-  }
   if (measurements.pendingBytes + candidateBytes > limits.pendingStopBytes) {
     return { reason: "PENDING_BYTE_LIMIT", dimension: "PENDING_BYTES" };
   }
@@ -159,6 +154,12 @@ export function admissionFailure(
     measurements.oldestPendingAgeMs >= limits.pendingAgeStopMs
   ) {
     return { reason: "PENDING_AGE_LIMIT", dimension: "PENDING_AGE" };
+  }
+  if (retainedCount > limits.maxRetainedCount) {
+    return { reason: "RETAINED_COUNT_LIMIT", dimension: "RETAINED_COUNT" };
+  }
+  if (retainedBytes > limits.maxRetainedBytes) {
+    return { reason: "RETAINED_BYTE_LIMIT", dimension: "RETAINED_BYTES" };
   }
   return null;
 }

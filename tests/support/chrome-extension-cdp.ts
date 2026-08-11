@@ -2,7 +2,7 @@ import { Browser, Cache } from "@puppeteer/browsers";
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { type ChildProcess } from "node:child_process";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import WebSocket from "ws";
 
 import { formatTargets, type BrowserTarget } from "./devtools-panel";
@@ -89,13 +89,18 @@ export class CdpClient {
     });
   }
 
-  static async connect(url: string): Promise<CdpClient> {
+  static async connect(url: string, timeoutMs = 5_000): Promise<CdpClient> {
     const socket = new WebSocket(url);
     await new Promise<void>((resolvePromise, rejectPromise) => {
-      socket.once("open", resolvePromise);
-      socket.once("error", () =>
-        rejectPromise(new Error("Unable to connect to Chrome DevTools Protocol."))
-      );
+      const timeout = setTimeout(() => {
+        socket.close();
+        rejectPromise(new Error(`Timed out connecting to Chrome DevTools Protocol after ${timeoutMs} ms.`));
+      }, timeoutMs);
+      socket.once("open", () => { clearTimeout(timeout); resolvePromise(); });
+      socket.once("error", () => {
+        clearTimeout(timeout);
+        rejectPromise(new Error("Unable to connect to Chrome DevTools Protocol."));
+      });
     });
     return new CdpClient(socket);
   }
@@ -155,7 +160,7 @@ export async function waitForCondition(
   cdp: CdpClient,
   expression: string,
   description: string,
-  timeoutMs = 15_000
+  timeoutMs = 300_000
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -166,28 +171,16 @@ export async function waitForCondition(
 }
 
 export async function resolveChromeExecutable(rootDir: string): Promise<string> {
-  const configured = process.env.CHROME_PATH?.trim();
   const cacheDir =
     process.env.LSEW_BROWSER_CACHE_DIR?.trim() || join(rootDir, ".cache", "lsew-browsers");
   const installed = new Cache(cacheDir)
     .getInstalledBrowsers()
-    .filter((entry) => entry.browser === Browser.CHROME)
+    .filter((entry) => entry.browser === Browser.CHROME && String(entry.buildId).startsWith("151."))
     .sort((left, right) =>
       right.buildId.localeCompare(left.buildId, undefined, { numeric: true })
     )
     .map((entry) => entry.executablePath);
-  const candidates = [
-    configured,
-    ...installed,
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    ...commandCandidatesFromPath()
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  for (const candidate of candidates) {
+  for (const candidate of installed) {
     try {
       await access(candidate, constants.X_OK);
       return candidate;
@@ -196,14 +189,14 @@ export async function resolveChromeExecutable(rootDir: string): Promise<string> 
     }
   }
   throw new Error(
-    "Chrome was not found. Run npm run fixture:browser:install or set CHROME_PATH."
+    `Chrome for Testing 151 was not found in ${cacheDir}; refusing a system-Chrome fallback.`
   );
 }
 
 export async function waitForDebuggingPort(
   profile: string,
   child: ChildProcess,
-  timeoutMs = 15_000
+  timeoutMs = 300_000
 ): Promise<DebuggingEndpoint> {
   const activePortFile = join(profile, "DevToolsActivePort");
   const deadline = Date.now() + timeoutMs;
@@ -294,7 +287,7 @@ export async function waitForBrowserTargets(
     evaluateByValue?: ExtensionTargetDiscoveryOptions["evaluateByValue"];
   } = {}
 ): Promise<BrowserTarget[]> {
-  const deadline = Date.now() + (options.timeoutMs ?? 10_000);
+  const deadline = Date.now() + (options.timeoutMs ?? 300_000);
   let targets: BrowserTarget[] = [];
   while (Date.now() < deadline) {
     targets = await listBrowserTargets(port);
@@ -334,7 +327,7 @@ export async function waitForBrowserTargets(
 
 export async function waitForExtensionPanelTarget(
   port: number,
-  timeoutMs = 10_000
+  timeoutMs = 300_000
 ): Promise<BrowserTarget> {
   const deadline = Date.now() + timeoutMs;
   let targets: BrowserTarget[] = [];
@@ -365,16 +358,6 @@ export async function terminateChild(child: ChildProcess): Promise<void> {
 
 export function delay(milliseconds: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
-}
-
-function commandCandidatesFromPath(): string[] {
-  const names =
-    process.platform === "win32"
-      ? ["chrome.exe", "chromium.exe"]
-      : ["google-chrome", "chromium", "chromium-browser"];
-  return (process.env.PATH ?? "")
-    .split(delimiter)
-    .flatMap((directory) => names.map((name) => join(directory, name)));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

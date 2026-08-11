@@ -58,6 +58,7 @@ Options:
   --lifecycle-scenario ID  mount, runtime, history, capture, visibility, or full-ui (default: full-ui).
   --print-config           Print resolved lifecycle configuration and exit.
   --inspect-harness        Bundle the standalone harness and print its resolved React build.
+  Visible proof requires LSEW_BROWSER_HEADLESS=false and LSEW_UI_HEADLESS=false.
   --help                   Show this help.`);
   process.exit(0);
 }
@@ -88,6 +89,10 @@ if (args.evaluate) {
   process.exit(gate.passed ? 0 : 1);
 }
 
+if (process.env.LSEW_BROWSER_HEADLESS !== "false" || process.env.LSEW_UI_HEADLESS !== "false") {
+  throw new Error("Panel performance proof requires LSEW_BROWSER_HEADLESS=false and LSEW_UI_HEADLESS=false; refusing to switch to headless Chrome.");
+}
+
 const jsonPath = resolve(projectRoot, args.json ?? defaultJsonPath);
 const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-panel-measure-"));
 let server;
@@ -102,9 +107,13 @@ try {
   const chromeExecutable = await resolveChromeExecutable();
   browser = await chromium.launch({
     executablePath: chromeExecutable,
-    headless: true,
+    headless: false,
     args: ["--js-flags=--expose-gc", "--disable-background-timer-throttling"]
   });
+  const measuredBrowserVersion = await browser.version();
+  if (!/\b151\./u.test(measuredBrowserVersion)) {
+    throw new Error(`Panel performance proof requires Chrome for Testing major 151, got ${measuredBrowserVersion}.`);
+  }
 
   const report = {
     schemaVersion: 1,
@@ -916,19 +925,10 @@ async function resolveChromeExecutable() {
   const cacheDir = process.env.LSEW_BROWSER_CACHE_DIR?.trim() || resolve(projectRoot, ".cache/lsew-browsers");
   const installed = new Cache(cacheDir)
     .getInstalledBrowsers()
-    .filter((entry) => entry.browser === Browser.CHROME)
+    .filter((entry) => entry.browser === Browser.CHROME && String(entry.buildId).startsWith("151."))
     .sort((left, right) => right.buildId.localeCompare(left.buildId, undefined, { numeric: true }))
     .map((entry) => entry.executablePath);
-  const candidates = [
-    process.env.CHROME_PATH?.trim(),
-    ...installed,
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser"
-  ].filter(Boolean);
-  for (const candidate of candidates) {
+  for (const candidate of installed) {
     try {
       await access(candidate, constants.X_OK);
       return candidate;
@@ -936,7 +936,7 @@ async function resolveChromeExecutable() {
       // Try the next locally installed browser.
     }
   }
-  throw new Error("Chrome was not found. Run fixture:browser:install or set CHROME_PATH.");
+  throw new Error(`Chrome for Testing 151 was not found in ${cacheDir}; refusing a system-Chrome fallback.`);
 }
 
 async function listFiles(directory) {

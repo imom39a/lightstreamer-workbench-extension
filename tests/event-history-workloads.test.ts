@@ -45,7 +45,7 @@ describe("Event History benchmark workloads", () => {
     expect(sizes[2]).toBeGreaterThan(4_000);
     expect(sizes).toEqual([315, 807, 13_125]);
     expect(facts.map((fact) => fact.searchTokenCount)).toEqual([23, 50, 141]);
-    expect(facts.map((fact) => fact.indexedDbWritesPerEvent)).toEqual([25, 52, 143]);
+    expect(facts.map((fact) => fact.indexedDbWritesPerEvent)).toEqual([14, 14, 14]);
     expect(ISSUE_16_TOTAL_EVENTS).toBe(1_692);
   });
 

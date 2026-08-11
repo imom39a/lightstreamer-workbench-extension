@@ -120,6 +120,7 @@ export function mountWorkbenchPanel(
     reactRoot.render(<WorkbenchPanel runtime={presentationRuntime} />);
     bridge = connectBridgeClient({
       onStatusChange(status) {
+        document.documentElement.dataset.lsewPanelBridgeStatus = status;
         runtime?.dispatch({ type: "set-capture-status", status });
       },
       onCaptureMessage(message) {
@@ -163,6 +164,9 @@ function bindRuntime(runtime: WorkbenchRuntime, themeManager: ThemeManager): Wor
       }
       runtime.dispatch(command);
     },
-    dispose: runtime.dispose.bind(runtime)
+    dispose: runtime.dispose.bind(runtime),
+    ...(runtime.reportVisibleFrame
+      ? { reportVisibleFrame: runtime.reportVisibleFrame.bind(runtime) }
+      : {})
   };
 }
