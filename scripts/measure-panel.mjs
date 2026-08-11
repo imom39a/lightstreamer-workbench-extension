@@ -345,12 +345,14 @@ import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { createCaptureMessage } from ${source("src/bridge/messages.ts")};
 import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
+import { offerAndAwaitCommitted, waitForCommittedCount } from ${source("src/extension/panel/performance-harness-history.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 
 const root = document.querySelector("#app");
 if (!(root instanceof HTMLElement)) throw new Error("Performance harness requires #app.");
 let session = null;
+const pendingBoundaryWaiters = new Set();
 let longTasks = [];
 const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
 if (longTaskSupported) {
@@ -401,10 +403,10 @@ async function frame() {
 
 async function mount(initialCount = 12) {
   await dispose();
-  const { history, runtime } = createRuntimeSession(initialCount);
+  const { history, runtime, seededCount } = await createRuntimeSession(initialCount);
   const reactRoot = createRoot(root);
   reactRoot.render(createElement(WorkbenchPanel, { runtime }));
-  session = { history, runtime, reactRoot };
+  session = { history, runtime, reactRoot, seededCount };
   await frame();
   return { evidenceRows: root.querySelectorAll("[data-evidence-id]").length };
 }
@@ -424,10 +426,12 @@ async function ingest({ count = 180, intervalMs = 2 } = {}) {
   });
   observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
   const startedAt = performance.now();
+  const committed = beginCommittedWait(session.history, session.seededCount + count);
   for (let sequence = 1; sequence <= count; sequence += 1) {
     session.runtime.dispatch({ type: "ingest-capture-message", message: capture(sequence) });
     if (intervalMs > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+  await committed.promise;
   await new Promise((resolve) => setTimeout(resolve, 80));
   observer.disconnect();
   const gaps = mutationTimes.slice(1).map((time, index) => time - mutationTimes[index]);
@@ -442,17 +446,34 @@ async function ingest({ count = 180, intervalMs = 2 } = {}) {
   };
 }
 
-function createRuntimeSession(initialCount = 0) {
+async function createRuntimeSession(initialCount = 0) {
   const history = createInMemoryEventHistory();
-  for (let sequence = 1; sequence <= initialCount; sequence += 1) history.append(envelope(sequence));
+  const seed = Array.from({ length: initialCount }, (_, index) => envelope(index + 1));
+  await offerAndAwaitCommitted(history, seed);
   const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", theme: "dark" });
-  return { history, runtime };
+  return { history, runtime, seededCount: initialCount };
 }
 
 async function closeRuntimeSession(current) {
+  cancelPendingBoundaryWaiters();
   current.runtime.dispose();
-  await current.history.close().toPromise();
+  await current.history.close();
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function beginCommittedWait(history, expectedCount) {
+  const waiter = waitForCommittedCount(history, expectedCount);
+  pendingBoundaryWaiters.add(waiter);
+  void waiter.promise.then(
+    () => pendingBoundaryWaiters.delete(waiter),
+    () => pendingBoundaryWaiters.delete(waiter)
+  );
+  return waiter;
+}
+
+function cancelPendingBoundaryWaiters() {
+  for (const waiter of pendingBoundaryWaiters) waiter.cancel(new Error("Performance harness session disposed."));
+  pendingBoundaryWaiters.clear();
 }
 
 async function cycle({ scenario = "full-ui", captureCount = 60 } = {}) {
@@ -464,9 +485,11 @@ async function cycle({ scenario = "full-ui", captureCount = 60 } = {}) {
   if (scenario !== "full-ui") throw new Error("Unknown lifecycle scenario: " + scenario);
   await mount(12);
   session.runtime.dispatch({ type: "set-visible", visible: false });
+  const committed = beginCommittedWait(session.history, session.seededCount + captureCount);
   for (let sequence = 1; sequence <= captureCount; sequence += 1) {
     session.runtime.dispatch({ type: "ingest-capture-message", message: capture(1000 + sequence) });
   }
+  await committed.promise;
   session.runtime.dispatch({ type: "set-visible", visible: true });
   await new Promise((resolve) => setTimeout(resolve, 64));
   await dispose();
@@ -511,10 +534,12 @@ async function cycleTrivialRoot({ scenario, initialCount = 0, captureCount = 0, 
   const reactRoot = createRoot(root);
   reactRoot.render(createElement("div", { "data-perf-mount": "true" }, "Mount probe"));
   await frame();
-  const current = createRuntimeSession(initialCount);
+  const current = await createRuntimeSession(initialCount);
+  const committed = beginCommittedWait(current.history, initialCount + captureCount);
   for (let sequence = 1; sequence <= captureCount; sequence += 1) {
     current.runtime.dispatch({ type: "ingest-capture-message", message: capture(1000 + sequence) });
   }
+  await committed.promise;
   if (toggleVisibility) {
     current.runtime.dispatch({ type: "set-visible", visible: false });
     current.runtime.dispatch({ type: "set-visible", visible: true });

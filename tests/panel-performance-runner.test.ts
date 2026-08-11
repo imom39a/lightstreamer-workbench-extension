@@ -59,6 +59,10 @@ describe("panel performance evidence runner", () => {
 
     expect(source).toContain('source("src/core/event-history-authoritative.ts")');
     expect(source).not.toContain('source("src/core/event-history.ts")');
+    expect(source).not.toMatch(/history\.(append|query|subscribe)\(/u);
+    expect(source).not.toContain(".toPromise()");
+    expect(source).toContain('performance-harness-history.ts")');
+    expect(source).toContain("await committed.promise");
   });
 
   it("prints the lifecycle-only configuration without starting a browser", () => {

@@ -143,7 +143,7 @@ describe("production panel mount wiring", () => {
     const dispose = mountWorkbenchPanel(root, {
       openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory,
-      createRuntime,
+      createRuntime: (options = {}) => createRuntime(options),
       connectBridge
     });
     await flushPanel();
@@ -182,6 +182,69 @@ describe("production panel mount wiring", () => {
 
     expect(createRuntime).toHaveBeenCalledOnce();
     expect(reportVisibleFrame).toHaveBeenCalled();
+    await disposePanel(dispose);
+  });
+
+  it("mounts one DOM Workbench root over authoritative seed and live committed Evidence", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory({ panelSessionId: PANEL_SESSION_ID });
+    const seed = createEventHistoryWorkloadEvent("small-lifecycle", 1, "authoritative-seed");
+    const live = createEventHistoryWorkloadEvent("ordinary-item-update", 2, "authoritative-live");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const createRuntime = vi.fn((options: WorkbenchRuntimeOptions = {}) => createWorkbenchRuntime(options));
+
+    await expect(history.offer(seed).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { eventId: seed.id }
+    });
+    const seeded = await history.read({ order: "asc" });
+    expect(seeded).toMatchObject({
+      ok: true,
+      value: { total: 1, committedEvidenceBoundary: { eventId: seed.id } }
+    });
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory: async () => history,
+      createRuntime,
+      connectBridge: (handlers) => {
+        handlers.onStatusChange("capturing");
+        return { reinjectDraft: vi.fn(), disconnect: vi.fn() };
+      }
+    });
+    await flushPanel();
+
+    expect(root.querySelectorAll('[aria-label="Lightstreamer Workbench"]')).toHaveLength(1);
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: PANEL_VISIBILITY_MESSAGE, visible: false },
+        origin: window.location.origin
+      }));
+    });
+    await flushPanel();
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: PANEL_VISIBILITY_MESSAGE, visible: true },
+        origin: window.location.origin
+      }));
+    });
+    await flushPanel();
+    await act(async () => {
+      await expect(history.offer(live).settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { eventId: live.id }
+      });
+    });
+    await flushPanel();
+    const committed = await history.read({ order: "asc" });
+    expect(committed).toMatchObject({
+      ok: true,
+      value: { total: 2, committedEvidenceBoundary: { eventId: live.id } }
+    });
+    const mountedRuntime = createRuntime.mock.results[0]?.value as ReturnType<typeof createWorkbenchRuntime> | undefined;
+    expect(mountedRuntime?.getSnapshot().evidence.events.map((event) => event.id)).toContain(live.id);
+    expect(root.querySelector(`[data-evidence-id="${live.id}"]`)).not.toBeNull();
+    expect(consoleError).not.toHaveBeenCalled();
+
     await disposePanel(dispose);
   });
 
