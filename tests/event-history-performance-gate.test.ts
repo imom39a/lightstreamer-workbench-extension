@@ -177,6 +177,42 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.checkedSamples).toBe(36);
   });
 
+  it("accepts an initial AVAILABLE state before the terminal pressure transition", () => {
+    const baseline = report();
+    const current = report({
+      terminalScenarios: baseline.terminalScenarios.map((scenario) => ({
+        ...scenario,
+        pressureTransitions: ["AVAILABLE", "NEAR_LIMIT", "EXHAUSTED"]
+      }))
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("PASS");
+    expect(decision.failures).toEqual([]);
+  });
+
+  it.each([
+    ["reversed", ["EXHAUSTED", "NEAR_LIMIT"]],
+    ["repeated exhausted", ["EXHAUSTED", "NEAR_LIMIT", "EXHAUSTED"]],
+    ["trailing state", ["NEAR_LIMIT", "EXHAUSTED", "NEAR_LIMIT"]],
+    ["unknown state", ["AVAILABLE", "NEAR_LIMIT", "PAUSED", "EXHAUSTED"]],
+    ["missing exhausted", ["NEAR_LIMIT"]]
+  ])("rejects a %s terminal pressure sequence", (_label, pressureTransitions) => {
+    const baseline = report();
+    const current = report({
+      terminalScenarios: baseline.terminalScenarios.map((scenario) => ({
+        ...scenario,
+        pressureTransitions
+      }))
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.filter((failure) => failure.includes("exact NEAR_LIMIT to EXHAUSTED"))).toHaveLength(4);
+  });
+
   it("fails a single incorrect sample instead of averaging it away", () => {
     const current = report({
       cells: report().cells.map((entry, index) => index === 0

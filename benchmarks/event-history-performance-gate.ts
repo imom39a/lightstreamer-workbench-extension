@@ -407,11 +407,16 @@ function validateTerminalScenarios(
     if (scenario.terminalReason !== (trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT") || !scenario.terminalReasonCorrect) failures.push(`${adapter}/${trigger} reported the wrong terminal reason.`);
     if (!scenario.finalBoundaryCorrect || !scenario.refusedIdentityCorrect || !scenario.exactOneTerminalPublication || scenario.terminalPublicationCount !== 1) failures.push(`${adapter}/${trigger} did not prove terminal identity, final boundary, and exactly-one publication.`);
     if (scenario.refusedCount !== scenario.refusedEventIds.length || scenario.refusedCount < 1) failures.push(`${adapter}/${trigger} refused-event accounting is incomplete.`);
-    if (scenario.pressureTransitions.join(",") !== "NEAR_LIMIT,EXHAUSTED") failures.push(`${adapter}/${trigger} did not report the exact NEAR_LIMIT to EXHAUSTED pressure transition.`);
+    if (!isValidTerminalPressureTransition(scenario.pressureTransitions)) failures.push(`${adapter}/${trigger} did not report the exact NEAR_LIMIT to EXHAUSTED pressure transition.`);
     if (trigger === "PENDING_BYTES" && scenario.firstMissingEventId !== scenario.refusedEventIds[0]) failures.push(`${adapter}/${trigger} first missing event identity is incorrect.`);
     if (trigger === "PENDING_BYTES" && (scenario.acceptedCount !== TERMINAL_PENDING_BYTE_ACCEPTED_COUNT || scenario.refusedCount !== TERMINAL_PENDING_BYTE_EVENT_COUNT - TERMINAL_PENDING_BYTE_ACCEPTED_COUNT)) failures.push(`${adapter}/${trigger} did not exercise the exact 17-event, 2 MiB checkpoint pressure workload.`);
     if (trigger === "PENDING_AGE" && (scenario.acceptedCount !== 1 || scenario.refusedCount !== 1)) failures.push(`${adapter}/${trigger} did not exercise the exact one-accepted/one-refused age workload.`);
   }
+}
+
+function isValidTerminalPressureTransition(transitions: readonly string[]): boolean {
+  const sequence = transitions.join(",");
+  return sequence === "NEAR_LIMIT,EXHAUSTED" || sequence === "AVAILABLE,NEAR_LIMIT,EXHAUSTED";
 }
 
 function validateCheckpointScenarios(
