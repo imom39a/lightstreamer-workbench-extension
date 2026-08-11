@@ -640,10 +640,15 @@ it("preserves IndexedDB accounted bytes through reopen", async () => {
     if (publication.type === "status") reopenedStatus = publication.status;
   });
   expect(reopenedStatus).toMatchObject({
-    capacity: {
-      tier: "NORMAL",
-      measurements: { retainedCount: 1, retainedBytes: canonicalAccountedBytes }
-    }
+    capacity: { tier: "LOWER" },
+    fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+  });
+  const control = await readIndexedControl(panelSessionId);
+  expect(control).toMatchObject({
+    phase: "RUNNING",
+    retainedCount: 1,
+    accountedBytes: canonicalAccountedBytes,
+    terminal: null
   });
   await reopened.close();
   await history.close();
@@ -688,7 +693,7 @@ it("applies the pending-age proactive drain once in IndexedDB", async () => {
   await history.close();
 });
 
-it("reopens a proactively stopped IndexedDB journal as STOPPED with its durable diagnostic", async () => {
+it("does not reopen a concurrently owned proactively stopped IndexedDB journal", async () => {
   const panelSessionId = "impl-05-reopen-proactive-stop";
   const history = await indexedHistory(panelSessionId, {
     capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
@@ -707,28 +712,29 @@ it("reopens a proactively stopped IndexedDB journal as STOPPED with its durable 
     if (publication.type === "status") reopenedStatus = publication.status;
   });
   expect(reopenedStatus).toMatchObject({
+    capacity: { tier: "LOWER" },
+    fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+  });
+  expect(publications.filter((entry) => entry.type === "terminal")).toHaveLength(0);
+  const control = await readIndexedControl(panelSessionId);
+  expect(control).toMatchObject({
     phase: "STOPPED",
-    captureOperation: "STOPPED",
     terminal: {
       reason: "RETAINED_COUNT_LIMIT",
       firstMissingEventId: "proactive-crossing",
       committedEvidenceBoundary: { sequence: 1, eventId: "proactive-retained" }
+    },
+    retainedCount: 1,
+    retainedRange: {
+      first: { sequence: 1, eventId: "proactive-retained" },
+      last: { sequence: 1, eventId: "proactive-retained" }
     }
-  });
-  expect(publications.filter((entry) => entry.type === "terminal")).toHaveLength(0);
-  await expect(reopened.clear()).resolves.toMatchObject({ ok: false, problem: { code: "HISTORY_STOPPED" } });
-  const afterReopen = reopened.offer(candidate("after-proactive-reopen"));
-  expect(afterReopen.intake).toBe("REFUSED");
-  await expect(afterReopen.settled).resolves.toMatchObject({ problem: { code: "RETAINED_COUNT_LIMIT" } });
-  await expect(reopened.read({})).resolves.toMatchObject({
-    ok: true,
-    value: { evidence: [expect.objectContaining({ sequence: 1, eventId: "proactive-retained" })], committedEvidenceBoundary: { sequence: 1 } }
   });
   await reopened.close();
   await history.close();
 });
 
-it("reopens a journal-failed IndexedDB history with terminal diagnostics and no new sequence", async () => {
+it("does not reopen a concurrently owned journal-failed IndexedDB history", async () => {
   const panelSessionId = "impl-05-reopen-journal-failure";
   const history = await indexedHistory(panelSessionId, {
     commitBatch: async (batch: readonly EvidenceCandidate[]) => {
@@ -747,6 +753,11 @@ it("reopens a journal-failed IndexedDB history with terminal diagnostics and no 
     if (publication.type === "status") reopenedStatus = publication.status;
   });
   expect(reopenedStatus).toMatchObject({
+    capacity: { tier: "LOWER" },
+    fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+  });
+  const reopenedControl = await readIndexedControl(panelSessionId);
+  expect(reopenedControl).toMatchObject({
     phase: "STOPPED",
     terminal: {
       reason: "JOURNAL_COMMIT_FAILED",
@@ -755,20 +766,18 @@ it("reopens a journal-failed IndexedDB history with terminal diagnostics and no 
       rejected: { count: 0, bytes: 0 },
       discarded: { count: 2 },
       committedEvidenceBoundary: { sequence: 1, eventId: "reopen-prior" }
+    },
+    retainedCount: 1,
+    retainedRange: {
+      first: { sequence: 1, eventId: "reopen-prior" },
+      last: { sequence: 1, eventId: "reopen-prior" }
     }
-  });
-  const afterReopen = reopened.offer(candidate("reopen-after-stop"));
-  expect(afterReopen.intake).toBe("REFUSED");
-  await expect(afterReopen.settled).resolves.toMatchObject({ problem: { code: "JOURNAL_COMMIT_FAILED" } });
-  await expect(reopened.read({})).resolves.toMatchObject({
-    ok: true,
-    value: { evidence: [expect.objectContaining({ sequence: 1, eventId: "reopen-prior" })], committedEvidenceBoundary: { sequence: 1 } }
   });
   await reopened.close();
   await history.close();
 });
 
-it("recovers a durable draining intent from the advanced durable boundary", async () => {
+it("does not replace a concurrent terminal intent by reopening from the advanced durable boundary", async () => {
   const panelSessionId = "impl-05-reopen-draining-boundary";
   let releaseFinalization!: () => void;
   let finalizationStarted!: () => void;
@@ -800,6 +809,27 @@ it("recovers a durable draining intent from the advanced durable boundary", asyn
     if (publication.type === "status") reopenedStatus = publication.status;
   });
   expect(reopenedStatus).toMatchObject({
+    capacity: { tier: "LOWER" },
+    fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+  });
+  const reopenedControl = await readIndexedControl(panelSessionId);
+  expect(reopenedControl).toMatchObject({
+    terminal: {
+      reason: "RETAINED_COUNT_LIMIT",
+      committedEvidenceBoundary: { sequence: 1, eventId: "durable-prior" },
+      retainedRange: {
+        first: { sequence: 1, eventId: "durable-prior" },
+        last: { sequence: 1, eventId: "durable-prior" }
+      }
+    },
+    retainedCount: 2
+  });
+
+  releaseFinalization();
+  await expect(advanced.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+  await expect(crossing.settled).resolves.toMatchObject({ problem: { code: "RETAINED_COUNT_LIMIT" } });
+  const finalizedControl = await readIndexedControl(panelSessionId);
+  expect(finalizedControl).toMatchObject({
     phase: "STOPPED",
     terminal: {
       reason: "RETAINED_COUNT_LIMIT",
@@ -810,10 +840,6 @@ it("recovers a durable draining intent from the advanced durable boundary", asyn
       }
     }
   });
-
-  releaseFinalization();
-  await expect(advanced.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
-  await expect(crossing.settled).resolves.toMatchObject({ problem: { code: "RETAINED_COUNT_LIMIT" } });
   await history.close();
   await reopened.close();
 });
@@ -847,7 +873,7 @@ it("does not let Close erase the journal while terminal finalization is in fligh
   expect(order).toEqual(["finalize-start", "finalize-end", "clear"]);
 });
 
-it("keeps a terminal-finalization failure fail-closed across reopen", async () => {
+it("does not reopen a concurrently owned terminal-finalization failure state", async () => {
   const panelSessionId = "impl-05-reopen-terminal-failure";
   const history = await indexedHistory(panelSessionId, {
     capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 },
@@ -863,8 +889,18 @@ it("keeps a terminal-finalization failure fail-closed across reopen", async () =
     if (publication.type === "status") reopenedStatus = publication.status;
   });
   expect(reopenedStatus).toMatchObject({
-    phase: "STOPPED",
-    terminal: { committedEvidenceBoundary: { sequence: 1, eventId: "terminal-failure-prior" } }
+    capacity: { tier: "LOWER" },
+    fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+  });
+  const reopenedControl = await readIndexedControl(panelSessionId);
+  expect(reopenedControl).toMatchObject({
+    phase: "DRAINING_TO_STOP",
+    terminal: {
+      reason: "RETAINED_COUNT_LIMIT",
+      committedEvidenceBoundary: { sequence: 1, eventId: "terminal-failure-prior" },
+      firstMissingEventId: "terminal-failure-crossing"
+    },
+    retainedCount: 1
   });
   await history.close();
   await reopened.close();
