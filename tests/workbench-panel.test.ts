@@ -170,6 +170,8 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       authoritativeLimit: "Neither projection is Authoritative COMMAND State."
     },
     diagnostics: [],
+    historyCondition: null,
+    historyAnnouncement: "",
     storage: { mode: "indexeddb" },
     retention: {
       retained: 2,

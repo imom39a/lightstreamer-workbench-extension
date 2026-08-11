@@ -9,7 +9,9 @@ import {
   createInMemoryEventHistory,
   type EvidenceRef,
   type EventHistory,
-  type HistoryPublication
+  type HistoryPublication,
+  type HistoryProblem,
+  type HistoryStatus
 } from "../../core/event-history-authoritative";
 import {
   type CommittedEvidence
@@ -63,6 +65,10 @@ import {
   type TopologySubscription
 } from "../../core/topology-state";
 import { bindCommittedEvidencePipeline, type CommittedEvidencePipeline } from "./committed-evidence-pipeline";
+import {
+  historyConditionFor,
+  type WorkbenchHistoryCondition
+} from "./history-condition";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 
@@ -184,6 +190,7 @@ export type WorkbenchDiagnostic = Readonly<{
   affected: string;
   detail: string;
   recovery?: string;
+  category?: "history" | "capture" | "session" | "retention";
 }>;
 
 export type WorkbenchEvidenceSnapshot = Readonly<{
@@ -355,6 +362,8 @@ export type WorkbenchSnapshot = Readonly<{
     authoritativeLimit: string;
   }>;
   diagnostics: readonly WorkbenchDiagnostic[];
+  historyCondition: WorkbenchHistoryCondition | null;
+  historyAnnouncement: string;
   storage: WorkbenchStorageSnapshot;
   retention: WorkbenchRetentionSnapshot;
   export: WorkbenchExportSnapshot;
@@ -538,6 +547,8 @@ class Runtime implements WorkbenchRuntime {
   private hiddenDirty = false;
   private captureBoundary: WorkbenchCaptureSnapshot | null = null;
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
+  private historyCondition: WorkbenchHistoryCondition | null = null;
+  private historyAnnouncement = "";
   private storage: WorkbenchStorageSnapshot;
   private storeStats = {
     retained: 0,
@@ -967,7 +978,9 @@ class Runtime implements WorkbenchRuntime {
 
   private ingestCaptureMessage(message: CaptureMessage): void {
     const event = this.normalizer.normalize(message);
-    this.captureStatus = "capturing";
+    if (this.captureStatus !== "bridge disconnected") {
+      this.captureStatus = "capturing";
+    }
     this.evidencePipeline.offer(event);
   }
 
@@ -1246,7 +1259,9 @@ class Runtime implements WorkbenchRuntime {
     }
     const event = entry.candidate;
     this.currentPageEpoch = event.topology?.pageEpoch ?? this.currentPageEpoch;
-    this.captureStatus = "capturing";
+    if (this.captureStatus !== "bridge disconnected") {
+      this.captureStatus = "capturing";
+    }
     const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
     if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
     this.commandStateProjections.apply(event);
@@ -1264,6 +1279,14 @@ class Runtime implements WorkbenchRuntime {
 
   private handleHistoryPublication(publication: HistoryPublication): void {
     if (this.disposed) return;
+    let shouldPublish = false;
+    if (publication.type === "status") {
+      shouldPublish = this.updateHistoryCondition(publication.status, publication.problem);
+    } else if (publication.type === "interval-cleared") {
+      shouldPublish = this.updateHistoryCondition(publication.status);
+    } else if (publication.type === "terminal") {
+      shouldPublish = this.updateHistoryCondition(publication.status);
+    }
     let reason: string | undefined;
     const terminal = publication.type === "terminal"
       ? publication.terminal
@@ -1272,6 +1295,7 @@ class Runtime implements WorkbenchRuntime {
         : undefined;
     if (publication.type === "status") {
       if (publication.status.phase !== "DRAINING_TO_STOP" && publication.status.phase !== "STOPPED") {
+        if (shouldPublish) this.publish();
         return;
       }
       reason = publication.problem?.reason ?? terminal?.reason;
@@ -1292,8 +1316,9 @@ class Runtime implements WorkbenchRuntime {
           committedEvidenceBoundary: exactBoundary,
           firstMissingEventId: exactFirstMissingEventId
         });
-        this.publish();
+        shouldPublish = true;
       }
+      if (shouldPublish) this.publish();
       return;
     }
     this.captureBoundary = Object.freeze({
@@ -1304,7 +1329,20 @@ class Runtime implements WorkbenchRuntime {
       detail: `Capture stopped at the committed Evidence boundary because ${reason}.`,
       recovery: "Reload the inspected page with DevTools open"
     });
-    this.publish();
+    if (shouldPublish || reason) this.publish();
+  }
+
+  private updateHistoryCondition(
+    status: HistoryStatus,
+    problem?: HistoryProblem
+  ): boolean {
+    const next = historyConditionFor({ status, problem });
+    const changed = this.historyCondition?.announcementKey !== next?.announcementKey;
+    this.historyCondition = next;
+    if (changed) {
+      this.historyAnnouncement = next?.announcement ?? "";
+    }
+    return changed;
   }
 
   private schedulePassivePublication(): void {
@@ -2062,6 +2100,8 @@ class Runtime implements WorkbenchRuntime {
       context: this.contextSnapshot(evidence.events, scope),
       commandProjections: this.commandProjectionSnapshot(),
       diagnostics: this.diagnosticSnapshot(scope),
+      historyCondition: this.historyCondition,
+      historyAnnouncement: this.historyAnnouncement,
       storage: Object.freeze({ ...this.storage }),
       retention: this.retentionSnapshot(),
       export: this.exportSnapshot(),
@@ -2439,8 +2479,19 @@ class Runtime implements WorkbenchRuntime {
   private diagnosticSnapshot(scope: WorkbenchSnapshot["scope"]): readonly WorkbenchDiagnostic[] {
     const capture = this.captureSnapshot();
     const diagnostics: WorkbenchDiagnostic[] = [];
+    if (this.historyCondition) {
+      diagnostics.push({
+        category: "history",
+        severity: this.historyCondition.severity,
+        title: this.historyCondition.title,
+        affected: this.historyCondition.affected,
+        detail: this.historyCondition.detail,
+        recovery: this.historyCondition.recovery
+      });
+    }
     if (this.captureStatus === "bridge disconnected") {
       diagnostics.push({
+        category: "capture",
         severity: "Error",
         title: "Capture disconnected",
         affected: scope.label,
@@ -2460,6 +2511,7 @@ class Runtime implements WorkbenchRuntime {
     const recoveringObjects = recoveringSessions.length ? recoveringSessions : recoveringClients;
     if (recoveringObjects.length) {
       diagnostics.push({
+        category: "session",
         severity: "Warning",
         title: "Session recovering",
         affected: [...new Set(recoveringObjects)].join(", "),
@@ -2467,8 +2519,9 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Inspect the affected Session and wait for recovery or reconnect the inspected page"
       });
     }
-    if (capture.coverage !== "USEFUL") {
+    if (capture.coverage !== "USEFUL" && !this.captureBoundary) {
       diagnostics.push({
+        category: "capture",
         severity: capture.coverage === "UNAVAILABLE" ? "Error" : "Warning",
         title: `Coverage ${capture.coverage}`,
         affected: scope.label,
@@ -2480,15 +2533,6 @@ class Runtime implements WorkbenchRuntime {
           (capture.coverage === "UNAVAILABLE"
             ? "Reconnect the inspected page, then reload it with DevTools open"
             : "Reload the inspected page with DevTools open")
-      });
-    }
-    if (this.storage.mode === "memory") {
-      diagnostics.push({
-        severity: "Warning",
-        title: "In-memory event history",
-        affected: "Current panel session",
-        detail: `${this.storage.reason ? `${this.storage.reason}. ` : ""}Evidence remains available only while this panel session stays open.`,
-        recovery: "Restore IndexedDB availability and reopen DevTools"
       });
     }
     const scopeSelection = scope.selection;
@@ -2512,6 +2556,7 @@ class Runtime implements WorkbenchRuntime {
     }
     if (this.clearState === "error" && this.clearError) {
       diagnostics.push({
+        category: "retention",
         severity: "Error",
         title: "History could not be cleared",
         affected: "Current panel session",

@@ -398,7 +398,8 @@ describe("production panel mount wiring", () => {
     expect(root.textContent).toContain("Coverage USEFUL");
     expect(root.textContent).not.toContain("Coverage LIMITED");
     expect(root.textContent).not.toContain("Capture STOPPED");
-    expect(root.textContent).toContain("In-memory event history");
+    expect(root.textContent).toContain("Warning · Lower History Capacity");
+    expect(root.textContent).toContain("Observation Coverage is unchanged");
 
     await disposePanel(dispose);
   });
@@ -459,7 +460,11 @@ describe("production panel mount wiring", () => {
 
   it("states the storage limitation when IndexedDB falls back to session memory", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
-    const history = createInMemoryEventHistory();
+    const history = createInMemoryEventHistory({
+      panelSessionId: "panel-fallback-error",
+      capacityTier: "LOWER",
+      fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+    });
     const closeHistory = vi.spyOn(history, "close");
     const storageError = new Error("IndexedDB denied");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -474,18 +479,18 @@ describe("production panel mount wiring", () => {
     await flushPanel();
 
     const footerDiagnostics = root.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
-    const storageDetail = "IndexedDB is unavailable. Evidence remains available only while this panel session stays open.";
+    const storageDetail = "PRIMARY_JOURNAL_UNAVAILABLE · the primary session journal is unavailable. Memory is limited to 5,000 Evidence records or 32 MiB.";
 
     expect(root.textContent).toContain("Coverage USEFUL");
     expect(root.textContent).not.toContain("Coverage LIMITED");
-    expect(footerDiagnostics?.textContent).toContain("Warning · In-memory event history");
-    expect(footerDiagnostics?.textContent).toContain("Affected: Current panel session");
+    expect(footerDiagnostics?.textContent).toContain("Warning · Lower History Capacity");
+    expect(footerDiagnostics?.textContent).toContain("Affected: Current Panel Session");
     expect(footerDiagnostics?.textContent).toContain(storageDetail);
-    expect(footerDiagnostics?.textContent).toContain("Recovery: Restore IndexedDB availability and reopen DevTools");
+    expect(footerDiagnostics?.textContent).toContain("Recovery: Restore primary session storage");
     expect(root.textContent?.split(storageDetail)).toHaveLength(2);
     await clickButton(root, "More actions");
     expect(root.textContent).toContain(
-      "current Panel Session history uses in-memory fallback"
+      "current Panel Session owns one temporary Event History using in-memory fallback"
     );
     expect(consoleError).toHaveBeenCalledWith(
       "Falling back to in-memory event storage.",

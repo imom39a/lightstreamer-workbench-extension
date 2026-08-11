@@ -144,8 +144,8 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expectVisibleKeyboardTarget(page, more);
       await page.keyboard.press("Enter");
       const operations = page.getByRole("region", { name: "Session operations" });
-      await expect(operations).toContainText("current Panel Session history uses in-memory fallback");
-      await expect(operations).toContainText("cleared when this Panel Session closes");
+      await expect(operations).toContainText("current Panel Session owns one temporary Event History using in-memory fallback");
+      await expect(operations).toContainText("Closing attempts controlled erasure");
       return;
     }
     case "clear-confirmation": {

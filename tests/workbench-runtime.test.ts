@@ -1486,8 +1486,7 @@ describe("WorkbenchRuntime", () => {
       expect.arrayContaining([
         "Capture disconnected",
         "Session recovering",
-        "Coverage LIMITED",
-        "In-memory event history"
+        "Coverage LIMITED"
       ])
     );
     expect(runtime.getSnapshot().capture.coverage).toBe("LIMITED");
@@ -1496,7 +1495,7 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "set-storage-state", storage: { mode: "indexeddb" } });
     expect(runtime.getSnapshot().diagnostics.map(({ title }) => title)).not.toContain(
-      "In-memory event history"
+      "Lower History Capacity"
     );
     runtime.dispose();
   });
