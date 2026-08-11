@@ -3,8 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+  AUTHORITATIVE_EVENT_DB_NAME_PREFIX,
   authoritativeEventDatabaseName,
-  deleteAuthoritativeEventDatabase
+  authoritativeEventDatabaseRuntime,
+  deleteAuthoritativeEventDatabase,
+  type AuthoritativeEventDatabaseRuntime
 } from "../src/core/indexeddb/authoritative-event-db";
 import {
   openEventHistory,
@@ -48,6 +51,40 @@ function requestValue<T>(request: IDBRequest<T>): Promise<T> {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+function legacyJournalName(panelSessionId: string, schemaVersion: number): string {
+  return `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v${schemaVersion}-${panelSessionId}`;
+}
+
+async function createLegacyJournal(panelSessionId: string, schemaVersion: number, markerStore: string, markerValue: string): Promise<void> {
+  const name = legacyJournalName(panelSessionId, schemaVersion);
+  const request = indexedDB.open(name, schemaVersion);
+  request.onupgradeneeded = () => {
+    const database = request.result;
+    if (!database.objectStoreNames.contains(markerStore)) {
+      database.createObjectStore(markerStore, { keyPath: "id" });
+    }
+    const transaction = request.transaction;
+    if (!transaction) return;
+    const store = transaction.objectStore(markerStore);
+    store.put({ id: "marker", value: markerValue });
+  };
+  const database = await requestValue(request);
+  database.close();
+}
+
+async function hasLegacyMarker(name: string, markerStore: string, markerValue: string): Promise<boolean> {
+  const request = indexedDB.open(name);
+  const database = await requestValue(request);
+  try {
+    if (!database.objectStoreNames.contains(markerStore)) return false;
+    const transaction = database.transaction(markerStore, "readonly");
+    const value = await requestValue(transaction.objectStore(markerStore).get("marker"));
+    return (value as { value: string } | undefined)?.value === markerValue;
+  } finally {
+    database.close();
+  }
 }
 
 type TransactionHandlers = {
@@ -1204,5 +1241,174 @@ describe("IndexedDB authoritative EventHistory", () => {
       }
     });
     await history.close();
+  });
+
+  it("isolates startup cleanup to panel-matching journals and keeps unknown newer generations", async () => {
+    const panelSessionId = "ownership-isolation-session";
+    const legacySessionId = "other-isolation-session";
+    const knownOlderName = legacyJournalName(panelSessionId, 1);
+    const futureName = legacyJournalName(panelSessionId, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1);
+    const otherOlderName = legacyJournalName(legacySessionId, 1);
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await Promise.all([
+      createLegacyJournal(panelSessionId, 1, "owned", "legacy-current-panel-old"),
+      createLegacyJournal(legacySessionId, 1, "owned-other", "legacy-other-panel"),
+      createLegacyJournal(panelSessionId, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1, "future", "future-stays")
+    ]);
+
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [
+        { name: knownOlderName, version: 1 },
+        { name: futureName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1 },
+        { name: otherOlderName, version: 1 }
+      ]),
+      requestLock: vi.fn(async (_name, _options, callback) => callback())
+    };
+
+    const history = await openEventHistory({ panelSessionId, runtime });
+    let status: unknown;
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") status = publication.status;
+    });
+    expect(status).toMatchObject({ fallback: null, capacity: { tier: "NORMAL" } });
+    await history.close();
+
+    expect(await hasLegacyMarker(knownOlderName, "owned", "legacy-current-panel-old")).toBe(false);
+    expect(await hasLegacyMarker(futureName, "future", "future-stays")).toBe(true);
+    expect(await hasLegacyMarker(otherOlderName, "owned-other", "legacy-other-panel")).toBe(true);
+  });
+
+  it("normalizes panel-session identifiers when matching crash residue journals", async () => {
+    const unsanitizedPanelSessionId = "ownership session/unsanitized";
+    const sanitizedPanelSessionId = authoritativeEventDatabaseName(unsanitizedPanelSessionId).replace(
+      `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}-`,
+      ""
+    );
+    const legacyName = legacyJournalName(sanitizedPanelSessionId, 1);
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await createLegacyJournal(sanitizedPanelSessionId, 1, "owned", "unsanitized-legacy");
+
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [{ name: legacyName, version: 1 }]),
+      requestLock: vi.fn(async (_name, _options, callback) => callback())
+    };
+
+    const history = await openEventHistory({ panelSessionId: unsanitizedPanelSessionId, runtime });
+    await history.close();
+    expect(await hasLegacyMarker(legacyName, "owned", "unsanitized-legacy")).toBe(false);
+  });
+
+  it("keeps orphan journals when cleanup lock cannot be acquired", async () => {
+    const panelSessionId = "ownership-lock-blocked";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const legacyName = legacyJournalName(panelSessionId, 1);
+    await createLegacyJournal(panelSessionId, 1, "owned", "legacy-blocked");
+
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [{ name: legacyName, version: 1 }]),
+      requestLock: vi.fn(async () => null)
+    };
+
+    const history = await openEventHistory({ panelSessionId, runtime });
+    await history.close();
+    expect(await hasLegacyMarker(legacyName, "owned", "legacy-blocked")).toBe(true);
+  });
+
+  it("falls back to memory when the startup lock throws", async () => {
+    const panelSessionId = "startup-lock-error";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const legacyName = legacyJournalName(panelSessionId, 1);
+    await createLegacyJournal(panelSessionId, 1, "owned", "legacy-lock-error");
+
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [{ name: legacyName, version: 1 }]),
+      requestLock: vi.fn(async () => {
+        throw new Error("lock request failed");
+      })
+    };
+
+    const history = await openEventHistory({ panelSessionId, runtime });
+    let status: unknown;
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") status = publication.status;
+    });
+    expect(status).toMatchObject({ fallback: "PRIMARY_JOURNAL_UNAVAILABLE", capacity: { tier: "LOWER" } });
+    await history.close();
+    expect(await hasLegacyMarker(legacyName, "owned", "legacy-lock-error")).toBe(true);
+  });
+
+  it("falls back to memory when startup database enumeration fails", async () => {
+    const panelSessionId = "startup-list-error";
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => {
+        throw new Error("database listing failed");
+      }),
+      requestLock: vi.fn(async (_name, _options, callback) => callback())
+    };
+
+    const history = await openEventHistory({ panelSessionId, runtime });
+    let status: unknown;
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") status = publication.status;
+    });
+    expect(status).toMatchObject({ fallback: "PRIMARY_JOURNAL_UNAVAILABLE", capacity: { tier: "LOWER" } });
+    await history.close();
+  });
+
+  it("supports delayed lock callbacks while deleting orphan journals", async () => {
+    const panelSessionId = "startup-lock-late";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const legacyName = legacyJournalName(panelSessionId, 1);
+    await createLegacyJournal(panelSessionId, 1, "owned", "legacy-late");
+
+    let notifyStarted!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    let release!: () => void;
+    const cleanupPermit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [{ name: legacyName, version: 1 }]),
+      requestLock: (async (_name, _options, callback) => {
+        notifyStarted();
+        await cleanupPermit;
+        return callback();
+      }) as AuthoritativeEventDatabaseRuntime["requestLock"]
+    };
+
+    const historyPromise = createIndexedDbEventHistory({ panelSessionId, runtime });
+    await cleanupStarted;
+    let historyResolved = false;
+    void historyPromise.then(() => {
+      historyResolved = true;
+    });
+    await Promise.resolve();
+    expect(historyResolved).toBe(false);
+    release();
+    const history = await historyPromise;
+    await history.close();
+    expect(await hasLegacyMarker(legacyName, "owned", "legacy-late")).toBe(false);
+  });
+
+  it("releases in-process ownership locks after a cleanup callback failure", async () => {
+    const runtime = authoritativeEventDatabaseRuntime();
+    const lockName = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}-leak`;
+    await expect(
+      runtime.requestLock(
+        lockName,
+        { mode: "exclusive", ifAvailable: false },
+        () => Promise.reject(new Error("cleanup callback failed"))
+      )
+    ).rejects.toThrow("cleanup callback failed");
+
+    await expect(
+      runtime.requestLock(
+        lockName,
+        { mode: "exclusive", ifAvailable: true },
+        () => Promise.resolve("recovered")
+      )
+    ).resolves.toBe("recovered");
   });
 });
