@@ -763,6 +763,120 @@ describe("Event History performance runner page operation", () => {
     });
   });
 
+  it("sanitizes valid progress identically for normal and rejected CDP statuses", async () => {
+    const validProgress = {
+      phase: "cells",
+      stage: "cell-7-receipts",
+      substage: "receipt-settlement",
+      sequence: 12,
+      pageElapsedMs: 4_321,
+      sample: 2,
+      trigger: null,
+      scenario: null,
+      cellIndex: 7,
+      cellTotal: 36,
+      adapter: "indexeddb",
+      workload: "burst",
+      shape: "large-json-rich",
+      workloadPhase: "commit",
+      offered: 1_692,
+      settled: 1_691,
+      query: null,
+      extraField: "must be dropped"
+    };
+    const expectedProgress = {
+      phase: "cells",
+      stage: "cell-7-receipts",
+      substage: "receipt-settlement",
+      sequence: 12,
+      pageElapsedMs: 4_321,
+      sample: 2,
+      trigger: null,
+      scenario: null,
+      cellIndex: 7,
+      cellTotal: 36,
+      adapter: "indexeddb",
+      workload: "burst",
+      shape: "large-json-rich",
+      workloadPhase: "commit",
+      offered: 1_692,
+      settled: 1_691,
+      query: null
+    };
+    const normalStatuses: Array<Record<string, unknown>> = [];
+    const normalCdp = new FakeCdp([
+      evaluated({ operationId: "normal-sanitized", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "normal-sanitized", state: "resolved", heartbeat: 1, progress: validProgress, result: true }),
+      evaluated(true)
+    ]);
+    await expect(runPageOperation(normalCdp, "window.run()", {
+      operationId: "normal-sanitized",
+      onHeartbeat: (status) => normalStatuses.push(status as Record<string, unknown>)
+    })).resolves.toBe(true);
+
+    const rejectedCdp = new FakeCdp([
+      evaluated({ operationId: "rejected-sanitized", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "rejected-sanitized", state: "rejected", heartbeat: 1, error: {
+        name: "HarnessStageTimeout",
+        message: "receipt stage timed out",
+        progress: validProgress
+      } }),
+      evaluated(true)
+    ]);
+    const rejected = await runPageOperation(rejectedCdp, "window.run()", { operationId: "rejected-sanitized" })
+      .then(() => null, (error) => error);
+
+    expect(normalStatuses.at(-1)?.progress).toEqual(expectedProgress);
+    expect(rejected).toMatchObject({ progress: expectedProgress });
+  });
+
+  it("drops invalid progress for both normal and rejected CDP statuses", async () => {
+    const invalidProgress = {
+      phase: "not-a-phase",
+      stage: "cell-7-receipts",
+      substage: "receipt-settlement",
+      sequence: 13,
+      pageElapsedMs: Number.NaN,
+      sample: 2,
+      trigger: null,
+      scenario: null,
+      cellIndex: 7,
+      cellTotal: 36,
+      adapter: "indexeddb",
+      workload: "burst",
+      shape: "large-json-rich",
+      workloadPhase: "commit",
+      offered: -1,
+      settled: 1,
+      query: null
+    };
+    const normalStatuses: Array<Record<string, unknown>> = [];
+    const normalCdp = new FakeCdp([
+      evaluated({ operationId: "normal-invalid", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "normal-invalid", state: "resolved", heartbeat: 1, progress: invalidProgress, result: true }),
+      evaluated(true)
+    ]);
+    await expect(runPageOperation(normalCdp, "window.run()", {
+      operationId: "normal-invalid",
+      onHeartbeat: (status) => normalStatuses.push(status as Record<string, unknown>)
+    })).resolves.toBe(true);
+
+    const rejectedCdp = new FakeCdp([
+      evaluated({ operationId: "rejected-invalid", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "rejected-invalid", state: "rejected", heartbeat: 1, error: {
+        name: "HarnessStageTimeout",
+        message: "receipt stage timed out",
+        progress: invalidProgress
+      } }),
+      evaluated(true)
+    ]);
+    const rejected = await runPageOperation(rejectedCdp, "window.run()", { operationId: "rejected-invalid" })
+      .then(() => null, (error) => error);
+
+    expect(normalStatuses.at(-1)).not.toHaveProperty("progress");
+    expect(rejected).not.toHaveProperty("progress");
+  });
+
   it("preserves the original rejected error fields and cleans the operation record", async () => {
     const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
     const cdp = new FakeCdp([

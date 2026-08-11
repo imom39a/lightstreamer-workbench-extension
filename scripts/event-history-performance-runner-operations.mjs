@@ -664,7 +664,7 @@ function evaluationValue(response) {
 }
 
 function operationStatus(value, startedAt, now, lastRequestTimeout = null) {
-  const progress = value?.progress && typeof value.progress === "object" ? value.progress : null;
+  const progress = serializeOperationProgress(value?.progress);
   return {
     operationId: value?.operationId ?? null,
     state: value?.state ?? "missing",
@@ -700,24 +700,44 @@ function remoteOperationError(details) {
 
 function serializeOperationProgress(value) {
   if (!value || typeof value !== "object") return null;
+  const validPhase = ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(value.phase);
+  const validWorkload = value.workload === null || value.workload === "sustained" || value.workload === "burst";
+  const validShape = value.shape === null || ["small-lifecycle", "ordinary-item-update", "large-json-rich"].includes(value.shape);
+  const validWorkloadPhase = value.workloadPhase === null || ["capture", "commit", "paint", "query"].includes(value.workloadPhase);
+  const validTrigger = value.trigger === null || value.trigger === "PENDING_BYTES" || value.trigger === "PENDING_AGE";
+  const validSample = value.sample === null || (Number.isInteger(value.sample) && value.sample >= 1 && value.sample <= 3);
+  const validCellIndex = value.cellIndex === null || (Number.isSafeInteger(value.cellIndex) && value.cellIndex >= 1 && value.cellIndex <= 36);
+  const validCount = (count) => count === null || (Number.isSafeInteger(count) && count >= 0);
+  if (!validPhase
+    || typeof value.stage !== "string" || value.stage.length === 0
+    || typeof value.substage !== "string" || value.substage.length === 0
+    || !Number.isSafeInteger(value.sequence) || value.sequence < 1
+    || !Number.isFinite(value.pageElapsedMs) || value.pageElapsedMs < 0
+    || !validSample || !validTrigger
+    || (value.scenario !== null && typeof value.scenario !== "string")
+    || !validCellIndex || value.cellTotal !== 36
+    || (value.adapter !== null && value.adapter !== "indexeddb" && value.adapter !== "memory")
+    || !validWorkload || !validShape || !validWorkloadPhase
+    || !validCount(value.offered) || !validCount(value.settled)
+    || (value.query !== null && typeof value.query !== "string")) return null;
   return {
-    phase: ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(value.phase) ? value.phase : "cells",
-    stage: typeof value.stage === "string" ? value.stage : "unknown",
-    substage: typeof value.substage === "string" ? value.substage : (typeof value.stage === "string" ? value.stage : "unknown"),
-    sequence: Number.isSafeInteger(value.sequence) && value.sequence >= 1 ? value.sequence : 0,
-    pageElapsedMs: Number.isFinite(value.pageElapsedMs) && value.pageElapsedMs >= 0 ? value.pageElapsedMs : 0,
-    sample: value.sample === null || (Number.isInteger(value.sample) && value.sample >= 1 && value.sample <= 3) ? value.sample : null,
-    trigger: value.trigger === "PENDING_BYTES" || value.trigger === "PENDING_AGE" ? value.trigger : null,
-    scenario: typeof value.scenario === "string" ? value.scenario : null,
-    cellIndex: value.cellIndex === null || (Number.isSafeInteger(value.cellIndex) && value.cellIndex >= 1 && value.cellIndex <= 36) ? value.cellIndex : null,
+    phase: value.phase,
+    stage: value.stage,
+    substage: value.substage,
+    sequence: value.sequence,
+    pageElapsedMs: value.pageElapsedMs,
+    sample: value.sample,
+    trigger: value.trigger,
+    scenario: value.scenario,
+    cellIndex: value.cellIndex,
     cellTotal: 36,
-    adapter: value.adapter === "indexeddb" || value.adapter === "memory" ? value.adapter : null,
-    workload: value.workload === "sustained" || value.workload === "burst" ? value.workload : null,
-    shape: ["small-lifecycle", "ordinary-item-update", "large-json-rich"].includes(value.shape) ? value.shape : null,
-    workloadPhase: ["capture", "commit", "paint", "query"].includes(value.workloadPhase) ? value.workloadPhase : null,
-    offered: Number.isSafeInteger(value.offered) && value.offered >= 0 ? value.offered : null,
-    settled: Number.isSafeInteger(value.settled) && value.settled >= 0 ? value.settled : null,
-    query: typeof value.query === "string" ? value.query : null
+    adapter: value.adapter,
+    workload: value.workload,
+    shape: value.shape,
+    workloadPhase: value.workloadPhase,
+    offered: value.offered,
+    settled: value.settled,
+    query: value.query
   };
 }
 
