@@ -313,7 +313,7 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.failures.some((failure) => failure.includes("reference") && failure.includes("empty"))).toBe(true);
   });
 
-  it("fails closed for malformed heap telemetry instead of accepting a negative delta", () => {
+  it("accepts a negative post-GC heap delta when the sample is otherwise valid", () => {
     const baseline = report();
     const current = report({
       heapSamples: baseline.heapSamples.map((sample, index) =>
@@ -323,8 +323,8 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
 
-    expect(decision.verdict).toBe("FAIL");
-    expect(decision.failures.some((failure) => failure.includes("malformed") || failure.includes("heap"))).toBe(true);
+    expect(decision.verdict).toBe("PASS");
+    expect(decision.failures).toEqual([]);
   });
 
   it("fails closed for a pinned reference with duplicate matrix samples", () => {

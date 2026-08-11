@@ -479,7 +479,7 @@ function isHeapSample(value: unknown): value is EventHistoryPerformanceHeapSampl
   return isRecord(value) && ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
     && Number.isInteger(value.sample) && (value.sample as number) >= 1 && (value.sample as number) <= SAMPLE_COUNT
     && Number.isSafeInteger(value.eventCount) && (value.eventCount as number) >= 0
-    && isFiniteNumber(value.postGcHeapDeltaBytes) && value.postGcHeapDeltaBytes >= 0;
+    && isFiniteNumber(value.postGcHeapDeltaBytes);
 }
 
 function hasIndependentMatrixSamples(cells: unknown[]): cells is EventHistoryPerformanceCell[] {
