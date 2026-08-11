@@ -14,6 +14,8 @@ import {
   createStagedTopologyCheckpointCandidate,
   HarnessStageTimeout,
   settleReceiptStage,
+  publishHarnessProgress,
+  waitForBoundedFrame,
   withStageDeadline,
   type HarnessProgressInput
 } from "../benchmarks/event-history-performance-harness";
@@ -22,6 +24,7 @@ import { createTopologyProjection } from "../src/extension/panel/topology-projec
 
 describe("Event History performance checkpoint workload", () => {
   const progress = (stage: string): HarnessProgressInput => ({
+    operationId: null,
     phase: "cells",
     stage,
     substage: stage,
@@ -72,6 +75,87 @@ describe("Event History performance checkpoint workload", () => {
       expect(observed.at(-1)).toBe(1);
       expect(observed).not.toContain(2);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects stale progress from a prior operation without overwriting the current operation", () => {
+    const key = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+    const globalRecord = globalThis as unknown as Record<string, unknown>;
+    const previous = globalRecord[key];
+    const currentOperation = { operationId: "new-operation", state: "pending", startedAt: 0, progress: { operationId: "new-operation" } };
+    globalRecord[key] = currentOperation;
+    try {
+      publishHarnessProgress({ ...progress("stale"), operationId: "old-operation" });
+      expect(currentOperation.progress).toEqual({ operationId: "new-operation" });
+      publishHarnessProgress({ ...progress("current"), operationId: "new-operation" });
+      expect(currentOperation.progress).toMatchObject({ operationId: "new-operation", stage: "current" });
+    } finally {
+      if (previous === undefined) delete globalRecord[key];
+      else globalRecord[key] = previous;
+    }
+  });
+
+  it("closes a receipt stage on rejection and suppresses a later success callback", async () => {
+    let resolveLate!: (value: string) => void;
+    const observed: number[] = [];
+    const pending = settleReceiptStage(
+      [
+        Promise.reject(new Error("early rejection")),
+        new Promise<string>((resolve) => { resolveLate = resolve; })
+      ],
+      "cell-7-receipts",
+      100,
+      (settled) => {
+        observed.push(settled);
+        return { ...progress("receipt-settlement"), settled };
+      }
+    );
+    const rejected = expect(pending).rejects.toThrow("early rejection");
+    await rejected;
+    resolveLate("late success");
+    await Promise.resolve();
+    expect(observed).toEqual([1]);
+  });
+
+  it("closes a receipt stage on rejection and suppresses a later rejection callback", async () => {
+    let rejectLate!: (error: Error) => void;
+    const observed: number[] = [];
+    const pending = settleReceiptStage(
+      [
+        Promise.reject(new Error("early rejection")),
+        new Promise<never>((_, reject) => { rejectLate = reject; })
+      ],
+      "cell-7-receipts",
+      100,
+      (settled) => {
+        observed.push(settled);
+        return { ...progress("receipt-settlement"), settled };
+      }
+    );
+    const rejected = expect(pending).rejects.toThrow("early rejection");
+    await rejected;
+    rejectLate(new Error("late rejection"));
+    await Promise.resolve();
+    expect(observed).toEqual([1]);
+  });
+
+  it("fails closed when a frame does not arrive before its stage deadline", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    window.requestAnimationFrame = (() => 0) as typeof window.requestAnimationFrame;
+    try {
+      const pending = waitForBoundedFrame("cell-7-frame", () => progress("frame"));
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: "HarnessStageTimeout",
+        code: "HARNESS_STAGE_TIMEOUT",
+        stage: "cell-7-frame",
+        timeoutMs: 30_000
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejected;
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
       vi.useRealTimers();
     }
   });

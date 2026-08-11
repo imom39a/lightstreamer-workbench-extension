@@ -5,6 +5,7 @@ const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_REQUEST_CEILING_MS = 5_000;
 const DEFAULT_HEAP_GC_DEADLINE_MS = 240_000;
 const DEFAULT_PROGRESS_AGE_CEILING_MS = 120_000;
+const DEFAULT_STARTUP_PROGRESS_CEILING_MS = 30_000;
 
 export class PerformanceOperationTimeout extends Error {
   constructor(message, status) {
@@ -382,29 +383,67 @@ function progressAgeCeilingMs(progress) {
   return stageCeiling === null ? phaseCeiling : Math.min(phaseCeiling, stageCeiling);
 }
 
+function progressStageKey(progress) {
+  if (!progress) return null;
+  return JSON.stringify([
+    progress.phase,
+    progress.stage,
+    progress.substage,
+    progress.sample,
+    progress.trigger,
+    progress.scenario,
+    progress.cellIndex,
+    progress.adapter,
+    progress.workload,
+    progress.shape,
+    progress.workloadPhase,
+    progress.query
+  ]);
+}
+
 function observeProgressStatus(status, monitor, now) {
   const progress = status.progress;
   if (progress && Number.isSafeInteger(progress.sequence) && progress.sequence > monitor.sequence) {
+    const observedAt = now();
+    const nextStageKey = progressStageKey(progress);
+    if (monitor.stageKey !== nextStageKey) {
+      monitor.stageKey = nextStageKey;
+      monitor.stageStartedAt = observedAt;
+      monitor.stageDeadlineMs = progressAgeCeilingMs(progress) ?? DEFAULT_PROGRESS_AGE_CEILING_MS;
+    }
     monitor.sequence = progress.sequence;
-    monitor.lastObservedAt = now();
+    monitor.lastObservedAt = observedAt;
     monitor.ceilingMs = progressAgeCeilingMs(progress);
   }
   const progressAgeMs = monitor.lastObservedAt === null ? null : Math.max(0, now() - monitor.lastObservedAt);
+  const progressStageAgeMs = Math.max(0, now() - monitor.stageStartedAt);
   return {
     ...status,
     progressSequence: monitor.sequence >= 0 ? monitor.sequence : null,
     progressAgeMs,
     progressAgeCeilingMs: monitor.ceilingMs,
-    lastProgressObservedAt: monitor.lastObservedAt
+    lastProgressObservedAt: monitor.lastObservedAt,
+    progressStageKey: monitor.stageKey,
+    progressStageAgeMs,
+    progressStageDeadlineMs: monitor.stageDeadlineMs
   };
 }
 
 function assertProgressAge(status, monitor, now) {
   const ageMs = monitor.lastObservedAt === null ? null : Math.max(0, now() - monitor.lastObservedAt);
-  if (ageMs !== null && monitor.ceilingMs !== null && ageMs > monitor.ceilingMs) {
+  const stageAgeMs = Math.max(0, now() - monitor.stageStartedAt);
+  const inactivityExceeded = ageMs !== null && monitor.ceilingMs !== null && ageMs > monitor.ceilingMs;
+  const stageExceeded = stageAgeMs > monitor.stageDeadlineMs;
+  if (inactivityExceeded || stageExceeded) {
+    const reason = stageExceeded ? "absolute stage" : "inactivity";
     throw new PerformanceOperationTimeout(
-      `Event History performance operation stalled in ${status.progress?.stage ?? "unknown"} progress for ${ageMs} ms (ceiling ${monitor.ceilingMs} ms).`,
-      { ...status, progressAgeMs: ageMs }
+      `Event History performance operation exceeded its ${reason} progress ceiling in ${status.progress?.stage ?? "startup"}.`,
+      {
+        ...status,
+        progressAgeMs: ageMs,
+        progressStageAgeMs: stageAgeMs,
+        progressStageDeadlineMs: monitor.stageDeadlineMs
+      }
     );
   }
 }
@@ -420,7 +459,14 @@ export async function runPageOperation(cdp, expression, options = {}) {
   const deadlineAt = startedAt + deadlineMs;
   let lastRequestTimeout = null;
   let pollToken = 0;
-  const progressMonitor = { sequence: -1, lastObservedAt: null, ceilingMs: null };
+  const progressMonitor = {
+    sequence: -1,
+    lastObservedAt: null,
+    ceilingMs: null,
+    stageKey: null,
+    stageStartedAt: startedAt,
+    stageDeadlineMs: DEFAULT_STARTUP_PROGRESS_CEILING_MS
+  };
   const statusAt = (value, requestTimeout = null) => observeProgressStatus(
     operationStatus(value, startedAt, now, requestTimeout),
     progressMonitor,
@@ -700,6 +746,7 @@ function remoteOperationError(details) {
 
 function serializeOperationProgress(value) {
   if (!value || typeof value !== "object") return null;
+  const operationId = value.operationId === undefined ? null : value.operationId;
   const validPhase = ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(value.phase);
   const validWorkload = value.workload === null || value.workload === "sustained" || value.workload === "burst";
   const validShape = value.shape === null || ["small-lifecycle", "ordinary-item-update", "large-json-rich"].includes(value.shape);
@@ -709,6 +756,7 @@ function serializeOperationProgress(value) {
   const validCellIndex = value.cellIndex === null || (Number.isSafeInteger(value.cellIndex) && value.cellIndex >= 1 && value.cellIndex <= 36);
   const validCount = (count) => count === null || (Number.isSafeInteger(count) && count >= 0);
   if (!validPhase
+    || (operationId !== null && typeof operationId !== "string")
     || typeof value.stage !== "string" || value.stage.length === 0
     || typeof value.substage !== "string" || value.substage.length === 0
     || !Number.isSafeInteger(value.sequence) || value.sequence < 1
@@ -721,6 +769,7 @@ function serializeOperationProgress(value) {
     || !validCount(value.offered) || !validCount(value.settled)
     || (value.query !== null && typeof value.query !== "string")) return null;
   return {
+    operationId,
     phase: value.phase,
     stage: value.stage,
     substage: value.substage,

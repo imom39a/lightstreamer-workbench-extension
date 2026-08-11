@@ -58,6 +58,7 @@ type EventHistoryPerformanceConfig = Readonly<{
 }>;
 
 export type HarnessProgressInput = Readonly<{
+  operationId: string | null;
   phase: "cells" | "terminal" | "checkpoint" | "heap" | "lifecycle";
   stage: string;
   substage: string;
@@ -93,7 +94,9 @@ const STAGE_DEADLINES_MS = Object.freeze({
   terminalReceipts: 120_000,
   checkpointReceipts: 120_000,
   heapWarmupReceipts: 240_000,
-  heapSampleReceipts: 240_000
+  heapSampleReceipts: 240_000,
+  visibleFrame: 30_000,
+  frame: 30_000
 });
 
 export class HarnessStageTimeout extends Error {
@@ -113,6 +116,13 @@ export class HarnessStageTimeout extends Error {
 
 let harnessProgressSequence = 0;
 
+function currentHarnessOperationId(): string | null {
+  const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+  return operation && typeof operation === "object" && typeof (operation as { operationId?: unknown }).operationId === "string"
+    ? (operation as { operationId: string }).operationId
+    : null;
+}
+
 function observeHarnessProgress(progress: HarnessProgressInput): HarnessProgress {
   const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
   const startedAt = operation && typeof operation === "object" && typeof (operation as { startedAt?: unknown }).startedAt === "number"
@@ -125,8 +135,17 @@ function observeHarnessProgress(progress: HarnessProgressInput): HarnessProgress
   };
 }
 
-function publishHarnessProgress(progress: HarnessProgressInput): HarnessProgress {
+export function publishHarnessProgress(progress: HarnessProgressInput): HarnessProgress {
   const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+  if (operation && typeof operation === "object"
+    && progress.operationId !== null
+    && (operation as { operationId?: unknown }).operationId !== progress.operationId) {
+    return {
+      ...progress,
+      sequence: ++harnessProgressSequence,
+      pageElapsedMs: 0
+    };
+  }
   const observed = observeHarnessProgress(progress);
   if (!operation || typeof operation !== "object") return observed;
   const record = operation as { state?: unknown; progress?: unknown };
@@ -168,7 +187,8 @@ export function withStageDeadline<T>(
         if (settled) return;
         settled = true;
         window.clearTimeout(timer);
-        reject(normalizeHarnessError(error, stage, progress()));
+        if (error && typeof error === "object" && "progress" in error) reject(error);
+        else reject(normalizeHarnessError(error, stage, progress()));
       }
     );
   });
@@ -181,19 +201,19 @@ export function settleReceiptStage<T>(
   progress: (settled: number) => HarnessProgressInput
 ): Promise<T[]> {
   let settled = 0;
-  let timedOut = false;
+  let terminal = false;
   const observedReceipts = receipts.map((receipt) => Promise.resolve(receipt).then(
     (value) => {
-      if (timedOut) return value;
+      if (terminal) return value;
       settled += 1;
       publishHarnessProgress(progress(settled));
       return value;
     },
     (error: unknown) => {
-      if (timedOut) return undefined as T;
+      if (terminal) return undefined as T;
+      terminal = true;
       settled += 1;
       const contextual = normalizeHarnessError(error, stage, progress(settled));
-      publishHarnessProgress(progress(settled));
       throw contextual;
     }
   ));
@@ -202,7 +222,7 @@ export function settleReceiptStage<T>(
     stage,
     timeoutMs,
     () => progress(settled),
-    () => { timedOut = true; }
+    () => { terminal = true; }
   );
 }
 
@@ -290,6 +310,7 @@ type HarnessResult = Readonly<{
 }>;
 
 type RetainedHeapSession = Readonly<{
+  operationId: string | null;
   adapter: "indexeddb" | "memory";
   count: number;
   retained: number;
@@ -468,6 +489,7 @@ let retainedHeapSequence = 0;
 
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
   async run(overrides = {}) {
+    const operationId = currentHarnessOperationId();
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
     const cells: EventHistoryPerformanceCell[] = [];
@@ -478,6 +500,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           for (const sample of [1, 2, 3] as const) {
             cellIndex += 1;
             publishHarnessProgress({
+              operationId,
               phase: "cells",
               stage: "cell-start",
               substage: "cell-start",
@@ -494,7 +517,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
               settled: 0,
               query: null
             });
-            cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex));
+            cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId));
           }
         }
       }
@@ -503,6 +526,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const trigger of ["PENDING_BYTES", "PENDING_AGE"] as const) {
         publishHarnessProgress({
+          operationId,
           phase: "terminal",
           stage: trigger,
           substage: trigger,
@@ -519,13 +543,14 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           settled: null,
           query: null
         });
-        terminalScenarios.push(await runTerminalScenario(adapter, trigger));
+        terminalScenarios.push(await runTerminalScenario(adapter, trigger, operationId));
       }
     }
     const checkpointScenarios: EventHistoryPerformanceCheckpointScenario[] = [];
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const name of ["representative", "maximum-2MiB"] as const) {
         publishHarnessProgress({
+          operationId,
           phase: "checkpoint",
           stage: name,
           substage: name,
@@ -542,7 +567,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           settled: null,
           query: null
         });
-        checkpointScenarios.push(await runCheckpointScenario(adapter, name));
+        checkpointScenarios.push(await runCheckpointScenario(adapter, name, operationId));
       }
     }
     return {
@@ -571,6 +596,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
   async prepareRetainedHeapSample(adapter, count, phase, sample) {
     if (retainedHeapSession) throw new Error("A retained heap session is already active; cleanup must complete before the next sample.");
     const runId = `heap-${adapter}-${phase}-${sample ?? "warmup"}-${retainedHeapSequence += 1}`;
+    const operationId = currentHarnessOperationId();
     const databaseName = adapter === "indexeddb" ? authoritativeEventDatabaseName(runId) : null;
     const root = document.createElement("main");
     let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
@@ -593,6 +619,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
       );
       const heapProgress = (settled: number | null = null): HarnessProgressInput => ({
+        operationId,
         phase: "heap",
         stage: `${phase}-receipt-settlement`,
         substage: `${phase}-receipt-settlement`,
@@ -617,8 +644,8 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         phase === "warmup" ? STAGE_DEADLINES_MS.heapWarmupReceipts : STAGE_DEADLINES_MS.heapSampleReceipts,
         heapProgress
       );
-      await waitForFrame();
-      retainedHeapSession = { adapter, count, retained: events.length, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
+      await waitForBoundedFrame(`${phase}-frame`, heapProgress);
+      retainedHeapSession = { operationId, adapter, count, retained: events.length, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
       return { adapter, count, retained: events.length, sessionId: runId, databaseName, phase, sample };
     } catch (error) {
       const originalError = error instanceof Error ? error : new Error(String(error));
@@ -633,7 +660,24 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         disposePanel: () => panel?.disposePanel(),
         closeHistory: () => history ? history.close() : Promise.resolve(null),
         removeRoot: () => root.remove(),
-        yieldFrame: () => waitForFrame()
+        yieldFrame: () => waitForBoundedFrame(`${phase}-cleanup-frame`, () => ({
+          operationId,
+          phase: "heap",
+          stage: `${phase}-cleanup-frame`,
+          substage: `${phase}-cleanup-frame`,
+          sample,
+          trigger: null,
+          scenario: null,
+          cellIndex: null,
+          cellTotal: 36,
+          adapter,
+          workload: null,
+          shape: null,
+          workloadPhase: null,
+          offered: count,
+          settled: null,
+          query: null
+        }))
       });
       Object.assign(originalError, { code: "PREPARE_FAILED", cleanupEvidence });
       throw originalError;
@@ -655,7 +699,25 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     return !session.root.isConnected;
   },
   async yieldRetainedHeapFrame() {
-    await waitForFrame();
+    const operationId = currentHarnessOperationId();
+    await waitForBoundedFrame("heap-retained-frame", () => ({
+      operationId,
+      phase: "heap",
+      stage: "retained-frame",
+      substage: "retained-frame",
+      sample: null,
+      trigger: null,
+      scenario: null,
+      cellIndex: null,
+      cellTotal: 36,
+      adapter: null,
+      workload: null,
+      shape: null,
+      workloadPhase: "paint",
+      offered: null,
+      settled: null,
+      query: null
+    }));
     return true;
   }
 };
@@ -666,7 +728,8 @@ async function runCell(
   shape: EventHistoryShape,
   sample: number,
   config: EventHistoryPerformanceConfig,
-  cellIndex: number
+  cellIndex: number,
+  operationId: string | null
 ): Promise<EventHistoryPerformanceCell> {
   const runId = `${adapter}-${workload}-${shape}-sample-${sample}`;
   const history = adapter === "indexeddb"
@@ -691,6 +754,7 @@ async function runCell(
   let offeredCount = 0;
   let settledCount = 0;
   const progress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): HarnessProgressInput => ({
+    operationId,
     phase: "cells",
     stage,
     substage: stage,
@@ -816,8 +880,16 @@ async function runCell(
     const commitSettledAt = performance.now();
     enterPhase("paint");
     updateProgress("visible-frame", "paint");
-    await Promise.race([finalVisible, timeout(30_000)]);
-    await waitForFrame();
+    await withStageDeadline(
+      finalVisible,
+      `cell-${cellIndex}-visible-frame`,
+      STAGE_DEADLINES_MS.visibleFrame,
+      () => progress("visible-frame", "paint")
+    );
+    await waitForBoundedFrame(
+      `cell-${cellIndex}-frame`,
+      () => progress("frame", "paint")
+    );
     const readStartedAt = performance.now();
     enterPhase("query");
     const queryMeasurements = await withStageDeadline((async () => ({
@@ -978,7 +1050,8 @@ async function runCell(
 
 async function runTerminalScenario(
   adapter: "indexeddb" | "memory",
-  trigger: "PENDING_BYTES" | "PENDING_AGE"
+  trigger: "PENDING_BYTES" | "PENDING_AGE",
+  operationId: string | null
 ): Promise<EventHistoryPerformanceTerminalScenario> {
   const tier = adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const;
   let releaseCommit = (): void => undefined;
@@ -989,6 +1062,7 @@ async function runTerminalScenario(
     offered: number | null = null,
     settled: number | null = null
   ): HarnessProgressInput => ({
+    operationId,
     phase: "terminal",
     stage,
     substage: stage,
@@ -1132,13 +1206,15 @@ async function runTerminalScenario(
 
 async function runCheckpointScenario(
   adapter: "indexeddb" | "memory",
-  name: "representative" | "maximum-2MiB"
+  name: "representative" | "maximum-2MiB",
+  operationId: string | null
 ): Promise<EventHistoryPerformanceCheckpointScenario> {
   const tier = adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const;
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier })
     : createInMemoryEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier });
   const progress = (stage: string, offered: number | null = null, settled: number | null = null): HarnessProgressInput => ({
+    operationId,
     phase: "checkpoint",
     stage,
     substage: stage,
@@ -1773,12 +1849,20 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-function timeout(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-}
-
 function waitForFrame(): Promise<void> {
   return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+export function waitForBoundedFrame(
+  stage: string,
+  progress: () => HarnessProgressInput
+): Promise<void> {
+  return withStageDeadline(
+    waitForFrame(),
+    stage,
+    STAGE_DEADLINES_MS.frame,
+    progress
+  );
 }
 
 function validateConfig(config: EventHistoryPerformanceConfig): void {

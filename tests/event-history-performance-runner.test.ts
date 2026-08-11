@@ -662,6 +662,81 @@ describe("Event History performance runner page operation", () => {
     });
   });
 
+  it("enforces a startup progress ceiling before the first page progress", async () => {
+    let now = 0;
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "startup-timeout", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "startup-timeout", state: "pending", heartbeat: 1 }),
+      evaluated(true)
+    ]);
+    const result = await runPageOperation(cdp, "window.run()", {
+      operationId: "startup-timeout",
+      deadlineMs: 100_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 30_001; }
+    }).then(() => null, (error) => error);
+
+    expect(result).toBeInstanceOf(PerformanceOperationTimeout);
+    expect(result.status).toMatchObject({
+      progressAgeMs: null,
+      progressStageAgeMs: 30_001,
+      progressStageDeadlineMs: 30_000,
+      progressStageKey: null
+    });
+  });
+
+  it("does not let sequence-only progress extend one absolute stage deadline", async () => {
+    let now = 0;
+    let calls = 0;
+    const cdp = {
+      request: (_method: string, params: Record<string, unknown> = {}) => {
+        if (String(params.expression ?? "").includes("delete globalThis")) return Promise.resolve(evaluated(true));
+        calls += 1;
+        if (calls === 1) return Promise.resolve(evaluated({ operationId: "absolute-stage", state: "pending", heartbeat: 0 }));
+        return Promise.resolve(evaluated({
+          operationId: "absolute-stage",
+          state: "pending",
+          heartbeat: calls - 1,
+          progress: {
+            phase: "cells",
+            stage: "cell-7-close",
+            substage: "cell-7-close",
+            sequence: calls - 1,
+            pageElapsedMs: now,
+            sample: 1,
+            trigger: null,
+            scenario: null,
+            cellIndex: 7,
+            cellTotal: 36,
+            adapter: "indexeddb",
+            workload: "burst",
+            shape: "large-json-rich",
+            workloadPhase: "paint",
+            offered: 1_692,
+            settled: 1_692,
+            query: null
+          }
+        }));
+      }
+    };
+    const result = await runPageOperation(cdp, "window.run()", {
+      operationId: "absolute-stage",
+      deadlineMs: 100_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 10_001; }
+    }).then(() => null, (error) => error);
+
+    expect(result).toBeInstanceOf(PerformanceOperationTimeout);
+    expect(result.status).toMatchObject({
+      progressStageAgeMs: 30_003,
+      progressStageDeadlineMs: 30_000,
+      progress: { stage: "cell-7-close" }
+    });
+    expect(result.status.progressAgeMs).toBeLessThanOrEqual(10_001);
+  });
+
   it("enforces progress age after a bounded poll retry", async () => {
     let now = 0;
     let calls = 0;
@@ -785,6 +860,7 @@ describe("Event History performance runner page operation", () => {
       extraField: "must be dropped"
     };
     const expectedProgress = {
+      operationId: null,
       phase: "cells",
       stage: "cell-7-receipts",
       substage: "receipt-settlement",
@@ -997,6 +1073,7 @@ describe("Event History performance runner page operation", () => {
         heartbeat: 12,
         lastHeartbeatAt: 59_998,
         progress: {
+          operationId: "timed-out-operation",
           phase: "cells",
           stage: "cell-36-read",
           substage: "cell-36-read",

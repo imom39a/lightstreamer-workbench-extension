@@ -5,6 +5,7 @@ export type PerformanceOperationRequestTimeout = Readonly<{
   ceilingMs: number;
 }>;
 export type PerformanceOperationProgress = Readonly<{
+  operationId: string | null;
   phase: "cells" | "terminal" | "checkpoint" | "heap" | "lifecycle";
   stage: string;
   substage: string;
@@ -105,6 +106,9 @@ export type PerformanceOperationStatus = Readonly<{
   progressAgeMs?: number | null;
   progressAgeCeilingMs?: number | null;
   lastProgressObservedAt?: number | null;
+  progressStageKey?: string | null;
+  progressStageAgeMs?: number | null;
+  progressStageDeadlineMs?: number | null;
   result?: unknown;
   error?: Readonly<{
     name: string;
