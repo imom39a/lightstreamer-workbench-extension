@@ -16,6 +16,7 @@ import {
   createStagedTopologyCheckpointCandidate,
   createHarnessStageGuard,
   HarnessStageTimeout,
+  measureCheckpointLiveCapture,
   measureQuery,
   offerSustained,
   settleOffers,
@@ -33,6 +34,31 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  it("fails closed for before-and-after-only traffic and accepts measured concurrent staging traffic", () => {
+    const beforeAndAfter = measureCheckpointLiveCapture({
+      liveCaptureStartedAtMs: 0,
+      liveCaptureEndedAtMs: 10,
+      checkpointStagingStartedAtMs: 20,
+      checkpointStagingEndedAtMs: 30,
+      liveCaptureEventTimesMs: [0, 5, 10]
+    });
+    expect(beforeAndAfter.interleavedWhileStaging).toBe(false);
+    expect(beforeAndAfter.liveCaptureOverlapMs).toBe(0);
+    expect(beforeAndAfter.liveCaptureOverlapEventCount).toBe(0);
+
+    const concurrent = measureCheckpointLiveCapture({
+      liveCaptureStartedAtMs: 100,
+      liveCaptureEndedAtMs: 1_300,
+      checkpointStagingStartedAtMs: 90,
+      checkpointStagingEndedAtMs: 1_310,
+      liveCaptureEventTimesMs: Array.from({ length: 72 }, (_, index) => 100 + index * (1_200 / 72))
+    });
+    expect(concurrent.interleavedWhileStaging).toBe(true);
+    expect(concurrent.liveCaptureOverlapMs).toBe(1_200);
+    expect(concurrent.liveCaptureOverlapEventCount).toBe(72);
+    expect(concurrent.liveCaptureRateEventsPerSecond).toBe(60);
+  });
+
   const progress = (stage: string): HarnessProgressInput => ({
     operationId: null,
     phase: "cells",

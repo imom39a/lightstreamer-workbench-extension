@@ -25,6 +25,7 @@ export const EVENT_HISTORY_PERFORMANCE_LIMITS = {
 } as const;
 
 export const TERMINAL_PENDING_BYTE_EVENT_COUNT = 17;
+export const CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND = 50;
 export const TERMINAL_PENDING_BYTE_ACCEPTED_COUNT = 16;
 
 export type EventHistoryPerformanceAdapter = "indexeddb" | "memory";
@@ -178,7 +179,21 @@ export type EventHistoryPerformanceCheckpointScenario = Readonly<{
   retained: number;
   trafficBefore: number;
   trafficAfter: number;
-  interleaved: boolean;
+  liveCaptureEventIds: readonly string[];
+  retainedEventIds: readonly string[];
+  publishedEventIds: readonly string[];
+  liveCaptureCount: number;
+  liveCaptureStartedAtMs: number;
+  liveCaptureEndedAtMs: number;
+  liveCaptureDurationMs: number;
+  checkpointStagingStartedAtMs: number;
+  checkpointStagingEndedAtMs: number;
+  checkpointStagingDurationMs: number;
+  liveCaptureOverlapMs: number;
+  liveCaptureOverlapEventCount: number;
+  liveCaptureRateEventsPerSecond: number;
+  liveCaptureRateSatisfied: boolean;
+  interleavedWhileStaging: boolean;
   canonicalBytes: number;
   committedBoundaryCorrect: boolean;
   batchAcceptedAsOneOversizedUnit: boolean;
@@ -447,7 +462,21 @@ function isCheckpointScenario(value: unknown): value is EventHistoryPerformanceC
     && isBoolean(value.accepted) && Number.isSafeInteger(value.retained) && (value.retained as number) >= 0
     && Number.isSafeInteger(value.trafficBefore) && (value.trafficBefore as number) >= 1
     && Number.isSafeInteger(value.trafficAfter) && (value.trafficAfter as number) >= 1
-    && isBoolean(value.interleaved)
+    && Array.isArray(value.liveCaptureEventIds) && value.liveCaptureEventIds.length > 0
+    && value.liveCaptureEventIds.every((id) => typeof id === "string" && id.length > 0)
+    && Array.isArray(value.retainedEventIds) && value.retainedEventIds.length > 0
+    && value.retainedEventIds.every((id) => typeof id === "string" && id.length > 0)
+    && Array.isArray(value.publishedEventIds) && value.publishedEventIds.length > 0
+    && value.publishedEventIds.every((id) => typeof id === "string" && id.length > 0)
+    && Number.isSafeInteger(value.liveCaptureCount) && (value.liveCaptureCount as number) > 0
+    && isFiniteNumber(value.liveCaptureStartedAtMs) && isFiniteNumber(value.liveCaptureEndedAtMs)
+    && isFiniteNumber(value.liveCaptureDurationMs) && (value.liveCaptureDurationMs as number) > 0
+    && isFiniteNumber(value.checkpointStagingStartedAtMs) && isFiniteNumber(value.checkpointStagingEndedAtMs)
+    && isFiniteNumber(value.checkpointStagingDurationMs) && (value.checkpointStagingDurationMs as number) > 0
+    && isFiniteNumber(value.liveCaptureOverlapMs) && (value.liveCaptureOverlapMs as number) >= 0
+    && Number.isSafeInteger(value.liveCaptureOverlapEventCount) && (value.liveCaptureOverlapEventCount as number) >= 0
+    && isFiniteNumber(value.liveCaptureRateEventsPerSecond) && (value.liveCaptureRateEventsPerSecond as number) >= 0
+    && isBoolean(value.liveCaptureRateSatisfied) && isBoolean(value.interleavedWhileStaging)
     && Number.isSafeInteger(value.canonicalBytes) && (value.canonicalBytes as number) > 0
     && isBoolean(value.committedBoundaryCorrect) && isBoolean(value.batchAcceptedAsOneOversizedUnit);
 }
@@ -496,7 +525,47 @@ function validateCheckpointScenarios(
     const matches = scenarios.filter((scenario) => scenario.name === name);
     if (matches.length !== 2) failures.push(`Expected NORMAL and LOWER ${name} checkpoint scenarios.`);
     for (const scenario of matches) {
-      if (!scenario.accepted || scenario.retained !== scenario.trafficBefore + scenario.trafficAfter + 1 || !scenario.interleaved || !scenario.committedBoundaryCorrect || !scenario.batchAcceptedAsOneOversizedUnit) failures.push(`${scenario.adapter}/${name} checkpoint evidence is incomplete or not interleaved with sustained traffic.`);
+      const liveIdsUnique = new Set(scenario.liveCaptureEventIds).size === scenario.liveCaptureEventIds.length;
+      const retainedIdsUnique = new Set(scenario.retainedEventIds).size === scenario.retainedEventIds.length;
+      const publishedIdsUnique = new Set(scenario.publishedEventIds).size === scenario.publishedEventIds.length;
+      const liveIdsRetained = scenario.liveCaptureEventIds.every((eventId) => scenario.retainedEventIds.includes(eventId));
+      const liveIdsPublished = scenario.liveCaptureEventIds.every((eventId) => scenario.publishedEventIds.includes(eventId));
+      const liveRetainedInOrder = containsOrderedSubsequence(scenario.retainedEventIds, scenario.liveCaptureEventIds);
+      const livePublishedInOrder = containsOrderedSubsequence(scenario.publishedEventIds, scenario.liveCaptureEventIds);
+      const liveDuration = scenario.liveCaptureEndedAtMs - scenario.liveCaptureStartedAtMs;
+      const stagingDuration = scenario.checkpointStagingEndedAtMs - scenario.checkpointStagingStartedAtMs;
+      const overlapStart = Math.max(scenario.liveCaptureStartedAtMs, scenario.checkpointStagingStartedAtMs);
+      const overlapEnd = Math.min(scenario.liveCaptureEndedAtMs, scenario.checkpointStagingEndedAtMs);
+      const calculatedOverlap = Math.max(0, overlapEnd - overlapStart);
+      const durationEvidence = Math.abs(liveDuration - scenario.liveCaptureDurationMs) < 1
+        && Math.abs(stagingDuration - scenario.checkpointStagingDurationMs) < 1
+        && Math.abs(calculatedOverlap - scenario.liveCaptureOverlapMs) < 1;
+      const rate = scenario.liveCaptureDurationMs > 0
+        ? scenario.liveCaptureCount * 1_000 / scenario.liveCaptureDurationMs
+        : 0;
+      if (!scenario.accepted
+        || scenario.liveCaptureCount !== scenario.liveCaptureEventIds.length
+        || scenario.retained !== scenario.trafficBefore + scenario.trafficAfter + scenario.liveCaptureCount + 1
+        || scenario.retainedEventIds.length !== scenario.retained
+        || scenario.publishedEventIds.length !== scenario.retained
+        || !liveIdsUnique
+        || !retainedIdsUnique
+        || !publishedIdsUnique
+        || !liveIdsRetained
+        || !liveIdsPublished
+        || !liveRetainedInOrder
+        || !livePublishedInOrder
+        || !durationEvidence
+        || scenario.liveCaptureOverlapMs <= 0
+        || scenario.liveCaptureOverlapEventCount < 1
+        || scenario.liveCaptureRateEventsPerSecond < CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND
+        || Math.abs(rate - scenario.liveCaptureRateEventsPerSecond) >= 1
+        || !scenario.liveCaptureRateSatisfied
+        || !scenario.interleavedWhileStaging
+        || !scenario.committedBoundaryCorrect
+        || !scenario.batchAcceptedAsOneOversizedUnit) {
+        failures.push(`${scenario.adapter}/${name} checkpoint evidence is incomplete: concurrent live capture must overlap staging and sustain at least ${CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND} events/sec.`);
+      }
       if (name === "maximum-2MiB" && scenario.canonicalBytes < 2 * MIB) failures.push(`${scenario.adapter}/${name} is smaller than the required 2 MiB checkpoint.`);
     }
   }
@@ -778,6 +847,15 @@ function validateCell(cell: EventHistoryPerformanceCell, failures: string[]): vo
 
 function identifiersMatch(actual: readonly string[], expected: readonly string[]): boolean {
   return actual.length === expected.length && actual.every((id, index) => id === expected[index]);
+}
+
+function containsOrderedSubsequence(container: readonly string[], sequence: readonly string[]): boolean {
+  let next = 0;
+  for (const id of container) {
+    if (id === sequence[next]) next += 1;
+    if (next === sequence.length) return true;
+  }
+  return sequence.length === 0;
 }
 
 function compareReference(

@@ -167,6 +167,42 @@ function terminalEvidence(acceptedCount: number, refusedEventId: string) {
   };
 }
 
+function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "indexeddb" | "memory") {
+  const liveCaptureEventIds = Array.from({ length: 72 }, (_, index) => `${adapter}-${name}-live-${index + 1}`);
+  const retainedEventIds = [
+    ...Array.from({ length: 4 }, (_, index) => `${adapter}-${name}-before-${index}`),
+    `${adapter}-${name}-candidate`,
+    ...liveCaptureEventIds,
+    ...Array.from({ length: 4 }, (_, index) => `${adapter}-${name}-after-${index}`)
+  ];
+  return {
+    name,
+    adapter,
+    accepted: true,
+    retained: retainedEventIds.length,
+    trafficBefore: 4,
+    trafficAfter: 4,
+    liveCaptureEventIds,
+    retainedEventIds,
+    publishedEventIds: [...retainedEventIds],
+    liveCaptureCount: liveCaptureEventIds.length,
+    liveCaptureStartedAtMs: 100,
+    liveCaptureEndedAtMs: 1_300,
+    liveCaptureDurationMs: 1_200,
+    checkpointStagingStartedAtMs: 90,
+    checkpointStagingEndedAtMs: 1_310,
+    checkpointStagingDurationMs: 1_220,
+    liveCaptureOverlapMs: 1_200,
+    liveCaptureOverlapEventCount: 72,
+    liveCaptureRateEventsPerSecond: 60,
+    liveCaptureRateSatisfied: true,
+    interleavedWhileStaging: true,
+    canonicalBytes: name === "representative" ? 10_000 : 2 * 1_048_576,
+    committedBoundaryCorrect: true,
+    batchAcceptedAsOneOversizedUnit: true
+  };
+}
+
 function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHistoryPerformanceReport {
   const cells = ["indexeddb", "memory"].flatMap((adapter) =>
     ["sustained", "burst"].flatMap((workload) =>
@@ -217,8 +253,8 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
       }
     ]),
     checkpointScenarios: ["indexeddb", "memory"].flatMap((adapter) => [
-      { name: "representative" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 9, trafficBefore: 4, trafficAfter: 4, interleaved: true, canonicalBytes: 10_000, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true },
-      { name: "maximum-2MiB" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 9, trafficBefore: 4, trafficAfter: 4, interleaved: true, canonicalBytes: 2 * 1_048_576, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true }
+      checkpointEvidence("representative", adapter as "indexeddb" | "memory"),
+      checkpointEvidence("maximum-2MiB", adapter as "indexeddb" | "memory")
     ]),
     heapSamples: [1, 2, 3].flatMap((index) => [heapSample("indexeddb", index), heapSample("memory", index)]),
     heapRuns: heapRuns(),
@@ -531,14 +567,55 @@ describe("Event History real-Chrome performance gate classifier", () => {
     const baseline = report();
     const current = report({
       checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) =>
-        index === 0 ? { ...scenario, interleaved: false } : scenario
+        index === 0 ? { ...scenario, interleavedWhileStaging: false } : scenario
       )
     });
 
     const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
 
     expect(decision.verdict).toBe("FAIL");
-    expect(decision.failures.some((failure) => failure.includes("interleaved"))).toBe(true);
+    expect(decision.failures.some((failure) => failure.includes("concurrent live capture"))).toBe(true);
+  });
+
+  it("fails checkpoint traffic that only surrounds staging without overlapping it", () => {
+    const baseline = report();
+    const current = report({
+      checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) => index === 0
+        ? {
+            ...scenario,
+            liveCaptureStartedAtMs: 0,
+            liveCaptureEndedAtMs: 10,
+            liveCaptureDurationMs: 10,
+            checkpointStagingStartedAtMs: 20,
+            checkpointStagingEndedAtMs: 30,
+            checkpointStagingDurationMs: 10,
+            liveCaptureOverlapMs: 0,
+            liveCaptureOverlapEventCount: 0,
+            liveCaptureRateEventsPerSecond: 7200,
+            liveCaptureRateSatisfied: true,
+            interleavedWhileStaging: false
+          }
+        : scenario)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("concurrent live capture"))).toBe(true);
+  });
+
+  it("fails checkpoint overlap that does not sustain the required live rate", () => {
+    const baseline = report();
+    const current = report({
+      checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) => index === 0
+        ? { ...scenario, liveCaptureRateEventsPerSecond: 49, liveCaptureRateSatisfied: false }
+        : scenario)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("50 events/sec"))).toBe(true);
   });
 
   it("returns REVIEW for a comparable absolute pass that regresses over twenty percent", () => {
