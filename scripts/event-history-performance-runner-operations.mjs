@@ -637,6 +637,7 @@ function startOperationExpression(expression, operationId) {
     const key = ${JSON.stringify(PERFORMANCE_OPERATION_KEY)};
     const operationId = ${JSON.stringify(operationId)};
     const serializePageProgress = ${serializeOperationProgress.toString()};
+    const serializePageCleanupEvidence = ${serializeCleanupEvidence.toString()};
     const existing = globalThis[key];
     if (existing?.state === "pending") throw new Error("A performance operation is already pending.");
     const operation = {
@@ -658,35 +659,9 @@ function startOperationExpression(expression, operationId) {
       (error) => {
         if (globalThis[key] !== operation) return;
         const rawCleanupEvidence = error?.cleanupEvidence;
-        const cleanupEvidence = rawCleanupEvidence && typeof rawCleanupEvidence === "object" ? {
-          adapter: rawCleanupEvidence.adapter === "indexeddb" ? "indexeddb" : "memory",
-          phase: rawCleanupEvidence.phase === "warmup" ? "warmup" : "cleanup",
-          sample: rawCleanupEvidence.sample === null || (Number.isInteger(rawCleanupEvidence.sample) && rawCleanupEvidence.sample >= 1 && rawCleanupEvidence.sample <= 3) ? rawCleanupEvidence.sample : null,
-          eventCount: Number.isSafeInteger(rawCleanupEvidence.eventCount) ? rawCleanupEvidence.eventCount : 0,
-          retained: rawCleanupEvidence.retained === null || Number.isSafeInteger(rawCleanupEvidence.retained) ? rawCleanupEvidence.retained : null,
-          sessionId: typeof rawCleanupEvidence.sessionId === "string" ? rawCleanupEvidence.sessionId : null,
-          databaseName: typeof rawCleanupEvidence.databaseName === "string" ? rawCleanupEvidence.databaseName : null,
-          close: rawCleanupEvidence.close && typeof rawCleanupEvidence.close === "object" ? {
-            ok: rawCleanupEvidence.close.ok === true,
-            ...(rawCleanupEvidence.close.value && typeof rawCleanupEvidence.close.value === "object" ? { value: {
-              dataDisposition: rawCleanupEvidence.close.value.dataDisposition === "ERASED" ? "ERASED" : "ERASURE_UNCONFIRMED",
-              cleanupDisposition: rawCleanupEvidence.close.value.cleanupDisposition === "COMPLETE" ? "COMPLETE" : "DEFERRED"
-            } } : {}),
-            ...(rawCleanupEvidence.close.problem && typeof rawCleanupEvidence.close.problem === "object" ? { problem: {
-              code: typeof rawCleanupEvidence.close.problem.code === "string" ? rawCleanupEvidence.close.problem.code : "CLOSE_FAILED",
-              message: typeof rawCleanupEvidence.close.problem.message === "string" ? rawCleanupEvidence.close.problem.message : "Event History cleanup failed."
-            } } : {})
-          } : null,
-          disposeError: typeof rawCleanupEvidence.disposeError === "string" ? rawCleanupEvidence.disposeError : null,
-          rootRemoved: rawCleanupEvidence.rootRemoved === true,
-          frameYielded: rawCleanupEvidence.frameYielded === true,
-          gcPasses: rawCleanupEvidence.gcPasses === 3 ? 3 : null,
-          status: rawCleanupEvidence.status === "PASS" ? "PASS" : "FAIL",
-          failure: rawCleanupEvidence.failure && typeof rawCleanupEvidence.failure === "object" ? {
-            code: typeof rawCleanupEvidence.failure.code === "string" ? rawCleanupEvidence.failure.code : "HEAP_MEASUREMENT_FAILED",
-            message: typeof rawCleanupEvidence.failure.message === "string" ? rawCleanupEvidence.failure.message : "Heap measurement failed."
-          } : null
-        } : null;
+        const cleanupEvidence = rawCleanupEvidence && typeof rawCleanupEvidence === "object"
+          ? serializePageCleanupEvidence(rawCleanupEvidence)
+          : null;
         const rawProgress = error?.progress;
         const progress = rawProgress && typeof rawProgress === "object" ? serializePageProgress(rawProgress, operationId) : null;
         operation.state = "rejected";
@@ -752,6 +727,7 @@ function operationStatus(value, startedAt, now, lastRequestTimeout = null, expec
     throw new Error("Performance operation status has an operationId that does not match the requested operation.");
   }
   const progress = serializeOperationProgress(value?.progress);
+  const error = value?.error === undefined ? null : serializeOperationError(value.error);
   if (progress !== null && progress.operationId !== null && progress.operationId !== operationId) {
     throw new Error("Performance operation status has an operationId mismatch between status and progress.");
   }
@@ -764,7 +740,7 @@ function operationStatus(value, startedAt, now, lastRequestTimeout = null, expec
     ...(progress ? { ...progress, progress } : {}),
     operationId,
     ...(value?.result !== undefined ? { result: value.result } : {}),
-    ...(value?.error !== undefined ? { error: value.error } : {})
+    ...(error ? { error } : {})
   };
 }
 
@@ -777,15 +753,28 @@ function requestTimeoutDetails(error) {
 }
 
 function remoteOperationError(details) {
-  const error = new Error(details?.message ?? "Performance operation rejected.");
-  error.name = details?.name ?? "Error";
-  if (typeof details?.code === "string") error.code = details.code;
-  const progress = serializeOperationProgress(details?.progress);
-  if (progress) error.progress = progress;
-  const cleanupEvidence = serializeCleanupEvidence(details?.cleanupEvidence);
-  if (cleanupEvidence) error.cleanupEvidence = cleanupEvidence;
-  if (details?.stack) error.stack = details.stack;
+  const safeDetails = serializeOperationError(details);
+  const error = new Error(safeDetails?.message ?? "Performance operation rejected.");
+  error.name = safeDetails?.name ?? "Error";
+  if (safeDetails?.code) error.code = safeDetails.code;
+  if (safeDetails?.progress) error.progress = safeDetails.progress;
+  if (safeDetails?.cleanupEvidence) error.cleanupEvidence = safeDetails.cleanupEvidence;
+  if (safeDetails?.stack) error.stack = safeDetails.stack;
   return error;
+}
+
+function serializeOperationError(value) {
+  if (!value || typeof value !== "object") return null;
+  const progress = serializeOperationProgress(value.progress);
+  const cleanupEvidence = serializeCleanupEvidence(value.cleanupEvidence);
+  return {
+    name: typeof value.name === "string" ? value.name : "Error",
+    message: typeof value.message === "string" ? value.message : String(value),
+    stack: typeof value.stack === "string" ? value.stack : null,
+    ...(typeof value.code === "string" ? { code: value.code } : {}),
+    ...(progress ? { progress } : {}),
+    ...(cleanupEvidence ? { cleanupEvidence } : {})
+  };
 }
 
 function serializeOperationProgress(value, expectedOperationId = null) {
@@ -837,42 +826,68 @@ function serializeOperationProgress(value, expectedOperationId = null) {
 
 function serializeCleanupEvidence(value) {
   if (!value || typeof value !== "object") return null;
-  const close = value.close;
-  const safeClose = close && typeof close === "object"
-    ? {
-        ok: close.ok === true,
-        ...(close.value && typeof close.value === "object" ? {
-          value: {
-            dataDisposition: close.value.dataDisposition === "ERASED" ? "ERASED" : "ERASURE_UNCONFIRMED",
-            cleanupDisposition: close.value.cleanupDisposition === "COMPLETE" ? "COMPLETE" : "DEFERRED"
-          }
-        } : {}),
-        ...(close.problem && typeof close.problem === "object" ? {
-          problem: {
-            code: typeof close.problem.code === "string" ? close.problem.code : "CLOSE_FAILED",
-            message: typeof close.problem.message === "string" ? close.problem.message : "Event History cleanup failed."
-          }
-        } : {})
-      }
-    : null;
+  const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+  const requiredFields = [
+    "adapter", "phase", "sample", "eventCount", "retained", "sessionId", "databaseName", "close",
+    "disposeError", "rootRemoved", "frameYielded", "gcPasses", "status", "failure"
+  ];
+  if (!requiredFields.every((field) => has(value, field))) return null;
+  if (value.adapter !== "indexeddb" && value.adapter !== "memory") return null;
+  if (value.phase !== "warmup" && value.phase !== "cleanup") return null;
+  if (value.sample !== null && (!Number.isInteger(value.sample) || value.sample < 1 || value.sample > 3)) return null;
+  if (!Number.isSafeInteger(value.eventCount) || value.eventCount < 0) return null;
+  if (value.retained !== null && (!Number.isSafeInteger(value.retained) || value.retained < 0)) return null;
+  if (value.sessionId !== null && typeof value.sessionId !== "string") return null;
+  if (value.databaseName !== null && typeof value.databaseName !== "string") return null;
+  if (value.disposeError !== null && typeof value.disposeError !== "string") return null;
+  if (typeof value.rootRemoved !== "boolean" || typeof value.frameYielded !== "boolean") return null;
+  if (value.gcPasses !== null && value.gcPasses !== 3) return null;
+  if (value.status !== "PASS" && value.status !== "FAIL") return null;
+
+  let safeClose = null;
+  if (value.close !== null) {
+    const close = value.close;
+    if (!close || typeof close !== "object" || typeof close.ok !== "boolean") return null;
+    safeClose = { ok: close.ok };
+    if (has(close, "value")) {
+      if (!close.value || typeof close.value !== "object"
+        || (close.value.dataDisposition !== "ERASED" && close.value.dataDisposition !== "ERASURE_UNCONFIRMED")
+        || (close.value.cleanupDisposition !== "COMPLETE" && close.value.cleanupDisposition !== "DEFERRED")) return null;
+      safeClose.value = {
+        dataDisposition: close.value.dataDisposition,
+        cleanupDisposition: close.value.cleanupDisposition
+      };
+    }
+    if (has(close, "problem")) {
+      if (!close.problem || typeof close.problem !== "object"
+        || typeof close.problem.code !== "string" || typeof close.problem.message !== "string") return null;
+      safeClose.problem = { code: close.problem.code, message: close.problem.message };
+    }
+    if (close.ok === true && !has(close, "value")) return null;
+    if (close.ok === false && !has(close, "problem")) return null;
+  }
+
+  let failure = null;
+  if (value.failure !== null) {
+    if (!value.failure || typeof value.failure !== "object"
+      || typeof value.failure.code !== "string" || typeof value.failure.message !== "string") return null;
+    failure = { code: value.failure.code, message: value.failure.message };
+  }
   return {
-    adapter: value.adapter === "indexeddb" ? "indexeddb" : "memory",
-    phase: value.phase === "warmup" ? "warmup" : "cleanup",
-    sample: value.sample === null || (Number.isInteger(value.sample) && value.sample >= 1 && value.sample <= 3) ? value.sample : null,
-    eventCount: Number.isSafeInteger(value.eventCount) ? value.eventCount : 0,
-    retained: value.retained === null || Number.isSafeInteger(value.retained) ? value.retained : null,
-    sessionId: typeof value.sessionId === "string" ? value.sessionId : null,
-    databaseName: typeof value.databaseName === "string" ? value.databaseName : null,
+    adapter: value.adapter,
+    phase: value.phase,
+    sample: value.sample,
+    eventCount: value.eventCount,
+    retained: value.retained,
+    sessionId: value.sessionId,
+    databaseName: value.databaseName,
     close: safeClose,
-    disposeError: typeof value.disposeError === "string" ? value.disposeError : null,
-    rootRemoved: value.rootRemoved === true,
-    frameYielded: value.frameYielded === true,
-    gcPasses: value.gcPasses === 3 ? 3 : null,
-    status: value.status === "PASS" ? "PASS" : "FAIL",
-    failure: value.failure && typeof value.failure === "object" ? {
-      code: typeof value.failure.code === "string" ? value.failure.code : "HEAP_MEASUREMENT_FAILED",
-      message: typeof value.failure.message === "string" ? value.failure.message : "Heap measurement failed."
-    } : null
+    disposeError: value.disposeError,
+    rootRemoved: value.rootRemoved,
+    frameYielded: value.frameYielded,
+    gcPasses: value.gcPasses,
+    status: value.status,
+    failure
   };
 }
 

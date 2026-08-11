@@ -211,6 +211,26 @@ function strictProgress(operationId: string | null, overrides: Record<string, un
   };
 }
 
+function strictCleanupEvidence(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    adapter: "indexeddb",
+    phase: "cleanup",
+    sample: 2,
+    eventCount: 10_000,
+    retained: 10_000,
+    sessionId: "cleanup-session",
+    databaseName: "cleanup-database",
+    close: { ok: false, problem: { code: "CLOSE_FAILED", message: "close failed" } },
+    disposeError: null,
+    rootRemoved: true,
+    frameYielded: true,
+    gcPasses: null,
+    status: "FAIL",
+    failure: { code: "CLOSE_FAILED", message: "close failed" },
+    ...overrides
+  };
+}
+
 class GeneratedRejectionCdp {
   readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   private readonly context = { performance: { now: () => 0 } };
@@ -656,6 +676,74 @@ describe("Event History performance runner page operation", () => {
 
     expect(rejected).toMatchObject({ message: "invalid generated progress" });
     expect(rejected).not.toHaveProperty("progress");
+  });
+
+  it("preserves and whitelists valid cleanup evidence for normal and rejected statuses", async () => {
+    const validEvidence = strictCleanupEvidence({ extraField: "drop me" });
+    const expectedEvidence = strictCleanupEvidence();
+    const normalStatuses: Array<Record<string, unknown>> = [];
+    const normalCdp = new FakeCdp([
+      evaluated({ operationId: "normal-cleanup", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "normal-cleanup", state: "resolved", heartbeat: 1, error: { name: "Error", message: "normal", cleanupEvidence: validEvidence }, result: true }),
+      evaluated(true)
+    ]);
+    await expect(runPageOperation(normalCdp, "window.run()", {
+      operationId: "normal-cleanup",
+      onHeartbeat: (status) => normalStatuses.push(status as Record<string, unknown>)
+    })).resolves.toBe(true);
+
+    const rejectedCdp = new FakeCdp([
+      evaluated({ operationId: "rejected-cleanup", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "rejected-cleanup", state: "rejected", heartbeat: 1, error: { name: "Error", message: "rejected", cleanupEvidence: validEvidence } }),
+      evaluated(true)
+    ]);
+    const rejected = await runPageOperation(rejectedCdp, "window.run()", { operationId: "rejected-cleanup" })
+      .then(() => null, (error) => error);
+
+    expect(normalStatuses.at(-1)).toMatchObject({ error: { cleanupEvidence: expectedEvidence } });
+    expect(rejected).toMatchObject({ cleanupEvidence: expectedEvidence });
+  });
+
+  it.each([
+    ["negative eventCount", { eventCount: -1 }],
+    ["invalid adapter", { adapter: "unknown" }],
+    ["invalid close problem", { close: { ok: false, problem: { code: "CLOSE_FAILED" } } }],
+    ["invalid gc passes", { gcPasses: 2 }]
+  ] as const)("drops %s cleanup evidence for normal and rejected statuses", async (_name, override) => {
+    const invalidEvidence = strictCleanupEvidence(override);
+    const normalStatuses: Array<Record<string, unknown>> = [];
+    const normalCdp = new FakeCdp([
+      evaluated({ operationId: "normal-invalid-cleanup", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "normal-invalid-cleanup", state: "resolved", heartbeat: 1, error: { name: "Error", message: "normal", cleanupEvidence: invalidEvidence }, result: true }),
+      evaluated(true)
+    ]);
+    await expect(runPageOperation(normalCdp, "window.run()", {
+      operationId: "normal-invalid-cleanup",
+      onHeartbeat: (status) => normalStatuses.push(status as Record<string, unknown>)
+    })).resolves.toBe(true);
+
+    const rejectedCdp = new FakeCdp([
+      evaluated({ operationId: "rejected-invalid-cleanup", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "rejected-invalid-cleanup", state: "rejected", heartbeat: 1, error: { name: "Error", message: "rejected", cleanupEvidence: invalidEvidence } }),
+      evaluated(true)
+    ]);
+    const rejected = await runPageOperation(rejectedCdp, "window.run()", { operationId: "rejected-invalid-cleanup" })
+      .then(() => null, (error) => error);
+
+    expect(normalStatuses.at(-1)).not.toHaveProperty("error.cleanupEvidence");
+    expect(rejected).not.toHaveProperty("cleanupEvidence");
+  });
+
+  it("drops malformed cleanup evidence in the generated page rejection serializer", async () => {
+    const cdp = new GeneratedRejectionCdp();
+    const invalidEvidence = strictCleanupEvidence({ eventCount: -1 });
+    const expression = `Promise.reject(Object.assign(new Error("generated cleanup failure"), { cleanupEvidence: ${JSON.stringify(invalidEvidence)} }))`;
+
+    const rejected = await runPageOperation(cdp, expression, { operationId: "generated-cleanup" })
+      .then(() => null, (error) => error);
+
+    expect(rejected).toMatchObject({ message: "generated cleanup failure" });
+    expect(rejected).not.toHaveProperty("cleanupEvidence");
   });
 
   it.each([
