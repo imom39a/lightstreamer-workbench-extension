@@ -556,7 +556,8 @@ function pollOperationExpression(operationId, logicalPollToken) {
       return { operationId: ${JSON.stringify(operationId)}, state: "missing", heartbeat: 0 };
     }
     const logicalPollToken = ${JSON.stringify(logicalPollToken)};
-    if (operation.lastPollToken !== logicalPollToken) {
+    if (operation.state === "pending"
+      && (operation.lastPollToken === null || logicalPollToken > operation.lastPollToken)) {
       operation.heartbeat += 1;
       operation.lastHeartbeatAt = performance.now();
       operation.lastPollToken = logicalPollToken;
