@@ -416,31 +416,72 @@ export async function bestEffortHeapPreparationCleanup(input: Readonly<{
   closeHistory: () => Promise<unknown>;
   removeRoot: () => void;
   yieldFrame: () => Promise<void>;
+  progress?: () => HarnessProgressInput;
 }>): Promise<HeapPreparationCleanupEvidence> {
   let disposeError: string | null = null;
   let close: unknown = null;
   let rootRemoved = false;
   let frameYielded = false;
+  const cleanupFailures: string[] = [];
+  const cleanupProgress = (): HarnessProgressInput => input.progress?.() ?? {
+    operationId: null,
+    phase: "heap",
+    stage: `${input.phase}-cleanup`,
+    substage: `${input.phase}-cleanup`,
+    sample: input.phase === "warmup" ? null : input.sample,
+    trigger: null,
+    scenario: null,
+    cellIndex: null,
+    cellTotal: 36,
+    adapter: input.adapter,
+    workload: null,
+    shape: null,
+    workloadPhase: null,
+    offered: input.eventCount,
+    settled: null,
+    query: null
+  };
   try {
     input.disposePanel();
   } catch (error) {
     disposeError = error instanceof Error ? error.message : String(error);
+    cleanupFailures.push(`disposePanel: ${disposeError}`);
   }
   try {
-    close = await input.closeHistory();
-  } catch {
-    close = null;
+    close = await withStageDeadline(
+      input.closeHistory(),
+      `${input.phase}-cleanup-close`,
+      STAGE_DEADLINES_MS.close,
+      cleanupProgress
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    close = {
+      ok: false,
+      problem: {
+        code: error instanceof HarnessStageTimeout ? "CLEANUP_CLOSE_TIMEOUT" : "CLEANUP_CLOSE_FAILED",
+        message
+      }
+    };
+    cleanupFailures.push(`closeHistory: ${message}`);
   }
   try {
     input.removeRoot();
     rootRemoved = true;
-  } catch {
+  } catch (error) {
+    cleanupFailures.push(`removeRoot: ${error instanceof Error ? error.message : String(error)}`);
     rootRemoved = false;
   }
   try {
-    await input.yieldFrame();
+    await withStageDeadline(
+      input.yieldFrame(),
+      `${input.phase}-cleanup-frame`,
+      STAGE_DEADLINES_MS.frame,
+      cleanupProgress
+    );
     frameYielded = true;
-  } catch {
+  } catch (error) {
+    cleanupFailures.push(`yieldFrame: ${error instanceof Error ? error.message : String(error)}`);
     frameYielded = false;
   }
   return {
@@ -459,7 +500,10 @@ export async function bestEffortHeapPreparationCleanup(input: Readonly<{
     status: "FAIL" as const,
     failure: {
       code: "PREPARE_FAILED",
-      message: input.originalError instanceof Error ? input.originalError.message : String(input.originalError)
+      message: [
+        input.originalError instanceof Error ? input.originalError.message : String(input.originalError),
+        ...cleanupFailures
+      ].join("; ")
     }
   };
 }
@@ -628,6 +672,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     if (retainedHeapSession) throw new Error("A retained heap session is already active; cleanup must complete before the next sample.");
     const runId = `heap-${adapter}-${phase}-${sample ?? "warmup"}-${retainedHeapSequence += 1}`;
     const operationId = currentHarnessOperationId();
+    const heapGuard = createHarnessStageGuard();
     const databaseName = adapter === "indexeddb" ? authoritativeEventDatabaseName(runId) : null;
     const root = document.createElement("main");
     let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
@@ -673,9 +718,10 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         events,
         `${phase}-heap-receipts`,
         phase === "warmup" ? STAGE_DEADLINES_MS.heapWarmupReceipts : STAGE_DEADLINES_MS.heapSampleReceipts,
-        heapProgress
+        heapProgress,
+        heapGuard
       );
-      await waitForBoundedFrame(`${phase}-frame`, heapProgress);
+      await waitForBoundedFrame(`${phase}-frame`, heapProgress, heapGuard);
       retainedHeapSession = { operationId, adapter, count, retained: events.length, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
       return { adapter, count, retained: events.length, sessionId: runId, databaseName, phase, sample };
     } catch (error) {
@@ -708,7 +754,25 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           offered: count,
           settled: null,
           query: null
-        }))
+        })),
+        progress: () => ({
+          operationId,
+          phase: "heap",
+          stage: `${phase}-cleanup`,
+          substage: `${phase}-cleanup`,
+          sample,
+          trigger: null,
+          scenario: null,
+          cellIndex: null,
+          cellTotal: 36,
+          adapter,
+          workload: null,
+          shape: null,
+          workloadPhase: null,
+          offered: count,
+          settled: null,
+          query: null
+        })
       });
       Object.assign(originalError, { code: "PREPARE_FAILED", cleanupEvidence });
       throw originalError;
@@ -1676,16 +1740,17 @@ export async function offerBurst(
   return receipts;
 }
 
-async function settleOffers(
+export async function settleOffers(
   history: EventHistory,
   events: readonly EvidenceCandidate[],
   stage: string,
   timeoutMs: number,
-  progress: (settled: number) => HarnessProgressInput
+  progress: (settled: number) => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
 ): Promise<void> {
   const receipts = events.map((event) => history.offer(event));
   if (receipts.some((receipt) => receipt.intake !== "QUEUED")) throw new Error("Retained heap offer was refused.");
-  await settleReceiptStage(receipts.map((receipt) => receipt.settled), stage, timeoutMs, progress);
+  await settleReceiptStage(receipts.map((receipt) => receipt.settled), stage, timeoutMs, progress, guard);
 }
 
 async function mountProductionPanel(

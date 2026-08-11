@@ -16,6 +16,7 @@ import {
   HarnessStageTimeout,
   measureQuery,
   offerSustained,
+  settleOffers,
   settleReceiptStage,
   publishHarnessProgress,
   waitForBoundedFrame,
@@ -325,6 +326,121 @@ describe("Event History performance checkpoint workload", () => {
       rootRemoved: true,
       frameYielded: true
     });
+  });
+
+  it("bounds close cleanup and still removes the root and yields a frame", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    try {
+      const cleanup = bestEffortHeapPreparationCleanup({
+        adapter: "indexeddb",
+        eventCount: 10_000,
+        phase: "sample",
+        sample: 2,
+        sessionId: "hung-close-session",
+        databaseName: "hung-close-database",
+        originalError: new Error("prepare failed"),
+        disposePanel: () => { calls.push("dispose"); },
+        closeHistory: () => {
+          calls.push("close");
+          return new Promise<never>(() => undefined);
+        },
+        removeRoot: () => { calls.push("remove"); },
+        yieldFrame: async () => { calls.push("yield"); }
+      });
+      const completed = expect(cleanup).resolves.toMatchObject({
+        close: { ok: false, problem: { code: "CLEANUP_CLOSE_TIMEOUT" } },
+        rootRemoved: true,
+        frameYielded: true,
+        failure: { message: expect.stringContaining("closeHistory:") }
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await completed;
+      expect(calls).toEqual(["dispose", "close", "remove", "yield"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a failed heap cleanup frame independently after close completes", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    try {
+      const cleanup = bestEffortHeapPreparationCleanup({
+        adapter: "memory",
+        eventCount: 5_000,
+        phase: "warmup",
+        sample: null,
+        sessionId: "hung-frame-session",
+        databaseName: null,
+        originalError: new Error("warmup failed"),
+        disposePanel: () => { calls.push("dispose"); },
+        closeHistory: async () => { calls.push("close"); return { ok: true }; },
+        removeRoot: () => { calls.push("remove"); },
+        yieldFrame: async () => {
+          calls.push("yield");
+          await new Promise<never>(() => undefined);
+        }
+      });
+      const completed = expect(cleanup).resolves.toMatchObject({
+        close: { ok: true },
+        rootRemoved: true,
+        frameYielded: false,
+        failure: { message: expect.stringContaining("yieldFrame:") }
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await completed;
+      expect(calls).toEqual(["dispose", "close", "remove", "yield"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("suppresses late heap receipt progress after settleOffers timeout", async () => {
+    vi.useFakeTimers();
+    let resolveFirst!: (value: unknown) => void;
+    let resolveSecond!: (value: unknown) => void;
+    const guard = createHarnessStageGuard();
+    const observed: number[] = [];
+    const events = [
+      createEventHistoryWorkloadEvent("small-lifecycle", 0, "late-heap"),
+      createEventHistoryWorkloadEvent("small-lifecycle", 1, "late-heap")
+    ];
+    const history = {
+      offer: vi.fn((event: { id: string }) => ({
+        intake: "QUEUED" as const,
+        settled: new Promise((resolve) => {
+          if (event.id === events[0]!.id) resolveFirst = resolve;
+          else resolveSecond = resolve;
+        })
+      }))
+    } as unknown as EventHistory;
+    try {
+      const pending = settleOffers(
+        history,
+        events,
+        "sample-heap-receipts",
+        100,
+        (settled) => {
+          observed.push(settled);
+          return progress("sample-heap-receipts");
+        },
+        guard
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: "HarnessStageTimeout",
+        stage: "sample-heap-receipts"
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+      resolveFirst({ ok: true });
+      resolveSecond({ ok: true });
+      await Promise.resolve();
+      expect(observed).toEqual([0]);
+      expect(guard.isActive()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a failed warm-up in the warm-up evidence slot", async () => {
