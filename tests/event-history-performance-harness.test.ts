@@ -6,6 +6,7 @@ import {
 } from "../src/extension/panel/topology-checkpoint-evidence-codec";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 import {
+  attributeLongTasks,
   createPendingTelemetryTracker,
   createStagedTopologyCheckpointCandidate
 } from "../benchmarks/event-history-performance-harness";
@@ -13,6 +14,59 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  it("attributes every Long Task by deterministic greatest positive phase overlap", () => {
+    const intervals = [
+      { phase: "capture" as const, start: 0, end: 10 },
+      { phase: "commit" as const, start: 10, end: 30 },
+      { phase: "paint" as const, start: 30, end: 40 },
+      { phase: "query" as const, start: 40, end: 50 }
+    ];
+    const entries = [
+      { startTime: 2, duration: 4 },
+      { startTime: 8, duration: 14 },
+      { startTime: 20, duration: 15 },
+      { startTime: 60, duration: 5 },
+      { startTime: 10, duration: 0 }
+    ] as PerformanceEntry[];
+
+    const result = attributeLongTasks(entries, intervals);
+
+    expect(result.capture).toEqual([4]);
+    expect(result.commit).toEqual([14, 15]);
+    expect(result.paint).toEqual([]);
+    expect(result.query).toEqual([]);
+    expect(result.unattributed).toBe(2);
+    expect(result.unattributedReasons).toEqual([
+      { reason: "no-overlap", startTime: 60, duration: 5 },
+      { reason: "no-overlap", startTime: 10, duration: 0 }
+    ]);
+    expect(
+      result.capture.length + result.commit.length + result.paint.length + result.query.length
+      + result.unattributedReasons.length
+    ).toBe(entries.length);
+  });
+
+  it("keeps equal overlap ties explicitly unattributed with deterministic phase evidence", () => {
+    const result = attributeLongTasks(
+      [{ startTime: 5, duration: 10 }] as PerformanceEntry[],
+      [
+        { phase: "capture" as const, start: 0, end: 10 },
+        { phase: "commit" as const, start: 10, end: 20 }
+      ]
+    );
+
+    expect(result.capture).toEqual([]);
+    expect(result.commit).toEqual([]);
+    expect(result.unattributed).toBe(1);
+    expect(result.unattributedReasons).toEqual([{
+      reason: "ambiguous",
+      overlaps: [
+        { phase: "capture", duration: 5 },
+        { phase: "commit", duration: 5 }
+      ]
+    }]);
+  });
+
   it("keeps pending telemetry exact across synchronous, asynchronous, and refused receipts without rescanning offers", () => {
     let now = 100;
     const tracker = createPendingTelemetryTracker(() => now);

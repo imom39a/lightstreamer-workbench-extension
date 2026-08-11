@@ -275,6 +275,33 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.failures.some((failure) => failure.includes("Long Task telemetry"))).toBe(true);
   });
 
+  it("keeps explicitly diagnosed ambiguity fail-closed", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry, index) => index === 0
+        ? {
+            ...entry,
+            longTasks: {
+              ...entry.longTasks,
+              unattributed: 1,
+              unattributedReasons: [{
+                reason: "ambiguous",
+                overlaps: [
+                  { phase: "capture", duration: 5 },
+                  { phase: "commit", duration: 5 }
+                ]
+              }]
+            }
+          }
+        : entry)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("unattributed"))).toBe(true);
+  });
+
   it("fails measured IndexedDB amplification that is not internally coherent", () => {
     const baseline = report();
     const current = report({

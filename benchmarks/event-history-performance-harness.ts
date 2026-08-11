@@ -167,6 +167,20 @@ type StorageProbe = Readonly<{
 type PhaseName = "capture" | "commit" | "paint" | "query";
 type PhaseInterval = Readonly<{ phase: PhaseName; start: number; end: number }>;
 
+export type UnattributedLongTaskReason = Readonly<
+  | { reason: "no-overlap"; startTime: number; duration: number }
+  | { reason: "ambiguous"; overlaps: readonly Readonly<{ phase: PhaseName; duration: number }>[] }
+>;
+
+export type LongTaskAttribution = Readonly<{
+  capture: readonly number[];
+  commit: readonly number[];
+  paint: readonly number[];
+  query: readonly number[];
+  unattributed: number;
+  unattributedReasons: readonly UnattributedLongTaskReason[];
+}>;
+
 declare global {
   interface Window {
     __LSEW_EVENT_HISTORY_PERFORMANCE__?: {
@@ -930,25 +944,39 @@ function emptyStorageTelemetry(): StorageTelemetry {
   };
 }
 
-function attributeLongTasks(
+export function attributeLongTasks(
   entries: readonly PerformanceEntry[],
   intervals: readonly PhaseInterval[]
-): { capture: number[]; commit: number[]; paint: number[]; query: number[]; unattributed: number } {
+): LongTaskAttribution {
   const attributed: { capture: number[]; commit: number[]; paint: number[]; query: number[] } = {
     capture: [], commit: [], paint: [], query: []
   };
   let unattributed = 0;
+  const unattributedReasons: UnattributedLongTaskReason[] = [];
   for (const entry of entries) {
     const start = entry.startTime;
     const end = start + entry.duration;
-    const matches = intervals.filter((interval) => start < interval.end && end > interval.start);
-    if (matches.length !== 1) {
+    const overlaps = intervals
+      .map((interval) => ({
+        phase: interval.phase,
+        duration: Math.max(0, Math.min(end, interval.end) - Math.max(start, interval.start))
+      }))
+      .filter(({ duration }) => duration > 0);
+    if (overlaps.length === 0) {
       unattributed += 1;
+      unattributedReasons.push({ reason: "no-overlap", startTime: start, duration: entry.duration });
       continue;
     }
-    attributed[matches[0]!.phase].push(entry.duration);
+    const greatestOverlap = Math.max(...overlaps.map(({ duration }) => duration));
+    const greatest = overlaps.filter(({ duration }) => duration === greatestOverlap);
+    if (greatest.length !== 1) {
+      unattributed += 1;
+      unattributedReasons.push({ reason: "ambiguous", overlaps: greatest });
+      continue;
+    }
+    attributed[greatest[0]!.phase].push(entry.duration);
   }
-  return { ...attributed, unattributed };
+  return { ...attributed, unattributed, unattributedReasons };
 }
 
 function storageTelemetryForCell(base: StorageTelemetry): StorageTelemetry {
