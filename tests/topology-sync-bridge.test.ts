@@ -179,7 +179,12 @@ describe("topology checkpoint bridge", () => {
       "page-a",
       "client-a"
     ]);
-    expect(coordinator.status()).toEqual({ state: "complete", retry: false, coverage });
+    expect(coordinator.status()).toEqual({
+      state: "partial",
+      retry: true,
+      reason: "getter-missing",
+      coverage
+    });
     bridge.disconnect();
   });
 });

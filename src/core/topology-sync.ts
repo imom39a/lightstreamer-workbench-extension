@@ -207,9 +207,16 @@ export function createTopologySyncCoordinator<T>(
     if (!stage || !sameMetadata(stage.metadata, frame)) {
       return reject("unknown-or-conflicting-complete");
     }
-    if (frame.reason !== undefined) {
-      const reason = frame.reason;
+    const partialReason =
+      frame.reason ?? (frame.coverage.status === "partial" ? frame.coverage.reason : undefined);
+    const isPartialCheckpoint =
+      partialReason !== undefined || frame.coverage.status === "partial";
+
+    if (isPartialCheckpoint) {
       const partialStage = stage;
+      if (!partialStage) {
+        return reject("unknown-or-conflicting-complete");
+      }
       stage = undefined;
       const observations = [...partialStage.live.values()]
         .map(({ observation }) => observation)
@@ -226,9 +233,41 @@ export function createTopologySyncCoordinator<T>(
         };
         return { accepted: false, reason: liveError };
       }
+
+      if (partialStage.chunks.size !== partialStage.metadata.chunkCount) {
+        return abortStage("missing-chunks");
+      }
+      const partialRecords = [...partialStage.chunks.entries()]
+        .sort(([left], [right]) => left - right)
+        .flatMap(([, records]) => records);
+      if (partialRecords.length !== partialStage.metadata.recordCount) {
+        return abortStage("record-count-mismatch");
+      }
+      if (!isValidAbsoluteRecordSet(partialRecords, activePageEpoch, partialStage.metadata.cutoffCaptureSequence)) {
+        return abortStage("invalid-record-set");
+      }
+      let replacement: T;
+      try {
+        replacement = adapter.hydrate(activePageEpoch, partialRecords);
+        for (const observation of observations) {
+          replacement = adapter.applyLive(replacement, observation);
+        }
+      } catch {
+        return abortStage("invalid-record-set");
+      }
+
+      current = replacement;
+      acceptedCutoff =
+        acceptedCutoff === null
+          ? partialStage.metadata.cutoffCaptureSequence
+          : Math.max(acceptedCutoff, partialStage.metadata.cutoffCaptureSequence);
+      appliedLive.clear();
+      for (const [sequence, entry] of partialStage.live) {
+        appliedLive.set(sequence, entry.fingerprint);
+      }
       const candidate = buildTopologyCheckpointCandidate(
         frame,
-        stagedRecords(partialStage),
+        partialRecords,
         observations
       );
       completed.set(frame.syncId, {
@@ -240,13 +279,14 @@ export function createTopologySyncCoordinator<T>(
       syncStatus = {
         state: "partial",
         retry: true,
-        reason,
+        ...(partialReason !== undefined ? { reason: partialReason } : {}),
         ...(frame.coverage.status === "partial"
           ? { coverage: cloneCoverage(frame.coverage) }
           : {})
       };
       return { accepted: true, candidate };
     }
+
     if (stage.chunks.size !== stage.metadata.chunkCount) {
       return abortStage("missing-chunks");
     }

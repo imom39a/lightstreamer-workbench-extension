@@ -215,11 +215,20 @@ describe("bounded atomic topology synchronization", () => {
       expect(coordinator.snapshot().records.map((entry) => entry.id)).toContain(
         "semantic-partial"
       );
-      expect(coordinator.status()).toEqual({
-        state: "complete",
-        retry: false,
-        coverage
-      });
+      if (coverage.reason) {
+        expect(coordinator.status()).toEqual({
+          state: "partial",
+          retry: true,
+          reason: coverage.reason,
+          coverage
+        });
+      } else {
+        expect(coordinator.status()).toEqual({
+          state: "partial",
+          retry: true,
+          coverage
+        });
+      }
     }
   });
 
@@ -245,32 +254,23 @@ describe("bounded atomic topology synchronization", () => {
     };
     coordinator.begin(partialBegin);
     coordinator.applyLive(live("partial-tail", 12));
-    const partialCompleteResult = coordinator.complete(partialComplete);
-    expect(partialCompleteResult).toMatchObject({ accepted: true });
-    const partialCandidate = assertCheckpointCandidate(partialCompleteResult);
-    expect(partialCandidate.checkpoint).toMatchObject({
-      pageEpoch: "page-a",
-      cutoffCaptureSequence: 10,
-      coverage: {
-        status: "partial",
-        getters: {},
-        reason: "limit-exceeded"
-      },
-      reason: "limit-exceeded"
+    expect(coordinator.complete(partialComplete)).toMatchObject({
+      accepted: false,
+      reason: "missing-chunks"
     });
     expect(coordinator.status()).toMatchObject({
       state: "partial",
-      retry: true,
-      coverage: partialBegin.coverage
+      retry: true
     });
     expect(coordinator.snapshot().records).toEqual([]);
     expect(coordinator.snapshot().observations.map((entry) => entry.subscription?.id)).toEqual([
       "confirmed",
       "partial-tail"
     ]);
-    const duplicatePartial = coordinator.complete(partialComplete);
-    expect(duplicatePartial).toMatchObject({ accepted: true, duplicate: true });
-    assertNoCheckpointCandidate(duplicatePartial);
+    expect(coordinator.complete(partialComplete)).toMatchObject({
+      accepted: false,
+      reason: "unknown-or-conflicting-complete"
+    });
     expect(coordinator.snapshot().observations).toHaveLength(2);
 
     const conflict = frames([record("one")], "conflict");

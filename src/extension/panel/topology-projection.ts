@@ -1,11 +1,24 @@
 import {
   TOPOLOGY_SYNC_BEGIN,
   TOPOLOGY_SYNC_CHUNK,
+  TOPOLOGY_SYNC_COMPLETE,
+  TOPOLOGY_SYNC_LIMITS,
+  TOPOLOGY_SYNC_VERSION,
+  type TopologyAbsoluteRecord,
   type TopologyCoverage,
+  type TopologyCoverageReason,
+  type TopologyGetterCoverage,
   type TopologyObservation,
-  type TopologySyncFrame
+  type TopologySyncChunkFrame,
+  type TopologySyncFrame,
+  type TopologySyncCompleteFrame,
+  type TopologySyncMetadata
 } from "../../bridge/messages";
 import { type LightstreamerEventEnvelope } from "../../core/event-envelope";
+import {
+  type CommittedEvidence,
+  type TopologyCheckpointEvidenceCandidate
+} from "../../core/event-history-authoritative";
 import {
   createTopologyStateIndex,
   type TopologyClient,
@@ -47,6 +60,9 @@ export type TopologyProjection = {
   ingestHistory(event: LightstreamerEventEnvelope): boolean;
   replaceHistory(events: readonly LightstreamerEventEnvelope[]): void;
   applySyncFrame(frame: TopologySyncFrame): TopologyProjectionResult;
+  ingestCommittedEvidence(
+    evidence: CommittedEvidence | readonly CommittedEvidence[]
+  ): TopologyProjectionResult;
   snapshot(): TopologyState;
   scopeStructureRevision(): number;
   sensitiveStructureRevision(): number;
@@ -59,11 +75,14 @@ export type TopologyProjection = {
 const MAX_RETAINED_SEMANTIC_EVENTS = 4_096;
 const MAX_RETIRED_PAGE_EPOCHS = 16;
 
+const DEFAULT_COVERAGE: TopologyCoverage = { status: "complete", getters: {} };
+
 /** Owns legacy reconstruction, semantic live projection, checkpoint sync, and history merging. */
 export function createTopologyProjection(): TopologyProjection {
   const legacyIndex = createTopologyStateIndex();
   const legacyLiveFallbackIndex = createTopologyStateIndex();
   const semanticEvents = new Map<string, LightstreamerEventEnvelope>();
+  const retainedSemanticEvents = new Map<string, LightstreamerEventEnvelope>();
   const syncAdapter = createPanelTopologySyncAdapter((observation) => {
     const key = semanticEventKey(observation);
     const event = semanticEvents.get(key);
@@ -106,6 +125,7 @@ export function createTopologyProjection(): TopologyProjection {
       }
       syncCoordinator.retirePageEpoch(pageEpoch);
       semanticEvents.clear();
+      retainedSemanticEvents.clear();
       retainedSemanticEventIds.clear();
     }
     semanticActive = true;
@@ -135,7 +155,10 @@ export function createTopologyProjection(): TopologyProjection {
     coverage = observation.coverage;
     retainedSemanticEventIds.add(event.id);
     trimSet(retainedSemanticEventIds, MAX_RETAINED_SEMANTIC_EVENTS);
-    semanticEvents.set(semanticEventKey(observation), event);
+    const key = semanticEventKey(observation);
+    retainedSemanticEvents.set(key, event);
+    trimMap(retainedSemanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
+    semanticEvents.set(key, event);
     trimMap(semanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
     syncCoordinator.applyLive(observation);
     invalidateMaterializedState(scopeStructureMayHaveChanged);
@@ -158,6 +181,134 @@ export function createTopologyProjection(): TopologyProjection {
     }
     invalidateMaterializedState(scopeStructureMayHaveChanged);
     return belongsToCurrentPage;
+  }
+
+  function ingestCommittedTopologyEvent(
+    event: LightstreamerEventEnvelope
+  ): TopologyProjectionResult {
+    const captureResult = ingestCapture(event);
+    if (captureResult.accepted) {
+      legacyIndex.ingest(event);
+      return captureResult;
+    }
+
+    const scopeStructureMayHaveChanged = eventMayChangeScopeStructure(
+      event,
+      materializedState
+    );
+    const belongsToCurrentPage = !staleSemanticEventIds.delete(event.id);
+    const wasSemanticCapture = retainedSemanticEventIds.delete(event.id);
+    legacyIndex.ingest(event);
+    if (belongsToCurrentPage && !wasSemanticCapture) {
+      legacyLiveFallbackIndex.ingest(event);
+    }
+    invalidateMaterializedState(scopeStructureMayHaveChanged);
+    return captureResult;
+  }
+
+  function applyCommittedCheckpoint(
+    candidate: TopologyCheckpointEvidenceCandidate
+  ): TopologyProjectionResult {
+    const reconstructed = reconstructCheckpointFrames(candidate);
+    if (!reconstructed) {
+      return { accepted: false, resetConsumerState: false };
+    }
+
+    const retained = [...retainedSemanticEvents.values()]
+      .filter(
+        (event) =>
+          event.topology?.pageEpoch === reconstructed.metadata.pageEpoch &&
+          event.topology?.captureSequence > reconstructed.cutoffCaptureSequence
+      )
+      .sort(
+        (left, right) =>
+          (left.topology?.captureSequence ?? 0) - (right.topology?.captureSequence ?? 0)
+      );
+    const beginResult = applySyncFrame(reconstructed.begin);
+    if (!beginResult.accepted) return beginResult;
+    for (const chunk of reconstructed.chunks) {
+      const chunkResult = applySyncFrame(chunk);
+      if (!chunkResult.accepted) {
+        return chunkResult;
+      }
+    }
+    const completeResult = applySyncFrame(reconstructed.complete);
+    if (!completeResult.accepted) {
+      return completeResult;
+    }
+    dropCommittedEventsAtOrBelowCutoff(
+      reconstructed.metadata.pageEpoch,
+      reconstructed.cutoffCaptureSequence
+    );
+
+    for (const event of retained) {
+      if (event.topology) {
+        const key = semanticEventKey(event.topology);
+        semanticEvents.set(key, event);
+        const replayResult = syncCoordinator.applyLive(event.topology);
+        if (!replayResult.accepted) {
+          return { accepted: false, resetConsumerState: false };
+        }
+      }
+    }
+    return completeResult;
+  }
+
+  function dropCommittedEventsAtOrBelowCutoff(
+    pageEpoch: string,
+    cutoffCaptureSequence: number
+  ): void {
+    for (const [key, event] of semanticEvents) {
+      if (
+        event.topology?.pageEpoch === pageEpoch &&
+        (event.topology.captureSequence ?? -1) <= cutoffCaptureSequence
+      ) {
+        semanticEvents.delete(key);
+      }
+    }
+    for (const [key, event] of retainedSemanticEvents) {
+      if (
+        event.topology?.pageEpoch === pageEpoch &&
+        (event.topology.captureSequence ?? -1) <= cutoffCaptureSequence
+      ) {
+        retainedSemanticEvents.delete(key);
+      }
+    }
+  }
+
+  function ingestCommittedEvidence(
+    evidence: CommittedEvidence | readonly CommittedEvidence[]
+  ): TopologyProjectionResult {
+    const entries = Array.isArray(evidence) ? evidence : [evidence];
+    let resetConsumerState = false;
+
+    for (const entry of entries) {
+      const result = ingestCommittedEvidenceEntry(entry);
+      if (!result.accepted) {
+        return {
+          accepted: false,
+          resetConsumerState: resetConsumerState || result.resetConsumerState
+        };
+      }
+      resetConsumerState ||= result.resetConsumerState;
+    }
+
+    return { accepted: true, resetConsumerState };
+  }
+
+  function ingestCommittedEvidenceEntry(
+    entry: CommittedEvidence
+  ): TopologyProjectionResult {
+    if (isTopologyCheckpointEvidenceCandidate(entry.candidate)) {
+      return applyCommittedCheckpoint(entry.candidate);
+    }
+    if (entry.candidate.topology) {
+      return ingestCommittedTopologyEvent(entry.candidate);
+    }
+    return {
+      accepted: ingestHistory(entry.candidate as LightstreamerEventEnvelope),
+      resetConsumerState: false
+    };
   }
 
   function replaceHistory(events: readonly LightstreamerEventEnvelope[]): void {
@@ -312,6 +463,7 @@ export function createTopologyProjection(): TopologyProjection {
     semanticActive = false;
     coverage = null;
     semanticEvents.clear();
+    retainedSemanticEvents.clear();
     retiredPageEpochs.clear();
     preservedHistory.clear();
     staleSemanticEventIds.clear();
@@ -326,6 +478,7 @@ export function createTopologyProjection(): TopologyProjection {
     ingestHistory,
     replaceHistory,
     applySyncFrame,
+    ingestCommittedEvidence,
 
     snapshot() {
       return currentMaterializedState();
@@ -376,6 +529,202 @@ export function createTopologyProjection(): TopologyProjection {
       resetSemanticProjection();
     }
   };
+}
+
+type CommittedCheckpointMetadata = TopologySyncMetadata & {
+  chunkCount: number;
+  recordCount: number;
+};
+
+type ReconstructedCommittedCheckpoint = {
+  metadata: CommittedCheckpointMetadata;
+  begin: TopologySyncFrame;
+  chunks: TopologySyncChunkFrame[];
+  complete: TopologySyncCompleteFrame;
+  cutoffCaptureSequence: number;
+};
+
+function reconstructCheckpointFrames(
+  evidence: TopologyCheckpointEvidenceCandidate
+): ReconstructedCommittedCheckpoint | null {
+  const checkpoint = evidence.checkpoint;
+  if (!isRecord(checkpoint)) {
+    return null;
+  }
+
+  const pageEpoch =
+    stringValue(checkpoint.pageEpoch) ??
+    derivePageEpochFromRecords(checkpoint.records);
+  if (!pageEpoch) {
+    return null;
+  }
+
+  const records = parseAbsoluteRecords(checkpoint.records);
+  if (records === null) {
+    return null;
+  }
+
+  const syncId = stringValue(checkpoint.syncId) ?? evidence.id;
+  const panelSessionId = stringValue(checkpoint.panelSessionId) ?? `topology-checkpoint:${syncId}`;
+  const cutoffCaptureSequence =
+    intValue(checkpoint.cutoffCaptureSequence) ??
+    Math.max(0, ...records.map((record) => record.captureSequence));
+  if (cutoffCaptureSequence < 0) {
+    return null;
+  }
+
+  const coverage = parseCoverage(checkpoint.coverage) ?? DEFAULT_COVERAGE;
+  const chunkedRecords = chunkAbsoluteRecords(records);
+  const recordCount = records.length;
+  const chunkCount = chunkedRecords.length;
+
+  const metadata: CommittedCheckpointMetadata = {
+    version: TOPOLOGY_SYNC_VERSION,
+    syncId,
+    panelSessionId,
+    pageEpoch,
+    cutoffCaptureSequence,
+    chunkCount,
+    recordCount,
+    coverage
+  };
+
+  return {
+    metadata,
+    cutoffCaptureSequence,
+    begin: {
+      type: TOPOLOGY_SYNC_BEGIN,
+      ...metadata
+    },
+    chunks: chunkedRecords.map((records, chunkIndex) => ({
+      type: TOPOLOGY_SYNC_CHUNK,
+      ...metadata,
+      chunkIndex,
+      records
+    })),
+    complete: {
+      type: TOPOLOGY_SYNC_COMPLETE,
+      ...metadata
+    }
+  };
+}
+
+function chunkAbsoluteRecords(records: readonly TopologyAbsoluteRecord[]): TopologyAbsoluteRecord[][] {
+  if (records.length === 0) {
+    return [];
+  }
+  const chunks: TopologyAbsoluteRecord[][] = [];
+  for (let start = 0; start < records.length; start += TOPOLOGY_SYNC_LIMITS.maxRecords) {
+    chunks.push(records.slice(start, start + TOPOLOGY_SYNC_LIMITS.maxRecords));
+  }
+  return chunks;
+}
+
+function derivePageEpochFromRecords(records: unknown): string | null {
+  const entries =
+    records === undefined || !Array.isArray(records)
+      ? []
+      : records.filter(isRecord).filter((record) =>
+          typeof record.pageEpoch === "string" && record.pageEpoch.length > 0
+        )
+      ;
+  const firstEpoch = entries.at(0)?.pageEpoch;
+  return typeof firstEpoch === "string" && firstEpoch.length > 0 ? firstEpoch : null;
+}
+
+function parseAbsoluteRecords(
+  rawRecords: unknown
+): TopologyAbsoluteRecord[] | null {
+  if (!Array.isArray(rawRecords)) {
+    return null;
+  }
+  const records: TopologyAbsoluteRecord[] = [];
+  for (const rawRecord of rawRecords) {
+    if (!isTopologyAbsoluteRecord(rawRecord)) {
+      return null;
+    }
+    records.push(rawRecord);
+  }
+  return records;
+}
+
+function isTopologyAbsoluteRecord(
+  value: unknown
+): value is TopologyAbsoluteRecord {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.kind === "string" &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    typeof value.pageEpoch === "string" &&
+    value.pageEpoch.length > 0 &&
+    typeof value.captureSequence === "number" &&
+    Number.isSafeInteger(value.captureSequence) &&
+    value.captureSequence >= 0
+  );
+}
+
+function isTopologyCheckpointEvidenceCandidate(
+  candidate: TopologyCheckpointEvidenceCandidate | LightstreamerEventEnvelope
+): candidate is TopologyCheckpointEvidenceCandidate {
+  return candidate.kind === "topology-checkpoint";
+}
+
+function parseCoverage(value: unknown): TopologyCoverage | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const getters =
+    isRecord(value.getters) ?
+      value.getters
+    : null;
+  if (!getters) {
+    return null;
+  }
+  const status = stringValue(value.status);
+  if (status !== "complete" && status !== "partial") {
+    return null;
+  }
+  return {
+    status,
+    getters: Object.fromEntries(
+      Object.entries(getters).filter(([, reason]) =>
+        isTopologyGetterCoverage(reason)
+      ) as Array<[string, TopologyGetterCoverage]>
+    ),
+    ...(typeof value.reason === "string" && isTopologyCoverageReason(value.reason)
+      ? { reason: value.reason }
+      : {}),
+    ...(typeof value.context === "string" ? { context: value.context } : {})
+  };
+}
+
+function isTopologyCoverageReason(value: unknown): value is TopologyCoverageReason {
+  return value === "getter-missing" ||
+    value === "getter-threw" ||
+    value === "late-attachment" ||
+    value === "unsupported-shape" ||
+    value === "out-of-scope-frame" ||
+    value === "limit-exceeded" ||
+    value === "sanitization-failed";
+}
+
+function isTopologyGetterCoverage(value: unknown): value is TopologyGetterCoverage {
+  return value === "available" || value === "missing" || value === "threw";
+}
+
+function intValue(candidate: unknown): number | null {
+  return typeof candidate === "number" && Number.isSafeInteger(candidate)
+    ? candidate
+    : null;
+}
+
+function stringValue(candidate: unknown): string | null {
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+function isRecord(candidate: unknown): candidate is Record<string, unknown> {
+  return candidate !== null && typeof candidate === "object" && !Array.isArray(candidate);
 }
 
 function fallbackPreservesAndExtendsStructure(
