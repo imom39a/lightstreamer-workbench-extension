@@ -47,6 +47,7 @@ import {
   type HistoryStatus,
   type Outcome,
   type CloseResult,
+  type EventHistoryStorage,
   copyCandidate,
   matchesEvidenceQuery,
   type HistoryTerminalDiagnostic
@@ -1024,7 +1025,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     });
   }
 
-  return { offer, read, clear, follow, close };
+  const storage: EventHistoryStorage = Object.freeze({ mode: "indexeddb" });
+  return { storage, offer, read, clear, follow, close };
 }
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {

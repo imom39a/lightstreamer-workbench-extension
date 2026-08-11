@@ -64,6 +64,7 @@ function createReplayableHistory(initial: EvidenceCandidate[]): EventHistory {
   }
 
   return {
+    storage: { mode: "memory" },
     offer(candidate) {
       const snapshot = {
         intervalId,

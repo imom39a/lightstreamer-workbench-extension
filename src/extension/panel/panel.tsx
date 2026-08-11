@@ -8,6 +8,7 @@ import {
 import {
   createInMemoryEventHistory,
   openEventHistory,
+  type EventHistoryStorage,
   type EventHistory
 } from "../../core/event-history-authoritative";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
@@ -77,13 +78,14 @@ export function mountWorkbenchPanel(
   };
 
   async function initialize(): Promise<void> {
-    let storageLimited = false;
+    let storage: EventHistoryStorage;
     try {
       history = await openHistory({ panelSessionId });
+      storage = history.storage;
     } catch (error) {
       console.error("Falling back to in-memory event storage.", error);
-      history = createMemoryHistory({ panelSessionId });
-      storageLimited = true;
+      history = createMemoryHistory({ panelSessionId, fallback: "PRIMARY_JOURNAL_UNAVAILABLE" });
+      storage = { mode: "memory", reason: "IndexedDB is unavailable" };
     }
 
     if (disposed) {
@@ -111,9 +113,7 @@ export function mountWorkbenchPanel(
       visible,
       theme: themeManager.preference,
       localInjectionExecutor,
-      storage: storageLimited
-        ? { mode: "memory", reason: "IndexedDB is unavailable" }
-        : { mode: "indexeddb" }
+      storage
     });
     const presentationRuntime = bindRuntime(runtime, themeManager);
     reactRoot = createRoot(root);

@@ -218,6 +218,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       capacity: { tier: "NORMAL" },
       fallback: null
     });
+    expect(history.storage).toEqual({ mode: "indexeddb" });
     await history.close();
   });
 

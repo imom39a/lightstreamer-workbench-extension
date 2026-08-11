@@ -31,6 +31,7 @@ describe("commit-authoritative EventHistory", () => {
       capacity: { tier: "LOWER" },
       fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
     });
+    expect(history.storage).toEqual({ mode: "memory", reason: "IndexedDB is unavailable" });
     await history.close();
   });
 

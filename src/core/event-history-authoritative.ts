@@ -146,6 +146,11 @@ export type HistoryStatus = Readonly<{
   terminal?: HistoryTerminalDiagnostic;
 }>;
 
+export type EventHistoryStorage = Readonly<{
+  mode: "indexeddb" | "memory";
+  reason?: string;
+}>;
+
 export type ClearResult = Readonly<{
   previousInterval: HistoryInterval;
   interval: HistoryInterval;
@@ -175,6 +180,7 @@ export type HistoryPublication =
   | Readonly<{ type: "terminal"; terminal: HistoryTerminalDiagnostic; status: HistoryStatus }>;
 
 export interface EventHistory {
+  readonly storage: EventHistoryStorage;
   offer(candidate: EvidenceCandidate): CaptureReceipt;
   read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>>;
   clear(): Promise<Outcome<ClearResult>>;
@@ -293,6 +299,17 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   const clock = options.clock ?? Date.now;
   const timer = options.timer ?? defaultHistoryTimer();
   const fallback = options.fallback ?? null;
+  const storage: EventHistoryStorage = deepFreeze({
+    mode: "memory",
+    ...(fallback
+      ? {
+          reason:
+            fallback === "UNKNOWN_NEWER_SCHEMA"
+              ? "IndexedDB journal schema is newer than this Workbench version"
+              : "IndexedDB is unavailable"
+        }
+      : {})
+  });
   const subscribers = new Set<Subscriber>();
   const committed: CommittedEvidence[] = [];
   const pending: PendingCandidate[] = [];
@@ -985,7 +1002,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     }
   }
 
-  return { offer, read, clear, follow, close };
+  return { storage, offer, read, clear, follow, close };
 }
 
 function createInterval(sessionId: string, ordinal: number): HistoryInterval {

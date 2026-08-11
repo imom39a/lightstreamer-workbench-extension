@@ -344,6 +344,65 @@ describe("production panel mount wiring", () => {
     expect(closeHistory).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards explicit opened-history storage metadata before the first Capture offer", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    const openHistory = vi.fn(async () => history);
+    const createRuntime = vi.fn((options: WorkbenchRuntimeOptions = {}) => createWorkbenchRuntime(options));
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 44 } }
+    } as unknown as typeof chrome;
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory,
+      createRuntime
+    });
+    await flushPanel();
+
+    expect(openHistory).toHaveBeenCalledTimes(1);
+    expect(createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history,
+        storage: { mode: "memory" }
+      })
+    );
+    expect(root.textContent).toContain("Coverage USEFUL");
+    expect(root.textContent).not.toContain("Coverage LIMITED");
+
+    await disposePanel(dispose);
+  });
+
+  it("reports internal startup fallback without changing Capture coverage", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const createRuntime = vi.fn((options: WorkbenchRuntimeOptions = {}) => createWorkbenchRuntime(options));
+    const port = createFakePort();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 45 } },
+      runtime: { connect: vi.fn(() => port as unknown as chrome.runtime.Port) }
+    } as unknown as typeof chrome;
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory: async () => createInMemoryEventHistory({
+        panelSessionId: "panel-internal-fallback",
+        fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+      }),
+      createRuntime
+    });
+    await flushPanel();
+
+    expect(createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storage: { mode: "memory", reason: "IndexedDB is unavailable" }
+      })
+    );
+    expect(root.textContent).toContain("Coverage USEFUL");
+    expect(root.textContent).not.toContain("Coverage LIMITED");
+    expect(root.textContent).not.toContain("Capture STOPPED");
+    expect(root.textContent).toContain("In-memory event history");
+
+    await disposePanel(dispose);
+  });
+
   it("removes legacy telemetry state while keeping first-party resources available", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
