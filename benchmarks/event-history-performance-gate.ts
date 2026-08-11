@@ -450,8 +450,7 @@ function isPerformanceReference(value: unknown): value is EventHistoryPerformanc
     && typeof value.rationale === "string" && value.rationale.trim().length > 0
     && isRecord(environment) && environment.chromeMajor === 151
     && typeof environment.platformClass === "string" && typeof environment.architectureClass === "string"
-    && Array.isArray(value.cells) && value.cells.length === expectedMatrixKeys().size * SAMPLE_COUNT
-    && value.cells.every(isPerformanceCell);
+    && Array.isArray(value.cells) && hasIndependentMatrixSamples(value.cells);
 }
 
 function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell {
@@ -480,7 +479,20 @@ function isHeapSample(value: unknown): value is EventHistoryPerformanceHeapSampl
   return isRecord(value) && ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
     && Number.isInteger(value.sample) && (value.sample as number) >= 1 && (value.sample as number) <= SAMPLE_COUNT
     && Number.isSafeInteger(value.eventCount) && (value.eventCount as number) >= 0
-    && isFiniteNumber(value.postGcHeapDeltaBytes);
+    && isFiniteNumber(value.postGcHeapDeltaBytes) && value.postGcHeapDeltaBytes >= 0;
+}
+
+function hasIndependentMatrixSamples(cells: unknown[]): cells is EventHistoryPerformanceCell[] {
+  if (cells.length !== expectedMatrixKeys().size * SAMPLE_COUNT || !cells.every(isPerformanceCell)) return false;
+  const byKey = new Map<string, number[]>();
+  for (const cell of cells) {
+    const samples = byKey.get(cellKey(cell)) ?? [];
+    samples.push(cell.sample);
+    byKey.set(cellKey(cell), samples);
+  }
+  return byKey.size === expectedMatrixKeys().size && [...byKey.entries()].every(([key, samples]) =>
+    expectedMatrixKeys().has(key) && samples.sort((left, right) => left - right).join(",") === "1,2,3"
+  );
 }
 
 function validateCell(cell: EventHistoryPerformanceCell, failures: string[]): void {
