@@ -1,16 +1,11 @@
-import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { createInMemoryEventHistory, createIndexedDbEventHistory } from "../src/core/event-history";
-import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
+import { type EventHistory } from "../src/core/event-history-authoritative";
 import { createCaptureMessage } from "../src/bridge/messages";
 import { createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
+import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { getPanelScenario } from "./support/panel-scenarios";
-
-// Pre-cutover contract coverage is migrated independently from the focused
-// history-impl-09 runtime slice.
-const createRuntime = createWorkbenchRuntime as (options?: any) => ReturnType<typeof createWorkbenchRuntime>;
 
 type ScheduledCallback = () => void;
 
@@ -106,7 +101,7 @@ function topologyEvent(
 }
 
 function appendTopologyJourney(
-  history: ReturnType<typeof createInMemoryEventHistory>,
+  history: EventHistory,
   identity: {
     clientId: string;
     sessionId: string;
@@ -149,12 +144,12 @@ function appendTopologyJourney(
       ...(itemEvidence ? { item: { name: identity.itemName, position: 1 } } : {})
     };
   };
-  history.append(base(0, "client-created"));
-  history.append(base(1, "client-status"));
-  history.append(base(2, "subscription-created"));
-  history.append(base(3, "subscription-started"));
-  history.append(base(4, "listener-added"));
-  history.append({
+  history.offer(base(0, "client-created"));
+  history.offer(base(1, "client-status"));
+  history.offer(base(2, "subscription-created"));
+  history.offer(base(3, "subscription-started"));
+  history.offer(base(4, "listener-added"));
+  history.offer({
     ...base(5, "item-update"),
     update: {
       isSnapshot: false,
@@ -218,8 +213,9 @@ function contextFields(runtime: ReturnType<typeof createWorkbenchRuntime>): Reco
 }
 
 describe("WorkbenchRuntime", () => {
-  it("keeps getSnapshot and subscribe callback-safe for useSyncExternalStore", () => {
-    const runtime = createRuntime();
+  it("keeps getSnapshot and subscribe callback-safe for useSyncExternalStore", async () => {
+    const runtime = createWorkbenchRuntime();
+    await flushStoreNotifications();
     const getSnapshot = runtime.getSnapshot;
     const subscribe = runtime.subscribe;
     let notifications = 0;
@@ -235,13 +231,14 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("exposes one cached immutable bounded Evidence snapshot and publishes developer commands synchronously", () => {
-    const history = createInMemoryEventHistory();
+  it("exposes one cached immutable bounded Evidence snapshot and publishes developer commands synchronously", async () => {
+    const history = createAuthoritativeHistory();
     for (let index = 1; index <= 62; index += 1) {
-      history.append(event(`event-${index}`));
+      history.offer(event(`event-${index}`));
     }
 
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const initial = runtime.getSnapshot();
     const notifications: number[] = [];
     runtime.subscribe(() => notifications.push(runtime.getSnapshot().version));
@@ -261,9 +258,10 @@ describe("WorkbenchRuntime", () => {
     runtime.dispatch({ type: "select-evidence", eventId: "event-17" });
     runtime.dispatch({ type: "set-context", contextId: "context:event-17" });
     runtime.dispatch({ type: "set-find", value: "event-17" });
+    await flushStoreNotifications();
 
     const selected = runtime.getSnapshot();
-    expect(notifications).toHaveLength(4);
+    expect(notifications).toHaveLength(5);
     expect(selected).not.toBe(initial);
     expect(selected.scopeId).toBe(clientScope?.id);
     expect(selected.selectionEventId).toBe("event-17");
@@ -274,9 +272,16 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("publishes async Scope, Filter, Freeze, and Follow intent synchronously and rejects stale query results", async () => {
-    const base = createInMemoryEventHistory();
+    let deferBounded = false;
+    const pending: Array<{ resolve(): void }> = [];
+    const history = createAuthoritativeHistory({
+      readControl(query, release) {
+        if (!deferBounded || query.limit === undefined) release();
+        else pending.push({ resolve: release });
+      }
+    });
     appendTopologyJourney(
-      base,
+      history,
       {
         clientId: "async-client",
         sessionId: "async-session",
@@ -286,28 +291,8 @@ describe("WorkbenchRuntime", () => {
       },
       50
     );
-    let deferBounded = false;
-    const pending: Array<{
-      resolve(): void;
-    }> = [];
-    const history = {
-      ...base,
-      queryEvents(query?: Parameters<typeof base.queryEvents>[0]) {
-        if (!deferBounded || query?.limit === undefined) return base.queryEvents(query);
-        const promise = new Promise<Awaited<ReturnType<ReturnType<typeof base.queryEvents>["toPromise"]>>>((resolve) => {
-          pending.push({ resolve: () => void base.queryEvents(query).toPromise().then(resolve) });
-        });
-        return {
-          receive(onValue: (value: Awaited<typeof promise>) => void, onError: (error: unknown) => void) {
-            void promise.then(onValue, onError);
-          },
-          toPromise() {
-            return promise;
-          }
-        };
-      }
-    };
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const scope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind }) => kind === "subscription");
@@ -346,9 +331,16 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("publishes no stale Evidence beneath a new Scope or Filter while delayed queries settle", async () => {
-    const base = createInMemoryEventHistory();
+    let deferBounded = false;
+    const pending: Array<{ resolve(): void }> = [];
+    const history = createAuthoritativeHistory({
+      readControl(query, release) {
+        if (!deferBounded || query.limit === undefined) release();
+        else pending.push({ resolve: release });
+      }
+    });
     appendTopologyJourney(
-      base,
+      history,
       {
         clientId: "delayed-client-a",
         sessionId: "delayed-session-a",
@@ -359,7 +351,7 @@ describe("WorkbenchRuntime", () => {
       100
     );
     appendTopologyJourney(
-      base,
+      history,
       {
         clientId: "delayed-client-b",
         sessionId: "delayed-session-b",
@@ -369,26 +361,8 @@ describe("WorkbenchRuntime", () => {
       },
       200
     );
-    let deferBounded = false;
-    const pending: Array<{ resolve(): void }> = [];
-    const history = {
-      ...base,
-      queryEvents(query?: Parameters<typeof base.queryEvents>[0]) {
-        if (!deferBounded || query?.limit === undefined) return base.queryEvents(query);
-        const promise = new Promise<Awaited<ReturnType<ReturnType<typeof base.queryEvents>["toPromise"]>>>((resolve) => {
-          pending.push({ resolve: () => void base.queryEvents(query).toPromise().then(resolve) });
-        });
-        return {
-          receive(onValue: (value: Awaited<typeof promise>) => void, onError: (error: unknown) => void) {
-            void promise.then(onValue, onError);
-          },
-          toPromise() {
-            return promise;
-          }
-        };
-      }
-    };
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const clientB = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "client" && label === "delayed-client-b");
@@ -435,9 +409,16 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("coalesces live Capture behind an in-flight identity query without leaving Evidence loading", async () => {
-    const base = createInMemoryEventHistory();
+    let deferBounded = false;
+    const pending: Array<{ resolve(): void }> = [];
+    const history = createAuthoritativeHistory({
+      readControl(query, release) {
+        if (!deferBounded || query.limit === undefined) release();
+        else pending.push({ resolve: release });
+      }
+    });
     appendTopologyJourney(
-      base,
+      history,
       {
         clientId: "streaming-client",
         sessionId: "streaming-session",
@@ -447,27 +428,9 @@ describe("WorkbenchRuntime", () => {
       },
       100
     );
-    let deferBounded = false;
-    const pending: Array<{ resolve(): void }> = [];
-    const history = {
-      ...base,
-      queryEvents(query?: Parameters<typeof base.queryEvents>[0]) {
-        if (!deferBounded || query?.limit === undefined) return base.queryEvents(query);
-        const promise = new Promise<Awaited<ReturnType<ReturnType<typeof base.queryEvents>["toPromise"]>>>((resolve) => {
-          pending.push({ resolve: () => void base.queryEvents(query).toPromise().then(resolve) });
-        });
-        return {
-          receive(onValue: (value: Awaited<typeof promise>) => void, onError: (error: unknown) => void) {
-            void promise.then(onValue, onError);
-          },
-          toPromise() {
-            return promise;
-          }
-        };
-      }
-    };
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     const client = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "client" && label === "streaming-client");
@@ -475,7 +438,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispatch({ type: "set-scope", scopeId: client?.id ?? null });
     expect(runtime.getSnapshot().evidence.loading).toBe(true);
 
-    history.append({
+    history.offer({
       ...event("streaming-client-106", "streaming-item"),
       client: {
         id: "streaming-client",
@@ -493,6 +456,7 @@ describe("WorkbenchRuntime", () => {
     });
     await flushStoreNotifications();
     scheduler.flushFrame();
+    await flushStoreNotifications();
     expect(pending).toHaveLength(1);
     pending.shift()?.resolve();
     await flushStoreNotifications();
@@ -508,17 +472,18 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("batches passive Capture publications into one frame while retaining the newest matching window", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     const initial = runtime.getSnapshot();
     let notifications = 0;
     runtime.subscribe(() => {
       notifications += 1;
     });
 
-    history.append(event("event-1"));
-    history.append(event("event-2"));
+    history.offer(event("event-1"));
+    history.offer(event("event-2"));
     await flushStoreNotifications();
 
     expect(runtime.getSnapshot()).toBe(initial);
@@ -526,6 +491,7 @@ describe("WorkbenchRuntime", () => {
     expect(scheduler.fallbackCount()).toBe(1);
 
     scheduler.flushFrame();
+    await flushStoreNotifications();
 
     expect(notifications).toBe(1);
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual([
@@ -539,24 +505,27 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("preserves presentation identity for unchanged retained Evidence rows", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
-    history.append(event("event-1"));
-    history.append(event("event-2"));
-    const runtime = createRuntime({ history, scheduler });
+    history.offer(event("event-1"));
+    history.offer(event("event-2"));
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     const firstPresentation = runtime.getSnapshot().evidence.events[0];
 
-    history.append(event("event-3"));
+    history.offer(event("event-3"));
     scheduler.flushFrame();
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().evidence.events[0]).toBe(firstPresentation);
     runtime.dispose();
   });
 
   it("coalesces direct Capture notifications to render cadence without losing deliveries", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     let notifications = 0;
     runtime.subscribe(() => {
       notifications += 1;
@@ -577,31 +546,35 @@ describe("WorkbenchRuntime", () => {
     }
     await flushStoreNotifications();
 
-    expect(await history.count().toPromise()).toBe(3);
+    const retained = await history.read({});
+    expect(retained).toMatchObject({ ok: true, value: { total: 3 } });
     expect(notifications).toBe(0);
     expect(scheduler.frameCount()).toBe(1);
 
     scheduler.flushFrame();
+    await flushStoreNotifications();
 
     expect(notifications).toBe(1);
     expect(runtime.getSnapshot().evidence.total).toBe(3);
-    expect((await history.list().toPromise()).map((retained) => retained.listener?.id)).toEqual([
-      "listener-1",
-      "listener-2",
-      "listener-3"
-    ]);
+    if (!retained.ok) return;
+    expect(
+      retained.value.evidence.map(({ candidate }) =>
+        candidate.kind === "topology-checkpoint" ? null : candidate.listener?.id
+      )
+    ).toEqual(["listener-1", "listener-2", "listener-3"]);
     runtime.dispose();
   });
 
   it("reuses unchanged structural Scope nodes while refreshing volatile counter presentations", async () => {
-    const history = createInMemoryEventHistory();
-    history.append(topologyEvent("client-1", "client-created"));
-    history.append(topologyEvent("session-1", "client-status"));
-    history.append(topologyEvent("subscription-1", "subscription-started"));
-    history.append(topologyEvent("listener-1", "listener-added"));
-    history.append(topologyEvent("update-1", "item-update"));
+    const history = createAuthoritativeHistory();
+    history.offer(topologyEvent("client-1", "client-created"));
+    history.offer(topologyEvent("session-1", "client-status"));
+    history.offer(topologyEvent("subscription-1", "subscription-started"));
+    history.offer(topologyEvent("listener-1", "listener-added"));
+    history.offer(topologyEvent("update-1", "item-update"));
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler, captureStatus: "capturing" });
+    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    await flushStoreNotifications();
     const initialScope = runtime.getSnapshot().scope;
     const structuralNodes = initialScope.structure;
     const initialFacts = initialScope.nodes;
@@ -617,6 +590,7 @@ describe("WorkbenchRuntime", () => {
       })
     });
     scheduler.flushFrame();
+    await flushStoreNotifications();
 
     const refreshedScope = runtime.getSnapshot().scope;
     const refreshedNodes = refreshedScope.nodes;
@@ -631,8 +605,8 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("rebuilds ordered Scope locators when an established inactive Subscription becomes active", () => {
-    const history = createInMemoryEventHistory();
+  it("rebuilds ordered Scope locators when an established inactive Subscription becomes active", async () => {
+    const history = createAuthoritativeHistory();
     const subscription = (
       id: string,
       active: boolean,
@@ -649,10 +623,11 @@ describe("WorkbenchRuntime", () => {
       },
       item: { name: `item-${id}`, position: 1 }
     });
-    history.append(subscription("A", false, 1));
-    history.append(subscription("B", true, 2));
+    history.offer(subscription("A", false, 1));
+    history.offer(subscription("B", true, 2));
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler, captureStatus: "capturing" });
+    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    await flushStoreNotifications();
     const initialScope = runtime.getSnapshot().scope;
     expect(
       initialScope.structure
@@ -678,6 +653,7 @@ describe("WorkbenchRuntime", () => {
       })
     });
     scheduler.flushFrame();
+    await flushStoreNotifications();
 
     const refreshedScope = runtime.getSnapshot().scope;
     const subscriptions = refreshedScope.structure.filter(
@@ -699,24 +675,25 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("refreshes sensitive export counts when facts-only updates add and remove connection facts", () => {
-    const history = createInMemoryEventHistory();
-    history.append(topologyEvent("sensitive-subscription", "subscription-started"));
+  it("refreshes sensitive export counts when facts-only updates add and remove connection facts", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer(topologyEvent("sensitive-subscription", "subscription-started"));
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler, captureStatus: "capturing" });
+    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().export.sensitiveCounts).toMatchObject({
       "server-addresses": 0,
       "client-ips": 0
     });
 
-    const dispatchFacts = (
+    const dispatchFacts = async (
       id: string,
       values: {
         serverAddress: string | null;
         serverInstanceAddress: string | null;
         clientIp: string | null;
       }
-    ): void => {
+    ): Promise<void> => {
       runtime.dispatch({
         type: "ingest-capture-message",
         message: createCaptureMessage("item-update", {
@@ -737,9 +714,10 @@ describe("WorkbenchRuntime", () => {
         })
       });
       scheduler.flushFrame();
+      await flushStoreNotifications();
     };
 
-    dispatchFacts("sensitive-add", {
+    await dispatchFacts("sensitive-add", {
       serverAddress: "https://example.test/lightstreamer",
       serverInstanceAddress: "instance.example.test",
       clientIp: "192.0.2.10"
@@ -749,7 +727,7 @@ describe("WorkbenchRuntime", () => {
       "client-ips": 1
     });
 
-    dispatchFacts("sensitive-remove", {
+    await dispatchFacts("sensitive-remove", {
       serverAddress: null,
       serverInstanceAddress: null,
       clientIp: null
@@ -762,21 +740,24 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("preserves a Frozen Evidence window, selection, and filtered newer count until Follow Live", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
-    history.append(event("alpha-1", "alpha"));
-    history.append(event("alpha-2", "alpha"));
-    const runtime = createRuntime({ history, scheduler });
+    history.offer(event("alpha-1", "alpha"));
+    history.offer(event("alpha-2", "alpha"));
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
 
     runtime.dispatch({ type: "set-filters", filters: { query: "alpha" } });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "alpha-1" });
     runtime.dispatch({ type: "freeze-evidence" });
     const frozen = runtime.getSnapshot();
 
-    history.append(event("beta-1", "beta"));
-    history.append(event("alpha-3", "alpha"));
+    history.offer(event("beta-1", "beta"));
+    history.offer(event("alpha-3", "alpha"));
     await flushStoreNotifications();
     scheduler.flushFallback();
+    await flushStoreNotifications();
 
     const afterCapture = runtime.getSnapshot();
     expect(afterCapture.evidence.mode).toBe("frozen");
@@ -787,6 +768,7 @@ describe("WorkbenchRuntime", () => {
     expect(afterCapture.selectionEventId).toBe("alpha-1");
 
     runtime.dispatch({ type: "follow-live" });
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().evidence.mode).toBe("live");
     expect(runtime.getSnapshot().evidence.newerCount).toBe(0);
@@ -800,9 +782,10 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("consolidates hidden-panel Capture and releases every scheduled resource exactly once", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     let notifications = 0;
     runtime.subscribe(() => {
       notifications += 1;
@@ -810,31 +793,34 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "set-visible", visible: false });
     const hidden = runtime.getSnapshot();
-    history.append(event("event-1"));
+    history.offer(event("event-1"));
     await flushStoreNotifications();
 
     expect(scheduler.frameCount()).toBe(0);
     expect(runtime.getSnapshot()).toBe(hidden);
 
     runtime.dispatch({ type: "set-visible", visible: true });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(["event-1"]);
     expect(notifications).toBe(2);
 
-    history.append(event("event-2"));
+    history.offer(event("event-2"));
     await flushStoreNotifications();
     expect(scheduler.frameCount()).toBe(1);
     runtime.dispose();
     runtime.dispose();
     scheduler.flushFrame();
+    await flushStoreNotifications();
     scheduler.flushFallback();
 
     expect(notifications).toBe(2);
   });
 
   it("defers hidden theme, Capture status, history, and multi-frame topology publication until one restore", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     const snapshots: Array<ReturnType<typeof runtime.getSnapshot>> = [];
     runtime.subscribe(() => snapshots.push(runtime.getSnapshot()));
 
@@ -846,15 +832,16 @@ describe("WorkbenchRuntime", () => {
     for (const frame of getPanelScenario("topology-large").topologySyncFrames ?? []) {
       runtime.dispatch({ type: "apply-topology-sync-frame", frame });
     }
-    history.append(event("hidden-history-1"));
+    history.offer(event("hidden-history-1"));
     await flushStoreNotifications();
 
     expect(snapshots).toEqual([]);
     expect(runtime.getSnapshot()).toBe(hiddenSnapshot);
     expect(scheduler.frameCount()).toBe(0);
-    await expect(history.count().toPromise()).resolves.toBe(1);
+    await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { total: 1 } });
 
     runtime.dispatch({ type: "set-visible", visible: true });
+    await flushStoreNotifications();
 
     expect(snapshots).toHaveLength(1);
     expect(runtime.getSnapshot()).toMatchObject({
@@ -870,21 +857,24 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("preserves a Frozen historical window across hidden visibility while Live reveal follows newest", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
     for (let index = 1; index <= 125; index += 1) {
-      history.append({ ...event(`visibility-${index}`), timestamp: index });
+      history.offer({ ...event(`visibility-${index}`), timestamp: index });
     }
-    const runtime = createRuntime({ history, scheduler, windowSize: 60 });
+    const runtime = createWorkbenchRuntime({ history, scheduler, windowSize: 60 });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "freeze-evidence" });
     runtime.dispatch({ type: "show-oldest-evidence" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events[0]?.id).toBe("visibility-1");
     expect(runtime.getSnapshot().evidence.events.at(-1)?.id).toBe("visibility-60");
 
     runtime.dispatch({ type: "set-visible", visible: false });
-    history.append({ ...event("visibility-126"), timestamp: 126 });
+    history.offer({ ...event("visibility-126"), timestamp: 126 });
     await flushStoreNotifications();
     runtime.dispatch({ type: "set-visible", visible: true });
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().evidence).toMatchObject({
       mode: "frozen",
@@ -897,18 +887,19 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "follow-live" });
     runtime.dispatch({ type: "set-visible", visible: false });
-    history.append({ ...event("visibility-127"), timestamp: 127 });
+    history.offer({ ...event("visibility-127"), timestamp: 127 });
     await flushStoreNotifications();
     runtime.dispatch({ type: "set-visible", visible: true });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.mode).toBe("live");
     expect(runtime.getSnapshot().evidence.events[0]?.id).toBe("visibility-68");
     expect(runtime.getSnapshot().evidence.events.at(-1)?.id).toBe("visibility-127");
     runtime.dispose();
   });
 
-  it("owns presentation-ready evidence, Scope, Context, Capture coverage, and COMMAND provenance", () => {
-    const history = createInMemoryEventHistory();
-    history.append({
+  it("owns presentation-ready evidence, Scope, Context, Capture coverage, and COMMAND provenance", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer({
       ...event("command-1", "orders"),
       subscription: { id: "orders-subscription", mode: "COMMAND" },
       update: {
@@ -919,7 +910,7 @@ describe("WorkbenchRuntime", () => {
         changedFields: { qty: 3 }
       }
     });
-    const runtime = createRuntime({
+    const runtime = createWorkbenchRuntime({
       history,
       captureStatus: "capturing",
       theme: "dark",
@@ -929,6 +920,7 @@ describe("WorkbenchRuntime", () => {
         recovery: "Reload the inspected page with DevTools open"
       }
     });
+    await flushStoreNotifications();
 
     runtime.dispatch({ type: "focus-evidence", eventId: "command-1" });
     runtime.dispatch({ type: "open-context" });
@@ -957,9 +949,10 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("normalizes typed Capture messages into history through its four-method interface", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
 
     runtime.dispatch({
       type: "ingest-capture-message",
@@ -972,6 +965,7 @@ describe("WorkbenchRuntime", () => {
     });
     await flushStoreNotifications();
     scheduler.flushFrame();
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().capture.operation).toBe("RUNNING");
     expect(runtime.getSnapshot().evidence.events).toEqual([
@@ -980,15 +974,15 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("derives complete typed structural Scope and retains a retired selection identity", () => {
-    const history = createInMemoryEventHistory();
-    history.append(topologyEvent("client-1", "client-created"));
-    history.append(topologyEvent("session-1", "client-status"));
-    history.append(topologyEvent("subscription-1", "subscription-created"));
-    history.append(topologyEvent("subscription-2", "subscription-started"));
-    history.append(topologyEvent("listener-1", "listener-added"));
-    history.append(topologyEvent("update-1", "item-update"));
-    history.append(
+  it("derives complete typed structural Scope and retains a retired selection identity", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer(topologyEvent("client-1", "client-created"));
+    history.offer(topologyEvent("session-1", "client-status"));
+    history.offer(topologyEvent("subscription-1", "subscription-created"));
+    history.offer(topologyEvent("subscription-2", "subscription-started"));
+    history.offer(topologyEvent("listener-1", "listener-added"));
+    history.offer(topologyEvent("update-1", "item-update"));
+    history.offer(
       topologyEvent("session-2", "client-status", {
         client: {
           id: "client-main",
@@ -998,7 +992,8 @@ describe("WorkbenchRuntime", () => {
         }
       })
     );
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const nodes = runtime.getSnapshot().scope.nodes;
 
     expect(new Set(nodes.map(({ kind }) => kind))).toEqual(
@@ -1014,6 +1009,7 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "set-scope", scopeId: retiredSession?.id ?? null });
     runtime.dispatch({ type: "set-scope-focus", scopeId: retiredSession?.id ?? null });
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().scope.selection).toMatchObject({
       id: retiredSession?.id,
@@ -1034,8 +1030,8 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("exposes canonical structural Scope lifecycle without presentation inference", () => {
-    const activeHistory = createInMemoryEventHistory();
+  it("exposes canonical structural Scope lifecycle without presentation inference", async () => {
+    const activeHistory = createAuthoritativeHistory();
     appendTopologyJourney(
       activeHistory,
       {
@@ -1047,10 +1043,11 @@ describe("WorkbenchRuntime", () => {
       },
       700
     );
-    const activeRuntime = createRuntime({
+    const activeRuntime = createWorkbenchRuntime({
       history: activeHistory,
       captureStatus: "capturing"
     });
+    await flushStoreNotifications();
     expect(
       activeRuntime.getSnapshot().scope.nodes.map(({ kind, lifecycle }) => [kind, lifecycle])
     ).toEqual([
@@ -1063,8 +1060,8 @@ describe("WorkbenchRuntime", () => {
     ]);
     activeRuntime.dispose();
 
-    const recoveringHistory = createInMemoryEventHistory();
-    recoveringHistory.append(
+    const recoveringHistory = createAuthoritativeHistory();
+    recoveringHistory.offer(
       topologyEvent("lifecycle-recovering", "client-status", {
         client: {
           id: "recovering-client",
@@ -1077,7 +1074,8 @@ describe("WorkbenchRuntime", () => {
         update: undefined
       })
     );
-    const recoveringRuntime = createRuntime({ history: recoveringHistory });
+    const recoveringRuntime = createWorkbenchRuntime({ history: recoveringHistory });
+    await flushStoreNotifications();
     expect(
       recoveringRuntime.getSnapshot().scope.nodes
         .filter(({ kind }) => kind === "page" || kind === "client" || kind === "session")
@@ -1085,8 +1083,8 @@ describe("WorkbenchRuntime", () => {
     ).toEqual(["recovering", "recovering", "recovering"]);
     recoveringRuntime.dispose();
 
-    const disconnectedHistory = createInMemoryEventHistory();
-    disconnectedHistory.append(
+    const disconnectedHistory = createAuthoritativeHistory();
+    disconnectedHistory.offer(
       topologyEvent("lifecycle-disconnected", "client-status", {
         client: {
           id: "disconnected-client",
@@ -1099,10 +1097,11 @@ describe("WorkbenchRuntime", () => {
         update: undefined
       })
     );
-    const disconnectedRuntime = createRuntime({
+    const disconnectedRuntime = createWorkbenchRuntime({
       history: disconnectedHistory,
       captureStatus: "bridge disconnected"
     });
+    await flushStoreNotifications();
     expect(
       disconnectedRuntime.getSnapshot().scope.nodes
         .filter(({ kind }) => kind === "page" || kind === "client" || kind === "session")
@@ -1110,8 +1109,8 @@ describe("WorkbenchRuntime", () => {
     ).toEqual(["disconnected", "disconnected", "disconnected"]);
     disconnectedRuntime.dispose();
 
-    const stalledHistory = createInMemoryEventHistory();
-    stalledHistory.append(
+    const stalledHistory = createAuthoritativeHistory();
+    stalledHistory.offer(
       topologyEvent("lifecycle-stalled", "client-status", {
         client: {
           id: "stalled-client",
@@ -1124,7 +1123,8 @@ describe("WorkbenchRuntime", () => {
         update: undefined
       })
     );
-    const stalledRuntime = createRuntime({ history: stalledHistory });
+    const stalledRuntime = createWorkbenchRuntime({ history: stalledHistory });
+    await flushStoreNotifications();
     expect(
       stalledRuntime.getSnapshot().scope.nodes
         .filter(({ kind }) => kind === "page" || kind === "client" || kind === "session")
@@ -1132,8 +1132,8 @@ describe("WorkbenchRuntime", () => {
     ).toEqual(["stalled", "stalled", "stalled"]);
     stalledRuntime.dispose();
 
-    const inactiveHistory = createInMemoryEventHistory();
-    inactiveHistory.append(
+    const inactiveHistory = createAuthoritativeHistory();
+    inactiveHistory.offer(
       topologyEvent("lifecycle-inactive", "subscription-ended", {
         subscription: {
           id: "inactive-sub",
@@ -1146,21 +1146,24 @@ describe("WorkbenchRuntime", () => {
         update: undefined
       })
     );
-    const inactiveRuntime = createRuntime({ history: inactiveHistory });
+    const inactiveRuntime = createWorkbenchRuntime({ history: inactiveHistory });
+    await flushStoreNotifications();
     expect(
       inactiveRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "subscription")
     ).toMatchObject({ lifecycle: "inactive", retired: false });
     inactiveRuntime.dispose();
 
-    const unknownRuntime = createRuntime();
+    const unknownRuntime = createWorkbenchRuntime();
+    await flushStoreNotifications();
     expect(unknownRuntime.getSnapshot().scope.nodes).toEqual([
       expect.objectContaining({ kind: "page", lifecycle: "unknown" })
     ]);
     unknownRuntime.dispose();
   });
 
-  it("keeps structural Scope bounded when a checkpoint contains one thousand COMMAND generations", () => {
-    const runtime = createRuntime();
+  it("keeps structural Scope bounded when a checkpoint contains one thousand COMMAND generations", async () => {
+    const runtime = createWorkbenchRuntime();
+    await flushStoreNotifications();
     const scenario = getPanelScenario("topology-large");
     for (const frame of scenario.topologySyncFrames ?? []) {
       runtime.dispatch({ type: "apply-topology-sync-frame", frame });
@@ -1178,8 +1181,8 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("assembles a truthful runtime-object dossier for every structural Scope", () => {
-    const history = createInMemoryEventHistory();
+  it("assembles a truthful runtime-object dossier for every structural Scope", async () => {
+    const history = createAuthoritativeHistory();
     appendTopologyJourney(
       history,
       {
@@ -1191,7 +1194,8 @@ describe("WorkbenchRuntime", () => {
       },
       800
     );
-    const runtime = createRuntime({ history, captureStatus: "capturing" });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    await flushStoreNotifications();
 
     expect(contextFields(runtime)).toMatchObject({
       "Scope type": "Page",
@@ -1263,8 +1267,8 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("scopes both COMMAND projections to structural descendants without merging their semantics", () => {
-    const history = createInMemoryEventHistory();
+  it("scopes both COMMAND projections to structural descendants without merging their semantics", async () => {
+    const history = createAuthoritativeHistory();
     const subAOrders = {
       clientId: "client-a",
       sessionId: "session-a",
@@ -1275,9 +1279,9 @@ describe("WorkbenchRuntime", () => {
       key: "shared-key",
       qty: 1
     };
-    history.append(commandUpdate("command-1", subAOrders));
-    history.append(commandUpdate("command-2", { ...subAOrders, itemName: "trades", itemPosition: 2, key: "trade-key", qty: 2 }));
-    history.append(commandUpdate("command-3", {
+    history.offer(commandUpdate("command-1", subAOrders));
+    history.offer(commandUpdate("command-2", { ...subAOrders, itemName: "trades", itemPosition: 2, key: "trade-key", qty: 2 }));
+    history.offer(commandUpdate("command-3", {
       ...subAOrders,
       clientId: "client-b",
       sessionId: "session-b",
@@ -1285,22 +1289,23 @@ describe("WorkbenchRuntime", () => {
       listenerId: "listener-b",
       qty: 3
     }));
-    history.append(commandUpdate("command-4", { ...subAOrders, qty: 9 }, { synthetic: true, command: "UPDATE" }));
-    history.append(commandUpdate("command-5", {
+    history.offer(commandUpdate("command-4", { ...subAOrders, qty: 9 }, { synthetic: true, command: "UPDATE" }));
+    history.offer(commandUpdate("command-5", {
       ...subAOrders,
       itemName: "trades",
       itemPosition: 2,
       key: "trade-key",
       qty: 8
     }, { synthetic: true, command: "UPDATE" }));
-    history.append(commandUpdate("command-6", {
+    history.offer(commandUpdate("command-6", {
       ...subAOrders,
       itemName: "trades",
       itemPosition: 2,
       key: "trade-key",
       qty: 2
     }, { command: "UPDATE" }));
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().commandProjections.observed.rows.map(([label]) => label)).toEqual([
       "sub-a / orders / shared-key",
@@ -1348,9 +1353,9 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("opens and closes the promoted COMMAND comparison without changing the investigation state", () => {
-    const history = createInMemoryEventHistory();
-    history.append(commandUpdate("comparison-command-1", {
+  it("opens and closes the promoted COMMAND comparison without changing the investigation state", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer(commandUpdate("comparison-command-1", {
       clientId: "comparison-client",
       sessionId: "comparison-session",
       subscriptionId: "comparison-subscription",
@@ -1360,7 +1365,8 @@ describe("WorkbenchRuntime", () => {
       key: "comparison-key",
       qty: 1
     }));
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "comparison-command-1" });
     runtime.dispatch({ type: "open-context" });
     const before = runtime.getSnapshot();
@@ -1379,10 +1385,11 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("returns Session operations to the prior Context without changing investigation state", () => {
-    const history = createInMemoryEventHistory();
-    history.append(event("actions-origin", "orders"));
-    const runtime = createRuntime({ history });
+  it("returns Session operations to the prior Context without changing investigation state", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer(event("actions-origin", "orders"));
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "actions-origin" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "set-filters", filters: { item: "orders" } });
@@ -1404,8 +1411,8 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("keeps a retained COMMAND projection available in retired Session Scope", () => {
-    const history = createInMemoryEventHistory();
+  it("keeps a retained COMMAND projection available in retired Session Scope", async () => {
+    const history = createAuthoritativeHistory();
     const identity = {
       clientId: "retired-client",
       sessionId: "retired-session",
@@ -1416,8 +1423,8 @@ describe("WorkbenchRuntime", () => {
       key: "retired-key",
       qty: 7
     };
-    history.append(commandUpdate("retired-command-1", identity));
-    history.append({
+    history.offer(commandUpdate("retired-command-1", identity));
+    history.offer({
       ...topologyEvent("retired-session-2", "client-status"),
       client: {
         id: identity.clientId,
@@ -1430,7 +1437,8 @@ describe("WorkbenchRuntime", () => {
       listener: undefined,
       update: undefined
     });
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const retired = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, retired }) => kind === "session" && retired);
@@ -1445,9 +1453,9 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("keeps disconnected Capture, independent limited Coverage, recovery, and storage boundaries", () => {
-    const history = createInMemoryEventHistory();
-    history.append(
+  it("keeps disconnected Capture, independent limited Coverage, recovery, and storage boundaries", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer(
       topologyEvent("recovering-1", "client-status", {
         client: {
           id: "client-main",
@@ -1456,7 +1464,7 @@ describe("WorkbenchRuntime", () => {
         }
       })
     );
-    const runtime = createRuntime({
+    const runtime = createWorkbenchRuntime({
       history,
       captureStatus: "bridge disconnected",
       capture: {
@@ -1465,6 +1473,8 @@ describe("WorkbenchRuntime", () => {
       },
       storage: { mode: "memory", reason: "IndexedDB unavailable" }
     });
+    await flushStoreNotifications();
+    runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
 
     expect(runtime.getSnapshot().storage).toEqual({
       mode: "memory",
@@ -1490,19 +1500,20 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("requires explicit retention confirmation and clears history without silently dropping selection", async () => {
-    const history = createInMemoryEventHistory();
-    history.append(event("selected-before-clear"));
-    const runtime = createRuntime({ history });
+    const history = createAuthoritativeHistory();
+    history.offer(event("selected-before-clear"));
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "selected-before-clear" });
 
     runtime.dispatch({ type: "request-clear-history" });
     expect(runtime.getSnapshot().retention.clearState).toBe("confirming");
-    await expect(history.count().toPromise()).resolves.toBe(1);
+    await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { total: 1 } });
 
     runtime.dispatch({ type: "confirm-clear-history" });
     await flushStoreNotifications();
 
-    await expect(history.count().toPromise()).resolves.toBe(0);
+    await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { total: 0 } });
     expect(runtime.getSnapshot().selectionEventId).toBe("selected-before-clear");
     expect(runtime.getSnapshot().retention.clearState).toBe("idle");
     expect(runtime.getSnapshot().diagnostics).toContainEqual(
@@ -1511,11 +1522,12 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("prepares a versioned credential-safe topology export from runtime-owned choices", () => {
-    const history = createInMemoryEventHistory();
-    history.append(topologyEvent("export-1", "client-status"));
-    history.append(topologyEvent("export-2", "item-update"));
-    const runtime = createRuntime({ history });
+  it("prepares a versioned credential-safe topology export from runtime-owned choices", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer(topologyEvent("export-1", "client-status"));
+    history.offer(topologyEvent("export-2", "item-update"));
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
 
     runtime.dispatch({
       type: "set-export-redactions",
@@ -1541,7 +1553,7 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("constrains Evidence to structural Scope while preserving Live/Frozen and retired history", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     appendTopologyJourney(
       history,
       {
@@ -1565,31 +1577,34 @@ describe("WorkbenchRuntime", () => {
       200
     );
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     const subscriptionScope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "subscription" && label === "orders-a");
     expect(subscriptionScope).toBeDefined();
 
     runtime.dispatch({ type: "set-scope", scopeId: subscriptionScope?.id ?? null });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.total).toBe(4);
     expect(
       runtime.getSnapshot().evidence.events.every(({ raw }) => raw.subscription?.id === "orders-a")
     ).toBe(true);
 
     runtime.dispatch({ type: "freeze-evidence" });
-    history.append({
+    history.offer({
       ...event("scoped-new", "orders-item-a"),
       client: { id: "client-a", sessionId: "session-a" },
       subscription: { id: "orders-a", mode: "MERGE" }
     });
-    history.append({
+    history.offer({
       ...event("other-new", "orders-item-b"),
       client: { id: "client-b", sessionId: "session-b" },
       subscription: { id: "orders-b", mode: "MERGE" }
     });
     await flushStoreNotifications();
     scheduler.flushFrame();
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().evidence.mode).toBe("frozen");
     expect(runtime.getSnapshot().evidence.newerCount).toBe(1);
@@ -1598,8 +1613,8 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("queries narrow structural Scope through bounded storage filters without listing full envelopes", () => {
-    const history = createInMemoryEventHistory();
+  it("queries narrow structural Scope through bounded storage filters without listing full envelopes", async () => {
+    const history = createAuthoritativeHistory();
     appendTopologyJourney(
       history,
       {
@@ -1611,17 +1626,16 @@ describe("WorkbenchRuntime", () => {
       },
       1_000
     );
-    const runtime = createRuntime({ history, windowSize: 3 });
-    const queryEvents = vi.spyOn(history, "queryEvents");
-    const list = vi.spyOn(history, "list");
+    const runtime = createWorkbenchRuntime({ history, windowSize: 3 });
+    await flushStoreNotifications();
+    const read = vi.spyOn(history, "read");
     const listenerScope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind }) => kind === "listener");
 
     runtime.dispatch({ type: "set-scope", scopeId: listenerScope?.id ?? null });
 
-    expect(queryEvents).toHaveBeenCalledTimes(1);
-    expect(queryEvents).toHaveBeenCalledWith({
+    expect(read).toHaveBeenLastCalledWith({
       filters: {
         clientId: "bounded-client",
         sessionId: "bounded-session",
@@ -1631,20 +1645,20 @@ describe("WorkbenchRuntime", () => {
         listenerId: "bounded-listener"
       },
       limit: 3,
-      offset: 0,
+      offsetFromNewest: 0,
       order: "asc"
     });
-    expect(list).not.toHaveBeenCalled();
     runtime.dispose();
   });
 
   it("navigates stable bounded retained windows and leaves Frozen focus untouched by passive Capture", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     for (let index = 1; index <= 125; index += 1) {
-      history.append({ ...event(`event-${index}`, "orders"), timestamp: index });
+      history.offer({ ...event(`event-${index}`, "orders"), timestamp: index });
     }
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler, windowSize: 60 });
+    const runtime = createWorkbenchRuntime({ history, scheduler, windowSize: 60 });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "event-100" });
     runtime.dispatch({ type: "freeze-evidence" });
 
@@ -1659,6 +1673,7 @@ describe("WorkbenchRuntime", () => {
     });
 
     runtime.dispatch({ type: "show-older-evidence" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(
       Array.from({ length: 60 }, (_, index) => `event-${index + 6}`)
     );
@@ -1672,6 +1687,7 @@ describe("WorkbenchRuntime", () => {
     });
 
     runtime.dispatch({ type: "show-oldest-evidence" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence).toMatchObject({
       offset: 65,
       visibleStart: 1,
@@ -1680,12 +1696,14 @@ describe("WorkbenchRuntime", () => {
       hasNewer: true
     });
     runtime.dispatch({ type: "show-newer-evidence" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence).toMatchObject({
       offset: 5,
       visibleStart: 61,
       visibleEnd: 120
     });
     runtime.dispatch({ type: "show-newest-evidence" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence).toMatchObject({
       mode: "frozen",
       offset: 0,
@@ -1694,9 +1712,10 @@ describe("WorkbenchRuntime", () => {
       hasNewer: false
     });
 
-    history.append({ ...event("event-126", "orders"), timestamp: 126 });
+    history.offer({ ...event("event-126", "orders"), timestamp: 126 });
     await flushStoreNotifications();
     scheduler.flushFrame();
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events.at(-1)?.id).toBe("event-125");
     expect(runtime.getSnapshot().evidence).toMatchObject({
       offset: 1,
@@ -1720,10 +1739,10 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("keeps selected Evidence, Context limitations, and raw document stable outside the visible window", () => {
-    const history = createInMemoryEventHistory();
+  it("keeps selected Evidence, Context limitations, and raw document stable outside the visible window", async () => {
+    const history = createAuthoritativeHistory();
     for (let index = 1; index <= 125; index += 1) {
-      history.append({
+      history.offer({
         ...event(`selected-${index}`, "orders"),
         timestamp: index,
         captureSource: "listener",
@@ -1736,7 +1755,8 @@ describe("WorkbenchRuntime", () => {
         } : {})
       });
     }
-    const runtime = createRuntime({ history, windowSize: 60 });
+    const runtime = createWorkbenchRuntime({ history, windowSize: 60 });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "selected-100" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "show-oldest-evidence" });
@@ -1776,7 +1796,7 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("recovers an active structural Scope identity and focus to Page when its object disappears", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     appendTopologyJourney(
       history,
       {
@@ -1789,16 +1809,19 @@ describe("WorkbenchRuntime", () => {
       1_100
     );
     const scheduler = createScheduler();
-    const runtime = createRuntime({ history, scheduler });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     const scope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind }) => kind === "subscription");
     runtime.dispatch({ type: "set-scope", scopeId: scope?.id ?? null });
     expect(runtime.getSnapshot().scopeId).toBe(scope?.id);
 
-    await history.clear().toPromise();
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
     await flushStoreNotifications();
     scheduler.flushFrame();
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().scopeId).toBe("page");
     expect(runtime.getSnapshot().scope.focusedNodeId).toBe("page");
@@ -1812,9 +1835,18 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("prepares canonical complete scoped Evidence copy and invalidates stale async results", async () => {
-    const base = createInMemoryEventHistory();
+    let deferCompleteCopy = false;
+    let resolveDeferred: () => void = () => {
+      throw new Error("Complete Evidence copy was not deferred.");
+    };
+    const history = createAuthoritativeHistory({
+      readControl(query, release) {
+        if (!deferCompleteCopy || query.limit !== undefined) release();
+        else resolveDeferred = release;
+      }
+    });
     appendTopologyJourney(
-      base,
+      history,
       {
         clientId: "copy-client-a",
         sessionId: "copy-session-a",
@@ -1825,7 +1857,7 @@ describe("WorkbenchRuntime", () => {
       1_200
     );
     appendTopologyJourney(
-      base,
+      history,
       {
         clientId: "copy-client-b",
         sessionId: "copy-session-b",
@@ -1835,34 +1867,15 @@ describe("WorkbenchRuntime", () => {
       },
       1_300
     );
-    let deferCompleteCopy = false;
-    let resolveDeferred: () => void = () => {
-      throw new Error("Complete Evidence copy was not deferred.");
-    };
-    const history = {
-      ...base,
-      queryEvents(query?: Parameters<typeof base.queryEvents>[0]) {
-        if (!deferCompleteCopy || query?.limit !== undefined) return base.queryEvents(query);
-        const promise = new Promise<Awaited<ReturnType<ReturnType<typeof base.queryEvents>["toPromise"]>>>((resolve) => {
-          resolveDeferred = () => void base.queryEvents(query).toPromise().then(resolve);
-        });
-        return {
-          receive(onValue: (value: Awaited<typeof promise>) => void, onError: (error: unknown) => void) {
-            void promise.then(onValue, onError);
-          },
-          toPromise() {
-            return promise;
-          }
-        };
-      }
-    };
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const scope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "subscription" && label === "copy-sub-a");
     runtime.dispatch({ type: "set-scope", scopeId: scope?.id ?? null });
 
     runtime.dispatch({ type: "prepare-scoped-evidence-copy" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidenceCopy.state).toBe("ready");
     const copy = JSON.parse(runtime.getSnapshot().evidenceCopy.text ?? "null") as {
       format: string;
@@ -1898,15 +1911,17 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("keeps Filter membership independent while preserving a hidden selection and Context", async () => {
-    const history = createInMemoryEventHistory();
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
-    history.append({ ...event("alpha-1", "alpha"), timestamp: 1 });
-    history.append({ ...event("beta-1", "beta"), timestamp: 2 });
-    history.append({ ...event("alpha-2", "alpha"), timestamp: 3 });
-    const runtime = createRuntime({ history, scheduler });
+    history.offer({ ...event("alpha-1", "alpha"), timestamp: 1 });
+    history.offer({ ...event("beta-1", "beta"), timestamp: 2 });
+    history.offer({ ...event("alpha-2", "alpha"), timestamp: 3 });
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "beta-1" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
+    await flushStoreNotifications();
 
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual([
       "alpha-1",
@@ -1925,13 +1940,15 @@ describe("WorkbenchRuntime", () => {
       title: "beta-1 · Item Update"
     });
 
-    history.append({ ...event("alpha-3", "alpha"), timestamp: 4 });
+    history.offer({ ...event("alpha-3", "alpha"), timestamp: 4 });
     await flushStoreNotifications();
     scheduler.flushFrame();
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().selectionEventId).toBe("beta-1");
     expect(runtime.getSnapshot().evidence.focusedEventId).toBe("alpha-2");
 
     runtime.dispatch({ type: "set-find", value: "alpha" });
+    await flushStoreNotifications();
     const membership = runtime.getSnapshot().evidence.events.map(({ id }) => id);
     expect(runtime.getSnapshot().evidence.findState).toMatchObject({
       query: "alpha",
@@ -1965,6 +1982,7 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().evidence.focusedEventId).toBe("beta-1");
 
     runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "clear-evidence-selection" });
     expect(runtime.getSnapshot().selectionEventId).toBeNull();
     expect(runtime.getSnapshot().evidence.hiddenSelection).toBeNull();
@@ -1973,15 +1991,17 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("preserves a Filter-hidden selection while opening raw Evidence and returning", () => {
-    const history = createInMemoryEventHistory();
-    history.append({ ...event("alpha-raw-1", "alpha"), timestamp: 1 });
-    history.append({ ...event("beta-raw-1", "beta"), timestamp: 2 });
-    const runtime = createRuntime({ history });
+  it("preserves a Filter-hidden selection while opening raw Evidence and returning", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer({ ...event("alpha-raw-1", "alpha"), timestamp: 1 });
+    history.offer({ ...event("beta-raw-1", "beta"), timestamp: 2 });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
 
     runtime.dispatch({ type: "select-evidence", eventId: "beta-raw-1" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.hiddenSelection?.eventId).toBe("beta-raw-1");
 
     runtime.dispatch({ type: "open-raw-evidence", eventId: "beta-raw-1" });
@@ -2005,20 +2025,22 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("finds the human-readable Evidence kind without changing Filter membership", () => {
-    const history = createInMemoryEventHistory();
-    history.append(event("update-1", "alpha"));
-    history.append({
+  it("finds the human-readable Evidence kind without changing Filter membership", async () => {
+    const history = createAuthoritativeHistory();
+    history.offer(event("update-1", "alpha"));
+    history.offer({
       ...event("status-1", "status"),
       kind: "client-status",
       item: undefined,
       update: undefined
     });
-    history.append(event("update-2", "beta"));
-    const runtime = createRuntime({ history });
+    history.offer(event("update-2", "beta"));
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const unfilteredIds = runtime.getSnapshot().evidence.events.map(({ id }) => id);
 
     runtime.dispatch({ type: "set-find", value: "ITEM UPDATE" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.findState).toEqual({
       query: "ITEM UPDATE",
       matchCount: 2,
@@ -2030,7 +2052,10 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(unfilteredIds);
 
     runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(["update-1"]);
+    runtime.dispatch({ type: "set-find", value: "ITEM UPDATE" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.findState).toMatchObject({
       matchCount: 1,
       currentIndex: 0,
@@ -2040,22 +2065,25 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("finds and reveals matches across all 4,000 retained events without changing the investigation", async () => {
-    const history = createInMemoryEventHistory({ batchSize: 256 });
+    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
     const matchNumbers = new Set([5, 2_050, 3_995]);
     for (let number = 1; number <= 4_000; number += 1) {
-      history.append({
+      history.offer({
         ...event(`retained-${number}`, matchNumbers.has(number) ? `needle-${number}` : `orders-${number}`),
         subscription: { id: "retained-subscription", mode: "MERGE" }
       });
     }
-    const runtime = createRuntime({ history, scheduler, windowSize: 60 });
+    const runtime = createWorkbenchRuntime({ history, scheduler, windowSize: 60 });
+    await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "retained-4000" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "set-filters", filters: { mode: "MERGE" } });
+    await flushStoreNotifications();
     const origin = runtime.getSnapshot();
 
     runtime.dispatch({ type: "set-find", value: "needle" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.findState).toEqual({
       query: "needle",
       matchCount: 3,
@@ -2078,12 +2106,13 @@ describe("WorkbenchRuntime", () => {
       }
     });
 
-    history.append({
+    history.offer({
       ...event("retained-4001", "orders-4001"),
       subscription: { id: "retained-subscription", mode: "MERGE" }
     });
     await flushStoreNotifications();
     scheduler.flushFrame();
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("retained-2050");
     expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "retained-2050")).toBe(true);
 
@@ -2095,37 +2124,33 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("uses the same complete retained Find contract with IndexedDB history", async () => {
-    const sessionId = "workbench-complete-find";
-    Reflect.set(globalThis, "indexedDB", new IDBFactory());
-    await deleteEventDatabase(eventDatabaseName(sessionId));
-    const history = await createIndexedDbEventHistory({ panelSessionId: sessionId, reset: true, batchSize: 64 });
-    try {
-      await Promise.all(Array.from({ length: 180 }, (_, index) => {
-        const number = index + 1;
-        return history.append({
-          ...event(`indexed-retained-${number}`, [2, 91, 179].includes(number) ? `indexed-needle-${number}` : `indexed-orders-${number}`),
-          subscription: { id: "indexed-retained-subscription", mode: "MERGE" }
-        }).toPromise();
-      }));
-      const runtime = createRuntime({ history, windowSize: 60 });
-      await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(180));
-      runtime.dispatch({ type: "set-find", value: "indexed-needle" });
-      await vi.waitFor(() => expect(runtime.getSnapshot().evidence.findState.matchCount).toBe(3));
-      expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-2");
-      expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-2")).toBe(true);
-      runtime.dispatch({ type: "find-next" });
-      expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-91");
-      expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-91")).toBe(true);
-      runtime.dispose();
-    } finally {
-      await history.close().toPromise();
-      await deleteEventDatabase(eventDatabaseName(sessionId));
+  it("uses the same complete retained Find contract with authoritative history", async () => {
+    const history = createAuthoritativeHistory();
+    for (let index = 1; index <= 180; index += 1) {
+      history.offer({
+        ...event(
+          `indexed-retained-${index}`,
+          [2, 91, 179].includes(index) ? `indexed-needle-${index}` : `indexed-orders-${index}`
+        ),
+        subscription: { id: "indexed-retained-subscription", mode: "MERGE" }
+      });
     }
+    const runtime = createWorkbenchRuntime({ history, windowSize: 60 });
+    await flushStoreNotifications();
+    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(180));
+    runtime.dispatch({ type: "set-find", value: "indexed-needle" });
+    await vi.waitFor(() => expect(runtime.getSnapshot().evidence.findState.matchCount).toBe(3));
+    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-2");
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-2")).toBe(true);
+    runtime.dispatch({ type: "find-next" });
+    expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("indexed-retained-91");
+    expect(runtime.getSnapshot().evidence.events.some(({ id }) => id === "indexed-retained-91")).toBe(true);
+    runtime.dispose();
+    await history.close();
   });
 
-  it("keeps an active Scope explicit when its independent Filter produces empty Evidence", () => {
-    const history = createInMemoryEventHistory();
+  it("keeps an active Scope explicit when its independent Filter produces empty Evidence", async () => {
+    const history = createAuthoritativeHistory();
     appendTopologyJourney(
       history,
       {
@@ -2137,7 +2162,8 @@ describe("WorkbenchRuntime", () => {
       },
       300
     );
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const itemScope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "item" && label.includes("scope-item"));
@@ -2150,8 +2176,8 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("prunes versioned export documents at client, subscription, and item Scope", () => {
-    const history = createInMemoryEventHistory();
+  it("prunes versioned export documents at client, subscription, and item Scope", async () => {
+    const history = createAuthoritativeHistory();
     appendTopologyJourney(
       history,
       {
@@ -2174,7 +2200,8 @@ describe("WorkbenchRuntime", () => {
       },
       500
     );
-    const runtime = createRuntime({ history });
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStoreNotifications();
     const scopeNodes = runtime.getSnapshot().scope.nodes;
 
     const assertExport = (scopeId: string) => {

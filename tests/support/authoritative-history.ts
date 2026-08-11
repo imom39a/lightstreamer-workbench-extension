@@ -34,6 +34,8 @@ export type AuthoritativeHistoryOptions = Readonly<{
     candidate: EvidenceCandidate,
     offerNumber: number
   ) => AuthoritativeHistoryOfferDecision;
+  /** Optional test control for holding a read until the supplied release callback runs. */
+  readControl?: (query: EvidenceQuery, release: () => void) => void;
   /** Fixed initial interval identity; the default is deterministic. */
   intervalId?: string;
 }>;
@@ -201,19 +203,19 @@ export function createAuthoritativeHistory(
     };
   }
 
-  function read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>> {
+  function readNow(query: EvidenceQuery): Outcome<EvidenceRead> {
     if (closed) {
-      return Promise.resolve({
+      return {
         ok: false,
         problem: problem("HISTORY_CLOSED", "Event History is closed.")
-      });
+      };
     }
     const matching = currentEvidence.filter(
       (entry) =>
         (query.intervalId === undefined || entry.intervalId === query.intervalId) &&
         matchesEvidenceQuery(entry, query)
     );
-    return Promise.resolve({
+    return {
       ok: true,
       value: Object.freeze({
         interval,
@@ -222,6 +224,13 @@ export function createAuthoritativeHistory(
         committedEvidenceBoundary: currentBoundary(),
         retainedRange: retainedRange()
       })
+    };
+  }
+
+  function read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>> {
+    if (!options.readControl) return Promise.resolve(readNow(query));
+    return new Promise((resolve) => {
+      options.readControl?.(query, () => resolve(readNow(query)));
     });
   }
 
