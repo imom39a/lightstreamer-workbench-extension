@@ -15,7 +15,7 @@ import {
   type HistoryPublication
 } from "../src/core/event-history-authoritative";
 import { createIndexedDbEventHistory, transactionDone, type IndexedDbEventHistoryOptions } from "../src/core/event-history-indexeddb";
-import { serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
+import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 
 function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): EvidenceCandidate {
   return {
@@ -87,6 +87,66 @@ async function hasLegacyMarker(name: string, markerStore: string, markerValue: s
   }
 }
 
+async function createModernJournal(panelSessionId: string, count: number): Promise<void> {
+  const name = authoritativeEventDatabaseName(panelSessionId);
+  const interval = { id: `${panelSessionId}:interval-1`, ordinal: 1 };
+  const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
+  request.onupgradeneeded = () => {
+    const database = request.result;
+    if (!database.objectStoreNames.contains("historyControl")) {
+      database.createObjectStore("historyControl", { keyPath: "key" });
+    }
+    if (!database.objectStoreNames.contains("evidence")) {
+      const evidence = database.createObjectStore("evidence", { keyPath: "sequence" });
+      evidence.createIndex("eventIdentity", "eventId", { unique: true });
+      evidence.createIndex("facets", "facets", { multiEntry: true });
+    }
+  };
+  const database = await requestValue(request);
+  try {
+    const transaction = database.transaction(["historyControl", "evidence"], "readwrite");
+    const evidenceStore = transaction.objectStore("evidence");
+    let accountedBytes = 0;
+    let replayPayloadBytes = 0;
+    for (let index = 0; index < count; index += 1) {
+      const entry = candidate(`event-${index}`);
+      const serialized = serializeJournalEvidenceCandidate(entry);
+      replayPayloadBytes += serialized.bytes;
+      accountedBytes += journalAccountedBytes(serialized.bytes);
+      evidenceStore.add({
+        intervalId: interval.id,
+        sequence: index + 1,
+        eventId: entry.id,
+        replayPayload: serialized.payload,
+        serializedBytes: serialized.bytes,
+        accountedBytes: journalAccountedBytes(serialized.bytes),
+        facets: itemUpdateFacets()
+      });
+    }
+    transaction.objectStore("historyControl").put({
+      key: "control",
+      schemaVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+      recordVersion: 3,
+      panelSessionId,
+      interval,
+      phase: "RUNNING",
+      terminal: null,
+      nextSequence: count + 1,
+      committedEvidenceBoundary: { intervalId: interval.id, sequence: count, eventId: `event-${count - 1}` },
+      retainedRange: {
+        first: { intervalId: interval.id, sequence: 1, eventId: "event-0" },
+        last: { intervalId: interval.id, sequence: count, eventId: `event-${count - 1}` }
+      },
+      retainedCount: count,
+      replayPayloadBytes,
+      accountedBytes
+    });
+    await transactionDone(transaction, "building legacy-modern journal");
+  } finally {
+    database.close();
+  }
+}
+
 type TransactionHandlers = {
   oncomplete: (() => void) | null;
   onerror: (() => void) | null;
@@ -136,7 +196,6 @@ describe("IndexedDB authoritative EventHistory", () => {
   it("creates exactly the control and evidence stores with only identity and facet indexes", async () => {
     const panelSessionId = "indexed-schema";
     const history = await freshHistory(panelSessionId);
-    await history.close();
 
     const request = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -150,6 +209,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(evidence.index("eventIdentity").unique).toBe(true);
     expect(evidence.index("facets").multiEntry).toBe(true);
     database.close();
+    await history.close();
   });
 
   it("persists the v3 accounting and terminal-state fields as exact durable journal records", async () => {
@@ -613,8 +673,9 @@ describe("IndexedDB authoritative EventHistory", () => {
 
   it("validates startup through a cursor without getAll and hands replay to live Capture exactly once", async () => {
     const panelSessionId = "indexed-replay-handoff";
-    const history = await freshHistory(panelSessionId);
-    for (let index = 0; index < 600; index += 1) await history.offer(candidate(`replay-${index}`)).settled;
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
+    await createModernJournal(panelSessionId, 600);
 
     const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll");
     const reopened = await openEventHistory({ panelSessionId });
@@ -632,12 +693,11 @@ describe("IndexedDB authoritative EventHistory", () => {
     const live = reopened.offer(candidate("replay-live"));
     await expect(live.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 601 } });
     await replayComplete;
-    expect(received).toEqual([...Array.from({ length: 600 }, (_, index) => `replay-${index}`), "replay-live"]);
+    expect(received).toEqual([...Array.from({ length: 600 }, (_, index) => `event-${index}`), "replay-live"]);
 
     unsubscribe();
     getAllSpy.mockRestore();
     await reopened.close();
-    await history.close();
   });
 
   it("latches a stalled read cursor to the boundary, excluding a post-latch commit", async () => {
@@ -788,11 +848,11 @@ describe("IndexedDB authoritative EventHistory", () => {
       if (publication.type === "status") replacedStatus = publication.status;
     });
     expect(replacedStatus).toMatchObject({ capacity: { tier: "NORMAL" }, fallback: null });
-    await replaced.close();
-    const replacedDatabase = await requestValue(indexedDB.open(knownName));
+    const replacedDatabase = await requestValue(indexedDB.open(knownName, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION));
     expect(replacedDatabase.version).toBe(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
     expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "historyControl"]);
     replacedDatabase.close();
+    await replaced.close();
 
     const newerName = authoritativeEventDatabaseName("newer-schema");
     const newer = indexedDB.open(newerName, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 10);
@@ -1243,24 +1303,22 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
-  it("isolates startup cleanup to panel-matching journals and keeps unknown newer generations", async () => {
-    const panelSessionId = "ownership-isolation-session";
-    const legacySessionId = "other-isolation-session";
-    const knownOlderName = legacyJournalName(panelSessionId, 1);
-    const futureName = legacyJournalName(panelSessionId, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1);
-    const otherOlderName = legacyJournalName(legacySessionId, 1);
+  it("sweeps all recognized known generations across sessions during startup", async () => {
+    const panelSessionId = "ownership-cleanup-session";
+    const firstLegacySession = "legacy-session-a";
+    const secondLegacySession = "legacy-session-b";
+    const firstLegacyName = legacyJournalName(firstLegacySession, 1);
+    const secondLegacyName = legacyJournalName(secondLegacySession, 1);
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await Promise.all([
-      createLegacyJournal(panelSessionId, 1, "owned", "legacy-current-panel-old"),
-      createLegacyJournal(legacySessionId, 1, "owned-other", "legacy-other-panel"),
-      createLegacyJournal(panelSessionId, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1, "future", "future-stays")
+      createLegacyJournal(firstLegacySession, 1, "owned-first", "legacy-first"),
+      createLegacyJournal(secondLegacySession, 1, "owned-second", "legacy-second")
     ]);
 
     const runtime: AuthoritativeEventDatabaseRuntime = {
       listDatabases: vi.fn(async () => [
-        { name: knownOlderName, version: 1 },
-        { name: futureName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1 },
-        { name: otherOlderName, version: 1 }
+        { name: firstLegacyName, version: 1 },
+        { name: secondLegacyName, version: 1 }
       ]),
       requestLock: vi.fn(async (_name, _options, callback) => callback())
     };
@@ -1273,9 +1331,8 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(status).toMatchObject({ fallback: null, capacity: { tier: "NORMAL" } });
     await history.close();
 
-    expect(await hasLegacyMarker(knownOlderName, "owned", "legacy-current-panel-old")).toBe(false);
-    expect(await hasLegacyMarker(futureName, "future", "future-stays")).toBe(true);
-    expect(await hasLegacyMarker(otherOlderName, "owned-other", "legacy-other-panel")).toBe(true);
+    expect(await hasLegacyMarker(firstLegacyName, "owned-first", "legacy-first")).toBe(false);
+    expect(await hasLegacyMarker(secondLegacyName, "owned-second", "legacy-second")).toBe(false);
   });
 
   it("normalizes panel-session identifiers when matching crash residue journals", async () => {
@@ -1296,6 +1353,68 @@ describe("IndexedDB authoritative EventHistory", () => {
     const history = await openEventHistory({ panelSessionId: unsanitizedPanelSessionId, runtime });
     await history.close();
     expect(await hasLegacyMarker(legacyName, "owned", "unsanitized-legacy")).toBe(false);
+  });
+
+  it("preserves recognized newer schema journals and falls back to memory", async () => {
+    const currentPanelSessionId = "ownership-unknown-newer";
+    const legacySessionId = "ownership-unknown-other";
+    const newerName = legacyJournalName(legacySessionId, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1);
+    const legacyName = legacyJournalName(legacySessionId, 1);
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await Promise.all([
+      createLegacyJournal(legacySessionId, 1, "owned", "legacy-old"),
+      createLegacyJournal(legacySessionId, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1, "future", "future-stays")
+    ]);
+
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [
+        { name: legacyName, version: 1 },
+        { name: newerName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1 }
+      ]),
+      requestLock: vi.fn(async (_name, _options, callback) => callback())
+    };
+
+    const history = await openEventHistory({ panelSessionId: currentPanelSessionId, runtime });
+    let status: unknown;
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") status = publication.status;
+    });
+    expect(status).toMatchObject({
+      capacity: { tier: "LOWER" },
+      fallback: "UNKNOWN_NEWER_SCHEMA"
+    });
+    await history.close();
+
+    expect(await hasLegacyMarker(legacyName, "owned", "legacy-old")).toBe(false);
+    expect(await hasLegacyMarker(newerName, "future", "future-stays")).toBe(true);
+  });
+
+  it("holds current-journal ownership and blocks a concurrent session", async () => {
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const panelSessionId = "owner-lock-block";
+    const runtime = authoritativeEventDatabaseRuntime();
+    const first = await openEventHistory({ panelSessionId, runtime });
+
+    const second = await openEventHistory({ panelSessionId, runtime });
+    let secondStatus: unknown;
+    second.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") secondStatus = publication.status;
+    });
+    expect(secondStatus).toMatchObject({
+      capacity: { tier: "LOWER" },
+      fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+    });
+
+    await first.close();
+    await second.close();
+
+    const recovered = await openEventHistory({ panelSessionId, runtime });
+    let recoveredStatus: unknown;
+    recovered.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") recoveredStatus = publication.status;
+    });
+    expect(recoveredStatus).toMatchObject({ capacity: { tier: "NORMAL" }, fallback: null });
+    await recovered.close();
   });
 
   it("keeps orphan journals when cleanup lock cannot be acquired", async () => {
