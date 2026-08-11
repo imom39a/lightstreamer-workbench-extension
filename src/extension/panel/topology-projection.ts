@@ -4,6 +4,7 @@ import {
   TOPOLOGY_SYNC_COMPLETE,
   TOPOLOGY_SYNC_LIMITS,
   TOPOLOGY_SYNC_VERSION,
+  isTopologyObservation,
   type TopologyAbsoluteRecord,
   type TopologyCoverage,
   type TopologyCoverageReason,
@@ -239,6 +240,20 @@ export function createTopologyProjection(): TopologyProjection {
         (left, right) =>
           (left.topology?.captureSequence ?? 0) - (right.topology?.captureSequence ?? 0)
       );
+    const replayObservations = new Map<string, TopologyObservation>(
+      reconstructed.observations.map((observation) => [
+        semanticEventKey(observation),
+        observation
+      ])
+    );
+    const retainedEvents = new Map<string, LightstreamerEventEnvelope>();
+    for (const event of retained) {
+      if (event.topology) {
+        const key = semanticEventKey(event.topology);
+        replayObservations.set(key, event.topology);
+        retainedEvents.set(key, event);
+      }
+    }
     const beginResult = applyCommittedSyncFrame(reconstructed.begin);
     if (!beginResult.accepted) return beginResult;
     for (const chunk of reconstructed.chunks) {
@@ -256,14 +271,17 @@ export function createTopologyProjection(): TopologyProjection {
       reconstructed.cutoffCaptureSequence
     );
 
-    for (const event of retained) {
-      if (event.topology) {
-        const key = semanticEventKey(event.topology);
+    for (const observation of [...replayObservations.values()].sort(
+      (left, right) => left.captureSequence - right.captureSequence
+    )) {
+      const key = semanticEventKey(observation);
+      const event = retainedEvents.get(key);
+      if (event) {
         semanticEvents.set(key, event);
-        const replayResult = syncCoordinator.applyLive(event.topology);
-        if (!replayResult.accepted) {
-          return { accepted: false, resetConsumerState: false };
-        }
+      }
+      const replayResult = syncCoordinator.applyLive(observation);
+      if (!replayResult.accepted) {
+        return { accepted: false, resetConsumerState: false };
       }
     }
     return completeResult;
@@ -654,6 +672,7 @@ type ReconstructedCommittedCheckpoint = {
   chunks: TopologySyncChunkFrame[];
   complete: TopologySyncCompleteFrame;
   cutoffCaptureSequence: number;
+  observations: TopologyObservation[];
 };
 
 function reconstructCheckpointFrames(
@@ -682,6 +701,15 @@ function reconstructCheckpointFrames(
     intValue(checkpoint.cutoffCaptureSequence) ??
     Math.max(0, ...records.map((record) => record.captureSequence));
   if (cutoffCaptureSequence < 0) {
+    return null;
+  }
+
+  const observations = parseCheckpointObservations(
+    checkpoint.observations,
+    pageEpoch,
+    cutoffCaptureSequence
+  );
+  if (!observations) {
     return null;
   }
 
@@ -720,7 +748,8 @@ function reconstructCheckpointFrames(
       ...(checkpoint.reason === "limit-exceeded" || checkpoint.reason === "serialization-failed"
         ? { reason: checkpoint.reason }
         : {})
-    }
+    },
+    observations
   };
 }
 
@@ -761,6 +790,35 @@ function parseAbsoluteRecords(
     records.push(rawRecord);
   }
   return records;
+}
+
+function parseCheckpointObservations(
+  rawObservations: unknown,
+  pageEpoch: string,
+  cutoffCaptureSequence: number
+): TopologyObservation[] | null {
+  if (rawObservations === undefined) {
+    return [];
+  }
+  if (!Array.isArray(rawObservations)) {
+    return null;
+  }
+
+  const observations: TopologyObservation[] = [];
+  const captureSequences = new Set<number>();
+  for (const rawObservation of rawObservations) {
+    if (
+      !isTopologyObservation(rawObservation) ||
+      rawObservation.pageEpoch !== pageEpoch ||
+      rawObservation.captureSequence <= cutoffCaptureSequence ||
+      captureSequences.has(rawObservation.captureSequence)
+    ) {
+      return null;
+    }
+    captureSequences.add(rawObservation.captureSequence);
+    observations.push(rawObservation);
+  }
+  return observations.sort((left, right) => left.captureSequence - right.captureSequence);
 }
 
 function isTopologyAbsoluteRecord(

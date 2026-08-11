@@ -15,6 +15,7 @@ import {
 } from "../src/bridge/messages";
 import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
 import { createEventNormalizer } from "../src/core/event-normalizer";
+import { type TopologyState } from "../src/core/topology-state";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 import { createTopologyCheckpointEvidenceCandidate } from "../src/extension/panel/topology-checkpoint-evidence-codec";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
@@ -183,6 +184,53 @@ describe("history-impl-09 topology cutover", () => {
     expect(topologyCandidates[0]?.id).toBe(candidate.id);
 
     runtime.dispose();
+  });
+
+  it("rebuilds a committed checkpoint and applies persisted post-cutoff observations once on a fresh follower", () => {
+    const frames = checkpointFrames("follower-recovery-sync");
+    const candidate = checkpointCandidate(frames, [observation("recovered-tail", 2)]);
+    const projection = createTopologyProjection();
+    const committed = {
+      intervalId: "interval-recovery",
+      sequence: 1,
+      eventId: candidate.id,
+      candidate
+    };
+
+    expect(projection.ingestCommittedEvidence(committed)).toMatchObject({
+      accepted: true
+    });
+    expect(projection.snapshot().subscriptionCount).toBe(2);
+    expect(projection.snapshot().serverEstablishedSubscriptionCount).toBe(1);
+    expect(subscriptionIds(projection.snapshot())).toEqual(
+      expect.arrayContaining(["recovered-tail"])
+    );
+
+    expect(projection.ingestCommittedEvidence(committed)).toMatchObject({
+      accepted: true
+    });
+    expect(projection.snapshot().subscriptionCount).toBe(2);
+  });
+
+  it("preserves a retained semantic tail while replaying persisted observations", () => {
+    const projection = createTopologyProjection();
+    const normalizer = createEventNormalizer();
+    const retainedTail = observation("retained-tail", 3);
+    projection.ingestCapture(normalizer.normalize(topologyCapture(retainedTail)));
+
+    const frames = checkpointFrames("retained-tail-sync");
+    const candidate = checkpointCandidate(frames, [observation("persisted-tail", 2)]);
+    projection.ingestCommittedEvidence({
+      intervalId: "interval-retained-tail",
+      sequence: 1,
+      eventId: candidate.id,
+      candidate
+    });
+
+    expect(projection.snapshot().subscriptionCount).toBe(3);
+    expect(subscriptionIds(projection.snapshot())).toEqual(
+      expect.arrayContaining(["persisted-tail", "retained-tail"])
+    );
   });
 
   it("does not project a complete checkpoint until its candidate becomes committed Evidence", async () => {
@@ -374,11 +422,22 @@ function topologyCapture(topology: TopologyObservation) {
 }
 
 function checkpointCandidate(
-  frames: readonly [TopologySyncBeginFrame, TopologySyncChunkFrame, TopologySyncCompleteFrame]
+  frames: readonly [TopologySyncBeginFrame, TopologySyncChunkFrame, TopologySyncCompleteFrame],
+  observations: readonly TopologyObservation[] = []
 ) {
-  const result = createTopologyCheckpointEvidenceCandidate(frames);
+  const result = createTopologyCheckpointEvidenceCandidate(frames, observations);
   if (!result.ok) throw new Error(result.rejection.code);
   return result.value;
+}
+
+function subscriptionIds(state: TopologyState) {
+  return [
+    ...state.unassignedSubscriptions.map(({ id }) => id),
+    ...state.clients.flatMap((client) => [
+      ...client.waitingSubscriptions.map(({ id }) => id),
+      ...client.sessions.flatMap((session) => session.subscriptions.map(({ id }) => id))
+    ])
+  ];
 }
 
 async function committedTopologyCandidates(history: Awaited<ReturnType<typeof createMemoryEventHistoryForTests>>) {
