@@ -23,6 +23,7 @@ import {
   parseAuthoritativeEventDatabaseName,
   openAuthoritativeEventDatabase,
   AuthoritativeDatabaseOpenError,
+  type AuthoritativeEventDatabaseIdentity,
   type AuthoritativeEventDatabaseRuntime,
   type AuthoritativeEventDatabase
 } from "./indexeddb/authoritative-event-db";
@@ -201,9 +202,30 @@ export async function createIndexedDbEventHistory(
 }
 
 const AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}`;
+const AUTHORITATIVE_EVENT_DATABASE_LEGACY_NAME_RE = /^lsew-history-v(\d+)-(.+)$/;
 
 function authoritativeOwnershipLockName(databaseName: string): string {
   return `${AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX}-${databaseName}`;
+}
+
+function parseLegacyAuthoritativeEventDatabaseName(name: string): AuthoritativeEventDatabaseIdentity | null {
+  const match = AUTHORITATIVE_EVENT_DATABASE_LEGACY_NAME_RE.exec(name);
+  if (!match) {
+    return null;
+  }
+  const schemaVersion = Number(match[1]);
+  if (!Number.isSafeInteger(schemaVersion) || schemaVersion < 1) {
+    return null;
+  }
+  return {
+    panelSessionId: match[2],
+    schemaVersion,
+    name
+  };
+}
+
+function parseSweepCandidateEventDatabaseName(name: string): AuthoritativeEventDatabaseIdentity | null {
+  return parseAuthoritativeEventDatabaseName(name) ?? parseLegacyAuthoritativeEventDatabaseName(name);
 }
 
 async function runStartupSweep(
@@ -219,7 +241,7 @@ async function runStartupSweep(
     if (!name) {
       continue;
     }
-    const identity = parseAuthoritativeEventDatabaseName(name);
+    const identity = parseSweepCandidateEventDatabaseName(name);
     if (!identity) {
       continue;
     }
