@@ -4,6 +4,7 @@ export const FORCED_GC_PASSES = 3;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_REQUEST_CEILING_MS = 5_000;
 const DEFAULT_HEAP_GC_DEADLINE_MS = 240_000;
+const DEFAULT_PROGRESS_AGE_CEILING_MS = 120_000;
 
 export class PerformanceOperationTimeout extends Error {
   constructor(message, status) {
@@ -363,6 +364,44 @@ class CdpRequestTimeout extends Error {
   }
 }
 
+function progressAgeCeilingMs(progress) {
+  if (!progress) return null;
+  const stage = typeof progress.stage === "string" ? progress.stage : "";
+  if (progress.phase === "heap") return /cleanup|close/u.test(stage) ? 30_000 : 240_000;
+  if (progress.phase === "terminal" || progress.phase === "checkpoint") return 120_000;
+  if (/cleanup|close|read/u.test(stage)) return 30_000;
+  if (/query/u.test(stage)) return /^cell-\d+-query$/u.test(stage) ? 120_000 : 30_000;
+  if (/offer|receipt|commit/u.test(stage)) return 120_000;
+  return DEFAULT_PROGRESS_AGE_CEILING_MS;
+}
+
+function observeProgressStatus(status, monitor, now) {
+  const progress = status.progress;
+  if (progress && Number.isSafeInteger(progress.sequence) && progress.sequence > monitor.sequence) {
+    monitor.sequence = progress.sequence;
+    monitor.lastObservedAt = now();
+    monitor.ceilingMs = progressAgeCeilingMs(progress);
+  }
+  const progressAgeMs = monitor.lastObservedAt === null ? null : Math.max(0, now() - monitor.lastObservedAt);
+  return {
+    ...status,
+    progressSequence: monitor.sequence >= 0 ? monitor.sequence : null,
+    progressAgeMs,
+    progressAgeCeilingMs: monitor.ceilingMs,
+    lastProgressObservedAt: monitor.lastObservedAt
+  };
+}
+
+function assertProgressAge(status, monitor, now) {
+  const ageMs = monitor.lastObservedAt === null ? null : Math.max(0, now() - monitor.lastObservedAt);
+  if (ageMs !== null && monitor.ceilingMs !== null && ageMs > monitor.ceilingMs) {
+    throw new PerformanceOperationTimeout(
+      `Event History performance operation stalled in ${status.progress?.stage ?? "unknown"} progress for ${ageMs} ms (ceiling ${monitor.ceilingMs} ms).`,
+      { ...status, progressAgeMs: ageMs }
+    );
+  }
+}
+
 export async function runPageOperation(cdp, expression, options = {}) {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? delay;
@@ -374,7 +413,13 @@ export async function runPageOperation(cdp, expression, options = {}) {
   const deadlineAt = startedAt + deadlineMs;
   let lastRequestTimeout = null;
   let pollToken = 0;
-  let lastStatus = operationStatus({ operationId, state: "pending", heartbeat: 0 }, startedAt, now);
+  const progressMonitor = { sequence: -1, lastObservedAt: null, ceilingMs: null };
+  const statusAt = (value, requestTimeout = null) => observeProgressStatus(
+    operationStatus(value, startedAt, now, requestTimeout),
+    progressMonitor,
+    now
+  );
+  let lastStatus = statusAt({ operationId, state: "pending", heartbeat: 0 });
   emitHeartbeat(options.onHeartbeat, lastStatus);
 
   try {
@@ -383,7 +428,8 @@ export async function runPageOperation(cdp, expression, options = {}) {
       awaitPromise: false,
       returnByValue: true
     }, deadlineAt, requestCeilingMs, now, "start");
-    lastStatus = operationStatus(evaluationValue(startResponse), startedAt, now);
+    lastStatus = statusAt(evaluationValue(startResponse));
+    assertProgressAge(lastStatus, progressMonitor, now);
 
     while (true) {
       let pollResponse;
@@ -396,8 +442,9 @@ export async function runPageOperation(cdp, expression, options = {}) {
       } catch (error) {
         if (!(error instanceof CdpRequestTimeout) || error.phase !== "poll") throw error;
         lastRequestTimeout = requestTimeoutDetails(error);
-        lastStatus = operationStatus(lastStatus, startedAt, now, lastRequestTimeout);
+        lastStatus = statusAt(lastStatus, lastRequestTimeout);
         emitHeartbeat(options.onHeartbeat, lastStatus);
+        assertProgressAge(lastStatus, progressMonitor, now);
         if (lastStatus.elapsedMs >= deadlineMs) {
           throw new PerformanceOperationTimeout(
             `Event History performance operation timed out after ${lastStatus.elapsedMs} ms.`,
@@ -407,8 +454,9 @@ export async function runPageOperation(cdp, expression, options = {}) {
         await sleep(Math.min(pollIntervalMs, Math.max(0, deadlineMs - lastStatus.elapsedMs)));
         continue;
       }
-      lastStatus = operationStatus(evaluationValue(pollResponse), startedAt, now, lastRequestTimeout);
+      lastStatus = statusAt(evaluationValue(pollResponse), lastRequestTimeout);
       emitHeartbeat(options.onHeartbeat, lastStatus);
+      assertProgressAge(lastStatus, progressMonitor, now);
       if (lastStatus.state === "resolved") return lastStatus.result;
       if (lastStatus.state === "rejected") throw remoteOperationError(lastStatus.error);
       if (lastStatus.state !== "pending") throw new Error(`Performance operation entered invalid state: ${lastStatus.state}.`);
@@ -423,7 +471,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
     }
   } catch (error) {
     if (error instanceof CdpRequestTimeout) {
-      const timeoutStatus = operationStatus(lastStatus, startedAt, now, requestTimeoutDetails(error));
+      const timeoutStatus = statusAt(lastStatus, requestTimeoutDetails(error));
       throw new PerformanceOperationTimeout(
         `Event History performance operation timed out during the ${error.phase} CDP request after ${timeoutStatus.elapsedMs} ms.`,
         timeoutStatus
@@ -538,6 +586,12 @@ function startOperationExpression(expression, operationId) {
         const progress = rawProgress && typeof rawProgress === "object" ? {
           phase: ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(rawProgress.phase) ? rawProgress.phase : "cells",
           stage: typeof rawProgress.stage === "string" ? rawProgress.stage : "unknown",
+          substage: typeof rawProgress.substage === "string" ? rawProgress.substage : (typeof rawProgress.stage === "string" ? rawProgress.stage : "unknown"),
+          sequence: Number.isSafeInteger(rawProgress.sequence) && rawProgress.sequence >= 1 ? rawProgress.sequence : 0,
+          pageElapsedMs: Number.isFinite(rawProgress.pageElapsedMs) && rawProgress.pageElapsedMs >= 0 ? rawProgress.pageElapsedMs : 0,
+          sample: rawProgress.sample === null || (Number.isInteger(rawProgress.sample) && rawProgress.sample >= 1 && rawProgress.sample <= 3) ? rawProgress.sample : null,
+          trigger: rawProgress.trigger === "PENDING_BYTES" || rawProgress.trigger === "PENDING_AGE" ? rawProgress.trigger : null,
+          scenario: typeof rawProgress.scenario === "string" ? rawProgress.scenario : null,
           cellIndex: rawProgress.cellIndex === null || (Number.isSafeInteger(rawProgress.cellIndex) && rawProgress.cellIndex >= 1 && rawProgress.cellIndex <= 36) ? rawProgress.cellIndex : null,
           cellTotal: 36,
           adapter: rawProgress.adapter === "indexeddb" || rawProgress.adapter === "memory" ? rawProgress.adapter : null,
@@ -642,6 +696,12 @@ function serializeOperationProgress(value) {
   return {
     phase: ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(value.phase) ? value.phase : "cells",
     stage: typeof value.stage === "string" ? value.stage : "unknown",
+    substage: typeof value.substage === "string" ? value.substage : (typeof value.stage === "string" ? value.stage : "unknown"),
+    sequence: Number.isSafeInteger(value.sequence) && value.sequence >= 1 ? value.sequence : 0,
+    pageElapsedMs: Number.isFinite(value.pageElapsedMs) && value.pageElapsedMs >= 0 ? value.pageElapsedMs : 0,
+    sample: value.sample === null || (Number.isInteger(value.sample) && value.sample >= 1 && value.sample <= 3) ? value.sample : null,
+    trigger: value.trigger === "PENDING_BYTES" || value.trigger === "PENDING_AGE" ? value.trigger : null,
+    scenario: typeof value.scenario === "string" ? value.scenario : null,
     cellIndex: value.cellIndex === null || (Number.isSafeInteger(value.cellIndex) && value.cellIndex >= 1 && value.cellIndex <= 36) ? value.cellIndex : null,
     cellTotal: 36,
     adapter: value.adapter === "indexeddb" || value.adapter === "memory" ? value.adapter : null,

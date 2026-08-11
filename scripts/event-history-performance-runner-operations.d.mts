@@ -7,6 +7,12 @@ export type PerformanceOperationRequestTimeout = Readonly<{
 export type PerformanceOperationProgress = Readonly<{
   phase: "cells" | "terminal" | "checkpoint" | "heap" | "lifecycle";
   stage: string;
+  substage: string;
+  sequence: number;
+  pageElapsedMs: number;
+  sample: number | null;
+  trigger: "PENDING_BYTES" | "PENDING_AGE" | null;
+  scenario: string | null;
   cellIndex: number | null;
   cellTotal: 36;
   adapter: HeapAdapter | null;
@@ -95,6 +101,10 @@ export type PerformanceOperationStatus = Readonly<{
   lastHeartbeatAt: number | null;
   lastRequestTimeout?: PerformanceOperationRequestTimeout;
   progress?: PerformanceOperationProgress;
+  progressSequence?: number | null;
+  progressAgeMs?: number | null;
+  progressAgeCeilingMs?: number | null;
+  lastProgressObservedAt?: number | null;
   result?: unknown;
   error?: Readonly<{
     name: string;

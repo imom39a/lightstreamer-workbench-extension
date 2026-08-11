@@ -15,15 +15,19 @@ import {
   HarnessStageTimeout,
   settleReceiptStage,
   withStageDeadline,
-  type HarnessProgress
+  type HarnessProgressInput
 } from "../benchmarks/event-history-performance-harness";
 import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
-  const progress = (stage: string): HarnessProgress => ({
+  const progress = (stage: string): HarnessProgressInput => ({
     phase: "cells",
     stage,
+    substage: stage,
+    sample: 1,
+    trigger: null,
+    scenario: null,
     cellIndex: 7,
     cellTotal: 36,
     adapter: "indexeddb",
@@ -37,37 +41,57 @@ describe("Event History performance checkpoint workload", () => {
 
   it("bounds a partial receipt stage and absorbs a late rejection without an unhandled rejection", async () => {
     vi.useFakeTimers();
+    let resolveLate!: (value: string) => void;
     let rejectLate!: (error: Error) => void;
+    const observed: number[] = [];
     try {
       const pending = settleReceiptStage(
         [
           Promise.resolve("settled-first"),
+          new Promise<string>((resolve) => { resolveLate = resolve; }),
           new Promise<never>((_, reject) => { rejectLate = reject; })
         ],
         "cell-7-receipts",
         100,
-        (settled) => ({ ...progress("receipt-settlement"), settled })
+        (settled) => {
+          observed.push(settled);
+          return { ...progress("receipt-settlement"), settled };
+        }
       );
-      await vi.advanceTimersByTimeAsync(100);
-      await expect(pending).rejects.toMatchObject({
+      const rejected = expect(pending).rejects.toMatchObject({
         name: "HarnessStageTimeout",
         code: "HARNESS_STAGE_TIMEOUT",
         stage: "cell-7-receipts",
         progress: { offered: 1692, settled: 1 }
       });
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+      resolveLate("late-success");
       rejectLate(new Error("late receipt rejection"));
       await Promise.resolve();
+      expect(observed.at(-1)).toBe(1);
+      expect(observed).not.toContain(2);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it.each(["query-find-2", "cell-7-read", "cell-7-close"])("contextualizes bounded %s failures", async (stage) => {
+  it.each([
+    "cell-7-query",
+    "query-find-2",
+    "cell-7-read",
+    "cell-7-close",
+    "terminal-memory-PENDING_AGE-receipts",
+    "checkpoint-memory-representative-candidate",
+    "sample-heap-receipts",
+    "cleanup-close"
+  ])("contextualizes bounded %s failures", async (stage) => {
     vi.useFakeTimers();
     try {
       const pending = withStageDeadline(new Promise<never>(() => undefined), stage, 50, () => progress(stage));
+      const rejected = expect(pending).rejects.toBeInstanceOf(HarnessStageTimeout);
       await vi.advanceTimersByTimeAsync(50);
-      await expect(pending).rejects.toBeInstanceOf(HarnessStageTimeout);
+      await rejected;
     } finally {
       vi.useRealTimers();
     }

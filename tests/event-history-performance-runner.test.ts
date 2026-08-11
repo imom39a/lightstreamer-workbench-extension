@@ -581,6 +581,12 @@ describe("Event History performance runner page operation", () => {
     const progress = {
       phase: "cells",
       stage: "receipt-settlement",
+      substage: "receipt-settlement",
+      sequence: 17,
+      pageElapsedMs: 4_321,
+      sample: 2,
+      trigger: null,
+      scenario: null,
       cellIndex: 7,
       cellTotal: 36,
       adapter: "indexeddb",
@@ -610,6 +616,104 @@ describe("Event History performance runner page operation", () => {
     });
   });
 
+  it("fails closed on host-observed progress age even when polls keep succeeding", async () => {
+    let now = 0;
+    const progress = {
+      phase: "cells",
+      stage: "cell-7-receipts",
+      substage: "receipt-settlement",
+      sequence: 4,
+      pageElapsedMs: 1,
+      sample: 1,
+      trigger: null,
+      scenario: null,
+      cellIndex: 7,
+      cellTotal: 36,
+      adapter: "indexeddb",
+      workload: "burst",
+      shape: "large-json-rich",
+      workloadPhase: "commit",
+      offered: 1_692,
+      settled: 1,
+      query: null
+    };
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "stale-progress", state: "pending", heartbeat: 0, progress }),
+      evaluated({ operationId: "stale-progress", state: "pending", heartbeat: 1, progress }),
+      evaluated({ operationId: "stale-progress", state: "pending", heartbeat: 2, progress }),
+      evaluated(true)
+    ]);
+
+    const result = await runPageOperation(cdp, "window.run()", {
+      operationId: "stale-progress",
+      deadlineMs: 200_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 120_001; }
+    }).then(() => null, (error) => error);
+
+    expect(result).toBeInstanceOf(PerformanceOperationTimeout);
+    expect(result.status).toMatchObject({
+      progressSequence: 4,
+      progressAgeMs: 120_001,
+      progressAgeCeilingMs: 120_000,
+      lastProgressObservedAt: 0,
+      progress: { stage: "cell-7-receipts" }
+    });
+  });
+
+  it("enforces progress age after a bounded poll retry", async () => {
+    let now = 0;
+    let calls = 0;
+    const progress = {
+      phase: "heap",
+      stage: "cleanup-close",
+      substage: "cleanup-close",
+      sequence: 9,
+      pageElapsedMs: 2,
+      sample: 2,
+      trigger: null,
+      scenario: null,
+      cellIndex: null,
+      cellTotal: 36,
+      adapter: "indexeddb",
+      workload: null,
+      shape: null,
+      workloadPhase: null,
+      offered: 10_000,
+      settled: 10_000,
+      query: null
+    };
+    const neverSettles = new Promise<FakeCdpResponse>(() => undefined) as CancelableFakeCdpRequest;
+    neverSettles.cancel = () => { now = 30_001; };
+    const cdp = {
+      request: (_method: string, params: Record<string, unknown> = {}) => {
+        calls += 1;
+        if (String(params.expression ?? "").includes("delete globalThis")) return Promise.resolve(evaluated(true));
+        if (calls === 1) return Promise.resolve(evaluated({ operationId: "retry-stale-progress", state: "pending", heartbeat: 0, progress }));
+        if (calls === 2) return neverSettles;
+        return Promise.resolve(evaluated({ operationId: "retry-stale-progress", state: "pending", heartbeat: calls - 1, progress }));
+      }
+    };
+
+    const result = await runPageOperation(cdp, "window.run()", {
+      operationId: "retry-stale-progress",
+      deadlineMs: 100_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      requestCeilingMs: 10
+    }).then(() => null, (error) => error);
+
+    expect(result).toBeInstanceOf(PerformanceOperationTimeout);
+    expect(result.status).toMatchObject({
+      progressAgeMs: 30_001,
+      progressAgeCeilingMs: 30_000,
+      lastProgressObservedAt: 0,
+      lastRequestTimeout: { phase: "poll", ceilingMs: 10 }
+    });
+    expect(calls).toBeGreaterThanOrEqual(3);
+  });
+
   it("preserves the original rejected error fields and cleans the operation record", async () => {
     const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
     const cdp = new FakeCdp([
@@ -625,8 +729,14 @@ describe("Event History performance runner page operation", () => {
           stack: "TypeError: original failure\\n at page.js:4",
           code: "PREPARE_FAILED",
           progress: {
-            phase: "heap",
-            stage: "sample-receipt-settlement",
+      phase: "heap",
+      stage: "sample-receipt-settlement",
+      substage: "sample-receipt-settlement",
+      sequence: 18,
+      pageElapsedMs: 12_345,
+      sample: 2,
+      trigger: null,
+      scenario: null,
             cellIndex: null,
             cellTotal: 36,
             adapter: "indexeddb",
@@ -672,6 +782,9 @@ describe("Event History performance runner page operation", () => {
       progress: {
         phase: "heap",
         stage: "sample-receipt-settlement",
+        sequence: 18,
+        pageElapsedMs: 12_345,
+        sample: 2,
         adapter: "indexeddb",
         offered: 10_000,
         settled: 9_999
@@ -723,6 +836,12 @@ describe("Event History performance runner page operation", () => {
         progress: {
           phase: "cells",
           stage: "cell-36-read",
+          substage: "cell-36-read",
+          sequence: 99,
+          pageElapsedMs: 60_001,
+          sample: 3,
+          trigger: null,
+          scenario: null,
           cellIndex: 36,
           cellTotal: 36,
           adapter: "memory",

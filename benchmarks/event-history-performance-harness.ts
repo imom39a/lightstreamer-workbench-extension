@@ -57,9 +57,13 @@ type EventHistoryPerformanceConfig = Readonly<{
   burstPauseMs: number;
 }>;
 
-export type HarnessProgress = Readonly<{
+export type HarnessProgressInput = Readonly<{
   phase: "cells" | "terminal" | "checkpoint" | "heap" | "lifecycle";
   stage: string;
+  substage: string;
+  sample: number | null;
+  trigger: "PENDING_BYTES" | "PENDING_AGE" | null;
+  scenario: string | null;
   cellIndex: number | null;
   cellTotal: 36;
   adapter: "indexeddb" | "memory" | null;
@@ -71,19 +75,25 @@ export type HarnessProgress = Readonly<{
   query: string | null;
 }>;
 
+export type HarnessProgress = HarnessProgressInput & Readonly<{
+  sequence: number;
+  pageElapsedMs: number;
+}>;
+
 const PERFORMANCE_OPERATION_KEY = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
 // These are local fail-closed ceilings for one page stage. They are deliberately
 // generous for the retained workloads and never extend the one-hour operation deadline.
 const STAGE_DEADLINES_MS = Object.freeze({
   cellOffer: 120_000,
-  cellReceipts: 300_000,
-  query: 60_000,
-  read: 120_000,
-  close: 120_000,
-  terminalReceipts: 180_000,
-  checkpointReceipts: 180_000,
-  heapWarmupReceipts: 600_000,
-  heapSampleReceipts: 600_000
+  cellReceipts: 120_000,
+  query: 30_000,
+  queryTotal: 120_000,
+  read: 30_000,
+  close: 30_000,
+  terminalReceipts: 120_000,
+  checkpointReceipts: 120_000,
+  heapWarmupReceipts: 240_000,
+  heapSampleReceipts: 240_000
 });
 
 export class HarnessStageTimeout extends Error {
@@ -101,19 +111,34 @@ export class HarnessStageTimeout extends Error {
   }
 }
 
-function publishHarnessProgress(progress: HarnessProgress): void {
+let harnessProgressSequence = 0;
+
+function observeHarnessProgress(progress: HarnessProgressInput): HarnessProgress {
   const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
-  if (!operation || typeof operation !== "object") return;
-  const record = operation as { state?: unknown; progress?: unknown };
-  if (record.state !== "pending") return;
-  record.progress = progress;
+  const startedAt = operation && typeof operation === "object" && typeof (operation as { startedAt?: unknown }).startedAt === "number"
+    ? (operation as { startedAt: number }).startedAt
+    : performance.now();
+  return {
+    ...progress,
+    sequence: ++harnessProgressSequence,
+    pageElapsedMs: Math.max(0, performance.now() - startedAt)
+  };
 }
 
-function normalizeHarnessError(error: unknown, stage: string, progress: HarnessProgress): Error {
+function publishHarnessProgress(progress: HarnessProgressInput): HarnessProgress {
+  const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+  const observed = observeHarnessProgress(progress);
+  if (!operation || typeof operation !== "object") return observed;
+  const record = operation as { state?: unknown; progress?: unknown };
+  if (record.state === "pending") record.progress = observed;
+  return observed;
+}
+
+function normalizeHarnessError(error: unknown, stage: string, progress: HarnessProgressInput): Error {
   const normalized = error instanceof Error ? error : new Error(String(error));
   const record = normalized as Error & { stage?: string; progress?: HarnessProgress };
   record.stage ??= stage;
-  record.progress ??= progress;
+  record.progress ??= publishHarnessProgress(progress);
   return normalized;
 }
 
@@ -121,14 +146,16 @@ export function withStageDeadline<T>(
   operation: PromiseLike<T> | T,
   stage: string,
   timeoutMs: number,
-  progress: () => HarnessProgress
+  progress: () => HarnessProgressInput,
+  onTimeout: (() => void) | undefined = undefined
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const timer = window.setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new HarnessStageTimeout(stage, timeoutMs, progress()));
+      onTimeout?.();
+      reject(new HarnessStageTimeout(stage, timeoutMs, publishHarnessProgress(progress())));
     }, timeoutMs);
     Promise.resolve(operation).then(
       (value) => {
@@ -151,16 +178,19 @@ export function settleReceiptStage<T>(
   receipts: readonly PromiseLike<T>[],
   stage: string,
   timeoutMs: number,
-  progress: (settled: number) => HarnessProgress
+  progress: (settled: number) => HarnessProgressInput
 ): Promise<T[]> {
   let settled = 0;
+  let timedOut = false;
   const observedReceipts = receipts.map((receipt) => Promise.resolve(receipt).then(
     (value) => {
+      if (timedOut) return value;
       settled += 1;
       publishHarnessProgress(progress(settled));
       return value;
     },
     (error: unknown) => {
+      if (timedOut) return undefined as T;
       settled += 1;
       const contextual = normalizeHarnessError(error, stage, progress(settled));
       publishHarnessProgress(progress(settled));
@@ -171,7 +201,8 @@ export function settleReceiptStage<T>(
     Promise.all(observedReceipts),
     stage,
     timeoutMs,
-    () => progress(settled)
+    () => progress(settled),
+    () => { timedOut = true; }
   );
 }
 
@@ -449,6 +480,10 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
             publishHarnessProgress({
               phase: "cells",
               stage: "cell-start",
+              substage: "cell-start",
+              sample,
+              trigger: null,
+              scenario: null,
               cellIndex,
               cellTotal: 36,
               adapter,
@@ -470,6 +505,10 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         publishHarnessProgress({
           phase: "terminal",
           stage: trigger,
+          substage: trigger,
+          sample: null,
+          trigger,
+          scenario: null,
           cellIndex: null,
           cellTotal: 36,
           adapter,
@@ -489,6 +528,10 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         publishHarnessProgress({
           phase: "checkpoint",
           stage: name,
+          substage: name,
+          sample: null,
+          trigger: null,
+          scenario: name,
           cellIndex: null,
           cellTotal: 36,
           adapter,
@@ -549,9 +592,13 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       const events = Array.from({ length: count }, (_, sequence) =>
         createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
       );
-      const heapProgress = (settled: number | null = null): HarnessProgress => ({
+      const heapProgress = (settled: number | null = null): HarnessProgressInput => ({
         phase: "heap",
         stage: `${phase}-receipt-settlement`,
+        substage: `${phase}-receipt-settlement`,
+        sample,
+        trigger: null,
+        scenario: null,
         cellIndex: null,
         cellTotal: 36,
         adapter,
@@ -643,9 +690,13 @@ async function runCell(
   let phaseStartedAt = performance.now();
   let offeredCount = 0;
   let settledCount = 0;
-  const progress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): HarnessProgress => ({
+  const progress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): HarnessProgressInput => ({
     phase: "cells",
     stage,
+    substage: stage,
+    sample,
+    trigger: null,
+    scenario: null,
     cellIndex,
     cellTotal: 36,
     adapter,
@@ -769,10 +820,13 @@ async function runCell(
     await waitForFrame();
     const readStartedAt = performance.now();
     enterPhase("query");
-    const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"));
-    const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"));
-    const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"));
-    const fullP95Ms = await measureQuery(history, () => history.read({ order: "asc" }), "full", () => progress("query", "query", "full"));
+    const queryMeasurements = await withStageDeadline((async () => ({
+      recentPageP95Ms: await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page")),
+      structuredIndexedP95Ms: await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed")),
+      findP95Ms: await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find")),
+      fullP95Ms: await measureQuery(history, () => history.read({ order: "asc" }), "full", () => progress("query", "query", "full"))
+    }))(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"));
+    const { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms } = queryMeasurements;
     const queryElapsedMs = performance.now() - readStartedAt;
     updateProgress("read", "query", "final-read");
     const read = await withStageDeadline(
@@ -934,9 +988,13 @@ async function runTerminalScenario(
     stage = `${trigger}-receipt-settlement`,
     offered: number | null = null,
     settled: number | null = null
-  ): HarnessProgress => ({
+  ): HarnessProgressInput => ({
     phase: "terminal",
     stage,
+    substage: stage,
+    sample: null,
+    trigger,
+    scenario: null,
     cellIndex: null,
     cellTotal: 36,
     adapter,
@@ -1080,9 +1138,13 @@ async function runCheckpointScenario(
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier })
     : createInMemoryEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier });
-  const progress = (stage: string, offered: number | null = null, settled: number | null = null): HarnessProgress => ({
+  const progress = (stage: string, offered: number | null = null, settled: number | null = null): HarnessProgressInput => ({
     phase: "checkpoint",
     stage,
+    substage: stage,
+    sample: null,
+    trigger: null,
+    scenario: name,
     cellIndex: null,
     cellTotal: 36,
     adapter,
@@ -1479,7 +1541,7 @@ async function settleOffers(
   events: readonly EvidenceCandidate[],
   stage: string,
   timeoutMs: number,
-  progress: (settled: number) => HarnessProgress
+  progress: (settled: number) => HarnessProgressInput
 ): Promise<void> {
   const receipts = events.map((event) => history.offer(event));
   if (receipts.some((receipt) => receipt.intake !== "QUEUED")) throw new Error("Retained heap offer was refused.");
@@ -1529,7 +1591,7 @@ async function measureQuery(
   history: EventHistory,
   query: () => Promise<unknown>,
   queryName: string,
-  progress: () => HarnessProgress
+  progress: () => HarnessProgressInput
 ): Promise<number> {
   const samples: number[] = [];
   for (let index = 0; index < 3; index += 1) {
