@@ -1,6 +1,10 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { type EventFilterState, matchesEventFilters } from "./event-filter";
-import { serializeJournalEvidenceCandidate } from "./event-history-serialization";
+import {
+  deserializeJournalEvidenceCandidate,
+  journalAccountedBytes,
+  serializeJournalEvidenceCandidate
+} from "./event-history-serialization";
 import { type AuthoritativeEventDatabaseRuntime } from "./indexeddb/authoritative-event-db";
 import {
   admissionFailure,
@@ -200,7 +204,7 @@ export type OpenEventHistoryOptions = Readonly<{
 }> & HistoryCapacityOptions;
 
 type HistoryJournal = {
-  commitBatch(batch: readonly PendingCandidate[]): Promise<void>;
+  commitBatch(batch: readonly EvidenceCandidate[]): Promise<void>;
   persistTerminalIntent(terminal: HistoryTerminalDiagnostic): Promise<void>;
   finalizeTerminal(terminal: HistoryTerminalDiagnostic): Promise<void>;
   clear(): Promise<void>;
@@ -209,7 +213,7 @@ type HistoryJournal = {
 
 type PendingCandidate = Readonly<{
   ordinal: number;
-  candidate: EvidenceCandidate;
+  serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
   bytes: number;
   offeredAt: number;
   resolve: (result: ReceiptResult) => void;
@@ -287,8 +291,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   const sessionId = options.panelSessionId ?? `session-${nextId()}`;
   const journal: HistoryJournal = {
     async commitBatch(batch) {
-      await options.failure?.commitBatch?.(batch.map((entry) => entry.candidate));
-      await options.commitBatch?.(batch.map((entry) => entry.candidate));
+      await options.failure?.commitBatch?.(batch);
+      await options.commitBatch?.(batch);
     },
     async persistTerminalIntent(terminal) { await options.persistTerminalIntent?.(terminal); },
     async finalizeTerminal(terminal) { await options.finalizeTerminal?.(terminal); },
@@ -517,12 +521,15 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     resolveTerminalReceipts(issue);
   }
 
-  function offerForClearInProgress(candidate: EvidenceCandidate, bytes: number): CaptureReceipt {
+  function offerForClearInProgress(
+    serialized: ReturnType<typeof serializeJournalEvidenceCandidate>,
+    bytes: number
+  ): CaptureReceipt {
     let resolveReceipt!: (result: ReceiptResult) => void;
     const settled = new Promise<ReceiptResult>((resolve) => { resolveReceipt = resolve; });
     clearQueueForCandidate().push({
       ordinal: nextCaptureOrdinal++,
-      candidate,
+      serialized,
       bytes,
       offeredAt: clock(),
       resolve: resolveReceipt
@@ -653,11 +660,14 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
     if (phase === "CLOSED" || closing) return refuseClosed();
     if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return refuseStopped(candidate);
-    let copied: EvidenceCandidate;
+    let serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
     let bytes: number;
     try {
-      copied = copyCandidate(candidate);
-      bytes = estimateHistoryCandidateBytes(copied, options.byteEstimator);
+      assertCandidate(candidate);
+      serialized = serializeJournalEvidenceCandidate(candidate);
+      bytes = options.byteEstimator
+        ? options.byteEstimator(copyCandidate(candidate))
+        : journalAccountedBytes(serialized.bytes);
     } catch (error) {
       notAccepted += 1;
       const issue = problem("INVALID_CANDIDATE", error instanceof Error ? error.message : "Candidate is not valid Evidence input.");
@@ -669,14 +679,14 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       notAccepted += 1;
       rejectedCount += 1;
       rejectedBytes += bytes;
-      beginDrain(failure.reason, failure.dimension, copied.id);
+      beginDrain(failure.reason, failure.dimension, candidate.id);
       const completion = terminalFinalization ?? terminalSettled;
       const settled = completion
         ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary }))
         : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary });
       return { intake: "REFUSED", settled };
     }
-    return offerForClearInProgress(copied, bytes);
+    return offerForClearInProgress(serialized, bytes);
   }
 
   function scheduleProcessing(): void {
@@ -692,11 +702,13 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       while (pending.length > 0 && (phase === "RUNNING" || phase === "DRAINING_TO_STOP")) {
         const batch = pending.splice(0);
         inFlight.push(...batch);
+        let candidates: EvidenceCandidate[] = [];
         try {
-          await journal.commitBatch(batch);
+          candidates = batch.map((entry) => freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload)));
+          await journal.commitBatch(candidates);
         } catch (error) {
           const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
-          const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null);
+          const failedTrigger = makeTrigger(reason, "JOURNAL", candidates[0]?.id ?? null);
           trigger = failedTrigger;
           ensureTerminalSettled();
           const discarded = [...batch, ...pending.splice(0)];
@@ -710,9 +722,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
           finishTerminal();
           break;
         }
-        const evidence = batch.map((entry) => {
-          const reference = deepFreeze({ intervalId: interval.id, sequence: nextEvidenceSequence++, eventId: candidateId(entry.candidate) });
-          return deepFreeze({ ...reference, candidate: entry.candidate });
+        const evidence = batch.map((entry, index) => {
+          const candidate = candidates[index]!;
+          const reference = deepFreeze({ intervalId: interval.id, sequence: nextEvidenceSequence++, eventId: candidateId(candidate) });
+          return deepFreeze({ ...reference, candidate });
         });
         inFlight.length = 0;
         committed.push(...evidence);
@@ -1080,19 +1093,30 @@ function toRef(evidence: CommittedEvidence): EvidenceRef {
 }
 
 export function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
+  assertCandidate(candidate);
+  return freezeCandidate(structuredClone(candidate));
+}
+
+/** @internal Validates an Evidence candidate without copying its payload. */
+export function assertCandidate(candidate: unknown): asserts candidate is EvidenceCandidate {
   if (!candidate || typeof candidate !== "object") {
     throw new Error("Candidate must be an object.");
   }
-  if (candidate.kind === "topology-checkpoint") {
+  const value = candidate as { kind?: unknown; id?: unknown };
+  if (value.kind === "topology-checkpoint") {
     if (!isTopologyCheckpointEvidenceCandidate(candidate)) {
       throw new Error("Topology checkpoint candidate is incomplete.");
     }
-    return deepFreeze(structuredClone(candidate));
+    return;
   }
-  if (typeof candidate.id !== "string" || candidate.id.length === 0) {
+  if (typeof value.id !== "string" || value.id.length === 0) {
     throw new Error("Capture candidate must have a stable event ID.");
   }
-  return deepFreeze(structuredClone(candidate));
+}
+
+/** @internal Freezes a candidate after its immutable serialized snapshot exists. */
+export function freezeCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
+  return deepFreeze(candidate);
 }
 
 function isTopologyCheckpointEvidenceCandidate(candidate: unknown): candidate is TopologyCheckpointEvidenceCandidate {

@@ -1,7 +1,6 @@
 import {
   admissionFailure,
   defaultHistoryTimer,
-  estimateHistoryCandidateBytes,
   historyCapacityLimits,
   pendingAgeFailure,
   pressureFor,
@@ -48,7 +47,9 @@ import {
   type Outcome,
   type CloseResult,
   type EventHistoryStorage,
+  assertCandidate,
   copyCandidate,
+  freezeCandidate,
   matchesEvidenceQuery,
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
@@ -84,7 +85,7 @@ type EvidenceRecord = {
 
 type Pending = {
   ordinal: number;
-  candidate: EvidenceCandidate;
+  eventId: string;
   serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
   bytes: number;
   offeredAt: number;
@@ -584,7 +585,9 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
   function refusedCandidateBytes(candidate: EvidenceCandidate): number {
     try {
-      return estimateHistoryCandidateBytes(copyCandidate(candidate), options.byteEstimator);
+      return options.byteEstimator
+        ? options.byteEstimator(copyCandidate(candidate))
+        : journalAccountedBytes(serializeJournalEvidenceCandidate(candidate).bytes);
     } catch {
       return 0;
     }
@@ -645,14 +648,13 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
     if (phase === "CLOSED" || closing) return refuseClosed();
     if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return refuseStopped(candidate);
-    let copied: EvidenceCandidate;
     let serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
     let bytes: number;
     try {
-      copied = copyCandidate(candidate);
-      serialized = serializeJournalEvidenceCandidate(copied);
+      assertCandidate(candidate);
+      serialized = serializeJournalEvidenceCandidate(candidate);
       bytes = options.byteEstimator
-        ? estimateHistoryCandidateBytes(copied, options.byteEstimator)
+        ? options.byteEstimator(copyCandidate(candidate))
         : journalAccountedBytes(serialized.bytes);
     } catch (error) {
       notAccepted += 1;
@@ -664,7 +666,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       notAccepted += 1;
       rejectedCount += 1;
       rejectedBytes += bytes;
-      beginDrain(failure.reason, failure.dimension, copied.id);
+      beginDrain(failure.reason, failure.dimension, candidate.id);
       const completion = terminalFinalization ?? terminalSettled;
       const settled = completion
         ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary: currentBoundary() }))
@@ -675,7 +677,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     const settled = new Promise<ReceiptResult>((finish) => { resolve = finish; });
     const ordinal = captured + 1;
     captured += 1;
-    clearQueueForCandidate().push({ ordinal, candidate: copied, serialized, bytes, offeredAt: clock(), resolve });
+    clearQueueForCandidate().push({ ordinal, eventId: candidate.id, serialized, bytes, offeredAt: clock(), resolve });
     scheduleAgeCheck();
     pressureChanged();
     if (!clearInProgress) schedule();
@@ -706,10 +708,17 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         }
         const batchAccountedBytes = batch.reduce((sum, entry) => sum + entry.bytes, 0);
         inFlight.push(...batch);
-        const evidence = batch.map((entry, index) => toCommittedEvidence(entry.candidate, interval, nextSequence + index));
+        let evidence: CommittedEvidence[] = [];
+        let candidates: EvidenceCandidate[] = [];
         try {
-          await options.failure?.commitBatch?.(batch.map((entry) => entry.candidate));
-          await options.commitBatch?.(batch.map((entry) => entry.candidate));
+          evidence = batch.map((entry, index) => toCommittedEvidence(
+            freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload)),
+            interval,
+            nextSequence + index
+          ));
+          candidates = evidence.map((entry) => entry.candidate);
+          await options.failure?.commitBatch?.(candidates);
+          await options.commitBatch?.(candidates);
           const controlPhase = phase === "RUNNING" ? "RUNNING" as const : "DRAINING_TO_STOP" as const;
           const controlTerminal = controlPhase === "DRAINING_TO_STOP" ? terminalDiagnostic() : null;
           const batchDurableAccountedBytes = batch.reduce((sum, entry) => sum + journalAccountedBytes(entry.serialized.bytes), 0);
@@ -730,7 +739,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         } catch (error) {
           const reason: HistoryTerminalReason = isQuotaError(error) ? "QUOTA_EXCEEDED" : "JOURNAL_COMMIT_FAILED";
           terminalFailureDetail = describeJournalError(error);
-          const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null, describeJournalError(error));
+          const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.eventId ?? null, describeJournalError(error));
           trigger = failedTrigger;
           phase = "DRAINING_TO_STOP";
           ensureTerminalSettled();

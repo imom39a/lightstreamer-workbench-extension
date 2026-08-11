@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import {
   createMemoryEventHistoryForTests,
   openEventHistory,
@@ -18,6 +19,32 @@ function candidate(id: string): EvidenceCandidate {
 }
 
 describe("commit-authoritative EventHistory", () => {
+  it("captures a large candidate snapshot without synchronous structured cloning", async () => {
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "large-offer-snapshot",
+      commitBatch: async () => commitGate
+    });
+    const candidate = createEventHistoryWorkloadEvent("large-json-rich", 1, "large-offer");
+
+    const receipt = history.offer(candidate);
+
+    expect(receipt.intake).toBe("QUEUED");
+    expect(clone).not.toHaveBeenCalled();
+    releaseCommit();
+    await expect(receipt.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { eventId: candidate.id }
+    });
+
+    expect(clone).not.toHaveBeenCalled();
+    await history.close();
+  });
+
   it("opens the dormant memory adapter through the backend-independent public factory", async () => {
     const history = await openEventHistory({ panelSessionId: "public-factory" });
     let initialStatus: unknown;
