@@ -163,7 +163,7 @@ export async function openAuthoritativeEventDatabase(
   return openAtCurrentSchema(name);
 }
 
-export function deleteAuthoritativeEventDatabase(name = AUTHORITATIVE_EVENT_DB_NAME): Promise<void> {
+export function deleteAuthoritativeEventDatabase(name = FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID): Promise<void> {
   if (typeof indexedDB === "undefined") {
     return Promise.resolve();
   }
