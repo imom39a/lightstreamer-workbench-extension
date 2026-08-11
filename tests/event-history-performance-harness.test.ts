@@ -10,6 +10,16 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  it("constructs the exact browser checkpoint seeds at their requested sizes", () => {
+    for (const [seed, syncId, minimumBytes] of [
+      ["checkpoint-indexeddb-representative", "sync-representative", 64 * 1_024],
+      ["checkpoint-indexeddb-maximum-2MiB", "sync-maximum-2MiB", 2 * 1_048_576]
+    ] as const) {
+      const candidate = createStagedTopologyCheckpointCandidate(seed, syncId, minimumBytes);
+      expect(journalAccountedBytes(serializeJournalEvidenceCandidate(candidate).bytes)).toBe(minimumBytes);
+    }
+  }, 30_000);
+
   it("constructs representative and maximum checkpoints through production staging", () => {
     for (const [name, minimumBytes] of [
       ["representative", 64 * 1_024],

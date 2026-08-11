@@ -137,7 +137,7 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
         acceptedCount: 1,
         refusedCount: 1,
         refusedEventIds: ["missing-age"],
-        firstMissingEventId: null,
+        firstMissingEventId: "missing-age",
         committedBoundary: { sequence: 1, eventId: "accepted-1" },
         terminalPublicationCount: 1,
         finalBoundaryCorrect: true,

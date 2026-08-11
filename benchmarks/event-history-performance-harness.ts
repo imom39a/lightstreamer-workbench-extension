@@ -443,10 +443,10 @@ async function runTerminalScenario(
   unsubscribe();
   await history.close();
   const finalEvidence = read.ok ? read.value.evidence.at(-1) ?? null : null;
-  const expectedFirstMissing = trigger === "PENDING_BYTES" ? refused[0]?.id ?? null : null;
-  const refusedIdentityCorrect = trigger === "PENDING_BYTES"
-    ? terminal?.firstMissingEventId === expectedFirstMissing
-    : terminal?.firstMissingEventId === null && refused.length === 1 && outcomes.at(-1)?.outcome === "NOT_EVIDENCE";
+  const expectedFirstMissing = refused[0]?.id ?? null;
+  const refusedIdentityCorrect = terminal?.firstMissingEventId === expectedFirstMissing
+    && refused.length === 1
+    && outcomes.at(-1)?.outcome === "NOT_EVIDENCE";
   return {
     adapter,
     trigger,
@@ -532,7 +532,7 @@ export function createStagedTopologyCheckpointCandidate(
   const pageEpoch = `page-${seed}`;
   const panelSessionId = "panel-00000000-0000-4000-8000-000000000099";
   const coverage: TopologyCoverage = { status: "complete", getters: {} };
-  const recordCount = minimumCanonicalBytes >= TERMINAL_CHECKPOINT_PAYLOAD_BYTES ? 6_500 : 230;
+  const recordCount = minimumCanonicalBytes >= TERMINAL_CHECKPOINT_PAYLOAD_BYTES ? 6_500 : 64;
   let lastStagedBytes = 0;
   let lastBaseBytes = 0;
   for (let paddingLength = 64; paddingLength <= 256; paddingLength += 8) {
