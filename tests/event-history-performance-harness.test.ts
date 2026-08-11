@@ -12,13 +12,18 @@ import {
   closeHeapSessionWithEvidence,
   createPendingTelemetryTracker,
   createStagedTopologyCheckpointCandidate,
+  createHarnessStageGuard,
   HarnessStageTimeout,
+  measureQuery,
+  offerSustained,
   settleReceiptStage,
   publishHarnessProgress,
   waitForBoundedFrame,
   withStageDeadline,
   type HarnessProgressInput
 } from "../benchmarks/event-history-performance-harness";
+import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
+import type { EventHistory } from "../src/core/event-history-authoritative";
 import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
@@ -156,6 +161,94 @@ describe("Event History performance checkpoint workload", () => {
       await rejected;
     } finally {
       window.requestAnimationFrame = originalRequestAnimationFrame;
+      vi.useRealTimers();
+    }
+  });
+
+  it("publishes frame progress before waiting for the RAF callback", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const key = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+    const globalRecord = globalThis as unknown as Record<string, unknown>;
+    const previousOperation = globalRecord[key];
+    const operation = { operationId: "frame-operation", state: "pending", startedAt: 0, progress: null as unknown };
+    window.requestAnimationFrame = (() => 0) as typeof window.requestAnimationFrame;
+    globalRecord[key] = operation;
+    try {
+      const pending = waitForBoundedFrame("cell-7-frame", () => ({ ...progress("frame"), operationId: "frame-operation" }));
+      expect(operation.progress).toMatchObject({ stage: "frame", operationId: "frame-operation" });
+      const rejected = expect(pending).rejects.toMatchObject({ stage: "cell-7-frame" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejected;
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      if (previousOperation === undefined) delete globalRecord[key];
+      else globalRecord[key] = previousOperation;
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not offer after an invalidated offer stage resumes", async () => {
+    const guard = createHarnessStageGuard();
+    let onOfferCalls = 0;
+    const offer = vi.fn(() => ({ intake: "QUEUED" as const, settled: Promise.resolve({}) }));
+    const history = { offer } as unknown as EventHistory;
+    const events = [
+      createEventHistoryWorkloadEvent("small-lifecycle", 0, "guarded-offer"),
+      createEventHistoryWorkloadEvent("small-lifecycle", 1, "guarded-offer")
+    ];
+
+    await expect(offerSustained(
+      history,
+      events,
+      { sustainedCount: 2, sustainedEventsPerSecond: 50, burstCount: 1692, burstPauseMs: 0 },
+      new Map(),
+      createPendingTelemetryTracker(),
+      () => {
+        onOfferCalls += 1;
+        guard.invalidate();
+      },
+      () => undefined,
+      guard
+    )).rejects.toThrow("invalidated");
+
+    expect(onOfferCalls).toBe(1);
+    expect(offer).not.toHaveBeenCalled();
+  });
+
+  it("does not start another query or publish late progress after query timeout", async () => {
+    vi.useFakeTimers();
+    const guard = createHarnessStageGuard();
+    let resolveLate!: (value: unknown) => void;
+    let queryCalls = 0;
+    let progressCalls = 0;
+    try {
+      const pending = measureQuery(
+        undefined as unknown as EventHistory,
+        () => {
+          queryCalls += 1;
+          return new Promise((resolve) => { resolveLate = resolve; });
+        },
+        "late-query",
+        () => {
+          progressCalls += 1;
+          return progress("query");
+        },
+        guard
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: "HarnessStageTimeout",
+        stage: "query-late-query-1"
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejected;
+      const callsAtTimeout = progressCalls;
+      resolveLate({ late: true });
+      await Promise.resolve();
+      expect(queryCalls).toBe(1);
+      expect(progressCalls).toBe(callsAtTimeout);
+      expect(guard.isActive()).toBe(false);
+    } finally {
       vi.useRealTimers();
     }
   });

@@ -114,6 +114,19 @@ export class HarnessStageTimeout extends Error {
   }
 }
 
+export type HarnessStageGuard = Readonly<{
+  isActive(): boolean;
+  invalidate(): void;
+}>;
+
+export function createHarnessStageGuard(): HarnessStageGuard {
+  let active = true;
+  return {
+    isActive: () => active,
+    invalidate: () => { active = false; }
+  };
+}
+
 let harnessProgressSequence = 0;
 
 function currentHarnessOperationId(): string | null {
@@ -153,11 +166,23 @@ export function publishHarnessProgress(progress: HarnessProgressInput): HarnessP
   return observed;
 }
 
-function normalizeHarnessError(error: unknown, stage: string, progress: HarnessProgressInput): Error {
+function publishStageProgress(progress: HarnessProgressInput, guard: HarnessStageGuard | undefined): HarnessProgress | null {
+  if (guard && !guard.isActive()) return null;
+  return publishHarnessProgress(progress);
+}
+
+function normalizeHarnessError(
+  error: unknown,
+  stage: string,
+  progress: HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): Error {
   const normalized = error instanceof Error ? error : new Error(String(error));
   const record = normalized as Error & { stage?: string; progress?: HarnessProgress };
   record.stage ??= stage;
-  record.progress ??= publishHarnessProgress(progress);
+  record.progress ??= guard && !guard.isActive()
+    ? observeHarnessProgress(progress)
+    : publishHarnessProgress(progress);
   return normalized;
 }
 
@@ -166,7 +191,8 @@ export function withStageDeadline<T>(
   stage: string,
   timeoutMs: number,
   progress: () => HarnessProgressInput,
-  onTimeout: (() => void) | undefined = undefined
+  onTimeout: (() => void) | undefined = undefined,
+  guard: HarnessStageGuard | undefined = undefined
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -174,7 +200,9 @@ export function withStageDeadline<T>(
       if (settled) return;
       settled = true;
       onTimeout?.();
-      reject(new HarnessStageTimeout(stage, timeoutMs, publishHarnessProgress(progress())));
+      const timeoutProgress = publishHarnessProgress(progress());
+      guard?.invalidate();
+      reject(new HarnessStageTimeout(stage, timeoutMs, timeoutProgress));
     }, timeoutMs);
     Promise.resolve(operation).then(
       (value) => {
@@ -187,8 +215,9 @@ export function withStageDeadline<T>(
         if (settled) return;
         settled = true;
         window.clearTimeout(timer);
+        guard?.invalidate();
         if (error && typeof error === "object" && "progress" in error) reject(error);
-        else reject(normalizeHarnessError(error, stage, progress()));
+        else reject(normalizeHarnessError(error, stage, progress(), guard));
       }
     );
   });
@@ -198,7 +227,8 @@ export function settleReceiptStage<T>(
   receipts: readonly PromiseLike<T>[],
   stage: string,
   timeoutMs: number,
-  progress: (settled: number) => HarnessProgressInput
+  progress: (settled: number) => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
 ): Promise<T[]> {
   let settled = 0;
   let terminal = false;
@@ -206,14 +236,14 @@ export function settleReceiptStage<T>(
     (value) => {
       if (terminal) return value;
       settled += 1;
-      publishHarnessProgress(progress(settled));
+      publishStageProgress(progress(settled), guard);
       return value;
     },
     (error: unknown) => {
       if (terminal) return undefined as T;
       terminal = true;
       settled += 1;
-      const contextual = normalizeHarnessError(error, stage, progress(settled));
+      const contextual = normalizeHarnessError(error, stage, progress(settled), guard);
       throw contextual;
     }
   ));
@@ -222,7 +252,8 @@ export function settleReceiptStage<T>(
     stage,
     timeoutMs,
     () => progress(settled),
-    () => { terminal = true; }
+    () => { terminal = true; },
+    guard
   );
 }
 
@@ -749,6 +780,7 @@ async function runCell(
   const publishedIds: string[] = [];
   const phaseIntervals: PhaseInterval[] = [];
   const longTaskEntries: PerformanceEntry[] = [];
+  const runGuard = createHarnessStageGuard();
   let phase: PhaseName = "capture";
   let phaseStartedAt = performance.now();
   let offeredCount = 0;
@@ -772,7 +804,7 @@ async function runCell(
     query
   });
   const updateProgress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): void => {
-    publishHarnessProgress(progress(stage, workloadPhase, query));
+    publishStageProgress(progress(stage, workloadPhase, query), runGuard);
   };
   const pressureTransitions: string[] = [];
   let terminalReason: string | null = null;
@@ -802,9 +834,11 @@ async function runCell(
   const expectedFinalId = `${runId}-${shape}-${expectedCount - 1}`;
   const panel = await mountProductionPanel(history, {
       onCommittedEvidenceBoundary(boundary, timestampMs) {
+        if (!runGuard.isActive()) return;
         committedBoundaryAt.set(boundary.eventId, timestampMs);
       },
       onVisibleFrame(_boundary, timestampMs, coveredBoundaries) {
+        if (!runGuard.isActive()) return;
         for (const coveredBoundary of coveredBoundaries) {
           const offeredAt = offerTimes.get(coveredBoundary.eventId);
           if (offeredAt !== undefined) visibleLatencies.push(Math.max(0, timestampMs - offeredAt));
@@ -821,6 +855,7 @@ async function runCell(
     createEventHistoryWorkloadEvent(shape, sequence, runId)
   );
   unsubscribe = history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
+    if (!runGuard.isActive()) return;
     if (publication.type === "status") {
       const state = publication.status.capacity.state;
       if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
@@ -848,22 +883,28 @@ async function runCell(
     const receipts = workload === "sustained"
       ? await withStageDeadline(
         offerSustained(history, events, config, offerTimes, pending, () => {
+          if (!runGuard.isActive()) return;
           enterPhase("capture");
           offeredCount += 1;
           updateProgress("offer", "capture");
-        }, samplePending),
+        }, samplePending, runGuard),
         `cell-${cellIndex}-offer`,
         STAGE_DEADLINES_MS.cellOffer,
-        () => progress("offer", "capture")
+        () => progress("offer", "capture"),
+        undefined,
+        runGuard
       )
       : await withStageDeadline(
         offerBurst(history, events, config, offerTimes, pending, () => {
+          if (!runGuard.isActive()) return;
           offeredCount += 1;
           updateProgress("offer", "capture");
-        }, samplePending),
+        }, samplePending, runGuard),
         `cell-${cellIndex}-offer`,
         STAGE_DEADLINES_MS.cellOffer,
-        () => progress("offer", "capture")
+        () => progress("offer", "capture"),
+        undefined,
+        runGuard
       );
     const enqueueElapsedMs = performance.now() - startedAt;
     enterPhase("commit");
@@ -873,9 +914,11 @@ async function runCell(
       `cell-${cellIndex}-receipts`,
       STAGE_DEADLINES_MS.cellReceipts,
       (settled) => {
+        if (!runGuard.isActive()) return progress("receipt-settlement", "commit");
         settledCount = settled;
         return progress("receipt-settlement", "commit");
-      }
+      },
+      runGuard
     );
     const commitSettledAt = performance.now();
     enterPhase("paint");
@@ -884,20 +927,23 @@ async function runCell(
       finalVisible,
       `cell-${cellIndex}-visible-frame`,
       STAGE_DEADLINES_MS.visibleFrame,
-      () => progress("visible-frame", "paint")
+      () => progress("visible-frame", "paint"),
+      undefined,
+      runGuard
     );
     await waitForBoundedFrame(
       `cell-${cellIndex}-frame`,
-      () => progress("frame", "paint")
+      () => progress("frame", "paint"),
+      runGuard
     );
     const readStartedAt = performance.now();
     enterPhase("query");
     const queryMeasurements = await withStageDeadline((async () => ({
-      recentPageP95Ms: await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page")),
-      structuredIndexedP95Ms: await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed")),
-      findP95Ms: await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find")),
-      fullP95Ms: await measureQuery(history, () => history.read({ order: "asc" }), "full", () => progress("query", "query", "full"))
-    }))(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"));
+      recentPageP95Ms: await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard),
+      structuredIndexedP95Ms: await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard),
+      findP95Ms: await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard),
+      fullP95Ms: await measureQuery(history, () => history.read({ order: "asc" }), "full", () => progress("query", "query", "full"), runGuard)
+    }))(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
     const { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms } = queryMeasurements;
     const queryElapsedMs = performance.now() - readStartedAt;
     updateProgress("read", "query", "final-read");
@@ -905,7 +951,9 @@ async function runCell(
       history.read({ order: "asc" }),
       `cell-${cellIndex}-read`,
       STAGE_DEADLINES_MS.read,
-      () => progress("read", "query", "final-read")
+      () => progress("read", "query", "final-read"),
+      undefined,
+      runGuard
     );
     const expectedIds = events.map((event) => event.id);
     const retainedIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
@@ -915,7 +963,14 @@ async function runCell(
     longTaskEntries.push(...(longTaskObserver?.takeRecords() ?? []));
     longTaskObserver?.disconnect();
     const attributedLongTasks = attributeLongTasks(longTaskEntries, phaseIntervals);
-    const storageEstimate = await captureStorageEstimate();
+    const storageEstimate = await withStageDeadline(
+      captureStorageEstimate(),
+      `cell-${cellIndex}-storage-estimate`,
+      STAGE_DEADLINES_MS.read,
+      () => progress("storage-estimate", "query", "storage-estimate"),
+      undefined,
+      runGuard
+    );
     const terminal = terminalPublication as Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null;
     const firstMissingEventId = terminal?.firstMissingEventId ?? null;
     const refusedCount = terminal?.rejected.count ?? 0;
@@ -992,7 +1047,7 @@ async function runCell(
       queryElapsedMs,
     } as EventHistoryPerformanceCell;
   } catch (error) {
-    primaryFailure = normalizeHarnessError(error, `cell-${cellIndex}`, progress("failed", phase));
+    primaryFailure = normalizeHarnessError(error, `cell-${cellIndex}`, progress("failed", phase), runGuard);
     throw primaryFailure;
   } finally {
     storageProbe?.restore();
@@ -1000,13 +1055,13 @@ async function runCell(
     try { unsubscribe(); } catch { /* Preserve the primary stage failure. */ }
     let disposeError: Error | null = null;
     let closeOutcome: Outcome<CloseResult> | null = null;
-    try { panel.disposePanel(); } catch (error) { disposeError = normalizeHarnessError(error, `cell-${cellIndex}-dispose`, progress("close", null)); }
+    try { panel.disposePanel(); } catch (error) { disposeError = normalizeHarnessError(error, `cell-${cellIndex}-dispose`, progress("close", null), runGuard); }
     let rootRemoved = false;
     try {
       root.remove();
       rootRemoved = !root.isConnected;
     } catch (error) {
-      disposeError ??= normalizeHarnessError(error, `cell-${cellIndex}-root`, progress("close", null));
+      disposeError ??= normalizeHarnessError(error, `cell-${cellIndex}-root`, progress("close", null), runGuard);
     }
     let closeError: Error | null = null;
     try {
@@ -1014,11 +1069,13 @@ async function runCell(
         history.close(),
         `cell-${cellIndex}-close`,
         STAGE_DEADLINES_MS.close,
-        () => progress("close", null)
+        () => progress("close", null),
+        undefined,
+        runGuard
       );
       if (closeOutcome.ok !== true) throw new Error("Event History close did not complete successfully.");
     } catch (error) {
-      closeError = normalizeHarnessError(error, `cell-${cellIndex}-close`, progress("close", null));
+      closeError = normalizeHarnessError(error, `cell-${cellIndex}-close`, progress("close", null), runGuard);
     }
     if (disposeError || closeError) {
       const cleanupFailure = disposeError ?? closeError ?? new Error("Event History cleanup failed.");
@@ -1555,22 +1612,26 @@ function createCheckpointFrames(
   ];
 }
 
-async function offerSustained(
+export async function offerSustained(
   history: EventHistory,
   events: readonly EvidenceCandidate[],
   config: EventHistoryPerformanceConfig,
   offerTimes: Map<string, number>,
   pending: PendingTelemetryTracker,
   onOffer: () => void,
-  samplePending: () => void
+  samplePending: () => void,
+  guard: HarnessStageGuard | undefined = undefined
 ): Promise<Promise<unknown>[]> {
   const receipts: Promise<unknown>[] = [];
   const startedAt = performance.now();
   for (let sequence = 0; sequence < events.length; sequence += 1) {
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
     const dueAt = startedAt + (sequence * 1_000) / config.sustainedEventsPerSecond;
     await delay(Math.max(0, dueAt - performance.now()));
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
     const event = events[sequence]!;
     onOffer();
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
     const offeredAt = performance.now();
     offerTimes.set(event.id, offeredAt);
     pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
@@ -1585,18 +1646,21 @@ async function offerSustained(
   return receipts;
 }
 
-async function offerBurst(
+export async function offerBurst(
   history: EventHistory,
   events: readonly EvidenceCandidate[],
   config: EventHistoryPerformanceConfig,
   offerTimes: Map<string, number>,
   pending: PendingTelemetryTracker,
   onOffer: () => void,
-  samplePending: () => void
+  samplePending: () => void,
+  guard: HarnessStageGuard | undefined = undefined
 ): Promise<Promise<unknown>[]> {
   const receipts: Promise<unknown>[] = [];
   for (const [index, event] of events.entries()) {
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
     onOffer();
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
     const offeredAt = performance.now();
     offerTimes.set(event.id, offeredAt);
     pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
@@ -1663,17 +1727,19 @@ async function mountProductionPanel(
   throw new Error("Production panel mount did not render its React boundary.");
 }
 
-async function measureQuery(
+export async function measureQuery(
   history: EventHistory,
   query: () => Promise<unknown>,
   queryName: string,
-  progress: () => HarnessProgressInput
+  progress: () => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
 ): Promise<number> {
   const samples: number[] = [];
   for (let index = 0; index < 3; index += 1) {
-    publishHarnessProgress(progress());
+    publishStageProgress(progress(), guard);
     const startedAt = performance.now();
-    await withStageDeadline(query(), `query-${queryName}-${index + 1}`, STAGE_DEADLINES_MS.query, progress);
+    await withStageDeadline(query(), `query-${queryName}-${index + 1}`, STAGE_DEADLINES_MS.query, progress, undefined, guard);
+    if (guard && !guard.isActive()) throw new Error(`Query stage ${queryName} was invalidated.`);
     samples.push(performance.now() - startedAt);
   }
   return percentile(samples, 0.95);
@@ -1855,13 +1921,17 @@ function waitForFrame(): Promise<void> {
 
 export function waitForBoundedFrame(
   stage: string,
-  progress: () => HarnessProgressInput
+  progress: () => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
 ): Promise<void> {
+  publishStageProgress(progress(), guard);
   return withStageDeadline(
     waitForFrame(),
     stage,
     STAGE_DEADLINES_MS.frame,
-    progress
+    progress,
+    undefined,
+    guard
   );
 }
 
