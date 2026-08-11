@@ -65,6 +65,11 @@ export type CommittedEvidencePipeline = Readonly<{
   firstMissingIdentity(): string | null;
 }>;
 
+export type CommittedEvidencePipelineBinderOptions = Readonly<{
+  history: EventHistory;
+  onCommittedEvidence(entry: CommittedEvidence): void;
+}>;
+
 export type CommittedEvidencePipelineOptions = Readonly<{
   onCommittedEvidence(entry: CommittedEvidence): void;
   history?: EventHistory;
@@ -217,11 +222,11 @@ export function createLocalDeliveryHelper(
   };
 }
 
-export async function createCommittedEvidencePipeline(
-  options: CommittedEvidencePipelineOptions
-): Promise<CommittedEvidencePipeline> {
+export function bindCommittedEvidencePipeline(
+  options: CommittedEvidencePipelineBinderOptions
+): CommittedEvidencePipeline {
   const onCommittedEvidence = options.onCommittedEvidence;
-  const history = options.history ?? await openEventHistory({ panelSessionId: options.panelSessionId });
+  const history = options.history;
   const seen = new Set<string>();
   const retriableFailures = new Set<string>();
   let subscribe: (() => void) | null = null;
@@ -348,5 +353,15 @@ export async function createCommittedEvidencePipeline(
     firstMissingIdentity() {
       return firstMissingIdentity;
     }
+  });
+}
+
+export async function createCommittedEvidencePipeline(
+  options: CommittedEvidencePipelineOptions
+): Promise<CommittedEvidencePipeline> {
+  const history = options.history ?? await openEventHistory({ panelSessionId: options.panelSessionId });
+  return bindCommittedEvidencePipeline({
+    history,
+    onCommittedEvidence: options.onCommittedEvidence
   });
 }

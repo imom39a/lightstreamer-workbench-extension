@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  bindCommittedEvidencePipeline,
   createCommittedEvidencePipeline,
   createLocalDeliveryHelper
 } from "../src/extension/panel/committed-evidence-pipeline";
@@ -134,6 +135,38 @@ function createReplayableHistory(initial: EvidenceCandidate[]): EventHistory {
 }
 
 describe("committed-evidence pipeline", () => {
+  it("binds synchronously and delegates operations to the opened history instance", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "pipeline-bind" });
+    const follow = vi.spyOn(history, "follow");
+    const offer = vi.spyOn(history, "offer");
+    const read = vi.spyOn(history, "read");
+    const clear = vi.spyOn(history, "clear");
+    const close = vi.spyOn(history, "close");
+    const candidate = lightstreamerCandidate("bound");
+
+    const pipeline = bindCommittedEvidencePipeline({
+      history,
+      onCommittedEvidence: () => undefined
+    });
+
+    expect(pipeline).not.toBeInstanceOf(Promise);
+    pipeline.start();
+    const receipt = pipeline.offer(candidate);
+    await receipt.settled;
+    await pipeline.read({ order: "asc", limit: 1 });
+    await pipeline.clear();
+    await pipeline.close();
+
+    expect(follow).toHaveBeenCalledWith(
+      { from: "CURRENT_INTERVAL_START" },
+      expect.any(Function)
+    );
+    expect(offer).toHaveBeenCalledWith(candidate);
+    expect(read).toHaveBeenCalledWith({ order: "asc", limit: 1 });
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("starts follow from CURRENT_INTERVAL_START and replays committed entries in order", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "pipeline-current-start" });
     await history.offer(lightstreamerCandidate("before-a")).settled;
