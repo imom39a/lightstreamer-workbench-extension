@@ -14,12 +14,21 @@ import { execFileSync, spawn } from "node:child_process";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
 import WebSocket from "ws";
+import {
+  createTimeoutDiagnostic,
+  PerformanceOperationTimeout,
+  runPageOperation
+} from "./event-history-performance-runner-operations.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_OUTPUT ?? "test-results/event-history-performance.json");
 const markdownPath = outputPath.replace(/\.json$/u, ".md");
 const referencePath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_REFERENCE ?? "docs/reference/event-history-performance-reference.json");
 const BROWSER_TIMEOUT_MS = 240_000;
+const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
+  "LSEW_EVENT_HISTORY_PERF_DEADLINE_MS",
+  3_600_000
+);
 
 async function main() {
   requireVisibleEnvironment();
@@ -32,6 +41,8 @@ async function main() {
   let chrome;
   let cdp;
   let chromeOutput = "";
+  let chromeMetadata = null;
+  let environmentMetadata = null;
   try {
     await mkdir(site, { recursive: true });
     await build({ entryPoints: [join(rootDir, "benchmarks/event-history-performance-gate.ts")], outfile: gateModulePath, bundle: true, format: "esm", platform: "node", target: "node20", logLevel: "silent" });
@@ -71,9 +82,30 @@ async function main() {
     const environment = await cdp.request("Browser.getVersion");
     const chromeMajor = chromeMajorFromProduct(environment.product);
     if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
+    chromeMetadata = {
+      kind: "real-chrome",
+      headless: false,
+      fakeIndexedDbUsed: false,
+      product: environment.product,
+      userAgent: environment.userAgent,
+      jsVersion: environment.jsVersion
+    };
+    environmentMetadata = {
+      chromeMajor,
+      platformClass: process.platform === "darwin" ? "darwin" : process.platform,
+      architectureClass: process.arch,
+      headless: false
+    };
     await waitForHarness(cdp);
 
-    const result = await evaluate(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run()", 3_600_000);
+    const result = await runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run()", {
+      deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
+      onHeartbeat(status) {
+        process.stderr.write(
+          `[event-history-performance] state=${status.state} elapsedMs=${status.elapsedMs.toFixed(0)} heartbeat=${status.heartbeat}\n`
+        );
+      }
+    });
     const heapSamples = [];
     for (const adapter of ["indexeddb", "memory"]) {
       const count = adapter === "indexeddb" ? 10_000 : 5_000;
@@ -106,16 +138,13 @@ async function main() {
     const report = {
       schemaVersion: 2,
       generatedAt: new Date().toISOString(),
-      runner: { kind: "real-chrome", headless: false, fakeIndexedDbUsed: false, product: environment.product, userAgent: environment.userAgent, jsVersion: environment.jsVersion },
+      runner: chromeMetadata,
       source: {
         revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
         dirty: execFileSync("git", ["status", "--porcelain"], { cwd: rootDir, encoding: "utf8" }).trim().length > 0
       },
       environment: {
-        chromeMajor,
-        platformClass: process.platform === "darwin" ? "darwin" : process.platform,
-        architectureClass: process.arch,
-        headless: false
+        ...environmentMetadata
       },
       anchors: result.anchors,
       config: result.config,
@@ -138,6 +167,20 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ verdict: decision.verdict, failures: decision.failures, reviewReasons: decision.reviewReasons, report: outputPath }, null, 2)}\n`);
     if (decision.verdict === "FAIL") throw new Error(`Event History performance gate failed. See ${outputPath}.`);
   } catch (error) {
+    if (error instanceof PerformanceOperationTimeout && chromeMetadata && environmentMetadata) {
+      const source = sourceState();
+      const diagnostic = createTimeoutDiagnostic({
+        generatedAt: new Date().toISOString(),
+        source,
+        runner: chromeMetadata,
+        environment: environmentMetadata,
+        referencePath,
+        deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
+        operation: error.status
+      });
+      await mkdir(dirname(outputPath), { recursive: true });
+      await writeFile(outputPath, `${JSON.stringify(diagnostic, null, 2)}\n`);
+    }
     if (chromeOutput) process.stderr.write(`\nChrome output:\n${chromeOutput.slice(-8_000)}\n`);
     throw error;
   } finally {
@@ -170,6 +213,19 @@ function chromeMajorFromProduct(product) {
   const match = String(product).match(/\/(\d+)/u);
   if (!match) throw new Error(`Could not determine Chrome major from ${product}.`);
   return Number(match[1]);
+}
+
+function positiveFiniteEnvironment(name, fallback) {
+  const value = process.env[name] === undefined ? fallback : Number(process.env[name]);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive finite number.`);
+  return value;
+}
+
+function sourceState() {
+  return {
+    revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
+    dirty: execFileSync("git", ["status", "--porcelain"], { cwd: rootDir, encoding: "utf8" }).trim().length > 0
+  };
 }
 
 function isStrictlyMonotonic(values) {
