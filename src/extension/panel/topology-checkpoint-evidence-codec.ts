@@ -162,6 +162,9 @@ function validateFrameSequence(
   ) {
     return reject("UNSUPPORTED_FRAME_SEQUENCE");
   }
+  if (frames[0] !== begin || frames.at(-1) !== complete || frames.slice(1, -1).some((frame) => frame.type !== TOPOLOGY_SYNC_CHUNK)) {
+    return reject("UNSUPPORTED_FRAME_SEQUENCE");
+  }
   if (!sameMetadata(begin, complete) || chunks.some((chunk) => !sameMetadata(begin, chunk))) {
     return reject("INVALID_CHECKPOINT");
   }
