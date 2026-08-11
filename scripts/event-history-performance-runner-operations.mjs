@@ -383,11 +383,26 @@ export async function runPageOperation(cdp, expression, options = {}) {
     lastStatus = operationStatus(evaluationValue(startResponse), startedAt, now);
 
     while (true) {
-      const pollResponse = await requestWithDeadline(cdp, {
-        expression: pollOperationExpression(operationId),
-        awaitPromise: false,
-        returnByValue: true
-      }, deadlineAt, requestCeilingMs, now, "poll");
+      let pollResponse;
+      try {
+        pollResponse = await requestWithDeadline(cdp, {
+          expression: pollOperationExpression(operationId),
+          awaitPromise: false,
+          returnByValue: true
+        }, deadlineAt, requestCeilingMs, now, "poll");
+      } catch (error) {
+        if (!(error instanceof CdpRequestTimeout) || error.phase !== "poll") throw error;
+        lastStatus = operationStatus(lastStatus, startedAt, now);
+        emitHeartbeat(options.onHeartbeat, lastStatus);
+        if (lastStatus.elapsedMs >= deadlineMs) {
+          throw new PerformanceOperationTimeout(
+            `Event History performance operation timed out after ${lastStatus.elapsedMs} ms.`,
+            lastStatus
+          );
+        }
+        await sleep(Math.min(pollIntervalMs, Math.max(0, deadlineMs - lastStatus.elapsedMs)));
+        continue;
+      }
       lastStatus = operationStatus(evaluationValue(pollResponse), startedAt, now);
       emitHeartbeat(options.onHeartbeat, lastStatus);
       if (lastStatus.state === "resolved") return lastStatus.result;

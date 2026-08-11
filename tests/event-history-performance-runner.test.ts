@@ -405,7 +405,8 @@ describe("Event History performance runner page operation", () => {
     expect(heartbeats).toEqual([
       { state: "pending", elapsedMs: 0 },
       { state: "pending", elapsedMs: 0 },
-      { state: "pending", elapsedMs: 10 }
+      { state: "pending", elapsedMs: 10 },
+      { state: "pending", elapsedMs: 20 }
     ]);
     expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
     expect(cdp.calls.every(({ params }) => params.awaitPromise === false)).toBe(true);
@@ -429,8 +430,10 @@ describe("Event History performance runner page operation", () => {
   });
 
   it("preserves the original rejected error fields and cleans the operation record", async () => {
+    const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
     const cdp = new FakeCdp([
       evaluated({ operationId: "rejected-operation", state: "pending", heartbeat: 0 }),
+      neverSettles,
       evaluated({
         operationId: "rejected-operation",
         state: "rejected",
@@ -463,7 +466,9 @@ describe("Event History performance runner page operation", () => {
 
     const rejected = await runPageOperation(cdp, "window.run()", {
       operationId: "rejected-operation",
-      deadlineMs: 100
+      deadlineMs: 100,
+      pollIntervalMs: 1,
+      requestCeilingMs: 10
     }).then(() => null, (error) => error);
     expect(rejected).toMatchObject({
       name: "TypeError",
@@ -558,17 +563,17 @@ describe("Event History performance runner page operation", () => {
     await expect(runPageOperation(second, "window.run()", { operationId: "second-operation" })).resolves.toEqual({ run: 2 });
   });
 
-  it("turns a never-settling poll into a prompt timeout and preserves the diagnostic status", async () => {
+  it("keeps retrying bounded poll requests until the true global deadline", async () => {
     const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
     const cdp = new FakeCdp([
       evaluated({ operationId: "hung-poll", state: "pending", heartbeat: 0 }),
-      neverSettles,
+      ...Array.from({ length: 20 }, () => neverSettles),
       evaluated(true)
     ]);
     const startedAt = Date.now();
     const result = await watchdog(runPageOperation(cdp, "window.run()", {
       operationId: "hung-poll",
-      deadlineMs: 100,
+      deadlineMs: 35,
       requestCeilingMs: 10
     }).then(
       (value) => ({ value }),
@@ -587,6 +592,31 @@ describe("Event History performance runner page operation", () => {
       deadlineMs: 100,
       operation: timeout.status
     })).toMatchObject({ status: "TIMED_OUT", classification: "NOT_CLASSIFIED", reference: { adopted: false } });
+    expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
+  });
+
+  it("recovers when one bounded poll request hangs but a later poll observes completion", async () => {
+    const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "recoverable-poll", state: "pending", heartbeat: 0 }),
+      neverSettles,
+      evaluated({ operationId: "recoverable-poll", state: "resolved", heartbeat: 2, result: { recovered: true } }),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", {
+      operationId: "recoverable-poll",
+      deadlineMs: 100,
+      pollIntervalMs: 1,
+      requestCeilingMs: 10
+    })).resolves.toEqual({ recovered: true });
+
+    expect(cdp.calls.map(({ method }) => method)).toEqual([
+      "Runtime.evaluate",
+      "Runtime.evaluate",
+      "Runtime.evaluate",
+      "Runtime.evaluate"
+    ]);
     expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
   });
 
@@ -618,9 +648,11 @@ describe("Event History performance runner page operation", () => {
   it("ignores a late poll rejection after timeout without an unhandled rejection or stale result", async () => {
     let rejectLatePoll!: (error: Error) => void;
     const latePoll = new Promise<FakeCdpResponse>((_, reject) => { rejectLatePoll = reject; });
+    const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
     const cdp = new FakeCdp([
       evaluated({ operationId: "late-poll", state: "pending", heartbeat: 0 }),
       latePoll,
+      ...Array.from({ length: 10 }, () => neverSettles),
       evaluated(true)
     ]);
     const unhandled: unknown[] = [];
@@ -629,7 +661,8 @@ describe("Event History performance runner page operation", () => {
     try {
       const result = await watchdog(runPageOperation(cdp, "window.run()", {
         operationId: "late-poll",
-        deadlineMs: 100,
+        deadlineMs: 30,
+        pollIntervalMs: 1,
         requestCeilingMs: 10
       }).then(
         (value) => ({ value }),
@@ -639,7 +672,7 @@ describe("Event History performance runner page operation", () => {
       rejectLatePoll(new Error("late poll failure"));
       await new Promise((resolve) => setImmediate(resolve));
       expect(unhandled).toEqual([]);
-      expect(cdp.calls).toHaveLength(3);
+      expect(cdp.calls.length).toBeGreaterThan(3);
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
