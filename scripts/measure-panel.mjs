@@ -26,6 +26,9 @@ import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const diagnosticDirectory = resolve(
+  process.env.LSEW_PANEL_DIAGNOSTIC_DIR?.trim() || join(tmpdir(), "lsew-panel-diagnostics")
+);
 const args = parseArgs(process.argv.slice(2));
 const defaultJsonPath = resolve(
   projectRoot,
@@ -142,7 +145,7 @@ try {
     report.limitations = lifecycleLimitations(lifecycleRuns);
   } else {
     const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
-    report.coldLoads = await measureColdLoads(context, harness.url);
+    report.coldLoads = await measureColdLoads(context, harness.url, diagnosticDirectory);
     report.highVolume = await measureHighVolume(context, harness.url);
     report.lifecycle = await measureLifecycle(context, harness.url, lifecycleConfiguration);
     await context.close();
@@ -341,7 +344,7 @@ function harnessSource() {
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { createCaptureMessage } from ${source("src/bridge/messages.ts")};
-import { createInMemoryEventHistory } from ${source("src/core/event-history.ts")};
+import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 
@@ -566,16 +569,33 @@ document.documentElement.dataset.panelPerfReady = "true";
 `;
 }
 
-async function measureColdLoads(context, url) {
+async function measureColdLoads(context, url, diagnosticsDirectory) {
   const runs = [];
   for (let run = 1; run <= 5; run += 1) {
     const page = await context.newPage();
+    const consoleMessages = [];
+    const pageErrors = [];
+    const failedRequests = [];
+    page.on("console", (message) => consoleMessages.push({ type: message.type(), text: message.text(), location: message.location() }));
+    page.on("pageerror", (error) => pageErrors.push({ name: error.name, message: error.message, stack: error.stack ?? null }));
+    page.on("requestfailed", (request) => failedRequests.push({ url: request.url(), method: request.method(), failure: request.failure() }));
     const cdp = await context.newCDPSession(page);
     await cdp.send("Performance.enable");
     await cdp.send("Network.enable");
     await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await page.getByLabel("Lightstreamer Workbench", { exact: true }).waitFor({ state: "visible" });
+    try {
+      await page.getByRole("region", { name: "Lightstreamer Workbench", exact: true }).waitFor({ state: "visible" });
+    } catch (error) {
+      await writeColdLoadDiagnostics(page, run, diagnosticsDirectory, {
+        expectedUrl: url,
+        consoleMessages,
+        pageErrors,
+        failedRequests,
+        error: { name: error.name, message: error.message, stack: error.stack ?? null }
+      });
+      throw error;
+    }
     const semanticReadyMs = await page.evaluate(() => performance.now());
     const after = await performanceMetrics(cdp);
     runs.push({
@@ -594,6 +614,35 @@ async function measureColdLoads(context, url) {
     parseCompileDurationMs: summarize(runs.map((run) => run.parseCompileDurationMs)),
     taskDurationMs: summarize(runs.map((run) => run.taskDurationMs))
   };
+}
+
+async function writeColdLoadDiagnostics(page, run, directory, telemetry) {
+  await mkdir(directory, { recursive: true });
+  const evidence = await page.evaluate(() => {
+    const root = document.querySelector('[aria-label="Lightstreamer Workbench"]');
+    const rootStyle = root ? getComputedStyle(root) : null;
+    const rootRect = root?.getBoundingClientRect();
+    return {
+      url: window.location.href,
+      readyState: document.readyState,
+      bodySnippet: document.body?.innerHTML.slice(0, 50_000) ?? null,
+      root: root ? {
+        tagName: root.tagName,
+        outerHTML: root.outerHTML.slice(0, 20_000),
+        display: rootStyle?.display ?? null,
+        visibility: rootStyle?.visibility ?? null,
+        opacity: rootStyle?.opacity ?? null,
+        rect: rootRect ? { x: rootRect.x, y: rootRect.y, width: rootRect.width, height: rootRect.height } : null
+      } : null,
+      scripts: [...document.scripts].map((script) => script.src || "inline"),
+      stylesheets: [...document.querySelectorAll("link[rel=stylesheet]")].map((link) => link.href),
+      resources: performance.getEntriesByType("resource").map((entry) => entry.name)
+    };
+  }).catch((error) => ({ evaluationError: String(error) }));
+  const artifactBase = join(directory, `cold-load-run-${run}`);
+  await page.screenshot({ path: `${artifactBase}.png`, fullPage: true });
+  await writeFile(`${artifactBase}.json`, `${JSON.stringify({ telemetry, evidence }, null, 2)}\n`);
+  process.stderr.write(`[PANEL-PERF-DIAGNOSTIC] ${artifactBase}.json\n`);
 }
 
 async function measureHighVolume(context, url) {

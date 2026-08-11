@@ -50,8 +50,15 @@ describe("panel performance evidence runner", () => {
   it("waits for the current semantic Workbench root instead of a transient Find control", () => {
     const source = readFileSync(runner, "utf8");
 
-    expect(source).toContain('page.getByLabel("Lightstreamer Workbench", { exact: true })');
+    expect(source).toContain('page.getByRole("region", { name: "Lightstreamer Workbench", exact: true })');
     expect(source).not.toContain('page.getByRole("button", { name: "Find", exact: true })');
+  });
+
+  it("mounts the standalone harness with the authoritative Event History contract", () => {
+    const source = readFileSync(runner, "utf8");
+
+    expect(source).toContain('source("src/core/event-history-authoritative.ts")');
+    expect(source).not.toContain('source("src/core/event-history.ts")');
   });
 
   it("prints the lifecycle-only configuration without starting a browser", () => {
