@@ -1,20 +1,31 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, describe, it } from "vitest";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const scriptCopy = join(repositoryRoot, "scripts", `.event-history-performance-script-test-${process.pid}.mjs`);
-writeFileSync(scriptCopy, readFileSync(join(repositoryRoot, "scripts/event-history-performance.mjs"), "utf8").replace(/^#![^\n]*\n/u, ""));
+mkdirSync(join(repositoryRoot, "test-results"), { recursive: true });
+const temporaryModuleRoot = mkdtempSync(join(repositoryRoot, "test-results", ".event-history-performance-script-test-"));
+const scriptCopy = join(temporaryModuleRoot, "event-history-performance.mjs");
+const runnerOperationsCopy = join(temporaryModuleRoot, "event-history-performance-runner-operations.mjs");
+const cleanupTemporaryModuleRoot = () => rmSync(temporaryModuleRoot, { recursive: true, force: true });
+process.once("exit", cleanupTemporaryModuleRoot);
+try {
+  writeFileSync(scriptCopy, readFileSync(join(repositoryRoot, "scripts/event-history-performance.mjs"), "utf8").replace(/^#![^\n]*\n/u, ""));
+  writeFileSync(runnerOperationsCopy, readFileSync(join(repositoryRoot, "scripts/event-history-performance-runner-operations.mjs"), "utf8"));
+} catch (error) {
+  cleanupTemporaryModuleRoot();
+  throw error;
+}
 const scriptUrl = pathToFileURL(scriptCopy).href;
 const runNode = (source: string) => execFileSync(process.execPath, ["--input-type=module", "-e", source], {
   cwd: repositoryRoot,
   encoding: "utf8",
   timeout: 5_000
 });
-afterAll(() => rmSync(scriptCopy, { force: true }));
+afterAll(cleanupTemporaryModuleRoot);
 
 describe("Event History performance startup fail-closed seams", () => {
   it("bounds a hung CDP WebSocket open and closes the socket", () => {
