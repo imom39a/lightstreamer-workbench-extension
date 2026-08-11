@@ -40,7 +40,178 @@ async function nextTask(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+function expectDeeplyFrozen(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  expect(Object.isFrozen(value)).toBe(true);
+  for (const child of Object.values(value)) expectDeeplyFrozen(child);
+}
+
+function concurrentRuntime() {
+  return {
+    listDatabases: async () => [],
+    requestLock: async <T>(_name: string, _options: { mode: "exclusive"; ifAvailable?: boolean }, callback: () => Promise<T> | T) => callback()
+  };
+}
+
 describe("history-impl-09 shared lifecycle blockers", () => {
+  it.each(["memory", "indexeddb"] as const)(
+    "deeply freezes every terminal publication before the first %s subscriber receives it",
+    async (kind) => {
+      const panelSessionId = `impl-09-terminal-publication-freeze-${kind}`;
+      const publications: HistoryPublication[] = [];
+      const history = kind === "memory"
+        ? await createMemoryEventHistoryForTests({
+            panelSessionId,
+            capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
+          })
+        : await (() => {
+            Reflect.set(globalThis, "indexedDB", new IDBFactory());
+            return createIndexedDbEventHistory({
+              panelSessionId,
+              capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
+            });
+          })();
+      let firstTerminal: HistoryPublication | undefined;
+      let laterTerminal: HistoryPublication | undefined;
+      history.follow({ from: "NOW" }, (publication) => {
+        if (publication.type !== "terminal") return;
+        firstTerminal = publication;
+        publications.push(publication);
+        expectDeeplyFrozen(publication);
+        try {
+          Reflect.set(publication.status, "phase", "RUNNING");
+        } catch {
+          // A frozen publication must reject mutation without harming delivery.
+        }
+      });
+      history.follow({ from: "NOW" }, (publication) => {
+        if (publication.type === "terminal") laterTerminal = publication;
+      });
+
+      await expect(history.offer(candidate("retained")).settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 1, eventId: "retained" }
+      });
+      await expect(history.offer(candidate("crossing")).settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        problem: { code: "RETAINED_COUNT_LIMIT" },
+        committedEvidenceBoundary: { sequence: 1, eventId: "retained" }
+      });
+
+      expect(publications).toHaveLength(1);
+      expect(laterTerminal).toBe(firstTerminal);
+      expect(laterTerminal).toMatchObject({
+        type: "terminal",
+        terminal: {
+          reason: "RETAINED_COUNT_LIMIT",
+          committedEvidenceBoundary: { sequence: 1, eventId: "retained" }
+        },
+        status: { phase: "STOPPED", captureOperation: "STOPPED" }
+      });
+      expectDeeplyFrozen(laterTerminal);
+      await history.close();
+    }
+  );
+
+  it("recovers a finalization persistence failure as a durable stopped journal failure", async () => {
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const panelSessionId = "impl-09-reopen-finalization-failure";
+    const runtime = concurrentRuntime();
+    const history = await createIndexedDbEventHistory({
+      panelSessionId,
+      runtime,
+      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 },
+      finalizeTerminal: () => {
+        throw new Error("terminal finalization failed");
+      }
+    });
+
+    await expect(history.offer(candidate("finalization-prior")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    await expect(history.offer(candidate("finalization-crossing")).settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT" },
+      committedEvidenceBoundary: { sequence: 1, eventId: "finalization-prior" }
+    });
+
+    const reopened = await createIndexedDbEventHistory({ panelSessionId, runtime });
+    let status: unknown;
+    reopened.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") status = publication.status;
+    });
+    expect(status).toMatchObject({
+      phase: "STOPPED",
+      captureOperation: "STOPPED",
+      terminal: {
+        reason: "JOURNAL_COMMIT_FAILED",
+        committedEvidenceBoundary: { sequence: 1, eventId: "finalization-prior" }
+      }
+    });
+    await expect(reopened.offer(candidate("after-reopen")).settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" },
+      committedEvidenceBoundary: { sequence: 1, eventId: "finalization-prior" }
+    });
+    await expect(reopened.read({})).resolves.toMatchObject({
+      ok: true,
+      value: {
+        evidence: [{ sequence: 1, eventId: "finalization-prior" }],
+        committedEvidenceBoundary: { sequence: 1, eventId: "finalization-prior" }
+      }
+    });
+    await reopened.close();
+    await history.close();
+  });
+
+  it("recovers a terminal-intent control put failure as a durable stopped journal failure", async () => {
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const panelSessionId = "impl-09-reopen-terminal-intent-failure";
+    const runtime = concurrentRuntime();
+    const originalPut = IDBObjectStore.prototype.put;
+    let failNormalControlPut = false;
+    const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (failNormalControlPut && this.name === "historyControl") {
+        failNormalControlPut = false;
+        throw new Error("terminal intent control put failed");
+      }
+      return originalPut.apply(this, args);
+    });
+    const history = await createIndexedDbEventHistory({
+      panelSessionId,
+      runtime,
+      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
+    });
+
+    await expect(history.offer(candidate("intent-prior")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    failNormalControlPut = true;
+    await expect(history.offer(candidate("intent-crossing")).settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT" },
+      committedEvidenceBoundary: { sequence: 1, eventId: "intent-prior" }
+    });
+    put.mockRestore();
+
+    const reopened = await createIndexedDbEventHistory({ panelSessionId, runtime });
+    let status: unknown;
+    reopened.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") status = publication.status;
+    });
+    expect(status).toMatchObject({
+      phase: "STOPPED",
+      captureOperation: "STOPPED",
+      terminal: {
+        reason: "JOURNAL_COMMIT_FAILED",
+        committedEvidenceBoundary: { sequence: 1, eventId: "intent-prior" }
+      }
+    });
+    await expect(reopened.offer(candidate("after-reopen")).settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "JOURNAL_COMMIT_FAILED" },
+      committedEvidenceBoundary: { sequence: 1, eventId: "intent-prior" }
+    });
+    await reopened.close();
+    await history.close();
+  });
+
   it.each(["memory", "indexeddb"] as const)(
     "restarts the %s pipeline follower after a consumer throw and delivers later Evidence once",
     async (kind) => {

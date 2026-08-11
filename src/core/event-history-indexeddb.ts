@@ -470,7 +470,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           finalized
         );
       } catch (error) {
-        failTerminalPersistence(error);
+        await failTerminalPersistence(error);
         return;
       }
       persistedTerminal = finalized;
@@ -513,7 +513,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     });
   }
 
-  function failTerminalPersistence(error: unknown): void {
+  async function failTerminalPersistence(error: unknown): Promise<void> {
     if (terminalPersistenceFailed) return;
     terminalPersistenceFailed = true;
     const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
@@ -522,10 +522,25 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     persistedTerminal = failedTerminal;
     terminal = failedTerminal;
     phase = "STOPPED";
+    try {
+      await finalizeTerminal(
+        database,
+        loaded.panelSessionId,
+        interval,
+        nextSequence,
+        committedEvidenceBoundary,
+        retainedRange,
+        retainedCount,
+        replayPayloadBytes,
+        durableAccountedBytes,
+        failedTerminal
+      );
+    } catch {
+      // The emergency control update is best effort; local state remains fail-closed.
+    }
     const issue = terminalProblem(trigger);
     publish({ type: "terminal", terminal: failedTerminal, status: status(issue) });
     publish({ type: "status", status: status(issue), problem: issue });
-    signalTerminalSettled();
   }
 
   function startTerminalPersistence(): void {
@@ -545,9 +560,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           persistedTerminal = intent;
         }
       })
-      .catch((error) => {
-        failTerminalPersistence(error);
-      });
+      .catch((error) => failTerminalPersistence(error));
   }
   function beginDrain(reason: HistoryTerminalReason, dimension: HistoryCapacityDimension | "JOURNAL", firstMissingEventId: string | null): void {
     if (phase === "STOPPED" || phase === "CLOSED") return;
@@ -926,21 +939,22 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   }
 
   function publish(publication: HistoryPublication): void {
+    const immutablePublication = deepFreeze(publication);
     for (const subscriber of [...subscribers]) {
-      if (subscriber.replaying && publication.type === "committed-evidence") {
-        const first = publication.evidence[0];
-        const last = publication.evidence.at(-1);
+      if (subscriber.replaying && immutablePublication.type === "committed-evidence") {
+        const first = immutablePublication.evidence[0];
+        const last = immutablePublication.evidence.at(-1);
         if (first && last) {
           subscriber.pending.push({
             type: "committed-range",
-            interval: publication.interval,
+            interval: immutablePublication.interval,
             firstSequence: first.sequence,
             lastSequence: last.sequence,
-            committedEvidenceBoundary: publication.committedEvidenceBoundary
+            committedEvidenceBoundary: immutablePublication.committedEvidenceBoundary
           });
         }
-      } else if (subscriber.replaying) subscriber.pending.push(publication);
-      else invoke(subscriber, publication);
+      } else if (subscriber.replaying) subscriber.pending.push(immutablePublication);
+      else invoke(subscriber, immutablePublication);
     }
   }
 
@@ -1128,7 +1142,12 @@ async function persistTerminalIntent(
   const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl);
   const current = await requestToPromise<ControlRecord | undefined>(store.get(AUTHORITATIVE_EVENT_CONTROL_KEY), "reading Event History terminal intent");
   if (!current || current.panelSessionId !== panelSessionId) throw new Error("The Event History terminal intent control is missing or belongs to another Panel Session.");
-  store.put({ ...current, phase: "DRAINING_TO_STOP", terminal });
+  try {
+    store.put({ ...current, phase: "DRAINING_TO_STOP", terminal });
+  } catch (error) {
+    try { transaction.abort(); } catch { /* the transaction may already be complete */ }
+    throw error;
+  }
   await transactionDone(transaction, "persisting Event History terminal intent");
 }
 
@@ -1145,9 +1164,14 @@ async function finalizeTerminal(
   terminal: HistoryTerminalDiagnostic
 ): Promise<void> {
   const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, "readwrite");
-  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(
-    createControl(panelSessionId, interval, "STOPPED", terminal, nextSequence, boundary, range, retainedCount, replayPayloadBytes, accountedBytes)
-  );
+  try {
+    transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(
+      createControl(panelSessionId, interval, "STOPPED", terminal, nextSequence, boundary, range, retainedCount, replayPayloadBytes, accountedBytes)
+    );
+  } catch (error) {
+    try { transaction.abort(); } catch { /* the transaction may already be complete */ }
+    throw error;
+  }
   await transactionDone(transaction, "finalizing Event History terminal state");
 }
 

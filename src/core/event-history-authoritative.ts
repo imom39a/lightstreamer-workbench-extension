@@ -989,11 +989,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   }
 
   function publish(publication: HistoryPublication): void {
+    const immutablePublication = deepFreeze(publication);
     for (const subscriber of [...subscribers]) {
       if (subscriber.replaying) {
-        subscriber.pending.push(publication);
+        subscriber.pending.push(immutablePublication);
       } else {
-        invoke(subscriber, publication);
+        invoke(subscriber, immutablePublication);
       }
     }
   }

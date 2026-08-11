@@ -873,7 +873,7 @@ it("does not let Close erase the journal while terminal finalization is in fligh
   expect(order).toEqual(["finalize-start", "finalize-end", "clear"]);
 });
 
-it("does not reopen a concurrently owned terminal-finalization failure state", async () => {
+it("recovers a terminal-finalization failure as a durable journal-failed state", async () => {
   const panelSessionId = "impl-05-reopen-terminal-failure";
   const history = await indexedHistory(panelSessionId, {
     capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 },
@@ -894,9 +894,9 @@ it("does not reopen a concurrently owned terminal-finalization failure state", a
   });
   const reopenedControl = await readIndexedControl(panelSessionId);
   expect(reopenedControl).toMatchObject({
-    phase: "DRAINING_TO_STOP",
+    phase: "STOPPED",
     terminal: {
-      reason: "RETAINED_COUNT_LIMIT",
+      reason: "JOURNAL_COMMIT_FAILED",
       committedEvidenceBoundary: { sequence: 1, eventId: "terminal-failure-prior" },
       firstMissingEventId: "terminal-failure-crossing"
     },
