@@ -118,8 +118,11 @@ export function estimateHistoryCandidateBytes(
 ): number {
   // The estimator remains a test-only seam for deterministic pressure tests.
   // Production accounting always includes the canonical payload and frame.
+  // Custom estimators are a test-only seam and may mutate their input. Give
+  // that seam an isolated snapshot; the production path keeps using the
+  // already-computed canonical payload bytes without another object walk.
   const bytes = estimator
-    ? estimator(candidate)
+    ? estimator(structuredClone(candidate) as EvidenceCandidate)
     : journalAccountedBytes(
         serializedPayloadBytes ?? serializeJournalEvidenceCandidate(candidate).bytes
       );

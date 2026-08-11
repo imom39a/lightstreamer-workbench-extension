@@ -157,6 +157,85 @@ describe.each([
     await history.close();
   });
 
+  it("keeps the offered snapshot immutable across a mutating custom estimator", async () => {
+    const accepted = {
+      id: "estimator-accepted",
+      timestamp: 1_700_000_000_000,
+      direction: "inbound" as const,
+      source: "server" as const,
+      synthetic: false,
+      kind: "item-update" as const,
+      update: { jsonPatches: { nested: { marker: "original" } } }
+    };
+    const expectedAccepted = {
+      id: "estimator-accepted",
+      timestamp: 1_700_000_000_000,
+      direction: "inbound" as const,
+      source: "server" as const,
+      synthetic: false,
+      kind: "item-update" as const,
+      update: { jsonPatches: { nested: { marker: "original" } } }
+    };
+    const crossing = {
+      id: "estimator-crossing",
+      timestamp: 1_700_000_000_001,
+      direction: "inbound" as const,
+      source: "server" as const,
+      synthetic: false,
+      kind: "item-update" as const,
+      update: { jsonPatches: { nested: { marker: "crossing-original" } } }
+    };
+    const mutateEstimator = (value: EvidenceCandidate): number => {
+      const mutable = value as unknown as {
+        update: { jsonPatches: { nested: { marker: string } } };
+        id: string;
+      };
+      mutable.id = "mutated-by-estimator";
+      mutable.update.jsonPatches.nested.marker = "mutated-by-estimator";
+      return 8;
+    };
+    const history = await create({
+      byteEstimator: mutateEstimator,
+      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
+    });
+    const publications = collect(history);
+
+    await expect(history.offer(accepted).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    expect(accepted).toEqual(expectedAccepted);
+
+    const refused = history.offer(crossing);
+    await expect(refused.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT" }
+    });
+    expect(crossing).toEqual({
+      id: "estimator-crossing",
+      timestamp: 1_700_000_000_001,
+      direction: "inbound",
+      source: "server",
+      synthetic: false,
+      kind: "item-update",
+      update: { jsonPatches: { nested: { marker: "crossing-original" } } }
+    });
+
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [{ eventId: "estimator-accepted", candidate: expectedAccepted }] }
+    });
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "committed-evidence",
+      evidence: [expect.objectContaining({ eventId: "estimator-accepted", candidate: expectedAccepted })]
+    }));
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "terminal",
+      terminal: expect.objectContaining({
+        firstMissingEventId: "estimator-crossing",
+        rejected: { count: 1, bytes: 8 }
+      })
+    }));
+    await history.close();
+  });
+
   it.each([
     ["NORMAL", {
       maxRetainedCount: 10_000,
