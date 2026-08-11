@@ -624,6 +624,74 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("does not project pending evidence before commit, keeping committed-only reads", async () => {
+    let allowCommit!: () => void;
+    let commitStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      commitStarted = resolve;
+    });
+    const history = await freshIndexedHistory("indexed-no-precommit-projection", {
+      commitBatch: async (batch) => {
+        if (batch.some((entry) => entry.id === "stalled")) {
+          commitStarted();
+          await new Promise<void>((resolve) => {
+            allowCommit = resolve;
+          });
+        }
+      }
+    });
+    const committedEvidence: string[] = [];
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "committed-evidence") {
+        committedEvidence.push(...publication.evidence.map((entry) => entry.eventId));
+      }
+    });
+
+    const pre = await history.offer(candidate("pre"));
+    await expect(pre.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1, eventId: "pre" }
+    });
+    const stalled = history.offer(candidate("stalled"));
+    await started;
+
+    let stalledSettled = false;
+    void stalled.settled.finally(() => {
+      stalledSettled = true;
+    });
+    expect(stalled.intake).toBe("QUEUED");
+    expect(stalledSettled).toBe(false);
+    expect(committedEvidence).toEqual(["pre"]);
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: {
+        evidence: [expect.objectContaining({ eventId: "pre", sequence: 1 })],
+        total: 1,
+        committedEvidenceBoundary: { sequence: 1, eventId: "pre" }
+      }
+    });
+
+    allowCommit();
+    await expect(stalled.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "stalled" }
+    });
+    expect(committedEvidence).toEqual(["pre", "stalled"]);
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: {
+        evidence: [
+          expect.objectContaining({ eventId: "pre" }),
+          expect.objectContaining({ eventId: "stalled" })
+        ],
+        total: 2,
+        committedEvidenceBoundary: { sequence: 2, eventId: "stalled" }
+      }
+    });
+
+    await history.close();
+  });
+
   it("keeps reads at the committed snapshot and preserves query parity", async () => {
     const history = await freshHistory("indexed-query");
     const events = [
