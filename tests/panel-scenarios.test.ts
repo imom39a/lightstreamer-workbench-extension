@@ -136,16 +136,15 @@ describe("deterministic panel scenarios", () => {
   it("keeps the high-cardinality COMMAND scenario bounded at the source seam", () => {
     const first = createTopologyLargeScenario();
     const second = createTopologyLargeScenario();
-    const records = first.topologySyncFrames?.[1];
+    const records = first.topologySyncFrames?.flatMap((frame) =>
+      frame.type === "lsew:topology-sync-chunk"
+        ? frame.records.filter((record) => record.kind === "command-generation")
+        : []
+    );
 
     expect(first).toEqual(second);
-    expect(records?.type).toBe("lsew:topology-sync-chunk");
-    if (records?.type !== "lsew:topology-sync-chunk") {
-      throw new Error("missing large topology checkpoint records");
-    }
-    expect(records.records.filter((record) => record.kind === "command-generation")).toHaveLength(
-      1_000
-    );
+    expect(first.topologySyncFrames?.length).toBeGreaterThan(3);
+    expect(records).toHaveLength(1_000);
   });
 
   it("describes the compact export scenario as a real interaction sequence", () => {

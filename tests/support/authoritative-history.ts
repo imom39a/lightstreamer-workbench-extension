@@ -296,7 +296,7 @@ export function createAuthoritativeHistory(
     return Promise.resolve(closeOutcome);
   }
 
-  return { offer, read, clear, follow, close };
+  return { storage: { mode: "memory" }, offer, read, clear, follow, close };
 }
 
 function toRef(evidence: CommittedEvidence): EvidenceRef {

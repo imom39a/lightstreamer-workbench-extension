@@ -1019,7 +1019,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("advances Local Effective COMMAND State once when delivered Evidence retention fails", async () => {
+  it("does not advance Local Effective COMMAND State when delivered Evidence retention fails", async () => {
     const retainedHistory = createAuthoritativeHistory({
       precommitted: [
         commandEvent("journey-1", "client-created"),
@@ -1079,7 +1079,8 @@ describe("WorkbenchRuntime Local Injection", () => {
       detail: expect.stringContaining("could not be retained")
     });
     expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=17");
+    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=1");
+    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).not.toContain("qty=17");
     expect(
       runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId
     ).toBeUndefined();

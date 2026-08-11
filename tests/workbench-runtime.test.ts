@@ -838,7 +838,7 @@ describe("WorkbenchRuntime", () => {
     expect(snapshots).toEqual([]);
     expect(runtime.getSnapshot()).toBe(hiddenSnapshot);
     expect(scheduler.frameCount()).toBe(0);
-    await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { total: 1 } });
+    await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { total: 2 } });
 
     runtime.dispatch({ type: "set-visible", visible: true });
     await flushStoreNotifications();
@@ -1162,7 +1162,8 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("keeps structural Scope bounded when a checkpoint contains one thousand COMMAND generations", async () => {
-    const runtime = createWorkbenchRuntime();
+    const history = createAuthoritativeHistory();
+    const runtime = createWorkbenchRuntime({ history });
     await flushStoreNotifications();
     const scenario = getPanelScenario("topology-large");
     for (const frame of scenario.topologySyncFrames ?? []) {

@@ -507,19 +507,28 @@ function createTopologyGuardrailSyncFrames(
     });
   }
 
+  const recordChunks: TopologyAbsoluteRecord[][] = [];
+  for (let offset = 0; offset < records.length; offset += 128) {
+    recordChunks.push(records.slice(offset, offset + 128));
+  }
   const metadata = {
     version: TOPOLOGY_SYNC_VERSION,
     syncId: options.syncId,
     panelSessionId: "panel-00000000-0000-4000-8000-000000000019",
     pageEpoch: options.pageEpoch,
     cutoffCaptureSequence: records.at(-1)?.captureSequence ?? 0,
-    chunkCount: 1,
+    chunkCount: recordChunks.length,
     recordCount: records.length,
     coverage: { status: "complete" as const, getters: {} }
   };
   return [
     { type: TOPOLOGY_SYNC_BEGIN, ...metadata },
-    { type: TOPOLOGY_SYNC_CHUNK, ...metadata, chunkIndex: 0, records },
+    ...recordChunks.map((records, chunkIndex) => ({
+      type: TOPOLOGY_SYNC_CHUNK,
+      ...metadata,
+      chunkIndex,
+      records
+    })),
     { type: TOPOLOGY_SYNC_COMPLETE, ...metadata }
   ];
 }

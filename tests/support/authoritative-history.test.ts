@@ -32,6 +32,7 @@ describe("authoritative EventHistory test support", () => {
       offerDecisions: ["commit", "refuse"]
     });
     expect(history).not.toBeInstanceOf(Promise);
+    expect(history.storage).toEqual({ mode: "memory" });
 
     const replayed: string[] = [];
     history.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
