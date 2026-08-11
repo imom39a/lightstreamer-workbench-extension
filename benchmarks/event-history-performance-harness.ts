@@ -119,10 +119,17 @@ export type HarnessStageGuard = Readonly<{
   invalidate(): void;
 }>;
 
-export function createHarnessStageGuard(): HarnessStageGuard {
+export function createHarnessStageGuard(operationId: string | null = null): HarnessStageGuard {
   let active = true;
   return {
-    isActive: () => active,
+    isActive: () => {
+      if (!active || operationId === null) return active;
+      const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+      return operation !== null
+        && typeof operation === "object"
+        && (operation as { operationId?: unknown }).operationId === operationId
+        && (operation as { state?: unknown }).state === "pending";
+    },
     invalidate: () => { active = false; }
   };
 }
@@ -223,6 +230,112 @@ export function withStageDeadline<T>(
   });
 }
 
+export type ReceiptStageState = Readonly<{
+  terminal: boolean;
+  retired: boolean;
+  settled: number;
+  pending: number;
+}>;
+
+export type ReceiptStageController<T> = Readonly<{
+  promise: Promise<T[]>;
+  state(): ReceiptStageState;
+  retire(): void;
+}>;
+
+export function createReceiptStageController<T>(
+  receipts: readonly PromiseLike<T>[],
+  stage: string,
+  progress: (settled: number) => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): ReceiptStageController<T> {
+  let settled = 0;
+  let pending = receipts.length;
+  let terminal = false;
+  let retired = false;
+  let values: T[] | null = new Array<T>(receipts.length);
+  let progressCallback: ((settled: number) => HarnessProgressInput) | null = progress;
+  let resolveAggregate: ((value: T[]) => void) | null = null;
+  let rejectAggregate: ((error: unknown) => void) | null = null;
+  const promise = new Promise<T[]>((resolve, reject) => {
+    resolveAggregate = resolve;
+    rejectAggregate = reject;
+  });
+  const release = (): void => {
+    values = null;
+    progressCallback = null;
+    resolveAggregate = null;
+    rejectAggregate = null;
+  };
+  const complete = (): void => {
+    if (terminal) return;
+    terminal = true;
+    const result = values ? values.slice() : [];
+    const resolve = resolveAggregate;
+    release();
+    resolve?.(result);
+  };
+  const retire = (): void => {
+    if (terminal) {
+      retired = true;
+      release();
+      return;
+    }
+    terminal = true;
+    retired = true;
+    release();
+  };
+  receipts.forEach((receipt, index) => {
+    Promise.resolve(receipt).then(
+      (value) => {
+        if (terminal) return;
+        settled += 1;
+        pending -= 1;
+        const progressCallbackNow = progressCallback;
+        if (progressCallbackNow) publishStageProgress(progressCallbackNow(settled), guard);
+        if (values) values[index] = value;
+        if (pending === 0) complete();
+      },
+      (error: unknown) => {
+        if (terminal) return;
+        terminal = true;
+        retired = true;
+        settled += 1;
+        pending -= 1;
+        const progressCallbackNow = progressCallback;
+        const contextual = normalizeHarnessError(
+          error,
+          stage,
+          progressCallbackNow ? progressCallbackNow(settled) : {
+            operationId: null,
+            phase: "heap",
+            stage,
+            substage: stage,
+            sample: null,
+            trigger: null,
+            scenario: null,
+            cellIndex: null,
+            cellTotal: 36,
+            adapter: null,
+            workload: null,
+            shape: null,
+            workloadPhase: null,
+            offered: null,
+            settled,
+            query: null
+          },
+          guard
+        );
+        const reject = rejectAggregate;
+        release();
+        reject?.(contextual);
+      }
+    );
+  });
+  if (pending === 0) complete();
+  return { promise, state: () => ({ terminal, retired, settled, pending }), retire };
+}
+
 export function settleReceiptStage<T>(
   receipts: readonly PromiseLike<T>[],
   stage: string,
@@ -230,29 +343,13 @@ export function settleReceiptStage<T>(
   progress: (settled: number) => HarnessProgressInput,
   guard: HarnessStageGuard | undefined = undefined
 ): Promise<T[]> {
-  let settled = 0;
-  let terminal = false;
-  const observedReceipts = receipts.map((receipt) => Promise.resolve(receipt).then(
-    (value) => {
-      if (terminal) return value;
-      settled += 1;
-      publishStageProgress(progress(settled), guard);
-      return value;
-    },
-    (error: unknown) => {
-      if (terminal) return undefined as T;
-      terminal = true;
-      settled += 1;
-      const contextual = normalizeHarnessError(error, stage, progress(settled), guard);
-      throw contextual;
-    }
-  ));
+  const controller = createReceiptStageController(receipts, stage, progress, guard);
   return withStageDeadline(
-    Promise.all(observedReceipts),
+    controller.promise,
     stage,
     timeoutMs,
-    () => progress(settled),
-    () => { terminal = true; },
+    () => progress(controller.state().settled),
+    controller.retire,
     guard
   );
 }
@@ -565,6 +662,7 @@ let retainedHeapSequence = 0;
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
   async run(overrides = {}) {
     const operationId = currentHarnessOperationId();
+    const runGuard = createHarnessStageGuard(operationId);
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
     const cells: EventHistoryPerformanceCell[] = [];
@@ -573,6 +671,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       for (const workload of ["sustained", "burst"] as const) {
         for (const shape of EVENT_HISTORY_SHAPES) {
           for (const sample of [1, 2, 3] as const) {
+            if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
             cellIndex += 1;
             publishHarnessProgress({
               operationId,
@@ -592,7 +691,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
               settled: 0,
               query: null
             });
-            cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId));
+            cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard));
           }
         }
       }
@@ -600,6 +699,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     const terminalScenarios: EventHistoryPerformanceTerminalScenario[] = [];
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const trigger of ["PENDING_BYTES", "PENDING_AGE"] as const) {
+        if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
         publishHarnessProgress({
           operationId,
           phase: "terminal",
@@ -618,12 +718,13 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           settled: null,
           query: null
         });
-        terminalScenarios.push(await runTerminalScenario(adapter, trigger, operationId));
+        terminalScenarios.push(await runTerminalScenario(adapter, trigger, operationId, runGuard));
       }
     }
     const checkpointScenarios: EventHistoryPerformanceCheckpointScenario[] = [];
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const name of ["representative", "maximum-2MiB"] as const) {
+        if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
         publishHarnessProgress({
           operationId,
           phase: "checkpoint",
@@ -642,7 +743,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           settled: null,
           query: null
         });
-        checkpointScenarios.push(await runCheckpointScenario(adapter, name, operationId));
+        checkpointScenarios.push(await runCheckpointScenario(adapter, name, operationId, runGuard));
       }
     }
     return {
@@ -672,7 +773,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     if (retainedHeapSession) throw new Error("A retained heap session is already active; cleanup must complete before the next sample.");
     const runId = `heap-${adapter}-${phase}-${sample ?? "warmup"}-${retainedHeapSequence += 1}`;
     const operationId = currentHarnessOperationId();
-    const heapGuard = createHarnessStageGuard();
+    const heapGuard = createHarnessStageGuard(operationId);
     const databaseName = adapter === "indexeddb" ? authoritativeEventDatabaseName(runId) : null;
     const root = document.createElement("main");
     let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
@@ -681,9 +782,11 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       history = adapter === "indexeddb"
         ? await createIndexedDbEventHistory({ panelSessionId: runId, capacityTier: "NORMAL" })
         : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+      if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
       root.id = "app";
       document.body.replaceChildren(root);
       panel = await mountProductionPanel(history, undefined, root);
+      if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
       const heapShapes = adapter === "memory"
         ? (["small-lifecycle", "ordinary-item-update"] as const)
         : ([
@@ -712,7 +815,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         settled,
         query: null
       });
-      publishHarnessProgress(heapProgress());
+      publishStageProgress(heapProgress(), heapGuard);
       await settleOffers(
         history,
         events,
@@ -722,6 +825,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         heapGuard
       );
       await waitForBoundedFrame(`${phase}-frame`, heapProgress, heapGuard);
+      if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
       retainedHeapSession = { operationId, adapter, count, retained: events.length, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
       return { adapter, count, retained: events.length, sessionId: runId, databaseName, phase, sample };
     } catch (error) {
@@ -824,12 +928,15 @@ async function runCell(
   sample: number,
   config: EventHistoryPerformanceConfig,
   cellIndex: number,
-  operationId: string | null
+  operationId: string | null,
+  runGuard: HarnessStageGuard
 ): Promise<EventHistoryPerformanceCell> {
   const runId = `${adapter}-${workload}-${shape}-sample-${sample}`;
+  if (!runGuard.isActive()) throw new Error("Event History cell was cancelled.");
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: `event-history-performance-${runId}`, capacityTier: "NORMAL" })
     : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+  if (!runGuard.isActive()) throw new Error("Event History cell was cancelled.");
   const storageProbe = adapter === "indexeddb" ? beginStorageProbe() : null;
   const root = document.createElement("main");
   root.id = "app";
@@ -844,7 +951,6 @@ async function runCell(
   const publishedIds: string[] = [];
   const phaseIntervals: PhaseInterval[] = [];
   const longTaskEntries: PerformanceEntry[] = [];
-  const runGuard = createHarnessStageGuard();
   let phase: PhaseName = "capture";
   let phaseStartedAt = performance.now();
   let offeredCount = 0;
@@ -915,6 +1021,7 @@ async function runCell(
         }
       }
     }, root);
+  if (!runGuard.isActive()) throw new Error("Event History cell was cancelled.");
   const events = Array.from({ length: expectedCount }, (_, sequence) =>
     createEventHistoryWorkloadEvent(shape, sequence, runId)
   );
@@ -1128,18 +1235,27 @@ async function runCell(
       disposeError ??= normalizeHarnessError(error, `cell-${cellIndex}-root`, progress("close", null), runGuard);
     }
     let closeError: Error | null = null;
-    try {
-      closeOutcome = await withStageDeadline(
-        history.close(),
+    if (!runGuard.isActive()) {
+      closeError = normalizeHarnessError(
+        new Error("Event History close was cancelled with the performance run."),
         `cell-${cellIndex}-close`,
-        STAGE_DEADLINES_MS.close,
-        () => progress("close", null),
-        undefined,
+        progress("close", null),
         runGuard
       );
-      if (closeOutcome.ok !== true) throw new Error("Event History close did not complete successfully.");
-    } catch (error) {
-      closeError = normalizeHarnessError(error, `cell-${cellIndex}-close`, progress("close", null), runGuard);
+    } else {
+      try {
+        closeOutcome = await withStageDeadline(
+          history.close(),
+          `cell-${cellIndex}-close`,
+          STAGE_DEADLINES_MS.close,
+          () => progress("close", null),
+          undefined,
+          runGuard
+        );
+        if (closeOutcome.ok !== true) throw new Error("Event History close did not complete successfully.");
+      } catch (error) {
+        closeError = normalizeHarnessError(error, `cell-${cellIndex}-close`, progress("close", null), runGuard);
+      }
     }
     if (disposeError || closeError) {
       const cleanupFailure = disposeError ?? closeError ?? new Error("Event History cleanup failed.");
@@ -1169,11 +1285,13 @@ async function runCell(
   }
 }
 
-async function runTerminalScenario(
+export async function runTerminalScenario(
   adapter: "indexeddb" | "memory",
   trigger: "PENDING_BYTES" | "PENDING_AGE",
-  operationId: string | null
+  operationId: string | null,
+  guard: HarnessStageGuard
 ): Promise<EventHistoryPerformanceTerminalScenario> {
+  if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
   const tier = adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const;
   let releaseCommit = (): void => undefined;
   const blockedCommit = new Promise<void>((resolve) => { releaseCommit = resolve; });
@@ -1203,10 +1321,12 @@ async function runTerminalScenario(
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) })
     : createInMemoryEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) });
+  if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
   const terminals: Array<Extract<HistoryPublication, { type: "terminal" }>> = [];
   const publishedEventIds: string[] = [];
   const pressureTransitions: string[] = [];
   const unsubscribe = history.follow({ from: "NOW" }, (publication) => {
+    if (!guard.isActive()) return;
     if (publication.type === "terminal") terminals.push(publication);
     if (publication.type === "status") {
       const state = publication.status.capacity.state;
@@ -1216,47 +1336,60 @@ async function runTerminalScenario(
       publishedEventIds.push(...publication.evidence.map((evidence) => evidence.eventId));
     }
   });
-  const receipts: Array<{ id: string; receipt: ReturnType<EventHistory["offer"]> }> = [];
-  const firstEvent = createEventHistoryWorkloadEvent("large-json-rich", 0, `${panelSessionId}-accepted`);
-  if (trigger === "PENDING_BYTES") {
-    const events = Array.from({ length: TERMINAL_PENDING_BYTE_EVENT_COUNT }, (_, index) =>
-      createStagedTopologyCheckpointCandidate(`${panelSessionId}-${index}`, "terminal-pressure", TERMINAL_CHECKPOINT_PAYLOAD_BYTES)
-    );
-    for (const event of events) receipts.push({ id: event.id, receipt: history.offer(event) });
-  } else {
-    receipts.push({ id: firstEvent.id, receipt: history.offer(firstEvent) });
-    await delay((tier === "NORMAL" ? 30_000 : 5_000) + 150);
-    const refused = createEventHistoryWorkloadEvent("small-lifecycle", 1, `${panelSessionId}-refused`);
-    receipts.push({ id: refused.id, receipt: history.offer(refused) });
-    releaseCommit();
-  }
   try {
-    publishHarnessProgress(progress());
+    const receipts: Array<{ id: string; receipt: ReturnType<EventHistory["offer"]> }> = [];
+    const firstEvent = createEventHistoryWorkloadEvent("large-json-rich", 0, `${panelSessionId}-accepted`);
+    if (trigger === "PENDING_BYTES") {
+      const events = Array.from({ length: TERMINAL_PENDING_BYTE_EVENT_COUNT }, (_, index) =>
+        createStagedTopologyCheckpointCandidate(`${panelSessionId}-${index}`, "terminal-pressure", TERMINAL_CHECKPOINT_PAYLOAD_BYTES)
+      );
+      if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+      for (const event of events) {
+        if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+        receipts.push({ id: event.id, receipt: history.offer(event) });
+      }
+    } else {
+      if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+      receipts.push({ id: firstEvent.id, receipt: history.offer(firstEvent) });
+      await delay((tier === "NORMAL" ? 30_000 : 5_000) + 150);
+      if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+      const refused = createEventHistoryWorkloadEvent("small-lifecycle", 1, `${panelSessionId}-refused`);
+      receipts.push({ id: refused.id, receipt: history.offer(refused) });
+      releaseCommit();
+    }
+    publishStageProgress(progress(), guard);
     const outcomes = await settleReceiptStage(
       receipts.map(({ receipt }) => receipt.settled),
       `terminal-${adapter}-${trigger}-receipts`,
       STAGE_DEADLINES_MS.terminalReceipts,
-      (settled) => progress(`${trigger}-receipt-settlement`, receipts.length, settled)
+      (settled) => progress(`${trigger}-receipt-settlement`, receipts.length, settled),
+      guard
     );
   const accepted = outcomes.filter((outcome) => outcome.outcome === "BECAME_EVIDENCE");
   const refused = receipts.filter((entry, index) => outcomes[index]?.outcome === "NOT_EVIDENCE");
   const offeredEventIds = receipts.map((entry) => entry.id);
   const acceptedEventIds = receipts.filter((_entry, index) => outcomes[index]?.outcome === "BECAME_EVIDENCE").map((entry) => entry.id);
   const refusedEventIds = refused.map((entry) => entry.id);
-  publishHarnessProgress({ ...progress(), stage: `${trigger}-read` });
+  if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+  publishStageProgress({ ...progress(), stage: `${trigger}-read` }, guard);
   const read = await withStageDeadline(
     history.read({ order: "asc" }),
     `terminal-${adapter}-${trigger}-read`,
     STAGE_DEADLINES_MS.read,
-    () => ({ ...progress(), stage: `${trigger}-read` })
+    () => ({ ...progress(), stage: `${trigger}-read` }),
+    undefined,
+    guard
   );
   const terminal = terminals.at(-1)?.terminal ?? null;
   unsubscribe();
+  if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
   const closeOutcome = await withStageDeadline(
     history.close(),
     `terminal-${adapter}-${trigger}-close`,
     STAGE_DEADLINES_MS.close,
-    () => ({ ...progress(), stage: `${trigger}-close` })
+    () => ({ ...progress(), stage: `${trigger}-close` }),
+    undefined,
+    guard
   );
   if (closeOutcome.ok !== true) throw new Error(`Terminal ${adapter}/${trigger} Event History close failed.`);
   const finalEvidence = read.ok ? read.value.evidence.at(-1) ?? null : null;
@@ -1290,18 +1423,20 @@ async function runTerminalScenario(
     pressureTransitions
     };
   } catch (error) {
-    const failure = normalizeHarnessError(error, `terminal-${adapter}-${trigger}`, progress());
+    const failure = normalizeHarnessError(error, `terminal-${adapter}-${trigger}`, progress(), guard);
     try { unsubscribe(); } catch { /* Preserve the terminal failure. */ }
     let closeOutcome: Outcome<CloseResult> | null = null;
-    try {
+    if (guard.isActive()) try {
       closeOutcome = await withStageDeadline(
         history.close(),
         `terminal-${adapter}-${trigger}-close-after-failure`,
         STAGE_DEADLINES_MS.close,
-        () => ({ ...progress(), stage: `${trigger}-close-after-failure` })
+        () => ({ ...progress(), stage: `${trigger}-close-after-failure` }),
+        undefined,
+        guard
       );
     } catch (closeError) {
-      Object.assign(failure, { closeError: normalizeHarnessError(closeError, `terminal-${adapter}-${trigger}-close`, progress()).message });
+      Object.assign(failure, { closeError: normalizeHarnessError(closeError, `terminal-${adapter}-${trigger}-close`, progress(), guard).message });
     }
     Object.assign(failure, {
       cleanupEvidence: {
@@ -1325,15 +1460,17 @@ async function runTerminalScenario(
   }
 }
 
-async function runCheckpointScenario(
+export async function runCheckpointScenario(
   adapter: "indexeddb" | "memory",
   name: "representative" | "maximum-2MiB",
-  operationId: string | null
+  operationId: string | null,
+  guard: HarnessStageGuard
 ): Promise<EventHistoryPerformanceCheckpointScenario> {
   const tier = adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const;
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier })
     : createInMemoryEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier });
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
   const progress = (stage: string, offered: number | null = null, settled: number | null = null): HarnessProgressInput => ({
     operationId,
     phase: "checkpoint",
@@ -1352,14 +1489,18 @@ async function runCheckpointScenario(
     settled,
     query: null
   });
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
   const candidate = createStagedTopologyCheckpointCandidate(
     `checkpoint-${adapter}-${name}`,
     `sync-${name}`,
     name === "representative" ? 64 * 1_024 : TERMINAL_CHECKPOINT_PAYLOAD_BYTES
   );
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
   const serialized = serializeJournalEvidenceCandidate(candidate);
   const publications: HistoryPublication[] = [];
-  const unsubscribe = history.follow({ from: "NOW" }, (publication) => publications.push(publication));
+  const unsubscribe = history.follow({ from: "NOW" }, (publication) => {
+    if (guard.isActive()) publications.push(publication);
+  });
   const trafficBefore = Array.from({ length: 4 }, (_, index) =>
     createEventHistoryWorkloadEvent("ordinary-item-update", index, `${adapter}-${name}-before`)
   );
@@ -1367,32 +1508,45 @@ async function runCheckpointScenario(
     createEventHistoryWorkloadEvent("ordinary-item-update", index, `${adapter}-${name}-after`)
   );
   try {
-    publishHarnessProgress(progress(`${name}-traffic-before`, trafficBefore.length, 0));
+    publishStageProgress(progress(`${name}-traffic-before`, trafficBefore.length, 0), guard);
   await settleReceiptStage(
-    trafficBefore.map((event) => history.offer(event).settled),
+    trafficBefore.map((event) => {
+      if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
+      return history.offer(event).settled;
+    }),
     `checkpoint-${adapter}-${name}-before`,
     STAGE_DEADLINES_MS.checkpointReceipts,
-    (settled) => progress(`${name}-traffic-before`, trafficBefore.length, settled)
+    (settled) => progress(`${name}-traffic-before`, trafficBefore.length, settled),
+    guard
   );
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
   const receipt = history.offer(candidate);
   const [outcome] = await settleReceiptStage(
     [receipt.settled],
     `checkpoint-${adapter}-${name}-candidate`,
     STAGE_DEADLINES_MS.checkpointReceipts,
-    (settled) => progress(`${name}-candidate`, 1, settled)
+    (settled) => progress(`${name}-candidate`, 1, settled),
+    guard
   );
   if (!outcome) throw new Error(`Checkpoint ${adapter}/${name} candidate receipt did not settle.`);
   await settleReceiptStage(
-    trafficAfter.map((event) => history.offer(event).settled),
+    trafficAfter.map((event) => {
+      if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
+      return history.offer(event).settled;
+    }),
     `checkpoint-${adapter}-${name}-after`,
     STAGE_DEADLINES_MS.checkpointReceipts,
-    (settled) => progress(`${name}-traffic-after`, trafficAfter.length, settled)
+    (settled) => progress(`${name}-traffic-after`, trafficAfter.length, settled),
+    guard
   );
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
   const read = await withStageDeadline(
     history.read({ order: "asc" }),
     `checkpoint-${adapter}-${name}-read`,
     STAGE_DEADLINES_MS.read,
-    () => progress(`${name}-read`)
+    () => progress(`${name}-read`),
+    undefined,
+    guard
   );
   const committedPublication = publications.find((publication) =>
     publication.type === "committed-evidence" && publication.evidence.some((entry) => entry.eventId === candidate.id)
@@ -1404,11 +1558,14 @@ async function runCheckpointScenario(
   const trafficBeforeIds = trafficBefore.map((event) => event.id);
   const trafficAfterIds = trafficAfter.map((event) => event.id);
   unsubscribe();
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
   const closeOutcome = await withStageDeadline(
     history.close(),
     `checkpoint-${adapter}-${name}-close`,
     STAGE_DEADLINES_MS.close,
-    () => progress(`${name}-close`)
+    () => progress(`${name}-close`),
+    undefined,
+    guard
   );
   if (closeOutcome.ok !== true) throw new Error(`Checkpoint ${adapter}/${name} Event History close failed.`);
     return {
@@ -1430,18 +1587,20 @@ async function runCheckpointScenario(
     batchAcceptedAsOneOversizedUnit: committedPublication?.type === "committed-evidence" && committedPublication.evidence.length === 1
     };
   } catch (error) {
-    const failure = normalizeHarnessError(error, `checkpoint-${adapter}-${name}`, progress(`${name}-failed`));
+    const failure = normalizeHarnessError(error, `checkpoint-${adapter}-${name}`, progress(`${name}-failed`), guard);
     try { unsubscribe(); } catch { /* Preserve the checkpoint failure. */ }
     let closeOutcome: Outcome<CloseResult> | null = null;
-    try {
+    if (guard.isActive()) try {
       closeOutcome = await withStageDeadline(
         history.close(),
         `checkpoint-${adapter}-${name}-close-after-failure`,
         STAGE_DEADLINES_MS.close,
-        () => progress(`${name}-close-after-failure`)
+        () => progress(`${name}-close-after-failure`),
+        undefined,
+        guard
       );
     } catch (closeError) {
-      Object.assign(failure, { closeError: normalizeHarnessError(closeError, `checkpoint-${adapter}-${name}-close`, progress(`${name}-close`)).message });
+      Object.assign(failure, { closeError: normalizeHarnessError(closeError, `checkpoint-${adapter}-${name}-close`, progress(`${name}-close`), guard).message });
     }
     Object.assign(failure, {
       cleanupEvidence: {
@@ -1748,7 +1907,10 @@ export async function settleOffers(
   progress: (settled: number) => HarnessProgressInput,
   guard: HarnessStageGuard | undefined = undefined
 ): Promise<void> {
-  const receipts = events.map((event) => history.offer(event));
+  const receipts = events.map((event) => {
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+    return history.offer(event);
+  });
   if (receipts.some((receipt) => receipt.intake !== "QUEUED")) throw new Error("Retained heap offer was refused.");
   await settleReceiptStage(receipts.map((receipt) => receipt.settled), stage, timeoutMs, progress, guard);
 }

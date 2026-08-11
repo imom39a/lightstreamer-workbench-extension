@@ -11,6 +11,7 @@ import {
   captureStorageEstimate,
   closeHeapSessionWithEvidence,
   createPendingTelemetryTracker,
+  createReceiptStageController,
   createStagedTopologyCheckpointCandidate,
   createHarnessStageGuard,
   HarnessStageTimeout,
@@ -19,6 +20,8 @@ import {
   settleOffers,
   settleReceiptStage,
   publishHarnessProgress,
+  runCheckpointScenario,
+  runTerminalScenario,
   waitForBoundedFrame,
   withStageDeadline,
   type HarnessProgressInput
@@ -144,6 +147,109 @@ describe("Event History performance checkpoint workload", () => {
     rejectLate(new Error("late rejection"));
     await Promise.resolve();
     expect(observed).toEqual([1]);
+  });
+
+  it("retires a receipt aggregate and absorbs every late settlement without progress", async () => {
+    let resolveLate!: (value: string) => void;
+    let rejectLater!: (error: Error) => void;
+    const observed: number[] = [];
+    const controller = createReceiptStageController(
+      [
+        new Promise<string>((resolve) => { resolveLate = resolve; }),
+        new Promise<string>((_, reject) => { rejectLater = reject; })
+      ],
+      "retirable-receipts",
+      (settled) => {
+        observed.push(settled);
+        return { ...progress("retirable-receipts"), settled };
+      }
+    );
+
+    expect(controller.state()).toEqual({ terminal: false, retired: false, settled: 0, pending: 2 });
+    controller.retire();
+    expect(controller.state()).toEqual({ terminal: true, retired: true, settled: 0, pending: 2 });
+    resolveLate("late-success");
+    rejectLater(new Error("late-rejection"));
+    await Promise.resolve();
+
+    expect(controller.state()).toEqual({ terminal: true, retired: true, settled: 0, pending: 2 });
+    expect(observed).toEqual([]);
+  });
+
+  it("retires a receipt aggregate immediately on rejection and suppresses later settlements", async () => {
+    let resolveLate!: (value: string) => void;
+    const observed: number[] = [];
+    const controller = createReceiptStageController(
+      [
+        Promise.reject(new Error("first-receipt-failed")),
+        new Promise<string>((resolve) => { resolveLate = resolve; })
+      ],
+      "rejected-receipts",
+      (settled) => {
+        observed.push(settled);
+        return { ...progress("rejected-receipts"), settled };
+      }
+    );
+    const rejected = expect(controller.promise).rejects.toThrow("first-receipt-failed");
+    await rejected;
+    expect(controller.state()).toEqual({ terminal: true, retired: true, settled: 1, pending: 1 });
+    resolveLate("late-success");
+    await Promise.resolve();
+    expect(observed).toEqual([1]);
+    expect(controller.state()).toEqual({ terminal: true, retired: true, settled: 1, pending: 1 });
+  });
+
+  it("invalidates a captured run when the operation registry is deleted or replaced", () => {
+    const key = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+    const globalRecord = globalThis as unknown as Record<string, unknown>;
+    const previous = globalRecord[key];
+    try {
+      globalRecord[key] = { operationId: "captured", state: "pending" };
+      const guard = createHarnessStageGuard("captured");
+      expect(guard.isActive()).toBe(true);
+      delete globalRecord[key];
+      expect(guard.isActive()).toBe(false);
+
+      globalRecord[key] = { operationId: "captured", state: "pending" };
+      const replacementGuard = createHarnessStageGuard("captured");
+      globalRecord[key] = { operationId: "replacement", state: "pending" };
+      expect(replacementGuard.isActive()).toBe(false);
+    } finally {
+      if (previous === undefined) delete globalRecord[key];
+      else globalRecord[key] = previous;
+    }
+  });
+
+  it("rejects terminal work before it can offer after host cancellation", async () => {
+    const key = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+    const globalRecord = globalThis as unknown as Record<string, unknown>;
+    const previous = globalRecord[key];
+    try {
+      globalRecord[key] = { operationId: "terminal-run", state: "pending" };
+      const guard = createHarnessStageGuard("terminal-run");
+      delete globalRecord[key];
+      await expect(runTerminalScenario("memory", "PENDING_BYTES", "terminal-run", guard))
+        .rejects.toThrow("Terminal scenario was cancelled.");
+    } finally {
+      if (previous === undefined) delete globalRecord[key];
+      else globalRecord[key] = previous;
+    }
+  });
+
+  it("rejects checkpoint work before it can offer after host operation replacement", async () => {
+    const key = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+    const globalRecord = globalThis as unknown as Record<string, unknown>;
+    const previous = globalRecord[key];
+    try {
+      globalRecord[key] = { operationId: "checkpoint-run", state: "pending" };
+      const guard = createHarnessStageGuard("checkpoint-run");
+      globalRecord[key] = { operationId: "new-run", state: "pending" };
+      await expect(runCheckpointScenario("memory", "representative", "checkpoint-run", guard))
+        .rejects.toThrow("Checkpoint scenario was cancelled.");
+    } finally {
+      if (previous === undefined) delete globalRecord[key];
+      else globalRecord[key] = previous;
+    }
   });
 
   it("fails closed when a frame does not arrive before its stage deadline", async () => {
