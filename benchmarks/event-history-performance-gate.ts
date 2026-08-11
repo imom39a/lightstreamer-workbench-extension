@@ -55,6 +55,8 @@ export type EventHistoryPerformanceCell = Readonly<{
     findFullP95Ms: number;
   }>;
   longTasks: Readonly<{
+    supported: boolean;
+    unattributed: number;
     capture: readonly number[];
     commit: readonly number[];
     paint: readonly number[];
@@ -164,7 +166,7 @@ export function classifyEventHistoryPerformance(
   }
   if (!isPerformanceReport(report)) failures.push("Missing or malformed performance report telemetry.");
   if (failures.length > 0) return decision(failures, reviewReasons, 0, 0);
-  const validReport = report;
+  const validReport = report as unknown as EventHistoryPerformanceReport;
   if (validReport.source.dirty !== false) failures.push("The performance report was not generated from a clean source revision.");
   if (validReport.environment.headless !== false) {
     failures.push("The performance proof must run in visible Chrome.");
@@ -221,6 +223,8 @@ export function classifyEventHistoryPerformance(
         failures.push(`${label} has a capture/commit/paint Long Task over 50 ms.`);
       }
     }
+    if (!sample.longTasks.supported) failures.push(`${label} does not have supported Long Task telemetry.`);
+    if (sample.longTasks.unattributed !== 0) failures.push(`${label} has unattributed Long Task telemetry.`);
     const queryLongTasks = sample.longTasks.query.filter((duration) => duration > 50);
     if (queryLongTasks.some((duration) => duration > EVENT_HISTORY_PERFORMANCE_LIMITS.query.longTaskLimitMs)) {
       failures.push(`${label} has a query Long Task over 125 ms.`);
@@ -336,7 +340,7 @@ function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell
   if (!isRecord(value) || !ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
     || !WORKLOADS.includes(value.workload as EventHistoryPerformanceWorkload)
     || !SHAPES.includes(value.shape as EventHistoryPerformanceShape)
-    || !Number.isInteger(value.sample) || value.sample < 1 || value.sample > SAMPLE_COUNT) return false;
+    || !Number.isInteger(value.sample) || (value.sample as number) < 1 || (value.sample as number) > SAMPLE_COUNT) return false;
   const correctness = value.correctness;
   const latency = value.latency;
   const longTasks = value.longTasks;
@@ -346,7 +350,7 @@ function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell
   const terminal = value.terminal;
   if (!isRecord(correctness) || !["retainedMatchesAccepted", "publicationMatchesAccepted", "retainedInOrder", "publicationInOrder", "finalBoundaryCorrect", "terminalOutcomeCorrect"].every((key) => correctness[key] === true || correctness[key] === false)) return false;
   if (!isRecord(latency) || !["offerToPublicationP95Ms", "offerToVisibleFrameP95Ms", "committedBoundaryToVisibleFrameP95Ms", "behindBacklogMs", "recentPageP95Ms", "structuredIndexedP95Ms", "findFullP95Ms"].every((key) => isFiniteNumber(latency[key]) && (latency[key] as number) >= 0) || !(latency.finalBoundaryVisibleMs === null || (isFiniteNumber(latency.finalBoundaryVisibleMs) && latency.finalBoundaryVisibleMs >= 0))) return false;
-  if (!isRecord(longTasks) || !["capture", "commit", "paint", "query"].every((key) => Array.isArray(longTasks[key]) && (longTasks[key] as unknown[]).every((duration) => isFiniteNumber(duration) && duration >= 0))) return false;
+  if (!isRecord(longTasks) || !isBoolean(longTasks.supported) || !Number.isSafeInteger(longTasks.unattributed) || (longTasks.unattributed as number) < 0 || !["capture", "commit", "paint", "query"].every((key) => Array.isArray(longTasks[key]) && (longTasks[key] as unknown[]).every((duration) => isFiniteNumber(duration) && duration >= 0))) return false;
   if (!isRecord(storage) || !["transactionCount", "readwriteTransactionCount", "readonlyTransactionCount", "evidenceWriteCount", "controlWriteCount", "facetEntryCount", "indexEntryCount"].every((key) => Number.isSafeInteger(storage[key]) && (storage[key] as number) >= 0)) return false;
   if (!isRecord(workloadFacts) || !["expectedCount", "offeredEventsPerSecond", "shapeBytes", "persistedJsonBytes", "indexedDbWritesPerEvent", "searchTokenCount"].every((key) => isFiniteNumber(workloadFacts[key]) && (workloadFacts[key] as number) >= 0)) return false;
   if (!isRecord(pressure) || !isFiniteNumber(pressure.maxPendingBytes) || !isFiniteNumber(pressure.maxOldestPendingAgeMs) || pressure.maxPendingBytes < 0 || pressure.maxOldestPendingAgeMs < 0 || !Array.isArray(pressure.transitions) || !pressure.transitions.every((entry) => typeof entry === "string") || !isRecord(pressure.limits)) return false;
@@ -356,8 +360,8 @@ function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell
 
 function isHeapSample(value: unknown): value is EventHistoryPerformanceHeapSample {
   return isRecord(value) && ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
-    && Number.isInteger(value.sample) && value.sample >= 1 && value.sample <= SAMPLE_COUNT
-    && Number.isSafeInteger(value.eventCount) && value.eventCount >= 0
+    && Number.isInteger(value.sample) && (value.sample as number) >= 1 && (value.sample as number) <= SAMPLE_COUNT
+    && Number.isSafeInteger(value.eventCount) && (value.eventCount as number) >= 0
     && isFiniteNumber(value.postGcHeapDeltaBytes);
 }
 
@@ -404,8 +408,8 @@ function validateCell(cell: EventHistoryPerformanceCell, failures: string[]): vo
   if (cell.terminal.refusedCount !== 0 || cell.terminal.discardedCount !== 0) {
     failures.push(`${label} reported refused or discarded events.`);
   }
-  for (const durations of Object.values(cell.longTasks)) {
-    if (durations.some((duration) => !Number.isFinite(duration) || duration < 0)) {
+  for (const phase of ["capture", "commit", "paint", "query"] as const) {
+    if (cell.longTasks[phase].some((duration) => !Number.isFinite(duration) || duration < 0)) {
       failures.push(`${label} contains invalid Long Task telemetry.`);
       break;
     }

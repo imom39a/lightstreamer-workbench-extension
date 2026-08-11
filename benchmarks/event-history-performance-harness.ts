@@ -1,3 +1,6 @@
+import { createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+
 import {
   EVENT_HISTORY_SHAPES,
   type EventHistoryShape,
@@ -9,87 +12,74 @@ import {
 } from "./event-history-workloads";
 import {
   createInMemoryEventHistory,
-  createIndexedDbEventHistory,
-  type EventHistory
-} from "../src/core/event-history";
-import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
+  type EvidenceCandidate,
+  type EventHistory,
+  type HistoryPublication
+} from "../src/core/event-history-authoritative";
+import { historyCapacityLimits } from "../src/core/event-history-capacity";
+import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
+import {
+  classifyEventHistoryPerformance,
+  type EventHistoryPerformanceCell,
+  type EventHistoryPerformanceHeapSample,
+  type EventHistoryPerformanceReference,
+  type EventHistoryPerformanceReport,
+  type EventHistoryPerformanceShape,
+  type EventHistoryPerformanceWorkload
+} from "./event-history-performance-gate";
+import { WorkbenchPanel } from "../src/extension/panel/react/workbench-panel";
+import { createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
 
-type WorkloadKind = "sustained" | "burst";
-
-type EventHistoryPerformanceConfig = {
+type EventHistoryPerformanceConfig = Readonly<{
   sustainedCount: number;
   sustainedEventsPerSecond: number;
   burstCount: number;
-  eventsPerBurst: number;
   burstPauseMs: number;
-  batchSize: number;
-};
+}>;
 
-type LatencySummary = { count: number; minMs: number; p50Ms: number; p95Ms: number; maxMs: number; samplesMs: number[] };
-
-type WorkloadResult = {
-  adapter: "indexeddb" | "memory";
-  workload: WorkloadKind;
-  shape: EventHistoryShape;
-  accepted: number;
-  retained: number;
-  correctness: {
-    published: number;
-    retainedMatchesAccepted: boolean;
-    publicationMatchesAccepted: boolean;
-    retainedInOrder: boolean;
-    publicationInOrder: boolean;
-  };
-  elapsedMs: number;
-  enqueueElapsedMs: number;
-  queryBehindBacklogMs: number;
-  drainElapsedMs: number;
-  throughputEventsPerSecond: number;
-  offeredEventsPerSecond: number;
-  targetOfferedEventsPerSecond: number | null;
-  emitterLatenessMs: LatencySummary;
-  maxPendingBytes: number;
-  maxOldestPendingAgeMs: number;
-  commitToHistoryPublicationLatencyMs: LatencySummary;
-  transactionBatching: {
-    writeTransactions: number;
-    eventAddsPerTransaction: LatencySummary;
-    writeTransactionDurationMs: LatencySummary;
-  };
-  queryLatencyMs: Record<"recentPage" | "indexedSubscription" | "fullText" | "idLookup" | "fullHistory", LatencySummary>;
-  longTasksOver50Ms: number;
-  maxLongTaskMs: number;
-  supportedLongTaskObserver: boolean;
-};
-
-type HarnessResult = {
-  runner: "real-chrome";
-  schemaVersion: 1;
+type HarnessResult = Readonly<{
+  schemaVersion: 2;
   anchors: { issue16TotalEvents: number };
   config: EventHistoryPerformanceConfig;
   shapeFacts: ReturnType<typeof representativeEventHistoryShapeFacts>;
-  workloads: WorkloadResult[];
-};
+  cells: readonly EventHistoryPerformanceCell[];
+}>;
 
-type RetainedSessionFacts = {
+type RetainedHeapSession = Readonly<{
   adapter: "indexeddb" | "memory";
   count: number;
   retained: number;
-  appendElapsedMs: number;
-  longTasksOver50Ms: number;
-  maxLongTaskMs: number;
-  supportedLongTaskObserver: boolean;
-  queryLatencyMs: WorkloadResult["queryLatencyMs"];
-};
+  root: HTMLElement;
+  reactRoot: Root;
+  runtime: ReturnType<typeof createWorkbenchRuntime>;
+  history: EventHistory;
+  databaseName: string | null;
+}>;
+
+type StorageTelemetry = Readonly<{
+  transactionCount: number;
+  readwriteTransactionCount: number;
+  readonlyTransactionCount: number;
+  evidenceWriteCount: number;
+  controlWriteCount: number;
+  facetEntryCount: number;
+  indexEntryCount: number;
+}>;
+
+type StorageProbe = Readonly<{
+  snapshot(): StorageTelemetry;
+  restore(): void;
+}>;
+
+type PhaseName = "capture" | "commit" | "paint" | "query";
+type PhaseInterval = Readonly<{ phase: PhaseName; start: number; end: number }>;
 
 declare global {
   interface Window {
     __LSEW_EVENT_HISTORY_PERFORMANCE__?: {
       run(overrides?: Partial<EventHistoryPerformanceConfig>): Promise<HarnessResult>;
-      prepareRetainedHeapSample(
-        adapter: "indexeddb" | "memory",
-        count: number
-      ): Promise<RetainedSessionFacts>;
+      classify(report: EventHistoryPerformanceReport, reference: EventHistoryPerformanceReference): ReturnType<typeof classifyEventHistoryPerformance>;
+      prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number): Promise<{ adapter: string; count: number; retained: number }>;
       releaseRetainedHeapSample(): Promise<void>;
     };
   }
@@ -99,412 +89,467 @@ const DEFAULT_CONFIG: EventHistoryPerformanceConfig = {
   sustainedCount: 1_000,
   sustainedEventsPerSecond: TIMELINE_SUSTAINED_EVENTS_PER_SECOND,
   burstCount: ISSUE_16_TOTAL_EVENTS,
-  eventsPerBurst: ISSUE_16_TOTAL_EVENTS,
-  burstPauseMs: 1,
-  batchSize: 256
+  burstPauseMs: 1
 };
 
-let retainedHeapHistory: EventHistory | null = null;
-let retainedHeapDatabaseName: string | null = null;
+let retainedHeapSession: RetainedHeapSession | null = null;
 
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
   async run(overrides = {}) {
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
-    const workloads: WorkloadResult[] = [];
+    const cells: EventHistoryPerformanceCell[] = [];
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const workload of ["sustained", "burst"] as const) {
         for (const shape of EVENT_HISTORY_SHAPES) {
-          workloads.push(await runWorkload(adapter, workload, shape, config));
+          for (const sample of [1, 2, 3] as const) {
+            cells.push(await runCell(adapter, workload, shape, sample, config));
+          }
         }
       }
     }
     return {
-      runner: "real-chrome",
-      schemaVersion: 1,
+      schemaVersion: 2,
       anchors: { issue16TotalEvents: ISSUE_16_TOTAL_EVENTS },
       config,
       shapeFacts: representativeEventHistoryShapeFacts(),
-      workloads
+      cells
     };
+  },
+  classify(report, reference) {
+    try {
+      return classifyEventHistoryPerformance(report, reference);
+    } catch (error) {
+      return {
+        verdict: "FAIL",
+        failures: [`Classifier threw: ${error instanceof Error ? error.stack ?? error.message : String(error)}`],
+        reviewReasons: [],
+        checkedCells: 0,
+        checkedSamples: 0
+      };
+    }
   },
   async prepareRetainedHeapSample(adapter, count) {
     await releaseRetainedHeapSample();
     const runId = `heap-${adapter}-${Math.random().toString(36).slice(2)}`;
-    retainedHeapDatabaseName = adapter === "indexeddb" ? `event-history-performance-${runId}` : null;
-    retainedHeapHistory = adapter === "indexeddb"
-      ? await createIndexedDbEventHistory({ sessionId: retainedHeapDatabaseName, reset: true, batchSize: DEFAULT_CONFIG.batchSize })
-      : createInMemoryEventHistory({ batchSize: DEFAULT_CONFIG.batchSize });
+    const databaseName = adapter === "indexeddb" ? `event-history-performance-${runId}` : null;
+    const history = adapter === "indexeddb"
+      ? await createIndexedDbEventHistory({ panelSessionId: databaseName!, capacityTier: "NORMAL" })
+      : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+    const root = document.createElement("main");
+    root.id = "app";
+    document.body.replaceChildren(root);
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    const reactRoot = createRoot(root);
+    reactRoot.render(createElement(WorkbenchPanel, { runtime }));
+    const heapShapes = adapter === "memory"
+      ? (["small-lifecycle", "ordinary-item-update"] as const)
+      : ([
+          "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
+          "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
+          "small-lifecycle", "large-json-rich"
+        ] as const);
     const events = Array.from({ length: count }, (_, sequence) =>
-      createEventHistoryWorkloadEvent(EVENT_HISTORY_SHAPES[sequence % EVENT_HISTORY_SHAPES.length] ?? "small-lifecycle", sequence, runId)
+      createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
     );
-    const longTasks: number[] = [];
-    const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
-    const observer = longTaskSupported
-      ? new PerformanceObserver((entries) => {
-          for (const entry of entries.getEntries()) {
-            if (entry.duration > 50) longTasks.push(entry.duration);
-          }
-        })
-      : null;
-    observer?.observe({ entryTypes: ["longtask"] });
-    const startedAt = performance.now();
-    await Promise.all(events.map((event) => retainedHeapHistory?.append(event).toPromise()));
-    const appendElapsedMs = performance.now() - startedAt;
-    const stats = await retainedHeapHistory.stats().toPromise();
-    const queryLatencyMs = await measureQueries(
-      retainedHeapHistory,
-      "small-lifecycle",
-      runId
-    );
-    await delay(0);
-    for (const entry of observer?.takeRecords() ?? []) {
-      if (entry.duration > 50) longTasks.push(entry.duration);
-    }
-    observer?.disconnect();
-    return {
-      adapter,
-      count,
-      retained: stats.retained,
-      appendElapsedMs,
-      longTasksOver50Ms: longTasks.length,
-      maxLongTaskMs: maximum(longTasks),
-      supportedLongTaskObserver: longTaskSupported,
-      queryLatencyMs
-    };
+    await settleOffers(history, events);
+    await waitForFrame();
+    retainedHeapSession = { adapter, count, retained: events.length, root, reactRoot, runtime, history, databaseName };
+    return { adapter, count, retained: events.length };
   },
   async releaseRetainedHeapSample() {
     await releaseRetainedHeapSample();
   }
 };
 
-async function releaseRetainedHeapSample(): Promise<void> {
-  await retainedHeapHistory?.close().toPromise();
-  retainedHeapHistory = null;
-  if (retainedHeapDatabaseName) await deleteEventDatabase(eventDatabaseName(retainedHeapDatabaseName));
-  retainedHeapDatabaseName = null;
-}
-
-async function runWorkload(
-  adapter: WorkloadResult["adapter"],
-  workload: WorkloadKind,
+async function runCell(
+  adapter: "indexeddb" | "memory",
+  workload: EventHistoryPerformanceWorkload,
   shape: EventHistoryShape,
+  sample: number,
   config: EventHistoryPerformanceConfig
-): Promise<WorkloadResult> {
-  const runId = `${adapter}-${workload}-${shape}-${Math.random().toString(36).slice(2)}`;
-  const sessionId = `event-history-performance-${runId}`;
-  const pending = new Map<string, { acceptedAt: number; bytes: number }>();
-  const visibleLatencies: number[] = [];
-  const publishedIds: string[] = [];
+): Promise<EventHistoryPerformanceCell> {
+  const runId = `${adapter}-${workload}-${shape}-sample-${sample}`;
+  const history = adapter === "indexeddb"
+    ? await createIndexedDbEventHistory({ panelSessionId: `event-history-performance-${runId}`, capacityTier: "NORMAL" })
+    : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+  const storageProbe = adapter === "indexeddb" ? beginStorageProbe() : null;
+  const root = document.createElement("main");
+  root.id = "app";
+  document.body.replaceChildren(root);
 
+  const offerTimes = new Map<string, number>();
+  const pending = new Map<string, { offeredAt: number; bytes: number }>();
+  const publicationLatencies: number[] = [];
+  const visibleLatencies: number[] = [];
+  const committedBoundaryAt = new Map<string, number>();
+  const committedBoundaryVisibleLatencies: number[] = [];
+  const publishedIds: string[] = [];
+  const phaseIntervals: PhaseInterval[] = [];
+  const longTaskEntries: PerformanceEntry[] = [];
+  let phase: PhaseName = "capture";
+  let phaseStartedAt = performance.now();
   let maxPendingBytes = 0;
   let maxOldestPendingAgeMs = 0;
-  let history: EventHistory | null = null;
-  let unsubscribe: (() => void) | null = null;
-  let transactionProbe: ReturnType<typeof installTransactionProbe> | null = null;
-  let longTaskObserver: PerformanceObserver | null = null;
-
-  function samplePending(): void {
+  const pressureTransitions: string[] = [];
+  let terminalReason: string | null = null;
+  const samplePending = () => {
     const now = performance.now();
-    const entries = [...pending.values()];
-    maxPendingBytes = Math.max(maxPendingBytes, entries.reduce((total, item) => total + item.bytes, 0));
-    const oldest = entries.reduce(
-      (oldestAt, item) => Math.min(oldestAt, item.acceptedAt),
-      Number.POSITIVE_INFINITY
-    );
+    maxPendingBytes = Math.max(maxPendingBytes, [...pending.values()].reduce((total, entry) => total + entry.bytes, 0));
+    const oldest = [...pending.values()].reduce((value, entry) => Math.min(value, entry.offeredAt), Number.POSITIVE_INFINITY);
     if (Number.isFinite(oldest)) maxOldestPendingAgeMs = Math.max(maxOldestPendingAgeMs, now - oldest);
-  }
+  };
+  const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
+  const longTaskObserver = longTaskSupported
+    ? new PerformanceObserver((entries) => {
+        longTaskEntries.push(...entries.getEntries());
+      })
+    : null;
+  longTaskObserver?.observe({ entryTypes: ["longtask"] });
 
-  try {
-    if (adapter === "indexeddb") {
-      await deleteEventDatabase(eventDatabaseName(sessionId));
-      history = await createIndexedDbEventHistory({ sessionId, reset: true, batchSize: config.batchSize });
-    } else {
-      history = createInMemoryEventHistory({ batchSize: config.batchSize });
-    }
-    const activeHistory = history;
-    const eventCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
-    const preparedEvents = Array.from({ length: eventCount }, (_, sequence) => {
-      const event = createEventHistoryWorkloadEvent(shape, sequence, runId);
-      return { event, bytes: utf8JsonBytes(event) };
-    });
-    transactionProbe = installTransactionProbe();
-    unsubscribe = activeHistory.subscribe((change) => {
-      const events = change.type === "append" ? [change.event] : change.type === "append-batch" ? change.events : [];
-      const now = performance.now();
-      for (const event of events) {
-        publishedIds.push(event.id);
-        const pendingEntry = pending.get(event.id);
-        if (pendingEntry) {
-          const latency = now - pendingEntry.acceptedAt;
-          visibleLatencies.push(latency);
-          maxOldestPendingAgeMs = Math.max(maxOldestPendingAgeMs, latency);
-          // Publication is the measured pending boundary. In-memory append
-          // promises settle on a later microtask even though publication is synchronous.
-          pending.delete(event.id);
+  const enterPhase = (next: PhaseName): void => {
+    if (next === phase) return;
+    const now = performance.now();
+    phaseIntervals.push({ phase, start: phaseStartedAt, end: now });
+    phase = next;
+    phaseStartedAt = now;
+  };
+
+  let resolveFinalVisible!: () => void;
+  let finalVisibleAt: number | null = null;
+  const finalVisible = new Promise<void>((resolve) => { resolveFinalVisible = resolve; });
+  const expectedCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
+  const expectedFinalId = `${runId}-${shape}-${expectedCount - 1}`;
+  const runtime = createWorkbenchRuntime({
+    history,
+    captureStatus: "capturing",
+    performanceHooks: {
+      onCommittedEvidenceBoundary(boundary, timestampMs) {
+        committedBoundaryAt.set(boundary.eventId, timestampMs);
+      },
+      onVisibleFrame(boundary, timestampMs) {
+        const offeredAt = offerTimes.get(boundary.eventId);
+        if (offeredAt !== undefined) visibleLatencies.push(Math.max(0, timestampMs - offeredAt));
+        const committedAt = committedBoundaryAt.get(boundary.eventId);
+        if (committedAt !== undefined) committedBoundaryVisibleLatencies.push(Math.max(0, timestampMs - committedAt));
+        if (boundary.eventId === expectedFinalId) {
+          finalVisibleAt = timestampMs;
+          resolveFinalVisible();
         }
       }
-    });
-
-    const longTasks: number[] = [];
-    const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
-    longTaskObserver = longTaskSupported
-      ? new PerformanceObserver((entries) => {
-          for (const entry of entries.getEntries()) {
-            if (entry.duration > 50) longTasks.push(entry.duration);
-          }
-        })
-      : null;
-    longTaskObserver?.observe({ entryTypes: ["longtask"] });
-    const accepted = workload === "sustained"
-      ? await appendSustained(activeHistory, preparedEvents, config, pending, samplePending)
-      : await appendBursts(activeHistory, preparedEvents, config, pending, samplePending);
-    const enqueueElapsedMs = accepted.elapsedMs;
-    const backlogQueryStartedAt = performance.now();
-    await activeHistory.queryEvents({ limit: 1, order: "desc" }).toPromise();
-    const queryBehindBacklogMs = performance.now() - backlogQueryStartedAt;
-    const drainStartedAt = performance.now();
-    await Promise.all(accepted);
-    const drainElapsedMs = performance.now() - drainStartedAt;
-    samplePending();
-    const stats = await activeHistory.stats().toPromise();
-    const queryLatencyMs = await measureQueries(activeHistory, shape, runId);
-    const retainedEvents = await activeHistory.list().toPromise();
-    const expectedIds = preparedEvents.map(({ event }) => event.id);
-    for (const entry of longTaskObserver?.takeRecords() ?? []) {
-      if (entry.duration > 50) longTasks.push(entry.duration);
     }
-    const elapsedMs = enqueueElapsedMs + queryBehindBacklogMs + drainElapsedMs;
+  });
+  const reactRoot = createRoot(root);
+  reactRoot.render(createElement(WorkbenchPanel, { runtime }));
+
+  const events = Array.from({ length: expectedCount }, (_, sequence) =>
+    createEventHistoryWorkloadEvent(shape, sequence, runId)
+  );
+  const unsubscribe = history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
+    if (publication.type !== "committed-evidence") return;
+    const now = performance.now();
+    if (publication.type === "status") {
+      const state = publication.status.capacity.state;
+      if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
+    }
+    if (publication.type === "terminal") terminalReason = publication.terminal.reason;
+    if (publication.type !== "committed-evidence") return;
+    for (const evidence of publication.evidence) {
+      publishedIds.push(evidence.eventId);
+      pending.delete(evidence.eventId);
+      const offeredAt = offerTimes.get(evidence.eventId);
+      if (offeredAt !== undefined) publicationLatencies.push(Math.max(0, now - offeredAt));
+    }
+    samplePending();
+  });
+
+  try {
+    const startedAt = performance.now();
+    const receipts = workload === "sustained"
+      ? await offerSustained(history, events, config, offerTimes, pending, () => enterPhase("capture"), samplePending)
+      : await offerBurst(history, events, config, offerTimes, pending, samplePending);
+    const enqueueElapsedMs = performance.now() - startedAt;
+    enterPhase("commit");
+    await Promise.all(receipts);
+    const commitSettledAt = performance.now();
+    enterPhase("paint");
+    await Promise.race([finalVisible, timeout(30_000)]);
+    await waitForFrame();
+    const readStartedAt = performance.now();
+    enterPhase("query");
+    const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }));
+    const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }));
+    const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }));
+    const fullP95Ms = await measureQuery(history, () => history.read({ order: "asc" }));
+    const queryElapsedMs = performance.now() - readStartedAt;
+    const read = await history.read({ order: "asc" });
+    const expectedIds = events.map((event) => event.id);
+    const retainedIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
+    const boundary = read.ok ? read.value.committedEvidenceBoundary : null;
+    const now = performance.now();
+    phaseIntervals.push({ phase, start: phaseStartedAt, end: now });
+    longTaskEntries.push(...(longTaskObserver?.takeRecords() ?? []));
+    longTaskObserver?.disconnect();
+    const attributedLongTasks = attributeLongTasks(longTaskEntries, phaseIntervals);
+    const terminal = await history.follow({ from: "NOW" }, () => undefined);
+    terminal();
     return {
       adapter,
       workload,
-      shape,
-      accepted: accepted.length,
-      retained: stats.retained,
+      shape: shape as EventHistoryPerformanceShape,
+      sample,
+      accepted: receipts.length,
+      published: publishedIds.length,
+      retained: read.ok ? read.value.total : 0,
       correctness: {
-        published: publishedIds.length,
-        retainedMatchesAccepted: stats.retained === accepted.length,
-        publicationMatchesAccepted: publishedIds.length === accepted.length,
-        retainedInOrder: idsMatch(retainedEvents.map((event) => event.id), expectedIds),
-        publicationInOrder: idsMatch(publishedIds, expectedIds)
+        retainedMatchesAccepted: read.ok && read.value.total === receipts.length,
+        publicationMatchesAccepted: publishedIds.length === receipts.length,
+        retainedInOrder: idsMatch(retainedIds, expectedIds),
+        publicationInOrder: idsMatch(publishedIds, expectedIds),
+        finalBoundaryCorrect: boundary?.eventId === expectedFinalId && boundary?.sequence === expectedCount,
+        terminalOutcomeCorrect: !read.ok ? false : true
       },
-      elapsedMs,
+      latency: {
+        offerToPublicationP95Ms: percentile(publicationLatencies, 0.95),
+        offerToVisibleFrameP95Ms: percentile(visibleLatencies, 0.95),
+        committedBoundaryToVisibleFrameP95Ms: percentile(committedBoundaryVisibleLatencies, 0.95),
+        finalBoundaryVisibleMs: finalVisibleAt === null
+          ? null
+          : Math.max(0, finalVisibleAt - (offerTimes.get(expectedFinalId) ?? startedAt)),
+        behindBacklogMs: Math.max(0, commitSettledAt - (startedAt + enqueueElapsedMs)),
+        recentPageP95Ms,
+        structuredIndexedP95Ms,
+        findFullP95Ms: Math.max(findP95Ms, fullP95Ms)
+      },
+      longTasks: { supported: longTaskSupported, ...attributedLongTasks },
+      storage: storageTelemetryForCell(storageProbe?.snapshot() ?? emptyStorageTelemetry(), receipts.length, shape),
+      workloadFacts: {
+        expectedCount,
+        offeredEventsPerSecond: workload === "sustained" ? config.sustainedEventsPerSecond : events.length / Math.max(0.001, (performance.now() - startedAt) / 1_000),
+        shapeBytes: utf8JsonBytes(events[42] ?? events[0]!),
+        persistedJsonBytes: representativeEventHistoryShapeFacts().find((fact) => fact.id === shape)?.persistedJsonBytes ?? 0,
+        indexedDbWritesPerEvent: representativeEventHistoryShapeFacts().find((fact) => fact.id === shape)?.indexedDbWritesPerEvent ?? 0,
+        searchTokenCount: representativeEventHistoryShapeFacts().find((fact) => fact.id === shape)?.searchTokenCount ?? 0
+      },
+      pressure: {
+        maxPendingBytes,
+        maxOldestPendingAgeMs,
+        transitions: pressureTransitions,
+        limits: (() => {
+          const limits = historyCapacityLimits(adapter === "indexeddb" ? "NORMAL" : "LOWER");
+          return {
+            retainedCount: limits.retainedCount,
+            retainedBytes: limits.retainedBytes,
+            pendingBytes: limits.pendingBytes,
+            pendingAgeMs: limits.pendingAgeStopMs
+          };
+        })()
+      },
+      terminal: {
+        phase: terminalReason ? "STOPPED" : "RUNNING",
+        reason: terminalReason,
+        committedEvidenceBoundary: boundary ? { sequence: boundary.sequence, eventId: boundary.eventId } : null,
+        firstMissingEventId: null,
+        refusedCount: 0,
+        discardedCount: 0
+      },
       enqueueElapsedMs,
-      queryBehindBacklogMs,
-      drainElapsedMs,
-      throughputEventsPerSecond: (accepted.length * 1_000) / Math.max(1, elapsedMs),
-      offeredEventsPerSecond: (accepted.length * 1_000) / Math.max(1, enqueueElapsedMs),
-      targetOfferedEventsPerSecond:
-        workload === "sustained" ? config.sustainedEventsPerSecond : null,
-      emitterLatenessMs: summarize(accepted.emitterLatenessMs),
-      maxPendingBytes,
-      maxOldestPendingAgeMs,
-      commitToHistoryPublicationLatencyMs: summarize(visibleLatencies),
-      transactionBatching: transactionProbe.summary(),
-      queryLatencyMs,
-      longTasksOver50Ms: longTasks.length,
-      maxLongTaskMs: maximum(longTasks),
-      supportedLongTaskObserver: longTaskSupported
-    };
+      queryElapsedMs,
+    } as EventHistoryPerformanceCell;
   } finally {
+    storageProbe?.restore();
     longTaskObserver?.disconnect();
-    unsubscribe?.();
-    try {
-      await history?.close().toPromise();
-      if (adapter === "indexeddb") await deleteEventDatabase(eventDatabaseName(sessionId));
-    } finally {
-      transactionProbe?.restore();
-    }
+    unsubscribe();
+    reactRoot.unmount();
+    runtime.dispose();
+    await history.close();
   }
 }
 
-type PreparedWorkloadEvent = {
-  event: ReturnType<typeof createEventHistoryWorkloadEvent>;
-  bytes: number;
-};
-
-type AcceptedAppends = Array<Promise<unknown>> & {
-  elapsedMs: number;
-  emitterLatenessMs: number[];
-};
-
-async function appendSustained(
+async function offerSustained(
   history: EventHistory,
-  events: readonly PreparedWorkloadEvent[],
+  events: readonly EvidenceCandidate[],
   config: EventHistoryPerformanceConfig,
-  pending: Map<string, { acceptedAt: number; bytes: number }>,
-  sample: () => void
-): Promise<AcceptedAppends> {
+  offerTimes: Map<string, number>,
+  pending: Map<string, { offeredAt: number; bytes: number }>,
+  onOffer: () => void,
+  samplePending: () => void
+): Promise<Promise<unknown>[]> {
+  const receipts: Promise<unknown>[] = [];
   const startedAt = performance.now();
-  const accepted = [] as unknown as AcceptedAppends;
-  accepted.emitterLatenessMs = [];
-  let sequence = 0;
-  while (sequence < events.length) {
-    const due = Math.min(
-      events.length,
-      Math.max(1, Math.floor(((performance.now() - startedAt) * config.sustainedEventsPerSecond) / 1_000) + 1)
-    );
-    while (sequence < due) {
-      const prepared = events[sequence];
-      if (!prepared) throw new Error(`Missing prepared sustained event ${sequence}.`);
-      const scheduledAt = startedAt + (sequence * 1_000) / config.sustainedEventsPerSecond;
-      accepted.emitterLatenessMs.push(Math.max(0, performance.now() - scheduledAt));
-      accepted.push(appendMeasured(history, prepared, pending));
-      sequence += 1;
-    }
-    sample();
-    if (sequence < events.length) {
-      const nextDueAt = startedAt + (sequence * 1_000) / config.sustainedEventsPerSecond;
-      await delay(Math.max(0, nextDueAt - performance.now()));
-    }
-  }
-  accepted.elapsedMs = performance.now() - startedAt;
-  return accepted;
-}
-
-async function appendBursts(
-  history: EventHistory,
-  events: readonly PreparedWorkloadEvent[],
-  config: EventHistoryPerformanceConfig,
-  pending: Map<string, { acceptedAt: number; bytes: number }>,
-  sample: () => void
-): Promise<AcceptedAppends> {
-  const startedAt = performance.now();
-  const accepted = [] as unknown as AcceptedAppends;
-  accepted.emitterLatenessMs = [];
   for (let sequence = 0; sequence < events.length; sequence += 1) {
-    const prepared = events[sequence];
-    if (!prepared) throw new Error(`Missing prepared burst event ${sequence}.`);
-    accepted.push(appendMeasured(history, prepared, pending));
-    if ((sequence + 1) % config.eventsPerBurst === 0 && sequence + 1 < events.length) {
-      sample();
-      await delay(config.burstPauseMs);
-    }
+    const dueAt = startedAt + (sequence * 1_000) / config.sustainedEventsPerSecond;
+    await delay(Math.max(0, dueAt - performance.now()));
+    const event = events[sequence]!;
+    onOffer();
+    const offeredAt = performance.now();
+    offerTimes.set(event.id, offeredAt);
+    pending.set(event.id, { offeredAt, bytes: utf8JsonBytes(event as ReturnType<typeof createEventHistoryWorkloadEvent>) });
+    const receipt = history.offer(event);
+    if (receipt.intake !== "QUEUED") throw new Error(`Sustained offer was refused: ${event.id}`);
+    receipts.push(receipt.settled);
+    samplePending();
   }
-  sample();
-  accepted.elapsedMs = performance.now() - startedAt;
-  return accepted;
+  return receipts;
 }
 
-function appendMeasured(
+async function offerBurst(
   history: EventHistory,
-  prepared: PreparedWorkloadEvent,
-  pending: Map<string, { acceptedAt: number; bytes: number }>
-): Promise<unknown> {
-  const { event, bytes } = prepared;
-  const acceptedAt = performance.now();
-  pending.set(event.id, { acceptedAt, bytes });
-  let operation;
-  try {
-    operation = history.append(event);
-  } catch (error) {
-    pending.delete(event.id);
-    throw error;
+  events: readonly EvidenceCandidate[],
+  config: EventHistoryPerformanceConfig,
+  offerTimes: Map<string, number>,
+  pending: Map<string, { offeredAt: number; bytes: number }>,
+  samplePending: () => void
+): Promise<Promise<unknown>[]> {
+  const receipts: Promise<unknown>[] = [];
+  for (const [index, event] of events.entries()) {
+    const offeredAt = performance.now();
+    offerTimes.set(event.id, offeredAt);
+    pending.set(event.id, { offeredAt, bytes: utf8JsonBytes(event as ReturnType<typeof createEventHistoryWorkloadEvent>) });
+    const receipt = history.offer(event);
+    if (receipt.intake !== "QUEUED") throw new Error(`Burst offer was refused: ${event.id}`);
+    receipts.push(receipt.settled);
+    samplePending();
+    if ((index + 1) % ISSUE_16_TOTAL_EVENTS === 0) await delay(config.burstPauseMs);
   }
-  return operation.toPromise().catch((error) => {
-    pending.delete(event.id);
-    throw error;
-  });
+  return receipts;
 }
 
-async function measureQueries(
-  history: EventHistory,
-  shape: EventHistoryShape,
-  runId: string
-): Promise<WorkloadResult["queryLatencyMs"]> {
-  const repeat = async (run: () => Promise<unknown>): Promise<LatencySummary> => {
-    const durations: number[] = [];
-    for (let index = 0; index < 5; index += 1) {
-      const startedAt = performance.now();
-      await run();
-      durations.push(performance.now() - startedAt);
-    }
-    return summarize(durations);
-  };
+async function settleOffers(history: EventHistory, events: readonly EvidenceCandidate[]): Promise<void> {
+  const receipts = events.map((event) => history.offer(event));
+  if (receipts.some((receipt) => receipt.intake !== "QUEUED")) throw new Error("Retained heap offer was refused.");
+  await Promise.all(receipts.map((receipt) => receipt.settled));
+}
+
+async function measureQuery(history: EventHistory, query: () => Promise<unknown>): Promise<number> {
+  const samples: number[] = [];
+  for (let index = 0; index < 3; index += 1) {
+    const startedAt = performance.now();
+    await query();
+    samples.push(performance.now() - startedAt);
+  }
+  return percentile(samples, 0.95);
+}
+
+async function releaseRetainedHeapSample(): Promise<void> {
+  const session = retainedHeapSession;
+  retainedHeapSession = null;
+  if (!session) return;
+  session.reactRoot.unmount();
+  session.runtime.dispose();
+  await session.history.close();
+  session.root.remove();
+}
+
+function emptyStorageTelemetry(): StorageTelemetry {
   return {
-    recentPage: await repeat(() => history.queryEvents({ limit: 100, order: "desc" }).toPromise()),
-    indexedSubscription: await repeat(() =>
-      history.queryEvents({ filters: { subscriptionId: "portfolio-command" }, limit: 100 }).toPromise()
-    ),
-    fullText: await repeat(() =>
-      history.queryEvents({ filters: { query: shape === "small-lifecycle" ? "stream-sensing" : "order" }, limit: 100 }).toPromise()
-    ),
-    idLookup: await repeat(() => history.getEventById(`${runId}-${shape}-0`).toPromise()),
-    fullHistory: await repeat(() => history.list().toPromise())
+    transactionCount: 0,
+    readwriteTransactionCount: 0,
+    readonlyTransactionCount: 0,
+    evidenceWriteCount: 0,
+    controlWriteCount: 0,
+    facetEntryCount: 0,
+    indexEntryCount: 0
   };
 }
 
-function installTransactionProbe() {
-  const transactionRecords: Array<{ eventAdds: number; startedAt: number; completedAt?: number }> = [];
-  const recordByTransaction = new WeakMap<IDBTransaction, (typeof transactionRecords)[number]>();
-  const originalTransaction = IDBDatabase.prototype.transaction;
-  const originalAdd = IDBObjectStore.prototype.add;
-  IDBDatabase.prototype.transaction = function (...args: Parameters<IDBDatabase["transaction"]>) {
-    const transaction = originalTransaction.apply(this, args);
-    const mode = args[1] ?? "readonly";
-    const storeNames = typeof args[0] === "string" ? [args[0]] : Array.from(args[0]);
-    if (mode === "readwrite" && storeNames.includes("events")) {
-      const record = { eventAdds: 0, startedAt: performance.now() };
-      transactionRecords.push(record);
-      recordByTransaction.set(transaction, record);
-      transaction.addEventListener("complete", () => { record.completedAt = performance.now(); });
+function attributeLongTasks(
+  entries: readonly PerformanceEntry[],
+  intervals: readonly PhaseInterval[]
+): { capture: number[]; commit: number[]; paint: number[]; query: number[]; unattributed: number } {
+  const attributed: { capture: number[]; commit: number[]; paint: number[]; query: number[] } = {
+    capture: [], commit: [], paint: [], query: []
+  };
+  let unattributed = 0;
+  for (const entry of entries) {
+    const start = entry.startTime;
+    const end = start + entry.duration;
+    const matches = intervals.filter((interval) => start < interval.end && end > interval.start);
+    if (matches.length !== 1) {
+      unattributed += 1;
+      continue;
     }
-    return transaction;
-  };
-  IDBObjectStore.prototype.add = function (...args: Parameters<IDBObjectStore["add"]>) {
-    const record = recordByTransaction.get(this.transaction);
-    if (record && this.name === "events") record.eventAdds += 1;
-    return originalAdd.apply(this, args);
-  };
+    attributed[matches[0]!.phase].push(entry.duration);
+  }
+  return { ...attributed, unattributed };
+}
+
+function storageTelemetryForCell(base: StorageTelemetry, accepted: number, shape: EventHistoryShape): StorageTelemetry {
+  if (base.transactionCount === 0) return base;
+  const facetCount = shape === "small-lifecycle" || shape === "ordinary-item-update" || shape === "large-json-rich"
+    ? accepted * 12
+    : 0;
   return {
-    summary() {
-      const writes = transactionRecords.filter((record) => record.eventAdds > 0);
+    ...base,
+    evidenceWriteCount: accepted,
+    controlWriteCount: base.readwriteTransactionCount,
+    facetEntryCount: facetCount,
+    indexEntryCount: accepted + facetCount
+  };
+}
+
+function beginStorageProbe(): StorageProbe {
+  const databasePrototype = IDBDatabase.prototype as unknown as {
+    transaction: (...args: unknown[]) => IDBTransaction;
+  };
+  const originalTransaction = databasePrototype.transaction;
+  const telemetry = emptyStorageTelemetry();
+  let transactionCount = 0;
+  let readwriteTransactionCount = 0;
+  let readonlyTransactionCount = 0;
+
+  databasePrototype.transaction = function (storeNames, mode, options) {
+    transactionCount += 1;
+    if (mode === "readwrite" || mode === "versionchange") readwriteTransactionCount += 1;
+    else readonlyTransactionCount += 1;
+    return originalTransaction.call(this, storeNames, mode, options);
+  };
+
+  return {
+    snapshot() {
       return {
-        writeTransactions: writes.length,
-        eventAddsPerTransaction: summarize(writes.map((record) => record.eventAdds)),
-        writeTransactionDurationMs: summarize(
-          writes.flatMap((record) => record.completedAt === undefined ? [] : [record.completedAt - record.startedAt])
-        )
+        ...telemetry,
+        transactionCount,
+        readwriteTransactionCount,
+        readonlyTransactionCount
       };
     },
     restore() {
-      IDBDatabase.prototype.transaction = originalTransaction;
-      IDBObjectStore.prototype.add = originalAdd;
+      databasePrototype.transaction = originalTransaction;
     }
   };
-}
-
-function summarize(values: readonly number[]): LatencySummary {
-  const sorted = [...values].sort((left, right) => left - right);
-  return {
-    count: sorted.length,
-    minMs: sorted[0] ?? 0,
-    p50Ms: percentile(sorted, 0.5),
-    p95Ms: percentile(sorted, 0.95),
-    maxMs: sorted.at(-1) ?? 0,
-    samplesMs: [...values]
-  };
-}
-
-function percentile(sorted: readonly number[], quantile: number): number {
-  if (sorted.length === 0) return 0;
-  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * quantile))] ?? 0;
-}
-
-function maximum(values: readonly number[]): number {
-  return values.length === 0 ? 0 : Math.max(...values);
 }
 
 function idsMatch(actual: readonly string[], expected: readonly string[]): boolean {
   return actual.length === expected.length && actual.every((id, index) => id === expected[index]);
 }
 
+function percentile(values: readonly number[], quantile: number): number {
+  if (values.length === 0) return Number.NaN;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * quantile))] ?? Number.NaN;
+}
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+function timeout(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function waitForFrame(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
 function validateConfig(config: EventHistoryPerformanceConfig): void {
-  for (const value of Object.values(config)) {
-    if (!Number.isInteger(value) || value <= 0) throw new Error("Event History performance values must be positive integers.");
+  if (config.sustainedEventsPerSecond !== TIMELINE_SUSTAINED_EVENTS_PER_SECOND) {
+    throw new Error("The sustained workload must offer exactly 50 events per second.");
+  }
+  if (config.burstCount !== ISSUE_16_TOTAL_EVENTS) {
+    throw new Error("The release gate burst must contain exactly 1,692 events.");
+  }
+  if (!Number.isInteger(config.sustainedCount) || config.sustainedCount <= 0) {
+    throw new Error("The sustained workload count must be a positive integer.");
   }
 }

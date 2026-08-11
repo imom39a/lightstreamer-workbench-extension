@@ -42,7 +42,7 @@ function cell(
       structuredIndexedP95Ms: 10,
       findFullP95Ms: 20
     },
-    longTasks: { capture: [], commit: [], paint: [], query: [] },
+    longTasks: { supported: true, unattributed: 0, capture: [], commit: [], paint: [], query: [] },
     storage: {
       transactionCount: 1,
       readwriteTransactionCount: 1,
@@ -172,6 +172,20 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.failures.some((failure) => failure.includes("sustained offer-to-visible"))).toBe(true);
     expect(decision.failures.some((failure) => failure.includes("Long Task"))).toBe(true);
     expect(decision.failures.some((failure) => failure.includes("post-GC heap"))).toBe(true);
+  });
+
+  it("fails closed when Long Task telemetry is unsupported or unattributed", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry, index) => index === 0
+        ? { ...entry, longTasks: { ...entry.longTasks, supported: false, unattributed: 1 } }
+        : entry)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("Long Task telemetry"))).toBe(true);
   });
 
   it("returns REVIEW for a comparable absolute pass that regresses over twenty percent", () => {
