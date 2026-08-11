@@ -169,6 +169,7 @@ function terminalEvidence(acceptedCount: number, refusedEventId: string) {
 
 function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "indexeddb" | "memory") {
   const liveCaptureEventIds = Array.from({ length: 72 }, (_, index) => `${adapter}-${name}-live-${index + 1}`);
+  const liveCaptureEventTimesMs = Array.from({ length: 72 }, (_, index) => 100 + index * (1_200 / 72));
   const retainedEventIds = [
     ...Array.from({ length: 4 }, (_, index) => `${adapter}-${name}-before-${index}`),
     `${adapter}-${name}-candidate`,
@@ -183,6 +184,7 @@ function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "i
     trafficBefore: 4,
     trafficAfter: 4,
     liveCaptureEventIds,
+    liveCaptureEventTimesMs,
     retainedEventIds,
     publishedEventIds: [...retainedEventIds],
     liveCaptureCount: liveCaptureEventIds.length,
@@ -194,6 +196,7 @@ function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "i
     checkpointStagingDurationMs: 1_220,
     liveCaptureOverlapMs: 1_200,
     liveCaptureOverlapEventCount: 72,
+    liveCaptureMaxInterEventGapMs: 1_200 / 72,
     liveCaptureRateEventsPerSecond: 60,
     liveCaptureRateSatisfied: true,
     interleavedWhileStaging: true,
@@ -594,6 +597,35 @@ describe("Event History real-Chrome performance gate classifier", () => {
             liveCaptureRateEventsPerSecond: 7200,
             liveCaptureRateSatisfied: true,
             interleavedWhileStaging: false
+          }
+        : scenario)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("concurrent live capture"))).toBe(true);
+  });
+
+  it("fails a short high-rate burst even when it overlaps staging", () => {
+    const baseline = report();
+    const current = report({
+      checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) => index === 0
+        ? {
+            ...scenario,
+            liveCaptureEventTimesMs: Array.from({ length: 72 }, (_, eventIndex) => 100 + eventIndex * (10 / 72)),
+            liveCaptureStartedAtMs: 100,
+            liveCaptureEndedAtMs: 110,
+            liveCaptureDurationMs: 10,
+            checkpointStagingStartedAtMs: 90,
+            checkpointStagingEndedAtMs: 120,
+            checkpointStagingDurationMs: 30,
+            liveCaptureOverlapMs: 10,
+            liveCaptureOverlapEventCount: 72,
+            liveCaptureMaxInterEventGapMs: 10 / 72,
+            liveCaptureRateEventsPerSecond: 7_200,
+            liveCaptureRateSatisfied: true,
+            interleavedWhileStaging: true
           }
         : scenario)
     });

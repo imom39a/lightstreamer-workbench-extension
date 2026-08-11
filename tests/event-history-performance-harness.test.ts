@@ -46,6 +46,17 @@ describe("Event History performance checkpoint workload", () => {
     expect(beforeAndAfter.liveCaptureOverlapMs).toBe(0);
     expect(beforeAndAfter.liveCaptureOverlapEventCount).toBe(0);
 
+    const shortBurst = measureCheckpointLiveCapture({
+      liveCaptureStartedAtMs: 100,
+      liveCaptureEndedAtMs: 110,
+      checkpointStagingStartedAtMs: 90,
+      checkpointStagingEndedAtMs: 120,
+      liveCaptureEventTimesMs: [100, 101, 102, 103, 104, 105]
+    });
+    expect(shortBurst.liveCaptureRateEventsPerSecond).toBeGreaterThan(50);
+    expect(shortBurst.liveCaptureOverlapMs).toBe(10);
+    expect(shortBurst.interleavedWhileStaging).toBe(false);
+
     const concurrent = measureCheckpointLiveCapture({
       liveCaptureStartedAtMs: 100,
       liveCaptureEndedAtMs: 1_300,
@@ -57,6 +68,7 @@ describe("Event History performance checkpoint workload", () => {
     expect(concurrent.liveCaptureOverlapMs).toBe(1_200);
     expect(concurrent.liveCaptureOverlapEventCount).toBe(72);
     expect(concurrent.liveCaptureRateEventsPerSecond).toBe(60);
+    expect(concurrent.liveCaptureMaxInterEventGapMs).toBeCloseTo(1_200 / 72, 10);
   });
 
   const progress = (stage: string): HarnessProgressInput => ({

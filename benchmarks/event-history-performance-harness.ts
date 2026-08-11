@@ -35,7 +35,9 @@ import {
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   classifyEventHistoryPerformance,
+  CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS,
   CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND,
+  CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS,
   TERMINAL_PENDING_BYTE_EVENT_COUNT,
   type EventHistoryPerformanceCell,
   type EventHistoryPerformanceCheckpointScenario,
@@ -82,11 +84,12 @@ export type HarnessProgress = HarnessProgressInput & Readonly<{
   pageElapsedMs: number;
 }>;
 
-const CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT = 144;
-const CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS = 20;
+const CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT = 180;
+const CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS = 18;
 
 export type CheckpointLiveCaptureMeasurement = Readonly<{
   liveCaptureCount: number;
+  liveCaptureEventTimesMs: readonly number[];
   liveCaptureStartedAtMs: number;
   liveCaptureEndedAtMs: number;
   liveCaptureDurationMs: number;
@@ -95,6 +98,7 @@ export type CheckpointLiveCaptureMeasurement = Readonly<{
   checkpointStagingDurationMs: number;
   liveCaptureOverlapMs: number;
   liveCaptureOverlapEventCount: number;
+  liveCaptureMaxInterEventGapMs: number;
   liveCaptureRateEventsPerSecond: number;
   liveCaptureRateSatisfied: boolean;
   interleavedWhileStaging: boolean;
@@ -118,12 +122,17 @@ export function measureCheckpointLiveCapture(
     timestamp >= input.checkpointStagingStartedAtMs && timestamp < input.checkpointStagingEndedAtMs
   ).length;
   const liveCaptureCount = input.liveCaptureEventTimesMs.length;
+  const liveCaptureMaxInterEventGapMs = input.liveCaptureEventTimesMs.slice(1).reduce(
+    (maximum, timestamp, index) => Math.max(maximum, timestamp - input.liveCaptureEventTimesMs[index]!),
+    0
+  );
   const liveCaptureRateEventsPerSecond = liveCaptureDurationMs > 0
     ? liveCaptureCount * 1_000 / liveCaptureDurationMs
     : 0;
   const liveCaptureRateSatisfied = liveCaptureRateEventsPerSecond >= CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND;
   return {
     liveCaptureCount,
+    liveCaptureEventTimesMs: [...input.liveCaptureEventTimesMs],
     liveCaptureStartedAtMs: input.liveCaptureStartedAtMs,
     liveCaptureEndedAtMs: input.liveCaptureEndedAtMs,
     liveCaptureDurationMs,
@@ -132,10 +141,15 @@ export function measureCheckpointLiveCapture(
     checkpointStagingDurationMs,
     liveCaptureOverlapMs,
     liveCaptureOverlapEventCount,
+    liveCaptureMaxInterEventGapMs,
     liveCaptureRateEventsPerSecond,
     liveCaptureRateSatisfied,
     interleavedWhileStaging: liveCaptureOverlapMs > 0
       && liveCaptureOverlapEventCount > 0
+      && liveCaptureDurationMs >= CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
+      && checkpointStagingDurationMs >= CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
+      && liveCaptureOverlapMs >= CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
+      && liveCaptureMaxInterEventGapMs <= CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS
       && liveCaptureRateSatisfied
   };
 }
