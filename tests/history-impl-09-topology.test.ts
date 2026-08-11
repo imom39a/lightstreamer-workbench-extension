@@ -1,16 +1,23 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createCaptureMessage,
+  TOPOLOGY_OBSERVATION_VERSION,
   TOPOLOGY_SYNC_BEGIN,
   TOPOLOGY_SYNC_CHUNK,
   TOPOLOGY_SYNC_COMPLETE,
   TOPOLOGY_SYNC_VERSION,
   type TopologyAbsoluteRecord,
+  type TopologyObservation,
   type TopologySyncBeginFrame,
   type TopologySyncChunkFrame,
   type TopologySyncCompleteFrame
 } from "../src/bridge/messages";
 import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
+import { createEventNormalizer } from "../src/core/event-normalizer";
+import { createTopologyProjection } from "../src/extension/panel/topology-projection";
+import { createTopologyCheckpointEvidenceCandidate } from "../src/extension/panel/topology-checkpoint-evidence-codec";
+import { createAuthoritativeHistory } from "./support/authoritative-history";
 import {
   createWorkbenchRuntime,
   type WorkbenchRuntimeScheduler
@@ -20,6 +27,164 @@ const PAGE_EPOCH = "ticket09-page";
 const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000009";
 
 describe("history-impl-09 topology cutover", () => {
+  it("keeps changed live observations in distinct candidates for one pending syncId", () => {
+    const projection = createTopologyProjection();
+    const normalizer = createEventNormalizer();
+    const sequence = checkpointFrames("pending-live-observation-sync");
+
+    projection.applySyncFrame(sequence[0]);
+    projection.ingestCapture(normalizer.normalize(topologyCapture(observation("first", 2))));
+    projection.applySyncFrame(sequence[1]);
+    const first = projection.applySyncFrame(sequence[2]).candidate;
+
+    projection.applySyncFrame(sequence[0]);
+    projection.ingestCapture(normalizer.normalize(topologyCapture(observation("second", 3))));
+    projection.applySyncFrame(sequence[1]);
+    const second = projection.applySyncFrame(sequence[2]).candidate;
+
+    expect(first?.checkpoint.observations).toEqual([
+      expect.objectContaining({
+        captureSequence: 2,
+        subscription: { id: "first" }
+      })
+    ]);
+    expect(second?.checkpoint.observations).toEqual([
+      expect.objectContaining({
+        captureSequence: 3,
+        subscription: { id: "second" }
+      })
+    ]);
+    expect(first?.checkpoint.syncId).toBe("pending-live-observation-sync");
+    expect(second?.checkpoint.syncId).toBe(first?.checkpoint.syncId);
+    expect(second?.id).not.toBe(first?.id);
+  });
+
+  it("offers one checkpoint per syncId when observations change while the candidate is pending", async () => {
+    const commit = deferred<void>();
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: PANEL_SESSION_ID,
+      commitBatch: () => commit.promise
+    });
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler: immediateScheduler()
+    });
+    const sequence = checkpointFrames("pending-observation-sync", "first-checkpoint");
+    const changedSequence = checkpointFrames("pending-observation-sync", "second-checkpoint");
+
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: sequence[0] });
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: sequence[1] });
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: sequence[2] });
+
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: changedSequence[0] });
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: changedSequence[1] });
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: changedSequence[2] });
+
+    expect(runtime.getSnapshot().evidence.total).toBe(0);
+    commit.resolve();
+    await settle();
+
+    const topologyCandidates = await committedTopologyCandidates(history);
+    expect(topologyCandidates).toHaveLength(1);
+    expect(topologyCandidates[0]?.checkpoint.records).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "first-checkpoint" })])
+    );
+    expect(runtime.getSnapshot().scope.nodes[0]).toMatchObject({
+      kind: "page",
+      detail: "1 clients · 1 subscriptions"
+    });
+
+    runtime.dispose();
+  });
+
+  it("keeps one committed checkpoint when the same syncId changes after commit", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: PANEL_SESSION_ID
+    });
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler: immediateScheduler()
+    });
+
+    for (const frame of checkpointFrames("after-commit-sync", "first-checkpoint")) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    await settle();
+    for (const frame of checkpointFrames("after-commit-sync", "second-checkpoint")) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    await settle();
+
+    const topologyCandidates = await committedTopologyCandidates(history);
+    expect(topologyCandidates).toHaveLength(1);
+    expect(topologyCandidates[0]?.checkpoint.records).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "first-checkpoint" })])
+    );
+    expect(runtime.getSnapshot().scope.nodes[0]).toMatchObject({
+      kind: "page",
+      detail: "1 clients · 1 subscriptions"
+    });
+
+    runtime.dispose();
+  });
+
+  it("releases a syncId after NOT_EVIDENCE so a changed retry can commit", async () => {
+    let refused = false;
+    const history = createAuthoritativeHistory({
+      decideOffer(candidate) {
+        if (candidate.kind === "topology-checkpoint" && !refused) {
+          refused = true;
+          return "refuse";
+        }
+        return "commit";
+      }
+    });
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler: immediateScheduler()
+    });
+
+    for (const frame of checkpointFrames("retryable-sync", "first-checkpoint")) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    await settle();
+    expect(await committedTopologyCandidates(history)).toHaveLength(0);
+
+    for (const frame of checkpointFrames("retryable-sync", "second-checkpoint")) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    await settle();
+
+    const topologyCandidates = await committedTopologyCandidates(history);
+    expect(topologyCandidates).toHaveLength(1);
+    expect(topologyCandidates[0]?.checkpoint.records).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "second-checkpoint" })])
+    );
+
+    runtime.dispose();
+  });
+
+  it("does not recommit a replayed syncId after recovery", async () => {
+    const replayFrames = checkpointFrames("replayed-sync", "recovered-checkpoint");
+    const candidate = checkpointCandidate(replayFrames);
+    const history = createAuthoritativeHistory({ precommitted: [candidate] });
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler: immediateScheduler()
+    });
+
+    for (const frame of checkpointFrames("replayed-sync", "replayed-again")) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    await settle();
+
+    const topologyCandidates = await committedTopologyCandidates(history);
+    expect(topologyCandidates).toHaveLength(1);
+    expect(topologyCandidates[0]?.id).toBe(candidate.id);
+
+    runtime.dispose();
+  });
+
   it("does not project a complete checkpoint until its candidate becomes committed Evidence", async () => {
     const commit = deferred<void>();
     const history = await createMemoryEventHistoryForTests({
@@ -133,7 +298,8 @@ describe("history-impl-09 topology cutover", () => {
 });
 
 function checkpointFrames(
-  syncId = "complete-sync"
+  syncId = "complete-sync",
+  subscriptionId = "ticket09-subscription"
 ): readonly [
   TopologySyncBeginFrame,
   TopologySyncChunkFrame,
@@ -156,7 +322,7 @@ function checkpointFrames(
     },
     {
       kind: "subscription",
-      id: "ticket09-subscription",
+      id: subscriptionId,
       parentId: "ticket09-client",
       clientId: "ticket09-client",
       pageEpoch: PAGE_EPOCH,
@@ -180,6 +346,47 @@ function checkpointFrames(
     { type: TOPOLOGY_SYNC_CHUNK, ...metadata, chunkIndex: 0, records },
     { type: TOPOLOGY_SYNC_COMPLETE, ...metadata }
   ];
+}
+
+function observation(subscriptionId: string, captureSequence: number): TopologyObservation {
+  return {
+    version: TOPOLOGY_OBSERVATION_VERSION,
+    kind: "subscription-active",
+    pageEpoch: PAGE_EPOCH,
+    captureSequence,
+    provenance: { instrumentationSource: "official-public-api" },
+    coverage: { status: "complete", getters: {} },
+    client: { id: "ticket09-client" },
+    subscription: { id: subscriptionId }
+  };
+}
+
+function topologyCapture(topology: TopologyObservation) {
+  return createCaptureMessage(
+    "subscription-started",
+    {
+      client: { id: "ticket09-client" },
+      subscription: { id: topology.subscription?.id ?? "ticket09-subscription" }
+    },
+    topology.captureSequence,
+    topology
+  );
+}
+
+function checkpointCandidate(
+  frames: readonly [TopologySyncBeginFrame, TopologySyncChunkFrame, TopologySyncCompleteFrame]
+) {
+  const result = createTopologyCheckpointEvidenceCandidate(frames);
+  if (!result.ok) throw new Error(result.rejection.code);
+  return result.value;
+}
+
+async function committedTopologyCandidates(history: Awaited<ReturnType<typeof createMemoryEventHistoryForTests>>) {
+  const result = await history.read({ order: "asc" });
+  if (!result.ok) throw new Error(result.problem.message);
+  return result.value.evidence.flatMap(({ candidate }) =>
+    candidate.kind === "topology-checkpoint" ? [candidate] : []
+  );
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {

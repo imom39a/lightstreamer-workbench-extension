@@ -497,7 +497,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
   private readonly retainedLocalEvidenceIds = new Set<string>();
-  private readonly offeredTopologyCheckpointIds = new Set<string>();
+  private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
   private readonly topologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private visible: boolean;
@@ -976,15 +976,16 @@ class Runtime implements WorkbenchRuntime {
       this.topologyCoverage = "LIMITED";
     }
     const candidate = result.candidate;
-    if (candidate && !this.offeredTopologyCheckpointIds.has(candidate.id)) {
-      this.offeredTopologyCheckpointIds.add(candidate.id);
+    const syncId = candidate ? topologyCheckpointSyncId(candidate) : null;
+    if (candidate && syncId !== null && !this.offeredTopologyCheckpointSyncIds.has(syncId)) {
+      this.offeredTopologyCheckpointSyncIds.add(syncId);
       const receipt = this.evidencePipeline.offer(candidate);
       void receipt.settled.then((settled) => {
         if (settled.outcome === "NOT_EVIDENCE") {
-          this.offeredTopologyCheckpointIds.delete(candidate.id);
+          this.offeredTopologyCheckpointSyncIds.delete(syncId);
         }
       }).catch(() => {
-        this.offeredTopologyCheckpointIds.delete(candidate.id);
+        this.offeredTopologyCheckpointSyncIds.delete(syncId);
       });
     }
     this.publish();
@@ -1205,6 +1206,10 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
+      const syncId = topologyCheckpointSyncId(entry.candidate);
+      if (syncId !== null) {
+        this.offeredTopologyCheckpointSyncIds.add(syncId);
+      }
       const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
       if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
       this.preparedExport = null;
@@ -2650,6 +2655,14 @@ function isLightstreamerEvidenceCandidate(
   candidate: CommittedEvidence["candidate"] | undefined
 ): candidate is LightstreamerEventEnvelope {
   return Boolean(candidate && candidate.kind !== "topology-checkpoint");
+}
+
+function topologyCheckpointSyncId(
+  candidate: CommittedEvidence["candidate"]
+): string | null {
+  if (candidate.kind !== "topology-checkpoint") return null;
+  const syncId = candidate.checkpoint.syncId;
+  return typeof syncId === "string" && syncId.length > 0 ? syncId : null;
 }
 
 function lightstreamerEvents(
