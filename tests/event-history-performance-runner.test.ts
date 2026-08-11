@@ -714,6 +714,55 @@ describe("Event History performance runner page operation", () => {
     expect(calls).toBeGreaterThanOrEqual(3);
   });
 
+  it.each([
+    ["terminal", "terminal-read"],
+    ["checkpoint", "checkpoint-close"]
+  ])("uses the narrower 30s ceiling for %s %s progress", async (phase, stage) => {
+    let now = 0;
+    let calls = 0;
+    const progress = {
+      phase,
+      stage,
+      substage: stage,
+      sequence: 11,
+      pageElapsedMs: 3,
+      sample: null,
+      trigger: phase === "terminal" ? "PENDING_AGE" : null,
+      scenario: phase === "checkpoint" ? "representative" : null,
+      cellIndex: null,
+      cellTotal: 36,
+      adapter: "indexeddb",
+      workload: null,
+      shape: null,
+      workloadPhase: null,
+      offered: null,
+      settled: null,
+      query: null
+    };
+    const cdp = {
+      request: (_method: string, params: Record<string, unknown> = {}) => {
+        if (String(params.expression ?? "").includes("delete globalThis")) return Promise.resolve(evaluated(true));
+        calls += 1;
+        return Promise.resolve(evaluated({ operationId: `narrow-${phase}`, state: "pending", heartbeat: calls, progress }));
+      }
+    };
+
+    const result = await runPageOperation(cdp, "window.run()", {
+      operationId: `narrow-${phase}`,
+      deadlineMs: 100_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 30_001; }
+    }).then(() => null, (error) => error);
+
+    expect(result).toBeInstanceOf(PerformanceOperationTimeout);
+    expect(result.status).toMatchObject({
+      progressAgeMs: 30_001,
+      progressAgeCeilingMs: 30_000,
+      progress: { phase, stage }
+    });
+  });
+
   it("preserves the original rejected error fields and cleans the operation record", async () => {
     const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
     const cdp = new FakeCdp([

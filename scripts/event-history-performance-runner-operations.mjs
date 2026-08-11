@@ -367,12 +367,19 @@ class CdpRequestTimeout extends Error {
 function progressAgeCeilingMs(progress) {
   if (!progress) return null;
   const stage = typeof progress.stage === "string" ? progress.stage : "";
-  if (progress.phase === "heap") return /cleanup|close/u.test(stage) ? 30_000 : 240_000;
-  if (progress.phase === "terminal" || progress.phase === "checkpoint") return 120_000;
-  if (/cleanup|close|read/u.test(stage)) return 30_000;
-  if (/query/u.test(stage)) return /^cell-\d+-query$/u.test(stage) ? 120_000 : 30_000;
-  if (/offer|receipt|commit/u.test(stage)) return 120_000;
-  return DEFAULT_PROGRESS_AGE_CEILING_MS;
+  const phaseCeiling = progress.phase === "heap"
+    ? 240_000
+    : progress.phase === "terminal" || progress.phase === "checkpoint"
+      ? 120_000
+      : DEFAULT_PROGRESS_AGE_CEILING_MS;
+  const stageCeiling = /cleanup|close|read/u.test(stage)
+    ? 30_000
+    : /query/u.test(stage)
+      ? /^cell-\d+-query$/u.test(stage) ? 120_000 : 30_000
+      : /offer|receipt|commit/u.test(stage)
+        ? 120_000
+        : null;
+  return stageCeiling === null ? phaseCeiling : Math.min(phaseCeiling, stageCeiling);
 }
 
 function observeProgressStatus(status, monitor, now) {
