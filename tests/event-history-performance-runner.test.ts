@@ -627,6 +627,7 @@ describe("Event History performance runner page operation", () => {
     const result = await watchdog(runPageOperation(cdp, "window.run()", {
       operationId: "hung-poll",
       deadlineMs: 35,
+      pollIntervalMs: 1,
       requestCeilingMs: 10
     }).then(
       (value) => ({ value }),
