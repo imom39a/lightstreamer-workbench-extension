@@ -373,6 +373,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
   const startedAt = now();
   const deadlineAt = startedAt + deadlineMs;
   let lastRequestTimeout = null;
+  let pollToken = 0;
   let lastStatus = operationStatus({ operationId, state: "pending", heartbeat: 0 }, startedAt, now);
   emitHeartbeat(options.onHeartbeat, lastStatus);
 
@@ -388,7 +389,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
       let pollResponse;
       try {
         pollResponse = await requestWithDeadline(cdp, {
-          expression: pollOperationExpression(operationId),
+          expression: pollOperationExpression(operationId, pollToken),
           awaitPromise: false,
           returnByValue: true
         }, deadlineAt, requestCeilingMs, now, "poll");
@@ -411,6 +412,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
       if (lastStatus.state === "resolved") return lastStatus.result;
       if (lastStatus.state === "rejected") throw remoteOperationError(lastStatus.error);
       if (lastStatus.state !== "pending") throw new Error(`Performance operation entered invalid state: ${lastStatus.state}.`);
+      pollToken += 1;
       if (lastStatus.elapsedMs >= deadlineMs) {
         throw new PerformanceOperationTimeout(
           `Event History performance operation timed out after ${lastStatus.elapsedMs} ms.`,
@@ -488,7 +490,8 @@ function startOperationExpression(expression, operationId) {
       state: "pending",
       startedAt: performance.now(),
       lastHeartbeatAt: performance.now(),
-      heartbeat: 0
+      heartbeat: 0,
+      lastPollToken: null
     };
     globalThis[key] = operation;
     Promise.resolve().then(() => (${expression})).then(
@@ -545,15 +548,19 @@ function startOperationExpression(expression, operationId) {
   })()`;
 }
 
-function pollOperationExpression(operationId) {
+function pollOperationExpression(operationId, logicalPollToken) {
   return `(() => {
     const key = ${JSON.stringify(PERFORMANCE_OPERATION_KEY)};
     const operation = globalThis[key];
     if (!operation || operation.operationId !== ${JSON.stringify(operationId)}) {
       return { operationId: ${JSON.stringify(operationId)}, state: "missing", heartbeat: 0 };
     }
-    operation.heartbeat += 1;
-    operation.lastHeartbeatAt = performance.now();
+    const logicalPollToken = ${JSON.stringify(logicalPollToken)};
+    if (operation.lastPollToken !== logicalPollToken) {
+      operation.heartbeat += 1;
+      operation.lastHeartbeatAt = performance.now();
+      operation.lastPollToken = logicalPollToken;
+    }
     return { ...operation };
   })()`;
 }

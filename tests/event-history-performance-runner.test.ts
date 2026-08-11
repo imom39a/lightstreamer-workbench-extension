@@ -39,6 +39,54 @@ class FakeCdp {
   }
 }
 
+class LatePollCdp {
+  readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  private readonly page = {
+    operationId: "late-poll-operation",
+    state: "pending",
+    heartbeat: 0,
+    lastPollToken: null as number | null,
+    result: null as { source: string } | null
+  };
+  private resolveOriginal!: (response: FakeCdpResponse) => void;
+  lateSnapshot: Record<string, unknown> | null = null;
+
+  request(method: string, params: Record<string, unknown> = {}): CancelableFakeCdpRequest {
+    this.calls.push({ method, params });
+    if (this.calls.length === 1) {
+      return Promise.resolve(evaluated({ operationId: this.page.operationId, state: "pending", heartbeat: 0 })) as CancelableFakeCdpRequest;
+    }
+    if (this.calls.length === 2) {
+      const request = new Promise<FakeCdpResponse>((resolve) => { this.resolveOriginal = resolve; }) as CancelableFakeCdpRequest;
+      request.cancel = () => undefined;
+      return request;
+    }
+    if (this.calls.length === 3) {
+      this.page.state = "resolved";
+      this.page.result = { source: "retry" };
+      return Promise.resolve(this.evaluatePoll(params)) as CancelableFakeCdpRequest;
+    }
+    return Promise.resolve(evaluated(true)) as CancelableFakeCdpRequest;
+  }
+
+  resolveLateOriginal(): void {
+    const response = this.evaluatePoll(this.calls[1]?.params ?? {});
+    this.lateSnapshot = response.result.value as Record<string, unknown>;
+    this.resolveOriginal(response);
+  }
+
+  private evaluatePoll(params: Record<string, unknown>): FakeCdpResponse {
+    const expression = String(params.expression ?? "");
+    const tokenMatch = expression.match(/const logicalPollToken = (\d+);/u);
+    const token = tokenMatch ? Number(tokenMatch[1]) : null;
+    if (token === null || this.page.lastPollToken !== token) {
+      this.page.heartbeat += 1;
+      this.page.lastPollToken = token;
+    }
+    return evaluated({ ...this.page });
+  }
+}
+
 function evaluated(value: unknown): FakeCdpResponse {
   return { result: { value } };
 }
@@ -588,8 +636,10 @@ describe("Event History performance runner page operation", () => {
     expect(Date.now() - startedAt).toBeLessThan(100);
     const timeout = expectTimeoutOutcome(result);
     expect(timeout.status).toMatchObject({ operationId: "hung-poll", state: "pending" });
+    expect(timeout.status.elapsedMs).toBeGreaterThanOrEqual(35);
     expect(timeout.status.lastRequestTimeout).toMatchObject({ phase: "poll", ceilingMs: 10 });
-    expect(cdp.cancelledRequests).toBeGreaterThan(0);
+    expect(cdp.calls.length).toBeGreaterThan(3);
+    expect(cdp.cancelledRequests).toBeGreaterThan(1);
     expect(createTimeoutDiagnostic({
       generatedAt: "2026-08-11T00:00:00.000Z",
       source: { revision: "5a7c168", dirty: false },
@@ -626,6 +676,29 @@ describe("Event History performance runner page operation", () => {
     ]);
     expect(cdp.cancelledRequests).toBe(1);
     expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
+  });
+
+  it("deduplicates a late original poll execution against its retry token", async () => {
+    const cdp = new LatePollCdp();
+
+    const result = await runPageOperation(cdp, "window.run()", {
+      operationId: "late-poll-operation",
+      deadlineMs: 100,
+      pollIntervalMs: 1,
+      requestCeilingMs: 10
+    });
+    cdp.resolveLateOriginal();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(result).toMatchObject({ source: "retry" });
+    expect(cdp.lateSnapshot).toMatchObject({
+      operationId: "late-poll-operation",
+      state: "resolved",
+      heartbeat: 1,
+      result: { source: "retry" }
+    });
+    expect(cdp.calls[1]?.params.expression).toContain("logicalPollToken = 0");
+    expect(cdp.calls[2]?.params.expression).toContain("logicalPollToken = 0");
   });
 
   it("bounds cleanup that never settles after a deadline timeout", async () => {
