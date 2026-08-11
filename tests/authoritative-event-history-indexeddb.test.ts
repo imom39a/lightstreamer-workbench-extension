@@ -1642,6 +1642,69 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(await hasLegacyMarker(legacyName, "owned", "legacy-blocked")).toBe(true);
   });
 
+  it("preserves an actively locked peer while still cleaning up true orphan journals", async () => {
+    const activePeerSessionId = "ownership-active-peer";
+    const activePeerName = legacyJournalName(activePeerSessionId, 1);
+    const orphanSessionId = "ownership-true-orphan";
+    const orphanName = legacyJournalName(orphanSessionId, 1);
+    const currentSessionId = "ownership-second-startup";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await Promise.all([
+      createLegacyJournal(activePeerSessionId, 1, "owned", "active-peer"),
+      createLegacyJournal(orphanSessionId, 1, "owned", "true-orphan")
+    ]);
+
+    const activeLocks = new Set<string>();
+    const request = vi.fn(async (
+      name: string,
+      options: LockOptions,
+      callback: (lock: Lock | null) => Promise<unknown> | unknown
+    ) => {
+      if (activeLocks.has(name)) {
+        return callback(options.ifAvailable ? null : ({ name, mode: options.mode } as Lock));
+      }
+      activeLocks.add(name);
+      try {
+        return await callback({ name, mode: options.mode } as Lock);
+      } finally {
+        activeLocks.delete(name);
+      }
+    });
+    const originalNavigatorLocks = navigator.locks;
+    Reflect.set(navigator, "locks", { request });
+
+    let releaseActivePeer!: () => void;
+    const activePeerRelease = new Promise<void>((resolve) => {
+      releaseActivePeer = resolve;
+    });
+    try {
+      const runtime = authoritativeEventDatabaseRuntime({
+        listDatabases: vi.fn(async () => [
+          { name: activePeerName, version: 1 },
+          { name: orphanName, version: 1 }
+        ])
+      });
+      const activePeerLock = runtime.requestLock(
+        legacyOwnerLock(activePeerName),
+        { mode: "exclusive", ifAvailable: false },
+        () => activePeerRelease
+      );
+      await vi.waitFor(() => expect(activeLocks.has(legacyOwnerLock(activePeerName))).toBe(true));
+
+      const history = await createIndexedDbEventHistory({ panelSessionId: currentSessionId, runtime });
+      expect(activeLocks.has(legacyOwnerLock(activePeerName))).toBe(true);
+      expect(activeLocks.has(legacyOwnerLock(authoritativeEventDatabaseName(currentSessionId)))).toBe(true);
+      expect(await hasLegacyMarker(activePeerName, "owned", "active-peer")).toBe(true);
+      expect(await hasLegacyMarker(orphanName, "owned", "true-orphan")).toBe(false);
+
+      await history.close();
+      releaseActivePeer();
+      await activePeerLock;
+    } finally {
+      Reflect.set(navigator, "locks", originalNavigatorLocks);
+    }
+  });
+
   it("falls back to memory when the startup lock throws", async () => {
     const panelSessionId = "startup-lock-error";
     Reflect.set(globalThis, "indexedDB", new IDBFactory());

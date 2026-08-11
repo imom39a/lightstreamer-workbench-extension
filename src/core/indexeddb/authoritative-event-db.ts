@@ -93,8 +93,11 @@ function requestBrowserLock<T>(
   options: AuthoritativeEventDatabaseLockOptions,
   callback: () => Promise<T> | T
 ): Promise<T | null> {
-  return navigator.locks.request(name, { ...options, mode: options.mode }, async () => {
-    return await callback();
+  return navigator.locks.request(name, { ...options, mode: options.mode }, (lock) => {
+    if (lock === null) {
+      return null;
+    }
+    return callback();
   }) as Promise<T | null>;
 }
 
