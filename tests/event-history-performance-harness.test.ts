@@ -10,6 +10,7 @@ import {
   bestEffortHeapPreparationCleanup,
   captureStorageEstimate,
   closeHeapSessionWithEvidence,
+  cleanupHarnessResources,
   createPendingTelemetryTracker,
   createReceiptStageController,
   createStagedTopologyCheckpointCandidate,
@@ -245,7 +246,7 @@ describe("Event History performance checkpoint workload", () => {
       const guard = createHarnessStageGuard("checkpoint-run");
       globalRecord[key] = { operationId: "new-run", state: "pending" };
       await expect(runCheckpointScenario("memory", "representative", "checkpoint-run", guard))
-        .rejects.toThrow("Checkpoint scenario was cancelled.");
+        .rejects.toThrow("Checkpoint scenario was cancelled");
     } finally {
       if (previous === undefined) delete globalRecord[key];
       else globalRecord[key] = previous;
@@ -467,6 +468,84 @@ describe("Event History performance checkpoint workload", () => {
       vi.useRealTimers();
     }
   });
+
+  it("cleans every acquired resource after immediate cancellation", async () => {
+    const calls: string[] = [];
+    const guard = createHarnessStageGuard();
+    guard.invalidate();
+    const history = {
+      close: vi.fn(async () => {
+        calls.push("close");
+        return { ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } };
+      })
+    } as unknown as EventHistory;
+
+    const evidence = await cleanupHarnessResources({
+      history,
+      stage: "cell-7",
+      guard,
+      progress: () => progress("cleanup"),
+      unsubscribe: () => { calls.push("unsubscribe"); },
+      disposePanel: () => { calls.push("dispose"); },
+      removeRoot: () => { calls.push("root"); return true; }
+    });
+
+    expect(calls).toEqual(["unsubscribe", "dispose", "root", "close"]);
+    expect(evidence).toMatchObject({
+      stage: "cell-7",
+      unsubscribeAttempted: true,
+      disposeAttempted: true,
+      rootRemovalAttempted: true,
+      rootRemoved: true,
+      closeAttempted: true,
+      close: { ok: true },
+      closeError: null
+    });
+  });
+
+  it.each(["cell", "terminal", "checkpoint"] as const)(
+    "bounds %s cleanup after cancellation without late progress",
+    async (phase) => {
+      vi.useFakeTimers();
+      const key = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+      const globalRecord = globalThis as unknown as Record<string, unknown>;
+      const previous = globalRecord[key];
+      const operation = { operationId: `cleanup-${phase}`, state: "pending", progress: null as unknown };
+      globalRecord[key] = operation;
+      const guard = createHarnessStageGuard(operation.operationId);
+      guard.invalidate();
+      const calls: string[] = [];
+      try {
+        const cleanup = cleanupHarnessResources({
+          history: {
+            close: () => {
+              calls.push("close");
+              return new Promise<never>(() => undefined);
+            }
+          } as unknown as EventHistory,
+          stage: `${phase}-7`,
+          guard,
+          progress: () => ({ ...progress(`${phase}-cleanup`), operationId: operation.operationId }),
+          unsubscribe: () => { calls.push("unsubscribe"); },
+          disposePanel: () => { calls.push("dispose"); },
+          removeRoot: () => { calls.push("root"); return true; }
+        });
+        const completed = expect(cleanup).resolves.toMatchObject({
+          stage: `${phase}-7`,
+          close: { ok: false, problem: { code: "CLEANUP_CLOSE_TIMEOUT" } },
+          closeError: expect.stringContaining("exceeded")
+        });
+        await vi.advanceTimersByTimeAsync(30_000);
+        await completed;
+        expect(calls).toEqual(["unsubscribe", "dispose", "root", "close"]);
+        expect(operation.progress).toBeNull();
+      } finally {
+        if (previous === undefined) delete globalRecord[key];
+        else globalRecord[key] = previous;
+        vi.useRealTimers();
+      }
+    }
+  );
 
   it("bounds a failed heap cleanup frame independently after close completes", async () => {
     vi.useFakeTimers();

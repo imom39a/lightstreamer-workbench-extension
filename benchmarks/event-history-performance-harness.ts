@@ -207,7 +207,10 @@ export function withStageDeadline<T>(
       if (settled) return;
       settled = true;
       onTimeout?.();
-      const timeoutProgress = publishHarnessProgress(progress());
+      const timeoutInput = progress();
+      const timeoutProgress = guard && !guard.isActive()
+        ? observeHarnessProgress(timeoutInput)
+        : publishHarnessProgress(timeoutInput);
       guard?.invalidate();
       reject(new HarnessStageTimeout(stage, timeoutMs, timeoutProgress));
     }, timeoutMs);
@@ -501,6 +504,95 @@ export type HeapPreparationCleanupEvidence = Readonly<{
   failure: Readonly<{ code: string; message: string }>;
 }>;
 
+export type HarnessCleanupEvidence = Readonly<{
+  stage: string;
+  unsubscribeAttempted: boolean;
+  unsubscribeError: string | null;
+  disposeAttempted: boolean;
+  disposeError: string | null;
+  rootRemovalAttempted: boolean;
+  rootRemoved: boolean;
+  rootError: string | null;
+  closeAttempted: boolean;
+  close: unknown;
+  closeError: string | null;
+}>;
+
+export async function cleanupHarnessResources(input: Readonly<{
+  history: EventHistory;
+  stage: string;
+  guard: HarnessStageGuard;
+  progress: () => HarnessProgressInput;
+  unsubscribe?: () => void;
+  disposePanel?: () => void;
+  removeRoot?: () => boolean | void;
+  restoreStorage?: () => void;
+  disconnectObserver?: () => void;
+}>): Promise<HarnessCleanupEvidence> {
+  let unsubscribeError: string | null = null;
+  let disposeError: string | null = null;
+  let rootError: string | null = null;
+  let closeError: string | null = null;
+  let close: unknown = null;
+  let rootRemoved = false;
+  const unsubscribeAttempted = input.unsubscribe !== undefined;
+  const disposeAttempted = input.disposePanel !== undefined;
+  const rootRemovalAttempted = input.removeRoot !== undefined;
+
+  try { input.restoreStorage?.(); } catch (error) { closeError = `restoreStorage: ${error instanceof Error ? error.message : String(error)}`; }
+  try { input.disconnectObserver?.(); } catch (error) { closeError ??= `disconnectObserver: ${error instanceof Error ? error.message : String(error)}`; }
+  if (input.unsubscribe) {
+    try { input.unsubscribe(); } catch (error) { unsubscribeError = error instanceof Error ? error.message : String(error); }
+  }
+  if (input.disposePanel) {
+    try { input.disposePanel(); } catch (error) { disposeError = error instanceof Error ? error.message : String(error); }
+  }
+  if (input.removeRoot) {
+    try {
+      const result = input.removeRoot();
+      rootRemoved = result === undefined ? true : result;
+    } catch (error) {
+      rootError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  try {
+    const closeOperation = input.history.close();
+    close = await withStageDeadline(
+      closeOperation,
+      `${input.stage}-cleanup-close`,
+      STAGE_DEADLINES_MS.close,
+      input.progress,
+      undefined,
+      input.guard
+    );
+    if (close && typeof close === "object" && "ok" in close && close.ok !== true) {
+      closeError ??= "Event History close returned a non-success outcome.";
+    }
+  } catch (error) {
+    closeError = error instanceof Error ? error.message : String(error);
+    close = {
+      ok: false,
+      problem: {
+        code: error instanceof HarnessStageTimeout ? "CLEANUP_CLOSE_TIMEOUT" : "CLEANUP_CLOSE_FAILED",
+        message: closeError
+      }
+    };
+  }
+  return {
+    stage: input.stage,
+    unsubscribeAttempted,
+    unsubscribeError,
+    disposeAttempted,
+    disposeError,
+    rootRemovalAttempted,
+    rootRemoved,
+    rootError,
+    closeAttempted: true,
+    close,
+    closeError
+  };
+}
+
 export async function bestEffortHeapPreparationCleanup(input: Readonly<{
   adapter: "indexeddb" | "memory";
   eventCount: number;
@@ -514,6 +606,7 @@ export async function bestEffortHeapPreparationCleanup(input: Readonly<{
   removeRoot: () => void;
   yieldFrame: () => Promise<void>;
   progress?: () => HarnessProgressInput;
+  guard?: HarnessStageGuard;
 }>): Promise<HeapPreparationCleanupEvidence> {
   let disposeError: string | null = null;
   let close: unknown = null;
@@ -549,7 +642,9 @@ export async function bestEffortHeapPreparationCleanup(input: Readonly<{
       input.closeHistory(),
       `${input.phase}-cleanup-close`,
       STAGE_DEADLINES_MS.close,
-      cleanupProgress
+      cleanupProgress,
+      undefined,
+      input.guard
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -574,7 +669,9 @@ export async function bestEffortHeapPreparationCleanup(input: Readonly<{
       input.yieldFrame(),
       `${input.phase}-cleanup-frame`,
       STAGE_DEADLINES_MS.frame,
-      cleanupProgress
+      cleanupProgress,
+      undefined,
+      input.guard
     );
     frameYielded = true;
   } catch (error) {
@@ -876,7 +973,8 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           offered: count,
           settled: null,
           query: null
-        })
+        }),
+        guard: heapGuard
       });
       Object.assign(originalError, { code: "PREPARE_FAILED", cleanupEvidence });
       throw originalError;
@@ -932,11 +1030,35 @@ async function runCell(
   runGuard: HarnessStageGuard
 ): Promise<EventHistoryPerformanceCell> {
   const runId = `${adapter}-${workload}-${shape}-sample-${sample}`;
+  const cancellationProgress = (): HarnessProgressInput => ({
+    operationId,
+    phase: "cells",
+    stage: "cleanup",
+    substage: "cleanup",
+    sample,
+    trigger: null,
+    scenario: null,
+    cellIndex,
+    cellTotal: 36,
+    adapter,
+    workload,
+    shape,
+    workloadPhase: null,
+    offered: null,
+    settled: null,
+    query: null
+  });
   if (!runGuard.isActive()) throw new Error("Event History cell was cancelled.");
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: `event-history-performance-${runId}`, capacityTier: "NORMAL" })
     : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
-  if (!runGuard.isActive()) throw new Error("Event History cell was cancelled.");
+  if (!runGuard.isActive()) {
+    const failure = new Error("Event History cell was cancelled after history acquisition.");
+    Object.assign(failure, {
+      cleanupEvidence: await cleanupHarnessResources({ history, stage: `cell-${cellIndex}`, guard: runGuard, progress: cancellationProgress })
+    });
+    throw failure;
+  }
   const storageProbe = adapter === "indexeddb" ? beginStorageProbe() : null;
   const root = document.createElement("main");
   root.id = "app";
@@ -979,7 +1101,7 @@ async function runCell(
   const pressureTransitions: string[] = [];
   let terminalReason: string | null = null;
   let terminalPublication: Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null = null;
-  let unsubscribe: () => void = () => undefined;
+  let unsubscribe: (() => void) | undefined;
   const samplePending = () => pending.sample();
   const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
   const longTaskObserver = longTaskSupported
@@ -1002,7 +1124,29 @@ async function runCell(
   const finalVisible = new Promise<void>((resolve) => { resolveFinalVisible = resolve; });
   const expectedCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
   const expectedFinalId = `${runId}-${shape}-${expectedCount - 1}`;
-  const panel = await mountProductionPanel(history, {
+  const cleanupSetupFailure = async (error: unknown): Promise<never> => {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    Object.assign(failure, {
+      cleanupEvidence: await cleanupHarnessResources({
+        history,
+        stage: `cell-${cellIndex}`,
+        guard: runGuard,
+        progress: cancellationProgress,
+        unsubscribe,
+        disposePanel: panel?.disposePanel,
+        removeRoot: () => {
+          root.remove();
+          return !root.isConnected;
+        },
+        restoreStorage: () => storageProbe?.restore(),
+        disconnectObserver: () => longTaskObserver?.disconnect()
+      })
+    });
+    throw failure;
+  };
+  let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+  try {
+    panel = await mountProductionPanel(history, {
       onCommittedEvidenceBoundary(boundary, timestampMs) {
         if (!runGuard.isActive()) return;
         committedBoundaryAt.set(boundary.eventId, timestampMs);
@@ -1021,32 +1165,41 @@ async function runCell(
         }
       }
     }, root);
-  if (!runGuard.isActive()) throw new Error("Event History cell was cancelled.");
+  } catch (error) {
+    await cleanupSetupFailure(error);
+  }
+  if (!runGuard.isActive()) {
+    await cleanupSetupFailure(new Error("Event History cell was cancelled after panel acquisition."));
+  }
   const events = Array.from({ length: expectedCount }, (_, sequence) =>
     createEventHistoryWorkloadEvent(shape, sequence, runId)
   );
-  unsubscribe = history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
-    if (!runGuard.isActive()) return;
-    if (publication.type === "status") {
-      const state = publication.status.capacity.state;
-      if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
-      return;
-    }
-    if (publication.type === "terminal") {
-      terminalReason = publication.terminal.reason;
-      terminalPublication = publication.terminal;
-    }
-    if (publication.type !== "committed-evidence") return;
-    const now = performance.now();
-    for (const evidence of publication.evidence) {
-      publishedIds.push(evidence.eventId);
-      pending.settle(evidence.eventId);
-      const offeredAt = offerTimes.get(evidence.eventId);
-      if (offeredAt !== undefined) publicationLatencies.push(Math.max(0, now - offeredAt));
-    }
-    samplePending();
-    updateProgress("receipt-settled", "commit");
-  });
+  try {
+    unsubscribe = history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
+      if (!runGuard.isActive()) return;
+      if (publication.type === "status") {
+        const state = publication.status.capacity.state;
+        if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
+        return;
+      }
+      if (publication.type === "terminal") {
+        terminalReason = publication.terminal.reason;
+        terminalPublication = publication.terminal;
+      }
+      if (publication.type !== "committed-evidence") return;
+      const now = performance.now();
+      for (const evidence of publication.evidence) {
+        publishedIds.push(evidence.eventId);
+        pending.settle(evidence.eventId);
+        const offeredAt = offerTimes.get(evidence.eventId);
+        if (offeredAt !== undefined) publicationLatencies.push(Math.max(0, now - offeredAt));
+      }
+      samplePending();
+      updateProgress("receipt-settled", "commit");
+    });
+  } catch (error) {
+    await cleanupSetupFailure(error);
+  }
 
   let primaryFailure: Error | null = null;
   try {
@@ -1221,66 +1374,30 @@ async function runCell(
     primaryFailure = normalizeHarnessError(error, `cell-${cellIndex}`, progress("failed", phase), runGuard);
     throw primaryFailure;
   } finally {
-    storageProbe?.restore();
-    longTaskObserver?.disconnect();
-    try { unsubscribe(); } catch { /* Preserve the primary stage failure. */ }
-    let disposeError: Error | null = null;
-    let closeOutcome: Outcome<CloseResult> | null = null;
-    try { panel.disposePanel(); } catch (error) { disposeError = normalizeHarnessError(error, `cell-${cellIndex}-dispose`, progress("close", null), runGuard); }
-    let rootRemoved = false;
-    try {
-      root.remove();
-      rootRemoved = !root.isConnected;
-    } catch (error) {
-      disposeError ??= normalizeHarnessError(error, `cell-${cellIndex}-root`, progress("close", null), runGuard);
-    }
-    let closeError: Error | null = null;
-    if (!runGuard.isActive()) {
-      closeError = normalizeHarnessError(
-        new Error("Event History close was cancelled with the performance run."),
-        `cell-${cellIndex}-close`,
-        progress("close", null),
-        runGuard
-      );
-    } else {
-      try {
-        closeOutcome = await withStageDeadline(
-          history.close(),
-          `cell-${cellIndex}-close`,
-          STAGE_DEADLINES_MS.close,
-          () => progress("close", null),
-          undefined,
-          runGuard
-        );
-        if (closeOutcome.ok !== true) throw new Error("Event History close did not complete successfully.");
-      } catch (error) {
-        closeError = normalizeHarnessError(error, `cell-${cellIndex}-close`, progress("close", null), runGuard);
-      }
-    }
-    if (disposeError || closeError) {
-      const cleanupFailure = disposeError ?? closeError ?? new Error("Event History cleanup failed.");
-      const cleanupEvidence = {
-        adapter,
-        phase: "cleanup" as const,
-        sample,
-        eventCount: expectedCount,
-        retained: null,
-        sessionId: runId,
-        databaseName: adapter === "indexeddb" ? authoritativeEventDatabaseName(`event-history-performance-${runId}`) : null,
-        close: closeOutcome,
-        disposeError: disposeError?.message ?? null,
-        rootRemoved,
-        frameYielded: false,
-        gcPasses: null,
-        status: "FAIL" as const,
-        failure: { code: cleanupFailure.name, message: cleanupFailure.message }
-      };
-      if (primaryFailure) {
-        Object.assign(primaryFailure, { cleanupEvidence });
-      } else {
-        Object.assign(cleanupFailure, { cleanupEvidence });
-        throw cleanupFailure;
-      }
+    const cleanupEvidence = await cleanupHarnessResources({
+      history,
+      stage: `cell-${cellIndex}`,
+      guard: runGuard,
+      progress: () => progress("close", null),
+      unsubscribe,
+      disposePanel: panel?.disposePanel,
+      removeRoot: () => {
+        root.remove();
+        return !root.isConnected;
+      },
+      restoreStorage: () => storageProbe?.restore(),
+      disconnectObserver: () => longTaskObserver?.disconnect()
+    });
+    const cleanupMessage = cleanupEvidence.unsubscribeError
+      ?? cleanupEvidence.disposeError
+      ?? cleanupEvidence.rootError
+      ?? cleanupEvidence.closeError;
+    if (primaryFailure) {
+      Object.assign(primaryFailure, { cleanupEvidence });
+    } else if (cleanupMessage) {
+      const cleanupFailure = new Error(cleanupMessage);
+      Object.assign(cleanupFailure, { cleanupEvidence });
+      throw cleanupFailure;
     }
   }
 }
@@ -1321,7 +1438,13 @@ export async function runTerminalScenario(
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) })
     : createInMemoryEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) });
-  if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+  if (!guard.isActive()) {
+    const failure = new Error("Terminal scenario was cancelled after history acquisition.");
+    Object.assign(failure, {
+      cleanupEvidence: await cleanupHarnessResources({ history, stage: `terminal-${adapter}-${trigger}`, guard, progress })
+    });
+    throw failure;
+  }
   const terminals: Array<Extract<HistoryPublication, { type: "terminal" }>> = [];
   const publishedEventIds: string[] = [];
   const pressureTransitions: string[] = [];
@@ -1424,22 +1547,16 @@ export async function runTerminalScenario(
     };
   } catch (error) {
     const failure = normalizeHarnessError(error, `terminal-${adapter}-${trigger}`, progress(), guard);
-    try { unsubscribe(); } catch { /* Preserve the terminal failure. */ }
-    let closeOutcome: Outcome<CloseResult> | null = null;
-    if (guard.isActive()) try {
-      closeOutcome = await withStageDeadline(
-        history.close(),
-        `terminal-${adapter}-${trigger}-close-after-failure`,
-        STAGE_DEADLINES_MS.close,
-        () => ({ ...progress(), stage: `${trigger}-close-after-failure` }),
-        undefined,
-        guard
-      );
-    } catch (closeError) {
-      Object.assign(failure, { closeError: normalizeHarnessError(closeError, `terminal-${adapter}-${trigger}-close`, progress(), guard).message });
-    }
+    const resourceCleanup = await cleanupHarnessResources({
+      history,
+      stage: `terminal-${adapter}-${trigger}`,
+      guard,
+      progress: () => ({ ...progress(), stage: `${trigger}-cleanup` }),
+      unsubscribe
+    });
     Object.assign(failure, {
       cleanupEvidence: {
+        ...resourceCleanup,
         adapter,
         phase: "cleanup" as const,
         sample: null,
@@ -1447,9 +1564,9 @@ export async function runTerminalScenario(
         retained: null,
         sessionId: panelSessionId,
         databaseName: adapter === "indexeddb" ? authoritativeEventDatabaseName(panelSessionId) : null,
-        close: closeOutcome,
-        disposeError: null,
-        rootRemoved: true,
+        close: resourceCleanup.close,
+        disposeError: resourceCleanup.disposeError,
+        rootRemoved: resourceCleanup.rootRemoved,
         frameYielded: false,
         gcPasses: null,
         status: "FAIL" as const,
@@ -1467,10 +1584,6 @@ export async function runCheckpointScenario(
   guard: HarnessStageGuard
 ): Promise<EventHistoryPerformanceCheckpointScenario> {
   const tier = adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const;
-  const history = adapter === "indexeddb"
-    ? await createIndexedDbEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier })
-    : createInMemoryEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier });
-  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
   const progress = (stage: string, offered: number | null = null, settled: number | null = null): HarnessProgressInput => ({
     operationId,
     phase: "checkpoint",
@@ -1489,7 +1602,16 @@ export async function runCheckpointScenario(
     settled,
     query: null
   });
-  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
+  const history = adapter === "indexeddb"
+    ? await createIndexedDbEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier })
+    : createInMemoryEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier });
+  if (!guard.isActive()) {
+    const failure = new Error("Checkpoint scenario was cancelled after history acquisition.");
+    Object.assign(failure, {
+      cleanupEvidence: await cleanupHarnessResources({ history, stage: `checkpoint-${adapter}-${name}`, guard, progress: () => progress(`${name}-cleanup`) })
+    });
+    throw failure;
+  }
   const candidate = createStagedTopologyCheckpointCandidate(
     `checkpoint-${adapter}-${name}`,
     `sync-${name}`,
@@ -1588,22 +1710,16 @@ export async function runCheckpointScenario(
     };
   } catch (error) {
     const failure = normalizeHarnessError(error, `checkpoint-${adapter}-${name}`, progress(`${name}-failed`), guard);
-    try { unsubscribe(); } catch { /* Preserve the checkpoint failure. */ }
-    let closeOutcome: Outcome<CloseResult> | null = null;
-    if (guard.isActive()) try {
-      closeOutcome = await withStageDeadline(
-        history.close(),
-        `checkpoint-${adapter}-${name}-close-after-failure`,
-        STAGE_DEADLINES_MS.close,
-        () => progress(`${name}-close-after-failure`),
-        undefined,
-        guard
-      );
-    } catch (closeError) {
-      Object.assign(failure, { closeError: normalizeHarnessError(closeError, `checkpoint-${adapter}-${name}-close`, progress(`${name}-close`), guard).message });
-    }
+    const resourceCleanup = await cleanupHarnessResources({
+      history,
+      stage: `checkpoint-${adapter}-${name}`,
+      guard,
+      progress: () => progress(`${name}-cleanup`),
+      unsubscribe
+    });
     Object.assign(failure, {
       cleanupEvidence: {
+        ...resourceCleanup,
         adapter,
         phase: "cleanup" as const,
         sample: null,
@@ -1613,9 +1729,9 @@ export async function runCheckpointScenario(
         databaseName: adapter === "indexeddb"
           ? authoritativeEventDatabaseName(`event-history-checkpoint-${adapter}-${name}`)
           : null,
-        close: closeOutcome,
-        disposeError: null,
-        rootRemoved: true,
+        close: resourceCleanup.close,
+        disposeError: resourceCleanup.disposeError,
+        rootRemoved: resourceCleanup.rootRemoved,
         frameYielded: false,
         gcPasses: null,
         status: "FAIL" as const,
