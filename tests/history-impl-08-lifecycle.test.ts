@@ -15,9 +15,13 @@ import {
 } from "../src/core/indexeddb/authoritative-event-db";
 
 const REPRESENTATIVE_PAYLOAD_BYTES = 256;
-const NEAR_TWO_MEBIBYTE_PAYLOAD_BYTES = 2_110_000;
+const ONE_MEBIBYTE = 1_048_576;
+const TWO_MEBIBYTE = 2_097_152;
+const NEAR_TWO_MEBIBYTE_PAYLOAD_BYTES = TWO_MEBIBYTE;
 
-type AdapterFactory = (panelSessionId: string, options?: Record<string, unknown>) => Promise<{
+type AdapterOptions = Parameters<typeof createMemoryEventHistoryForTests>[0] & Parameters<typeof openEventHistory>[0];
+
+type AdapterFactory = (panelSessionId: string, options?: AdapterOptions) => Promise<{
   history: EventHistory;
   panelSessionId: string;
   fakeIndexedDb: boolean;
@@ -34,6 +38,18 @@ function topologyCheckpointFixture(id: string, payloadBytes: number): EvidenceCa
       records: [{ id, payload: "x".repeat(payloadBytes) }]
     }
   };
+}
+
+function topologyCheckpointPayloadBytes(candidate: EvidenceCandidate): number {
+  if (candidate.kind !== "topology-checkpoint") {
+    throw new Error("Expected topology-checkpoint candidate.");
+  }
+  const checkpoint = candidate.checkpoint as { records?: ReadonlyArray<{ payload?: unknown }> } | undefined;
+  const payload = checkpoint?.records?.[0]?.payload;
+  if (typeof payload !== "string") {
+    throw new Error("Topology checkpoint payload missing or non-string.");
+  }
+  return payload.length;
 }
 
 function requestValue<T>(request: IDBRequest<T>): Promise<T> {
@@ -83,7 +99,7 @@ describe.each(adapters)("history-impl-08 lifecycle (%s)", (_name, fakeIndexedDb,
     const batchLengths: number[] = [];
     const sessionId = nextSessionId("impl-08-batch");
     const { history, panelSessionId, fakeIndexedDb: isFake } = await create(sessionId, {
-      commitBatch: async (batch) => {
+      commitBatch: async (batch: readonly EvidenceCandidate[]) => {
         batchLengths.push(batch.length);
       }
     });
@@ -92,6 +108,13 @@ describe.each(adapters)("history-impl-08 lifecycle (%s)", (_name, fakeIndexedDb,
     const second = topologyCheckpointFixture(`checkpoint-${panelSessionId}-two`, REPRESENTATIVE_PAYLOAD_BYTES);
     const nearLimit = topologyCheckpointFixture(`checkpoint-${panelSessionId}-near-2m`, NEAR_TWO_MEBIBYTE_PAYLOAD_BYTES);
     const third = topologyCheckpointFixture(`checkpoint-${panelSessionId}-three`, REPRESENTATIVE_PAYLOAD_BYTES);
+
+    expect(nearLimit.kind).toBe("topology-checkpoint");
+    const nearLimitPayloadBytes = topologyCheckpointPayloadBytes(nearLimit);
+    const nearLimitSerializedBytes = serializeJournalEvidenceCandidate(nearLimit).bytes;
+    expect(nearLimitPayloadBytes).toBeLessThanOrEqual(TWO_MEBIBYTE);
+    expect(nearLimitPayloadBytes).toBeGreaterThan(ONE_MEBIBYTE);
+    expect(nearLimitSerializedBytes).toBeGreaterThan(ONE_MEBIBYTE);
 
     if (isFake) {
       const promises = [first, second, nearLimit, third].map((candidate) => history.offer(candidate).settled);
@@ -128,7 +151,7 @@ describe.each(adapters)("history-impl-08 lifecycle (%s)", (_name, fakeIndexedDb,
       .map((candidate) => serializeJournalEvidenceCandidate(candidate).bytes)
       .reduce((sum, bytes) => sum + bytes, 0);
     const expectedAccountedBytes = [first, second, nearLimit, third]
-      .map(estimateHistoryCandidateBytes)
+      .map((candidate) => estimateHistoryCandidateBytes(candidate))
       .reduce((sum, bytes) => sum + bytes, 0);
 
     const database = await openDatabase(panelSessionId);
@@ -184,7 +207,7 @@ describe.each(adapters)("history-impl-08 lifecycle (%s)", (_name, fakeIndexedDb,
       evidence: { sequence: 2 }
     });
 
-    let finishClear: () => void;
+    let finishClear!: () => void;
     const clearHold = new Promise<void>((resolve) => {
       finishClear = resolve;
     });
@@ -218,7 +241,7 @@ describe.each(adapters)("history-impl-08 lifecycle (%s)", (_name, fakeIndexedDb,
   it("handles commit failure and retained-capacity refusal distinctly", async () => {
     const commitSession = nextSessionId("impl-08-commit");
     const commit = await create(commitSession, {
-      commitBatch: async (batch) => {
+      commitBatch: async (batch: readonly EvidenceCandidate[]) => {
         if (batch.some((candidate) => candidate.id.includes("commit-fail"))) {
           throw new Error("commit failed");
         }
