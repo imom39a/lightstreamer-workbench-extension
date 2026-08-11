@@ -304,7 +304,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       context: string;
       hasLegacyViews: boolean;
       panel: { width: number; height: number; viewportWidth: number; viewportHeight: number };
-    }>(panelCdp, `({
+      }>(panelCdps[1]!, `({
         scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
         evidence: document.querySelector('[aria-label="Ordered Evidence"]')?.textContent ?? "",
         context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
