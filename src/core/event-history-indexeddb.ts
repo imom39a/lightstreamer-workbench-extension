@@ -1280,14 +1280,9 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
       }
       const record = cursor.value as EvidenceRecord;
       try {
-        assertExactKeys(record, ["accountedBytes", "eventId", "facets", "intervalId", "replayPayload", "sequence", "serializedBytes"]);
-        if (record.intervalId !== control.interval.id || typeof record.eventId !== "string" || record.eventId.length === 0 || !Number.isSafeInteger(record.sequence) || record.sequence < 1 || (previous !== null && record.sequence !== previous.sequence + 1) || typeof record.replayPayload !== "string" || !Number.isSafeInteger(record.serializedBytes) || record.serializedBytes < 0 || !Number.isSafeInteger(record.accountedBytes) || record.accountedBytes !== journalAccountedBytes(record.serializedBytes) || !Array.isArray(record.facets) || record.facets.some((facetValue) => typeof facetValue !== "string")) {
-          throw new Error("An evidence record is incoherent with the history control record.");
-        }
-        const candidate = copyCandidate(deserializeJournalEvidenceCandidate(record.replayPayload));
-        const serialized = serializeJournalEvidenceCandidate(candidate);
-        if (candidate.id !== record.eventId || serialized.payload !== record.replayPayload || serialized.bytes !== record.serializedBytes || JSON.stringify(exactFacets(candidate)) !== JSON.stringify(record.facets)) {
-          throw new Error("An evidence record does not match its replay payload or facets.");
+        const candidate = validateEvidenceRecord(record, control.interval.id);
+        if (previous !== null && record.sequence !== previous.sequence + 1) {
+          throw new Error("An evidence record sequence is incoherent with the history control record.");
         }
         const reference = evidenceRef(record);
         if (first === null) first = reference;
@@ -1304,6 +1299,24 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
   });
 }
 
+function validateEvidenceRecord(record: EvidenceRecord, intervalId: string, expectedSequence?: number): EvidenceCandidate {
+  assertExactKeys(record, ["accountedBytes", "eventId", "facets", "intervalId", "replayPayload", "sequence", "serializedBytes"]);
+  if (record.intervalId !== intervalId || (expectedSequence !== undefined && record.sequence !== expectedSequence)
+    || typeof record.eventId !== "string" || record.eventId.length === 0 || !Number.isSafeInteger(record.sequence) || record.sequence < 1
+    || typeof record.replayPayload !== "string" || !Number.isSafeInteger(record.serializedBytes) || record.serializedBytes < 0
+    || !Number.isSafeInteger(record.accountedBytes) || record.accountedBytes !== journalAccountedBytes(record.serializedBytes)
+    || !Array.isArray(record.facets) || record.facets.some((facetValue) => typeof facetValue !== "string")) {
+    throw new Error("An evidence record is incoherent with the history control record.");
+  }
+  const candidate = copyCandidate(deserializeJournalEvidenceCandidate(record.replayPayload));
+  const serialized = serializeJournalEvidenceCandidate(candidate);
+  if (candidate.id !== record.eventId || serialized.payload !== record.replayPayload || serialized.bytes !== record.serializedBytes
+    || JSON.stringify(exactFacets(candidate)) !== JSON.stringify(record.facets)) {
+    throw new Error("An evidence record does not match its replay payload or facets.");
+  }
+  return candidate;
+}
+
 type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 
 function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, query: EvidenceQuery): Promise<JournalRead> {
@@ -1313,6 +1326,9 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
     const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
     const selected: CommittedEvidence[] = [];
     let total = 0;
+    let totalKnownBeforePayloadRead = false;
+    let preserveSelectionOrder = false;
+    let validateExactFacetPayload = false;
     let settled = false;
     const fail = (error: unknown): void => {
       if (settled) return;
@@ -1325,37 +1341,62 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
         () => {
           if (settled) return;
           settled = true;
-          selected.sort((left, right) => left.sequence - right.sequence);
-          resolve({ evidence: pageJournalSelection(selected, query, total), total });
+          if (!preserveSelectionOrder) selected.sort((left, right) => left.sequence - right.sequence);
+          resolve({ evidence: preserveSelectionOrder ? selected : pageJournalSelection(selected, query, total), total });
         },
         fail
       );
     };
-    const acceptRecord = (record: EvidenceRecord | undefined): void => {
-      if (!record || latch.retainedRange === null || record.intervalId !== latch.interval.id
-        || record.sequence < latch.retainedRange.first.sequence || record.sequence > latch.retainedRange.last.sequence) return;
-      const evidence = toCommittedEvidenceFromRecord(record);
+    const acceptRecord = (record: EvidenceRecord | undefined, requestedSequence?: number): void => {
+      if (validateExactFacetPayload && record !== undefined && record.sequence !== requestedSequence) {
+        fail(new Error("IndexedDB exact-facet page record does not match its requested sequence."));
+        return;
+      }
+      const readable = record !== undefined && latch.retainedRange !== null && record.intervalId === latch.interval.id
+        && Number.isSafeInteger(record.sequence) && record.sequence >= latch.retainedRange.first.sequence
+        && record.sequence <= latch.retainedRange.last.sequence;
+      if (!readable) {
+        if (validateExactFacetPayload) fail(new Error("IndexedDB exact-facet page record is invalid."));
+        return;
+      }
+      let evidence: CommittedEvidence;
+      if (validateExactFacetPayload) {
+        try {
+          const candidate = validateEvidenceRecord(record, latch.interval.id, requestedSequence);
+          evidence = deepFreeze({ intervalId: record.intervalId, sequence: record.sequence, eventId: record.eventId, candidate });
+        } catch (error) {
+          fail(error);
+          return;
+        }
+      } else {
+        evidence = toCommittedEvidenceFromRecord(record);
+      }
       if (matchesEvidenceQuery(evidence, query)) {
-        total += 1;
+        if (!totalKnownBeforePayloadRead) total += 1;
         selected.push(evidence);
+      } else if (validateExactFacetPayload) {
+        fail(new Error("IndexedDB exact-facet page payload does not match its query."));
       }
     };
     const readSequences = (sequences: readonly number[]): void => {
       let index = 0;
       const next = (): void => {
+        if (settled) return;
         if (index >= sequences.length) {
           finish();
           return;
         }
-        const request = store.get(sequences[index++]);
+        const requestedSequence = sequences[index++];
+        const request = store.get(requestedSequence);
         request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence read failed."));
-        request.onsuccess = () => nextRecord(request.result as EvidenceRecord | undefined, next);
+        request.onsuccess = () => nextRecord(request.result as EvidenceRecord | undefined, requestedSequence, next);
       };
       next();
     };
-    const nextRecord = (record: EvidenceRecord | undefined, next: () => void): void => {
-      acceptRecord(record);
-      next();
+    const nextRecord = (record: EvidenceRecord | undefined, requestedSequence: number | undefined, next: () => void): void => {
+      if (settled) return;
+      acceptRecord(record, requestedSequence);
+      if (!settled) next();
     };
     const readFacetMatches = (tokens: readonly string[]): void => {
       const sets: Set<number>[] = [];
@@ -1364,8 +1405,17 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
         if (tokenIndex >= tokens.length) {
           const sequences = [...(sets[0] ?? new Set<number>())]
             .filter((sequence) => sets.every((set) => set.has(sequence)))
-            .sort((left, right) => query.order === "desc" ? right - left : left - right);
-          readSequences(sequences);
+            .filter((sequence) => isReadableFacetSequence(sequence, latch, query))
+            .sort((left, right) => left - right);
+          if (canUseExactFacetPageFastPath(query, facetTokens, latch)) {
+            total = sequences.length;
+            totalKnownBeforePayloadRead = true;
+            preserveSelectionOrder = true;
+            validateExactFacetPayload = true;
+            readSequences(pageSequenceSelection(sequences, query));
+            return;
+          }
+          readSequences(query.order === "desc" ? [...sequences].reverse() : sequences);
           return;
         }
         const matches = new Set<number>();
@@ -1378,7 +1428,11 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
             nextToken();
             return;
           }
-          matches.add(Number(cursor.primaryKey));
+          if (typeof cursor.primaryKey !== "number" || !Number.isSafeInteger(cursor.primaryKey) || cursor.primaryKey < 1) {
+            fail(new Error("IndexedDB exact-facet index contains an invalid sequence."));
+            return;
+          }
+          matches.add(cursor.primaryKey);
           cursor.continue();
         };
       };
@@ -1443,13 +1497,60 @@ function exactFacetCursorKey(token: string): IDBKeyRange | string {
   return keyRange ? keyRange.only(token) : token;
 }
 
+function isReadableFacetSequence(sequence: number, latch: ReadLatch, query: EvidenceQuery): boolean {
+  if (latch.retainedRange === null || sequence < latch.retainedRange.first.sequence || sequence > latch.retainedRange.last.sequence) return false;
+  if (query.afterSequence !== undefined && (typeof query.afterSequence !== "number" || !Number.isFinite(query.afterSequence))) return true;
+  return query.afterSequence === undefined || sequence > query.afterSequence;
+}
+
+function hasResidualFind(query: EvidenceQuery): boolean {
+  return Boolean(query.find?.trim() || query.filters?.query?.trim());
+}
+
+const EXACT_FACET_FILTER_NAMES = new Set([
+  "clientId", "sessionId", "subscriptionId", "mode", "item", "itemPosition", "key", "command",
+  "snapshot", "synthetic", "kind", "listenerId"
+]);
+
+function canUseExactFacetPageFastPath(query: EvidenceQuery, tokens: readonly string[], latch: ReadLatch): boolean {
+  if (query.eventId !== undefined || tokens.length === 0 || latch.retainedRange === null || hasResidualFind(query)) return false;
+  if (query.afterSequence !== undefined && (typeof query.afterSequence !== "number" || !Number.isFinite(query.afterSequence))) return false;
+  if (query.candidateKind !== undefined && query.candidateKind !== "lightstreamer" && query.candidateKind !== "topology-checkpoint") return false;
+  if (!hasCompleteExactFacetPredicates(query.filters)) return false;
+  if (query.candidateKind === "lightstreamer" && !tokens.some((token) => token !== facet("kind", "topology-checkpoint"))) return false;
+  return true;
+}
+
+function hasCompleteExactFacetPredicates(filters: EvidenceQuery["filters"]): boolean {
+  if (!filters) return true;
+  return Object.entries(filters).every(([name, value]) => {
+    if (name === "query") return value === undefined || (typeof value === "string" && value.trim() === "");
+    if (!EXACT_FACET_FILTER_NAMES.has(name)) return false;
+    if (value === undefined) return true;
+    return name === "clientId" || name === "sessionId" || value !== "";
+  });
+}
+
+function pageSequenceSelection(sequences: readonly number[], query: EvidenceQuery): number[] {
+  const ordered = query.order === "desc" ? [...sequences].reverse() : [...sequences];
+  if (query.offsetFromNewest === undefined) {
+    return query.limit === undefined ? ordered : ordered.slice(0, Math.max(0, Math.floor(query.limit)));
+  }
+  const offset = Math.max(0, Math.floor(query.offsetFromNewest));
+  const limit = query.limit === undefined ? undefined : Math.max(0, Math.floor(query.limit));
+  const page = [...sequences].reverse().slice(offset, limit === undefined ? undefined : offset + limit);
+  return query.order === "desc" ? page : page.reverse();
+}
+
 function exactFacetQueryTokens(query: EvidenceQuery): string[] {
   const tokens: string[] = [];
   if (query.candidateKind === "topology-checkpoint") tokens.push(facet("kind", query.candidateKind));
   const filters = query.filters;
   if (!filters) return tokens;
+  if (filters.clientId !== undefined) tokens.push(facet("clientId", filters.clientId));
+  if (filters.sessionId !== undefined) tokens.push(facet("sessionId", filters.sessionId));
   const values: Array<[string, unknown]> = [
-    ["clientId", filters.clientId], ["sessionId", filters.sessionId], ["subscriptionId", filters.subscriptionId],
+    ["subscriptionId", filters.subscriptionId],
     ["mode", filters.mode], ["item", filters.item], ["itemPosition", filters.itemPosition], ["key", filters.key],
     ["command", filters.command], ["snapshot", filters.snapshot], ["synthetic", filters.synthetic], ["kind", filters.kind],
     ["listenerId", filters.listenerId]

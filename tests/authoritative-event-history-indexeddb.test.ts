@@ -196,6 +196,39 @@ async function freshIndexedHistory(
   return createIndexedDbEventHistory({ panelSessionId, ...options });
 }
 
+type TestEvidenceRecord = {
+  intervalId: string;
+  sequence: number;
+  eventId: string;
+  replayPayload: string;
+  serializedBytes: number;
+  accountedBytes: number;
+  facets: string[];
+};
+
+async function mutateEvidenceRecord(
+  panelSessionId: string,
+  sequence: number,
+  mutate: (record: TestEvidenceRecord) => TestEvidenceRecord | undefined
+): Promise<void> {
+  const databaseRequest = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
+  const database = await requestValue(databaseRequest);
+  try {
+    const readTransaction = database.transaction("evidence", "readonly");
+    const record = await requestValue(readTransaction.objectStore("evidence").get(sequence)) as TestEvidenceRecord | undefined;
+    await transactionDone(readTransaction, "reading test Evidence record");
+    if (!record) throw new Error(`Missing test Evidence record ${sequence}.`);
+    const writeTransaction = database.transaction("evidence", "readwrite");
+    const store = writeTransaction.objectStore("evidence");
+    const replacement = mutate(record);
+    if (replacement) store.put(replacement);
+    else store.delete(sequence);
+    await transactionDone(writeTransaction, "mutating test Evidence record");
+  } finally {
+    database.close();
+  }
+}
+
 describe("IndexedDB authoritative EventHistory", () => {
   it("takes an immutable offer snapshot and publishes only after the adapter commits it", async () => {
     let releaseCommit!: () => void;
@@ -372,6 +405,173 @@ describe("IndexedDB authoritative EventHistory", () => {
     }
     await indexed.close();
     await memory.close();
+  });
+
+  it("pages exact facets before reconstructing large IndexedDB payloads", async () => {
+    const indexed = await freshIndexedHistory("query-plan-exact-facet-page-before-payload");
+    const memory = createInMemoryEventHistory({ panelSessionId: "query-plan-exact-facet-page-before-payload-memory" });
+    const events = Array.from({ length: 1_000 }, (_, index) => createEventHistoryWorkloadEvent("large-json-rich", index, "page-before-payload"));
+    for (const event of events) {
+      await indexed.offer(event).settled;
+      await memory.offer(event).settled;
+    }
+
+    const payloadReads = vi.spyOn(IDBObjectStore.prototype, "get");
+    const queries = [
+      { page: { order: "asc" as const, limit: 100 }, expectedReads: 100 },
+      { page: { order: "desc" as const, limit: 100 }, expectedReads: 100 },
+      { page: { order: "desc" as const, offsetFromNewest: 137, limit: 100 }, expectedReads: 100 },
+      { page: { order: "asc" as const, limit: 0 }, expectedReads: 0 },
+      { page: { order: "desc" as const, limit: -1 }, expectedReads: 0 },
+      { page: { order: "asc" as const, limit: 2_000 }, expectedReads: 1_000 }
+    ].map(({ page, expectedReads }) => ({
+      query: { ...page, filters: { subscriptionId: "portfolio-command", mode: "COMMAND" } },
+      expectedReads
+    }));
+
+    try {
+      for (const { query, expectedReads } of queries) {
+        const readsBefore = payloadReads.mock.calls.length;
+        const indexedResult = await indexed.read(query);
+        const memoryResult = await memory.read(query);
+        expect(indexedResult).toMatchObject({ ok: true });
+        expect(memoryResult).toMatchObject({ ok: true });
+        if (indexedResult.ok && memoryResult.ok) {
+          expect(indexedResult.value.total).toBe(1_000);
+          expect(indexedResult.value.total).toBe(memoryResult.value.total);
+          expect(indexedResult.value.evidence.map((entry) => entry.eventId)).toEqual(
+            memoryResult.value.evidence.map((entry) => entry.eventId)
+          );
+        }
+        expect(payloadReads.mock.calls.length - readsBefore).toBe(expectedReads);
+      }
+    } finally {
+      payloadReads.mockRestore();
+      await indexed.close();
+      await memory.close();
+    }
+  }, 15_000);
+
+  it("keeps exact-facet paging in parity for empty facets, malformed boundaries, and candidate kinds", async () => {
+    const indexed = await freshIndexedHistory("query-plan-exact-facet-edge-parity");
+    const memory = createInMemoryEventHistory({ panelSessionId: "query-plan-exact-facet-edge-parity-memory" });
+    const events = [
+      candidate("empty-facet-match", {
+        client: { id: "", sessionId: "" },
+        subscription: { id: "edge-subscription", mode: "COMMAND" }
+      }),
+      candidate("non-empty-facet-miss", {
+        client: { id: "client", sessionId: "session" },
+        subscription: { id: "edge-subscription", mode: "COMMAND" }
+      }),
+      {
+        id: "edge-topology",
+        kind: "topology-checkpoint" as const,
+        checkpoint: { pageEpoch: "edge" }
+      }
+    ];
+    for (const event of events) {
+      await indexed.offer(event).settled;
+      await memory.offer(event).settled;
+    }
+
+    const queries = [
+      {
+        filters: { clientId: "", sessionId: "", mode: "COMMAND" },
+        order: "asc" as const,
+        limit: 10
+      },
+      {
+        filters: { mode: "COMMAND" },
+        afterSequence: Number.NaN,
+        order: "asc" as const,
+        limit: 10
+      },
+      {
+        candidateKind: "lightstreamer" as const,
+        filters: { kind: "topology-checkpoint" as never },
+        order: "asc" as const,
+        limit: 10
+      }
+    ];
+
+    for (const query of queries) {
+      const indexedResult = await indexed.read(query);
+      const memoryResult = await memory.read(query);
+      expect(indexedResult).toMatchObject({ ok: true });
+      expect(memoryResult).toMatchObject({ ok: true });
+      if (indexedResult.ok && memoryResult.ok) {
+        expect(indexedResult.value.total).toBe(memoryResult.value.total);
+        expect(indexedResult.value.evidence.map((entry) => entry.eventId)).toEqual(
+          memoryResult.value.evidence.map((entry) => entry.eventId)
+        );
+      }
+    }
+
+    await indexed.close();
+    await memory.close();
+  });
+
+  it("fails closed when an exact-facet page record is missing or mismatches its indexed payload", async () => {
+    const missingPanelSessionId = "query-plan-exact-facet-missing-record";
+    const missing = await freshIndexedHistory(missingPanelSessionId);
+    await missing.offer(candidate("missing-first", { subscription: { id: "corrupt-subscription", mode: "COMMAND" } })).settled;
+    await missing.offer(candidate("missing-second", { subscription: { id: "corrupt-subscription", mode: "COMMAND" } })).settled;
+    const originalGet = IDBObjectStore.prototype.get;
+    const missingGet = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, key: IDBValidKey | IDBKeyRange) {
+      if (this.name === "evidence" && key === 2) {
+        const request = {
+          result: undefined,
+          error: null,
+          onsuccess: null as null | (() => void),
+          onerror: null as null | (() => void)
+        };
+        queueMicrotask(() => request.onsuccess?.());
+        return request as unknown as IDBRequest<unknown>;
+      }
+      return originalGet.call(this, key);
+    });
+    try {
+      await expect(missing.read({ filters: { mode: "COMMAND" }, order: "desc", limit: 1 })).rejects.toThrow(/exact-facet/i);
+    } finally {
+      missingGet.mockRestore();
+    }
+    await missing.close();
+
+    const mismatchPanelSessionId = "query-plan-exact-facet-payload-mismatch";
+    const mismatch = await freshIndexedHistory(mismatchPanelSessionId);
+    const original = candidate("mismatch-record", { subscription: { id: "corrupt-subscription", mode: "COMMAND" } });
+    await mismatch.offer(original).settled;
+    await mutateEvidenceRecord(mismatchPanelSessionId, 1, (record) => {
+      const replacement = candidate("mismatch-record", { subscription: { id: "corrupt-subscription", mode: "MERGE" } });
+      const serialized = serializeJournalEvidenceCandidate(replacement);
+      return { ...record, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: journalAccountedBytes(serialized.bytes) };
+    });
+    await expect(mismatch.read({ filters: { mode: "COMMAND" }, order: "desc", limit: 1 })).rejects.toThrow(/exact-facet|replay|facets|incoherent/i);
+    await mismatch.close();
+  });
+
+  it("fails closed for every incoherent selected exact-facet record", async () => {
+    const corruptions: Array<[string, (record: TestEvidenceRecord) => TestEvidenceRecord]> = [
+      ["event-id", (record) => ({ ...record, eventId: "wrong-event-id" })],
+      ["serialized-bytes", (record) => ({ ...record, serializedBytes: record.serializedBytes + 1 })],
+      ["accounted-bytes", (record) => ({ ...record, accountedBytes: record.accountedBytes + 1 })],
+      ["non-string-facet", (record) => ({ ...record, facets: [...record.facets, 42 as unknown as string] })],
+      ["incomplete-facets", (record) => ({ ...record, facets: record.facets.filter((value) => value !== JSON.stringify(["v1", "synthetic", false])) })],
+      ["malformed-payload", (record) => ({ ...record, replayPayload: "not-json" })]
+    ];
+
+    for (const [name, corruption] of corruptions) {
+      const panelSessionId = `query-plan-exact-facet-corruption-${name}`;
+      const history = await freshIndexedHistory(panelSessionId);
+      await history.offer(candidate(`corrupt-${name}`, { subscription: { id: "corrupt-subscription", mode: "COMMAND" } })).settled;
+      await mutateEvidenceRecord(panelSessionId, 1, corruption);
+      try {
+        await expect(history.read({ filters: { mode: "COMMAND" }, order: "desc", limit: 1 })).rejects.toThrow(/incoherent|exact-facet|replay|JSON|token/i);
+      } finally {
+        await history.close();
+      }
+    }
   });
 
   it("defaults deleteAuthoritativeEventDatabase to the same fallback database used by open", async () => {
