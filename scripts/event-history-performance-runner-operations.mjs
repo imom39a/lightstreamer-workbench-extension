@@ -6,6 +6,7 @@ const DEFAULT_REQUEST_CEILING_MS = 5_000;
 const DEFAULT_HEAP_GC_DEADLINE_MS = 240_000;
 const DEFAULT_PROGRESS_AGE_CEILING_MS = 120_000;
 const DEFAULT_STARTUP_PROGRESS_CEILING_MS = 30_000;
+const DEFAULT_QUERY_TOTAL_PROGRESS_CEILING_MS = 120_000;
 
 export class PerformanceOperationTimeout extends Error {
   constructor(message, status) {
@@ -376,13 +377,40 @@ function progressAgeCeilingMs(progress) {
   const stageCeiling = /cleanup|close|read/u.test(stage)
     ? 30_000
     : /query/u.test(stage)
-      ? /^cell-\d+-query$/u.test(stage) ? 120_000 : 30_000
+      ? 30_000
       : /offer|receipt|commit/u.test(stage)
         ? 120_000
         : null;
   const frameCeiling = /frame/u.test(stage) ? 30_000 : null;
   const ceilings = [phaseCeiling, stageCeiling, frameCeiling].filter((ceiling) => ceiling !== null);
   return Math.min(...ceilings);
+}
+
+function isQueryTotalProgress(progress) {
+  return progress?.phase === "cells"
+    && typeof progress.stage === "string"
+    && /^cell-\d+-query$/u.test(progress.stage);
+}
+
+function progressTotalStageKey(progress) {
+  if (!isQueryTotalProgress(progress)) return null;
+  return JSON.stringify([
+    progress.phase,
+    progress.stage,
+    progress.substage,
+    progress.sample,
+    progress.trigger,
+    progress.scenario,
+    progress.cellIndex,
+    progress.adapter,
+    progress.workload,
+    progress.shape,
+    progress.workloadPhase
+  ]);
+}
+
+function progressTotalStageCeilingMs(progress) {
+  return isQueryTotalProgress(progress) ? DEFAULT_QUERY_TOTAL_PROGRESS_CEILING_MS : null;
 }
 
 function progressStageKey(progress) {
@@ -408,10 +436,16 @@ function observeProgressStatus(status, monitor, now) {
   if (progress && Number.isSafeInteger(progress.sequence) && progress.sequence > monitor.sequence) {
     const observedAt = now();
     const nextStageKey = progressStageKey(progress);
+    const nextTotalStageKey = progressTotalStageKey(progress);
     if (monitor.stageKey !== nextStageKey) {
       monitor.stageKey = nextStageKey;
       monitor.stageStartedAt = observedAt;
       monitor.stageDeadlineMs = progressAgeCeilingMs(progress) ?? DEFAULT_PROGRESS_AGE_CEILING_MS;
+    }
+    if (monitor.totalStageKey !== nextTotalStageKey) {
+      monitor.totalStageKey = nextTotalStageKey;
+      monitor.totalStageStartedAt = observedAt;
+      monitor.totalStageDeadlineMs = progressTotalStageCeilingMs(progress);
     }
     monitor.sequence = progress.sequence;
     monitor.lastObservedAt = observedAt;
@@ -419,6 +453,9 @@ function observeProgressStatus(status, monitor, now) {
   }
   const progressAgeMs = monitor.lastObservedAt === null ? null : Math.max(0, now() - monitor.lastObservedAt);
   const progressStageAgeMs = Math.max(0, now() - monitor.stageStartedAt);
+  const progressTotalStageAgeMs = monitor.totalStageKey === null
+    ? null
+    : Math.max(0, now() - monitor.totalStageStartedAt);
   return {
     ...status,
     progressSequence: monitor.sequence >= 0 ? monitor.sequence : null,
@@ -427,24 +464,33 @@ function observeProgressStatus(status, monitor, now) {
     lastProgressObservedAt: monitor.lastObservedAt,
     progressStageKey: monitor.stageKey,
     progressStageAgeMs,
-    progressStageDeadlineMs: monitor.stageDeadlineMs
+    progressStageDeadlineMs: monitor.stageDeadlineMs,
+    progressTotalStageKey: monitor.totalStageKey,
+    progressTotalStageAgeMs,
+    progressTotalStageDeadlineMs: monitor.totalStageDeadlineMs
   };
 }
 
 function assertProgressAge(status, monitor, now) {
   const ageMs = monitor.lastObservedAt === null ? null : Math.max(0, now() - monitor.lastObservedAt);
   const stageAgeMs = Math.max(0, now() - monitor.stageStartedAt);
+  const totalStageAgeMs = monitor.totalStageKey === null ? null : Math.max(0, now() - monitor.totalStageStartedAt);
   const inactivityExceeded = ageMs !== null && monitor.ceilingMs !== null && ageMs > monitor.ceilingMs;
   const stageExceeded = stageAgeMs > monitor.stageDeadlineMs;
-  if (inactivityExceeded || stageExceeded) {
-    const reason = stageExceeded ? "absolute stage" : "inactivity";
+  const totalStageExceeded = totalStageAgeMs !== null
+    && monitor.totalStageDeadlineMs !== null
+    && totalStageAgeMs > monitor.totalStageDeadlineMs;
+  if (inactivityExceeded || stageExceeded || totalStageExceeded) {
+    const reason = totalStageExceeded ? "absolute total stage" : stageExceeded ? "absolute stage" : "inactivity";
     throw new PerformanceOperationTimeout(
       `Event History performance operation exceeded its ${reason} progress ceiling in ${status.progress?.stage ?? "startup"}.`,
       {
         ...status,
         progressAgeMs: ageMs,
         progressStageAgeMs: stageAgeMs,
-        progressStageDeadlineMs: monitor.stageDeadlineMs
+        progressStageDeadlineMs: monitor.stageDeadlineMs,
+        progressTotalStageAgeMs: totalStageAgeMs,
+        progressTotalStageDeadlineMs: monitor.totalStageDeadlineMs
       }
     );
   }
@@ -467,10 +513,13 @@ export async function runPageOperation(cdp, expression, options = {}) {
     ceilingMs: null,
     stageKey: null,
     stageStartedAt: startedAt,
-    stageDeadlineMs: DEFAULT_STARTUP_PROGRESS_CEILING_MS
+    stageDeadlineMs: DEFAULT_STARTUP_PROGRESS_CEILING_MS,
+    totalStageKey: null,
+    totalStageStartedAt: startedAt,
+    totalStageDeadlineMs: null
   };
   const statusAt = (value, requestTimeout = null) => observeProgressStatus(
-    operationStatus(value, startedAt, now, requestTimeout),
+    operationStatus(value, startedAt, now, requestTimeout, operationId),
     progressMonitor,
     now
   );
@@ -639,7 +688,7 @@ function startOperationExpression(expression, operationId) {
           } : null
         } : null;
         const rawProgress = error?.progress;
-        const progress = rawProgress && typeof rawProgress === "object" ? serializePageProgress(rawProgress) : null;
+        const progress = rawProgress && typeof rawProgress === "object" ? serializePageProgress(rawProgress, operationId) : null;
         operation.state = "rejected";
         operation.error = {
           name: typeof error?.name === "string" ? error.name : "Error",
@@ -694,23 +743,26 @@ function evaluationValue(response) {
   return response?.result?.value;
 }
 
-function operationStatus(value, startedAt, now, lastRequestTimeout = null) {
+function operationStatus(value, startedAt, now, lastRequestTimeout = null, expectedOperationId) {
   const operationId = value?.operationId === undefined ? null : value.operationId;
   if (operationId !== null && typeof operationId !== "string") {
     throw new Error("Performance operation status has an invalid operationId.");
+  }
+  if (operationId !== expectedOperationId) {
+    throw new Error("Performance operation status has an operationId that does not match the requested operation.");
   }
   const progress = serializeOperationProgress(value?.progress);
   if (progress !== null && progress.operationId !== null && progress.operationId !== operationId) {
     throw new Error("Performance operation status has an operationId mismatch between status and progress.");
   }
   return {
-    operationId,
     state: value?.state ?? "missing",
     elapsedMs: Math.max(0, now() - startedAt),
     heartbeat: Number.isFinite(value?.heartbeat) ? value.heartbeat : 0,
     lastHeartbeatAt: value?.lastHeartbeatAt ?? null,
     ...(lastRequestTimeout ? { lastRequestTimeout } : {}),
     ...(progress ? { ...progress, progress } : {}),
+    operationId,
     ...(value?.result !== undefined ? { result: value.result } : {}),
     ...(value?.error !== undefined ? { error: value.error } : {})
   };
@@ -736,7 +788,7 @@ function remoteOperationError(details) {
   return error;
 }
 
-function serializeOperationProgress(value) {
+function serializeOperationProgress(value, expectedOperationId = null) {
   if (!value || typeof value !== "object") return null;
   const operationId = value.operationId === undefined ? null : value.operationId;
   const validPhase = ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(value.phase);
@@ -749,6 +801,7 @@ function serializeOperationProgress(value) {
   const validCount = (count) => count === null || (Number.isSafeInteger(count) && count >= 0);
   if (!validPhase
     || (operationId !== null && typeof operationId !== "string")
+    || (expectedOperationId !== null && operationId !== expectedOperationId)
     || typeof value.stage !== "string" || value.stage.length === 0
     || typeof value.substage !== "string" || value.substage.length === 0
     || !Number.isSafeInteger(value.sequence) || value.sequence < 1

@@ -584,6 +584,36 @@ describe("Event History performance runner page operation", () => {
     await expect(runPageOperation(cdp, "window.run()", { operationId: "host-operation" })).rejects.toThrow(expectedMessage);
   });
 
+  it.each([
+    ["foreign", { operationId: "foreign-operation", state: "pending", heartbeat: 1 }],
+    ["missing", { state: "pending", heartbeat: 1 }],
+    ["null", { operationId: null, state: "pending", heartbeat: 1 }]
+  ] as const)("requires the requested top-level operationId for a %s pending status", async (_name, malformedStatus) => {
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "requested-operation", state: "pending", heartbeat: 0 }),
+      evaluated(malformedStatus),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", { operationId: "requested-operation" }))
+      .rejects.toThrow(/operationId/u);
+  });
+
+  it.each([
+    ["foreign", { operationId: "foreign-operation", state: "resolved", heartbeat: 1, result: { source: "foreign" } }],
+    ["missing", { state: "resolved", heartbeat: 1, result: { source: "missing" } }],
+    ["null", { operationId: null, state: "resolved", heartbeat: 1, result: { source: "null" } }]
+  ] as const)("rejects a %s top-level operationId even for a resolved result", async (_name, malformedStatus) => {
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "requested-operation", state: "pending", heartbeat: 0 }),
+      evaluated(malformedStatus),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", { operationId: "requested-operation" }))
+      .rejects.toThrow(/operationId/u);
+  });
+
   it("uses the strict generated rejection serializer with operation identity", async () => {
     const cdp = new GeneratedRejectionCdp();
     const rawProgress = strictProgress("generated-operation", { extraField: "drop me" });
@@ -597,6 +627,19 @@ describe("Event History performance runner page operation", () => {
       progress: expect.objectContaining({ operationId: "generated-operation", stage: "cell-7-receipts" })
     });
     expect(rejected.progress).not.toHaveProperty("extraField");
+  });
+
+  it.each(["missing", "null", "foreign"] as const)("rejects %s generated rejection progress identity", async (identity) => {
+    const cdp = new GeneratedRejectionCdp();
+    const rawProgress = strictProgress(identity === "foreign" ? "foreign-progress" : null);
+    if (identity === "missing") delete rawProgress.operationId;
+    const expression = `Promise.reject(Object.assign(new Error("invalid progress identity"), { progress: ${JSON.stringify(rawProgress)} }))`;
+
+    const rejected = await runPageOperation(cdp, expression, { operationId: "generated-operation" })
+      .then(() => null, (error) => error);
+
+    expect(rejected).toMatchObject({ message: "invalid progress identity" });
+    expect(rejected).not.toHaveProperty("progress");
   });
 
   it("drops malformed generated rejection progress instead of coercing it", async () => {
@@ -801,6 +844,7 @@ describe("Event History performance runner page operation", () => {
     const cdp = new FakeCdp([
       evaluated({ operationId: "startup-timeout", state: "pending", heartbeat: 0 }),
       evaluated({ operationId: "startup-timeout", state: "pending", heartbeat: 1 }),
+      evaluated({ operationId: "startup-timeout", state: "pending", heartbeat: 2 }),
       evaluated(true)
     ]);
     const result = await runPageOperation(cdp, "window.run()", {
@@ -869,6 +913,50 @@ describe("Event History performance runner page operation", () => {
       progress: { stage: "cell-7-close" }
     });
     expect(result.status.progressAgeMs).toBeLessThanOrEqual(10_001);
+  });
+
+  it("keeps one 120-second query-total deadline across changing query names", async () => {
+    let now = 0;
+    let calls = 0;
+    const queryNames = ["recent-page", "structured-indexed", "find", "full"] as const;
+    const cdp = {
+      request: (_method: string, params: Record<string, unknown> = {}) => {
+        if (String(params.expression ?? "").includes("delete globalThis")) return Promise.resolve(evaluated(true));
+        calls += 1;
+        if (calls === 1) return Promise.resolve(evaluated({ operationId: "query-total", state: "pending", heartbeat: 0 }));
+        const poll = calls - 2;
+        const query = queryNames[poll % queryNames.length];
+        const progress = strictProgress("query-total", {
+          phase: "cells",
+          stage: "cell-7-query",
+          substage: "query",
+          sequence: poll + 1,
+          pageElapsedMs: now,
+          workloadPhase: "query",
+          query
+        });
+        return Promise.resolve(evaluated({ operationId: "query-total", state: "pending", heartbeat: poll + 1, progress }));
+      }
+    };
+
+    const result = await runPageOperation(cdp, "window.run()", {
+      operationId: "query-total",
+      deadlineMs: 300_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 20_001; }
+    }).then(() => null, (error) => error);
+
+    expect(result).toBeInstanceOf(PerformanceOperationTimeout);
+    expect(result.message).toMatch(/absolute total stage/u);
+    expect(result.status).toMatchObject({
+      progress: { stage: "cell-7-query", query: "find" },
+      progressAgeCeilingMs: 30_000,
+      progressStageDeadlineMs: 30_000,
+      progressTotalStageDeadlineMs: 120_000
+    });
+    expect(result.status.progressTotalStageAgeMs).toBeGreaterThan(120_000);
+    expect(calls).toBeGreaterThan(6);
   });
 
   it("enforces progress age after a bounded poll retry", async () => {
