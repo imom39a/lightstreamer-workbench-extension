@@ -122,20 +122,82 @@ export async function createIndexedDbEventHistory(
   const databaseName = authoritativeEventDatabaseName(panelSessionId);
   const canonicalPanelSessionId = parseAuthoritativeEventDatabaseName(databaseName)?.panelSessionId ?? panelSessionId;
   try {
-    await runStartupSweep(runtime, canonicalPanelSessionId, databaseName);
+    await runStartupSweep(runtime, databaseName);
   } catch (error) {
     throw error instanceof AuthoritativeDatabaseOpenError
       ? error
       : new AuthoritativeDatabaseOpenError("STARTUP_SWEEP_FAILED", "Startup journal sweep failed.", error);
   }
-  const database = await openAuthoritativeEventDatabase(databaseName);
-  try {
-    const loaded = await loadJournal(database, panelSessionId);
-    return createHistory(database, loaded, options);
-  } catch (error) {
-    database.db.close();
-    throw error;
-  }
+  const ownerName = authoritativeOwnershipLockName(databaseName);
+  let releaseOwnership: (() => void) | null = null;
+  const ownershipRelease = new Promise<void>((resolve) => {
+    releaseOwnership = resolve;
+  });
+
+  const closeCurrent = async (history: EventHistory, database: AuthoritativeEventDatabase): Promise<Outcome<CloseResult>> => {
+    try {
+      return await history.close();
+    } finally {
+      const release = releaseOwnership;
+      releaseOwnership = null;
+      if (release !== null) {
+        release();
+      }
+      database.db.close();
+    }
+  };
+
+  let historyResolve!: (value: EventHistory) => void;
+  let historyReject!: (error: unknown) => void;
+  let settled = false;
+  const historyReady = new Promise<EventHistory>((resolve, reject) => {
+    historyResolve = resolve;
+    historyReject = reject;
+  });
+  const settleHistoryFailure = (error: unknown): void => {
+    if (settled) return;
+    settled = true;
+    historyReject(error);
+  };
+
+  const historyAcquisition = runtime.requestLock(ownerName, { mode: "exclusive", ifAvailable: true }, async () => {
+    try {
+      const database = await openAuthoritativeEventDatabase(databaseName);
+      const loaded = await loadJournal(database, canonicalPanelSessionId);
+      const closeJournal = async (): Promise<void> => {
+        await options.closeJournal?.();
+        await deleteAuthoritativeEventDatabase(databaseName);
+      };
+      const baseHistory = createHistory(database, loaded, {
+        ...options,
+        closeJournal
+      });
+      const ownedHistory: EventHistory = {
+        ...baseHistory,
+        close: () => closeCurrent(baseHistory, database)
+      };
+      settled = true;
+      historyResolve(ownedHistory);
+      await ownershipRelease;
+      return ownedHistory;
+    } catch (error) {
+      settleHistoryFailure(error);
+      throw error;
+    }
+  });
+  void historyAcquisition.then((owned) => {
+    if (owned === null) {
+      settleHistoryFailure(new AuthoritativeDatabaseOpenError(
+        "OWNERSHIP_COULD_NOT_BE_CONFIRMED",
+        `Could not confirm exclusive ownership of ${databaseName}.`
+      ));
+    }
+  }).catch((error) => {
+    settleHistoryFailure(error);
+  });
+  const history = await historyReady;
+  void historyAcquisition.catch(() => undefined);
+  return history;
 }
 
 const AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}`;
@@ -146,19 +208,23 @@ function authoritativeOwnershipLockName(databaseName: string): string {
 
 async function runStartupSweep(
   runtime: AuthoritativeEventDatabaseRuntime,
-  panelSessionId: string,
   databaseName: string
 ): Promise<void> {
   const databases = await runtime.listDatabases().catch((error) => {
     throw new AuthoritativeDatabaseOpenError("STARTUP_SWEEP_FAILED", "Startup journal sweep could not enumerate IndexedDB databases.", error);
   });
+  let unknownNewerVersion = false;
   for (const descriptor of databases) {
     const name = descriptor.name;
     if (!name) {
       continue;
     }
     const identity = parseAuthoritativeEventDatabaseName(name);
-    if (!identity || identity.panelSessionId !== panelSessionId || identity.schemaVersion > AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+    if (!identity) {
+      continue;
+    }
+    if (identity.schemaVersion > AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+      unknownNewerVersion = true;
       continue;
     }
     if (name === databaseName) {
@@ -174,6 +240,9 @@ async function runStartupSweep(
     if (result === null) {
       continue;
     }
+  }
+  if (unknownNewerVersion) {
+    throw new AuthoritativeDatabaseOpenError("UNKNOWN_NEWER_SCHEMA", "A newer Workbench journal schema was detected.");
   }
 }
 
@@ -775,8 +844,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         if (applied !== false) {
           await clearJournalRecords(database, loaded.panelSessionId, interval, nextSequence, committedEvidenceBoundary);
           dataDisposition = "ERASED";
-          await options.closeJournal?.();
           database.db.close();
+          await options.closeJournal?.();
           cleanupDisposition = "COMPLETE";
         }
       } catch (error) {
