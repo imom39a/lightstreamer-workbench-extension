@@ -1,11 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createTimeoutDiagnostic,
+  collectHeapAfterRepeatedGc,
+  runHeapMeasurementPlan,
   PerformanceOperationTimeout,
+  releaseHeapSessionWithCleanup,
   runPageOperation
 } from "../scripts/event-history-performance-runner-operations.mjs";
 
@@ -17,8 +20,11 @@ type FakeCdpReply = FakeCdpResponse | Promise<FakeCdpResponse>;
 
 class FakeCdp {
   readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  private readonly responses: FakeCdpReply[];
 
-  constructor(private readonly responses: FakeCdpReply[]) {}
+  constructor(responses: readonly FakeCdpReply[]) {
+    this.responses = [...responses];
+  }
 
   request(method: string, params: Record<string, unknown> = {}): Promise<FakeCdpResponse> {
     this.calls.push({ method, params });
@@ -49,6 +55,28 @@ function expectTimeoutOutcome(result: unknown): PerformanceOperationTimeout {
 }
 
 describe("Event History performance runner reference preflight", () => {
+  it("wires the production runner through the heap plan and repeated GC seam", () => {
+    const source = readFileSync("scripts/event-history-performance.mjs", "utf8");
+    expect(source).toContain("runHeapMeasurementPlan");
+    expect(source).toContain("collectHeapAfterRepeatedGc");
+    expect(source).toContain("removeRetainedHeapRoot");
+    expect(source).toContain("yieldRetainedHeapFrame");
+    expect(source).toContain("heapRuns: heapPlan.heapRuns");
+    expect(source).toContain("releaseHeapSessionWithCleanup");
+    expect(readFileSync("benchmarks/event-history-performance-harness.ts", "utf8")).toContain("captureStorageEstimate");
+    expect(source).toContain("offerToPublicationP95Ms");
+    expect(source).toContain("behindBacklogMs");
+    expect(source).toContain("longTaskRows");
+    expect(source).toContain("terminalRows");
+    expect(source).toContain("heapRunRows");
+    expect(source).toContain("${checkpointRows}");
+    expect(source).toContain("## Checkpoint evidence");
+    expect(source).toContain("interleavedWhileStaging");
+    expect(source).toContain("identityEvidence");
+    expect(source).toContain("navigator.storage.estimate()");
+    expect(source).not.toContain("function gcHeap");
+  });
+
   it("rejects a pending reference before looking for or launching Chrome", () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), "lsew-reference-preflight-test-"));
     const referencePath = join(temporaryRoot, "pending-reference.json");
@@ -78,6 +106,280 @@ describe("Event History performance runner reference preflight", () => {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe("Event History heap measurement plan", () => {
+  it("performs exactly three forced collections before each heap usage read", async () => {
+    const cdp = new FakeCdp(Array.from({ length: 15 }, () => evaluated({ usedSize: 1 })));
+
+    await collectHeapAfterRepeatedGc(cdp);
+    await collectHeapAfterRepeatedGc(cdp);
+    await collectHeapAfterRepeatedGc(cdp);
+
+    expect(cdp.calls.map(({ method }) => method)).toEqual([
+      "HeapProfiler.enable", "HeapProfiler.collectGarbage", "HeapProfiler.collectGarbage", "HeapProfiler.collectGarbage", "Runtime.getHeapUsage",
+      "HeapProfiler.enable", "HeapProfiler.collectGarbage", "HeapProfiler.collectGarbage", "HeapProfiler.collectGarbage", "Runtime.getHeapUsage",
+      "HeapProfiler.enable", "HeapProfiler.collectGarbage", "HeapProfiler.collectGarbage", "HeapProfiler.collectGarbage", "Runtime.getHeapUsage"
+    ]);
+  });
+
+  it.each([
+    ["enable", [new Promise<FakeCdpResponse>(() => undefined)]],
+    ["collection", [evaluated({}), new Promise<FakeCdpResponse>(() => undefined)]],
+    ["usage", [evaluated({}), evaluated({}), evaluated({}), evaluated({}), new Promise<FakeCdpResponse>(() => undefined)]]
+  ] as const)("bounds a hung heap-GC %s request", async (phase, responses) => {
+    const result = await watchdog(collectHeapAfterRepeatedGc(new FakeCdp(responses), 3, {
+      deadlineMs: 10,
+      requestCeilingMs: 5
+    }).then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    ));
+
+    expect(result).not.toBe("WATCHDOG");
+    expect(result).toHaveProperty("error");
+    expect((result as { error: { name: string; phase: string } }).error).toMatchObject({
+      name: "CdpRequestTimeout",
+      phase: phase === "collection" ? "heap-gc-collection-1" : `heap-gc-${phase}`
+    });
+  });
+
+  it("keeps lifecycle cleanup bounded when its repeated-GC request hangs", async () => {
+    const events: string[] = [];
+    const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
+    const cdp = new FakeCdp([neverSettles]);
+    const result = await watchdog(releaseHeapSessionWithCleanup({
+      release: async () => { events.push("close"); return { ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } }; },
+      removeRoot: async () => { events.push("remove"); return true; },
+      yieldFrame: async () => { events.push("yield"); return true; },
+      forceGc: () => collectHeapAfterRepeatedGc(cdp, 3, { deadlineMs: 10, requestCeilingMs: 5 })
+    }).then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    ));
+
+    expect(result).not.toBe("WATCHDOG");
+    expect(result).toHaveProperty("error");
+    expect((result as { error: { name: string; phase: string; gcPasses: null; rootRemoved: boolean; frameYielded: boolean } }).error).toMatchObject({
+      name: "CdpRequestTimeout",
+      phase: "heap-gc-enable",
+      gcPasses: null,
+      rootRemoved: true,
+      frameYielded: true
+    });
+    expect(events).toEqual(["close", "remove", "yield"]);
+  });
+
+  it("attempts root removal, frame yield, and three-GC cleanup after a close failure", async () => {
+    const events: string[] = [];
+    await expect(releaseHeapSessionWithCleanup({
+      release: async () => { events.push("close"); return { ok: false, problem: { code: "CLOSE_FAILED", message: "close failed" } }; },
+      removeRoot: async () => { events.push("remove"); return false; },
+      yieldFrame: async () => { events.push("yield"); return false; },
+      forceGc: async () => { events.push("gc"); return { usedSize: 1, gcPasses: 3 }; }
+    })).rejects.toMatchObject({ code: "CLOSE_FAILED", rootRemoved: false, frameYielded: false, gcPasses: 3 });
+    expect(events).toEqual(["close", "remove", "yield", "gc"]);
+  });
+
+  it("runs one warm-up and three ordered independent samples without dropping slots", async () => {
+    const events: string[] = [];
+    let identity = 0;
+    const result = await runHeapMeasurementPlan({
+      adapters: ["indexeddb"],
+      eventCounts: { indexeddb: 10_000 },
+      prepare: async ({ adapter, eventCount, phase, sample }) => {
+        const sessionId = `${adapter}-${phase}-${sample ?? "warmup"}-${identity += 1}`;
+        events.push(`prepare:${phase}:${sample ?? "warmup"}:${eventCount}`);
+        return { adapter, eventCount, phase, sample, retained: eventCount, sessionId, databaseName: `db-${identity}` };
+      },
+      forceGc: async ({ phase, sample }) => {
+        events.push(`gc:${phase}:${sample ?? "warmup"}`);
+        return { usedSize: sample ?? 0, gcPasses: 3 };
+      },
+      record: ({ adapter, eventCount, sample, session, baseline, retained }) => {
+        events.push(`record:${sample}`);
+        return {
+          adapter,
+          sample,
+          eventCount,
+          sessionId: session.sessionId,
+          databaseName: session.databaseName,
+          baselineUsedSizeBytes: baseline.usedSize,
+          retainedUsedSizeBytes: retained.usedSize,
+          postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
+        };
+      },
+      close: async (session) => {
+        events.push(`close:${session.phase}:${session.sample ?? "warmup"}`);
+        return { ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } };
+      },
+      removeRoot: async (session) => { events.push(`remove:${session.phase}:${session.sample ?? "warmup"}`); return true; },
+      yieldFrame: async ({ phase, sample }) => { events.push(`yield:${phase}:${sample ?? "warmup"}`); return true; }
+    });
+
+    expect(result.heapSamples).toHaveLength(3);
+    expect(result.heapSamples.map(({ sample }) => sample)).toEqual([1, 2, 3]);
+    expect(new Set(result.heapSamples.map(({ sessionId }) => sessionId)).size).toBe(3);
+    expect(events).toEqual([
+      "prepare:warmup:warmup:10000",
+      "close:warmup:warmup",
+      "remove:warmup:warmup",
+      "yield:warmup:warmup",
+      "gc:warmup-cleanup:warmup",
+      "gc:baseline:1",
+      "prepare:sample:1:10000",
+      "gc:retained:1",
+      "record:1",
+      "close:sample:1",
+      "remove:sample:1",
+      "yield:cleanup:1",
+      "gc:cleanup:1",
+      "gc:baseline:2",
+      "prepare:sample:2:10000",
+      "gc:retained:2",
+      "record:2",
+      "close:sample:2",
+      "remove:sample:2",
+      "yield:cleanup:2",
+      "gc:cleanup:2",
+      "gc:baseline:3",
+      "prepare:sample:3:10000",
+      "gc:retained:3",
+      "record:3",
+      "close:sample:3",
+      "remove:sample:3",
+      "yield:cleanup:3",
+      "gc:cleanup:3"
+    ]);
+  });
+
+  it("keeps a measured cleanup failure in its original slot without retrying", async () => {
+    const prepared: string[] = [];
+    const closed: number[] = [];
+    const result = await runHeapMeasurementPlan({
+      adapters: ["memory"],
+      eventCounts: { memory: 5_000 },
+      prepare: async ({ phase, sample }) => {
+        const current = sample ?? 0;
+        prepared.push(phase === "warmup" ? "warmup" : `${current}`);
+        return { adapter: "memory", eventCount: 5_000, phase, sample, retained: 5_000, sessionId: `memory-${phase}-${current}`, databaseName: null };
+      },
+      forceGc: async () => ({ usedSize: 1, gcPasses: 3 }),
+      record: ({ adapter, eventCount, sample, session, baseline, retained }) => ({
+        adapter,
+        sample,
+        eventCount,
+        sessionId: session.sessionId,
+        databaseName: session.databaseName,
+        baselineUsedSizeBytes: baseline.usedSize,
+        retainedUsedSizeBytes: retained.usedSize,
+        postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
+      }),
+      close: async (session) => {
+        closed.push(session.sample ?? 0);
+        return session.sample === 2
+          ? { ok: false, problem: { code: "CLOSE_FAILED", message: "cleanup failed" } }
+          : { ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } };
+      },
+      removeRoot: async () => true,
+      yieldFrame: async () => true
+    });
+
+    expect(prepared).toEqual(["warmup", "1", "2", "3"]);
+    expect(closed).toEqual([0, 1, 2, 3]);
+    expect(result.heapSamples.map(({ sample }) => sample)).toEqual([1, 2, 3]);
+    expect(result.heapSamples[1]).toMatchObject({ sample: 2, status: "FAIL" });
+    expect(result.heapSamples[1]?.failure).toMatchObject({ code: "CLOSE_FAILED", message: expect.stringContaining("authoritative close") });
+  });
+
+  it("retains IndexedDB prepare-failure identity and cleanup evidence in its slot", async () => {
+    const result = await runHeapMeasurementPlan({
+      adapters: ["indexeddb"],
+      eventCounts: { indexeddb: 10_000 },
+      prepare: async ({ phase, sample, eventCount }) => {
+        if (phase === "sample" && sample === 2) {
+          const error = Object.assign(new Error("offer failed"), { code: "PREPARE_FAILED", cleanupEvidence: {
+            adapter: "indexeddb",
+            phase: "cleanup",
+            sample: 2,
+            eventCount,
+            retained: null,
+            sessionId: "idb-sample-2",
+            databaseName: "idb-db-2",
+            close: { ok: false, problem: { code: "CLOSE_FAILED", message: "close failed" } },
+            rootRemoved: true,
+            frameYielded: true,
+            gcPasses: null,
+            status: "FAIL",
+            failure: { code: "PREPARE_FAILED", message: "offer failed" }
+          } });
+          throw error;
+        }
+        return { adapter: "indexeddb", eventCount, phase, sample, retained: eventCount, sessionId: `idb-sample-${sample ?? "warmup"}`, databaseName: `idb-db-${sample ?? "warmup"}` };
+      },
+      forceGc: async () => ({ usedSize: 10, gcPasses: 3 }),
+      record: ({ adapter, eventCount, sample, session, baseline, retained }) => ({ adapter, sample, eventCount, sessionId: session.sessionId, databaseName: session.databaseName, baselineUsedSizeBytes: baseline.usedSize, retainedUsedSizeBytes: retained.usedSize, postGcHeapDeltaBytes: 0 }),
+      close: async () => ({ ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } }),
+      removeRoot: async () => true,
+      yieldFrame: async () => true
+    });
+
+    expect(result.heapSamples[1]).toMatchObject({ sample: 2, sessionId: "idb-sample-2", databaseName: "idb-db-2", status: "FAIL" });
+    expect(result.heapRuns).toContainEqual(expect.objectContaining({ phase: "cleanup", sample: 2, sessionId: "idb-sample-2", status: "FAIL" }));
+  });
+
+  it("runs cleanup GC after warm-up and measured prepare rejection without retrying", async () => {
+    const warmupGc: string[] = [];
+    const warmupError = Object.assign(new Error("warmup rejected"), { code: "PREPARE_FAILED",
+      cleanupEvidence: { adapter: "memory", phase: "warmup", sample: null, eventCount: 5_000, retained: null, sessionId: "warmup", databaseName: null, close: null, rootRemoved: true, frameYielded: true, gcPasses: null, status: "FAIL", failure: { code: "PREPARE_FAILED", message: "warmup rejected" } }
+    });
+    await expect(runHeapMeasurementPlan({
+      adapters: ["memory"],
+      eventCounts: { memory: 5_000 },
+      prepare: async () => { throw warmupError; },
+      forceGc: async ({ phase }) => { warmupGc.push(phase); return { usedSize: 1, gcPasses: 3 }; },
+      record: ({ adapter, eventCount, sample }) => ({ adapter, sample: sample ?? 1, eventCount, sessionId: null, databaseName: null, baselineUsedSizeBytes: null, retainedUsedSizeBytes: null, postGcHeapDeltaBytes: null }),
+      close: async () => ({ ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } }),
+      removeRoot: async () => true,
+      yieldFrame: async () => true
+    })).rejects.toThrow(/warmup rejected/u);
+    expect(warmupGc).toEqual(["warmup-cleanup"]);
+
+    const measuredGc: string[] = [];
+    const result = await runHeapMeasurementPlan({
+      adapters: ["memory"],
+      eventCounts: { memory: 5_000 },
+      prepare: async ({ phase, sample, eventCount }) => {
+        if (phase === "sample" && sample === 2) {
+          throw Object.assign(new Error("sample rejected"), { code: "PREPARE_FAILED",
+            cleanupEvidence: { adapter: "memory", phase: "cleanup", sample: 2, eventCount, retained: null, sessionId: "failed-2", databaseName: null, close: null, rootRemoved: true, frameYielded: true, gcPasses: null, status: "FAIL", failure: { code: "PREPARE_FAILED", message: "sample rejected" } }
+          });
+        }
+        return { adapter: "memory", eventCount, phase, sample, retained: eventCount, sessionId: `${phase}-${sample ?? "warmup"}`, databaseName: null };
+      },
+      forceGc: async ({ phase, sample }) => { measuredGc.push(`${phase}:${sample ?? "warmup"}`); return { usedSize: 1, gcPasses: 3 }; },
+      record: ({ adapter, eventCount, sample, session, baseline, retained }) => ({ adapter, sample, eventCount, sessionId: session.sessionId, databaseName: null, baselineUsedSizeBytes: baseline.usedSize, retainedUsedSizeBytes: retained.usedSize, postGcHeapDeltaBytes: 0 }),
+      close: async () => ({ ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } }),
+      removeRoot: async () => true,
+      yieldFrame: async () => true
+    });
+    expect(measuredGc).toContain("cleanup:2");
+    expect(result.heapRuns.find((run) => run.sample === 2)).toMatchObject({ gcPasses: 3 });
+    expect(result.heapSamples.find((sample) => sample.sample === 2)?.failure).toMatchObject({ code: "PREPARE_FAILED" });
+  });
+
+  it("fails closed when warm-up cleanup is not ERASED and COMPLETE", async () => {
+    await expect(runHeapMeasurementPlan({
+      adapters: ["indexeddb"],
+      eventCounts: { indexeddb: 10_000 },
+      prepare: async () => ({ adapter: "indexeddb", eventCount: 10_000, phase: "warmup" as const, sample: null, sessionId: "warmup", retained: 10_000, databaseName: "db-warmup" }),
+      forceGc: async () => ({ usedSize: 1, gcPasses: 3 }),
+      record: () => { throw new Error("record must not run"); },
+      close: async () => ({ ok: true, value: { dataDisposition: "ERASURE_UNCONFIRMED", cleanupDisposition: "DEFERRED" } }),
+      removeRoot: async () => true,
+      yieldFrame: async () => true
+    })).rejects.toThrow(/warm-up.*ERASED.*COMPLETE/u);
+  });
 });
 
 describe("Event History performance runner page operation", () => {
@@ -133,19 +435,61 @@ describe("Event History performance runner page operation", () => {
         operationId: "rejected-operation",
         state: "rejected",
         heartbeat: 1,
-        error: { name: "TypeError", message: "original failure", stack: "TypeError: original failure\\n at page.js:4" }
+        error: {
+          name: "TypeError",
+          message: "original failure",
+          stack: "TypeError: original failure\\n at page.js:4",
+          code: "PREPARE_FAILED",
+          cleanupEvidence: {
+            adapter: "indexeddb",
+            phase: "cleanup",
+            sample: 2,
+            eventCount: 10_000,
+            retained: null,
+            sessionId: "idb-session-2",
+            databaseName: "idb-database-2",
+            close: { ok: false, problem: { code: "CLOSE_FAILED", message: "close failed" } },
+            disposeError: "dispose failed",
+            rootRemoved: true,
+            frameYielded: true,
+            gcPasses: null,
+            status: "FAIL",
+            failure: { code: "PREPARE_FAILED", message: "original failure" }
+          }
+        }
       }),
       evaluated(true)
     ]);
 
-    await expect(runPageOperation(cdp, "window.run()", {
+    const rejected = await runPageOperation(cdp, "window.run()", {
       operationId: "rejected-operation",
       deadlineMs: 100
-    })).rejects.toMatchObject({
+    }).then(() => null, (error) => error);
+    expect(rejected).toMatchObject({
       name: "TypeError",
       message: "original failure",
-      stack: "TypeError: original failure\\n at page.js:4"
+      code: "PREPARE_FAILED",
+      stack: "TypeError: original failure\\n at page.js:4",
+      cleanupEvidence: {
+        adapter: "indexeddb",
+        phase: "cleanup",
+        sample: 2,
+        eventCount: 10_000,
+        retained: null,
+        sessionId: "idb-session-2",
+        databaseName: "idb-database-2",
+        close: { ok: false, problem: { code: "CLOSE_FAILED", message: "close failed" } },
+        disposeError: "dispose failed",
+        rootRemoved: true,
+        frameYielded: true,
+        gcPasses: null,
+        status: "FAIL",
+        failure: { code: "PREPARE_FAILED", message: "original failure" }
+      }
     });
+    const startExpression = cdp.calls[0]?.params.expression as string;
+    expect(startExpression).toContain("rawCleanupEvidence");
+    expect(startExpression).not.toContain("serializeCleanupEvidence(error");
     expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
   });
 

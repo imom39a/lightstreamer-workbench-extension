@@ -15,8 +15,11 @@ import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
 import WebSocket from "ws";
 import {
+  collectHeapAfterRepeatedGc,
   createTimeoutDiagnostic,
   PerformanceOperationTimeout,
+  releaseHeapSessionWithCleanup,
+  runHeapMeasurementPlan,
   runPageOperation
 } from "./event-history-performance-runner-operations.mjs";
 
@@ -106,32 +109,41 @@ async function main() {
         );
       }
     });
-    const heapSamples = [];
-    for (const adapter of ["indexeddb", "memory"]) {
-      const count = adapter === "indexeddb" ? 10_000 : 5_000;
-      for (let sample = 1; sample <= 3; sample += 1) {
-        const baseline = await gcHeap(cdp);
-        const session = await evaluate(cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${count})`, 3_600_000);
-        const retained = await gcHeap(cdp);
-        heapSamples.push({
-          adapter,
-          sample,
-          eventCount: count,
-          retained: session.retained,
-          baselineUsedSizeBytes: baseline.usedSize,
-          retainedUsedSizeBytes: retained.usedSize,
-          postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
-        });
-        await evaluate(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", BROWSER_TIMEOUT_MS);
-      }
-    }
+    const heapPlan = await runHeapMeasurementPlan({
+      eventCounts: { indexeddb: 10_000, memory: 5_000 },
+      prepare: ({ adapter, eventCount, phase, sample }) => runPageOperation(
+        cdp,
+        `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${eventCount}, ${JSON.stringify(phase)}, ${sample === null ? "null" : sample})`,
+        { deadlineMs: 3_600_000 }
+      ),
+      forceGc: () => collectHeapAfterRepeatedGc(cdp),
+      record: ({ adapter, eventCount, sample, session, baseline, retained }) => ({
+        adapter,
+        sample,
+        eventCount,
+        sessionId: session.sessionId,
+        databaseName: session.databaseName,
+        retained: session.retained,
+        baselineUsedSizeBytes: baseline.usedSize,
+        retainedUsedSizeBytes: retained.usedSize,
+        postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
+      }),
+      close: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+      removeRoot: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+      yieldFrame: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineMs: BROWSER_TIMEOUT_MS })
+    });
+    const heapSamples = heapPlan.heapSamples;
 
     const lifecycleRetainedHeapBytes = [];
     for (let sample = 0; sample < 3; sample += 1) {
-      const baseline = await gcHeap(cdp);
-      await evaluate(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100)", BROWSER_TIMEOUT_MS);
-      await evaluate(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", BROWSER_TIMEOUT_MS);
-      const released = await gcHeap(cdp);
+      const baseline = await collectHeapAfterRepeatedGc(cdp);
+      await runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineMs: BROWSER_TIMEOUT_MS });
+      const released = await releaseHeapSessionWithCleanup({
+        release: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+        removeRoot: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+        yieldFrame: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+        forceGc: () => collectHeapAfterRepeatedGc(cdp)
+      });
       lifecycleRetainedHeapBytes.push(released.usedSize - baseline.usedSize);
     }
 
@@ -153,11 +165,12 @@ async function main() {
       terminalScenarios: result.terminalScenarios,
       checkpointScenarios: result.checkpointScenarios,
       heapSamples,
+      heapRuns: heapPlan.heapRuns,
       lifecycle: {
         retainedHeapBytes: lifecycleRetainedHeapBytes,
         strictMonotonicGrowth: isStrictlyMonotonic(lifecycleRetainedHeapBytes)
       },
-      telemetry: { storage: "non-authoritative CDP Storage.getUsageAndQuota omitted from verdict" }
+      telemetry: { storageEstimate: "Per-cell navigator.storage.estimate() telemetry is non-authoritative; unavailable/error states are retained and excluded from verdict gates." }
     };
     const decision = classifyEventHistoryPerformance(report, reference);
     const complete = { ...report, decision, reference: { path: referencePath, separatelyPinned: true } };
@@ -233,7 +246,7 @@ function isStrictlyMonotonic(values) {
 }
 
 function markdown(report) {
-  const rows = report.cells.map((cell) => `| ${cell.adapter} | ${cell.workload} | ${cell.shape} | ${cell.sample} | ${cell.latency.offerToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.committedBoundaryToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.finalBoundaryVisibleMs === null ? "—" : cell.latency.finalBoundaryVisibleMs.toFixed(2)} | ${cell.latency.recentPageP95Ms.toFixed(2)} | ${cell.latency.structuredIndexedP95Ms.toFixed(2)} | ${cell.latency.findFullP95Ms.toFixed(2)} |`).join("\n");
+  const rows = report.cells.map((cell) => `| ${cell.adapter} | ${cell.workload} | ${cell.shape} | ${cell.sample} | ${cell.latency.offerToPublicationP95Ms.toFixed(2)} | ${cell.latency.offerToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.committedBoundaryToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.behindBacklogMs.toFixed(2)} | ${cell.latency.finalBoundaryVisibleMs === null ? "—" : cell.latency.finalBoundaryVisibleMs.toFixed(2)} | ${cell.latency.recentPageP95Ms.toFixed(2)} | ${cell.latency.structuredIndexedP95Ms.toFixed(2)} | ${cell.latency.findFullP95Ms.toFixed(2)} |`).join("\n");
   const evidenceRows = report.cells.map((cell) => {
     const key = `${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample}`;
     const correctness = Object.entries(cell.correctness).every(([, value]) => value) ? "PASS" : "FAIL";
@@ -241,11 +254,19 @@ function markdown(report) {
     const storage = `${cell.storage.transactionCount} tx (${cell.storage.readwriteTransactionCount} rw/${cell.storage.readonlyTransactionCount} ro); ${cell.storage.evidenceWriteCount} evidence writes; ${cell.storage.controlWriteCount} control writes; ${cell.storage.facetEntryCount} facet entries; ${cell.storage.indexEntryCount} index entries`;
     const pressure = `${cell.pressure.maxPendingBytes} pending bytes; ${cell.pressure.maxOldestPendingAgeMs.toFixed(2)} ms oldest; states=${cell.pressure.transitions.join(",") || "none"}`;
     const terminal = `${cell.terminal.phase}; reason=${cell.terminal.reason ?? "none"}; boundary=${cell.terminal.committedEvidenceBoundary?.sequence ?? "none"}; missing=${cell.terminal.firstMissingEventId ?? "none"}; refused=${cell.terminal.refusedCount}; discarded=${cell.terminal.discardedCount}`;
-    return `| ${key} | ${correctness} (${cell.accepted}/${cell.published}/${cell.retained}) | ${workload} | ${storage} | ${pressure} | ${terminal} |`;
+    return `| ${key} | ${correctness} (${cell.accepted}/${cell.published}/${cell.retained}) | ${workload} | ${storage} | ${pressure} | ${terminal} | ${JSON.stringify(cell.identityEvidence)} |`;
   }).join("\n");
-  const terminalRows = report.terminalScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.trigger} | ${scenario.terminalReason} | ${scenario.acceptedCount} | ${scenario.refusedCount} | ${scenario.firstMissingEventId ?? "none"} | ${scenario.committedBoundary?.sequence ?? "none"} | ${scenario.terminalPublicationCount} | ${scenario.pressureTransitions.join(",") || "none"} |`).join("\n");
-  const checkpointRows = report.checkpointScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.name} | ${scenario.accepted ? "PASS" : "FAIL"} | ${scenario.retained} | ${scenario.canonicalBytes} | ${scenario.batchAcceptedAsOneOversizedUnit ? "one batch" : "not one batch"} |`).join("\n");
-  return `# Event History performance gate\n\nVerdict: **${report.decision.verdict}**\n\nVisible Chrome: ${report.runner.product}; user agent: ${report.runner.userAgent}; JS: ${report.runner.jsVersion}; matrix samples: ${report.cells.length}; reference: ${report.reference.path}.\n\nSource revision: ${report.source.revision}; dirty at run: ${report.source.dirty}; config: ${JSON.stringify(report.config)}; environment: ${JSON.stringify(report.environment)}.\n\nAbsolute gates are fail-closed and are evaluated per independent sample. No failure is averaged away.\n\n## Matrix\n\n| Adapter | Workload | Shape | Sample | Offer→visible p95 (ms) | Boundary→visible p95 (ms) | Burst final boundary (ms) | Recent p95 (ms) | Structured/indexed p95 (ms) | Find/full p95 (ms) |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${rows}\n\n## Correctness, workload, storage, pressure, and terminal evidence\n\n| Cell | Counts and correctness | Workload | Transaction/facet/index amplification | Pressure | Terminal |\n| --- | --- | --- | --- | --- | --- |\n${evidenceRows}\n\n## Decision\n\nFailures:\n${report.decision.failures.length ? report.decision.failures.map((failure) => `- ${failure}`).join("\n") : "- None"}\n\nReview reasons:\n${report.decision.reviewReasons.length ? report.decision.reviewReasons.map((reason) => `- ${reason}`).join("\n") : "- None"}\n\nHeap samples: ${JSON.stringify(report.heapSamples)}\n\nLifecycle retained heap deltas: ${JSON.stringify(report.lifecycle.retainedHeapBytes)}; strict monotonic growth: ${report.lifecycle.strictMonotonicGrowth}.\n\nStorage telemetry outside the authoritative verdict: ${JSON.stringify(report.telemetry)}\n`;
+  const storageEstimateRows = report.cells.map((cell) => {
+    const estimate = cell.storageEstimate.status === "AVAILABLE"
+      ? `usage=${cell.storageEstimate.usageBytes}; quota=${cell.storageEstimate.quotaBytes}`
+      : `unavailable=${cell.storageEstimate.failure?.code ?? "unknown"}: ${cell.storageEstimate.failure?.message ?? "missing diagnostic"}`;
+    return `| ${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample} | ${estimate} |`;
+  }).join("\n");
+  const longTaskRows = report.cells.map((cell) => `| ${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample} | capture=${JSON.stringify(cell.longTasks.capture)}; commit=${JSON.stringify(cell.longTasks.commit)}; paint=${JSON.stringify(cell.longTasks.paint)}; query=${JSON.stringify(cell.longTasks.query)}; unattributed=${cell.longTasks.unattributed}; reasons=${JSON.stringify(cell.longTasks.unattributedReasons ?? [])} |`).join("\n");
+  const terminalRows = report.terminalScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.trigger} | ${scenario.terminalReason} | ${scenario.acceptedCount} | ${scenario.refusedCount} | ${JSON.stringify(scenario.offeredEventIds)} | ${JSON.stringify(scenario.acceptedEventIds)} | ${JSON.stringify(scenario.retainedEventIds)} | ${JSON.stringify(scenario.publishedEventIds)} | ${JSON.stringify(scenario.refusedEventIds)} | ${scenario.firstMissingEventId} | ${scenario.committedBoundary.sequence}/${scenario.committedBoundary.eventId} | ${scenario.terminalPublicationCount} | ${scenario.pressureTransitions.join(",") || "none"} |`).join("\n");
+  const heapRunRows = report.heapRuns.map((run) => `| ${run.adapter} | ${run.phase} | ${run.sample ?? "warmup"} | ${JSON.stringify(run)} |`).join("\n");
+  const checkpointRows = report.checkpointScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.name} | ${scenario.accepted ? "PASS" : "FAIL"} | ${scenario.retained} | ${scenario.canonicalBytes} | ${scenario.interleaved} | ${scenario.committedBoundaryCorrect} | ${scenario.batchAcceptedAsOneOversizedUnit} | ${JSON.stringify(scenario)} |`).join("\n");
+  return `# Event History performance gate\n\nVerdict: **${report.decision.verdict}**\n\nVisible Chrome: ${report.runner.product}; user agent: ${report.runner.userAgent}; JS: ${report.runner.jsVersion}; matrix samples: ${report.cells.length}; reference: ${report.reference.path}.\n\nSource revision: ${report.source.revision}; dirty at run: ${report.source.dirty}; config: ${JSON.stringify(report.config)}; environment: ${JSON.stringify(report.environment)}.\n\nAbsolute gates are fail-closed and are evaluated per independent sample. No failure is averaged away.\n\n## Matrix\n\n| Adapter | Workload | Shape | Sample | Offer→publication p95 (ms) | Offer→visible p95 (ms) | Boundary→visible p95 (ms) | Behind-backlog (ms) | Burst final boundary (ms) | Recent p95 (ms) | Structured/indexed p95 (ms) | Find/full p95 (ms) |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${rows}\n\n## Correctness, workload, storage, pressure, and exact cell identity evidence\n\n| Cell | Counts and correctness | Workload | Transaction/facet/index amplification | Pressure | Terminal | Exact identity arrays |\n| --- | --- | --- | --- | --- | --- | --- |\n${evidenceRows}\n\n## Long Task phase attribution\n\n| Cell | Exact phase durations, unattributed count, and reasons |\n| --- | --- |\n${longTaskRows}\n\n## Terminal partial-acceptance evidence\n\n| Adapter | Trigger | Reason | Accepted | Refused | Offered IDs | Accepted IDs | Retained IDs | Published IDs | Refused IDs | First missing | Boundary | Terminal publications | Pressure transitions |\n| --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | --- |\n${terminalRows}\n\n## Checkpoint evidence\n\n| Adapter | Name | Accepted | Retained | canonicalBytes | interleavedWhileStaging | committedBoundaryCorrect | batchAcceptedAsOneOversizedUnit | Full scenario evidence |\n| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |\n${checkpointRows}\n\n## Heap cleanup-run evidence\n\n| Adapter | Phase | Sample | Full cleanup evidence |\n| --- | --- | --- | --- |\n${heapRunRows}\n\n## Non-authoritative page storage estimates\n\n| Cell | navigator.storage.estimate() |\n| --- | --- |\n${storageEstimateRows}\n\n## Decision\n\nFailures:\n${report.decision.failures.length ? report.decision.failures.map((failure) => `- ${failure}`).join("\n") : "- None"}\n\nReview reasons:\n${report.decision.reviewReasons.length ? report.decision.reviewReasons.map((reason) => `- ${reason}`).join("\n") : "- None"}\n\nHeap samples: ${JSON.stringify(report.heapSamples)}\n\nLifecycle retained heap deltas: ${JSON.stringify(report.lifecycle.retainedHeapBytes)}; strict monotonic growth: ${report.lifecycle.strictMonotonicGrowth}.\n\nStorage telemetry outside the authoritative verdict: ${JSON.stringify(report.telemetry)}\n`;
 }
 
 async function serve(directory) {
@@ -332,12 +353,6 @@ async function evaluate(cdp, expression, timeoutMs = 30_000) {
     if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text);
     return response.result.value;
   } finally { clearTimeout(timer); }
-}
-
-async function gcHeap(cdp) {
-  await cdp.request("HeapProfiler.enable");
-  await cdp.request("HeapProfiler.collectGarbage");
-  return cdp.request("Runtime.getHeapUsage");
 }
 
 function delay(milliseconds) { return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)); }

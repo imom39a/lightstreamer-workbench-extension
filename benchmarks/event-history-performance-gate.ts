@@ -34,6 +34,24 @@ export type EventHistoryPerformanceShape =
   | "ordinary-item-update"
   | "large-json-rich";
 
+export type EventHistoryPerformanceIdentityEvidence = Readonly<{
+  expectedEventIds: readonly string[];
+  retainedEventIds: readonly string[];
+  publishedEventIds: readonly string[];
+}>;
+
+export type EventHistoryPerformanceStorageEstimate = Readonly<{
+  source: "navigator.storage.estimate";
+  status: "AVAILABLE" | "UNAVAILABLE";
+  usageBytes: number | null;
+  quotaBytes: number | null;
+  failure: Readonly<{ code: string; message: string }> | null;
+}>;
+
+export type EventHistoryPerformanceLongTaskReason =
+  | Readonly<{ reason: "no-overlap"; startTime: number; duration: number }>
+  | Readonly<{ reason: "ambiguous"; overlaps: readonly Readonly<{ phase: "capture" | "commit" | "paint" | "query"; duration: number }>[] }>;
+
 export type EventHistoryPerformanceCell = Readonly<{
   adapter: EventHistoryPerformanceAdapter;
   workload: EventHistoryPerformanceWorkload;
@@ -64,7 +82,9 @@ export type EventHistoryPerformanceCell = Readonly<{
     commit: readonly number[];
     paint: readonly number[];
     query: readonly number[];
+    unattributedReasons: readonly EventHistoryPerformanceLongTaskReason[];
   }>;
+  identityEvidence: EventHistoryPerformanceIdentityEvidence;
   storage: Readonly<{
     transactionCount: number;
     readwriteTransactionCount: number;
@@ -74,6 +94,7 @@ export type EventHistoryPerformanceCell = Readonly<{
     facetEntryCount: number;
     indexEntryCount: number;
   }>;
+  storageEstimate: EventHistoryPerformanceStorageEstimate;
   accepted: number;
   published: number;
   retained: number;
@@ -105,7 +126,27 @@ export type EventHistoryPerformanceHeapSample = Readonly<{
   adapter: EventHistoryPerformanceAdapter;
   sample: number;
   eventCount: number;
-  postGcHeapDeltaBytes: number;
+  sessionId: string | null;
+  databaseName: string | null;
+  status: "PASS" | "FAIL";
+  failure: Readonly<{ code: string; message: string }> | null;
+  postGcHeapDeltaBytes: number | null;
+}>;
+
+export type EventHistoryPerformanceHeapRun = Readonly<{
+  adapter: EventHistoryPerformanceAdapter;
+  phase: "warmup" | "cleanup";
+  sample: number | null;
+  eventCount: number;
+  retained: number | null;
+  sessionId: string | null;
+  databaseName: string | null;
+  close: Readonly<Record<string, unknown>> | null;
+  rootRemoved: boolean;
+  frameYielded: boolean;
+  gcPasses: number | null;
+  status: "PASS" | "FAIL";
+  failure: Readonly<{ code: string; message: string }> | null;
 }>;
 
 export type EventHistoryPerformanceTerminalScenario = Readonly<{
@@ -114,11 +155,15 @@ export type EventHistoryPerformanceTerminalScenario = Readonly<{
   tier: "NORMAL" | "LOWER";
   terminalReason: "PENDING_BYTE_LIMIT" | "PENDING_AGE_LIMIT";
   terminalReasonCorrect: boolean;
+  offeredEventIds: readonly string[];
+  acceptedEventIds: readonly string[];
+  retainedEventIds: readonly string[];
+  publishedEventIds: readonly string[];
+  refusedEventIds: readonly string[];
   acceptedCount: number;
   refusedCount: number;
-  refusedEventIds: readonly string[];
-  firstMissingEventId: string | null;
-  committedBoundary: Readonly<{ sequence: number; eventId: string }> | null;
+  firstMissingEventId: string;
+  committedBoundary: Readonly<{ sequence: number; eventId: string }>;
   terminalPublicationCount: number;
   finalBoundaryCorrect: boolean;
   refusedIdentityCorrect: boolean;
@@ -154,6 +199,7 @@ export type EventHistoryPerformanceReport = Readonly<{
   terminalScenarios: readonly EventHistoryPerformanceTerminalScenario[];
   checkpointScenarios: readonly EventHistoryPerformanceCheckpointScenario[];
   heapSamples: readonly EventHistoryPerformanceHeapSample[];
+  heapRuns: readonly EventHistoryPerformanceHeapRun[];
   lifecycle: Readonly<{
     retainedHeapBytes: readonly number[];
     strictMonotonicGrowth: boolean;
@@ -294,11 +340,15 @@ export function classifyEventHistoryPerformance(
       if (sample.eventCount !== limit.heapEventCount) {
         failures.push(`${adapter} heap sample must contain ${limit.heapEventCount} events.`);
       }
-      if (sample.postGcHeapDeltaBytes > limit.heapDeltaBytes) {
+      if (sample.status !== "PASS") {
+        failures.push(`${adapter} heap sample ${sample.sample} failed: ${sample.failure?.code ?? "unknown"}: ${sample.failure?.message ?? "missing failure details"}.`);
+      }
+      if (sample.status === "PASS" && (sample.postGcHeapDeltaBytes === null || sample.postGcHeapDeltaBytes > limit.heapDeltaBytes)) {
         failures.push(`${adapter} post-GC heap delta exceeds ${limit.heapDeltaBytes} bytes.`);
       }
     }
   }
+  validateHeapRuns(validReport.heapRuns, validReport.heapSamples, failures);
   validateTerminalScenarios(validReport.terminalScenarios, failures);
   validateCheckpointScenarios(validReport.checkpointScenarios, failures);
   if (validReport.lifecycle.strictMonotonicGrowth) {
@@ -363,6 +413,7 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && Array.isArray(value.terminalScenarios) && value.terminalScenarios.every(isTerminalScenario)
     && Array.isArray(value.checkpointScenarios) && value.checkpointScenarios.every(isCheckpointScenario)
     && Array.isArray(value.heapSamples) && value.heapSamples.every(isHeapSample)
+    && Array.isArray(value.heapRuns) && value.heapRuns.every(isHeapRun)
     && isRecord(lifecycle) && Array.isArray(lifecycle.retainedHeapBytes)
     && lifecycle.retainedHeapBytes.length === SAMPLE_COUNT && lifecycle.retainedHeapBytes.every(isFiniteNumber)
     && isBoolean(lifecycle.strictMonotonicGrowth);
@@ -374,15 +425,19 @@ function isTerminalScenario(value: unknown): value is EventHistoryPerformanceTer
     || !["PENDING_BYTES", "PENDING_AGE"].includes(value.trigger as string)
     || !["NORMAL", "LOWER"].includes(value.tier as string)
     || !["PENDING_BYTE_LIMIT", "PENDING_AGE_LIMIT"].includes(value.terminalReason as string)
-    || !Number.isSafeInteger(value.acceptedCount) || (value.acceptedCount as number) < 0
+    || !Array.isArray(value.offeredEventIds) || value.offeredEventIds.length === 0 || !value.offeredEventIds.every((id) => typeof id === "string" && id.length > 0)
+    || !Array.isArray(value.acceptedEventIds) || value.acceptedEventIds.length === 0 || !value.acceptedEventIds.every((id) => typeof id === "string" && id.length > 0)
+    || !Array.isArray(value.retainedEventIds) || value.retainedEventIds.length === 0 || !value.retainedEventIds.every((id) => typeof id === "string" && id.length > 0)
+    || !Array.isArray(value.publishedEventIds) || value.publishedEventIds.length === 0 || !value.publishedEventIds.every((id) => typeof id === "string" && id.length > 0)
+    || !Number.isSafeInteger(value.acceptedCount) || (value.acceptedCount as number) < 1
     || !Number.isSafeInteger(value.refusedCount) || (value.refusedCount as number) < 1
-    || !Array.isArray(value.refusedEventIds) || !value.refusedEventIds.every((id) => typeof id === "string" && id.length > 0)
-    || !(value.firstMissingEventId === null || typeof value.firstMissingEventId === "string")
+    || !Array.isArray(value.refusedEventIds) || value.refusedEventIds.length === 0 || !value.refusedEventIds.every((id) => typeof id === "string" && id.length > 0)
+    || typeof value.firstMissingEventId !== "string" || value.firstMissingEventId.length === 0
     || !Number.isSafeInteger(value.terminalPublicationCount) || (value.terminalPublicationCount as number) < 0
     || !isBoolean(value.terminalReasonCorrect) || !isBoolean(value.finalBoundaryCorrect) || !isBoolean(value.refusedIdentityCorrect)
     || !isBoolean(value.exactOneTerminalPublication) || !Array.isArray(value.pressureTransitions)
     || !value.pressureTransitions.every((entry) => typeof entry === "string")) return false;
-  if (value.committedBoundary !== null && (!isRecord(value.committedBoundary) || !Number.isSafeInteger(value.committedBoundary.sequence) || typeof value.committedBoundary.eventId !== "string")) return false;
+  if (!isRecord(value.committedBoundary) || !Number.isSafeInteger(value.committedBoundary.sequence) || typeof value.committedBoundary.eventId !== "string" || value.committedBoundary.eventId.length === 0) return false;
   return true;
 }
 
@@ -410,9 +465,19 @@ function validateTerminalScenarios(
     const scenario = matches[0]!;
     if (scenario.terminalReason !== (trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT") || !scenario.terminalReasonCorrect) failures.push(`${adapter}/${trigger} reported the wrong terminal reason.`);
     if (!scenario.finalBoundaryCorrect || !scenario.refusedIdentityCorrect || !scenario.exactOneTerminalPublication || scenario.terminalPublicationCount !== 1) failures.push(`${adapter}/${trigger} did not prove terminal identity, final boundary, and exactly-one publication.`);
-    if (scenario.refusedCount !== scenario.refusedEventIds.length || scenario.refusedCount < 1) failures.push(`${adapter}/${trigger} refused-event accounting is incomplete.`);
+    const offeredIds = scenario.offeredEventIds;
+    const acceptedIds = scenario.acceptedEventIds;
+    const retainedIds = scenario.retainedEventIds;
+    const publishedIds = scenario.publishedEventIds;
+    const refusedIds = scenario.refusedEventIds;
+    if (scenario.acceptedCount !== acceptedIds.length || scenario.refusedCount !== refusedIds.length || scenario.refusedCount < 1) failures.push(`${adapter}/${trigger} accepted/refused-event accounting is incomplete.`);
+    if (new Set(offeredIds).size !== offeredIds.length || new Set(acceptedIds).size !== acceptedIds.length || new Set(retainedIds).size !== retainedIds.length || new Set(publishedIds).size !== publishedIds.length || new Set(refusedIds).size !== refusedIds.length) failures.push(`${adapter}/${trigger} terminal identifier evidence contains duplicates.`);
+    if (offeredIds.length !== scenario.acceptedCount + scenario.refusedCount || !identifiersMatch(acceptedIds, offeredIds.slice(0, scenario.acceptedCount)) || !identifiersMatch(refusedIds, offeredIds.slice(scenario.acceptedCount))) failures.push(`${adapter}/${trigger} accepted/refused identifiers do not form the exact offered prefix/suffix.`);
+    if (!identifiersMatch(retainedIds, acceptedIds)) failures.push(`${adapter}/${trigger} retained identifiers do not exactly equal accepted identifiers.`);
+    if (!identifiersMatch(publishedIds, acceptedIds)) failures.push(`${adapter}/${trigger} published identifiers do not exactly equal accepted identifiers.`);
+    if (scenario.committedBoundary.sequence !== scenario.acceptedCount || scenario.committedBoundary.eventId !== acceptedIds.at(-1)) failures.push(`${adapter}/${trigger} committed boundary does not equal the last accepted identifier.`);
+    if (scenario.firstMissingEventId !== refusedIds[0]) failures.push(`${adapter}/${trigger} first missing event identity is incorrect.`);
     if (!isValidTerminalPressureTransition(scenario.pressureTransitions)) failures.push(`${adapter}/${trigger} did not report the exact NEAR_LIMIT to EXHAUSTED pressure transition.`);
-    if (trigger === "PENDING_BYTES" && scenario.firstMissingEventId !== scenario.refusedEventIds[0]) failures.push(`${adapter}/${trigger} first missing event identity is incorrect.`);
     if (trigger === "PENDING_BYTES" && (scenario.acceptedCount !== TERMINAL_PENDING_BYTE_ACCEPTED_COUNT || scenario.refusedCount !== TERMINAL_PENDING_BYTE_EVENT_COUNT - TERMINAL_PENDING_BYTE_ACCEPTED_COUNT)) failures.push(`${adapter}/${trigger} did not exercise the exact 17-event, 2 MiB checkpoint pressure workload.`);
     if (trigger === "PENDING_AGE" && (scenario.acceptedCount !== 1 || scenario.refusedCount !== 1)) failures.push(`${adapter}/${trigger} did not exercise the exact one-accepted/one-refused age workload.`);
   }
@@ -470,25 +535,171 @@ function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell
   const correctness = value.correctness;
   const latency = value.latency;
   const longTasks = value.longTasks;
+  const identityEvidence = value.identityEvidence;
   const storage = value.storage;
+  const storageEstimate = value.storageEstimate;
   const workloadFacts = value.workloadFacts;
   const pressure = value.pressure;
   const terminal = value.terminal;
   if (!isRecord(correctness) || !["retainedMatchesAccepted", "publicationMatchesAccepted", "retainedInOrder", "publicationInOrder", "finalBoundaryCorrect", "terminalOutcomeCorrect"].every((key) => correctness[key] === true || correctness[key] === false)) return false;
   if (!isRecord(latency) || !["offerToPublicationP95Ms", "offerToVisibleFrameP95Ms", "committedBoundaryToVisibleFrameP95Ms", "behindBacklogMs", "recentPageP95Ms", "structuredIndexedP95Ms", "findFullP95Ms"].every((key) => isFiniteNumber(latency[key]) && (latency[key] as number) >= 0) || !(latency.finalBoundaryVisibleMs === null || (isFiniteNumber(latency.finalBoundaryVisibleMs) && latency.finalBoundaryVisibleMs >= 0))) return false;
-  if (!isRecord(longTasks) || !isBoolean(longTasks.supported) || !Number.isSafeInteger(longTasks.unattributed) || (longTasks.unattributed as number) < 0 || !["capture", "commit", "paint", "query"].every((key) => Array.isArray(longTasks[key]) && (longTasks[key] as unknown[]).every((duration) => isFiniteNumber(duration) && duration >= 0))) return false;
+  if (!isRecord(longTasks) || !isBoolean(longTasks.supported) || !Number.isSafeInteger(longTasks.unattributed) || (longTasks.unattributed as number) < 0 || !["capture", "commit", "paint", "query"].every((key) => Array.isArray(longTasks[key]) && (longTasks[key] as unknown[]).every((duration) => isFiniteNumber(duration) && duration >= 0)) || !Array.isArray(longTasks.unattributedReasons) || !longTasks.unattributedReasons.every(isLongTaskReason)) return false;
+  if (!isIdentityEvidence(identityEvidence)) return false;
   if (!isRecord(storage) || !["transactionCount", "readwriteTransactionCount", "readonlyTransactionCount", "evidenceWriteCount", "controlWriteCount", "facetEntryCount", "indexEntryCount"].every((key) => Number.isSafeInteger(storage[key]) && (storage[key] as number) >= 0)) return false;
+  if (!isStorageEstimateTelemetry(storageEstimate)) return false;
   if (!isRecord(workloadFacts) || !["expectedCount", "offeredEventsPerSecond", "shapeBytes", "persistedJsonBytes", "indexedDbWritesPerEvent", "searchTokenCount"].every((key) => isFiniteNumber(workloadFacts[key]) && (workloadFacts[key] as number) >= 0)) return false;
   if (!isRecord(pressure) || !isFiniteNumber(pressure.maxPendingBytes) || !isFiniteNumber(pressure.maxOldestPendingAgeMs) || pressure.maxPendingBytes < 0 || pressure.maxOldestPendingAgeMs < 0 || !Array.isArray(pressure.transitions) || !pressure.transitions.every((entry) => typeof entry === "string") || !isRecord(pressure.limits)) return false;
   if (!isRecord(terminal) || !["RUNNING", "STOPPED"].includes(terminal.phase as string) || !(terminal.reason === null || typeof terminal.reason === "string") || !(terminal.firstMissingEventId === null || typeof terminal.firstMissingEventId === "string") || !Number.isSafeInteger(terminal.refusedCount) || !Number.isSafeInteger(terminal.discardedCount)) return false;
   return ["accepted", "published", "retained"].every((key) => Number.isSafeInteger(value[key]) && (value[key] as number) >= 0);
 }
 
+function isLongTaskReason(value: unknown): value is EventHistoryPerformanceLongTaskReason {
+  if (!isRecord(value) || (value.reason !== "no-overlap" && value.reason !== "ambiguous")) return false;
+  if (value.reason === "no-overlap") return isFiniteNumber(value.startTime) && value.startTime >= 0 && isFiniteNumber(value.duration) && value.duration >= 0;
+  return Array.isArray(value.overlaps) && value.overlaps.every((overlap) => isRecord(overlap)
+    && ["capture", "commit", "paint", "query"].includes(overlap.phase as string)
+    && isFiniteNumber(overlap.duration) && overlap.duration > 0);
+}
+
+function isIdentityEvidence(value: unknown): value is EventHistoryPerformanceIdentityEvidence {
+  if (!isRecord(value)) return false;
+  return ["expectedEventIds", "retainedEventIds", "publishedEventIds"].every((key) => {
+    const ids = value[key];
+    return Array.isArray(ids)
+      && ids.length > 0
+      && ids.every((id) => typeof id === "string" && id.length > 0)
+      && new Set(ids).size === ids.length;
+  });
+}
+
+function isStorageEstimateTelemetry(value: unknown): value is EventHistoryPerformanceStorageEstimate {
+  if (!isRecord(value) || value.source !== "navigator.storage.estimate" || !["AVAILABLE", "UNAVAILABLE"].includes(value.status as string)) return false;
+  if (value.status === "AVAILABLE") {
+    return value.failure === null
+      && isFiniteNumber(value.usageBytes) && value.usageBytes >= 0
+      && isFiniteNumber(value.quotaBytes) && value.quotaBytes >= 0;
+  }
+  return value.usageBytes === null && value.quotaBytes === null
+    && isRecord(value.failure) && typeof value.failure.code === "string" && typeof value.failure.message === "string";
+}
+
 function isHeapSample(value: unknown): value is EventHistoryPerformanceHeapSample {
   return isRecord(value) && ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
     && Number.isInteger(value.sample) && (value.sample as number) >= 1 && (value.sample as number) <= SAMPLE_COUNT
     && Number.isSafeInteger(value.eventCount) && (value.eventCount as number) >= 0
-    && isFiniteNumber(value.postGcHeapDeltaBytes);
+    && (value.sessionId === null || typeof value.sessionId === "string")
+    && (value.status === "FAIL"
+      ? (value.adapter === "indexeddb" ? value.databaseName === null || (typeof value.databaseName === "string" && value.databaseName.length > 0) : value.databaseName === null)
+      : (value.adapter === "indexeddb" ? typeof value.databaseName === "string" && value.databaseName.length > 0 : value.databaseName === null))
+    && (value.status === "PASS" || value.status === "FAIL")
+    && (value.status === "PASS"
+      ? value.failure === null && typeof value.sessionId === "string" && value.sessionId.length > 0 && isFiniteNumber(value.postGcHeapDeltaBytes)
+      : isRecord(value.failure) && typeof value.failure.code === "string" && typeof value.failure.message === "string" && value.postGcHeapDeltaBytes === null);
+}
+
+function isHeapRun(value: unknown): value is EventHistoryPerformanceHeapRun {
+  return isRecord(value) && ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
+    && (value.phase === "warmup" || value.phase === "cleanup")
+    && (value.sample === null || (Number.isInteger(value.sample) && (value.sample as number) >= 1 && (value.sample as number) <= SAMPLE_COUNT))
+    && Number.isSafeInteger(value.eventCount) && (value.eventCount as number) >= 0
+    && (value.retained === null || (Number.isSafeInteger(value.retained) && (value.retained as number) >= 0))
+    && (value.sessionId === null || typeof value.sessionId === "string")
+    && (value.adapter === "indexeddb" ? value.databaseName === null || (typeof value.databaseName === "string" && value.databaseName.length > 0) : value.databaseName === null)
+    && (value.close === null || isRecord(value.close))
+    && isBoolean(value.rootRemoved)
+    && isBoolean(value.frameYielded)
+    && (value.gcPasses === null || value.gcPasses === 3)
+    && (value.status === "PASS" || value.status === "FAIL")
+    && (value.status === "PASS"
+      ? value.failure === null && typeof value.sessionId === "string" && value.sessionId.length > 0
+        && (value.adapter === "indexeddb" ? typeof value.databaseName === "string" && value.databaseName.length > 0 : value.databaseName === null)
+        && value.retained !== null && value.gcPasses === 3 && value.rootRemoved === true && value.frameYielded === true
+        && isRecord(value.close) && value.close.ok === true
+      : isRecord(value.failure) && typeof value.failure.code === "string" && typeof value.failure.message === "string");
+}
+
+function validateHeapRuns(
+  runs: readonly EventHistoryPerformanceHeapRun[],
+  samples: readonly EventHistoryPerformanceHeapSample[],
+  failures: string[]
+): void {
+  const expectedRuns = ADAPTERS.length * (SAMPLE_COUNT + 1);
+  if (runs.length !== expectedRuns) failures.push(`Expected ${expectedRuns} heap warm-up/cleanup evidence records.`);
+  const warmups = new Map<EventHistoryPerformanceAdapter, EventHistoryPerformanceHeapRun>();
+  const cleanups = new Map<string, EventHistoryPerformanceHeapRun>();
+  for (const adapter of ADAPTERS) {
+    const adapterRuns = runs.filter((run) => run.adapter === adapter);
+    const warmupCount = adapterRuns.filter((run) => run.phase === "warmup" && run.sample === null).length;
+    const cleanupSamples = adapterRuns
+      .filter((run) => run.phase === "cleanup")
+      .map((run) => run.sample)
+      .sort((left, right) => Number(left) - Number(right));
+    if (warmupCount !== 1) failures.push(`${adapter} heap evidence must contain exactly one warm-up slot.`);
+    if (cleanupSamples.join(",") !== "1,2,3") failures.push(`${adapter} heap evidence must contain exactly cleanup slots 1,2,3.`);
+  }
+  for (const run of runs) {
+    const key = `${run.adapter}/${run.phase}/${run.sample ?? "warmup"}`;
+    if (run.phase === "warmup") {
+      if (warmups.has(run.adapter)) failures.push(`Duplicate ${run.adapter} heap warm-up evidence.`);
+      warmups.set(run.adapter, run);
+    } else {
+      if (cleanups.has(key)) failures.push(`Duplicate ${key} heap cleanup evidence.`);
+      cleanups.set(key, run);
+    }
+    if (run.status !== "PASS") {
+      failures.push(`${run.adapter} ${run.phase} heap cleanup failed: ${run.failure?.code ?? "unknown"}: ${run.failure?.message ?? "missing failure details"}.`);
+      continue;
+    }
+    if (run.retained !== run.eventCount) failures.push(`${run.adapter} ${run.phase} heap cleanup retained count mismatch.`);
+    const close = run.close;
+    if (close === null || close.ok !== true || !isRecord(close.value)
+      || close.value.dataDisposition !== "ERASED" || close.value.cleanupDisposition !== "COMPLETE") {
+      failures.push(`${run.adapter} ${run.phase} heap cleanup did not confirm ERASED/COMPLETE.`);
+    }
+  }
+  const warmupSessionIds = new Set<string>();
+  const warmupDatabaseNames = new Set<string>();
+  const measuredSessionIds = new Set<string>();
+  const measuredDatabaseNames = new Set<string>();
+  for (const adapter of ADAPTERS) {
+    const warmup = warmups.get(adapter);
+    if (!warmup) {
+      failures.push(`Missing ${adapter} heap warm-up evidence.`);
+    } else if (warmup.status === "PASS") {
+      if (warmup.sessionId === null) failures.push(`Missing ${adapter} warm-up Panel Session identity.`);
+      else if (warmupSessionIds.has(warmup.sessionId)) failures.push(`Duplicate heap warm-up Panel Session identity: ${warmup.sessionId}.`);
+      else warmupSessionIds.add(warmup.sessionId);
+      if (adapter === "indexeddb" && warmup.databaseName !== null) {
+        if (warmupDatabaseNames.has(warmup.databaseName)) failures.push(`Duplicate heap warm-up IndexedDB database identity: ${warmup.databaseName}.`);
+        else warmupDatabaseNames.add(warmup.databaseName);
+      }
+    }
+    for (let sampleNumber = 1; sampleNumber <= SAMPLE_COUNT; sampleNumber += 1) {
+      const sample = samples.find((entry) => entry.adapter === adapter && entry.sample === sampleNumber);
+      const cleanup = cleanups.get(`${adapter}/cleanup/${sampleNumber}`);
+      if (!sample || !cleanup) {
+        failures.push(`Missing ${adapter} heap sample/cleanup slot ${sampleNumber}.`);
+        continue;
+      }
+      if (cleanup.status === "PASS" && sample.status === "PASS") {
+        if (sample.sessionId === null || cleanup.sessionId !== sample.sessionId) {
+          failures.push(`${adapter} heap sample ${sampleNumber} does not match its cleanup identity.`);
+        } else if (measuredSessionIds.has(sample.sessionId)) {
+          failures.push(`Duplicate measured heap Panel Session identity: ${sample.sessionId}.`);
+        } else {
+          measuredSessionIds.add(sample.sessionId);
+        }
+        if (adapter === "indexeddb" && sample.databaseName !== null) {
+          if (cleanup.databaseName !== sample.databaseName) failures.push(`${adapter} heap sample ${sampleNumber} does not match its cleanup database identity.`);
+          if (measuredDatabaseNames.has(sample.databaseName)) failures.push(`Duplicate measured heap IndexedDB database identity: ${sample.databaseName}.`);
+          else measuredDatabaseNames.add(sample.databaseName);
+        }
+        const sampleSessionId = sample.sessionId;
+        if (sampleSessionId !== null && warmupSessionIds.has(sampleSessionId)) failures.push(`${adapter} measured heap sample reuses warm-up identity: ${sampleSessionId}.`);
+        if (sample.databaseName !== null && warmupDatabaseNames.has(sample.databaseName)) failures.push(`${adapter} measured heap sample reuses warm-up database identity: ${sample.databaseName}.`);
+      }
+    }
+  }
 }
 
 function hasIndependentMatrixSamples(cells: unknown[]): cells is EventHistoryPerformanceCell[] {
@@ -538,6 +749,16 @@ function validateCell(cell: EventHistoryPerformanceCell, failures: string[]): vo
   if (cell.accepted !== cell.workloadFacts.expectedCount) {
     failures.push(`${label} accepted count does not match the workload count.`);
   }
+  const { expectedEventIds, retainedEventIds, publishedEventIds } = cell.identityEvidence;
+  if (expectedEventIds.length !== cell.workloadFacts.expectedCount) failures.push(`${label} expected identifier evidence count is incomplete.`);
+  if (retainedEventIds.length !== cell.retained) failures.push(`${label} retained identifier evidence count does not match retained count.`);
+  if (publishedEventIds.length !== cell.published) failures.push(`${label} published identifier evidence count does not match published count.`);
+  const retainedInOrder = identifiersMatch(retainedEventIds, expectedEventIds);
+  const publishedInOrder = identifiersMatch(publishedEventIds, expectedEventIds);
+  if (cell.correctness.retainedInOrder !== retainedInOrder) failures.push(`${label} retained identifier order evidence disagrees with correctness.`);
+  if (cell.correctness.publicationInOrder !== publishedInOrder) failures.push(`${label} published identifier order evidence disagrees with correctness.`);
+  if (cell.correctness.retainedMatchesAccepted !== (retainedEventIds.length === cell.accepted)) failures.push(`${label} retained identifier count evidence disagrees with correctness.`);
+  if (cell.correctness.publicationMatchesAccepted !== (publishedEventIds.length === cell.accepted)) failures.push(`${label} published identifier count evidence disagrees with correctness.`);
   if (cell.terminal.phase !== "RUNNING") {
     failures.push(`${label} ended in terminal phase ${cell.terminal.phase}.`);
   }
@@ -553,6 +774,10 @@ function validateCell(cell: EventHistoryPerformanceCell, failures: string[]): vo
       break;
     }
   }
+}
+
+function identifiersMatch(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length && actual.every((id, index) => id === expected[index]);
 }
 
 function compareReference(
@@ -579,20 +804,27 @@ function compareReference(
     referenceByKey.set(cellKey(cell), samples);
   }
   for (const current of report.cells) {
-    const matching = referenceByKey.get(cellKey(current));
+    const key = cellKey(current);
+    const currentMatching = report.cells.filter((cell) => cellKey(cell) === key);
+    const matching = referenceByKey.get(key);
     if (!matching || matching.length < SAMPLE_COUNT) {
       reviewReasons.push(`Pinned reference is missing comparable samples for ${cellLabel(current)}.`);
       continue;
     }
+    if (current.sample !== 1) continue;
     const metrics: Array<[string, number, number[]]> = [
-      ["offer-to-publication p95", current.latency.offerToPublicationP95Ms, matching.map((cell) => cell.latency.offerToPublicationP95Ms)],
-      ["offer-to-visible p95", current.latency.offerToVisibleFrameP95Ms, matching.map((cell) => cell.latency.offerToVisibleFrameP95Ms)],
-      ["recent-page p95", current.latency.recentPageP95Ms, matching.map((cell) => cell.latency.recentPageP95Ms)],
-      ["structured/indexed p95", current.latency.structuredIndexedP95Ms, matching.map((cell) => cell.latency.structuredIndexedP95Ms)],
-      ["Find/full p95", current.latency.findFullP95Ms, matching.map((cell) => cell.latency.findFullP95Ms)]
+      ["offer-to-publication p95", median(currentMatching.map((cell) => cell.latency.offerToPublicationP95Ms)), matching.map((cell) => cell.latency.offerToPublicationP95Ms)],
+      ["offer-to-visible p95", median(currentMatching.map((cell) => cell.latency.offerToVisibleFrameP95Ms)), matching.map((cell) => cell.latency.offerToVisibleFrameP95Ms)],
+      ["recent-page p95", median(currentMatching.map((cell) => cell.latency.recentPageP95Ms)), matching.map((cell) => cell.latency.recentPageP95Ms)],
+      ["structured/indexed p95", median(currentMatching.map((cell) => cell.latency.structuredIndexedP95Ms)), matching.map((cell) => cell.latency.structuredIndexedP95Ms)],
+      ["Find/full p95", median(currentMatching.map((cell) => cell.latency.findFullP95Ms)), matching.map((cell) => cell.latency.findFullP95Ms)]
     ];
     if (current.latency.finalBoundaryVisibleMs !== null && current.workload === "burst") {
-      metrics.push(["burst final boundary", current.latency.finalBoundaryVisibleMs, matching.flatMap((cell) => cell.latency.finalBoundaryVisibleMs === null ? [] : [cell.latency.finalBoundaryVisibleMs])]);
+      metrics.push([
+        "burst final boundary",
+        median(currentMatching.flatMap((cell) => cell.latency.finalBoundaryVisibleMs === null ? [] : [cell.latency.finalBoundaryVisibleMs])),
+        matching.flatMap((cell) => cell.latency.finalBoundaryVisibleMs === null ? [] : [cell.latency.finalBoundaryVisibleMs])
+      ]);
     }
     for (const [name, value, referenceValues] of metrics) {
       const referenceMedian = median(referenceValues);

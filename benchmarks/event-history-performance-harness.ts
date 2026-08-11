@@ -11,11 +11,14 @@ import {
   createInMemoryEventHistory,
   type EvidenceCandidate,
   type EventHistory,
-  type HistoryPublication
+  type HistoryPublication,
+  type CloseResult,
+  type Outcome
 } from "../src/core/event-history-authoritative";
 import { historyCapacityLimits } from "../src/core/event-history-capacity";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
+import { authoritativeEventDatabaseName } from "../src/core/indexeddb/authoritative-event-db";
 import {
   TOPOLOGY_SYNC_BEGIN,
   TOPOLOGY_SYNC_CHUNK,
@@ -36,6 +39,7 @@ import {
   type EventHistoryPerformanceCell,
   type EventHistoryPerformanceCheckpointScenario,
   type EventHistoryPerformanceHeapSample,
+  type EventHistoryPerformanceStorageEstimate,
   type EventHistoryPerformanceReference,
   type EventHistoryPerformanceReport,
   type EventHistoryPerformanceShape,
@@ -140,6 +144,7 @@ type RetainedHeapSession = Readonly<{
   adapter: "indexeddb" | "memory";
   count: number;
   retained: number;
+  sessionId: string;
   root: HTMLElement;
   disposePanel: () => void;
   runtime: ReturnType<typeof createWorkbenchRuntime>;
@@ -181,13 +186,123 @@ export type LongTaskAttribution = Readonly<{
   unattributedReasons: readonly UnattributedLongTaskReason[];
 }>;
 
+export type HeapPreparationCleanupEvidence = Readonly<{
+  adapter: "indexeddb" | "memory";
+  phase: "warmup" | "cleanup";
+  sample: number | null;
+  eventCount: number;
+  retained: number | null;
+  sessionId: string | null;
+  databaseName: string | null;
+  close: unknown;
+  disposeError: string | null;
+  rootRemoved: boolean;
+  frameYielded: boolean;
+  gcPasses: number | null;
+  status: "PASS" | "FAIL";
+  failure: Readonly<{ code: string; message: string }>;
+}>;
+
+export async function bestEffortHeapPreparationCleanup(input: Readonly<{
+  adapter: "indexeddb" | "memory";
+  eventCount: number;
+  phase: "warmup" | "sample";
+  sample: number | null;
+  sessionId: string;
+  databaseName: string | null;
+  originalError: unknown;
+  disposePanel: () => void;
+  closeHistory: () => Promise<unknown>;
+  removeRoot: () => void;
+  yieldFrame: () => Promise<void>;
+}>): Promise<HeapPreparationCleanupEvidence> {
+  let disposeError: string | null = null;
+  let close: unknown = null;
+  let rootRemoved = false;
+  let frameYielded = false;
+  try {
+    input.disposePanel();
+  } catch (error) {
+    disposeError = error instanceof Error ? error.message : String(error);
+  }
+  try {
+    close = await input.closeHistory();
+  } catch {
+    close = null;
+  }
+  try {
+    input.removeRoot();
+    rootRemoved = true;
+  } catch {
+    rootRemoved = false;
+  }
+  try {
+    await input.yieldFrame();
+    frameYielded = true;
+  } catch {
+    frameYielded = false;
+  }
+  return {
+    adapter: input.adapter,
+    phase: input.phase === "warmup" ? "warmup" as const : "cleanup" as const,
+    sample: input.phase === "warmup" ? null : input.sample,
+    eventCount: input.eventCount,
+    retained: null,
+    sessionId: input.sessionId,
+    databaseName: input.databaseName,
+    close,
+    disposeError,
+    rootRemoved,
+    frameYielded,
+    gcPasses: null,
+    status: "FAIL" as const,
+    failure: {
+      code: "PREPARE_FAILED",
+      message: input.originalError instanceof Error ? input.originalError.message : String(input.originalError)
+    }
+  };
+}
+
+export async function closeHeapSessionWithEvidence(input: Readonly<{
+  disposePanel: () => void;
+  closeHistory: () => Promise<Outcome<CloseResult>>;
+}>): Promise<unknown> {
+  let disposeError: { code: string; message: string } | null = null;
+  let closeOutcome: Outcome<CloseResult> | null = null;
+  let closeError: { code: string; message: string } | null = null;
+  try {
+    input.disposePanel();
+  } catch (error) {
+    disposeError = { code: "PANEL_DISPOSE_FAILED", message: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    closeOutcome = await input.closeHistory();
+  } catch (error) {
+    closeError = { code: "CLOSE_FAILED", message: error instanceof Error ? error.message : String(error) };
+  }
+  if (!disposeError && !closeError) return closeOutcome;
+  const problem = disposeError ?? closeError!;
+  return {
+    ok: false,
+    problem: {
+      code: problem.code,
+      message: [disposeError?.message, closeError?.message].filter(Boolean).join("; ")
+    },
+    ...(closeOutcome ? { closeOutcome } : {}),
+    ...(disposeError ? { disposeError } : {}),
+    ...(closeError ? { closeError } : {})
+  };
+}
+
 declare global {
   interface Window {
     __LSEW_EVENT_HISTORY_PERFORMANCE__?: {
       run(overrides?: Partial<EventHistoryPerformanceConfig>): Promise<HarnessResult>;
       classify(report: EventHistoryPerformanceReport, reference: EventHistoryPerformanceReference): ReturnType<typeof classifyEventHistoryPerformance>;
-      prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number): Promise<{ adapter: string; count: number; retained: number }>;
-      releaseRetainedHeapSample(): Promise<void>;
+      prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number, phase: "warmup" | "sample", sample: number | null): Promise<{ adapter: string; count: number; retained: number; sessionId: string; databaseName: string | null; phase: "warmup" | "sample"; sample: number | null }>;
+      releaseRetainedHeapSample(): Promise<unknown>;
+      removeRetainedHeapRoot(): Promise<boolean>;
+      yieldRetainedHeapFrame(): Promise<boolean>;
     };
   }
 }
@@ -200,6 +315,7 @@ const DEFAULT_CONFIG: EventHistoryPerformanceConfig = {
 };
 
 let retainedHeapSession: RetainedHeapSession | null = null;
+let retainedHeapSequence = 0;
 
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
   async run(overrides = {}) {
@@ -250,34 +366,71 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       };
     }
   },
-  async prepareRetainedHeapSample(adapter, count) {
-    await releaseRetainedHeapSample();
-    const runId = `heap-${adapter}-${Math.random().toString(36).slice(2)}`;
-    const databaseName = adapter === "indexeddb" ? `event-history-performance-${runId}` : null;
-    const history = adapter === "indexeddb"
-      ? await createIndexedDbEventHistory({ panelSessionId: databaseName!, capacityTier: "NORMAL" })
-      : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+  async prepareRetainedHeapSample(adapter, count, phase, sample) {
+    if (retainedHeapSession) throw new Error("A retained heap session is already active; cleanup must complete before the next sample.");
+    const runId = `heap-${adapter}-${phase}-${sample ?? "warmup"}-${retainedHeapSequence += 1}`;
+    const databaseName = adapter === "indexeddb" ? authoritativeEventDatabaseName(runId) : null;
     const root = document.createElement("main");
-    root.id = "app";
-    document.body.replaceChildren(root);
-    const panel = await mountProductionPanel(history, undefined, root);
-    const heapShapes = adapter === "memory"
-      ? (["small-lifecycle", "ordinary-item-update"] as const)
-      : ([
-          "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
-          "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
-          "small-lifecycle", "large-json-rich"
-        ] as const);
-    const events = Array.from({ length: count }, (_, sequence) =>
-      createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
-    );
-    await settleOffers(history, events);
-    await waitForFrame();
-    retainedHeapSession = { adapter, count, retained: events.length, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
-    return { adapter, count, retained: events.length };
+    let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+    let history: EventHistory | null = null;
+    try {
+      history = adapter === "indexeddb"
+        ? await createIndexedDbEventHistory({ panelSessionId: runId, capacityTier: "NORMAL" })
+        : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+      root.id = "app";
+      document.body.replaceChildren(root);
+      panel = await mountProductionPanel(history, undefined, root);
+      const heapShapes = adapter === "memory"
+        ? (["small-lifecycle", "ordinary-item-update"] as const)
+        : ([
+            "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
+            "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
+            "small-lifecycle", "large-json-rich"
+          ] as const);
+      const events = Array.from({ length: count }, (_, sequence) =>
+        createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
+      );
+      await settleOffers(history, events);
+      await waitForFrame();
+      retainedHeapSession = { adapter, count, retained: events.length, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
+      return { adapter, count, retained: events.length, sessionId: runId, databaseName, phase, sample };
+    } catch (error) {
+      const originalError = error instanceof Error ? error : new Error(String(error));
+      const cleanupEvidence = await bestEffortHeapPreparationCleanup({
+        adapter,
+        eventCount: count,
+        phase,
+        sample,
+        sessionId: runId,
+        databaseName,
+        originalError,
+        disposePanel: () => panel?.disposePanel(),
+        closeHistory: () => history ? history.close() : Promise.resolve(null),
+        removeRoot: () => root.remove(),
+        yieldFrame: () => waitForFrame()
+      });
+      Object.assign(originalError, { code: "PREPARE_FAILED", cleanupEvidence });
+      throw originalError;
+    }
   },
   async releaseRetainedHeapSample() {
-    await releaseRetainedHeapSample();
+    const session = retainedHeapSession;
+    if (!session) throw new Error("No retained heap session is active.");
+    return closeHeapSessionWithEvidence({
+      disposePanel: session.disposePanel,
+      closeHistory: () => session.history.close()
+    });
+  },
+  async removeRetainedHeapRoot() {
+    const session = retainedHeapSession;
+    if (!session) return false;
+    session.root.remove();
+    retainedHeapSession = null;
+    return !session.root.isConnected;
+  },
+  async yieldRetainedHeapFrame() {
+    await waitForFrame();
+    return true;
   }
 };
 
@@ -403,6 +556,7 @@ async function runCell(
     longTaskEntries.push(...(longTaskObserver?.takeRecords() ?? []));
     longTaskObserver?.disconnect();
     const attributedLongTasks = attributeLongTasks(longTaskEntries, phaseIntervals);
+    const storageEstimate = await captureStorageEstimate();
     const terminal = terminalPublication as Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null;
     const firstMissingEventId = terminal?.firstMissingEventId ?? null;
     const refusedCount = terminal?.rejected.count ?? 0;
@@ -425,6 +579,11 @@ async function runCell(
           boundary?.eventId === expectedFinalId && boundary.sequence === expectedCount &&
           firstMissingEventId === null && refusedCount === 0 && discardedCount === 0
       },
+      identityEvidence: {
+        expectedEventIds: expectedIds,
+        retainedEventIds: retainedIds,
+        publishedEventIds: publishedIds
+      },
       latency: {
         offerToPublicationP95Ms: percentile(publicationLatencies, 0.95),
         offerToVisibleFrameP95Ms: percentile(visibleLatencies, 0.95),
@@ -439,6 +598,7 @@ async function runCell(
       },
       longTasks: { supported: longTaskSupported, ...attributedLongTasks },
       storage: storageTelemetryForCell(storageProbe?.snapshot() ?? emptyStorageTelemetry()),
+      storageEstimate,
       workloadFacts: {
         expectedCount,
         offeredEventsPerSecond: workload === "sustained" ? config.sustainedEventsPerSecond : events.length / Math.max(0.001, (performance.now() - startedAt) / 1_000),
@@ -493,12 +653,16 @@ async function runTerminalScenario(
     ? await createIndexedDbEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) })
     : createInMemoryEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) });
   const terminals: Array<Extract<HistoryPublication, { type: "terminal" }>> = [];
+  const publishedEventIds: string[] = [];
   const pressureTransitions: string[] = [];
   const unsubscribe = history.follow({ from: "NOW" }, (publication) => {
     if (publication.type === "terminal") terminals.push(publication);
     if (publication.type === "status") {
       const state = publication.status.capacity.state;
       if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
+    }
+    if (publication.type === "committed-evidence") {
+      publishedEventIds.push(...publication.evidence.map((evidence) => evidence.eventId));
     }
   });
   const receipts: Array<{ id: string; receipt: ReturnType<EventHistory["offer"]> }> = [];
@@ -518,12 +682,19 @@ async function runTerminalScenario(
   const outcomes = await Promise.all(receipts.map(({ receipt }) => receipt.settled));
   const accepted = outcomes.filter((outcome) => outcome.outcome === "BECAME_EVIDENCE");
   const refused = receipts.filter((entry, index) => outcomes[index]?.outcome === "NOT_EVIDENCE");
+  const offeredEventIds = receipts.map((entry) => entry.id);
+  const acceptedEventIds = receipts.filter((_entry, index) => outcomes[index]?.outcome === "BECAME_EVIDENCE").map((entry) => entry.id);
+  const refusedEventIds = refused.map((entry) => entry.id);
   const read = await history.read({ order: "asc" });
   const terminal = terminals.at(-1)?.terminal ?? null;
   unsubscribe();
   await history.close();
   const finalEvidence = read.ok ? read.value.evidence.at(-1) ?? null : null;
-  const expectedFirstMissing = refused[0]?.id ?? null;
+  const retainedEventIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
+  const boundaryEvidence = terminal?.committedEvidenceBoundary
+    ? { sequence: terminal.committedEvidenceBoundary.sequence, eventId: terminal.committedEvidenceBoundary.eventId }
+    : { sequence: 0, eventId: "" };
+  const expectedFirstMissing = refusedEventIds[0] ?? "";
   const refusedIdentityCorrect = terminal?.firstMissingEventId === expectedFirstMissing
     && refused.length === 1
     && outcomes.at(-1)?.outcome === "NOT_EVIDENCE";
@@ -533,11 +704,15 @@ async function runTerminalScenario(
     tier,
     terminalReason: trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT",
     terminalReasonCorrect: terminal?.reason === (trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT"),
+    offeredEventIds,
+    acceptedEventIds,
+    retainedEventIds,
+    publishedEventIds,
+    refusedEventIds,
     acceptedCount: accepted.length,
     refusedCount: refused.length,
-    refusedEventIds: refused.map((entry) => entry.id),
-    firstMissingEventId: terminal?.firstMissingEventId ?? null,
-    committedBoundary: terminal?.committedEvidenceBoundary ? { sequence: terminal.committedEvidenceBoundary.sequence, eventId: terminal.committedEvidenceBoundary.eventId } : null,
+    firstMissingEventId: terminal?.firstMissingEventId ?? "",
+    committedBoundary: boundaryEvidence,
     terminalPublicationCount: terminals.length,
     finalBoundaryCorrect: terminal !== null && terminal.committedEvidenceBoundary?.sequence === accepted.length && finalEvidence?.eventId === terminal.committedEvidenceBoundary.eventId,
     refusedIdentityCorrect,
@@ -923,15 +1098,6 @@ async function measureQuery(history: EventHistory, query: () => Promise<unknown>
   return percentile(samples, 0.95);
 }
 
-async function releaseRetainedHeapSample(): Promise<void> {
-  const session = retainedHeapSession;
-  retainedHeapSession = null;
-  if (!session) return;
-  session.disposePanel();
-  await session.history.close();
-  session.root.remove();
-}
-
 function emptyStorageTelemetry(): StorageTelemetry {
   return {
     transactionCount: 0,
@@ -942,6 +1108,49 @@ function emptyStorageTelemetry(): StorageTelemetry {
     facetEntryCount: 0,
     indexEntryCount: 0
   };
+}
+
+export async function captureStorageEstimate(
+  storage: Pick<StorageManager, "estimate"> | undefined = typeof navigator === "undefined" ? undefined : navigator.storage
+): Promise<EventHistoryPerformanceStorageEstimate> {
+  if (!storage || typeof storage.estimate !== "function") {
+    return {
+      source: "navigator.storage.estimate",
+      status: "UNAVAILABLE",
+      usageBytes: null,
+      quotaBytes: null,
+      failure: { code: "STORAGE_ESTIMATE_UNAVAILABLE", message: "navigator.storage.estimate is unavailable." }
+    };
+  }
+  try {
+    const estimate = await storage.estimate();
+    const usage = estimate.usage;
+    const quota = estimate.quota;
+    if (typeof usage !== "number" || !Number.isFinite(usage) || usage < 0 || typeof quota !== "number" || !Number.isFinite(quota) || quota < 0) {
+      return {
+        source: "navigator.storage.estimate",
+        status: "UNAVAILABLE",
+        usageBytes: null,
+        quotaBytes: null,
+        failure: { code: "STORAGE_ESTIMATE_INVALID", message: "navigator.storage.estimate returned invalid usage or quota." }
+      };
+    }
+    return {
+      source: "navigator.storage.estimate",
+      status: "AVAILABLE",
+      usageBytes: usage,
+      quotaBytes: quota,
+      failure: null
+    };
+  } catch (error) {
+    return {
+      source: "navigator.storage.estimate",
+      status: "UNAVAILABLE",
+      usageBytes: null,
+      quotaBytes: null,
+      failure: { code: "STORAGE_ESTIMATE_FAILED", message: error instanceof Error ? error.message : String(error) }
+    };
+  }
 }
 
 export function attributeLongTasks(

@@ -7,6 +7,9 @@ import {
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 import {
   attributeLongTasks,
+  bestEffortHeapPreparationCleanup,
+  captureStorageEstimate,
+  closeHeapSessionWithEvidence,
   createPendingTelemetryTracker,
   createStagedTopologyCheckpointCandidate
 } from "../benchmarks/event-history-performance-harness";
@@ -14,6 +17,93 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  it("captures available page storage estimates as non-authoritative telemetry", async () => {
+    await expect(captureStorageEstimate({ estimate: async () => ({ usage: 12, quota: 34 }) })).resolves.toEqual({
+      source: "navigator.storage.estimate",
+      status: "AVAILABLE",
+      usageBytes: 12,
+      quotaBytes: 34,
+      failure: null
+    });
+  });
+
+  it("retains storage-estimate unavailability and failures diagnostically", async () => {
+    await expect(captureStorageEstimate(undefined)).resolves.toMatchObject({
+      source: "navigator.storage.estimate",
+      status: "UNAVAILABLE",
+      usageBytes: null,
+      quotaBytes: null,
+      failure: { code: "STORAGE_ESTIMATE_UNAVAILABLE" }
+    });
+    await expect(captureStorageEstimate({ estimate: async () => { throw new Error("denied"); } })).resolves.toMatchObject({
+      status: "UNAVAILABLE",
+      failure: { code: "STORAGE_ESTIMATE_FAILED", message: "denied" }
+    });
+  });
+
+  it("continues prepare-failure cleanup after panel disposal throws", async () => {
+    const calls: string[] = [];
+    const evidence = await bestEffortHeapPreparationCleanup({
+      adapter: "indexeddb",
+      eventCount: 10_000,
+      phase: "sample",
+      sample: 2,
+      sessionId: "prepare-session",
+      databaseName: "prepare-database",
+      originalError: new Error("prepare failed"),
+      disposePanel: () => { calls.push("dispose"); throw new Error("dispose failed"); },
+      closeHistory: async () => { calls.push("close"); return { ok: false, problem: { code: "CLOSE_FAILED", message: "close failed" } }; },
+      removeRoot: () => { calls.push("remove"); },
+      yieldFrame: async () => { calls.push("yield"); }
+    });
+
+    expect(calls).toEqual(["dispose", "close", "remove", "yield"]);
+    expect(evidence).toMatchObject({
+      phase: "cleanup",
+      sample: 2,
+      sessionId: "prepare-session",
+      databaseName: "prepare-database",
+      disposeError: "dispose failed",
+      close: { ok: false, problem: { code: "CLOSE_FAILED", message: "close failed" } },
+      rootRemoved: true,
+      frameYielded: true
+    });
+  });
+
+  it("keeps a failed warm-up in the warm-up evidence slot", async () => {
+    const evidence = await bestEffortHeapPreparationCleanup({
+      adapter: "memory",
+      eventCount: 5_000,
+      phase: "warmup",
+      sample: null,
+      sessionId: "warmup-session",
+      databaseName: null,
+      originalError: new Error("warmup failed"),
+      disposePanel: () => undefined,
+      closeHistory: async () => ({ ok: false, problem: { code: "CLOSE_FAILED", message: "close failed" } }),
+      removeRoot: () => undefined,
+      yieldFrame: async () => undefined
+    });
+
+    expect(evidence).toMatchObject({ phase: "warmup", sample: null, status: "FAIL", failure: { code: "PREPARE_FAILED" } });
+  });
+
+  it("attempts authoritative close even when panel disposal throws", async () => {
+    const calls: string[] = [];
+    const outcome = await closeHeapSessionWithEvidence({
+      disposePanel: () => { calls.push("dispose"); throw new Error("dispose failed"); },
+      closeHistory: async () => { calls.push("close"); return { ok: true, value: { finalCommittedEvidenceBoundary: null, dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } }; }
+    });
+
+    expect(calls).toEqual(["dispose", "close"]);
+    expect(outcome).toMatchObject({
+      ok: false,
+      problem: { code: "PANEL_DISPOSE_FAILED", message: "dispose failed" },
+      closeOutcome: { ok: true, value: { finalCommittedEvidenceBoundary: null, dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } },
+      disposeError: { code: "PANEL_DISPOSE_FAILED", message: "dispose failed" }
+    });
+  });
+
   it("attributes every Long Task by deterministic greatest positive phase overlap", () => {
     const intervals = [
       { phase: "capture" as const, start: 0, end: 10 },

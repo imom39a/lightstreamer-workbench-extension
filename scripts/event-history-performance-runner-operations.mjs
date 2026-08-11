@@ -1,7 +1,9 @@
 export const PERFORMANCE_OPERATION_KEY = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+export const FORCED_GC_PASSES = 3;
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_REQUEST_CEILING_MS = 5_000;
+const DEFAULT_HEAP_GC_DEADLINE_MS = 240_000;
 
 export class PerformanceOperationTimeout extends Error {
   constructor(message, status) {
@@ -9,6 +11,346 @@ export class PerformanceOperationTimeout extends Error {
     this.name = "PerformanceOperationTimeout";
     this.status = status;
   }
+}
+
+export async function collectHeapAfterRepeatedGc(cdp, passes = FORCED_GC_PASSES, options = {}) {
+  if (passes !== FORCED_GC_PASSES) throw new Error(`Heap measurement requires exactly ${FORCED_GC_PASSES} forced GC passes.`);
+  const now = options.now ?? Date.now;
+  const deadlineMs = positiveFinite(options.deadlineMs ?? DEFAULT_HEAP_GC_DEADLINE_MS, "heap GC deadlineMs");
+  const requestCeilingMs = positiveFinite(options.requestCeilingMs ?? DEFAULT_REQUEST_CEILING_MS, "heap GC requestCeilingMs");
+  const deadlineAt = now() + deadlineMs;
+  const request = (method, phase) => requestWithDeadline(cdp, {}, deadlineAt, requestCeilingMs, now, phase, false, method);
+  await request("HeapProfiler.enable", "heap-gc-enable");
+  for (let pass = 1; pass <= passes; pass += 1) {
+    await request("HeapProfiler.collectGarbage", `heap-gc-collection-${pass}`);
+  }
+  const usage = await request("Runtime.getHeapUsage", "heap-gc-usage");
+  return { ...usage, gcPasses: passes };
+}
+
+function normalizeCleanupFailure(error, fallbackCode, fallbackMessage) {
+  if (error instanceof Error) return error;
+  const normalized = new Error(error === undefined ? fallbackMessage : String(error));
+  normalized.code = fallbackCode;
+  return normalized;
+}
+
+function completeCloseOutcome(value) {
+  return value !== null && typeof value === "object"
+    && value.ok === true
+    && value.value !== null && typeof value.value === "object"
+    && value.value.dataDisposition === "ERASED"
+    && value.value.cleanupDisposition === "COMPLETE";
+}
+
+export async function releaseHeapSessionWithCleanup({ release, removeRoot, yieldFrame, forceGc }) {
+  let firstFailure = null;
+  let closeOutcome = null;
+  let rootRemoved = false;
+  let frameYielded = false;
+  let gcPasses = null;
+  let gcSample = null;
+  try {
+    closeOutcome = await release();
+    if (!completeCloseOutcome(closeOutcome)) {
+      const problem = closeOutcome !== null && typeof closeOutcome === "object" && "problem" in closeOutcome
+        && closeOutcome.problem !== null && typeof closeOutcome.problem === "object"
+        ? closeOutcome.problem
+        : null;
+      const failure = new Error(problem !== null && "message" in problem && typeof problem.message === "string"
+        ? problem.message
+        : "Lifecycle heap cleanup close did not complete with ERASED/COMPLETE disposition.");
+      failure.code = problem !== null && "code" in problem && typeof problem.code === "string" ? problem.code : "CLOSE_FAILED";
+      firstFailure ??= failure;
+    }
+  } catch (error) {
+    firstFailure ??= normalizeCleanupFailure(error, "CLOSE_FAILED", "Lifecycle heap cleanup close failed.");
+  }
+  try {
+    rootRemoved = await removeRoot();
+    if (rootRemoved !== true) {
+      const failure = new Error("Lifecycle heap cleanup did not remove its owned root.");
+      failure.code = "ROOT_REMOVAL_FAILED";
+      firstFailure ??= failure;
+    }
+  } catch (error) {
+    firstFailure ??= normalizeCleanupFailure(error, "ROOT_REMOVAL_FAILED", "Lifecycle heap cleanup root removal failed.");
+  }
+  try {
+    frameYielded = await yieldFrame();
+    if (frameYielded !== true) {
+      const failure = new Error("Lifecycle heap cleanup did not yield a frame.");
+      failure.code = "FRAME_YIELD_FAILED";
+      firstFailure ??= failure;
+    }
+  } catch (error) {
+    firstFailure ??= normalizeCleanupFailure(error, "FRAME_YIELD_FAILED", "Lifecycle heap cleanup frame yield failed.");
+  }
+  try {
+    gcSample = await forceGc();
+    gcPasses = gcSample?.gcPasses ?? null;
+    if (gcPasses !== FORCED_GC_PASSES) {
+      const failure = new Error(`Lifecycle heap cleanup requires exactly ${FORCED_GC_PASSES} forced GC passes.`);
+      failure.code = "GC_FAILED";
+      firstFailure ??= failure;
+    }
+  } catch (error) {
+    firstFailure ??= normalizeCleanupFailure(error, "GC_FAILED", "Lifecycle heap cleanup GC failed.");
+  }
+  if (firstFailure) {
+    Object.assign(firstFailure, { closeOutcome, rootRemoved, frameYielded, gcPasses, gcSample });
+    throw firstFailure;
+  }
+  return { ...gcSample, closeOutcome, rootRemoved, frameYielded, gcPasses };
+}
+
+export async function runHeapMeasurementPlan({
+  adapters = ["indexeddb", "memory"],
+  eventCounts,
+  sampleCount = 3,
+  prepare,
+  forceGc,
+  record,
+  close,
+  removeRoot,
+  yieldFrame
+}) {
+  if (sampleCount !== 3) throw new Error("Heap measurement requires exactly three samples per adapter.");
+  const heapSamples = [];
+  const heapRuns = [];
+  const sessionIds = new Set();
+  const databaseNames = new Set();
+  for (const adapter of adapters) {
+    const eventCount = eventCounts[adapter];
+    let warmup = null;
+    let prepareFailure = null;
+    try {
+      warmup = await prepare({ adapter, eventCount, phase: "warmup", sample: null });
+    } catch (error) {
+      prepareFailure = error;
+      if (error?.cleanupEvidence) {
+        heapRuns.push(await finishFailedPreparationCleanup(error.cleanupEvidence, {
+          adapter,
+          eventCount,
+          sample: null,
+          forceGc
+        }));
+      }
+    }
+    if (prepareFailure) {
+      throw new Error(`Heap warm-up failed for ${adapter}: ${errorMessage(prepareFailure)}`, { cause: prepareFailure });
+    }
+    let warmupFailure = null;
+    try {
+      assertHeapSessionIdentity(warmup, adapter, "warm-up", null, sessionIds, databaseNames);
+      assertRetainedCount(warmup, adapter, "warm-up", null, eventCount);
+    } catch (error) {
+      warmupFailure = error;
+    }
+    try {
+      const evidence = await cleanupHeapSession({ adapter, eventCount, phase: "warmup", sample: null, session: warmup, close, removeRoot, yieldFrame, forceGc });
+      heapRuns.push(evidence);
+    } catch (error) {
+      if (error.evidence) heapRuns.push(error.evidence);
+      warmupFailure ??= error;
+    }
+    if (warmupFailure) {
+      throw new Error(`Heap warm-up failed for ${adapter}: ${errorMessage(warmupFailure)}`, { cause: warmupFailure });
+    }
+
+    for (let sample = 1; sample <= sampleCount; sample += 1) {
+      let session = null;
+      let baseline = null;
+      let retained = null;
+      let recorded = null;
+      let failure = null;
+      let cleanupEvidence = null;
+      try {
+        baseline = await forceGc({ adapter, eventCount, phase: "baseline", sample });
+        assertGcPasses(baseline, "baseline", adapter, sample);
+        session = await prepare({ adapter, eventCount, phase: "sample", sample });
+        assertHeapSessionIdentity(session, adapter, "sample", sample, sessionIds, databaseNames);
+        assertRetainedCount(session, adapter, "sample", sample, eventCount);
+        retained = await forceGc({ adapter, eventCount, phase: "retained", sample });
+        assertGcPasses(retained, "retained", adapter, sample);
+        recorded = await record({ adapter, eventCount, sample, session, baseline, retained });
+      } catch (error) {
+        failure = error;
+      }
+
+      if (!session && failure?.cleanupEvidence) {
+        heapRuns.push(await finishFailedPreparationCleanup(failure.cleanupEvidence, {
+          adapter,
+          eventCount,
+          sample,
+          forceGc
+        }));
+      } else if (!session && failure) {
+        heapRuns.push({
+          adapter,
+          phase: "cleanup",
+          sample,
+          eventCount,
+          retained: null,
+          sessionId: null,
+          databaseName: null,
+          close: null,
+          rootRemoved: false,
+          frameYielded: false,
+          gcPasses: null,
+          status: "FAIL",
+          failure: failureDetails(failure)
+        });
+      }
+
+      if (session) {
+        try {
+          cleanupEvidence = await cleanupHeapSession({ adapter, eventCount, phase: "cleanup", sample, session, close, removeRoot, yieldFrame, forceGc });
+          heapRuns.push(cleanupEvidence);
+        } catch (error) {
+          cleanupEvidence = error.evidence ?? null;
+          if (cleanupEvidence) heapRuns.push(cleanupEvidence);
+          failure ??= error;
+        }
+      }
+      if (failure) {
+        const cleanupEvidence = failure.cleanupEvidence;
+        heapSamples.push({
+          adapter,
+          sample,
+          eventCount,
+          sessionId: session?.sessionId ?? cleanupEvidence?.sessionId ?? null,
+          databaseName: session?.databaseName ?? cleanupEvidence?.databaseName ?? null,
+          status: "FAIL",
+          failure: failureDetails(failure),
+          baselineUsedSizeBytes: baseline?.usedSize ?? null,
+          retainedUsedSizeBytes: retained?.usedSize ?? null,
+          postGcHeapDeltaBytes: null
+        });
+      } else {
+        heapSamples.push({
+          ...recorded,
+          adapter,
+          sample,
+          eventCount,
+          sessionId: session.sessionId,
+          databaseName: session.databaseName ?? null,
+          status: "PASS",
+          failure: null
+        });
+      }
+    }
+  }
+  return { heapSamples, heapRuns };
+}
+
+async function cleanupHeapSession({ adapter, eventCount, phase, sample, session, close, removeRoot, yieldFrame, forceGc }) {
+  let failure = null;
+  let closeOutcome = null;
+  let rootRemoved = false;
+  let frameYielded = false;
+  let gc = null;
+  try {
+    closeOutcome = await close(session);
+    if (closeOutcome?.ok !== true || closeOutcome.value?.dataDisposition !== "ERASED" || closeOutcome.value?.cleanupDisposition !== "COMPLETE") {
+      const error = new Error(`authoritative close did not confirm ERASED/COMPLETE: ${JSON.stringify(closeOutcome)}`);
+      error.code = closeOutcome?.problem?.code ?? "CLOSE_FAILED";
+      throw error;
+    }
+  } catch (error) {
+    closeOutcome ??= error?.closeOutcome ?? null;
+    failure = error;
+  }
+  try {
+    rootRemoved = (await removeRoot(session)) === true;
+    if (!rootRemoved) throw new Error("owned DOM root was not confirmed removed.");
+  } catch (error) {
+    failure ??= error;
+  }
+  try {
+    frameYielded = (await yieldFrame({ adapter, eventCount, phase, sample })) === true;
+    if (!frameYielded) throw new Error("task/frame yield was not confirmed.");
+  } catch (error) {
+    failure ??= error;
+  }
+  try {
+    gc = await forceGc({ adapter, eventCount, phase: phase === "warmup" ? "warmup-cleanup" : "cleanup", sample });
+    assertGcPasses(gc, phase === "warmup" ? "warmup-cleanup" : "cleanup", adapter, sample);
+  } catch (error) {
+    failure ??= error;
+  }
+  const evidence = {
+    adapter,
+    phase,
+    sample,
+    eventCount,
+    retained: session.retained,
+    sessionId: session.sessionId,
+    databaseName: session.databaseName ?? null,
+    close: closeOutcome,
+    rootRemoved,
+    frameYielded,
+    gcPasses: gc?.gcPasses ?? null,
+    status: failure ? "FAIL" : "PASS",
+    failure: failure ? failureDetails(failure) : null
+  };
+  if (failure) {
+    failure.evidence = evidence;
+    throw failure;
+  }
+  return evidence;
+}
+
+function assertHeapSessionIdentity(session, adapter, phase, sample, sessionIds, databaseNames) {
+  if (!session || typeof session.sessionId !== "string" || session.sessionId.length === 0) {
+    throw new Error(`missing Panel Session identity for ${adapter} ${phase} sample ${sample ?? "warmup"}`);
+  }
+  if (adapter === "indexeddb" && (typeof session.databaseName !== "string" || session.databaseName.length === 0)) {
+    throw new Error(`missing IndexedDB database identity for ${adapter} ${phase} sample ${sample ?? "warmup"}`);
+  }
+  if (sessionIds.has(session.sessionId)) throw new Error(`duplicate Panel Session identity: ${session.sessionId}`);
+  sessionIds.add(session.sessionId);
+  if (adapter === "indexeddb") {
+    if (databaseNames.has(session.databaseName)) throw new Error(`duplicate IndexedDB database identity: ${session.databaseName}`);
+    databaseNames.add(session.databaseName);
+  }
+}
+
+function assertRetainedCount(session, adapter, phase, sample, expected) {
+  if (session?.retained !== expected) {
+    throw new Error(`retained workload mismatch for ${adapter} ${phase} sample ${sample ?? "warmup"}: expected ${expected}, received ${String(session?.retained)}`);
+  }
+}
+
+function assertGcPasses(value, phase, adapter, sample) {
+  if (value?.gcPasses !== 3) {
+    throw new Error(`forced GC sequence for ${adapter} ${phase} sample ${sample ?? "warmup"} must run exactly three collections.`);
+  }
+}
+
+async function finishFailedPreparationCleanup(evidence, { adapter, eventCount, sample, forceGc }) {
+  const completed = { ...evidence };
+  try {
+    const gc = await forceGc({ adapter, eventCount, phase: sample === null ? "warmup-cleanup" : "cleanup", sample });
+    assertGcPasses(gc, sample === null ? "warmup-cleanup" : "cleanup", adapter, sample);
+    completed.gcPasses = gc.gcPasses;
+  } catch (error) {
+    completed.gcPasses = null;
+    completed.gcFailure = failureDetails(error);
+  }
+  return completed;
+}
+
+function failureDetails(error) {
+  return {
+    code: typeof error?.code === "string" ? error.code : error?.name ?? "HEAP_MEASUREMENT_FAILED",
+    message: errorMessage(error),
+    ...(error?.cleanupEvidence ? { cleanupEvidence: error.cleanupEvidence } : {})
+  };
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 class CdpRequestTimeout extends Error {
@@ -140,11 +482,43 @@ function startOperationExpression(expression, operationId) {
       },
       (error) => {
         if (globalThis[key] !== operation) return;
+        const rawCleanupEvidence = error?.cleanupEvidence;
+        const cleanupEvidence = rawCleanupEvidence && typeof rawCleanupEvidence === "object" ? {
+          adapter: rawCleanupEvidence.adapter === "indexeddb" ? "indexeddb" : "memory",
+          phase: rawCleanupEvidence.phase === "warmup" ? "warmup" : "cleanup",
+          sample: rawCleanupEvidence.sample === null || (Number.isInteger(rawCleanupEvidence.sample) && rawCleanupEvidence.sample >= 1 && rawCleanupEvidence.sample <= 3) ? rawCleanupEvidence.sample : null,
+          eventCount: Number.isSafeInteger(rawCleanupEvidence.eventCount) ? rawCleanupEvidence.eventCount : 0,
+          retained: rawCleanupEvidence.retained === null || Number.isSafeInteger(rawCleanupEvidence.retained) ? rawCleanupEvidence.retained : null,
+          sessionId: typeof rawCleanupEvidence.sessionId === "string" ? rawCleanupEvidence.sessionId : null,
+          databaseName: typeof rawCleanupEvidence.databaseName === "string" ? rawCleanupEvidence.databaseName : null,
+          close: rawCleanupEvidence.close && typeof rawCleanupEvidence.close === "object" ? {
+            ok: rawCleanupEvidence.close.ok === true,
+            ...(rawCleanupEvidence.close.value && typeof rawCleanupEvidence.close.value === "object" ? { value: {
+              dataDisposition: rawCleanupEvidence.close.value.dataDisposition === "ERASED" ? "ERASED" : "ERASURE_UNCONFIRMED",
+              cleanupDisposition: rawCleanupEvidence.close.value.cleanupDisposition === "COMPLETE" ? "COMPLETE" : "DEFERRED"
+            } } : {}),
+            ...(rawCleanupEvidence.close.problem && typeof rawCleanupEvidence.close.problem === "object" ? { problem: {
+              code: typeof rawCleanupEvidence.close.problem.code === "string" ? rawCleanupEvidence.close.problem.code : "CLOSE_FAILED",
+              message: typeof rawCleanupEvidence.close.problem.message === "string" ? rawCleanupEvidence.close.problem.message : "Event History cleanup failed."
+            } } : {})
+          } : null,
+          disposeError: typeof rawCleanupEvidence.disposeError === "string" ? rawCleanupEvidence.disposeError : null,
+          rootRemoved: rawCleanupEvidence.rootRemoved === true,
+          frameYielded: rawCleanupEvidence.frameYielded === true,
+          gcPasses: rawCleanupEvidence.gcPasses === 3 ? 3 : null,
+          status: rawCleanupEvidence.status === "PASS" ? "PASS" : "FAIL",
+          failure: rawCleanupEvidence.failure && typeof rawCleanupEvidence.failure === "object" ? {
+            code: typeof rawCleanupEvidence.failure.code === "string" ? rawCleanupEvidence.failure.code : "HEAP_MEASUREMENT_FAILED",
+            message: typeof rawCleanupEvidence.failure.message === "string" ? rawCleanupEvidence.failure.message : "Heap measurement failed."
+          } : null
+        } : null;
         operation.state = "rejected";
         operation.error = {
           name: typeof error?.name === "string" ? error.name : "Error",
           message: typeof error?.message === "string" ? error.message : String(error),
-          stack: typeof error?.stack === "string" ? error.stack : null
+          stack: typeof error?.stack === "string" ? error.stack : null,
+          ...(typeof error?.code === "string" ? { code: error.code } : {}),
+          ...(cleanupEvidence ? { cleanupEvidence } : {})
         };
         operation.completedAt = performance.now();
       }
@@ -198,8 +572,52 @@ function operationStatus(value, startedAt, now) {
 function remoteOperationError(details) {
   const error = new Error(details?.message ?? "Performance operation rejected.");
   error.name = details?.name ?? "Error";
+  if (typeof details?.code === "string") error.code = details.code;
+  const cleanupEvidence = serializeCleanupEvidence(details?.cleanupEvidence);
+  if (cleanupEvidence) error.cleanupEvidence = cleanupEvidence;
   if (details?.stack) error.stack = details.stack;
   return error;
+}
+
+function serializeCleanupEvidence(value) {
+  if (!value || typeof value !== "object") return null;
+  const close = value.close;
+  const safeClose = close && typeof close === "object"
+    ? {
+        ok: close.ok === true,
+        ...(close.value && typeof close.value === "object" ? {
+          value: {
+            dataDisposition: close.value.dataDisposition === "ERASED" ? "ERASED" : "ERASURE_UNCONFIRMED",
+            cleanupDisposition: close.value.cleanupDisposition === "COMPLETE" ? "COMPLETE" : "DEFERRED"
+          }
+        } : {}),
+        ...(close.problem && typeof close.problem === "object" ? {
+          problem: {
+            code: typeof close.problem.code === "string" ? close.problem.code : "CLOSE_FAILED",
+            message: typeof close.problem.message === "string" ? close.problem.message : "Event History cleanup failed."
+          }
+        } : {})
+      }
+    : null;
+  return {
+    adapter: value.adapter === "indexeddb" ? "indexeddb" : "memory",
+    phase: value.phase === "warmup" ? "warmup" : "cleanup",
+    sample: value.sample === null || (Number.isInteger(value.sample) && value.sample >= 1 && value.sample <= 3) ? value.sample : null,
+    eventCount: Number.isSafeInteger(value.eventCount) ? value.eventCount : 0,
+    retained: value.retained === null || Number.isSafeInteger(value.retained) ? value.retained : null,
+    sessionId: typeof value.sessionId === "string" ? value.sessionId : null,
+    databaseName: typeof value.databaseName === "string" ? value.databaseName : null,
+    close: safeClose,
+    disposeError: typeof value.disposeError === "string" ? value.disposeError : null,
+    rootRemoved: value.rootRemoved === true,
+    frameYielded: value.frameYielded === true,
+    gcPasses: value.gcPasses === 3 ? 3 : null,
+    status: value.status === "PASS" ? "PASS" : "FAIL",
+    failure: value.failure && typeof value.failure === "object" ? {
+      code: typeof value.failure.code === "string" ? value.failure.code : "HEAP_MEASUREMENT_FAILED",
+      message: typeof value.failure.message === "string" ? value.failure.message : "Heap measurement failed."
+    } : null
+  };
 }
 
 function emitHeartbeat(onHeartbeat, status) {
@@ -219,7 +637,7 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function requestWithDeadline(cdp, params, deadlineAt, requestCeilingMs, now, phase, allowAfterDeadline = false) {
+function requestWithDeadline(cdp, params, deadlineAt, requestCeilingMs, now, phase, allowAfterDeadline = false, method = "Runtime.evaluate") {
   const remainingMs = deadlineAt - now();
   if (remainingMs <= 0 && !allowAfterDeadline) {
     return Promise.reject(new CdpRequestTimeout(phase, 0));
@@ -236,7 +654,7 @@ function requestWithDeadline(cdp, params, deadlineAt, requestCeilingMs, now, pha
     }, timeoutMs);
     let request;
     try {
-      request = Promise.resolve(cdp.request("Runtime.evaluate", params));
+      request = Promise.resolve(cdp.request(method, params));
     } catch (error) {
       clearTimeout(timer);
       settled = true;

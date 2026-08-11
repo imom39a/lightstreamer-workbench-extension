@@ -17,6 +17,8 @@ function cell(
   sample: number,
   overrides: Partial<EventHistoryPerformanceCell> = {}
 ): EventHistoryPerformanceCell {
+  const identityPrefix = `${adapter}-${workload}-${shape}-${sample}`;
+  const expectedEventIds = Array.from({ length: 1_692 }, (_, index) => `${identityPrefix}-expected-${index}`);
   return {
     adapter,
     workload,
@@ -43,7 +45,7 @@ function cell(
       structuredIndexedP95Ms: 10,
       findFullP95Ms: 20
     },
-    longTasks: { supported: true, unattributed: 0, capture: [], commit: [], paint: [], query: [] },
+    longTasks: { supported: true, unattributed: 0, capture: [], commit: [], paint: [], query: [], unattributedReasons: [] },
     storage: adapter === "indexeddb"
       ? {
           transactionCount: 1,
@@ -63,6 +65,18 @@ function cell(
           facetEntryCount: 0,
           indexEntryCount: 0
         },
+    storageEstimate: {
+      source: "navigator.storage.estimate",
+      status: "AVAILABLE",
+      usageBytes: 1,
+      quotaBytes: 2,
+      failure: null
+    },
+    identityEvidence: {
+      expectedEventIds,
+      retainedEventIds: [...expectedEventIds],
+      publishedEventIds: [...expectedEventIds]
+    },
     workloadFacts: {
       expectedCount: 1_692,
       offeredEventsPerSecond: 50,
@@ -94,7 +108,62 @@ function heapSample(adapter: EventHistoryPerformanceHeapSample["adapter"], index
     adapter,
     sample: index,
     eventCount: EVENT_HISTORY_PERFORMANCE_LIMITS[adapter].heapEventCount,
+    sessionId: `${adapter}-sample-${index}`,
+    databaseName: adapter === "indexeddb" ? `${adapter}-database-${index}` : null,
+    status: "PASS",
+    failure: null,
     postGcHeapDeltaBytes: 1_024
+  };
+}
+
+function heapRuns(): EventHistoryPerformanceReport["heapRuns"] {
+  return ["indexeddb", "memory"].flatMap((adapter) => {
+    const typedAdapter = adapter as EventHistoryPerformanceCell["adapter"];
+    const databaseName = typedAdapter === "indexeddb" ? `${typedAdapter}-database-warmup` : null;
+    return [
+      {
+        adapter: typedAdapter,
+        phase: "warmup" as const,
+        sample: null,
+        eventCount: EVENT_HISTORY_PERFORMANCE_LIMITS[typedAdapter].heapEventCount,
+        retained: EVENT_HISTORY_PERFORMANCE_LIMITS[typedAdapter].heapEventCount,
+        sessionId: `${typedAdapter}-warmup`,
+        databaseName,
+        close: { ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } },
+        rootRemoved: true,
+        frameYielded: true,
+        gcPasses: 3,
+        status: "PASS" as const,
+        failure: null
+      },
+      ...[1, 2, 3].map((sample) => ({
+        adapter: typedAdapter,
+        phase: "cleanup" as const,
+        sample,
+        eventCount: EVENT_HISTORY_PERFORMANCE_LIMITS[typedAdapter].heapEventCount,
+        retained: EVENT_HISTORY_PERFORMANCE_LIMITS[typedAdapter].heapEventCount,
+        sessionId: `${typedAdapter}-sample-${sample}`,
+        databaseName: typedAdapter === "indexeddb" ? `${typedAdapter}-database-${sample}` : null,
+        close: { ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } },
+        rootRemoved: true,
+        frameYielded: true,
+        gcPasses: 3,
+        status: "PASS" as const,
+        failure: null
+      }))
+    ];
+  });
+}
+
+function terminalEvidence(acceptedCount: number, refusedEventId: string) {
+  const acceptedEventIds = Array.from({ length: acceptedCount }, (_, index) => `accepted-${index + 1}`);
+  const refusedEventIds = [refusedEventId];
+  return {
+    offeredEventIds: [...acceptedEventIds, ...refusedEventIds],
+    acceptedEventIds,
+    retainedEventIds: [...acceptedEventIds],
+    publishedEventIds: [...acceptedEventIds],
+    refusedEventIds
   };
 }
 
@@ -118,9 +187,9 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
         tier: adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const,
         terminalReason: "PENDING_BYTE_LIMIT" as const,
         terminalReasonCorrect: true,
+        ...terminalEvidence(16, "missing-bytes"),
         acceptedCount: 16,
         refusedCount: 1,
-        refusedEventIds: ["missing-bytes"],
         firstMissingEventId: "missing-bytes",
         committedBoundary: { sequence: 16, eventId: "accepted-16" },
         terminalPublicationCount: 1,
@@ -135,9 +204,9 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
         tier: adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const,
         terminalReason: "PENDING_AGE_LIMIT" as const,
         terminalReasonCorrect: true,
+        ...terminalEvidence(1, "missing-age"),
         acceptedCount: 1,
         refusedCount: 1,
-        refusedEventIds: ["missing-age"],
         firstMissingEventId: "missing-age",
         committedBoundary: { sequence: 1, eventId: "accepted-1" },
         terminalPublicationCount: 1,
@@ -152,6 +221,7 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
       { name: "maximum-2MiB" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 9, trafficBefore: 4, trafficAfter: 4, interleaved: true, canonicalBytes: 2 * 1_048_576, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true }
     ]),
     heapSamples: [1, 2, 3].flatMap((index) => [heapSample("indexeddb", index), heapSample("memory", index)]),
+    heapRuns: heapRuns(),
     lifecycle: { retainedHeapBytes: [1, 2, 3], strictMonotonicGrowth: false },
     ...overrides
   };
@@ -214,6 +284,80 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.failures.filter((failure) => failure.includes("exact NEAR_LIMIT to EXHAUSTED"))).toHaveLength(4);
   });
 
+  it.each(["acceptedEventIds", "retainedEventIds", "publishedEventIds"] as const)("rejects reversed terminal %s order", (field) => {
+    const baseline = report();
+    const current = report({
+      terminalScenarios: baseline.terminalScenarios.map((scenario, index) => index === 0
+        ? { ...scenario, [field]: [...scenario[field]].reverse() }
+        : scenario)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("identifiers"))).toBe(true);
+  });
+
+  it("rejects duplicate terminal refused identifiers", () => {
+    const baseline = report();
+    const current = report({
+      terminalScenarios: baseline.terminalScenarios.map((scenario, index) => index === 0
+        ? { ...scenario, refusedEventIds: [scenario.refusedEventIds[0]!, scenario.refusedEventIds[0]!] }
+        : scenario)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("duplicates"))).toBe(true);
+  });
+
+  it.each([
+    ["boundary event", { eventId: "wrong-boundary" }],
+    ["boundary sequence", { sequence: 15 }]
+  ] as const)("rejects a mismatched terminal %s", (_label, boundaryPatch) => {
+    const baseline = report();
+    const current = report({
+      terminalScenarios: baseline.terminalScenarios.map((scenario, index) => index === 0
+        ? { ...scenario, committedBoundary: { ...scenario.committedBoundary, ...boundaryPatch } }
+        : scenario)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("committed boundary"))).toBe(true);
+  });
+
+  it("rejects a wrong PENDING_AGE first missing identifier", () => {
+    const baseline = report();
+    const current = report({
+      terminalScenarios: baseline.terminalScenarios.map((scenario) => scenario.trigger === "PENDING_AGE"
+        ? { ...scenario, firstMissingEventId: "wrong-age-missing" }
+        : scenario)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("first missing event identity"))).toBe(true);
+  });
+
+  it("rejects a nullable terminal committed boundary", () => {
+    const baseline = report();
+    const current = {
+      ...baseline,
+      terminalScenarios: baseline.terminalScenarios.map((scenario, index) => index === 0
+        ? { ...scenario, committedBoundary: null }
+        : scenario)
+    } as unknown;
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("malformed performance report"))).toBe(true);
+  });
+
   it("fails a single incorrect sample instead of averaging it away", () => {
     const current = report({
       cells: report().cells.map((entry, index) => index === 0
@@ -236,6 +380,73 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     expect(decision.verdict).toBe("FAIL");
     expect(decision.failures.some((failure) => failure.includes("exactly independent samples"))).toBe(true);
+  });
+
+  it("fails missing, duplicate, and invalid heap sample slots", () => {
+    const baseline = report();
+    const missing = report({ heapSamples: baseline.heapSamples.slice(1) });
+    const duplicate = report({
+      heapSamples: baseline.heapSamples.map((sample, index) => index === 2 ? { ...sample, sample: 1 } : sample)
+    });
+    const invalid = report({
+      heapSamples: baseline.heapSamples.map((sample, index) => index === 0
+        ? { ...sample, status: "FAIL", failure: { code: "CLOSE_FAILED", message: "cleanup failed" }, postGcHeapDeltaBytes: null }
+        : sample)
+    });
+
+    expect(classifyEventHistoryPerformance(missing, referenceFrom(baseline)).verdict).toBe("FAIL");
+    expect(classifyEventHistoryPerformance(duplicate, referenceFrom(baseline)).verdict).toBe("FAIL");
+    expect(classifyEventHistoryPerformance(invalid, referenceFrom(baseline)).verdict).toBe("FAIL");
+  });
+
+  it("retains a baseline GC timeout as a diagnostic FAIL slot without attempted identity", () => {
+    const baseline = report();
+    const timeoutFailure = { code: "CdpRequestTimeout", message: "CDP heap-gc-enable request timed out after 5 ms." };
+    const timedOut = report({
+      heapSamples: baseline.heapSamples.map((sample, index) => index === 0
+        ? { ...sample, sessionId: null, databaseName: null, status: "FAIL", failure: timeoutFailure, postGcHeapDeltaBytes: null }
+        : sample),
+      heapRuns: baseline.heapRuns.map((run) => run.adapter === "indexeddb" && run.phase === "cleanup" && run.sample === 1
+        ? { ...run, sessionId: null, databaseName: null, retained: null, close: null, rootRemoved: false, frameYielded: false, gcPasses: null, status: "FAIL", failure: timeoutFailure }
+        : run)
+    });
+
+    const decision = classifyEventHistoryPerformance(timedOut, referenceFrom(baseline));
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("CdpRequestTimeout"))).toBe(true);
+    expect(decision.failures.some((failure) => failure.includes("malformed"))).toBe(false);
+  });
+
+  it("requires each measured heap identity to match its cleanup evidence", () => {
+    const baseline = report();
+    expect(classifyEventHistoryPerformance(baseline, referenceFrom(baseline)).verdict).toBe("PASS");
+
+    const mismatched = report({
+      heapRuns: baseline.heapRuns.map((run, index) => index === 2 ? { ...run, sessionId: "wrong-session" } : run)
+    });
+    const duplicate = report({
+      heapSamples: baseline.heapSamples.map((sample, index) => index === 1 ? { ...sample, sessionId: baseline.heapSamples[0]!.sessionId } : sample)
+    });
+
+    expect(classifyEventHistoryPerformance(mismatched, referenceFrom(baseline)).verdict).toBe("FAIL");
+    expect(classifyEventHistoryPerformance(duplicate, referenceFrom(baseline)).verdict).toBe("FAIL");
+  });
+
+  it("enforces adapter-specific heap database identity", () => {
+    const baseline = report();
+    const invalidIndexedDb = report({
+      heapSamples: baseline.heapSamples.map((sample, index) => index === 0 ? { ...sample, databaseName: null } : sample)
+    });
+    const invalidMemory = report({
+      heapSamples: baseline.heapSamples.map((sample, index) => index === 1 ? { ...sample, databaseName: "memory-database" } : sample)
+    });
+    const invalidCleanup = report({
+      heapRuns: baseline.heapRuns.map((run, index) => index === 0 ? { ...run, databaseName: null } : run)
+    });
+
+    expect(classifyEventHistoryPerformance(invalidIndexedDb, referenceFrom(baseline)).verdict).toBe("FAIL");
+    expect(classifyEventHistoryPerformance(invalidMemory, referenceFrom(baseline)).verdict).toBe("FAIL");
+    expect(classifyEventHistoryPerformance(invalidCleanup, referenceFrom(baseline)).verdict).toBe("FAIL");
   });
 
   it("enforces the absolute latency, Long Task, and post-GC heap gates per sample", () => {
@@ -343,6 +554,71 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     expect(decision.verdict).toBe("REVIEW");
     expect(decision.reviewReasons.some((reason) => reason.includes("recent-page p95"))).toBe(true);
+  });
+
+  it("does not REVIEW a single current outlier when the comparable current median is unchanged", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry, index) => index === 0
+        ? { ...entry, latency: { ...entry.latency, recentPageP95Ms: 20 } }
+        : entry)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("PASS");
+    expect(decision.reviewReasons).toEqual([]);
+  });
+
+  it("REVIEWs when the comparable current median regresses over twenty percent", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry) => ({
+        ...entry,
+        latency: { ...entry.latency, recentPageP95Ms: 7 }
+      }))
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("REVIEW");
+    expect(decision.reviewReasons.some((reason) => reason.includes("recent-page p95"))).toBe(true);
+  });
+
+  it("requires exact independently auditable identity arrays", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry, index) => index === 0
+        ? {
+            ...entry,
+            correctness: { ...entry.correctness, retainedInOrder: true },
+            identityEvidence: { ...entry.identityEvidence, retainedEventIds: [...entry.identityEvidence.expectedEventIds].reverse() }
+          }
+        : entry)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("retained identifier order"))).toBe(true);
+  });
+
+  it("accepts unavailable storage-estimate telemetry without making it an authoritative gate", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry) => ({
+        ...entry,
+        storageEstimate: {
+          source: "navigator.storage.estimate" as const,
+          status: "UNAVAILABLE" as const,
+          usageBytes: null,
+          quotaBytes: null,
+          failure: { code: "STORAGE_ESTIMATE_UNAVAILABLE", message: "navigator.storage.estimate is unavailable." }
+        }
+      }))
+    });
+
+    expect(classifyEventHistoryPerformance(current, referenceFrom(current)).verdict).toBe("PASS");
   });
 
   it("fails closed when no reference is pinned", () => {
