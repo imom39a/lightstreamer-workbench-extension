@@ -74,6 +74,7 @@ export type CommittedEvidencePipelineBinderOptions = Readonly<{
 
 export type CommittedEvidencePipelineOptions = Readonly<{
   onCommittedEvidence(entry: CommittedEvidence): void;
+  onHistoryPublication?(publication: HistoryPublication): void;
   history?: EventHistory;
   panelSessionId?: string;
 }>;
@@ -370,6 +371,7 @@ export async function createCommittedEvidencePipeline(
   const history = options.history ?? await openEventHistory({ panelSessionId: options.panelSessionId });
   return bindCommittedEvidencePipeline({
     history,
-    onCommittedEvidence: options.onCommittedEvidence
+    onCommittedEvidence: options.onCommittedEvidence,
+    onHistoryPublication: options.onHistoryPublication
   });
 }

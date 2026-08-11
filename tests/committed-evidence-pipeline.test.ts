@@ -9,7 +9,8 @@ import {
   createMemoryEventHistoryForTests,
   type EvidenceCandidate,
   type EventHistory,
-  type CaptureReceipt
+  type CaptureReceipt,
+  type HistoryPublication
 } from "../src/core/event-history-authoritative";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
@@ -205,6 +206,50 @@ describe("committed-evidence pipeline", () => {
     pipeline.start();
     await Promise.resolve();
     expect(pipeline.startupMetadata().coverage).toBe("USEFUL");
+    await pipeline.close();
+  });
+
+  it("forwards one truthful terminal publication at the first refused boundary", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "pipeline-terminal-boundary",
+      byteEstimator: () => 60,
+      capacity: { maxRetainedBytes: 100, maxRetainedCount: 10 }
+    });
+    const publications: HistoryPublication[] = [];
+    const pipeline = await createCommittedEvidencePipeline({
+      history,
+      onCommittedEvidence: () => undefined,
+      onHistoryPublication: (publication) => publications.push(publication)
+    });
+    pipeline.start();
+
+    const accepted = pipeline.offer(lightstreamerCandidate("accepted"));
+    await expect(accepted.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1, eventId: "accepted" }
+    });
+
+    const refused = pipeline.offer(lightstreamerCandidate("refused"));
+    expect(refused.intake).toBe("REFUSED");
+    await expect(refused.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_BYTE_LIMIT", dimension: "RETAINED_BYTES" },
+      committedEvidenceBoundary: { sequence: 1, eventId: "accepted" }
+    });
+
+    const terminalPublications = publications.filter((publication) => publication.type === "terminal");
+    expect(terminalPublications).toHaveLength(1);
+    expect(terminalPublications[0]).toMatchObject({
+      type: "terminal",
+      terminal: {
+        reason: "RETAINED_BYTE_LIMIT",
+        firstMissingEventId: "refused",
+        committedEvidenceBoundary: { sequence: 1, eventId: "accepted" },
+        rejected: { count: 1 }
+      },
+      status: { phase: "STOPPED", captureOperation: "STOPPED" }
+    });
+
     await pipeline.close();
   });
 

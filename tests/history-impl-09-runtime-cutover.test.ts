@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createCaptureMessage } from "../src/bridge/messages";
-import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
+import { createMemoryEventHistoryForTests, type HistoryPublication } from "../src/core/event-history-authoritative";
 import { createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
 
 describe("history-impl-09 runtime cutover", () => {
@@ -59,12 +59,18 @@ describe("history-impl-09 runtime cutover", () => {
   });
 
   it("surfaces STOPPED and LIMITED at the first refused committed boundary once", async () => {
+    const commit = deferred<void>();
+    const commitStarted = deferred<void>();
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "history-impl-09-refusal-boundary",
       byteEstimator: () => 60,
-      capacity: { maxRetainedBytes: 100, maxRetainedCount: 10 }
+      capacity: { maxRetainedBytes: 100, maxRetainedCount: 10 },
+      commitBatch: async () => {
+        commitStarted.resolve();
+        await commit.promise;
+      }
     });
-    const stopPublications: Array<unknown> = [];
+    const stopPublications: HistoryPublication[] = [];
     history.follow({ from: "NOW" }, (publication) => {
       if (
         (publication.type === "status" && publication.status.phase !== "RUNNING") ||
@@ -75,16 +81,20 @@ describe("history-impl-09 runtime cutover", () => {
     });
     const runtime = createWorkbenchRuntime({ history, scheduler: immediateScheduler() });
     const degradedCaptures: Array<{ operation: string; coverage: string; detail?: string }> = [];
+    let lastDegradedCapture: string | null = null;
     runtime.subscribe(() => {
       const capture = runtime.getSnapshot().capture;
       if (capture.operation === "STOPPED" || capture.coverage === "LIMITED") {
-        degradedCaptures.push(capture);
+        const identity = JSON.stringify(capture);
+        if (identity !== lastDegradedCapture) {
+          degradedCaptures.push(capture);
+          lastDegradedCapture = identity;
+        }
       }
     });
 
     runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(1) });
-    await settle();
-    expect(runtime.getSnapshot().evidence.total).toBe(1);
+    await commitStarted.promise;
 
     runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(2) });
 
@@ -94,9 +104,12 @@ describe("history-impl-09 runtime cutover", () => {
         coverage: "LIMITED",
         detail: expect.stringContaining("RETAINED_BYTE_LIMIT")
       },
-      evidence: { total: 1 }
+      evidence: { total: 0 }
     });
+
+    commit.resolve();
     await settle();
+    expect(runtime.getSnapshot().evidence.total).toBe(1);
     expect(degradedCaptures).toHaveLength(1);
     expect(degradedCaptures[0]).toMatchObject({
       operation: "STOPPED",
@@ -119,6 +132,7 @@ describe("history-impl-09 runtime cutover", () => {
       status: { phase: "STOPPED", captureOperation: "STOPPED" },
       problem: { reason: "RETAINED_BYTE_LIMIT" }
     });
+    expect(stopPublications.filter((publication) => publication.type === "terminal")).toHaveLength(1);
 
     runtime.dispose();
     await settle();
@@ -149,7 +163,7 @@ describe("history-impl-09 runtime cutover", () => {
   it("handles a typed close failure during runtime disposal", async () => {
     const history = await createMemoryEventHistoryForTests({
       panelSessionId: "history-impl-09-close-failure",
-      clearJournal: async () => {
+      closeJournal: async () => {
         throw new Error("close unavailable");
       }
     });
