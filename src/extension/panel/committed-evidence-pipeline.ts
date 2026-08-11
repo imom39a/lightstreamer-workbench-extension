@@ -9,6 +9,7 @@ import {
   type EvidenceRead,
   type EvidenceRef,
   type EventHistory,
+  type HistoryPublication,
   type Outcome
 } from "../../core/event-history-authoritative";
 
@@ -68,6 +69,7 @@ export type CommittedEvidencePipeline = Readonly<{
 export type CommittedEvidencePipelineBinderOptions = Readonly<{
   history: EventHistory;
   onCommittedEvidence(entry: CommittedEvidence): void;
+  onHistoryPublication?(publication: HistoryPublication): void;
 }>;
 
 export type CommittedEvidencePipelineOptions = Readonly<{
@@ -226,6 +228,7 @@ export function bindCommittedEvidencePipeline(
   options: CommittedEvidencePipelineBinderOptions
 ): CommittedEvidencePipeline {
   const onCommittedEvidence = options.onCommittedEvidence;
+  const onHistoryPublication = options.onHistoryPublication;
   const history = options.history;
   const seen = new Set<string>();
   const retriableFailures = new Set<string>();
@@ -247,9 +250,14 @@ export function bindCommittedEvidencePipeline(
 
     const observer = (publication: Parameters<Parameters<EventHistory["follow"]>[1]>[0]) => {
       if (publication.type === "status") {
+        onHistoryPublication?.(publication);
         if (publication.status.fallback === "PRIMARY_JOURNAL_UNAVAILABLE") {
           startupMetadata = Object.freeze({ coverage: "USEFUL" });
         }
+        return;
+      }
+      if (publication.type === "terminal") {
+        onHistoryPublication?.(publication);
         return;
       }
       if (publication.type !== "committed-evidence") {

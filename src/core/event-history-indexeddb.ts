@@ -549,7 +549,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     phase = "DRAINING_TO_STOP";
     ensureTerminalSettled();
     trigger = makeTrigger(reason, dimension, firstMissingEventId);
-    publish({ type: "status", status: status(terminalProblem(trigger)) });
+    publish({ type: "status", status: status(), problem: terminalProblem(trigger) });
     startTerminalPersistence();
     finishTerminal();
   }

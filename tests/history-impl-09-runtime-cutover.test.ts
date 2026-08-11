@@ -57,7 +57,136 @@ describe("history-impl-09 runtime cutover", () => {
     await settle();
     expect(close).toHaveBeenCalledTimes(1);
   });
+
+  it("surfaces STOPPED and LIMITED at the first refused committed boundary once", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-09-refusal-boundary",
+      byteEstimator: () => 60,
+      capacity: { maxRetainedBytes: 100, maxRetainedCount: 10 }
+    });
+    const stopPublications: Array<unknown> = [];
+    history.follow({ from: "NOW" }, (publication) => {
+      if (
+        (publication.type === "status" && publication.status.phase !== "RUNNING") ||
+        publication.type === "terminal"
+      ) {
+        stopPublications.push(publication);
+      }
+    });
+    const runtime = createWorkbenchRuntime({ history, scheduler: immediateScheduler() });
+    const degradedCaptures: Array<{ operation: string; coverage: string; detail?: string }> = [];
+    runtime.subscribe(() => {
+      const capture = runtime.getSnapshot().capture;
+      if (capture.operation === "STOPPED" || capture.coverage === "LIMITED") {
+        degradedCaptures.push(capture);
+      }
+    });
+
+    runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(1) });
+    await settle();
+    expect(runtime.getSnapshot().evidence.total).toBe(1);
+
+    runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(2) });
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      capture: {
+        operation: "STOPPED",
+        coverage: "LIMITED",
+        detail: expect.stringContaining("RETAINED_BYTE_LIMIT")
+      },
+      evidence: { total: 1 }
+    });
+    await settle();
+    expect(degradedCaptures).toHaveLength(1);
+    expect(degradedCaptures[0]).toMatchObject({
+      operation: "STOPPED",
+      coverage: "LIMITED",
+      detail: expect.stringContaining("RETAINED_BYTE_LIMIT")
+    });
+    expect(stopPublications).toHaveLength(3);
+    expect(stopPublications[0]).toMatchObject({
+      type: "status",
+      status: { phase: "DRAINING_TO_STOP", captureOperation: "STOPPED" },
+      problem: { reason: "RETAINED_BYTE_LIMIT" }
+    });
+    expect(stopPublications[1]).toMatchObject({
+      type: "terminal",
+      terminal: { reason: "RETAINED_BYTE_LIMIT" },
+      status: { phase: "STOPPED", captureOperation: "STOPPED" }
+    });
+    expect(stopPublications[2]).toMatchObject({
+      type: "status",
+      status: { phase: "STOPPED", captureOperation: "STOPPED" },
+      problem: { reason: "RETAINED_BYTE_LIMIT" }
+    });
+
+    runtime.dispose();
+    await settle();
+  });
+
+  it("keeps coverage USEFUL when startup selects the lower-capacity journal tier", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-09-lower-capacity",
+      capacityTier: "LOWER",
+      fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+    });
+    const runtime = createWorkbenchRuntime({ history, scheduler: immediateScheduler() });
+
+    await settle();
+    expect(runtime.getSnapshot().capture.coverage).toBe("USEFUL");
+
+    runtime.dispatch({ type: "ingest-capture-message", message: captureMessage(1) });
+    await settle();
+
+    expect(runtime.getSnapshot().capture).toMatchObject({
+      operation: "RUNNING",
+      coverage: "USEFUL"
+    });
+    runtime.dispose();
+    await settle();
+  });
+
+  it("handles a typed close failure during runtime disposal", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "history-impl-09-close-failure",
+      clearJournal: async () => {
+        throw new Error("close unavailable");
+      }
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const runtime = createWorkbenchRuntime({ history, scheduler: immediateScheduler() });
+
+    runtime.dispose();
+    await settle();
+
+    expect(error).toHaveBeenCalledWith(
+      "Failed to close panel event history.",
+      "close unavailable"
+    );
+    error.mockRestore();
+  });
 });
+
+function captureMessage(sequence: number) {
+  return createCaptureMessage(
+    "item-update",
+    {
+      client: { id: "client-1", sessionId: "session-1" },
+      subscription: {
+        id: "command-sub",
+        mode: "COMMAND",
+        fields: ["command", "key", "value"]
+      },
+      item: { name: "orders", position: 1 },
+      update: {
+        command: "ADD",
+        key: `order-${sequence}`,
+        fields: { command: "ADD", key: `order-${sequence}`, value: sequence }
+      }
+    },
+    sequence
+  );
+}
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
   let resolvePromise!: (value: T) => void;

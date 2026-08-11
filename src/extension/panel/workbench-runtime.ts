@@ -7,7 +7,8 @@ import {
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
   createInMemoryEventHistory,
-  type EventHistory
+  type EventHistory,
+  type HistoryPublication
 } from "../../core/event-history-authoritative";
 import {
   type CommittedEvidence
@@ -532,6 +533,7 @@ class Runtime implements WorkbenchRuntime {
   private frameHandle: unknown | null = null;
   private fallbackHandle: unknown | null = null;
   private hiddenDirty = false;
+  private captureBoundary: WorkbenchCaptureSnapshot | null = null;
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
   private storage: WorkbenchStorageSnapshot;
   private storeStats = {
@@ -590,7 +592,8 @@ class Runtime implements WorkbenchRuntime {
     this.storage = options.storage ?? { mode: "indexeddb" };
     this.evidencePipeline = bindCommittedEvidencePipeline({
       history: this.history,
-      onCommittedEvidence: (entry) => this.handleCommittedEvidence(entry)
+      onCommittedEvidence: (entry) => this.handleCommittedEvidence(entry),
+      onHistoryPublication: (publication) => this.handleHistoryPublication(publication)
     });
     this.snapshot = this.createSnapshot();
 
@@ -943,7 +946,19 @@ class Runtime implements WorkbenchRuntime {
     this.disposed = true;
     this.cancelPassivePublication();
     this.listeners.clear();
-    void this.evidencePipeline.close().catch(() => undefined);
+    void this.evidencePipeline.close().then(
+      (result) => {
+        if (!result.ok) {
+          console.error("Failed to close panel event history.", result.problem.message);
+        }
+      },
+      (error: unknown) => {
+        console.error(
+          "Failed to close panel event history.",
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    );
   }
 
   private ingestCaptureMessage(message: CaptureMessage): void {
@@ -1213,6 +1228,27 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.schedulePassivePublication();
+  }
+
+  private handleHistoryPublication(publication: HistoryPublication): void {
+    if (this.disposed || this.captureBoundary) return;
+    let reason: string | undefined;
+    if (publication.type === "status") {
+      if (publication.status.phase !== "DRAINING_TO_STOP" && publication.status.phase !== "STOPPED") {
+        return;
+      }
+      reason = publication.problem?.reason ?? publication.status.terminal?.reason;
+    } else if (publication.type === "terminal") {
+      reason = publication.terminal.reason;
+    }
+    if (!reason) return;
+    this.captureBoundary = Object.freeze({
+      operation: "STOPPED",
+      coverage: "LIMITED",
+      detail: `Capture stopped at the committed Evidence boundary because ${reason}.`,
+      recovery: "Reload the inspected page with DevTools open"
+    });
+    this.publish();
   }
 
   private schedulePassivePublication(): void {
@@ -2018,6 +2054,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private captureSnapshot(): WorkbenchCaptureSnapshot {
+    const boundary = this.captureBoundary;
     const operation =
       this.captureStatus === "capturing"
         ? "RUNNING"
@@ -2025,10 +2062,18 @@ class Runtime implements WorkbenchRuntime {
           ? "STOPPED"
           : "IDLE";
     return Object.freeze({
-      operation: this.captureOverride.operation ?? operation,
-      coverage: this.captureOverride.coverage ?? this.topologyCoverage ?? "USEFUL",
-      ...(this.captureOverride.detail ? { detail: this.captureOverride.detail } : {}),
-      ...(this.captureOverride.recovery ? { recovery: this.captureOverride.recovery } : {})
+      operation: boundary?.operation ?? this.captureOverride.operation ?? operation,
+      coverage: boundary?.coverage ?? this.captureOverride.coverage ?? this.topologyCoverage ?? "USEFUL",
+      ...(boundary?.detail
+        ? { detail: boundary.detail }
+        : this.captureOverride.detail
+          ? { detail: this.captureOverride.detail }
+          : {}),
+      ...(boundary?.recovery
+        ? { recovery: boundary.recovery }
+        : this.captureOverride.recovery
+          ? { recovery: this.captureOverride.recovery }
+          : {})
     });
   }
 
