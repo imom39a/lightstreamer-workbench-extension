@@ -233,6 +233,31 @@ describe("history-impl-09 topology cutover", () => {
     );
   });
 
+  it("rejects a stale committed checkpoint instead of reporting recovery success", () => {
+    const projection = createTopologyProjection();
+    const newer = checkpointCandidate(
+      checkpointFrames("newer-checkpoint", "newer-subscription", 2),
+      [observation("newer-tail-subscription", 3)]
+    );
+    const stale = checkpointCandidate(checkpointFrames("stale-checkpoint", "stale-subscription", 1));
+
+    expect(projection.ingestCommittedEvidence({
+      intervalId: "interval-recovery-order",
+      sequence: 1,
+      eventId: newer.id,
+      candidate: newer
+    })).toMatchObject({ accepted: true });
+    expect(projection.snapshot().subscriptionCount).toBe(2);
+    expect(projection.ingestCommittedEvidence({
+      intervalId: "interval-recovery-order",
+      sequence: 2,
+      eventId: stale.id,
+      candidate: stale
+    })).toEqual({ accepted: false, resetConsumerState: false });
+    expect(projection.snapshot().subscriptionCount).toBe(2);
+    expect(projection.snapshot().serverEstablishedSubscriptionCount).toBe(1);
+  });
+
   it("does not project a complete checkpoint until its candidate becomes committed Evidence", async () => {
     const commit = deferred<void>();
     const history = await createMemoryEventHistoryForTests({
@@ -347,7 +372,8 @@ describe("history-impl-09 topology cutover", () => {
 
 function checkpointFrames(
   syncId = "complete-sync",
-  subscriptionId = "ticket09-subscription"
+  subscriptionId = "ticket09-subscription",
+  cutoffCaptureSequence = 1
 ): readonly [
   TopologySyncBeginFrame,
   TopologySyncChunkFrame,
@@ -384,7 +410,7 @@ function checkpointFrames(
     syncId,
     panelSessionId: PANEL_SESSION_ID,
     pageEpoch: PAGE_EPOCH,
-    cutoffCaptureSequence: 1,
+    cutoffCaptureSequence,
     chunkCount: 1,
     recordCount: records.length,
     coverage: { status: "complete" as const, getters: {} }

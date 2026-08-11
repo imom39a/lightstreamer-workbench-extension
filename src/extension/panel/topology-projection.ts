@@ -55,6 +55,7 @@ export type TopologyProjectionStatus = {
 export type TopologyProjectionResult = {
   accepted: boolean;
   resetConsumerState: boolean;
+  duplicate?: boolean;
   candidate?: TopologyCheckpointEvidenceCandidate;
 };
 
@@ -256,6 +257,7 @@ export function createTopologyProjection(): TopologyProjection {
     }
     const beginResult = applyCommittedSyncFrame(reconstructed.begin);
     if (!beginResult.accepted) return beginResult;
+    if (beginResult.duplicate) return beginResult;
     for (const chunk of reconstructed.chunks) {
       const chunkResult = applyCommittedSyncFrame(chunk);
       if (!chunkResult.accepted) {
@@ -459,11 +461,27 @@ export function createTopologyProjection(): TopologyProjection {
     coverage = frame.coverage;
     if (frame.type === TOPOLOGY_SYNC_BEGIN) {
       rememberHistory(snapshotPanelTopologyState(syncCoordinator.snapshot()));
-      syncCoordinator.begin(frame);
+      const result = syncCoordinator.begin(frame);
+      if (!result.accepted) {
+        return { accepted: false, resetConsumerState: activation.resetConsumerState };
+      }
+      if (result.duplicate) {
+        return {
+          accepted: true,
+          resetConsumerState: activation.resetConsumerState,
+          duplicate: true
+        };
+      }
     } else if (frame.type === TOPOLOGY_SYNC_CHUNK) {
-      syncCoordinator.acceptChunk(frame);
+      const result = syncCoordinator.acceptChunk(frame);
+      if (!result.accepted) {
+        return { accepted: false, resetConsumerState: activation.resetConsumerState };
+      }
     } else {
-      syncCoordinator.complete(frame);
+      const result = syncCoordinator.complete(frame);
+      if (!result.accepted) {
+        return { accepted: false, resetConsumerState: activation.resetConsumerState };
+      }
       if (syncCoordinator.status().state !== "partial") {
         for (const [key, event] of semanticEvents) {
           if (
