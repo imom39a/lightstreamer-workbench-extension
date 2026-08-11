@@ -29,6 +29,7 @@ function candidate(id: string): LightstreamerEventEnvelope {
 type HistoryLifecycleOptions = Readonly<{
   clearJournal?: () => Promise<void | boolean> | boolean;
   closeJournal?: () => Promise<void>;
+  commitBatch?: (batch: readonly EvidenceCandidate[]) => Promise<void>;
 }>;
 
 type HistoryFactory = (options?: HistoryLifecycleOptions) => Promise<EventHistory>;
@@ -61,6 +62,128 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
         }
       });
       expect(publications).toEqual(["contract-1", "contract-2"]);
+      await history.close();
+    });
+
+    it("rejoins captures offered during a successful Clear after a pending commit in capture order", async () => {
+      let releaseCommit!: () => void;
+      let commitStarted!: () => void;
+      const commitGate = new Promise<void>((resolve) => {
+        releaseCommit = resolve;
+      });
+      const commitStartedPromise = new Promise<void>((resolve) => {
+        commitStarted = resolve;
+      });
+      const history = await createHistory({
+        commitBatch: async (batch) => {
+          if (batch.some((entry) => entry.id === "clear-race-in-flight")) {
+            commitStarted();
+            await commitGate;
+          }
+        }
+      });
+
+      await expect(history.offer(candidate("clear-race-before")).settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 1, eventId: "clear-race-before" }
+      });
+
+      const inFlight = history.offer(candidate("clear-race-in-flight"));
+      await commitStartedPromise;
+      const clear = history.clear();
+      const duringClearFirst = history.offer(candidate("clear-race-during-first"));
+      const duringClearSecond = history.offer(candidate("clear-race-during-second"));
+      expect(duringClearFirst.intake).toBe("QUEUED");
+      expect(duringClearSecond.intake).toBe("QUEUED");
+
+      releaseCommit();
+
+      await expect(clear).resolves.toMatchObject({
+        ok: true,
+        value: {
+          previousInterval: { ordinal: 1 },
+          interval: { ordinal: 2 }
+        }
+      });
+      await expect(Promise.all([inFlight.settled, duringClearFirst.settled, duringClearSecond.settled])).resolves.toMatchObject([
+        { outcome: "BECAME_EVIDENCE", evidence: { sequence: 2, eventId: "clear-race-in-flight", intervalId: expect.stringContaining(":interval-1") } },
+        { outcome: "BECAME_EVIDENCE", evidence: { sequence: 3, eventId: "clear-race-during-first", intervalId: expect.stringContaining(":interval-2") } },
+        { outcome: "BECAME_EVIDENCE", evidence: { sequence: 4, eventId: "clear-race-during-second", intervalId: expect.stringContaining(":interval-2") } }
+      ]);
+      await expect(history.read({})).resolves.toMatchObject({
+        ok: true,
+        value: {
+          interval: { ordinal: 2 },
+          total: 2,
+          evidence: [
+            expect.objectContaining({ eventId: "clear-race-during-first", sequence: 3 }),
+            expect.objectContaining({ eventId: "clear-race-during-second", sequence: 4 })
+          ]
+        }
+      });
+      await history.close();
+    });
+
+    it("keeps clear-race captures terminal when the pending commit fails", async () => {
+      let releaseCommit!: () => void;
+      let commitStarted!: () => void;
+      const commitGate = new Promise<void>((resolve) => {
+        releaseCommit = resolve;
+      });
+      const commitStartedPromise = new Promise<void>((resolve) => {
+        commitStarted = resolve;
+      });
+      const history = await createHistory({
+        commitBatch: async (batch) => {
+          if (batch.some((entry) => entry.id === "clear-failure-in-flight")) {
+            commitStarted();
+            await commitGate;
+            throw new Error("commit failed");
+          }
+        }
+      });
+
+      await expect(history.offer(candidate("clear-failure-before")).settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 1, eventId: "clear-failure-before" }
+      });
+      const inFlight = history.offer(candidate("clear-failure-in-flight"));
+      await commitStartedPromise;
+      const clear = history.clear();
+      const duringClear = history.offer(candidate("clear-failure-during"));
+      expect(duringClear.intake).toBe("QUEUED");
+
+      releaseCommit();
+
+      await expect(clear).resolves.toMatchObject({
+        ok: false,
+        problem: { code: "HISTORY_STOPPED" }
+      });
+      await expect(inFlight.settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        problem: { code: "JOURNAL_COMMIT_FAILED" },
+        committedEvidenceBoundary: { sequence: 1, eventId: "clear-failure-before" }
+      });
+      await expect(duringClear.settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        problem: { code: "JOURNAL_COMMIT_FAILED" },
+        committedEvidenceBoundary: { sequence: 1, eventId: "clear-failure-before" }
+      });
+      const afterTerminal = history.offer(candidate("clear-failure-after"));
+      expect(afterTerminal.intake).toBe("REFUSED");
+      await expect(afterTerminal.settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        problem: { code: "JOURNAL_COMMIT_FAILED" },
+        committedEvidenceBoundary: { sequence: 1, eventId: "clear-failure-before" }
+      });
+      await expect(history.read({})).resolves.toMatchObject({
+        ok: true,
+        value: {
+          interval: { ordinal: 1 },
+          evidence: [expect.objectContaining({ eventId: "clear-failure-before", sequence: 1 })],
+          committedEvidenceBoundary: { sequence: 1, eventId: "clear-failure-before" }
+        }
+      });
       await history.close();
     });
 

@@ -841,6 +841,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       durableAccountedBytes = 0;
       lastNearLimit = false;
       generation += 1;
+      rejoinPostClearQueue();
       const result = deepFreeze({ previousInterval, interval });
       lastClearResult = result;
       publish(deepFreeze({ type: "interval-cleared" as const, previousInterval, interval, status: status() }));
