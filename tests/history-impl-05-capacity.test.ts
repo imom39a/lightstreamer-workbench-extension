@@ -99,6 +99,65 @@ describe.each([
   ["indexeddb", async (options: Record<string, unknown> = {}) => indexedHistory("impl-05-indexeddb", options)]
 ])("history-impl-05 %s", (_name, create) => {
   it.each([
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY]
+  ] as const)("rejects a %s byte-estimator result before admission", async (_label, estimate) => {
+    const history = await create({ byteEstimator: () => estimate });
+
+    const refused = history.offer(candidate(`invalid-estimate-${_label}`));
+
+    expect(refused.intake).toBe("REFUSED");
+    await expect(refused.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "INVALID_CANDIDATE" }
+    });
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { total: 0, evidence: [] }
+    });
+    await history.close();
+  });
+
+  it.each([
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY]
+  ] as const)("does not corrupt terminal refusal accounting for a %s result", async (_label, estimate) => {
+    let calls = 0;
+    const history = await create({
+      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 },
+      byteEstimator: () => {
+        calls += 1;
+        return calls < 3 ? 8 : estimate;
+      }
+    });
+    const publications = collect(history);
+
+    await expect(history.offer(candidate(`accounted-${_label}-accepted`)).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE"
+    });
+    const crossing = history.offer(candidate(`accounted-${_label}-crossing`));
+    const afterStop = history.offer(candidate(`accounted-${_label}-after-stop`));
+
+    await expect(crossing.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT" }
+    });
+    await expect(afterStop.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT" }
+    });
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "terminal",
+      terminal: expect.objectContaining({ rejected: { count: 2, bytes: 8 } })
+    }));
+    await history.close();
+  });
+
+  it.each([
     ["NORMAL", {
       maxRetainedCount: 10_000,
       maxRetainedBytes: 64 * MIB,

@@ -16,6 +16,7 @@ import {
   type EvidenceCandidate,
   type HistoryPublication
 } from "../src/core/event-history-authoritative";
+import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { createIndexedDbEventHistory, transactionDone, type IndexedDbEventHistoryOptions } from "../src/core/event-history-indexeddb";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
@@ -196,6 +197,113 @@ async function freshIndexedHistory(
 }
 
 describe("IndexedDB authoritative EventHistory", () => {
+  it("takes an immutable offer snapshot and publishes only after the adapter commits it", async () => {
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const history = await freshIndexedHistory("indexed-offer-snapshot", {
+      commitBatch: async () => commitGate
+    });
+    const publications: HistoryPublication[] = [];
+    history.follow({ from: "NOW" }, (publication) => publications.push(publication));
+    const offered = candidate("immutable-offer", {
+      raw: { nested: { value: "before-commit" } }
+    }) as LightstreamerEventEnvelope;
+
+    const receipt = history.offer(offered);
+    offered.raw = { nested: { value: "after-offer" } };
+
+    expect(publications.some((publication) => publication.type === "committed-evidence")).toBe(false);
+    releaseCommit();
+    await expect(receipt.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { eventId: "immutable-offer" }
+    });
+    expect(publications.some((publication) => {
+      if (publication.type !== "committed-evidence") return false;
+      const committed = publication.evidence[0]?.candidate as LightstreamerEventEnvelope | undefined;
+      const raw = committed?.raw as { nested?: { value?: unknown } } | undefined;
+      return raw?.nested?.value === "before-commit";
+    })).toBe(true);
+    await history.close();
+  });
+
+  it("reads committed fake-IndexedDB evidence through structured and Find queries", async () => {
+    const history = await freshIndexedHistory("indexed-read-query-replay");
+    await history.offer(candidate("query-hit", {
+      subscription: { id: "query-subscription", mode: "COMMAND" },
+      raw: { marker: "needle" }
+    })).settled;
+    await history.offer(candidate("query-miss", {
+      subscription: { id: "query-subscription", mode: "MERGE" },
+      raw: { marker: "other" }
+    })).settled;
+
+    await expect(history.read({ filters: { mode: "COMMAND" }, find: "needle" })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        total: 1,
+        evidence: [expect.objectContaining({ eventId: "query-hit" })]
+      }
+    });
+    await history.close();
+  });
+
+  it("replays committed fake-IndexedDB evidence through the follow seam", async () => {
+    const history = await freshIndexedHistory("indexed-follow-replay");
+    await history.offer(candidate("follow-first")).settled;
+    await history.offer(candidate("follow-second")).settled;
+    const replayed: string[] = [];
+    let resolveReplay!: () => void;
+    const replayComplete = new Promise<void>((resolve) => {
+      resolveReplay = resolve;
+    });
+
+    history.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
+      if (publication.type !== "committed-evidence") return;
+      replayed.push(...publication.evidence.map((entry) => entry.eventId));
+      if (replayed.length === 2) resolveReplay();
+    });
+
+    await replayComplete;
+    expect(replayed).toEqual(["follow-first", "follow-second"]);
+    await history.close();
+  });
+
+  it("round-trips JSON-native and special-tag values through fake IndexedDB", async () => {
+    const history = await freshIndexedHistory("indexed-special-tag-replay");
+    const specialObject = { __lsewReplayTag: "literal-key", nested: "value" };
+    const offered: EvidenceCandidate = {
+      id: "special-tag-round-trip",
+      kind: "topology-checkpoint",
+      checkpoint: {
+        json: { alpha: "first", omega: 2, nested: [true, null] },
+        special: [undefined, Number.NaN, Infinity, -Infinity, -0, 7n, new Date("2026-08-11T00:00:00.000Z")],
+        specialObject
+      }
+    };
+
+    await expect(history.offer(offered).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    const result = await history.read({ find: "literal-key" });
+
+    expect(result).toMatchObject({ ok: true, value: { total: 1 } });
+    if (result.ok) {
+      const checkpoint = result.value.evidence[0]?.candidate;
+      expect(checkpoint).toEqual(offered);
+      expect(checkpoint.kind).toBe("topology-checkpoint");
+      const values = checkpoint.kind === "topology-checkpoint" ? checkpoint.checkpoint.special as unknown[] : [];
+      expect(values[0]).toBeUndefined();
+      expect(Number.isNaN(values[1] as number)).toBe(true);
+      expect(values[2]).toBe(Infinity);
+      expect(values[3]).toBe(-Infinity);
+      expect(Object.is(values[4], -0)).toBe(true);
+      expect(values[5]).toBe(7n);
+      expect(values[6]).toEqual(new Date("2026-08-11T00:00:00.000Z"));
+    }
+    await history.close();
+  });
+
   it("uses a reverse primary-key cursor and stops after a recent descending page", async () => {
     const history = await freshIndexedHistory("query-plan-recent");
     for (let index = 0; index < 200; index += 1) {

@@ -67,4 +67,19 @@ describe("journal replay serialization", () => {
 
     fromEntries.mockRestore();
   });
+
+  it("keeps a JSON-native string equal to the special-tag name on the fast path", () => {
+    const candidate: EvidenceCandidate = {
+      id: "tag-shaped-string",
+      kind: "topology-checkpoint",
+      checkpoint: { value: "__lsewReplayTag" }
+    };
+    const serialized = serializeJournalEvidenceCandidate(candidate);
+    const fromEntries = vi.spyOn(Object, "fromEntries");
+
+    expect(deserializeJournalEvidenceCandidate(serialized.payload)).toEqual(candidate);
+    expect(fromEntries).not.toHaveBeenCalled();
+
+    fromEntries.mockRestore();
+  });
 });
