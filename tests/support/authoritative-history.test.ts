@@ -47,6 +47,7 @@ describe("authoritative EventHistory test support", () => {
         followedNow.push(...publication.evidence.map(({ eventId }) => eventId));
       }
     });
+    expect(followedNow).toEqual([]);
 
     const committed = history.offer(event("accepted"));
     const refused = history.offer(event("refused"));
@@ -97,12 +98,34 @@ describe("authoritative EventHistory test support", () => {
       evidence: { intervalId: "support-session:interval-2", sequence: 4 }
     });
 
+    const invalid = history.offer({ kind: "invalid" } as never);
+    expect(invalid.intake).toBe("REFUSED");
+    await expect(invalid.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "INVALID_CANDIDATE" },
+      committedEvidenceBoundary: { sequence: 4, eventId: "after-clear" }
+    });
+
     const closed = history.close();
     expect(closed).toBeInstanceOf(Promise);
     await expect(closed).resolves.toMatchObject({
       ok: true,
       value: { finalCommittedEvidenceBoundary: { sequence: 4, eventId: "after-clear" } }
     });
-    expect(history.offer(event("after-close")).intake).toBe("REFUSED");
+    await expect(history.clear()).resolves.toMatchObject({
+      ok: false,
+      problem: { code: "HISTORY_CLOSED" }
+    });
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: false,
+      problem: { code: "HISTORY_CLOSED" }
+    });
+    const afterClose = history.offer(event("after-close"));
+    expect(afterClose.intake).toBe("REFUSED");
+    await expect(afterClose.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "HISTORY_CLOSED" },
+      committedEvidenceBoundary: { sequence: 4, eventId: "after-clear" }
+    });
   });
 });

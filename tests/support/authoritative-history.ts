@@ -53,7 +53,7 @@ export function createAuthoritativeHistory(
   options: AuthoritativeHistoryOptions = {}
 ): EventHistory {
   const initialIntervalId = options.intervalId ?? "authoritative-test:interval-1";
-  const sessionId = initialIntervalId.replace(/:interval-1$/, "");
+  const sessionId = initialIntervalId.replace(/:interval-\d+$/, "");
   const subscribers = new Set<Subscriber>();
   const allEvidence: CommittedEvidence[] = [];
   let intervalOrdinal = 1;
@@ -160,7 +160,23 @@ export function createAuthoritativeHistory(
       };
     }
 
-    const copied = copyCandidate(candidate);
+    let copied: EvidenceCandidate;
+    try {
+      copied = copyCandidate(candidate);
+    } catch (error) {
+      notAccepted += 1;
+      return {
+        intake: "REFUSED",
+        settled: Promise.resolve({
+          outcome: "NOT_EVIDENCE",
+          problem: problem(
+            "INVALID_CANDIDATE",
+            error instanceof Error ? error.message : "Candidate is not valid Evidence input."
+          ),
+          committedEvidenceBoundary: currentBoundary()
+        })
+      };
+    }
     const configuredDecision = options.offerDecisions?.[offerNumber];
     const decision = configuredDecision ?? options.decideOffer?.(copied, offerNumber) ?? "commit";
     offerNumber += 1;
@@ -192,7 +208,11 @@ export function createAuthoritativeHistory(
         problem: problem("HISTORY_CLOSED", "Event History is closed.")
       });
     }
-    const matching = currentEvidence.filter((entry) => matchesEvidenceQuery(entry, query));
+    const matching = currentEvidence.filter(
+      (entry) =>
+        (query.intervalId === undefined || entry.intervalId === query.intervalId) &&
+        matchesEvidenceQuery(entry, query)
+    );
     return Promise.resolve({
       ok: true,
       value: Object.freeze({
@@ -263,6 +283,7 @@ export function createAuthoritativeHistory(
         cleanupDisposition: "COMPLETE"
       })
     };
+    publish(Object.freeze({ type: "closed", result: closeOutcome.value }));
     return Promise.resolve(closeOutcome);
   }
 
