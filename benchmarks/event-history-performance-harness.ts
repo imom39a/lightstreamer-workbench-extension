@@ -22,10 +22,14 @@ import {
   TOPOLOGY_SYNC_COMPLETE,
   TOPOLOGY_SYNC_LIMITS,
   TOPOLOGY_SYNC_VERSION,
+  TOPOLOGY_OBSERVATION_VERSION,
+  topologySyncUtf8Bytes,
   type TopologyAbsoluteRecord,
   type TopologyCoverage,
+  type TopologyObservation,
   type TopologySyncFrame
 } from "../src/bridge/messages";
+import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   classifyEventHistoryPerformance,
   TERMINAL_PENDING_BYTE_EVENT_COUNT,
@@ -39,7 +43,7 @@ import {
   type EventHistoryPerformanceWorkload
 } from "./event-history-performance-gate";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
-import { createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
+import { createWorkbenchRuntime, type WorkbenchRuntimePerformanceHooks } from "../src/extension/panel/workbench-runtime";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 type EventHistoryPerformanceConfig = Readonly<{
@@ -222,7 +226,7 @@ async function runCell(
   const pressureTransitions: string[] = [];
   let terminalReason: string | null = null;
   let terminalPublication: Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null = null;
-  let unsubscribe = () => undefined;
+  let unsubscribe: () => void = () => undefined;
   const samplePending = () => {
     const now = performance.now();
     maxPendingBytes = Math.max(maxPendingBytes, [...pending.values()].reduce((total, entry) => total + entry.bytes, 0));
@@ -266,7 +270,7 @@ async function runCell(
           }
         }
       }
-    });
+    }, root);
   const events = Array.from({ length: expectedCount }, (_, sequence) =>
     createEventHistoryWorkloadEvent(shape, sequence, runId)
   );
@@ -319,9 +323,10 @@ async function runCell(
     longTaskEntries.push(...(longTaskObserver?.takeRecords() ?? []));
     longTaskObserver?.disconnect();
     const attributedLongTasks = attributeLongTasks(longTaskEntries, phaseIntervals);
-    const firstMissingEventId = terminalPublication?.firstMissingEventId ?? null;
-    const refusedCount = terminalPublication?.rejected.count ?? 0;
-    const discardedCount = terminalPublication?.discarded.count ?? 0;
+    const terminal = terminalPublication as Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null;
+    const firstMissingEventId = terminal?.firstMissingEventId ?? null;
+    const refusedCount = terminal?.rejected.count ?? 0;
+    const discardedCount = terminal?.discarded.count ?? 0;
     return {
       adapter,
       workload,
@@ -369,9 +374,9 @@ async function runCell(
         limits: (() => {
           const limits = historyCapacityLimits(adapter === "indexeddb" ? "NORMAL" : "LOWER");
           return {
-            retainedCount: limits.retainedCount,
-            retainedBytes: limits.retainedBytes,
-            pendingBytes: limits.pendingBytes,
+            retainedCount: limits.maxRetainedCount,
+            retainedBytes: limits.maxRetainedBytes,
+            pendingBytes: limits.pendingStopBytes,
             pendingAgeMs: limits.pendingAgeStopMs
           };
         })()
@@ -420,7 +425,7 @@ async function runTerminalScenario(
   const firstEvent = createEventHistoryWorkloadEvent("large-json-rich", 0, `${panelSessionId}-accepted`);
   if (trigger === "PENDING_BYTES") {
     const events = Array.from({ length: TERMINAL_PENDING_BYTE_EVENT_COUNT }, (_, index) =>
-      checkpointCandidate(`${panelSessionId}-${index}`, "terminal-pressure", TERMINAL_CHECKPOINT_PAYLOAD_BYTES)
+      createStagedTopologyCheckpointCandidate(`${panelSessionId}-${index}`, "terminal-pressure", TERMINAL_CHECKPOINT_PAYLOAD_BYTES)
     );
     for (const event of events) receipts.push({ id: event.id, receipt: history.offer(event) });
   } else {
@@ -441,12 +446,13 @@ async function runTerminalScenario(
   const expectedFirstMissing = trigger === "PENDING_BYTES" ? refused[0]?.id ?? null : null;
   const refusedIdentityCorrect = trigger === "PENDING_BYTES"
     ? terminal?.firstMissingEventId === expectedFirstMissing
-    : refused.length === 1 && outcomes.at(-1)?.outcome === "NOT_EVIDENCE";
+    : terminal?.firstMissingEventId === null && refused.length === 1 && outcomes.at(-1)?.outcome === "NOT_EVIDENCE";
   return {
     adapter,
     trigger,
     tier,
     terminalReason: trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT",
+    terminalReasonCorrect: terminal?.reason === (trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT"),
     acceptedCount: accepted.length,
     refusedCount: refused.length,
     refusedEventIds: refused.map((entry) => entry.id),
@@ -468,7 +474,7 @@ async function runCheckpointScenario(
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier })
     : createInMemoryEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier });
-  const candidate = checkpointCandidate(
+  const candidate = createStagedTopologyCheckpointCandidate(
     `checkpoint-${adapter}-${name}`,
     `sync-${name}`,
     name === "representative" ? 64 * 1_024 : TERMINAL_CHECKPOINT_PAYLOAD_BYTES
@@ -476,10 +482,26 @@ async function runCheckpointScenario(
   const serialized = serializeJournalEvidenceCandidate(candidate);
   const publications: HistoryPublication[] = [];
   const unsubscribe = history.follow({ from: "NOW" }, (publication) => publications.push(publication));
+  const trafficBefore = Array.from({ length: 4 }, (_, index) =>
+    createEventHistoryWorkloadEvent("ordinary-item-update", index, `${adapter}-${name}-before`)
+  );
+  const trafficAfter = Array.from({ length: 4 }, (_, index) =>
+    createEventHistoryWorkloadEvent("ordinary-item-update", index, `${adapter}-${name}-after`)
+  );
+  await Promise.all(trafficBefore.map((event) => history.offer(event).settled));
   const receipt = history.offer(candidate);
   const outcome = await receipt.settled;
+  await Promise.all(trafficAfter.map((event) => history.offer(event).settled));
   const read = await history.read({ order: "asc" });
-  const committedPublication = publications.find((publication) => publication.type === "committed-evidence");
+  const committedPublication = publications.find((publication) =>
+    publication.type === "committed-evidence" && publication.evidence.some((entry) => entry.eventId === candidate.id)
+  );
+  const publishedOrder = publications
+    .filter((publication): publication is Extract<HistoryPublication, { type: "committed-evidence" }> => publication.type === "committed-evidence")
+    .flatMap((publication) => publication.evidence.map((entry) => entry.eventId));
+  const candidateIndex = publishedOrder.indexOf(candidate.id);
+  const trafficBeforeIds = trafficBefore.map((event) => event.id);
+  const trafficAfterIds = trafficAfter.map((event) => event.id);
   unsubscribe();
   await history.close();
   return {
@@ -487,24 +509,228 @@ async function runCheckpointScenario(
     adapter,
     accepted: outcome.outcome === "BECAME_EVIDENCE",
     retained: read.ok ? read.value.total : 0,
+    trafficBefore: trafficBefore.length,
+    trafficAfter: trafficAfter.length,
+    interleaved: publications.some((publication) =>
+      publication.type === "committed-evidence" &&
+      publication.evidence.some((entry) => entry.eventId === candidate.id) &&
+      candidateIndex > -1 &&
+      trafficBeforeIds.every((eventId) => publishedOrder.indexOf(eventId) < candidateIndex) &&
+      trafficAfterIds.every((eventId) => publishedOrder.indexOf(eventId) > candidateIndex)
+    ),
     canonicalBytes: journalAccountedBytes(serialized.bytes),
-    committedBoundaryCorrect: outcome.outcome === "BECAME_EVIDENCE" && read.ok && read.value.committedEvidenceBoundary?.eventId === candidate.id,
+    committedBoundaryCorrect: outcome.outcome === "BECAME_EVIDENCE" && outcome.evidence.eventId === candidate.id,
     batchAcceptedAsOneOversizedUnit: committedPublication?.type === "committed-evidence" && committedPublication.evidence.length === 1
   };
 }
 
-function checkpointCandidate(id: string, syncId: string, payloadBytes: number): EvidenceCandidate {
-  return {
-    kind: "topology-checkpoint",
-    id,
-    checkpoint: {
-      syncId,
-      panelSessionId: id,
-      pageEpoch: "page-epoch-1",
-      cutoffCaptureSequence: 42,
-      payload: "x".repeat(payloadBytes)
+export function createStagedTopologyCheckpointCandidate(
+  seed: string,
+  syncId: string,
+  minimumCanonicalBytes: number
+): EvidenceCandidate {
+  const pageEpoch = `page-${seed}`;
+  const panelSessionId = "panel-00000000-0000-4000-8000-000000000099";
+  const coverage: TopologyCoverage = { status: "complete", getters: {} };
+  const recordCount = minimumCanonicalBytes >= TERMINAL_CHECKPOINT_PAYLOAD_BYTES ? 6_500 : 230;
+  let lastStagedBytes = 0;
+  let lastBaseBytes = 0;
+  for (let paddingLength = 64; paddingLength <= 256; paddingLength += 8) {
+    const baseRecords = createCheckpointRecords(pageEpoch, recordCount, paddingLength, 0);
+    const baseFrames = createCheckpointFrames(syncId, panelSessionId, pageEpoch, coverage, baseRecords);
+    lastStagedBytes = baseFrames.reduce((total, frame) => total + topologySyncUtf8Bytes(frame), 0);
+    if (lastStagedBytes > TOPOLOGY_SYNC_LIMITS.maxStagedBytes) continue;
+    const baseCandidate = stageCheckpointCandidate(baseFrames, []);
+    if (!baseCandidate) continue;
+    const baseBytes = journalAccountedBytes(serializeJournalEvidenceCandidate(baseCandidate).bytes);
+    lastBaseBytes = baseBytes;
+    const extraPaddingLength = minimumCanonicalBytes - baseBytes;
+    if (extraPaddingLength >= 0 && extraPaddingLength <= 4_096) {
+      const records = createCheckpointRecords(pageEpoch, recordCount, paddingLength, extraPaddingLength);
+      const frames = createCheckpointFrames(syncId, panelSessionId, pageEpoch, coverage, records);
+      const stagedBytes = frames.reduce((total, frame) => total + topologySyncUtf8Bytes(frame), 0);
+      lastStagedBytes = stagedBytes;
+      if (stagedBytes <= TOPOLOGY_SYNC_LIMITS.maxStagedBytes) {
+        const candidate = stageCheckpointCandidate(frames, []);
+        if (candidate && journalAccountedBytes(serializeJournalEvidenceCandidate(candidate).bytes) === minimumCanonicalBytes) {
+          return candidate;
+        }
+      }
     }
+    if (minimumCanonicalBytes <= baseBytes) continue;
+
+    const oneObservation = createCheckpointObservationEvent(pageEpoch, recordCount + 1, 0);
+    const oneObservationCandidate = stageCheckpointCandidate(baseFrames, [oneObservation]);
+    if (!oneObservationCandidate) continue;
+    const oneObservationBytes = journalAccountedBytes(serializeJournalEvidenceCandidate(oneObservationCandidate).bytes);
+    const observationOverhead = oneObservationBytes - baseBytes;
+    if (observationOverhead <= 0) continue;
+    let observationCount = Math.max(
+      1,
+      Math.ceil((minimumCanonicalBytes - baseBytes - observationOverhead) / (4_096 + observationOverhead))
+    );
+    for (let adjustment = 0; adjustment < 4; adjustment += 1) {
+      const prefixObservations = createCheckpointObservationEvents(
+        pageEpoch,
+        recordCount,
+        observationCount,
+        4_096,
+        0
+      );
+      const prefixCandidate = stageCheckpointCandidate(baseFrames, prefixObservations);
+      if (!prefixCandidate) break;
+      const prefixBytes = journalAccountedBytes(serializeJournalEvidenceCandidate(prefixCandidate).bytes);
+      if (prefixBytes > minimumCanonicalBytes) {
+        observationCount -= 1;
+        continue;
+      }
+      if (prefixBytes + 4_096 < minimumCanonicalBytes) {
+        observationCount += 1;
+        continue;
+      }
+      let low = 0;
+      let high = 4_096;
+      while (low <= high) {
+        const padding = Math.floor((low + high) / 2);
+        const observations = createCheckpointObservationEvents(
+          pageEpoch,
+          recordCount,
+          observationCount,
+          4_096,
+          padding
+        );
+        const candidate = stageCheckpointCandidate(baseFrames, observations);
+        if (!candidate) break;
+        const bytes = journalAccountedBytes(serializeJournalEvidenceCandidate(candidate).bytes);
+        if (bytes === minimumCanonicalBytes) return candidate;
+        if (bytes < minimumCanonicalBytes) low = padding + 1;
+        else high = padding - 1;
+      }
+      break;
+    }
+  }
+  throw new Error(`Could not construct a codec-valid ${minimumCanonicalBytes}-byte topology checkpoint for ${seed}; last base bytes ${lastBaseBytes}, last staged bytes ${lastStagedBytes}.`);
+}
+
+function stageCheckpointCandidate(
+  frames: readonly TopologySyncFrame[],
+  observations: readonly LightstreamerEventEnvelope[]
+): EvidenceCandidate | undefined {
+  const projection = createTopologyProjection();
+  let candidate: EvidenceCandidate | undefined;
+  for (const frame of frames) {
+    if (frame.type === TOPOLOGY_SYNC_COMPLETE) {
+      for (const observation of observations) projection.ingestCapture(observation);
+    }
+    const result = projection.applySyncFrame(frame);
+    if (result.candidate) candidate = result.candidate;
+  }
+  return candidate;
+}
+
+function createCheckpointObservationEvents(
+  pageEpoch: string,
+  cutoffCaptureSequence: number,
+  count: number,
+  fullPaddingLength: number,
+  finalPaddingLength: number
+): LightstreamerEventEnvelope[] {
+  return Array.from({ length: count }, (_, index) =>
+    createCheckpointObservationEvent(
+      pageEpoch,
+      cutoffCaptureSequence + index + 1,
+      index === count - 1 ? finalPaddingLength : fullPaddingLength
+    )
+  );
+}
+
+function createCheckpointObservationEvent(
+  pageEpoch: string,
+  captureSequence: number,
+  paddingLength: number
+): LightstreamerEventEnvelope {
+  const topology: TopologyObservation = {
+    version: TOPOLOGY_OBSERVATION_VERSION,
+    kind: "item-update",
+    pageEpoch,
+    captureSequence,
+    timestamp: captureSequence,
+    provenance: { instrumentationSource: "official-public-api" },
+    coverage: { status: "complete", getters: {} },
+    values: { padding: { state: "real", value: "x".repeat(paddingLength) } }
   };
+  return {
+    id: `checkpoint-live-${pageEpoch}-${captureSequence}`,
+    timestamp: captureSequence,
+    direction: "inbound",
+    source: "server",
+    synthetic: false,
+    kind: "item-update",
+    topology
+  };
+}
+
+function createCheckpointRecords(
+  pageEpoch: string,
+  recordCount: number,
+  paddingLength: number,
+  extraPaddingLength: number
+): TopologyAbsoluteRecord[] {
+  const cutoffCaptureSequence = recordCount;
+  const page: TopologyAbsoluteRecord = { kind: "page", id: pageEpoch, pageEpoch, captureSequence: 1 };
+  const client: TopologyAbsoluteRecord = { kind: "client", id: "checkpoint-client", pageEpoch, captureSequence: 2, parentId: pageEpoch, clientActive: true };
+  const subscription: TopologyAbsoluteRecord = {
+    kind: "subscription",
+    id: "checkpoint-subscription",
+    pageEpoch,
+    captureSequence: 3,
+    parentId: client.id,
+    clientId: client.id,
+    clientActive: true,
+    serverEstablished: true
+  };
+  const padding = "x".repeat(paddingLength);
+  const aggregates = Array.from({ length: Math.max(0, recordCount - 3) }, (_, index) => ({
+    kind: "aggregate" as const,
+    id: `checkpoint-aggregate-${index}`,
+    pageEpoch,
+    captureSequence: index + 4,
+    parentId: subscription.id,
+    subscriptionId: subscription.id,
+    values: { padding: `${padding}${index === 0 ? "x".repeat(extraPaddingLength) : ""}` }
+  }));
+  if (aggregates.at(-1)?.captureSequence !== cutoffCaptureSequence) {
+    throw new Error("Topology checkpoint record cutoff is incoherent.");
+  }
+  return [page, client, subscription, ...aggregates];
+}
+
+function createCheckpointFrames(
+  syncId: string,
+  panelSessionId: string,
+  pageEpoch: string,
+  coverage: TopologyCoverage,
+  records: readonly TopologyAbsoluteRecord[]
+): TopologySyncFrame[] {
+  const chunkSize = 500;
+  const chunks = Array.from({ length: Math.ceil(records.length / chunkSize) }, (_, index) =>
+    records.slice(index * chunkSize, (index + 1) * chunkSize)
+  );
+  const metadata = {
+    version: TOPOLOGY_SYNC_VERSION as 2,
+    syncId,
+    panelSessionId,
+    pageEpoch,
+    cutoffCaptureSequence: records.at(-1)?.captureSequence ?? 0,
+    chunkCount: chunks.length,
+    recordCount: records.length,
+    coverage
+  };
+  return [
+    { type: TOPOLOGY_SYNC_BEGIN, ...metadata },
+    ...chunks.map((chunk, chunkIndex) => ({ type: TOPOLOGY_SYNC_CHUNK, ...metadata, chunkIndex, records: chunk })),
+    { type: TOPOLOGY_SYNC_COMPLETE, ...metadata }
+  ];
 }
 
 async function offerSustained(
@@ -564,7 +790,7 @@ async function settleOffers(history: EventHistory, events: readonly EvidenceCand
 
 async function mountProductionPanel(
   history: EventHistory,
-  performanceHooks: Parameters<typeof createWorkbenchRuntime>[0]["performanceHooks"] = undefined,
+  performanceHooks: WorkbenchRuntimePerformanceHooks | undefined = undefined,
   root: HTMLElement = document.createElement("main")
 ): Promise<{
   root: HTMLElement;

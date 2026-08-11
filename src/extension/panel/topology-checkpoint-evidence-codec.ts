@@ -3,6 +3,7 @@ import {
   TOPOLOGY_SYNC_CHUNK,
   TOPOLOGY_SYNC_COMPLETE,
   TOPOLOGY_SYNC_LIMITS,
+  TOPOLOGY_LIMITS,
   TOPOLOGY_SYNC_VERSION,
   isTopologyAbsoluteRecord,
   isTopologyObservation,
@@ -313,7 +314,16 @@ function createFrames(
   records: readonly TopologyAbsoluteRecord[],
   reason?: TopologySyncCompleteFrame["reason"]
 ): readonly TopologySyncFrame[] {
-  const chunks = chunkRecords(records);
+  const chunks = chunkRecords(records, {
+    version: TOPOLOGY_SYNC_VERSION,
+    syncId,
+    panelSessionId,
+    pageEpoch,
+    cutoffCaptureSequence,
+    chunkCount: TOPOLOGY_SYNC_LIMITS.maxChunks,
+    recordCount: records.length,
+    coverage
+  });
   const metadata = {
     version: TOPOLOGY_SYNC_VERSION,
     syncId,
@@ -336,10 +346,32 @@ function createFrames(
   ];
 }
 
-function chunkRecords(records: readonly TopologyAbsoluteRecord[]): readonly TopologyAbsoluteRecord[][] {
+function chunkRecords(
+  records: readonly TopologyAbsoluteRecord[],
+  metadata: Omit<TopologySyncBeginFrame, "type">
+): readonly TopologyAbsoluteRecord[][] {
   const chunks: TopologyAbsoluteRecord[][] = [];
-  for (let start = 0; start < records.length; start += TOPOLOGY_SYNC_LIMITS.maxRecords) {
-    chunks.push(records.slice(start, start + TOPOLOGY_SYNC_LIMITS.maxRecords));
+  let current: TopologyAbsoluteRecord[] = [];
+  for (const record of records) {
+    const next = [...current, record];
+    const frame = {
+      type: TOPOLOGY_SYNC_CHUNK,
+      ...metadata,
+      chunkIndex: chunks.length,
+      records: next
+    } satisfies TopologySyncChunkFrame;
+    if (
+      current.length > 0 &&
+      topologySyncUtf8Bytes(frame) > TOPOLOGY_LIMITS.utf8Bytes
+    ) {
+      chunks.push(current);
+      current = [record];
+    } else {
+      current = next;
+    }
+  }
+  if (current.length > 0) {
+    chunks.push(current);
   }
   return chunks;
 }

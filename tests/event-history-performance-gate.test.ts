@@ -116,6 +116,7 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
         trigger: "PENDING_BYTES" as const,
         tier: adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const,
         terminalReason: "PENDING_BYTE_LIMIT" as const,
+        terminalReasonCorrect: true,
         acceptedCount: 16,
         refusedCount: 1,
         refusedEventIds: ["missing-bytes"],
@@ -132,6 +133,7 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
         trigger: "PENDING_AGE" as const,
         tier: adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const,
         terminalReason: "PENDING_AGE_LIMIT" as const,
+        terminalReasonCorrect: true,
         acceptedCount: 1,
         refusedCount: 1,
         refusedEventIds: ["missing-age"],
@@ -145,8 +147,8 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
       }
     ]),
     checkpointScenarios: ["indexeddb", "memory"].flatMap((adapter) => [
-      { name: "representative" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 1, canonicalBytes: 10_000, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true },
-      { name: "maximum-2MiB" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 1, canonicalBytes: 2 * 1_048_576, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true }
+      { name: "representative" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 9, trafficBefore: 4, trafficAfter: 4, interleaved: true, canonicalBytes: 10_000, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true },
+      { name: "maximum-2MiB" as const, adapter: adapter as "indexeddb" | "memory", accepted: true, retained: 9, trafficBefore: 4, trafficAfter: 4, interleaved: true, canonicalBytes: 2 * 1_048_576, committedBoundaryCorrect: true, batchAcceptedAsOneOversizedUnit: true }
     ]),
     heapSamples: [1, 2, 3].flatMap((index) => [heapSample("indexeddb", index), heapSample("memory", index)]),
     lifecycle: { retainedHeapBytes: [1, 2, 3], strictMonotonicGrowth: false },
@@ -248,6 +250,20 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     expect(decision.verdict).toBe("FAIL");
     expect(decision.failures.some((failure) => failure.includes("index amplification"))).toBe(true);
+  });
+
+  it("fails checkpoint evidence that does not prove interleaved sustained traffic", () => {
+    const baseline = report();
+    const current = report({
+      checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) =>
+        index === 0 ? { ...scenario, interleaved: false } : scenario
+      )
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("interleaved"))).toBe(true);
   });
 
   it("returns REVIEW for a comparable absolute pass that regresses over twenty percent", () => {

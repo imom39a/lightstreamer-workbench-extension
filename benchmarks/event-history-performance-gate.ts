@@ -113,6 +113,7 @@ export type EventHistoryPerformanceTerminalScenario = Readonly<{
   trigger: "PENDING_BYTES" | "PENDING_AGE";
   tier: "NORMAL" | "LOWER";
   terminalReason: "PENDING_BYTE_LIMIT" | "PENDING_AGE_LIMIT";
+  terminalReasonCorrect: boolean;
   acceptedCount: number;
   refusedCount: number;
   refusedEventIds: readonly string[];
@@ -130,6 +131,9 @@ export type EventHistoryPerformanceCheckpointScenario = Readonly<{
   adapter: EventHistoryPerformanceAdapter;
   accepted: boolean;
   retained: number;
+  trafficBefore: number;
+  trafficAfter: number;
+  interleaved: boolean;
   canonicalBytes: number;
   committedBoundaryCorrect: boolean;
   batchAcceptedAsOneOversizedUnit: boolean;
@@ -371,7 +375,7 @@ function isTerminalScenario(value: unknown): value is EventHistoryPerformanceTer
     || !Array.isArray(value.refusedEventIds) || !value.refusedEventIds.every((id) => typeof id === "string" && id.length > 0)
     || !(value.firstMissingEventId === null || typeof value.firstMissingEventId === "string")
     || !Number.isSafeInteger(value.terminalPublicationCount) || (value.terminalPublicationCount as number) < 0
-    || !isBoolean(value.finalBoundaryCorrect) || !isBoolean(value.refusedIdentityCorrect)
+    || !isBoolean(value.terminalReasonCorrect) || !isBoolean(value.finalBoundaryCorrect) || !isBoolean(value.refusedIdentityCorrect)
     || !isBoolean(value.exactOneTerminalPublication) || !Array.isArray(value.pressureTransitions)
     || !value.pressureTransitions.every((entry) => typeof entry === "string")) return false;
   if (value.committedBoundary !== null && (!isRecord(value.committedBoundary) || !Number.isSafeInteger(value.committedBoundary.sequence) || typeof value.committedBoundary.eventId !== "string")) return false;
@@ -382,6 +386,9 @@ function isCheckpointScenario(value: unknown): value is EventHistoryPerformanceC
   return isRecord(value) && ["representative", "maximum-2MiB"].includes(value.name as string)
     && ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
     && isBoolean(value.accepted) && Number.isSafeInteger(value.retained) && (value.retained as number) >= 0
+    && Number.isSafeInteger(value.trafficBefore) && (value.trafficBefore as number) >= 1
+    && Number.isSafeInteger(value.trafficAfter) && (value.trafficAfter as number) >= 1
+    && isBoolean(value.interleaved)
     && Number.isSafeInteger(value.canonicalBytes) && (value.canonicalBytes as number) > 0
     && isBoolean(value.committedBoundaryCorrect) && isBoolean(value.batchAcceptedAsOneOversizedUnit);
 }
@@ -397,9 +404,10 @@ function validateTerminalScenarios(
       continue;
     }
     const scenario = matches[0]!;
-    if (scenario.terminalReason !== (trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT")) failures.push(`${adapter}/${trigger} reported the wrong terminal reason.`);
+    if (scenario.terminalReason !== (trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT") || !scenario.terminalReasonCorrect) failures.push(`${adapter}/${trigger} reported the wrong terminal reason.`);
     if (!scenario.finalBoundaryCorrect || !scenario.refusedIdentityCorrect || !scenario.exactOneTerminalPublication || scenario.terminalPublicationCount !== 1) failures.push(`${adapter}/${trigger} did not prove terminal identity, final boundary, and exactly-one publication.`);
     if (scenario.refusedCount !== scenario.refusedEventIds.length || scenario.refusedCount < 1) failures.push(`${adapter}/${trigger} refused-event accounting is incomplete.`);
+    if (scenario.pressureTransitions.join(",") !== "NEAR_LIMIT,EXHAUSTED") failures.push(`${adapter}/${trigger} did not report the exact NEAR_LIMIT to EXHAUSTED pressure transition.`);
     if (trigger === "PENDING_BYTES" && scenario.firstMissingEventId !== scenario.refusedEventIds[0]) failures.push(`${adapter}/${trigger} first missing event identity is incorrect.`);
     if (trigger === "PENDING_BYTES" && (scenario.acceptedCount !== TERMINAL_PENDING_BYTE_ACCEPTED_COUNT || scenario.refusedCount !== TERMINAL_PENDING_BYTE_EVENT_COUNT - TERMINAL_PENDING_BYTE_ACCEPTED_COUNT)) failures.push(`${adapter}/${trigger} did not exercise the exact 17-event, 2 MiB checkpoint pressure workload.`);
     if (trigger === "PENDING_AGE" && (scenario.acceptedCount !== 1 || scenario.refusedCount !== 1)) failures.push(`${adapter}/${trigger} did not exercise the exact one-accepted/one-refused age workload.`);
@@ -414,7 +422,7 @@ function validateCheckpointScenarios(
     const matches = scenarios.filter((scenario) => scenario.name === name);
     if (matches.length !== 2) failures.push(`Expected NORMAL and LOWER ${name} checkpoint scenarios.`);
     for (const scenario of matches) {
-      if (!scenario.accepted || scenario.retained !== 1 || !scenario.committedBoundaryCorrect || !scenario.batchAcceptedAsOneOversizedUnit) failures.push(`${scenario.adapter}/${name} checkpoint evidence is incomplete.`);
+      if (!scenario.accepted || scenario.retained !== scenario.trafficBefore + scenario.trafficAfter + 1 || !scenario.interleaved || !scenario.committedBoundaryCorrect || !scenario.batchAcceptedAsOneOversizedUnit) failures.push(`${scenario.adapter}/${name} checkpoint evidence is incomplete or not interleaved with sustained traffic.`);
       if (name === "maximum-2MiB" && scenario.canonicalBytes < 2 * MIB) failures.push(`${scenario.adapter}/${name} is smaller than the required 2 MiB checkpoint.`);
     }
   }
