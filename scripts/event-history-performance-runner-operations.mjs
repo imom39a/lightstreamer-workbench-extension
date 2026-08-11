@@ -726,8 +726,26 @@ function operationStatus(value, startedAt, now, lastRequestTimeout = null, expec
   if (operationId !== expectedOperationId) {
     throw new Error("Performance operation status has an operationId that does not match the requested operation.");
   }
-  const progress = serializeOperationProgress(value?.progress);
-  const error = value?.error === undefined ? null : serializeOperationError(value.error);
+  const hasProgress = value !== null
+    && typeof value === "object"
+    && Object.prototype.hasOwnProperty.call(value, "progress");
+  if (hasProgress
+    && typeof value.progress?.operationId === "string"
+    && value.progress.operationId !== expectedOperationId) {
+    throw new Error("Performance operation status has an operationId mismatch between status and progress.");
+  }
+  if (hasProgress && !hasMatchingProgressOperationId(value.progress, expectedOperationId)) {
+    throw new Error("Performance operation status has invalid progress or progress operationId.");
+  }
+  const progress = hasProgress ? serializeOperationProgress(value.progress, expectedOperationId) : null;
+  const rawError = value?.error;
+  const hasErrorProgress = rawError !== null
+    && typeof rawError === "object"
+    && Object.prototype.hasOwnProperty.call(rawError, "progress");
+  if (hasErrorProgress && !hasMatchingProgressOperationId(rawError.progress, expectedOperationId)) {
+    throw new Error("Performance operation status has invalid rejected progress or progress operationId.");
+  }
+  const error = rawError === undefined ? null : serializeOperationError(rawError, expectedOperationId);
   if (progress !== null && progress.operationId !== null && progress.operationId !== operationId) {
     throw new Error("Performance operation status has an operationId mismatch between status and progress.");
   }
@@ -742,6 +760,13 @@ function operationStatus(value, startedAt, now, lastRequestTimeout = null, expec
     ...(value?.result !== undefined ? { result: value.result } : {}),
     ...(error ? { error } : {})
   };
+}
+
+function hasMatchingProgressOperationId(value, expectedOperationId) {
+  return Boolean(value
+    && typeof value === "object"
+    && typeof value.operationId === "string"
+    && value.operationId === expectedOperationId);
 }
 
 function requestTimeoutDetails(error) {
@@ -763,9 +788,9 @@ function remoteOperationError(details) {
   return error;
 }
 
-function serializeOperationError(value) {
+function serializeOperationError(value, expectedOperationId = null) {
   if (!value || typeof value !== "object") return null;
-  const progress = serializeOperationProgress(value.progress);
+  const progress = serializeOperationProgress(value.progress, expectedOperationId);
   const cleanupEvidence = serializeCleanupEvidence(value.cleanupEvidence);
   return {
     name: typeof value.name === "string" ? value.name : "Error",

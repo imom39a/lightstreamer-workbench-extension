@@ -634,6 +634,79 @@ describe("Event History performance runner page operation", () => {
       .rejects.toThrow(/operationId/u);
   });
 
+  it.each(["missing", "null", "foreign"] as const)("rejects %s embedded progress operationId on pending and resolved statuses", async (identity) => {
+    const progress = strictProgress(identity === "foreign" ? "foreign-progress" : null);
+    if (identity === "missing") delete progress.operationId;
+
+    for (const state of ["pending", "resolved"] as const) {
+      const cdp = new FakeCdp([
+        evaluated({ operationId: "embedded-operation", state: "pending", heartbeat: 0 }),
+        evaluated({
+          operationId: "embedded-operation",
+          state,
+          heartbeat: 1,
+          progress,
+          ...(state === "resolved" ? { result: true } : {})
+        }),
+        evaluated(true)
+      ]);
+
+      await expect(runPageOperation(cdp, "window.run()", { operationId: "embedded-operation" }))
+        .rejects.toThrow(/progress.*operationId|operationId.*progress/u);
+    }
+  });
+
+  it.each(["missing", "null", "foreign"] as const)("rejects %s embedded progress operationId on rejected statuses", async (identity) => {
+    const progress = strictProgress(identity === "foreign" ? "foreign-progress" : null);
+    if (identity === "missing") delete progress.operationId;
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "embedded-rejected-operation", state: "pending", heartbeat: 0 }),
+      evaluated({
+        operationId: "embedded-rejected-operation",
+        state: "rejected",
+        heartbeat: 1,
+        error: { name: "HarnessStageTimeout", message: "rejected", progress }
+      }),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", { operationId: "embedded-rejected-operation" }))
+      .rejects.toThrow(/progress.*operationId|operationId.*progress/u);
+  });
+
+  it("preserves a valid requested identity in ordinary and rejected embedded progress", async () => {
+    const normalProgress = strictProgress("valid-ordinary-operation", { extraField: "drop me" });
+    const normalCdp = new FakeCdp([
+      evaluated({ operationId: "valid-ordinary-operation", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "valid-ordinary-operation", state: "resolved", heartbeat: 1, progress: normalProgress, result: true }),
+      evaluated(true)
+    ]);
+    const normalStatuses: Array<Record<string, unknown>> = [];
+    await expect(runPageOperation(normalCdp, "window.run()", {
+      operationId: "valid-ordinary-operation",
+      onHeartbeat: (status) => normalStatuses.push(status as Record<string, unknown>)
+    })).resolves.toBe(true);
+
+    const rejectedProgress = strictProgress("valid-rejected-operation", { extraField: "drop me" });
+    const rejectedCdp = new FakeCdp([
+      evaluated({ operationId: "valid-rejected-operation", state: "pending", heartbeat: 0 }),
+      evaluated({
+        operationId: "valid-rejected-operation",
+        state: "rejected",
+        heartbeat: 1,
+        error: { name: "HarnessStageTimeout", message: "rejected", progress: rejectedProgress }
+      }),
+      evaluated(true)
+    ]);
+    const rejected = await runPageOperation(rejectedCdp, "window.run()", { operationId: "valid-rejected-operation" })
+      .then(() => null, (error) => error);
+
+    expect(normalStatuses.at(-1)).toMatchObject({ progress: { operationId: "valid-ordinary-operation" } });
+    expect(normalStatuses.at(-1)?.progress).not.toHaveProperty("extraField");
+    expect(rejected).toMatchObject({ progress: { operationId: "valid-rejected-operation" } });
+    expect(rejected.progress).not.toHaveProperty("extraField");
+  });
+
   it("uses the strict generated rejection serializer with operation identity", async () => {
     const cdp = new GeneratedRejectionCdp();
     const rawProgress = strictProgress("generated-operation", { extraField: "drop me" });
@@ -844,6 +917,7 @@ describe("Event History performance runner page operation", () => {
 
   it("propagates structured harness progress through operation status", async () => {
     const progress = {
+      operationId: "progress-operation",
       phase: "cells",
       stage: "receipt-settlement",
       substage: "receipt-settlement",
@@ -884,6 +958,7 @@ describe("Event History performance runner page operation", () => {
   it("fails closed on host-observed progress age even when polls keep succeeding", async () => {
     let now = 0;
     const progress = {
+      operationId: "stale-progress",
       phase: "cells",
       stage: "cell-7-receipts",
       substage: "receipt-settlement",
@@ -965,6 +1040,7 @@ describe("Event History performance runner page operation", () => {
           state: "pending",
           heartbeat: calls - 1,
           progress: {
+            operationId: "absolute-stage",
             phase: "cells",
             stage: "cell-7-close",
             substage: "cell-7-close",
@@ -1051,6 +1127,7 @@ describe("Event History performance runner page operation", () => {
     let now = 0;
     let calls = 0;
     const progress = {
+      operationId: "retry-stale-progress",
       phase: "heap",
       stage: "cleanup-close",
       substage: "cleanup-close",
@@ -1106,6 +1183,7 @@ describe("Event History performance runner page operation", () => {
     let now = 0;
     let calls = 0;
     const progress = {
+      operationId: `narrow-${phase}`,
       phase,
       stage,
       substage: stage,
@@ -1150,6 +1228,7 @@ describe("Event History performance runner page operation", () => {
 
   it("sanitizes valid progress identically for normal and rejected CDP statuses", async () => {
     const validProgress = {
+      operationId: "normal-sanitized",
       phase: "cells",
       stage: "cell-7-receipts",
       substage: "receipt-settlement",
@@ -1170,7 +1249,7 @@ describe("Event History performance runner page operation", () => {
       extraField: "must be dropped"
     };
     const expectedProgress = {
-      operationId: null,
+      operationId: "normal-sanitized",
       phase: "cells",
       stage: "cell-7-receipts",
       substage: "receipt-settlement",
@@ -1205,7 +1284,7 @@ describe("Event History performance runner page operation", () => {
       evaluated({ operationId: "rejected-sanitized", state: "rejected", heartbeat: 1, error: {
         name: "HarnessStageTimeout",
         message: "receipt stage timed out",
-        progress: validProgress
+        progress: { ...validProgress, operationId: "rejected-sanitized" }
       } }),
       evaluated(true)
     ]);
@@ -1213,11 +1292,12 @@ describe("Event History performance runner page operation", () => {
       .then(() => null, (error) => error);
 
     expect(normalStatuses.at(-1)?.progress).toEqual(expectedProgress);
-    expect(rejected).toMatchObject({ progress: expectedProgress });
+    expect(rejected).toMatchObject({ progress: { ...expectedProgress, operationId: "rejected-sanitized" } });
   });
 
   it("drops invalid progress for both normal and rejected CDP statuses", async () => {
     const invalidProgress = {
+      operationId: "normal-invalid",
       phase: "not-a-phase",
       stage: "cell-7-receipts",
       substage: "receipt-settlement",
@@ -1252,7 +1332,7 @@ describe("Event History performance runner page operation", () => {
       evaluated({ operationId: "rejected-invalid", state: "rejected", heartbeat: 1, error: {
         name: "HarnessStageTimeout",
         message: "receipt stage timed out",
-        progress: invalidProgress
+        progress: { ...invalidProgress, operationId: "rejected-invalid" }
       } }),
       evaluated(true)
     ]);
@@ -1278,7 +1358,8 @@ describe("Event History performance runner page operation", () => {
           stack: "TypeError: original failure\\n at page.js:4",
           code: "PREPARE_FAILED",
           progress: {
-      phase: "heap",
+            operationId: "rejected-operation",
+            phase: "heap",
       stage: "sample-receipt-settlement",
       substage: "sample-receipt-settlement",
       sequence: 18,
