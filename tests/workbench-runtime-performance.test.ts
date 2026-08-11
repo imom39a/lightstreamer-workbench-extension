@@ -97,4 +97,54 @@ describe("production React runtime performance boundary seam", () => {
     await history.close();
     rootElement.remove();
   });
+
+  it("does not attribute a prior interval to a later visible frame", async () => {
+    const covered: number[][] = [];
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-interval-boundary" });
+    const runtime = createWorkbenchRuntime({
+      history,
+      captureStatus: "capturing",
+      performanceHooks: {
+        onVisibleFrame(_boundary, _timestampMs, boundaries) {
+          covered.push((boundaries ?? []).map((boundary) => boundary.sequence));
+        }
+      }
+    });
+
+    await expect(history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "before-clear")).settled)
+      .resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 1 } });
+    await expect(history.clear()).resolves.toMatchObject({ ok: true });
+    await expect(history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 2, "after-clear")).settled)
+      .resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 2 } });
+
+    runtime.reportVisibleFrame?.();
+
+    expect(covered).toEqual([[2]]);
+    runtime.dispose();
+    await history.close();
+  });
+
+  it("does not report a visible frame while the panel is hidden", async () => {
+    const visibleReports: number[] = [];
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-hidden-frame" });
+    const runtime = createWorkbenchRuntime({
+      history,
+      visible: false,
+      performanceHooks: {
+        onVisibleFrame(boundary) {
+          visibleReports.push(boundary.sequence);
+        }
+      }
+    });
+
+    await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "hidden")).settled;
+    runtime.reportVisibleFrame?.();
+    expect(visibleReports).toEqual([]);
+
+    runtime.dispatch({ type: "set-visible", visible: true });
+    runtime.reportVisibleFrame?.();
+    expect(visibleReports).toEqual([1]);
+    runtime.dispose();
+    await history.close();
+  });
 });

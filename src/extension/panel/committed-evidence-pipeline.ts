@@ -262,6 +262,7 @@ export function bindCommittedEvidencePipeline(
         return;
       }
       if (publication.type !== "committed-evidence") {
+        onHistoryPublication?.(publication);
         return;
       }
       for (const entry of publication.evidence) {

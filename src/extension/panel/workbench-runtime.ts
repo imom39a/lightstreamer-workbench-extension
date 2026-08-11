@@ -645,6 +645,7 @@ class Runtime implements WorkbenchRuntime {
   };
 
   readonly reportVisibleFrame = (): void => {
+    if (!this.visible) return;
     const boundary = this.committedEvidenceBoundary;
     if (!boundary || !this.performanceHooks?.onVisibleFrame || this.pendingVisibleBoundaries.length === 0) return;
     const coveredBoundaries = this.pendingVisibleBoundaries.splice(0);
@@ -1306,6 +1307,10 @@ class Runtime implements WorkbenchRuntime {
     if (publication.type === "status") {
       shouldPublish = this.updateHistoryCondition(publication.status, publication.problem);
     } else if (publication.type === "interval-cleared") {
+      // A frame after Clear can only prove visibility for the new History
+      // Interval. Boundaries accepted before the clear are no longer part of
+      // the rendered Evidence snapshot and must not be coalesced into it.
+      this.pendingVisibleBoundaries = [];
       shouldPublish = this.updateHistoryCondition(publication.status);
     } else if (publication.type === "terminal") {
       shouldPublish = this.updateHistoryCondition(publication.status);
