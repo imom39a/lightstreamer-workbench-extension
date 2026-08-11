@@ -202,30 +202,36 @@ export async function createIndexedDbEventHistory(
 }
 
 const AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}`;
-const AUTHORITATIVE_EVENT_DATABASE_LEGACY_NAME_RE = /^lsew-history-v(\d+)-(.+)$/;
+const AUTHORITATIVE_EVENT_DATABASE_LEGACY_NAME_RE = /^lsew-history-(.+)$/;
 
 function authoritativeOwnershipLockName(databaseName: string): string {
   return `${AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX}-${databaseName}`;
 }
 
-function parseLegacyAuthoritativeEventDatabaseName(name: string): AuthoritativeEventDatabaseIdentity | null {
+function parseLegacyAuthoritativeEventDatabaseName(
+  name: string,
+  schemaVersion?: number
+): AuthoritativeEventDatabaseIdentity | null {
   const match = AUTHORITATIVE_EVENT_DATABASE_LEGACY_NAME_RE.exec(name);
   if (!match) {
     return null;
   }
-  const schemaVersion = Number(match[1]);
-  if (!Number.isSafeInteger(schemaVersion) || schemaVersion < 1) {
+  const enumeratedSchemaVersion = Number(schemaVersion);
+  if (!Number.isSafeInteger(enumeratedSchemaVersion) || enumeratedSchemaVersion < 1) {
     return null;
   }
   return {
-    panelSessionId: match[2],
-    schemaVersion,
+    panelSessionId: match[1],
+    schemaVersion: enumeratedSchemaVersion,
     name
   };
 }
 
-function parseSweepCandidateEventDatabaseName(name: string): AuthoritativeEventDatabaseIdentity | null {
-  return parseAuthoritativeEventDatabaseName(name) ?? parseLegacyAuthoritativeEventDatabaseName(name);
+function parseSweepCandidateEventDatabaseName(
+  name: string,
+  schemaVersion?: number
+): AuthoritativeEventDatabaseIdentity | null {
+  return parseAuthoritativeEventDatabaseName(name) ?? parseLegacyAuthoritativeEventDatabaseName(name, schemaVersion);
 }
 
 async function runStartupSweep(
@@ -241,7 +247,7 @@ async function runStartupSweep(
     if (!name) {
       continue;
     }
-    const identity = parseSweepCandidateEventDatabaseName(name);
+    const identity = parseSweepCandidateEventDatabaseName(name, descriptor.version);
     if (!identity) {
       continue;
     }
