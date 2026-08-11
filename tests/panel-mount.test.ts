@@ -14,7 +14,7 @@ import {
 import {
   createInMemoryEventHistory,
   type EventHistory
-} from "../src/core/event-history";
+} from "../src/core/event-history-authoritative";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import {
   THEME_STORAGE_KEY,
@@ -140,7 +140,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory,
       createRuntime,
       connectBridge
@@ -172,7 +172,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -195,7 +195,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -232,7 +232,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -263,7 +263,7 @@ describe("production panel mount wiring", () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
     const closeHistory = vi.spyOn(history, "close");
-    const createIndexedDbHistory = vi.fn(async () => history);
+    const openHistory = vi.fn(async () => history);
     const port = createFakePort();
     (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: { inspectedWindow: { tabId: 42 } },
@@ -271,17 +271,13 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory,
+      openHistory,
       createInMemoryHistory: createInMemoryEventHistory,
       createPanelSessionId: () => PANEL_SESSION_ID
     });
     await flushPanel();
 
-    expect(createIndexedDbHistory).toHaveBeenCalledWith({
-      panelSessionId: PANEL_SESSION_ID,
-      reset: true,
-      clearOnClose: true
-    });
+    expect(openHistory).toHaveBeenCalledWith({ panelSessionId: PANEL_SESSION_ID });
     expect(port.postedMessages).toContainEqual({
       type: PANEL_REGISTER_MESSAGE,
       tabId: 42,
@@ -359,7 +355,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -390,7 +386,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -413,7 +409,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: vi.fn(async () => Promise.reject(storageError)),
+      openHistory: vi.fn(async () => Promise.reject(storageError)),
       createInMemoryHistory: () => history
     });
     await flushPanel();
@@ -454,7 +450,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: () => pendingHistory.promise,
+      openHistory: () => pendingHistory.promise,
       createInMemoryHistory: createInMemoryEventHistory
     });
 

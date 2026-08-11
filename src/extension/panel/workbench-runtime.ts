@@ -6,12 +6,11 @@ import {
 } from "../../core/event-envelope";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
-  createEventHistory,
   createInMemoryEventHistory,
   type EventHistory
-} from "../../core/event-history";
+} from "../../core/event-history-authoritative";
+import { type CommittedEvidence } from "../../core/event-history-authoritative";
 import { createEventSearchText, matchesEventFilters, type EventFilterState } from "../../core/event-filter";
-import { type EventStore, type EventStoreChange, type EventStoreStats } from "../../core/event-store";
 import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
 import {
   analyzeLocalInjectionDocument,
@@ -59,6 +58,7 @@ import {
   type TopologyState,
   type TopologySubscription
 } from "../../core/topology-state";
+import { bindCommittedEvidencePipeline, type CommittedEvidencePipeline } from "./committed-evidence-pipeline";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 
@@ -435,8 +435,6 @@ export type WorkbenchRuntimeScheduler = {
 
 export type WorkbenchRuntimeOptions = {
   history?: EventHistory;
-  /** @deprecated Prefer the storage-independent history seam. */
-  store?: EventStore;
   visible?: boolean;
   theme?: "auto" | "dark" | "light";
   captureStatus?: CaptureStatus;
@@ -487,6 +485,7 @@ export function createWorkbenchRuntime(options: WorkbenchRuntimeOptions = {}): W
 
 class Runtime implements WorkbenchRuntime {
   private readonly history: EventHistory;
+  private readonly evidencePipeline: CommittedEvidencePipeline;
   private readonly scheduler: WorkbenchRuntimeScheduler;
   private readonly windowSize: number;
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
@@ -497,7 +496,6 @@ class Runtime implements WorkbenchRuntime {
   private readonly retainedLocalEvidenceIds = new Set<string>();
   private readonly topologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
-  private readonly unsubscribeHistory: () => void;
   private visible: boolean;
   private theme: "auto" | "dark" | "light";
   private captureStatus: CaptureStatus;
@@ -533,7 +531,7 @@ class Runtime implements WorkbenchRuntime {
   private hiddenDirty = false;
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
   private storage: WorkbenchStorageSnapshot;
-  private storeStats: EventStoreStats = {
+  private storeStats = {
     retained: 0,
     totalAppended: 0,
     warningThreshold: 10_000,
@@ -577,8 +575,7 @@ class Runtime implements WorkbenchRuntime {
   } | null = null;
 
   constructor(options: WorkbenchRuntimeOptions) {
-    this.history =
-      options.history ?? (options.store ? createEventHistory(options.store) : createInMemoryEventHistory());
+    this.history = options.history ?? createInMemoryEventHistory();
     this.scheduler = options.scheduler ?? browserScheduler();
     this.windowSize = normalizeWindowSize(options.windowSize);
     this.visible = options.visible ?? true;
@@ -588,12 +585,14 @@ class Runtime implements WorkbenchRuntime {
     this.normalizer = options.normalizer ?? createEventNormalizer();
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
     this.storage = options.storage ?? { mode: "indexeddb" };
+    this.evidencePipeline = bindCommittedEvidencePipeline({
+      history: this.history,
+      onCommittedEvidence: (entry) => this.handleCommittedEvidence(entry)
+    });
     this.snapshot = this.createSnapshot();
 
+    this.evidencePipeline.start();
     this.refreshEvidence("initial");
-    this.unsubscribeHistory = this.history.subscribe((change, stats) =>
-      this.handleHistoryChange(change, stats)
-    );
     this.hydrateProjections();
   }
 
@@ -898,14 +897,17 @@ class Runtime implements WorkbenchRuntime {
     this.selectedEventEnvelope = null;
     if (reconcileFilterVisibility) this.selectionHiddenByFilter = false;
     let receiving = true;
-    this.history.getEventById(eventId).receive(
-      (event) => {
+    void this.evidencePipeline.read({ eventId }).then(
+      (result) => {
         if (
           this.disposed ||
           generation !== this.selectionLookupGeneration ||
           this.selectionEventId !== eventId
         ) return;
-        this.selectedEventEnvelope = event;
+        if (!result.ok) return;
+        const candidate = result.value.evidence[0]?.candidate;
+        if (!isLightstreamerEvidenceCandidate(candidate)) return;
+        this.selectedEventEnvelope = candidate;
         if (reconcileFilterVisibility) this.reconcileSelectedEnvelopeFilterVisibility();
         if (!receiving) this.publish();
       },
@@ -937,28 +939,14 @@ class Runtime implements WorkbenchRuntime {
     }
     this.disposed = true;
     this.cancelPassivePublication();
-    this.unsubscribeHistory();
     this.listeners.clear();
+    void this.evidencePipeline.close().catch(() => undefined);
   }
 
   private ingestCaptureMessage(message: CaptureMessage): void {
     const event = this.normalizer.normalize(message);
-    this.currentPageEpoch = event.topology?.pageEpoch ?? this.currentPageEpoch;
     this.captureStatus = "capturing";
-    this.topologyProjection.ingestCapture(event);
-    this.preparedExport = null;
-    this.history.append(event).receive(
-      () => undefined,
-      () => {
-        // Storage diagnostics are represented by the configured Capture state;
-        // a failed append must never fabricate Evidence.
-      }
-    );
-    // Capture remains lossless, but renderer notification is consolidated at
-    // the next paint boundary. The topology index is intentionally designed
-    // for many ingests followed by one snapshot at render cadence.
-    if (this.visible) this.schedulePassivePublication();
-    else this.hiddenDirty = true;
+    this.evidencePipeline.offer(event);
   }
 
   private applyTopologySyncFrame(frame: TopologySyncFrame): void {
@@ -998,10 +986,18 @@ class Runtime implements WorkbenchRuntime {
     const topology = this.topologyProjection.snapshot();
     const target = findTopologySelection(topology, this.scopeId ?? "page");
     const filters = combineScopeAndUserFilters(eventFiltersForScope(target), this.filters);
-    this.history.queryEvents({ filters, order: "asc" }).receive(
+    void this.evidencePipeline.read({ filters, order: "asc" }).then(
       (result) => {
         if (this.disposed || generation !== this.findQueryGeneration) return;
-        const events = Object.freeze([...result.events]);
+        if (!result.ok) {
+          this.findResultEvents = Object.freeze([]);
+          this.findMatchIndexes = Object.freeze([]);
+          this.findCurrentEventId = null;
+          this.findEvidence = null;
+          this.publish();
+          return;
+        }
+        const events = Object.freeze(lightstreamerEvents(result.value.evidence));
         const matchIndexes = Object.freeze(events.flatMap((event, index) =>
           createEvidenceFindText(event).includes(query) ? [index] : []
         ));
@@ -1110,9 +1106,24 @@ class Runtime implements WorkbenchRuntime {
     this.clearError = null;
     this.clearedSelectionEventId = this.selectionEventId;
     this.publish();
-    this.history.clear().receive(
-      () => {
+    void this.evidencePipeline.clear().then(
+      (result) => {
         if (this.disposed) return;
+        if (!result.ok) {
+          this.clearState = "error";
+          this.clearError = result.problem.message;
+          this.publish();
+          return;
+        }
+        this.commandStateProjections.clear();
+        this.retainedLocalEvidenceIds.clear();
+        this.topologyProjection.clear();
+        this.storeStats = {
+          ...this.storeStats,
+          retained: 0,
+          totalAppended: 0,
+          warningActive: false
+        };
         this.clearState = "idle";
         this.refreshEvidence("command");
       },
@@ -1159,25 +1170,25 @@ class Runtime implements WorkbenchRuntime {
     this.refreshEvidence("visibility");
   }
 
-  private handleHistoryChange(change: EventStoreChange, stats: EventStoreStats): void {
-    if (this.disposed || change.type === "init") {
-      this.storeStats = stats;
+  private handleCommittedEvidence(entry: CommittedEvidence): void {
+    if (this.disposed || !isLightstreamerEvidenceCandidate(entry.candidate)) {
+      if (this.disposed) return;
+      this.preparedExport = null;
+      if (this.visible) this.schedulePassivePublication();
+      else this.hiddenDirty = true;
       return;
     }
-    this.storeStats = stats;
+    const event = entry.candidate;
+    this.currentPageEpoch = event.topology?.pageEpoch ?? this.currentPageEpoch;
+    this.captureStatus = "capturing";
+    const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
+    if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
+    this.commandStateProjections.apply(event);
+    if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
+    this.storeStats.retained += 1;
+    this.storeStats.totalAppended += 1;
+    this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
     this.preparedExport = null;
-    if (change.type === "clear") {
-      this.commandStateProjections.clear();
-      this.retainedLocalEvidenceIds.clear();
-      this.topologyProjection.clear();
-    } else {
-      const events = change.type === "append" ? [change.event] : change.events;
-      for (const event of events) {
-        this.commandStateProjections.apply(event);
-        if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
-        this.topologyProjection.ingestHistory(event);
-      }
-    }
     if (!this.visible) {
       this.hiddenDirty = true;
       return;
@@ -1254,19 +1265,29 @@ class Runtime implements WorkbenchRuntime {
     const filterSnapshot = Object.freeze({ ...this.filters });
     this.evidenceCopy = Object.freeze({ state: "preparing", eventCount: 0, text: null });
     this.publish();
-    this.history.queryEvents({ filters, order: "asc" }).receive(
+    void this.evidencePipeline.read({ filters, order: "asc" }).then(
       (result) => {
         if (this.disposed || generation !== this.evidenceCopyGeneration) return;
+        if (!result.ok) {
+          this.evidenceCopy = Object.freeze({
+            state: "error",
+            eventCount: 0,
+            text: null,
+            error: result.problem.message
+          });
+          this.publish();
+          return;
+        }
         const document = {
           format: "lightstreamer-workbench/scoped-evidence-copy/v1",
           scope: { id: scopeId, label: scope.label },
           filters: filterSnapshot,
-          count: result.total,
-          events: result.events.map(toPersistableEventEnvelope)
+          count: result.value.total,
+          events: lightstreamerEvents(result.value.evidence).map(toPersistableEventEnvelope)
         };
         this.evidenceCopy = Object.freeze({
           state: "ready",
-          eventCount: result.total,
+          eventCount: result.value.total,
           text: JSON.stringify(document, null, 2)
         });
         this.publish();
@@ -1524,8 +1545,22 @@ class Runtime implements WorkbenchRuntime {
       // retaining the corresponding synthetic Evidence fails. A successful
       // history append echoes the same identity and is projection-deduplicated.
       this.commandStateProjections.apply(synthetic);
-      this.history.append(synthetic).receive(
-        () => this.setLocalInjectionOutcome(executionId, deliveredLocalInjectionOutcome(executionId, result)),
+      const receipt = this.evidencePipeline.offer(synthetic);
+      void receipt.settled.then(
+        (settled) => {
+          if (settled.outcome === "BECAME_EVIDENCE") {
+            this.setLocalInjectionOutcome(executionId, deliveredLocalInjectionOutcome(executionId, result));
+          } else {
+            this.setLocalInjectionOutcome(
+              executionId,
+              deliveredLocalInjectionOutcome(
+                executionId,
+                result,
+                "Delivered locally, but the synthetic Evidence could not be retained in session history."
+              )
+            );
+          }
+        },
         () => this.setLocalInjectionOutcome(
           executionId,
           deliveredLocalInjectionOutcome(
@@ -1735,24 +1770,35 @@ class Runtime implements WorkbenchRuntime {
     }
     let completedSynchronously = false;
     this.evidenceQueryPending = true;
-    this.history
-      .queryEvents({
+    void this.evidencePipeline
+      .read({
         filters,
         limit: this.windowSize,
-        offset,
+        offsetFromNewest: offset,
         order: "asc"
       })
-      .receive(
+      .then(
         (result) => {
           completedSynchronously = true;
           if (this.disposed || generation !== this.queryGeneration) {
             return;
           }
+          if (!result.ok) {
+            this.evidenceQueryPending = false;
+            this.evidenceLoading = false;
+            this.liveEvidence = emptyEvidence;
+            if (this.visible) this.publish();
+            else this.hiddenDirty = true;
+            return;
+          }
           this.evidenceQueryPending = false;
           this.evidenceLoading = false;
+          this.storeStats.retained = result.value.total;
+          this.storeStats.totalAppended = result.value.total;
+          this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
           this.liveEvidence = freezeEvidence(
-            result.events,
-            result.total,
+            lightstreamerEvents(result.value.evidence),
+            result.value.total,
             offset
           );
           if (
@@ -1814,20 +1860,15 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private hydrateProjections(): void {
-    this.history.queryEvents().receive(
+    void this.evidencePipeline.read({ order: "asc" }).then(
       (result) => {
         if (this.disposed) {
           return;
         }
-        this.commandStateProjections.clear();
-        this.retainedLocalEvidenceIds.clear();
-        this.topologyProjection.replaceHistory(result.events);
-        for (const event of result.events) {
-          this.commandStateProjections.apply(event);
-          if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
-        }
-        // Hydration is passive. The initial constructor snapshot can be replaced
-        // without notification; later asynchronous hydration emits one update.
+        if (!result.ok) return;
+        this.storeStats.retained = result.value.total;
+        this.storeStats.totalAppended = result.value.total;
+        this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
         if (this.version === 0) {
           this.snapshot = this.createSnapshot();
         } else if (this.visible) {
@@ -2543,6 +2584,20 @@ function freezeEvidence(
   offset: number
 ): EvidenceData {
   return Object.freeze({ events: Object.freeze([...events]), total, offset });
+}
+
+function isLightstreamerEvidenceCandidate(
+  candidate: CommittedEvidence["candidate"] | undefined
+): candidate is LightstreamerEventEnvelope {
+  return Boolean(candidate && candidate.kind !== "topology-checkpoint");
+}
+
+function lightstreamerEvents(
+  evidence: readonly CommittedEvidence[]
+): readonly LightstreamerEventEnvelope[] {
+  return evidence.flatMap(({ candidate }) =>
+    isLightstreamerEvidenceCandidate(candidate) ? [candidate] : []
+  );
 }
 
 function toWorkbenchEvidence(event: LightstreamerEventEnvelope): WorkbenchEvidence {

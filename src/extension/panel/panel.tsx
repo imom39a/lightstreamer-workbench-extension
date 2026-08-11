@@ -7,9 +7,9 @@ import {
 } from "../../bridge/messages";
 import {
   createInMemoryEventHistory,
-  createIndexedDbEventHistory,
+  openEventHistory,
   type EventHistory
-} from "../../core/event-history";
+} from "../../core/event-history-authoritative";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
 import { clearLegacyPanelStorage } from "./legacy-storage";
 import { WorkbenchPanel } from "./react/workbench-panel";
@@ -22,7 +22,7 @@ import {
 
 export type WorkbenchPanelMountOptions = {
   createPanelSessionId?: () => PanelSessionId;
-  createIndexedDbHistory?: typeof createIndexedDbEventHistory;
+  openHistory?: typeof openEventHistory;
   createInMemoryHistory?: typeof createInMemoryEventHistory;
   createRuntime?: typeof createWorkbenchRuntime;
   connectBridge?: typeof connectPanelBridge;
@@ -34,7 +34,7 @@ export function mountWorkbenchPanel(
   root: HTMLElement,
   options: WorkbenchPanelMountOptions = {}
 ): DisposeWorkbenchPanel {
-  const createIndexedHistory = options.createIndexedDbHistory ?? createIndexedDbEventHistory;
+  const openHistory = options.openHistory ?? openEventHistory;
   const createMemoryHistory = options.createInMemoryHistory ?? createInMemoryEventHistory;
   const createRuntime = options.createRuntime ?? createWorkbenchRuntime;
   const connectBridgeClient = options.connectBridge ?? connectPanelBridge;
@@ -70,7 +70,7 @@ export function mountWorkbenchPanel(
     reactRoot?.unmount();
     runtime?.dispose();
     themeManager.dispose();
-    closeHistory();
+    if (!runtime) closeHistory();
     if (!reactRoot) {
       root.textContent = "";
     }
@@ -79,14 +79,10 @@ export function mountWorkbenchPanel(
   async function initialize(): Promise<void> {
     let storageLimited = false;
     try {
-      history = await createIndexedHistory({
-        panelSessionId,
-        reset: true,
-        clearOnClose: true
-      });
+      history = await openHistory({ panelSessionId });
     } catch (error) {
       console.error("Falling back to in-memory event storage.", error);
-      history = createMemoryHistory();
+      history = createMemoryHistory({ panelSessionId });
       storageLimited = true;
     }
 
@@ -148,8 +144,10 @@ export function mountWorkbenchPanel(
       return;
     }
     historyClosed = true;
-    history.close().receive(
-      () => undefined,
+    void history.close().then(
+      (result) => {
+        if (!result.ok) console.error("Failed to close panel event history.", result.problem.message);
+      },
       (error) => console.error("Failed to close panel event history.", error)
     );
   }

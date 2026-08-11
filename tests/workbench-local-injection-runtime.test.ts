@@ -8,6 +8,8 @@ import {
   type WorkbenchRuntimeScheduler
 } from "../src/extension/panel/workbench-runtime";
 
+const createRuntime = createWorkbenchRuntime as (options?: any) => ReturnType<typeof createWorkbenchRuntime>;
+
 type Identity = {
   clientId: string;
   sessionId: string;
@@ -170,7 +172,7 @@ function scheduler(): WorkbenchRuntimeScheduler & { flush(): void } {
 
 describe("WorkbenchRuntime Local Injection", () => {
   it("publishes semantic entry availability for selected updates and live COMMAND Scope", () => {
-    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    const runtime = createRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     expect(runtime.getSnapshot().localInjection.availability).toEqual({
       selectedUpdate: {
         available: false,
@@ -195,7 +197,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     runtime.dispose();
 
-    const merge = createWorkbenchRuntime({ history: historyWithMergeTarget(), captureStatus: "capturing" });
+    const merge = createRuntime({ history: historyWithMergeTarget(), captureStatus: "capturing" });
     merge.dispatch({ type: "select-evidence", eventId: "merge-source-6" });
     const mergeItem = merge.getSnapshot().scope.nodes.find(({ kind }) => kind === "item");
     merge.dispatch({ type: "set-scope", scopeId: mergeItem?.id ?? null });
@@ -210,7 +212,7 @@ describe("WorkbenchRuntime Local Injection", () => {
   });
 
   it("creates one protected draft from exactly the selected compatible Item Update", () => {
-    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    const runtime = createRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     beginSelected(runtime);
 
     expect(runtime.getSnapshot().localInjection).toMatchObject({
@@ -253,7 +255,7 @@ describe("WorkbenchRuntime Local Injection", () => {
   });
 
   it("creates a valid captured MERGE draft without COMMAND-only diagnostics", () => {
-    const runtime = createWorkbenchRuntime({ history: historyWithMergeTarget(), captureStatus: "capturing" });
+    const runtime = createRuntime({ history: historyWithMergeTarget(), captureStatus: "capturing" });
     runtime.dispatch({ type: "select-evidence", eventId: "merge-source-6" });
     runtime.dispatch({ type: "begin-local-injection-from-selection" });
 
@@ -277,7 +279,7 @@ describe("WorkbenchRuntime Local Injection", () => {
   });
 
   it("blocks invalid raw JSON, then becomes ready after a corrected edit", () => {
-    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    const runtime = createRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     beginSelected(runtime);
     runtime.dispatch({
       type: "set-local-injection-json",
@@ -301,7 +303,7 @@ describe("WorkbenchRuntime Local Injection", () => {
   });
 
   it("authors one no-source Draft from a live single-item COMMAND Subscription or Item Scope", () => {
-    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    const runtime = createRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     const subscription = runtime.getSnapshot().scope.nodes.find(({ kind }) => kind === "subscription");
     runtime.dispatch({ type: "set-scope", scopeId: subscription?.id ?? null });
     expect(runtime.getSnapshot().localInjection.availability.commandScope).toEqual({
@@ -323,7 +325,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     runtime.dispose();
 
-    const itemRuntime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    const itemRuntime = createRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     const item = itemRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "item");
     itemRuntime.dispatch({ type: "set-scope", scopeId: item?.id ?? null });
     itemRuntime.dispatch({ type: "begin-local-injection-from-scope" });
@@ -366,7 +368,7 @@ describe("WorkbenchRuntime Local Injection", () => {
         changedFields: { command: "ADD", key: "order-2", qty: 2 }
       }
     }));
-    const ambiguousRuntime = createWorkbenchRuntime({ history: ambiguousHistory, captureStatus: "capturing" });
+    const ambiguousRuntime = createRuntime({ history: ambiguousHistory, captureStatus: "capturing" });
     const ambiguousSubscription = ambiguousRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "subscription");
     ambiguousRuntime.dispatch({ type: "set-scope", scopeId: ambiguousSubscription?.id ?? null });
     expect(ambiguousRuntime.getSnapshot().localInjection.availability.commandScope).toMatchObject({
@@ -395,7 +397,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     });
     ambiguousRuntime.dispose();
 
-    const mergeRuntime = createWorkbenchRuntime({
+    const mergeRuntime = createRuntime({
       history: historyWithMergeTarget(),
       captureStatus: "capturing"
     });
@@ -411,7 +413,7 @@ describe("WorkbenchRuntime Local Injection", () => {
   });
 
   it("reveals the existing draft on a second entry and replaces it only after confirmed discard", () => {
-    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    const runtime = createRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     beginSelected(runtime);
     const originalId = runtime.getSnapshot().localInjection.draft?.id;
     const originalAnchor = runtime.getSnapshot().localInjection.draft?.anchor;
@@ -438,7 +440,7 @@ describe("WorkbenchRuntime Local Injection", () => {
   });
 
   it("parks, resumes, minimizes, and discards without losing the safe draft or investigation origin", () => {
-    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    const runtime = createRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(7) });
     const before = runtime.getSnapshot().localInjection.draft;
@@ -468,7 +470,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     const beforeHistory = historyWithCommandTarget();
     const beforeScheduler = scheduler();
     const beforeExecutor = { execute: vi.fn(async () => result("success")) };
-    const before = createWorkbenchRuntime({
+    const before = createRuntime({
       history: beforeHistory,
       scheduler: beforeScheduler,
       captureStatus: "capturing",
@@ -498,7 +500,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     const betweenHistory = historyWithCommandTarget();
     const betweenScheduler = scheduler();
     const betweenExecutor = { execute: vi.fn(async () => result("success")) };
-    const between = createWorkbenchRuntime({
+    const between = createRuntime({
       history: betweenHistory,
       scheduler: betweenScheduler,
       captureStatus: "capturing",
@@ -543,7 +545,7 @@ describe("WorkbenchRuntime Local Injection", () => {
         failedCount: 0
       }))
     };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       scheduler: runtimeScheduler,
       captureStatus: "capturing",
@@ -586,7 +588,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     const history = historyWithCommandTarget();
     const runtimeScheduler = scheduler();
     const executor = { execute: vi.fn(async () => result("success")) };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       scheduler: runtimeScheduler,
       captureStatus: "capturing",
@@ -654,7 +656,7 @@ describe("WorkbenchRuntime Local Injection", () => {
   ] as const)("blocks a stale %s target before Review", async (_label, makeStale, code) => {
     const history = historyWithCommandTarget();
     const runtimeScheduler = scheduler();
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       scheduler: runtimeScheduler,
       captureStatus: "capturing"
@@ -685,7 +687,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     const history = historyWithCommandTarget();
     const runtimeScheduler = scheduler();
     const executor = { execute: vi.fn(async () => result("success")) };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       scheduler: runtimeScheduler,
       captureStatus: "capturing",
@@ -733,7 +735,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     const history = historyWithCommandTarget();
     const runtimeScheduler = scheduler();
     const executor = { execute: vi.fn(async () => result("success")) };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       scheduler: runtimeScheduler,
       captureStatus: "capturing",
@@ -777,7 +779,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     const history = historyWithCommandTarget();
     const runtimeScheduler = scheduler();
     const executor = { execute: vi.fn(async () => result("success")) };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       scheduler: runtimeScheduler,
       captureStatus: "capturing",
@@ -810,7 +812,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       resolveExecution = resolve;
     });
     const executor = { execute: vi.fn(() => pending) };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       scheduler: runtimeScheduler,
       captureStatus: "capturing",
@@ -875,7 +877,7 @@ describe("WorkbenchRuntime Local Injection", () => {
   ] as const)("maps %s without appending synthetic success", async (executionResult, disposition, headline) => {
     const history = historyWithCommandTarget();
     const executor = { execute: vi.fn(async () => executionResult) };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       captureStatus: "capturing",
       localInjectionExecutor: executor
@@ -900,7 +902,7 @@ describe("WorkbenchRuntime Local Injection", () => {
         failedCount: 0
       }))
     };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       captureStatus: "capturing",
       localInjectionExecutor: executor
@@ -927,7 +929,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       resolveExecution = resolve;
     });
     const executor = { execute: vi.fn(() => pending) };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       captureStatus: "capturing",
       localInjectionExecutor: executor
@@ -1020,7 +1022,7 @@ describe("WorkbenchRuntime Local Injection", () => {
         failedCount: 0
       }))
     };
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       captureStatus: "capturing",
       localInjectionExecutor: executor

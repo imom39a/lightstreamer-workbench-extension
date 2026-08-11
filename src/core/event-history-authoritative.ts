@@ -264,6 +264,13 @@ export async function openEventHistory(
 export async function createMemoryEventHistoryForTests(
   options: MemoryEventHistoryOptions = {}
 ): Promise<EventHistory> {
+  return createInMemoryEventHistory(options);
+}
+
+/** Synchronous memory authority used by synchronous runtime construction. */
+export function createInMemoryEventHistory(
+  options: MemoryEventHistoryOptions = {}
+): EventHistory {
   return createMemoryHistory(options);
 }
 

@@ -8,6 +8,10 @@ import { createCaptureMessage } from "../src/bridge/messages";
 import { createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
 import { getPanelScenario } from "./support/panel-scenarios";
 
+// Pre-cutover contract coverage is migrated independently from the focused
+// history-impl-09 runtime slice.
+const createRuntime = createWorkbenchRuntime as (options?: any) => ReturnType<typeof createWorkbenchRuntime>;
+
 type ScheduledCallback = () => void;
 
 function createScheduler(): WorkbenchRuntimeScheduler & {
@@ -215,7 +219,7 @@ function contextFields(runtime: ReturnType<typeof createWorkbenchRuntime>): Reco
 
 describe("WorkbenchRuntime", () => {
   it("keeps getSnapshot and subscribe callback-safe for useSyncExternalStore", () => {
-    const runtime = createWorkbenchRuntime();
+    const runtime = createRuntime();
     const getSnapshot = runtime.getSnapshot;
     const subscribe = runtime.subscribe;
     let notifications = 0;
@@ -237,7 +241,7 @@ describe("WorkbenchRuntime", () => {
       history.append(event(`event-${index}`));
     }
 
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const initial = runtime.getSnapshot();
     const notifications: number[] = [];
     runtime.subscribe(() => notifications.push(runtime.getSnapshot().version));
@@ -303,7 +307,7 @@ describe("WorkbenchRuntime", () => {
         };
       }
     };
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const scope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind }) => kind === "subscription");
@@ -384,7 +388,7 @@ describe("WorkbenchRuntime", () => {
         };
       }
     };
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const clientB = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "client" && label === "delayed-client-b");
@@ -463,7 +467,7 @@ describe("WorkbenchRuntime", () => {
       }
     };
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     const client = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "client" && label === "streaming-client");
@@ -506,7 +510,7 @@ describe("WorkbenchRuntime", () => {
   it("batches passive Capture publications into one frame while retaining the newest matching window", async () => {
     const history = createInMemoryEventHistory();
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     const initial = runtime.getSnapshot();
     let notifications = 0;
     runtime.subscribe(() => {
@@ -539,7 +543,7 @@ describe("WorkbenchRuntime", () => {
     const scheduler = createScheduler();
     history.append(event("event-1"));
     history.append(event("event-2"));
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     const firstPresentation = runtime.getSnapshot().evidence.events[0];
 
     history.append(event("event-3"));
@@ -552,7 +556,7 @@ describe("WorkbenchRuntime", () => {
   it("coalesces direct Capture notifications to render cadence without losing deliveries", async () => {
     const history = createInMemoryEventHistory();
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     let notifications = 0;
     runtime.subscribe(() => {
       notifications += 1;
@@ -597,7 +601,7 @@ describe("WorkbenchRuntime", () => {
     history.append(topologyEvent("listener-1", "listener-added"));
     history.append(topologyEvent("update-1", "item-update"));
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    const runtime = createRuntime({ history, scheduler, captureStatus: "capturing" });
     const initialScope = runtime.getSnapshot().scope;
     const structuralNodes = initialScope.structure;
     const initialFacts = initialScope.nodes;
@@ -648,7 +652,7 @@ describe("WorkbenchRuntime", () => {
     history.append(subscription("A", false, 1));
     history.append(subscription("B", true, 2));
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    const runtime = createRuntime({ history, scheduler, captureStatus: "capturing" });
     const initialScope = runtime.getSnapshot().scope;
     expect(
       initialScope.structure
@@ -699,7 +703,7 @@ describe("WorkbenchRuntime", () => {
     const history = createInMemoryEventHistory();
     history.append(topologyEvent("sensitive-subscription", "subscription-started"));
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler, captureStatus: "capturing" });
+    const runtime = createRuntime({ history, scheduler, captureStatus: "capturing" });
     expect(runtime.getSnapshot().export.sensitiveCounts).toMatchObject({
       "server-addresses": 0,
       "client-ips": 0
@@ -762,7 +766,7 @@ describe("WorkbenchRuntime", () => {
     const scheduler = createScheduler();
     history.append(event("alpha-1", "alpha"));
     history.append(event("alpha-2", "alpha"));
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
 
     runtime.dispatch({ type: "set-filters", filters: { query: "alpha" } });
     runtime.dispatch({ type: "select-evidence", eventId: "alpha-1" });
@@ -798,7 +802,7 @@ describe("WorkbenchRuntime", () => {
   it("consolidates hidden-panel Capture and releases every scheduled resource exactly once", async () => {
     const history = createInMemoryEventHistory();
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     let notifications = 0;
     runtime.subscribe(() => {
       notifications += 1;
@@ -830,7 +834,7 @@ describe("WorkbenchRuntime", () => {
   it("defers hidden theme, Capture status, history, and multi-frame topology publication until one restore", async () => {
     const history = createInMemoryEventHistory();
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     const snapshots: Array<ReturnType<typeof runtime.getSnapshot>> = [];
     runtime.subscribe(() => snapshots.push(runtime.getSnapshot()));
 
@@ -871,7 +875,7 @@ describe("WorkbenchRuntime", () => {
     for (let index = 1; index <= 125; index += 1) {
       history.append({ ...event(`visibility-${index}`), timestamp: index });
     }
-    const runtime = createWorkbenchRuntime({ history, scheduler, windowSize: 60 });
+    const runtime = createRuntime({ history, scheduler, windowSize: 60 });
     runtime.dispatch({ type: "freeze-evidence" });
     runtime.dispatch({ type: "show-oldest-evidence" });
     expect(runtime.getSnapshot().evidence.events[0]?.id).toBe("visibility-1");
@@ -915,7 +919,7 @@ describe("WorkbenchRuntime", () => {
         changedFields: { qty: 3 }
       }
     });
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       captureStatus: "capturing",
       theme: "dark",
@@ -955,7 +959,7 @@ describe("WorkbenchRuntime", () => {
   it("normalizes typed Capture messages into history through its four-method interface", async () => {
     const history = createInMemoryEventHistory();
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
 
     runtime.dispatch({
       type: "ingest-capture-message",
@@ -994,7 +998,7 @@ describe("WorkbenchRuntime", () => {
         }
       })
     );
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const nodes = runtime.getSnapshot().scope.nodes;
 
     expect(new Set(nodes.map(({ kind }) => kind))).toEqual(
@@ -1043,7 +1047,7 @@ describe("WorkbenchRuntime", () => {
       },
       700
     );
-    const activeRuntime = createWorkbenchRuntime({
+    const activeRuntime = createRuntime({
       history: activeHistory,
       captureStatus: "capturing"
     });
@@ -1073,7 +1077,7 @@ describe("WorkbenchRuntime", () => {
         update: undefined
       })
     );
-    const recoveringRuntime = createWorkbenchRuntime({ history: recoveringHistory });
+    const recoveringRuntime = createRuntime({ history: recoveringHistory });
     expect(
       recoveringRuntime.getSnapshot().scope.nodes
         .filter(({ kind }) => kind === "page" || kind === "client" || kind === "session")
@@ -1095,7 +1099,7 @@ describe("WorkbenchRuntime", () => {
         update: undefined
       })
     );
-    const disconnectedRuntime = createWorkbenchRuntime({
+    const disconnectedRuntime = createRuntime({
       history: disconnectedHistory,
       captureStatus: "bridge disconnected"
     });
@@ -1120,7 +1124,7 @@ describe("WorkbenchRuntime", () => {
         update: undefined
       })
     );
-    const stalledRuntime = createWorkbenchRuntime({ history: stalledHistory });
+    const stalledRuntime = createRuntime({ history: stalledHistory });
     expect(
       stalledRuntime.getSnapshot().scope.nodes
         .filter(({ kind }) => kind === "page" || kind === "client" || kind === "session")
@@ -1142,13 +1146,13 @@ describe("WorkbenchRuntime", () => {
         update: undefined
       })
     );
-    const inactiveRuntime = createWorkbenchRuntime({ history: inactiveHistory });
+    const inactiveRuntime = createRuntime({ history: inactiveHistory });
     expect(
       inactiveRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "subscription")
     ).toMatchObject({ lifecycle: "inactive", retired: false });
     inactiveRuntime.dispose();
 
-    const unknownRuntime = createWorkbenchRuntime();
+    const unknownRuntime = createRuntime();
     expect(unknownRuntime.getSnapshot().scope.nodes).toEqual([
       expect.objectContaining({ kind: "page", lifecycle: "unknown" })
     ]);
@@ -1156,7 +1160,7 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("keeps structural Scope bounded when a checkpoint contains one thousand COMMAND generations", () => {
-    const runtime = createWorkbenchRuntime();
+    const runtime = createRuntime();
     const scenario = getPanelScenario("topology-large");
     for (const frame of scenario.topologySyncFrames ?? []) {
       runtime.dispatch({ type: "apply-topology-sync-frame", frame });
@@ -1187,7 +1191,7 @@ describe("WorkbenchRuntime", () => {
       },
       800
     );
-    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    const runtime = createRuntime({ history, captureStatus: "capturing" });
 
     expect(contextFields(runtime)).toMatchObject({
       "Scope type": "Page",
@@ -1296,7 +1300,7 @@ describe("WorkbenchRuntime", () => {
       key: "trade-key",
       qty: 2
     }, { command: "UPDATE" }));
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
 
     expect(runtime.getSnapshot().commandProjections.observed.rows.map(([label]) => label)).toEqual([
       "sub-a / orders / shared-key",
@@ -1356,7 +1360,7 @@ describe("WorkbenchRuntime", () => {
       key: "comparison-key",
       qty: 1
     }));
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     runtime.dispatch({ type: "select-evidence", eventId: "comparison-command-1" });
     runtime.dispatch({ type: "open-context" });
     const before = runtime.getSnapshot();
@@ -1378,7 +1382,7 @@ describe("WorkbenchRuntime", () => {
   it("returns Session operations to the prior Context without changing investigation state", () => {
     const history = createInMemoryEventHistory();
     history.append(event("actions-origin", "orders"));
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     runtime.dispatch({ type: "select-evidence", eventId: "actions-origin" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "set-filters", filters: { item: "orders" } });
@@ -1426,7 +1430,7 @@ describe("WorkbenchRuntime", () => {
       listener: undefined,
       update: undefined
     });
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const retired = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, retired }) => kind === "session" && retired);
@@ -1452,7 +1456,7 @@ describe("WorkbenchRuntime", () => {
         }
       })
     );
-    const runtime = createWorkbenchRuntime({
+    const runtime = createRuntime({
       history,
       captureStatus: "bridge disconnected",
       capture: {
@@ -1488,7 +1492,7 @@ describe("WorkbenchRuntime", () => {
   it("requires explicit retention confirmation and clears history without silently dropping selection", async () => {
     const history = createInMemoryEventHistory();
     history.append(event("selected-before-clear"));
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     runtime.dispatch({ type: "select-evidence", eventId: "selected-before-clear" });
 
     runtime.dispatch({ type: "request-clear-history" });
@@ -1511,7 +1515,7 @@ describe("WorkbenchRuntime", () => {
     const history = createInMemoryEventHistory();
     history.append(topologyEvent("export-1", "client-status"));
     history.append(topologyEvent("export-2", "item-update"));
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
 
     runtime.dispatch({
       type: "set-export-redactions",
@@ -1561,7 +1565,7 @@ describe("WorkbenchRuntime", () => {
       200
     );
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     const subscriptionScope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "subscription" && label === "orders-a");
@@ -1607,7 +1611,7 @@ describe("WorkbenchRuntime", () => {
       },
       1_000
     );
-    const runtime = createWorkbenchRuntime({ history, windowSize: 3 });
+    const runtime = createRuntime({ history, windowSize: 3 });
     const queryEvents = vi.spyOn(history, "queryEvents");
     const list = vi.spyOn(history, "list");
     const listenerScope = runtime
@@ -1640,7 +1644,7 @@ describe("WorkbenchRuntime", () => {
       history.append({ ...event(`event-${index}`, "orders"), timestamp: index });
     }
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler, windowSize: 60 });
+    const runtime = createRuntime({ history, scheduler, windowSize: 60 });
     runtime.dispatch({ type: "select-evidence", eventId: "event-100" });
     runtime.dispatch({ type: "freeze-evidence" });
 
@@ -1732,7 +1736,7 @@ describe("WorkbenchRuntime", () => {
         } : {})
       });
     }
-    const runtime = createWorkbenchRuntime({ history, windowSize: 60 });
+    const runtime = createRuntime({ history, windowSize: 60 });
     runtime.dispatch({ type: "select-evidence", eventId: "selected-100" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "show-oldest-evidence" });
@@ -1785,7 +1789,7 @@ describe("WorkbenchRuntime", () => {
       1_100
     );
     const scheduler = createScheduler();
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     const scope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind }) => kind === "subscription");
@@ -1852,7 +1856,7 @@ describe("WorkbenchRuntime", () => {
         };
       }
     };
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const scope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "subscription" && label === "copy-sub-a");
@@ -1899,7 +1903,7 @@ describe("WorkbenchRuntime", () => {
     history.append({ ...event("alpha-1", "alpha"), timestamp: 1 });
     history.append({ ...event("beta-1", "beta"), timestamp: 2 });
     history.append({ ...event("alpha-2", "alpha"), timestamp: 3 });
-    const runtime = createWorkbenchRuntime({ history, scheduler });
+    const runtime = createRuntime({ history, scheduler });
     runtime.dispatch({ type: "select-evidence", eventId: "beta-1" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
@@ -1973,7 +1977,7 @@ describe("WorkbenchRuntime", () => {
     const history = createInMemoryEventHistory();
     history.append({ ...event("alpha-raw-1", "alpha"), timestamp: 1 });
     history.append({ ...event("beta-raw-1", "beta"), timestamp: 2 });
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
 
     runtime.dispatch({ type: "select-evidence", eventId: "beta-raw-1" });
     runtime.dispatch({ type: "open-context" });
@@ -2011,7 +2015,7 @@ describe("WorkbenchRuntime", () => {
       update: undefined
     });
     history.append(event("update-2", "beta"));
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const unfilteredIds = runtime.getSnapshot().evidence.events.map(({ id }) => id);
 
     runtime.dispatch({ type: "set-find", value: "ITEM UPDATE" });
@@ -2045,7 +2049,7 @@ describe("WorkbenchRuntime", () => {
         subscription: { id: "retained-subscription", mode: "MERGE" }
       });
     }
-    const runtime = createWorkbenchRuntime({ history, scheduler, windowSize: 60 });
+    const runtime = createRuntime({ history, scheduler, windowSize: 60 });
     runtime.dispatch({ type: "select-evidence", eventId: "retained-4000" });
     runtime.dispatch({ type: "open-context" });
     runtime.dispatch({ type: "set-filters", filters: { mode: "MERGE" } });
@@ -2104,7 +2108,7 @@ describe("WorkbenchRuntime", () => {
           subscription: { id: "indexed-retained-subscription", mode: "MERGE" }
         }).toPromise();
       }));
-      const runtime = createWorkbenchRuntime({ history, windowSize: 60 });
+      const runtime = createRuntime({ history, windowSize: 60 });
       await vi.waitFor(() => expect(runtime.getSnapshot().evidence.total).toBe(180));
       runtime.dispatch({ type: "set-find", value: "indexed-needle" });
       await vi.waitFor(() => expect(runtime.getSnapshot().evidence.findState.matchCount).toBe(3));
@@ -2133,7 +2137,7 @@ describe("WorkbenchRuntime", () => {
       },
       300
     );
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const itemScope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "item" && label.includes("scope-item"));
@@ -2170,7 +2174,7 @@ describe("WorkbenchRuntime", () => {
       },
       500
     );
-    const runtime = createWorkbenchRuntime({ history });
+    const runtime = createRuntime({ history });
     const scopeNodes = runtime.getSnapshot().scope.nodes;
 
     const assertExport = (scopeId: string) => {
