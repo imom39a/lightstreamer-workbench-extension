@@ -1541,10 +1541,6 @@ class Runtime implements WorkbenchRuntime {
         },
         draft.anchor.executionTarget
       );
-      // Successful delivery advances Local Effective COMMAND State even when
-      // retaining the corresponding synthetic Evidence fails. A successful
-      // history append echoes the same identity and is projection-deduplicated.
-      this.commandStateProjections.apply(synthetic);
       const receipt = this.evidencePipeline.offer(synthetic);
       void receipt.settled.then(
         (settled) => {
