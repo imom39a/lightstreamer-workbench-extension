@@ -11,6 +11,47 @@ import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { createCaptureMessage } from "../src/bridge/messages";
 
 describe("history-impl-09 final audit gaps", () => {
+  it("discards a delayed export after scope, option, or clear mutations", async () => {
+    const pendingReads: Array<() => void> = [];
+    let deferExportReads = false;
+    const history = createAuthoritativeHistory({
+      precommitted: [
+        topologyEvent("export-client-a", "export-client-a"),
+        topologyEvent("export-client-b", "export-client-b")
+      ],
+      readControl(query, release) {
+        if (deferExportReads && query.candidateKind === undefined && query.order === "asc") {
+          pendingReads.push(release);
+          return;
+        }
+        release();
+      }
+    });
+    const runtime = createWorkbenchRuntime({ history });
+    await settle();
+    deferExportReads = true;
+
+    const assertDiscarded = async (mutation: () => void): Promise<void> => {
+      runtime.dispatch({ type: "export-scope" });
+      expect(pendingReads).toHaveLength(1);
+      mutation();
+      pendingReads.shift()?.();
+      await settle();
+      expect(runtime.getSnapshot().export.document).toBeNull();
+    };
+
+    await assertDiscarded(() => runtime.dispatch({ type: "set-scope", scopeId: "page" }));
+    await assertDiscarded(() => runtime.dispatch({ type: "set-export-redactions", redactions: ["identifiers"] }));
+    await assertDiscarded(() => runtime.dispatch({ type: "set-export-complete-evidence", complete: true }));
+    await assertDiscarded(() => {
+      runtime.dispatch({ type: "request-clear-history" });
+      runtime.dispatch({ type: "confirm-clear-history" });
+    });
+
+    runtime.dispose();
+    await settle();
+  });
+
   it("builds Topology export from the typed boundary-qualified history read", async () => {
     const baseHistory = createAuthoritativeHistory({
       precommitted: [topologyEvent("projection-event", "projection-client")]

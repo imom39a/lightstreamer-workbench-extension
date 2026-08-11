@@ -1137,6 +1137,7 @@ class Runtime implements WorkbenchRuntime {
     if (this.clearState !== "confirming") {
       return;
     }
+    this.invalidatePreparedExport();
     this.clearState = "clearing";
     this.clearError = null;
     this.clearedSelectionEventId = this.selectionEventId;
