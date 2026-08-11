@@ -300,10 +300,14 @@ class Cdp {
   }
   request(method, params = {}) {
     const id = ++this.id;
-    return new Promise((resolvePromise, reject) => {
+    const request = new Promise((resolvePromise, reject) => {
       this.pending.set(id, { resolve: resolvePromise, reject });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
+    request.cancel = () => {
+      this.pending.delete(id);
+    };
+    return request;
   }
   close() { this.socket.close(); }
 }

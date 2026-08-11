@@ -354,11 +354,12 @@ function errorMessage(error) {
 }
 
 class CdpRequestTimeout extends Error {
-  constructor(phase, timeoutMs) {
+  constructor(phase, timeoutMs, ceilingMs) {
     super(`CDP ${phase} request timed out after ${timeoutMs} ms.`);
     this.name = "CdpRequestTimeout";
     this.phase = phase;
     this.timeoutMs = timeoutMs;
+    this.ceilingMs = ceilingMs;
   }
 }
 
@@ -371,6 +372,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
   const operationId = options.operationId ?? `${now()}-${Math.random().toString(36).slice(2)}`;
   const startedAt = now();
   const deadlineAt = startedAt + deadlineMs;
+  let lastRequestTimeout = null;
   let lastStatus = operationStatus({ operationId, state: "pending", heartbeat: 0 }, startedAt, now);
   emitHeartbeat(options.onHeartbeat, lastStatus);
 
@@ -392,7 +394,8 @@ export async function runPageOperation(cdp, expression, options = {}) {
         }, deadlineAt, requestCeilingMs, now, "poll");
       } catch (error) {
         if (!(error instanceof CdpRequestTimeout) || error.phase !== "poll") throw error;
-        lastStatus = operationStatus(lastStatus, startedAt, now);
+        lastRequestTimeout = requestTimeoutDetails(error);
+        lastStatus = operationStatus(lastStatus, startedAt, now, lastRequestTimeout);
         emitHeartbeat(options.onHeartbeat, lastStatus);
         if (lastStatus.elapsedMs >= deadlineMs) {
           throw new PerformanceOperationTimeout(
@@ -403,7 +406,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
         await sleep(Math.min(pollIntervalMs, Math.max(0, deadlineMs - lastStatus.elapsedMs)));
         continue;
       }
-      lastStatus = operationStatus(evaluationValue(pollResponse), startedAt, now);
+      lastStatus = operationStatus(evaluationValue(pollResponse), startedAt, now, lastRequestTimeout);
       emitHeartbeat(options.onHeartbeat, lastStatus);
       if (lastStatus.state === "resolved") return lastStatus.result;
       if (lastStatus.state === "rejected") throw remoteOperationError(lastStatus.error);
@@ -418,7 +421,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
     }
   } catch (error) {
     if (error instanceof CdpRequestTimeout) {
-      const timeoutStatus = operationStatus(lastStatus, startedAt, now);
+      const timeoutStatus = operationStatus(lastStatus, startedAt, now, requestTimeoutDetails(error));
       throw new PerformanceOperationTimeout(
         `Event History performance operation timed out during the ${error.phase} CDP request after ${timeoutStatus.elapsedMs} ms.`,
         timeoutStatus
@@ -572,15 +575,24 @@ function evaluationValue(response) {
   return response?.result?.value;
 }
 
-function operationStatus(value, startedAt, now) {
+function operationStatus(value, startedAt, now, lastRequestTimeout = null) {
   return {
     operationId: value?.operationId ?? null,
     state: value?.state ?? "missing",
     elapsedMs: Math.max(0, now() - startedAt),
     heartbeat: Number.isFinite(value?.heartbeat) ? value.heartbeat : 0,
     lastHeartbeatAt: value?.lastHeartbeatAt ?? null,
+    ...(lastRequestTimeout ? { lastRequestTimeout } : {}),
     ...(value?.result !== undefined ? { result: value.result } : {}),
     ...(value?.error !== undefined ? { error: value.error } : {})
+  };
+}
+
+function requestTimeoutDetails(error) {
+  return {
+    phase: error.phase,
+    timeoutMs: error.timeoutMs,
+    ceilingMs: error.ceilingMs
   };
 }
 
@@ -655,21 +667,29 @@ function delay(milliseconds) {
 function requestWithDeadline(cdp, params, deadlineAt, requestCeilingMs, now, phase, allowAfterDeadline = false, method = "Runtime.evaluate") {
   const remainingMs = deadlineAt - now();
   if (remainingMs <= 0 && !allowAfterDeadline) {
-    return Promise.reject(new CdpRequestTimeout(phase, 0));
+    return Promise.reject(new CdpRequestTimeout(phase, 0, requestCeilingMs));
   }
   const timeoutMs = remainingMs <= 0 && allowAfterDeadline
     ? requestCeilingMs
     : Math.max(1, Math.min(requestCeilingMs, remainingMs));
   return new Promise((resolve, reject) => {
     let settled = false;
+    let cancelRequest = null;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new CdpRequestTimeout(phase, timeoutMs));
+      try {
+        cancelRequest?.();
+      } catch {
+        // Local request retirement is best effort; the bounded operation remains fail-closed.
+      }
+      reject(new CdpRequestTimeout(phase, timeoutMs, requestCeilingMs));
     }, timeoutMs);
     let request;
     try {
-      request = Promise.resolve(cdp.request(method, params));
+      const rawRequest = cdp.request(method, params);
+      cancelRequest = typeof rawRequest?.cancel === "function" ? rawRequest.cancel.bind(rawRequest) : null;
+      request = Promise.resolve(rawRequest);
     } catch (error) {
       clearTimeout(timer);
       settled = true;

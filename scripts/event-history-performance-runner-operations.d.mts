@@ -1,4 +1,9 @@
 export type PerformanceOperationState = "pending" | "resolved" | "rejected" | "missing";
+export type PerformanceOperationRequestTimeout = Readonly<{
+  phase: string;
+  timeoutMs: number;
+  ceilingMs: number;
+}>;
 
 export type HeapAdapter = "indexeddb" | "memory";
 export type HeapSession = Readonly<{
@@ -75,6 +80,7 @@ export type PerformanceOperationStatus = Readonly<{
   elapsedMs: number;
   heartbeat: number;
   lastHeartbeatAt: number | null;
+  lastRequestTimeout?: PerformanceOperationRequestTimeout;
   result?: unknown;
   error?: Readonly<{
     name: string;

@@ -17,20 +17,25 @@ type FakeCdpResponse = Readonly<{
 }>;
 
 type FakeCdpReply = FakeCdpResponse | Promise<FakeCdpResponse>;
+type CancelableFakeCdpRequest = Promise<FakeCdpResponse> & { cancel?: () => void };
 
 class FakeCdp {
   readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  cancelledRequests = 0;
   private readonly responses: FakeCdpReply[];
 
   constructor(responses: readonly FakeCdpReply[]) {
     this.responses = [...responses];
   }
 
-  request(method: string, params: Record<string, unknown> = {}): Promise<FakeCdpResponse> {
+  request(method: string, params: Record<string, unknown> = {}): CancelableFakeCdpRequest {
     this.calls.push({ method, params });
     const response = this.responses.shift();
-    if (!response) return Promise.reject(new Error(`Unexpected CDP request ${method}.`));
-    return Promise.resolve(response);
+    const request = (response
+      ? Promise.resolve(response)
+      : Promise.reject(new Error(`Unexpected CDP request ${method}.`))) as CancelableFakeCdpRequest;
+    request.cancel = () => { this.cancelledRequests += 1; };
+    return request;
   }
 }
 
@@ -583,6 +588,8 @@ describe("Event History performance runner page operation", () => {
     expect(Date.now() - startedAt).toBeLessThan(100);
     const timeout = expectTimeoutOutcome(result);
     expect(timeout.status).toMatchObject({ operationId: "hung-poll", state: "pending" });
+    expect(timeout.status.lastRequestTimeout).toMatchObject({ phase: "poll", ceilingMs: 10 });
+    expect(cdp.cancelledRequests).toBeGreaterThan(0);
     expect(createTimeoutDiagnostic({
       generatedAt: "2026-08-11T00:00:00.000Z",
       source: { revision: "5a7c168", dirty: false },
@@ -617,6 +624,7 @@ describe("Event History performance runner page operation", () => {
       "Runtime.evaluate",
       "Runtime.evaluate"
     ]);
+    expect(cdp.cancelledRequests).toBe(1);
     expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
   });
 
