@@ -380,7 +380,9 @@ function progressAgeCeilingMs(progress) {
       : /offer|receipt|commit/u.test(stage)
         ? 120_000
         : null;
-  return stageCeiling === null ? phaseCeiling : Math.min(phaseCeiling, stageCeiling);
+  const frameCeiling = /frame/u.test(stage) ? 30_000 : null;
+  const ceilings = [phaseCeiling, stageCeiling, frameCeiling].filter((ceiling) => ceiling !== null);
+  return Math.min(...ceilings);
 }
 
 function progressStageKey(progress) {
@@ -585,6 +587,7 @@ function startOperationExpression(expression, operationId) {
   return `(() => {
     const key = ${JSON.stringify(PERFORMANCE_OPERATION_KEY)};
     const operationId = ${JSON.stringify(operationId)};
+    const serializePageProgress = ${serializeOperationProgress.toString()};
     const existing = globalThis[key];
     if (existing?.state === "pending") throw new Error("A performance operation is already pending.");
     const operation = {
@@ -636,25 +639,7 @@ function startOperationExpression(expression, operationId) {
           } : null
         } : null;
         const rawProgress = error?.progress;
-        const progress = rawProgress && typeof rawProgress === "object" ? {
-          phase: ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(rawProgress.phase) ? rawProgress.phase : "cells",
-          stage: typeof rawProgress.stage === "string" ? rawProgress.stage : "unknown",
-          substage: typeof rawProgress.substage === "string" ? rawProgress.substage : (typeof rawProgress.stage === "string" ? rawProgress.stage : "unknown"),
-          sequence: Number.isSafeInteger(rawProgress.sequence) && rawProgress.sequence >= 1 ? rawProgress.sequence : 0,
-          pageElapsedMs: Number.isFinite(rawProgress.pageElapsedMs) && rawProgress.pageElapsedMs >= 0 ? rawProgress.pageElapsedMs : 0,
-          sample: rawProgress.sample === null || (Number.isInteger(rawProgress.sample) && rawProgress.sample >= 1 && rawProgress.sample <= 3) ? rawProgress.sample : null,
-          trigger: rawProgress.trigger === "PENDING_BYTES" || rawProgress.trigger === "PENDING_AGE" ? rawProgress.trigger : null,
-          scenario: typeof rawProgress.scenario === "string" ? rawProgress.scenario : null,
-          cellIndex: rawProgress.cellIndex === null || (Number.isSafeInteger(rawProgress.cellIndex) && rawProgress.cellIndex >= 1 && rawProgress.cellIndex <= 36) ? rawProgress.cellIndex : null,
-          cellTotal: 36,
-          adapter: rawProgress.adapter === "indexeddb" || rawProgress.adapter === "memory" ? rawProgress.adapter : null,
-          workload: rawProgress.workload === "sustained" || rawProgress.workload === "burst" ? rawProgress.workload : null,
-          shape: ["small-lifecycle", "ordinary-item-update", "large-json-rich"].includes(rawProgress.shape) ? rawProgress.shape : null,
-          workloadPhase: ["capture", "commit", "paint", "query"].includes(rawProgress.workloadPhase) ? rawProgress.workloadPhase : null,
-          offered: Number.isSafeInteger(rawProgress.offered) && rawProgress.offered >= 0 ? rawProgress.offered : null,
-          settled: Number.isSafeInteger(rawProgress.settled) && rawProgress.settled >= 0 ? rawProgress.settled : null,
-          query: typeof rawProgress.query === "string" ? rawProgress.query : null
-        } : null;
+        const progress = rawProgress && typeof rawProgress === "object" ? serializePageProgress(rawProgress) : null;
         operation.state = "rejected";
         operation.error = {
           name: typeof error?.name === "string" ? error.name : "Error",
@@ -710,9 +695,16 @@ function evaluationValue(response) {
 }
 
 function operationStatus(value, startedAt, now, lastRequestTimeout = null) {
+  const operationId = value?.operationId === undefined ? null : value.operationId;
+  if (operationId !== null && typeof operationId !== "string") {
+    throw new Error("Performance operation status has an invalid operationId.");
+  }
   const progress = serializeOperationProgress(value?.progress);
+  if (progress !== null && progress.operationId !== null && progress.operationId !== operationId) {
+    throw new Error("Performance operation status has an operationId mismatch between status and progress.");
+  }
   return {
-    operationId: value?.operationId ?? null,
+    operationId,
     state: value?.state ?? "missing",
     elapsedMs: Math.max(0, now() - startedAt),
     heartbeat: Number.isFinite(value?.heartbeat) ? value.heartbeat : 0,

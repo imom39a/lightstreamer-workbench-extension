@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
   createTimeoutDiagnostic,
@@ -184,6 +185,45 @@ class OrderedPollCdp {
 
 function evaluated(value: unknown): FakeCdpResponse {
   return { result: { value } };
+}
+
+function strictProgress(operationId: string | null, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    operationId,
+    phase: "cells",
+    stage: "cell-7-receipts",
+    substage: "receipt-settlement",
+    sequence: 1,
+    pageElapsedMs: 1,
+    sample: 1,
+    trigger: null,
+    scenario: null,
+    cellIndex: 7,
+    cellTotal: 36,
+    adapter: "memory",
+    workload: "burst",
+    shape: "large-json-rich",
+    workloadPhase: "commit",
+    offered: 1,
+    settled: 1,
+    query: null,
+    ...overrides
+  };
+}
+
+class GeneratedRejectionCdp {
+  readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  private readonly context = { performance: { now: () => 0 } };
+
+  request(method: string, params: Record<string, unknown> = {}): Promise<FakeCdpResponse> {
+    this.calls.push({ method, params });
+    const expression = String(params.expression ?? "");
+    const evaluate = () => runInNewContext(expression, this.context);
+    return (async () => {
+      await Promise.resolve();
+      return evaluated(evaluate());
+    })();
+  }
 }
 
 function watchdog<T>(promise: Promise<T>, milliseconds = 100): Promise<T | "WATCHDOG"> {
@@ -531,6 +571,100 @@ describe("Event History heap measurement plan", () => {
 });
 
 describe("Event History performance runner page operation", () => {
+  it.each([
+    ["invalid top-level operationId", { operationId: 42, state: "pending", heartbeat: 1 }, /operationId/u],
+    ["mismatched progress operationId", { operationId: "host-operation", state: "pending", heartbeat: 1, progress: strictProgress("page-operation") }, /operationId mismatch/u]
+  ] as const)("rejects %s from a CDP status", async (_name, malformedStatus, expectedMessage) => {
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "host-operation", state: "pending", heartbeat: 0 }),
+      evaluated(malformedStatus),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", { operationId: "host-operation" })).rejects.toThrow(expectedMessage);
+  });
+
+  it("uses the strict generated rejection serializer with operation identity", async () => {
+    const cdp = new GeneratedRejectionCdp();
+    const rawProgress = strictProgress("generated-operation", { extraField: "drop me" });
+    const expression = `Promise.reject(Object.assign(new Error("generated failure"), { progress: ${JSON.stringify(rawProgress)} }))`;
+
+    const rejected = await runPageOperation(cdp, expression, { operationId: "generated-operation" })
+      .then(() => null, (error) => error);
+
+    expect(rejected).toMatchObject({
+      message: "generated failure",
+      progress: expect.objectContaining({ operationId: "generated-operation", stage: "cell-7-receipts" })
+    });
+    expect(rejected.progress).not.toHaveProperty("extraField");
+  });
+
+  it("drops malformed generated rejection progress instead of coercing it", async () => {
+    const cdp = new GeneratedRejectionCdp();
+    const rawProgress = strictProgress("generated-invalid", {
+      phase: "not-a-phase",
+      pageElapsedMs: "not-a-number",
+      offered: -1
+    });
+    const expression = `Promise.reject(Object.assign(new Error("invalid generated progress"), { progress: ${JSON.stringify(rawProgress)} }))`;
+
+    const rejected = await runPageOperation(cdp, expression, { operationId: "generated-invalid" })
+      .then(() => null, (error) => error);
+
+    expect(rejected).toMatchObject({ message: "invalid generated progress" });
+    expect(rejected).not.toHaveProperty("progress");
+  });
+
+  it.each([
+    ["cells", "cell-7-visible-frame"],
+    ["cells", "cell-7-frame"],
+    ["heap", "warmup-frame"],
+    ["heap", "sample-cleanup-frame"],
+    ["heap", "retained-frame"]
+  ] as const)("publishes and diagnoses a 30-second host ceiling for %s %s", async (phase, stage) => {
+    let now = 0;
+    const heartbeats: Array<Record<string, unknown>> = [];
+    const progress = strictProgress("frame-operation", { phase, stage, substage: stage, adapter: phase === "heap" ? "memory" : "memory" });
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "frame-operation", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "frame-operation", state: "pending", heartbeat: 1, progress }),
+      evaluated({ operationId: "frame-operation", state: "pending", heartbeat: 2, progress }),
+      evaluated(true)
+    ]);
+
+    const result = await runPageOperation(cdp, "window.run()", {
+      operationId: "frame-operation",
+      deadlineMs: 100_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 30_001; },
+      onHeartbeat: (status) => heartbeats.push(status as Record<string, unknown>)
+    }).then(() => null, (error) => error);
+
+    expect(result).toBeInstanceOf(PerformanceOperationTimeout);
+    expect(result.status).toMatchObject({
+      progress: { phase, stage },
+      progressAgeCeilingMs: 30_000,
+      progressStageDeadlineMs: 30_000,
+      progressStageAgeMs: 30_001
+    });
+    expect(heartbeats.at(-1)).toMatchObject({ progressStageDeadlineMs: 30_000, progress: { stage } });
+    expect(createTimeoutDiagnostic({
+      generatedAt: "2026-08-11T00:00:00.000Z",
+      source: { revision: "cd4231b", dirty: false },
+      runner: { product: "Chrome/151.0.7922.77", headless: false },
+      environment: { chromeMajor: 151, headless: false },
+      referencePath: "reference.json",
+      deadlineMs: 100_000,
+      operation: result.status
+    })).toMatchObject({
+      status: "TIMED_OUT",
+      operation: { lastStatus: { progressStageDeadlineMs: 30_000, progress: { stage } }, progress: { stage } },
+      classification: "NOT_CLASSIFIED",
+      reference: { adopted: false }
+    });
+  });
+
   it("observes a long-pending operation with visible state heartbeats and times out", async () => {
     let now = 0;
     const heartbeats: Array<{ state: string; elapsedMs: number }> = [];
