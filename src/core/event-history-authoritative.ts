@@ -438,11 +438,18 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       rejectedCount += 1;
       rejectedBytes += bytes;
     }
-    const receiptProblem = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
     const completion = terminalFinalization ?? terminalSettled;
     const settled = completion
-      ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary }))
-      : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
+      ? completion.then(() => ({
+          outcome: "NOT_EVIDENCE" as const,
+          problem: trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary."),
+          committedEvidenceBoundary
+        }))
+      : Promise.resolve({
+          outcome: "NOT_EVIDENCE" as const,
+          problem: trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary."),
+          committedEvidenceBoundary
+        });
     return { intake: "REFUSED", settled };
   }
 
@@ -663,11 +670,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       rejectedCount += 1;
       rejectedBytes += bytes;
       beginDrain(failure.reason, failure.dimension, copied.id);
-      const receiptProblem = terminalProblem(trigger!);
       const completion = terminalFinalization ?? terminalSettled;
       const settled = completion
-        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary }))
-        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
+        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary }))
+        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary });
       return { intake: "REFUSED", settled };
     }
     return offerForClearInProgress(copied, bytes);

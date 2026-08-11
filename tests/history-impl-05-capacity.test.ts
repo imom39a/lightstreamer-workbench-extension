@@ -152,6 +152,30 @@ describe.each([
     await history.close();
   });
 
+  it("settles a terminal refusal with the finalized fail-closed diagnostic", async () => {
+    const history = await create({
+      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
+    });
+    await expect(history.offer(candidate("terminal-prefix")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE"
+    });
+
+    const refused = history.offer(candidate("terminal-missing"));
+    await expect(refused.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: {
+        code: "RETAINED_COUNT_LIMIT",
+        terminal: {
+          reason: "RETAINED_COUNT_LIMIT",
+          committedEvidenceBoundary: { sequence: 1, eventId: "terminal-prefix" },
+          firstMissingEventId: "terminal-missing"
+        }
+      },
+      committedEvidenceBoundary: { sequence: 1, eventId: "terminal-prefix" }
+    });
+    await history.close();
+  });
+
   it("uses canonical replay payload plus logical framing for exact retained equality and crossing", async () => {
     const framed = candidate("canonical-frame");
     const expectedBytes = estimateHistoryCandidateBytes(framed);
@@ -168,6 +192,44 @@ describe.each([
     expect(crossing.intake).toBe("REFUSED");
     await expect(crossing.settled).resolves.toMatchObject({ problem: { code: "RETAINED_BYTE_LIMIT", dimension: "RETAINED_BYTES" } });
     expect(publications.filter((entry) => entry.type === "terminal")).toHaveLength(1);
+    await history.close();
+  });
+
+  it("reports pending pressure in canonical journal-accounted bytes", async () => {
+    const pendingCandidate = candidate("canonical-pending");
+    const expectedBytes = estimateHistoryCandidateBytes(pendingCandidate);
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const history = await create({
+      capacity: {
+        maxRetainedCount: 10,
+        maxRetainedBytes: 1_000_000,
+        pendingWarningBytes: expectedBytes,
+        pendingStopBytes: expectedBytes * 2
+      },
+      commitBatch: async () => {
+        started();
+        await gate;
+      }
+    });
+    const publications = collect(history);
+    const receipt = history.offer(pendingCandidate);
+    await startedPromise;
+
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "status",
+      status: expect.objectContaining({
+        capacity: expect.objectContaining({
+          state: "NEAR_LIMIT",
+          measurements: expect.objectContaining({ pendingBytes: expectedBytes })
+        })
+      })
+    }));
+
+    release();
+    await expect(receipt.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
     await history.close();
   });
 

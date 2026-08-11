@@ -600,11 +600,18 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       rejectedBytes += refusedCandidateBytes(candidate);
       rejectedCount += 1;
     }
-    const receiptProblem = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
     const completion = terminalFinalization ?? terminalSettled;
     const settled = completion
-      ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() }))
-      : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() });
+      ? completion.then(() => ({
+          outcome: "NOT_EVIDENCE" as const,
+          problem: trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary."),
+          committedEvidenceBoundary: currentBoundary()
+        }))
+      : Promise.resolve({
+          outcome: "NOT_EVIDENCE" as const,
+          problem: trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary."),
+          committedEvidenceBoundary: currentBoundary()
+        });
     return { intake: "REFUSED", settled };
   }
   function refuseClosed(): CaptureReceipt {
@@ -658,11 +665,10 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       rejectedCount += 1;
       rejectedBytes += bytes;
       beginDrain(failure.reason, failure.dimension, copied.id);
-      const receiptProblem = terminalProblem(trigger!);
       const completion = terminalFinalization ?? terminalSettled;
       const settled = completion
-        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() }))
-        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary: currentBoundary() });
+        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary: currentBoundary() }))
+        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary: currentBoundary() });
       return { intake: "REFUSED", settled };
     }
     let resolve!: (result: ReceiptResult) => void;
