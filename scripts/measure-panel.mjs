@@ -575,7 +575,7 @@ async function measureColdLoads(context, url) {
     await cdp.send("Network.enable");
     await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "Find", exact: true }).waitFor({ state: "visible" });
+    await page.getByLabel("Lightstreamer Workbench", { exact: true }).waitFor({ state: "visible" });
     const semanticReadyMs = await page.evaluate(() => performance.now());
     const after = await performanceMetrics(cdp);
     runs.push({
