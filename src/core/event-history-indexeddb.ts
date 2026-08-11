@@ -15,8 +15,15 @@ import {
 import {
   AUTHORITATIVE_EVENT_CONTROL_KEY,
   AUTHORITATIVE_EVENT_STORE_NAMES,
+  AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+  authoritativeEventDatabaseRuntime,
   authoritativeEventDatabaseName,
+  AUTHORITATIVE_EVENT_DB_NAME_PREFIX,
+  deleteAuthoritativeEventDatabase,
+  parseAuthoritativeEventDatabaseName,
   openAuthoritativeEventDatabase,
+  AuthoritativeDatabaseOpenError,
+  type AuthoritativeEventDatabaseRuntime,
   type AuthoritativeEventDatabase
 } from "./indexeddb/authoritative-event-db";
 import {
@@ -98,6 +105,7 @@ type Subscriber = {
 
 export type IndexedDbEventHistoryOptions = Readonly<{
   panelSessionId?: string;
+  runtime?: AuthoritativeEventDatabaseRuntime;
   capacityTier?: HistoryCapacityTier;
   clearJournal?: () => Promise<void | boolean> | void | boolean;
   closeJournal?: () => Promise<void>;
@@ -110,13 +118,62 @@ export async function createIndexedDbEventHistory(
   options: IndexedDbEventHistoryOptions = {}
 ): Promise<EventHistory> {
   const panelSessionId = options.panelSessionId ?? `session-${Math.random().toString(36).slice(2)}`;
-  const database = await openAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
+  const runtime = authoritativeEventDatabaseRuntime(options.runtime);
+  const databaseName = authoritativeEventDatabaseName(panelSessionId);
+  const canonicalPanelSessionId = parseAuthoritativeEventDatabaseName(databaseName)?.panelSessionId ?? panelSessionId;
+  try {
+    await runStartupSweep(runtime, canonicalPanelSessionId, databaseName);
+  } catch (error) {
+    throw error instanceof AuthoritativeDatabaseOpenError
+      ? error
+      : new AuthoritativeDatabaseOpenError("STARTUP_SWEEP_FAILED", "Startup journal sweep failed.", error);
+  }
+  const database = await openAuthoritativeEventDatabase(databaseName);
   try {
     const loaded = await loadJournal(database, panelSessionId);
     return createHistory(database, loaded, options);
   } catch (error) {
     database.db.close();
     throw error;
+  }
+}
+
+const AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-owner-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}`;
+
+function authoritativeOwnershipLockName(databaseName: string): string {
+  return `${AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX}-${databaseName}`;
+}
+
+async function runStartupSweep(
+  runtime: AuthoritativeEventDatabaseRuntime,
+  panelSessionId: string,
+  databaseName: string
+): Promise<void> {
+  const databases = await runtime.listDatabases().catch((error) => {
+    throw new AuthoritativeDatabaseOpenError("STARTUP_SWEEP_FAILED", "Startup journal sweep could not enumerate IndexedDB databases.", error);
+  });
+  for (const descriptor of databases) {
+    const name = descriptor.name;
+    if (!name) {
+      continue;
+    }
+    const identity = parseAuthoritativeEventDatabaseName(name);
+    if (!identity || identity.panelSessionId !== panelSessionId || identity.schemaVersion > AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+      continue;
+    }
+    if (name === databaseName) {
+      continue;
+    }
+    const result = await runtime.requestLock(
+      authoritativeOwnershipLockName(name),
+      { mode: "exclusive", ifAvailable: true },
+      () => deleteAuthoritativeEventDatabase(name)
+    ).catch((error) => {
+      throw new AuthoritativeDatabaseOpenError("STARTUP_SWEEP_FAILED", `Could not clean up ${name} during startup sweep.`, error);
+    });
+    if (result === null) {
+      continue;
+    }
   }
 }
 

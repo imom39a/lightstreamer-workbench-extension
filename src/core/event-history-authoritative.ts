@@ -1,6 +1,7 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { type EventFilterState, matchesEventFilters } from "./event-filter";
 import { serializeJournalEvidenceCandidate } from "./event-history-serialization";
+import { type AuthoritativeEventDatabaseRuntime } from "./indexeddb/authoritative-event-db";
 import {
   admissionFailure,
   defaultHistoryTimer,
@@ -186,6 +187,7 @@ export interface EventHistory {
 
 export type OpenEventHistoryOptions = Readonly<{
   panelSessionId?: string;
+  runtime?: AuthoritativeEventDatabaseRuntime;
 }> & HistoryCapacityOptions;
 
 type HistoryJournal = {

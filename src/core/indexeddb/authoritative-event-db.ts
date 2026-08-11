@@ -1,13 +1,47 @@
 export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 2;
-export const AUTHORITATIVE_EVENT_DB_NAME = "lsew-history-session";
+export const AUTHORITATIVE_EVENT_DB_NAME_PREFIX = "lsew-events-panel";
+export const AUTHORITATIVE_EVENT_DB_NAME = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-session`;
 export const AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION = 1;
 export const AUTHORITATIVE_EVENT_CONTROL_KEY = "control";
+
+const FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_PREFIX = "session";
+const FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-${AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION}-${FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_PREFIX}`;
 
 const INDEXEDDB_REQUEST_TIMEOUT_MS = 2_000;
 export const AUTHORITATIVE_EVENT_STORE_NAMES = {
   historyControl: "historyControl",
   evidence: "evidence"
 } as const;
+
+type IndexedDatabaseDescriptor = Readonly<{ name?: string; version?: number }>;
+
+type AuthoritativeEventDatabaseLockOptions = Readonly<{
+  mode: "exclusive";
+  ifAvailable?: boolean;
+}>;
+
+export type AuthoritativeEventDatabaseRuntime = Readonly<{
+  listDatabases: () => Promise<readonly IndexedDatabaseDescriptor[]>;
+  requestLock: <T>(
+    name: string,
+    options: AuthoritativeEventDatabaseLockOptions,
+    callback: () => Promise<T> | T
+  ) => Promise<T | null>;
+}>;
+
+export type AuthoritativeEventDatabaseIdentity = Readonly<{
+  panelSessionId: string;
+  schemaVersion: number;
+  name: string;
+}>;
+
+const AUTHORITATIVE_EVENT_DATABASE_NAME_RE = /^lsew-events-panel-v(\d+)-(.+)$/;
+
+const inProcessOwnershipLocks = new Set<string>();
+
+function sanitizePanelSessionId(panelSessionId: string): string {
+  return panelSessionId.replace(/[^A-Za-z0-9_-]/g, "-");
+}
 
 export type AuthoritativeEventDatabase = Readonly<{
   db: IDBDatabase;
@@ -17,7 +51,9 @@ export type AuthoritativeEventDatabase = Readonly<{
 export type AuthoritativeDatabaseOpenFailureCode =
   | "INDEXEDDB_UNAVAILABLE"
   | "UNKNOWN_NEWER_SCHEMA"
-  | "OPEN_FAILED";
+  | "OPEN_FAILED"
+  | "STARTUP_SWEEP_FAILED"
+  | "OWNERSHIP_COULD_NOT_BE_CONFIRMED";
 
 export class AuthoritativeDatabaseOpenError extends Error {
   readonly code: AuthoritativeDatabaseOpenFailureCode;
@@ -31,13 +67,83 @@ export class AuthoritativeDatabaseOpenError extends Error {
 
 export function authoritativeEventDatabaseName(panelSessionId?: string | null): string {
   if (!panelSessionId) {
-    return AUTHORITATIVE_EVENT_DB_NAME;
+    return FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID;
   }
-  return `lsew-history-${panelSessionId.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  return `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}-${sanitizePanelSessionId(panelSessionId)}`;
+}
+
+export function parseAuthoritativeEventDatabaseName(name: string): AuthoritativeEventDatabaseIdentity | null {
+  const match = AUTHORITATIVE_EVENT_DATABASE_NAME_RE.exec(name);
+  if (!match) {
+    return null;
+  }
+  const schemaVersion = Number(match[1]);
+  if (!Number.isSafeInteger(schemaVersion) || schemaVersion < 1) {
+    return null;
+  }
+  return {
+    panelSessionId: match[2],
+    schemaVersion,
+    name
+  };
+}
+
+function requestBrowserLock<T>(
+  name: string,
+  options: AuthoritativeEventDatabaseLockOptions,
+  callback: () => Promise<T> | T
+): Promise<T | null> {
+  return navigator.locks.request(name, { ...options, mode: options.mode }, async () => {
+    return await callback();
+  }) as Promise<T | null>;
+}
+
+function requestInProcessLock<T>(
+  name: string,
+  options: AuthoritativeEventDatabaseLockOptions,
+  callback: () => Promise<T> | T
+): Promise<T | null> {
+  if (options.ifAvailable && inProcessOwnershipLocks.has(name)) {
+    return Promise.resolve(null);
+  }
+  if (!options.ifAvailable && inProcessOwnershipLocks.has(name)) {
+    return Promise.reject(new Error(`Cannot acquire exclusive ownership of ${name}: ownership is already held.`));
+  }
+  inProcessOwnershipLocks.add(name);
+  return (async () => {
+    const value = await callback();
+    inProcessOwnershipLocks.delete(name);
+    return value;
+  })().catch((error) => {
+    inProcessOwnershipLocks.delete(name);
+    throw error;
+  });
+}
+
+export function authoritativeEventDatabaseRuntime(overrides: Partial<AuthoritativeEventDatabaseRuntime> = {}): AuthoritativeEventDatabaseRuntime {
+  const listDatabases = overrides.listDatabases
+    ?? ((): Promise<readonly IndexedDatabaseDescriptor[]> => {
+      if (typeof indexedDB === "undefined" || typeof indexedDB.databases !== "function") {
+        return Promise.resolve([]);
+      }
+      return indexedDB.databases();
+    });
+
+  const browserLockRequest = (
+    typeof navigator !== "undefined"
+      ? (navigator as { locks?: { request: AuthoritativeEventDatabaseRuntime["requestLock"] } }).locks?.request
+      : undefined
+  );
+  const requestLock = overrides.requestLock
+    ?? (typeof navigator !== "undefined" && typeof browserLockRequest === "function"
+      ? requestBrowserLock
+      : requestInProcessLock);
+
+  return { listDatabases, requestLock };
 }
 
 export async function openAuthoritativeEventDatabase(
-  name = AUTHORITATIVE_EVENT_DB_NAME
+  name = FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID
 ): Promise<AuthoritativeEventDatabase> {
   if (typeof indexedDB === "undefined") {
     throw new AuthoritativeDatabaseOpenError(
