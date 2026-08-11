@@ -150,6 +150,38 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
       await history.close();
     });
 
+    it("excludes topology checkpoints before calculating Lightstreamer Evidence totals and pages", async () => {
+      const history = await createHistory();
+      await history.offer(candidate("first-event")).settled;
+      await history.offer({
+        kind: "topology-checkpoint",
+        id: "between-events",
+        checkpoint: { pageEpoch: "epoch-paging" }
+      }).settled;
+      await history.offer(candidate("last-event")).settled;
+
+      await expect(history.read({ candidateKind: "lightstreamer", order: "asc", limit: 1 })).resolves.toMatchObject({
+        ok: true,
+        value: {
+          total: 2,
+          evidence: [expect.objectContaining({ eventId: "first-event" })]
+        }
+      });
+      await expect(history.read({
+        candidateKind: "lightstreamer",
+        order: "desc",
+        offsetFromNewest: 1,
+        limit: 1
+      })).resolves.toMatchObject({
+        ok: true,
+        value: {
+          total: 2,
+          evidence: [expect.objectContaining({ eventId: "first-event" })]
+        }
+      });
+      await history.close();
+    });
+
     it("propagates Clear-confirmation failures without stopping intake", async () => {
       const history = await createHistory({
         clearJournal: async () => {

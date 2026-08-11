@@ -208,7 +208,7 @@ describe("history-impl-09 topology cutover", () => {
     commit.resolve();
     await settle();
 
-    expect(runtime.getSnapshot().evidence.total).toBe(1);
+    expect(runtime.getSnapshot().evidence.total).toBe(0);
     expect(runtime.getSnapshot().scope.nodes[0]).toMatchObject({
       kind: "page",
       detail: "1 clients · 1 subscriptions"
@@ -257,7 +257,7 @@ describe("history-impl-09 topology cutover", () => {
     }
     await settle();
 
-    expect(runtime.getSnapshot().evidence.total).toBe(1);
+    expect(runtime.getSnapshot().evidence.total).toBe(0);
     expect(runtime.getSnapshot().scope.nodes[0]).toMatchObject({
       kind: "page",
       detail: "1 clients · 1 subscriptions"
@@ -287,7 +287,7 @@ describe("history-impl-09 topology cutover", () => {
     }
     await settle();
 
-    expect(runtime.getSnapshot().evidence.total).toBe(1);
+    expect(runtime.getSnapshot().evidence.total).toBe(0);
     expect(runtime.getSnapshot().scope.nodes[0]).toMatchObject({
       kind: "page",
       detail: "1 clients · 1 subscriptions"

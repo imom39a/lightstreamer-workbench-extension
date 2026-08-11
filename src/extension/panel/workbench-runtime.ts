@@ -903,7 +903,7 @@ class Runtime implements WorkbenchRuntime {
     this.selectedEventEnvelope = null;
     if (reconcileFilterVisibility) this.selectionHiddenByFilter = false;
     let receiving = true;
-    void this.evidencePipeline.read({ eventId }).then(
+    void this.evidencePipeline.read({ candidateKind: "lightstreamer", eventId }).then(
       (result) => {
         if (
           this.disposed ||
@@ -1017,7 +1017,7 @@ class Runtime implements WorkbenchRuntime {
     const topology = this.topologyProjection.snapshot();
     const target = findTopologySelection(topology, this.scopeId ?? "page");
     const filters = combineScopeAndUserFilters(eventFiltersForScope(target), this.filters);
-    void this.evidencePipeline.read({ filters, order: "asc" }).then(
+    void this.evidencePipeline.read({ candidateKind: "lightstreamer", filters, order: "asc" }).then(
       (result) => {
         if (this.disposed || generation !== this.findQueryGeneration) return;
         if (!result.ok) {
@@ -1325,7 +1325,7 @@ class Runtime implements WorkbenchRuntime {
     const filterSnapshot = Object.freeze({ ...this.filters });
     this.evidenceCopy = Object.freeze({ state: "preparing", eventCount: 0, text: null });
     this.publish();
-    void this.evidencePipeline.read({ filters, order: "asc" }).then(
+    void this.evidencePipeline.read({ candidateKind: "lightstreamer", filters, order: "asc" }).then(
       (result) => {
         if (this.disposed || generation !== this.evidenceCopyGeneration) return;
         if (!result.ok) {
@@ -1828,6 +1828,7 @@ class Runtime implements WorkbenchRuntime {
     this.evidenceQueryPending = true;
     void this.evidencePipeline
       .read({
+        candidateKind: "lightstreamer",
         filters,
         limit: this.windowSize,
         offsetFromNewest: offset,
@@ -1916,7 +1917,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private hydrateProjections(): void {
-    void this.evidencePipeline.read({ order: "asc" }).then(
+    void this.evidencePipeline.read({ candidateKind: "lightstreamer", order: "asc" }).then(
       (result) => {
         if (this.disposed) {
           return;

@@ -40,6 +40,8 @@ export type TopologyCheckpointEvidenceCandidate = Readonly<{
 
 export type EvidenceCandidate = LightstreamerEventEnvelope | TopologyCheckpointEvidenceCandidate;
 
+export type EvidenceCandidateKind = "lightstreamer" | "topology-checkpoint";
+
 export type EvidenceRef = Readonly<{
   intervalId: string;
   sequence: number;
@@ -90,6 +92,7 @@ export type CaptureReceipt = Readonly<{
 }>;
 
 export type EvidenceQuery = Readonly<{
+  candidateKind?: EvidenceCandidateKind;
   intervalId?: string;
   afterSequence?: number;
   limit?: number;
@@ -1024,6 +1027,8 @@ export function selectEvidence(evidence: readonly CommittedEvidence[], query: Ev
 }
 
 export function matchesEvidenceQuery(entry: CommittedEvidence, query: EvidenceQuery): boolean {
+  if (query.candidateKind === "lightstreamer" && entry.candidate.kind === "topology-checkpoint") return false;
+  if (query.candidateKind === "topology-checkpoint" && entry.candidate.kind !== "topology-checkpoint") return false;
   if (query.afterSequence !== undefined && entry.sequence <= query.afterSequence) return false;
   if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
   if (query.filters && !matchesCandidateFilters(entry.candidate, query.filters)) return false;

@@ -84,6 +84,13 @@ describe("authoritative EventHistory test support", () => {
         committedEvidenceBoundary: { sequence: 3, eventId: "accepted" }
       }
     });
+    await expect(history.read({ candidateKind: "lightstreamer", order: "asc", limit: 1 })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        total: 2,
+        evidence: [{ sequence: 1, eventId: "seed-event" }]
+      }
+    });
 
     const cleared = history.clear();
     expect(cleared).toBeInstanceOf(Promise);

@@ -1,8 +1,8 @@
 import { type LightstreamerEventEnvelope } from "../../src/core/event-envelope";
 import {
   copyCandidate,
-  matchesEvidenceQuery,
   pageEvidence,
+  selectEvidence,
   type CaptureReceipt,
   type CloseResult,
   type CommittedEvidence,
@@ -210,11 +210,10 @@ export function createAuthoritativeHistory(
         problem: problem("HISTORY_CLOSED", "Event History is closed.")
       };
     }
-    const matching = currentEvidence.filter(
-      (entry) =>
-        (query.intervalId === undefined || entry.intervalId === query.intervalId) &&
-        matchesEvidenceQuery(entry, query)
+    const intervalEvidence = currentEvidence.filter(
+      (entry) => query.intervalId === undefined || entry.intervalId === query.intervalId
     );
+    const matching = selectEvidence(intervalEvidence, query);
     return {
       ok: true,
       value: Object.freeze({

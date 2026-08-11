@@ -1637,6 +1637,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispatch({ type: "set-scope", scopeId: listenerScope?.id ?? null });
 
     expect(read).toHaveBeenLastCalledWith({
+      candidateKind: "lightstreamer",
       filters: {
         clientId: "bounded-client",
         sessionId: "bounded-session",
@@ -1649,6 +1650,57 @@ describe("WorkbenchRuntime", () => {
       offsetFromNewest: 0,
       order: "asc"
     });
+    runtime.dispose();
+  });
+
+  it("keeps paging, Find, selection, frozen windows, and Evidence copy on Lightstreamer reads", async () => {
+    const history = createAuthoritativeHistory({
+      precommitted: [
+        {
+          kind: "topology-checkpoint",
+          id: "checkpoint-before-first",
+          checkpoint: { pageEpoch: "epoch-paging-runtime" }
+        },
+        event("first-runtime-event", "runtime-item"),
+        {
+          kind: "topology-checkpoint",
+          id: "checkpoint-before-last",
+          checkpoint: { pageEpoch: "epoch-paging-runtime-2" }
+        },
+        event("last-runtime-event", "runtime-item")
+      ]
+    });
+    const runtime = createWorkbenchRuntime({ history, windowSize: 1 });
+    const read = vi.spyOn(history, "read");
+    await flushStoreNotifications();
+
+    expect(runtime.getSnapshot().evidence).toMatchObject({
+      total: 2,
+      events: [{ id: "last-runtime-event" }]
+    });
+
+    runtime.dispatch({ type: "show-older-evidence" });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().evidence).toMatchObject({
+      mode: "frozen",
+      total: 2,
+      events: [{ id: "first-runtime-event" }]
+    });
+
+    runtime.dispatch({ type: "select-evidence", eventId: "last-runtime-event" });
+    await flushStoreNotifications();
+    runtime.dispatch({ type: "set-find", value: "first-runtime-event" });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().evidence.findState).toMatchObject({
+      matchCount: 1,
+      currentEventId: "first-runtime-event"
+    });
+
+    runtime.dispatch({ type: "prepare-scoped-evidence-copy" });
+    await flushStoreNotifications();
+    expect(runtime.getSnapshot().evidenceCopy.eventCount).toBe(2);
+    expect(runtime.getSnapshot().evidenceCopy.text).not.toContain("checkpoint-");
+    expect(read.mock.calls.every(([query]) => query.candidateKind === "lightstreamer")).toBe(true);
     runtime.dispose();
   });
 

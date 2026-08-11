@@ -7,6 +7,8 @@ import {
 } from "../src/extension/panel/committed-evidence-pipeline";
 import {
   createMemoryEventHistoryForTests,
+  matchesEvidenceQuery,
+  pageEvidence,
   type EvidenceCandidate,
   type EventHistory,
   type CaptureReceipt,
@@ -85,16 +87,19 @@ function createReplayableHistory(initial: EvidenceCandidate[]): EventHistory {
         settled: Promise.resolve({ outcome: "BECAME_EVIDENCE", evidence: snapshot })
       };
     },
-    read: async (query) => ({
-      ok: true,
-      value: {
-        interval,
-        evidence,
-        total: evidence.length,
-        committedEvidenceBoundary: evidence[evidence.length - 1] ?? null,
-        retainedRange: evidence.length === 0 ? null : { first: evidence[0], last: evidence[evidence.length - 1] }
-      } as const
-    }),
+    read: async (query) => {
+      const matching = evidence.filter((entry) => matchesEvidenceQuery(entry, query));
+      return {
+        ok: true,
+        value: {
+          interval,
+          evidence: pageEvidence(matching, query),
+          total: matching.length,
+          committedEvidenceBoundary: evidence[evidence.length - 1] ?? null,
+          retainedRange: evidence.length === 0 ? null : { first: evidence[0], last: evidence[evidence.length - 1] }
+        } as const
+      };
+    },
     clear: async () => {
       clearCount += 1;
       const previousInterval = { ...interval };
@@ -167,6 +172,30 @@ describe("committed-evidence pipeline", () => {
     expect(read).toHaveBeenCalledWith({ order: "asc", limit: 1 });
     expect(clear).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the typed Lightstreamer read discriminator through the pipeline", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "pipeline-paging" });
+    await history.offer(lightstreamerCandidate("pipeline-first")).settled;
+    await history.offer({
+      kind: "topology-checkpoint",
+      id: "pipeline-checkpoint",
+      checkpoint: { pageEpoch: "pipeline-page" }
+    }).settled;
+    await history.offer(lightstreamerCandidate("pipeline-last")).settled;
+    const pipeline = bindCommittedEvidencePipeline({
+      history,
+      onCommittedEvidence: () => undefined
+    });
+
+    await expect(pipeline.read({ candidateKind: "lightstreamer", order: "asc", limit: 1 })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        total: 2,
+        evidence: [expect.objectContaining({ eventId: "pipeline-first" })]
+      }
+    });
+    await pipeline.close();
   });
 
   it("starts follow from CURRENT_INTERVAL_START and replays committed entries in order", async () => {

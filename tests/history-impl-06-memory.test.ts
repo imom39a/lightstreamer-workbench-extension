@@ -14,6 +14,33 @@ function candidate(id: string): EvidenceCandidate {
 }
 
 describe("history-impl-06 memory contract", () => {
+  it("reads only committed Evidence without flushing a pending commit", async () => {
+    let commitStarted!: () => void;
+    let releaseCommit!: () => void;
+    const started = new Promise<void>((resolve) => {
+      commitStarted = resolve;
+    });
+    const commitGate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const history = await createMemoryEventHistoryForTests({
+      commitBatch: async () => {
+        commitStarted();
+        await commitGate;
+      }
+    });
+
+    const pending = history.offer(candidate("pending"));
+    await started;
+    await expect(history.read({ candidateKind: "lightstreamer" })).resolves.toMatchObject({
+      ok: true,
+      value: { total: 0, evidence: [] }
+    });
+    releaseCommit();
+    await expect(pending.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    await history.close();
+  });
+
   it("returns identical outcomes for repeated failed close attempts", async () => {
     const history = await createMemoryEventHistoryForTests({
       clearJournal: async () => {
