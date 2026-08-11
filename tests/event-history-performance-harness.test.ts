@@ -71,6 +71,20 @@ describe("Event History performance checkpoint workload", () => {
     expect(concurrent.liveCaptureMaxInterEventGapMs).toBeCloseTo(1_200 / 72, 10);
   });
 
+  it("measures paced live capture while the production checkpoint stage is held", async () => {
+    const scenario = await runCheckpointScenario("memory", "representative", null, createHarnessStageGuard());
+    const overlapEventSpan = scenario.liveCaptureEventTimesMs.at(-1)! - scenario.liveCaptureEventTimesMs[0]!;
+
+    expect(scenario.liveCaptureCount).toBe(scenario.liveCaptureEventIds.length);
+    expect(scenario.liveCaptureDurationMs).toBeGreaterThanOrEqual(1_000);
+    expect(scenario.checkpointStagingDurationMs).toBeGreaterThanOrEqual(1_000);
+    expect(scenario.liveCaptureOverlapMs).toBeGreaterThanOrEqual(1_000);
+    expect(overlapEventSpan).toBeGreaterThanOrEqual(1_000);
+    expect(scenario.liveCaptureMaxInterEventGapMs).toBeLessThanOrEqual(250);
+    expect(scenario.liveCaptureRateEventsPerSecond).toBeGreaterThanOrEqual(50);
+    expect(scenario.interleavedWhileStaging).toBe(true);
+  });
+
   const progress = (stage: string): HarnessProgressInput => ({
     operationId: null,
     phase: "cells",
