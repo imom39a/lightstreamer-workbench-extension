@@ -518,7 +518,12 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     terminalPersistenceFailed = true;
     const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
     trigger = makeTrigger(reason, "JOURNAL", trigger?.firstMissingEventId ?? null);
+    const failedTerminal = terminalDiagnostic();
+    persistedTerminal = failedTerminal;
+    terminal = failedTerminal;
+    phase = "STOPPED";
     const issue = terminalProblem(trigger);
+    publish({ type: "terminal", terminal: failedTerminal, status: status(issue) });
     publish({ type: "status", status: status(issue), problem: issue });
     signalTerminalSettled();
   }
