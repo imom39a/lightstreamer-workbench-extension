@@ -8,9 +8,10 @@ import {
   type TopologySyncChunkFrame,
   type TopologySyncCompleteFrame
 } from "../bridge/messages";
+import type { TopologyCheckpointEvidenceCandidate } from "./event-history-authoritative";
 
 export type TopologySyncResult =
-  | { accepted: true; duplicate?: true }
+  | { accepted: true; duplicate?: true; candidate?: TopologyCheckpointEvidenceCandidate }
   | { accepted: false; reason: string };
 
 export type TopologySyncStatus = {
@@ -80,7 +81,14 @@ export function createTopologySyncCoordinator<T>(
   let syncStatus: TopologySyncStatus = { state: "idle", retry: false };
   let acceptedCutoff: number | null = null;
   const appliedLive = new Map<number, string>();
-  const completed = new Map<string, { begin: string; complete: string }>();
+  const completed = new Map<
+    string,
+    Readonly<{
+      begin: string;
+      complete: string;
+      candidate: TopologyCheckpointEvidenceCandidate;
+    }>
+  >();
 
   function reject(reason: string): TopologySyncResult {
     return { accepted: false, reason };
@@ -203,6 +211,9 @@ export function createTopologySyncCoordinator<T>(
       const reason = frame.reason;
       const partialStage = stage;
       stage = undefined;
+      const observations = [...partialStage.live.values()]
+        .map(({ observation }) => observation)
+        .sort((left, right) => left.captureSequence - right.captureSequence);
       const liveError = drainLive(partialStage);
       if (liveError) {
         syncStatus = {
@@ -215,9 +226,15 @@ export function createTopologySyncCoordinator<T>(
         };
         return { accepted: false, reason: liveError };
       }
+      const candidate = buildTopologyCheckpointCandidate(
+        frame,
+        stagedRecords(partialStage),
+        observations
+      );
       completed.set(frame.syncId, {
         begin: stableFingerprint(partialStage.metadata),
-        complete: stableFingerprint(frame)
+        complete: stableFingerprint(frame),
+        candidate
       });
       trimMap(completed, 128);
       syncStatus = {
@@ -228,7 +245,7 @@ export function createTopologySyncCoordinator<T>(
           ? { coverage: cloneCoverage(frame.coverage) }
           : {})
       };
-      return { accepted: true };
+      return { accepted: true, candidate };
     }
     if (stage.chunks.size !== stage.metadata.chunkCount) {
       return abortStage("missing-chunks");
@@ -258,6 +275,7 @@ export function createTopologySyncCoordinator<T>(
 
     const completedBegin = stableFingerprint(stage.metadata);
     current = replacement;
+    const candidate = buildTopologyCheckpointCandidate(frame, records, tail);
     acceptedCutoff =
       acceptedCutoff === null
         ? stage.metadata.cutoffCaptureSequence
@@ -268,7 +286,8 @@ export function createTopologySyncCoordinator<T>(
     }
     completed.set(frame.syncId, {
       begin: completedBegin,
-      complete: stableFingerprint(frame)
+      complete: stableFingerprint(frame),
+      candidate
     });
     trimMap(completed, 128);
     stage = undefined;
@@ -279,7 +298,7 @@ export function createTopologySyncCoordinator<T>(
         ? { coverage: cloneCoverage(frame.coverage) }
         : {})
     };
-    return { accepted: true };
+    return { accepted: true, candidate };
   }
 
   function applyLive(observation: TopologyObservation): TopologySyncResult {
@@ -359,6 +378,62 @@ function sameMetadata(
   );
 }
 
+function buildTopologyCheckpointCandidate(
+  frame: TopologySyncCompleteFrame,
+  records: readonly TopologyAbsoluteRecord[],
+  observations: readonly TopologyObservation[]
+): TopologyCheckpointEvidenceCandidate {
+  const normalizedRecords = normalizeTopologyAbsoluteRecords(records);
+  const normalizedObservations = normalizeTopologyObservations(observations);
+  const checkpoint = {
+    pageEpoch: frame.pageEpoch,
+    cutoffCaptureSequence: frame.cutoffCaptureSequence,
+    coverage: cloneCoverage(frame.coverage),
+    records: normalizedRecords,
+    observations: normalizedObservations,
+    ...(frame.reason !== undefined ? { reason: frame.reason } : {})
+  };
+  const acceptedTimestamp = stableHash(checkpoint);
+  return deepFreeze({
+    kind: "topology-checkpoint",
+    id: `topology-checkpoint:${stableFingerprint(frame)}:${acceptedTimestamp}`,
+    checkpoint: deepFreeze({
+      ...checkpoint,
+      acceptedTimestamp
+    })
+  });
+}
+
+function stagedRecords(stage: Stage): TopologyAbsoluteRecord[] {
+  return [...stage.chunks.entries()]
+    .sort(([left], [right]) => left - right)
+    .flatMap(([, entries]) => entries);
+}
+
+function normalizeTopologyAbsoluteRecords(
+  records: readonly TopologyAbsoluteRecord[]
+): readonly TopologyAbsoluteRecord[] {
+  return records
+    .map((record) => ({ ...record }))
+    .sort((left, right) =>
+      left.captureSequence === right.captureSequence
+        ? left.id.localeCompare(right.id)
+        : left.captureSequence - right.captureSequence
+    )
+    .map((record) => deepFreeze(record));
+}
+
+function normalizeTopologyObservations(
+  observations: readonly TopologyObservation[]
+): readonly TopologyObservation[] {
+  return observations
+    .map((observation) => ({
+      ...observation,
+      values: observation.values ? { ...observation.values } : undefined
+    }))
+    .map((observation) => deepFreeze(observation));
+}
+
 function isValidAbsoluteRecordSet(
   records: readonly TopologyAbsoluteRecord[],
   pageEpoch: string,
@@ -430,4 +505,24 @@ function trimMap<K, V>(map: Map<K, V>, limit: number): void {
   while (map.size > limit) {
     map.delete(map.keys().next().value as K);
   }
+}
+
+function stableHash(value: unknown): number {
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(stableFingerprint(value))) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  Object.freeze(value);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(child);
+  }
+  return value;
 }

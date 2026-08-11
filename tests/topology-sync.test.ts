@@ -14,6 +14,7 @@ import {
   type TopologySyncCompleteFrame,
   isTopologySyncFrame
 } from "../src/bridge/messages";
+import type { TopologyCheckpointEvidenceCandidate } from "../src/core/event-history-authoritative";
 import { createTopologySyncCoordinator } from "../src/core/topology-sync";
 
 const record = (id: string, sequence = 1): TopologyAbsoluteRecord => ({
@@ -37,6 +38,23 @@ const live = (id: string, sequence: number): TopologyObservation => ({
   client: { id: "client-a" },
   subscription: { id }
 });
+
+type SyncResult = ReturnType<ReturnType<typeof createTopologySyncCoordinator>['complete']>;
+
+function assertNoCheckpointCandidate(result: { candidate?: unknown }): void {
+  expect(result.candidate).toBeUndefined();
+}
+
+function assertCheckpointCandidate(result: SyncResult): TopologyCheckpointEvidenceCandidate {
+  expect(result).toMatchObject({ accepted: true });
+  expect(result.candidate).toBeDefined();
+  const candidate = result.candidate;
+  expect(candidate).toMatchObject({ kind: "topology-checkpoint", id: expect.any(String) });
+  expect(candidate).toBeDefined();
+  expect(Object.isFrozen(candidate)).toBe(true);
+  expect(Object.isFrozen(candidate!.checkpoint)).toBe(true);
+  return candidate as TopologyCheckpointEvidenceCandidate;
+}
 
 function frames(
   records: readonly TopologyAbsoluteRecord[],
@@ -94,13 +112,24 @@ describe("bounded atomic topology synchronization", () => {
 
     expect(isTopologySyncFrame(begin)).toBe(true);
     expect(isTopologySyncFrame(complete)).toBe(true);
-    expect(coordinator.begin(begin)).toEqual({ accepted: true });
+    const beginResult = coordinator.begin(begin);
+    expect(beginResult).toMatchObject({ accepted: true });
+    assertNoCheckpointCandidate(beginResult);
     expect(coordinator.snapshot()).toEqual({
       pageEpoch: "page-a",
       records: [],
       observations: []
     });
-    expect(coordinator.complete(complete)).toEqual({ accepted: true });
+    const completeResult = coordinator.complete(complete);
+    const completeCandidate = assertCheckpointCandidate(completeResult);
+    expect(completeCandidate.checkpoint).toMatchObject({
+      pageEpoch: "page-a",
+      cutoffCaptureSequence: 0,
+      coverage: { status: "complete", getters: {} },
+      records: [],
+      observations: []
+    });
+    expect(typeof completeCandidate.checkpoint.acceptedTimestamp).toBe("number");
     expect(coordinator.status()).toEqual({ state: "complete", retry: false });
     expect(coordinator.snapshot()).toEqual({
       pageEpoch: "page-a",
@@ -123,16 +152,35 @@ describe("bounded atomic topology synchronization", () => {
     coordinator.applyLive(live("old", 1));
     const sync = frames([record("checkpoint", 5)]);
 
-    expect(coordinator.begin(sync.begin)).toEqual({ accepted: true });
+    const beginResult = coordinator.begin(sync.begin);
+    expect(beginResult).toMatchObject({ accepted: true });
+    assertNoCheckpointCandidate(beginResult);
     expect(coordinator.acceptChunk(sync.chunk)).toEqual({ accepted: true });
     coordinator.applyLive(live("before-cutoff", 10));
     coordinator.applyLive(live("after-cutoff", 12));
     expect(coordinator.snapshot().observations.map((entry) => entry.subscription?.id)).toEqual(["old"]);
 
-    expect(coordinator.complete(sync.complete)).toEqual({ accepted: true });
+    const completeResult = coordinator.complete(sync.complete);
+    const completeCandidate = assertCheckpointCandidate(completeResult);
+    expect(completeCandidate.checkpoint).toMatchObject({
+      pageEpoch: "page-a",
+      cutoffCaptureSequence: 10,
+      coverage: { status: "complete", getters: {} },
+      observations: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "subscription-active",
+          captureSequence: 12,
+          pageEpoch: "page-a",
+          client: { id: "client-a" },
+          subscription: { id: "checkpoint" }
+        })
+      ])
+    });
     expect(coordinator.snapshot().records.map((entry) => entry.id)).toContain("checkpoint");
     expect(coordinator.snapshot().observations.map((entry) => entry.subscription?.id)).toEqual(["after-cutoff"]);
-    expect(coordinator.complete(sync.complete)).toEqual({ accepted: true, duplicate: true });
+    const duplicateComplete = coordinator.complete(sync.complete);
+    expect(duplicateComplete).toMatchObject({ accepted: true, duplicate: true });
+    assertNoCheckpointCandidate(duplicateComplete);
     expect(coordinator.snapshot().observations).toHaveLength(1);
   });
 
@@ -155,9 +203,15 @@ describe("bounded atomic topology synchronization", () => {
       const chunk = { ...checkpoint.chunk, coverage };
       const complete = { ...checkpoint.complete, coverage };
 
-      expect(coordinator.begin(begin)).toEqual({ accepted: true });
-      expect(coordinator.acceptChunk(chunk)).toEqual({ accepted: true });
-      expect(coordinator.complete(complete)).toEqual({ accepted: true });
+      expect(coordinator.begin(begin)).toMatchObject({ accepted: true });
+      expect(coordinator.acceptChunk(chunk)).toMatchObject({ accepted: true });
+      const completeResult = coordinator.complete(complete);
+      expect(completeResult).toMatchObject({ accepted: true });
+      const checkpointResult = assertCheckpointCandidate(completeResult);
+      expect(checkpointResult.checkpoint).toMatchObject({
+        pageEpoch: "page-a",
+        coverage
+      });
       expect(coordinator.snapshot().records.map((entry) => entry.id)).toContain(
         "semantic-partial"
       );
@@ -174,7 +228,9 @@ describe("bounded atomic topology synchronization", () => {
     coordinator.applyLive(live("confirmed", 1));
     const missing = frames([record("candidate")], "missing");
     coordinator.begin(missing.begin);
-    expect(coordinator.complete(missing.complete)).toMatchObject({ accepted: false, reason: "missing-chunks" });
+    const missingResult = coordinator.complete(missing.complete);
+    expect(missingResult).toMatchObject({ accepted: false, reason: "missing-chunks" });
+    assertNoCheckpointCandidate(missingResult);
     expect(coordinator.snapshot().observations[0]?.subscription?.id).toBe("confirmed");
 
     const partial = frames([], "partial");
@@ -189,7 +245,19 @@ describe("bounded atomic topology synchronization", () => {
     };
     coordinator.begin(partialBegin);
     coordinator.applyLive(live("partial-tail", 12));
-    expect(coordinator.complete(partialComplete)).toEqual({ accepted: true });
+    const partialCompleteResult = coordinator.complete(partialComplete);
+    expect(partialCompleteResult).toMatchObject({ accepted: true });
+    const partialCandidate = assertCheckpointCandidate(partialCompleteResult);
+    expect(partialCandidate.checkpoint).toMatchObject({
+      pageEpoch: "page-a",
+      cutoffCaptureSequence: 10,
+      coverage: {
+        status: "partial",
+        getters: {},
+        reason: "limit-exceeded"
+      },
+      reason: "limit-exceeded"
+    });
     expect(coordinator.status()).toMatchObject({
       state: "partial",
       retry: true,
@@ -200,7 +268,9 @@ describe("bounded atomic topology synchronization", () => {
       "confirmed",
       "partial-tail"
     ]);
-    expect(coordinator.complete(partialComplete)).toEqual({ accepted: true, duplicate: true });
+    const duplicatePartial = coordinator.complete(partialComplete);
+    expect(duplicatePartial).toMatchObject({ accepted: true, duplicate: true });
+    assertNoCheckpointCandidate(duplicatePartial);
     expect(coordinator.snapshot().observations).toHaveLength(2);
 
     const conflict = frames([record("one")], "conflict");
@@ -263,7 +333,8 @@ describe("bounded atomic topology synchronization", () => {
       })
     ).toMatchObject({ accepted: false, reason: "conflicting-duplicate-chunk" });
     expect(coordinator.status()).toMatchObject({ state: "staging", retry: false });
-    expect(coordinator.complete(active.complete)).toEqual({ accepted: true });
+    const activeComplete = coordinator.complete(active.complete);
+    assertCheckpointCandidate(activeComplete);
     expect(coordinator.snapshot().records.map((entry) => entry.id)).toContain("checkpoint");
   });
 
@@ -281,7 +352,8 @@ describe("bounded atomic topology synchronization", () => {
       reason: "unknown-or-conflicting-chunk"
     });
     expect(coordinator.acceptChunk(active.chunk)).toEqual({ accepted: true });
-    expect(coordinator.complete(active.complete)).toEqual({ accepted: true });
+    const samePanelComplete = coordinator.complete(active.complete);
+    assertCheckpointCandidate(samePanelComplete);
   });
 
   it("rejects an older checkpoint without replacing current state or disturbing a newer stage", () => {
@@ -289,7 +361,7 @@ describe("bounded atomic topology synchronization", () => {
     const accepted = frames([record("accepted", 5)], "accepted", 10);
     coordinator.begin(accepted.begin);
     coordinator.acceptChunk(accepted.chunk);
-    coordinator.complete(accepted.complete);
+    assertCheckpointCandidate(coordinator.complete(accepted.complete));
     coordinator.applyLive(live("confirmed-tail", 12));
 
     const stale = frames([record("stale", 5)], "stale", 5);
@@ -313,7 +385,8 @@ describe("bounded atomic topology synchronization", () => {
       reason: "stale-checkpoint"
     });
     expect(coordinator.status()).toMatchObject({ state: "staging", retry: false });
-    expect(coordinator.complete(newer.complete)).toEqual({ accepted: true });
+    const newerComplete = coordinator.complete(newer.complete);
+    assertCheckpointCandidate(newerComplete);
     expect(coordinator.snapshot().records.map((entry) => entry.id)).toContain("newer");
   });
 
