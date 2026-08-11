@@ -1525,18 +1525,21 @@ export async function runTerminalScenario(
   const terminals: Array<Extract<HistoryPublication, { type: "terminal" }>> = [];
   const publishedEventIds: string[] = [];
   const pressureTransitions: string[] = [];
-  const unsubscribe = history.follow({ from: "NOW" }, (publication) => {
-    if (!guard.isActive()) return;
-    if (publication.type === "terminal") terminals.push(publication);
-    if (publication.type === "status") {
-      const state = publication.status.capacity.state;
-      if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
-    }
-    if (publication.type === "committed-evidence") {
-      publishedEventIds.push(...publication.evidence.map((evidence) => evidence.eventId));
-    }
-  });
+  let unsubscribe: (() => void) | undefined;
+  let followCompleted = false;
   try {
+    unsubscribe = history.follow({ from: "NOW" }, (publication) => {
+      if (!guard.isActive()) return;
+      if (publication.type === "terminal") terminals.push(publication);
+      if (publication.type === "status") {
+        const state = publication.status.capacity.state;
+        if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
+      }
+      if (publication.type === "committed-evidence") {
+        publishedEventIds.push(...publication.evidence.map((evidence) => evidence.eventId));
+      }
+    });
+    followCompleted = true;
     const receipts: Array<{ id: string; receipt: ReturnType<EventHistory["offer"]> }> = [];
     const firstEvent = createEventHistoryWorkloadEvent("large-json-rich", 0, `${panelSessionId}-accepted`);
     if (trigger === "PENDING_BYTES") {
@@ -1581,7 +1584,8 @@ export async function runTerminalScenario(
     guard
   );
   const terminal = terminals.at(-1)?.terminal ?? null;
-  unsubscribe();
+  unsubscribe?.();
+  unsubscribe = undefined;
   if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
   const closeOutcome = await withStageDeadline(
     history.close(),
@@ -1623,7 +1627,9 @@ export async function runTerminalScenario(
     pressureTransitions
     };
   } catch (error) {
-    const failure = normalizeHarnessError(error, `terminal-${adapter}-${trigger}`, progress(), guard);
+    const failure = followCompleted
+      ? normalizeHarnessError(error, `terminal-${adapter}-${trigger}`, progress(), guard)
+      : error instanceof Error ? error : new Error(String(error));
     const resourceCleanup = await cleanupHarnessResources({
       history,
       stage: `terminal-${adapter}-${trigger}`,

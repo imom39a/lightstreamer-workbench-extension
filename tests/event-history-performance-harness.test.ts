@@ -29,6 +29,7 @@ import {
   type HarnessProgressInput
 } from "../benchmarks/event-history-performance-harness";
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
+import * as eventHistoryAuthoritative from "../src/core/event-history-authoritative";
 import type { EventHistory } from "../src/core/event-history-authoritative";
 import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
@@ -303,6 +304,67 @@ describe("Event History performance checkpoint workload", () => {
       await expect(runTerminalScenario("memory", "PENDING_BYTES", "terminal-run", guard))
         .rejects.toThrow("Terminal scenario was cancelled.");
     } finally {
+      if (previous === undefined) delete globalRecord[key];
+      else globalRecord[key] = previous;
+    }
+  });
+
+  it("cleans up an acquired terminal history when follow throws before publication", async () => {
+    const key = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+    const globalRecord = globalThis as unknown as Record<string, unknown>;
+    const previous = globalRecord[key];
+    const originalCreate = eventHistoryAuthoritative.createInMemoryEventHistory;
+    const followError = new Error("terminal follow setup failed");
+    let callbackInvoked = false;
+    let followCalls = 0;
+    let closeCalls = 0;
+    let factorySpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      globalRecord[key] = { operationId: "terminal-follow-failure", state: "pending", progress: null };
+      const underlying = originalCreate({ panelSessionId: "terminal-follow-failure" });
+      const injectedHistory = {
+        ...underlying,
+        follow: ((..._args: unknown[]) => {
+          followCalls += 1;
+          const listener = _args[1];
+          if (typeof listener === "function") {
+            const wrappedListener = (...publication: unknown[]) => {
+              callbackInvoked = true;
+              listener(...publication);
+            };
+            void wrappedListener;
+          }
+          throw followError;
+        }) as EventHistory["follow"],
+        close: () => {
+          closeCalls += 1;
+          return underlying.close();
+        }
+      } as EventHistory;
+      factorySpy = vi.spyOn(eventHistoryAuthoritative, "createInMemoryEventHistory").mockReturnValue(injectedHistory);
+
+      const failure = await runTerminalScenario(
+        "memory",
+        "PENDING_BYTES",
+        "terminal-follow-failure",
+        createHarnessStageGuard("terminal-follow-failure")
+      ).then(() => null, (error) => error as Error & { cleanupEvidence?: Record<string, unknown> });
+
+      expect(failure).toMatchObject({
+        message: "terminal follow setup failed",
+        cleanupEvidence: {
+          stage: "terminal-memory-PENDING_BYTES",
+          closeAttempted: true,
+          close: { ok: true },
+          status: "FAIL"
+        }
+      });
+      expect(closeCalls).toBe(1);
+      expect(followCalls).toBe(1);
+      expect(callbackInvoked).toBe(false);
+      expect(globalRecord[key]).toMatchObject({ progress: null });
+    } finally {
+      factorySpy?.mockRestore();
       if (previous === undefined) delete globalRecord[key];
       else globalRecord[key] = previous;
     }
