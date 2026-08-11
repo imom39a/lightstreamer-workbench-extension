@@ -18,7 +18,7 @@ export type DevtoolsCdpClient = {
 
 type BrowserPanelWaitOptions<TCdp extends DevtoolsCdpClient> = {
   listTargets(): Promise<BrowserTarget[]>;
-  connect(webSocketUrl: string): Promise<TCdp>;
+  connect(target: BrowserTarget): Promise<TCdp>;
   evaluateByValue<T>(cdp: TCdp, expression: string): Promise<T>;
   timeoutMs?: number;
 };
@@ -37,12 +37,11 @@ export async function waitForWorkbenchPanel<TCdp extends DevtoolsCdpClient>(
     latestTargets = await options.listTargets();
     const devtoolsTargets = latestTargets.filter(
       (target) =>
-        target.type === "page" &&
         target.url?.startsWith("devtools://") &&
-        typeof target.webSocketDebuggerUrl === "string"
+        (target.type === "page" || target.type === "other")
     );
     for (const target of devtoolsTargets) {
-      const cdp = await options.connect(target.webSocketDebuggerUrl ?? "");
+      const cdp = await options.connect(target);
       try {
         await cdp.request("Runtime.enable");
         const selection = await selectWorkbenchPanel(cdp, options.evaluateByValue);
@@ -79,7 +78,7 @@ async function selectWorkbenchPanel<TCdp extends DevtoolsCdpClient>(
       const tabbedPane = UI.InspectorView.InspectorView.instance().tabbedPane;
       const availableTabIds = tabbedPane.tabIds();
       const panelId =
-        availableTabIds.find((id) => id.includes("LightstreamerWorkbench")) ?? null;
+        availableTabIds.find((tabId) => /LightstreamerWorkbench/i.test(tabId)) ?? null;
       if (panelId) {
         await tabbedPane.selectTab(panelId, true);
       }

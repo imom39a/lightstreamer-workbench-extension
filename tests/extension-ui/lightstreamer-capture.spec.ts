@@ -1,21 +1,24 @@
 import { expect, test } from "@playwright/test";
+import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
 
 import {
   CdpClient,
+  connectToTarget,
   evaluateByValue,
   listBrowserTargets,
   resolveChromeExecutable,
   terminateChild,
+  launchExtensionBrowserProof,
   waitForBrowserTargets,
   waitForCondition,
-  waitForDebuggingPort,
-  waitForExtensionPanelTarget
+  waitForExtensionPanelTarget,
+  waitForWorkbenchServiceWorkerTarget
 } from "../support/chrome-extension-cdp";
 import {
   formatTargets,
@@ -51,47 +54,40 @@ async function runOfficialClientPanelJourney(
 
   try {
     await access(extensionDir, constants.R_OK);
-    const chromeArguments = [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--use-mock-keychain",
-      "--auto-open-devtools-for-tabs",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profileDir}`,
-      `--disable-extensions-except=${extensionDir}`,
-      `--load-extension=${extensionDir}`,
-      `--window-size=${windowSize}`,
-      "about:blank"
-    ];
-    if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
-      chromeArguments.unshift("--headless=new");
-    }
-    chrome = spawn(chromeExecutable, chromeArguments, {
-      cwd: rootDir,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true
+    const targetUrl =
+      scenario === "high-volume-loading" ? highVolumeFixtureUrl : authoredFixtureUrl;
+    const launchResult = await launchExtensionBrowserProof({
+      rootDir,
+      chromeExecutable,
+      profileDir,
+      extensionDir,
+      targetUrl,
+      windowSize,
+      env: process.env
     });
-    chrome.stdout?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
-    chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
-
-    const debugging = await waitForDebuggingPort(profileDir, chrome);
-    latestTargets = await waitForBrowserTargets(debugging.port);
-    const inspectedTarget = latestTargets.find(
-      (target) =>
-        target.type === "page" &&
-        !target.url?.startsWith("devtools://") &&
-        typeof target.webSocketDebuggerUrl === "string"
-    );
-    expect(inspectedTarget?.webSocketDebuggerUrl).toBeTruthy();
-    pageCdp = await CdpClient.connect(inspectedTarget?.webSocketDebuggerUrl ?? "");
+    chrome = launchResult.chrome;
+    chromeLogs.push(...launchResult.chromeLogs);
+    const debugging = launchResult.debugging;
+    const inspectedTarget = await (async () => {
+      latestTargets = await waitForBrowserTargets(debugging.port, {
+        requireExtensionDevtools: true
+      });
+      const candidate = latestTargets.find(
+        (target) =>
+          target.type === "page" &&
+          !target.url?.startsWith("devtools://") &&
+          typeof target.webSocketDebuggerUrl === "string"
+      );
+      assert.ok(candidate, "Chrome should expose the inspected fixture page.");
+      return candidate;
+    })();
+    expect(inspectedTarget).toBeTruthy();
+    pageCdp = await connectToTarget(inspectedTarget, debugging.browserWebSocketUrl);
     await pageCdp.request("Page.enable");
     await pageCdp.request("Runtime.enable");
-    await pageCdp.request("Page.navigate", {
-      url: scenario === "high-volume-loading" ? highVolumeFixtureUrl : authoredFixtureUrl
-    });
+    await waitForWorkbenchServiceWorkerTarget(debugging.port);
+    await pageCdp.request("Page.bringToFront");
+    await pageCdp.request("Page.navigate", { url: targetUrl });
     if (scenario === "high-volume-loading") {
       await waitForCondition(
         pageCdp,
@@ -113,7 +109,7 @@ async function runOfficialClientPanelJourney(
 
     const panelSelection = await waitForWorkbenchPanel({
       listTargets: () => listBrowserTargets(debugging.port),
-      connect: CdpClient.connect,
+      connect: (target) => connectToTarget(target, debugging.browserWebSocketUrl),
       evaluateByValue
     });
     latestTargets = panelSelection.targets;
@@ -123,7 +119,7 @@ async function runOfficialClientPanelJourney(
 
     const panelTarget = await waitForExtensionPanelTarget(debugging.port);
     latestTargets = await listBrowserTargets(debugging.port);
-    panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl ?? "");
+    panelCdp = await connectToTarget(panelTarget, debugging.browserWebSocketUrl);
     panelCdp.on("Debugger.scriptParsed", (params) => {
       const url = (params as { url?: unknown } | undefined)?.url;
       if (typeof url === "string" && url) panelScriptUrls.push(url);

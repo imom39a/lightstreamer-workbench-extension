@@ -3,17 +3,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
 
 import {
   CdpClient,
+  connectToTarget,
   evaluateByValue,
   listBrowserTargets,
   resolveChromeExecutable,
+  launchExtensionBrowserProof,
   terminateChild,
+  waitForWorkbenchServiceWorkerTarget,
   waitForBrowserTargets,
   waitForCondition,
-  waitForDebuggingPort,
   waitForExtensionPanelTarget
 } from "./support/chrome-extension-cdp";
 import { waitForWorkbenchPanel } from "./support/devtools-panel";
@@ -49,45 +51,36 @@ async function runBrowserProof(): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-local-injection-transport-"));
   const chromeExecutable = await resolveChromeExecutable(rootDir);
   const chromeLogs: string[] = [];
-  const chrome = spawn(chromeExecutable, [
-    ...(process.env.LSEW_BROWSER_HEADLESS === "false" ? [] : ["--headless=new"]),
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--use-mock-keychain",
-    "--auto-open-devtools-for-tabs",
-    "--remote-debugging-port=0",
-    `--user-data-dir=${profileDir}`,
-    `--disable-extensions-except=${extensionDir}`,
-    `--load-extension=${extensionDir}`,
-    "--window-size=1280,900",
-    "about:blank"
-  ], {
-    cwd: rootDir,
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true
-  });
-  chrome.stdout?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
-  chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
+  let chrome: ChildProcess | null = null;
 
   let pageCdp: CdpClient | null = null;
   let devtoolsCdp: CdpClient | null = null;
   let panelCdp: CdpClient | null = null;
   try {
-    const debugging = await waitForDebuggingPort(profileDir, chrome);
-    const targets = await waitForBrowserTargets(debugging.port, { requireExtensionDevtools: true });
-    const pageTarget = targets.find(
+    const launchResult = await launchExtensionBrowserProof({
+      rootDir,
+      chromeExecutable,
+      profileDir,
+      extensionDir,
+      targetUrl: wireFixtureUrl,
+      windowSize: "1280,900",
+      env: process.env
+    });
+    chrome = launchResult.chrome;
+    chromeLogs.push(...launchResult.chromeLogs);
+    const debugging = launchResult.debugging;
+    const pageTarget = (await waitForBrowserTargets(debugging.port, { requireExtensionDevtools: true })).find(
       (target) =>
         target.type === "page" &&
         !target.url?.startsWith("devtools://") &&
         typeof target.webSocketDebuggerUrl === "string"
     );
-    assert.ok(pageTarget?.webSocketDebuggerUrl, "Chrome should expose the inspected fixture page.");
-    pageCdp = await CdpClient.connect(pageTarget.webSocketDebuggerUrl);
+    await waitForWorkbenchServiceWorkerTarget(debugging.port);
+    assert.ok(pageTarget, "Chrome should expose the inspected fixture page.");
+    pageCdp = await connectToTarget(pageTarget, debugging.browserWebSocketUrl);
     await pageCdp.request("Page.enable");
     await pageCdp.request("Runtime.enable");
+    await pageCdp.request("Page.bringToFront");
     await pageCdp.request("Page.addScriptToEvaluateOnNewDocument", {
       source: `
         globalThis.__LSEW_E2E_CAPTURES__ = [];
@@ -117,7 +110,7 @@ async function runBrowserProof(): Promise<void> {
 
     const panelSelection = await waitForWorkbenchPanel({
       listTargets: () => listBrowserTargets(debugging.port),
-      connect: CdpClient.connect,
+      connect: (target) => connectToTarget(target, debugging.browserWebSocketUrl),
       evaluateByValue
     });
     devtoolsCdp = panelSelection.cdp;
@@ -125,8 +118,7 @@ async function runBrowserProof(): Promise<void> {
     assert.equal(panelSelection.selection.selectedTabId, panelSelection.selection.panelId);
 
     const panelTarget = await waitForExtensionPanelTarget(debugging.port);
-    assert.ok(panelTarget.webSocketDebuggerUrl, "Chrome should expose the Workbench panel target.");
-    panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl);
+    panelCdp = await connectToTarget(panelTarget, debugging.browserWebSocketUrl);
     await panelCdp.request("Runtime.enable");
 
     const wireEvidenceCount = await waitForPanelEvidence(panelCdp);
@@ -169,7 +161,9 @@ async function runBrowserProof(): Promise<void> {
     panelCdp?.close();
     devtoolsCdp?.close();
     pageCdp?.close();
-    await terminateChild(chrome);
+    if (chrome) {
+      await terminateChild(chrome);
+    }
     await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }

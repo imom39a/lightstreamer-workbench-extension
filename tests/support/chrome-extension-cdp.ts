@@ -1,11 +1,27 @@
 import { Browser, Cache } from "@puppeteer/browsers";
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { delimiter, join } from "node:path";
 import WebSocket from "ws";
 
 import { formatTargets, type BrowserTarget } from "./devtools-panel";
+
+type AttachTargetResult = {
+  sessionId?: unknown;
+};
+
+type BrowserProtocolTarget = {
+  id?: string;
+  targetId?: string;
+  type?: string;
+  url?: string;
+  title?: string;
+};
+
+type TargetListResult = {
+  targetInfos?: BrowserProtocolTarget[];
+};
 
 type CdpResponse = {
   id?: number;
@@ -28,8 +44,84 @@ export type DebuggingEndpoint = {
   browserWebSocketUrl: string;
 };
 
+type ExtensionBrowserLaunchResult = {
+  chrome: ChildProcess;
+  debugging: DebuggingEndpoint;
+  chromeLogs: string[];
+};
+
+type ExtensionBrowserLaunchOptions = {
+  rootDir: string;
+  chromeExecutable: string;
+  profileDir: string;
+  extensionDir: string;
+  targetUrl: string;
+  windowSize: string;
+  env?: NodeJS.ProcessEnv;
+  extraArguments?: string[];
+};
+
+function buildChromeArguments(
+  options: {
+    headless: boolean;
+    openDevTools: boolean;
+  } & Omit<ExtensionBrowserLaunchOptions, "rootDir" | "chromeExecutable">
+): string[] {
+  return [
+    ...(options.headless ? ["--headless=new"] : []),
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--use-mock-keychain",
+    ...(options.extraArguments ?? []),
+    ...(options.openDevTools ? ["--auto-open-devtools-for-tabs"] : []),
+    "--remote-debugging-port=0",
+    `--user-data-dir=${options.profileDir}`,
+    `--disable-extensions-except=${options.extensionDir}`,
+    `--load-extension=${options.extensionDir}`,
+    `--window-size=${options.windowSize}`,
+    options.targetUrl
+  ];
+}
+
+async function launchExtensionBrowserProcess(
+  options: ExtensionBrowserLaunchOptions & {
+    headless: boolean;
+    openDevTools: boolean;
+  }
+): Promise<ExtensionBrowserLaunchResult> {
+  const chrome = spawn(
+    options.chromeExecutable,
+    buildChromeArguments(options),
+    {
+      cwd: options.rootDir,
+      env: options.env ?? process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    }
+  );
+  const chromeLogs: string[] = [];
+  chrome.stdout?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
+  chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
+  const debugging = await waitForDebuggingPort(options.profileDir, chrome);
+  return { chrome, debugging, chromeLogs };
+}
+
+export async function launchExtensionBrowserProof(
+  options: ExtensionBrowserLaunchOptions
+): Promise<ExtensionBrowserLaunchResult> {
+  const launch = await launchExtensionBrowserProcess({
+    ...options,
+    headless: process.env.LSEW_BROWSER_HEADLESS !== "false",
+    openDevTools: true
+  });
+  return launch;
+}
+
 export class CdpClient {
   private nextId = 1;
+  private readonly sessionId?: string;
   private readonly eventListeners = new Map<string, Set<(params: unknown) => void>>();
   private readonly pending = new Map<
     number,
@@ -40,7 +132,11 @@ export class CdpClient {
     }
   >();
 
-  private constructor(private readonly socket: WebSocket) {
+  private constructor(
+    private readonly socket: WebSocket,
+    sessionId?: string
+  ) {
+    this.sessionId = sessionId;
     socket.on("message", (rawMessage) => {
       const message = JSON.parse(String(rawMessage)) as CdpResponse;
       if (typeof message.id !== "number") {
@@ -74,8 +170,19 @@ export class CdpClient {
     return new CdpClient(socket);
   }
 
+  static createSessionClient(
+    baseClient: CdpClient,
+    sessionId: string,
+    _attachedTargetId?: string
+  ): CdpClient {
+    return new CdpClient(baseClient.socket, sessionId);
+  }
+
   request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     const id = this.nextId++;
+    const effectiveParams = this.sessionId
+      ? { ...params, sessionId: this.sessionId }
+      : params;
     return new Promise((resolvePromise, rejectPromise) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
@@ -84,7 +191,7 @@ export class CdpClient {
         );
       }, 15_000);
       this.pending.set(id, { resolve: resolvePromise, reject: rejectPromise, timeout });
-      this.socket.send(JSON.stringify({ id, method, params }));
+      this.socket.send(JSON.stringify({ id, method, params: effectiveParams }));
     });
   }
 
@@ -105,7 +212,76 @@ export class CdpClient {
     }
     this.pending.clear();
     this.eventListeners.clear();
+    if (this.sessionId !== undefined) {
+      try {
+        this.socket.send(
+          JSON.stringify({
+            id: this.nextId++,
+            method: "Target.detachFromTarget",
+            params: { sessionId: this.sessionId }
+          })
+        );
+      } catch {
+        // Closing a broken socket will be handled by `socket.close`.
+      }
+    }
     this.socket.close();
+  }
+}
+
+export type ConnectTargetOptions = {
+  connect?: (webSocketUrl: string) => Promise<CdpClient>;
+};
+
+export async function connectToTarget(
+  target: BrowserTarget,
+  browserWebSocketUrl: string,
+  options: ConnectTargetOptions = {}
+): Promise<CdpClient> {
+  const connect = options.connect ?? CdpClient.connect;
+  if (typeof target.webSocketDebuggerUrl === "string" && target.webSocketDebuggerUrl) {
+    try {
+      return await connect(target.webSocketDebuggerUrl);
+    } catch (error) {
+      if (!target.id && !target.url) throw error;
+    }
+  }
+
+  if (!target.id && (!target.type || !target.url)) {
+    throw new Error("Cannot attach to a CDP target without enough identity for fallback attachment.");
+  }
+
+  const browserCdp = await connect(browserWebSocketUrl);
+  try {
+    const targetResponse = (await browserCdp.request("Target.getTargets")) as TargetListResult;
+    const targetInfos = targetResponse.targetInfos ?? [];
+    const matching = targetInfos.find((candidate) => {
+      if (target.id && (candidate.targetId === target.id || candidate.id === target.id)) {
+        return true;
+      }
+      if (target.url && candidate.url && candidate.url === target.url) {
+        return true;
+      }
+      return false;
+    });
+    if (!matching) {
+      throw new Error("The requested target is no longer available to Chrome targets.");
+    }
+    const targetId = matching.targetId ?? matching.id;
+    if (!targetId) {
+      throw new Error("The requested target is missing an attachable identifier.");
+    }
+    const attachResult = (await browserCdp.request("Target.attachToTarget", {
+      targetId,
+      flatten: true
+    })) as AttachTargetResult;
+    if (typeof attachResult?.sessionId !== "string") {
+      throw new Error("Chrome DevTools Protocol target attachment did not return a session.");
+    }
+    return CdpClient.createSessionClient(browserCdp, attachResult.sessionId, targetId);
+  } catch (error) {
+    browserCdp.close();
+    throw error;
   }
 }
 
@@ -222,11 +398,18 @@ export async function waitForBrowserTargets(
   let targets: BrowserTarget[] = [];
   while (Date.now() < deadline) {
     targets = await listBrowserTargets(port);
+    const isWorkbenchServiceWorker = (target: BrowserTarget) =>
+      target.type === "service_worker" &&
+      target.url?.startsWith("chrome-extension://") &&
+      /\/((?:extension|dist)\/)?(service_worker|background)\.js$/.test(target.url);
+
     const hasPage = targets.some(
       (target) => target.type === "page" && !target.url?.startsWith("devtools://")
     );
     const hasDevtools = targets.some(
-      (target) => target.type === "page" && target.url?.startsWith("devtools://")
+      (target) =>
+        (target.type === "page" || target.type === "other") &&
+        target.url?.startsWith("devtools://")
     );
     const hasWorkbench = options.requireExtensionDevtools
       ? targets.some(
@@ -235,16 +418,32 @@ export async function waitForBrowserTargets(
             target.url?.startsWith("chrome-extension://") &&
             target.url.endsWith("/devtools.html")
         )
-      : targets.some(
-          (target) =>
-            target.type === "service_worker" &&
-            target.url?.startsWith("chrome-extension://") &&
-            target.url.endsWith("/extension/background.js")
-        );
+      : targets.some(isWorkbenchServiceWorker);
     if (hasPage && hasDevtools && hasWorkbench) return targets;
     await delay(100);
   }
   throw new Error(`Timed out waiting for DevTools targets. Observed: ${formatTargets(targets)}`);
+}
+
+export async function waitForWorkbenchServiceWorkerTarget(
+  port: number,
+  timeoutMs = 60_000
+): Promise<BrowserTarget> {
+  const deadline = Date.now() + timeoutMs;
+  let targets: BrowserTarget[] = [];
+  const isWorkbenchServiceWorker = (target: BrowserTarget) =>
+    target.type === "service_worker" &&
+    target.url?.startsWith("chrome-extension://") &&
+    /\/((?:extension|dist)\/)?(service_worker|background)\.js$/.test(target.url);
+  while (Date.now() < deadline) {
+    targets = await listBrowserTargets(port);
+    const worker = targets.find(isWorkbenchServiceWorker);
+    if (worker) return worker;
+    await delay(100);
+  }
+  throw new Error(
+    `Timed out waiting for the Workbench service worker target. Observed: ${formatTargets(targets)}`
+  );
 }
 
 export async function waitForExtensionPanelTarget(
@@ -259,8 +458,7 @@ export async function waitForExtensionPanelTarget(
       (target) =>
         target.type === "iframe" &&
         target.url?.startsWith("chrome-extension://") &&
-        target.url.endsWith("/extension/panel/index.html") &&
-        typeof target.webSocketDebuggerUrl === "string"
+        target.url.endsWith("/extension/panel/index.html")
     );
     if (panel) return panel;
     await delay(100);
