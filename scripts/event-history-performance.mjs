@@ -28,6 +28,7 @@ const outputPath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_OUTPUT ?
 const markdownPath = outputPath.replace(/\.json$/u, ".md");
 const referencePath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_REFERENCE ?? "docs/reference/event-history-performance-reference.json");
 const BROWSER_TIMEOUT_MS = 240_000;
+const STARTUP_REQUEST_TIMEOUT_MS = 5_000;
 const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
   "LSEW_EVENT_HISTORY_PERF_DEADLINE_MS",
   3_600_000
@@ -81,7 +82,7 @@ async function main() {
     chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
-    cdp = await connect(await pageTarget(debugPort, url));
+    cdp = await connect(await pageTarget(debugPort, url, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
     const environment = await cdp.request("Browser.getVersion");
     const chromeMajor = chromeMajorFromProduct(environment.product);
     if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
@@ -180,7 +181,8 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ verdict: decision.verdict, failures: decision.failures, reviewReasons: decision.reviewReasons, report: outputPath }, null, 2)}\n`);
     if (decision.verdict === "FAIL") throw new Error(`Event History performance gate failed. See ${outputPath}.`);
   } catch (error) {
-    if (error instanceof PerformanceOperationTimeout && chromeMetadata && environmentMetadata) {
+    const timeout = normalizePerformanceTimeout(error);
+    if (timeout && chromeMetadata && environmentMetadata) {
       const source = sourceState();
       const diagnostic = createTimeoutDiagnostic({
         generatedAt: new Date().toISOString(),
@@ -189,14 +191,12 @@ async function main() {
         environment: environmentMetadata,
         referencePath,
         deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
-        operation: error.status
+        operation: timeout.status
       });
-      await mkdir(dirname(outputPath), { recursive: true });
-      await writeFile(outputPath, `${JSON.stringify(diagnostic, null, 2)}\n`);
-      await writeFile(markdownPath, timeoutMarkdown(diagnostic));
+      await writeTimeoutEvidence({ outputPath, markdownPath, diagnostic });
     }
     if (chromeOutput) process.stderr.write(`\nChrome output:\n${chromeOutput.slice(-8_000)}\n`);
-    throw error;
+    throw timeout ?? error;
   } finally {
     cdp?.close();
     if (chrome) await terminateChild(chrome);
@@ -240,6 +240,34 @@ function sourceState() {
     revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
     dirty: execFileSync("git", ["status", "--porcelain"], { cwd: rootDir, encoding: "utf8" }).trim().length > 0
   };
+}
+
+export function normalizePerformanceTimeout(error) {
+  if (error instanceof PerformanceOperationTimeout) return error;
+  if (!error || typeof error !== "object" || error.name !== "HarnessStageTimeout") return null;
+  const progress = error.progress && typeof error.progress === "object" ? error.progress : null;
+  const stage = typeof error.stage === "string" ? error.stage : (typeof progress?.stage === "string" ? progress.stage : null);
+  const status = {
+    operationId: typeof progress?.operationId === "string" ? progress.operationId : null,
+    state: "rejected",
+    elapsedMs: Number.isFinite(progress?.pageElapsedMs) ? progress.pageElapsedMs : 0,
+    heartbeat: null,
+    progress,
+    error: {
+      name: error.name,
+      message: typeof error.message === "string" ? error.message : String(error),
+      stack: typeof error.stack === "string" ? error.stack : null,
+      ...(typeof error.code === "string" ? { code: error.code } : {}),
+      ...(stage !== null ? { stage } : {})
+    }
+  };
+  return new PerformanceOperationTimeout("Event History performance harness stage timed out.", status);
+}
+
+export async function writeTimeoutEvidence({ outputPath: targetOutputPath, markdownPath: targetMarkdownPath, diagnostic }) {
+  await mkdir(dirname(targetOutputPath), { recursive: true });
+  await writeFile(targetOutputPath, `${JSON.stringify(diagnostic, null, 2)}\n`);
+  await writeFile(targetMarkdownPath, timeoutMarkdown(diagnostic));
 }
 
 function isStrictlyMonotonic(values) {
@@ -319,30 +347,135 @@ class Cdp {
   close() { this.socket.close(); }
 }
 
-async function connect(url) {
-  const socket = new WebSocket(url);
-  await new Promise((resolvePromise, reject) => { socket.addEventListener("open", resolvePromise, { once: true }); socket.addEventListener("error", reject, { once: true }); });
-  return new Cdp(socket);
+export async function connect(url, options = {}) {
+  const deadlineMs = positiveFiniteStartupOption(options.deadlineMs ?? BROWSER_TIMEOUT_MS, "connect deadlineMs");
+  const requestTimeoutMs = positiveFiniteStartupOption(options.requestTimeoutMs ?? Math.min(STARTUP_REQUEST_TIMEOUT_MS, deadlineMs), "connect requestTimeoutMs");
+  const createSocket = options.createSocket ?? ((target) => new WebSocket(target));
+  const socket = createSocket(url);
+  let onOpen;
+  let onError;
+  try {
+    await withStartupTimeout(new Promise((resolvePromise, reject) => {
+      onOpen = () => resolvePromise();
+      onError = (error) => reject(error);
+      socket.addEventListener("open", onOpen, { once: true });
+      socket.addEventListener("error", onError, { once: true });
+    }), Math.min(deadlineMs, requestTimeoutMs), () => socket.close(), "Timed out waiting for CDP WebSocket open.");
+    return new Cdp(socket);
+  } catch (error) {
+    socket.close();
+    throw error;
+  } finally {
+    if (onOpen) socket.removeEventListener?.("open", onOpen);
+    if (onError) socket.removeEventListener?.("error", onError);
+  }
 }
 
-async function debuggingPort(profile, child) {
-  const deadline = Date.now() + BROWSER_TIMEOUT_MS;
+export async function debuggingPort(profile, child, options = {}) {
+  const deadlineMs = positiveFiniteStartupOption(options.deadlineMs ?? BROWSER_TIMEOUT_MS, "debuggingPort deadlineMs");
+  const requestTimeoutMs = positiveFiniteStartupOption(options.requestTimeoutMs ?? Math.min(STARTUP_REQUEST_TIMEOUT_MS, deadlineMs), "debuggingPort requestTimeoutMs");
+  const readProfileFile = options.readProfileFile ?? readFile;
+  const sleep = options.sleep ?? delay;
+  const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error("Visible Chrome exited before CDP was ready.");
-    try { const [port] = (await readFile(join(profile, "DevToolsActivePort"), "utf8")).trim().split(/\r?\n/u); return Number(port); } catch { await delay(100); }
+    try {
+      const remaining = deadline - Date.now();
+      const contents = await readFileWithStartupTimeout(
+        join(profile, "DevToolsActivePort"),
+        Math.min(requestTimeoutMs, remaining),
+        readProfileFile
+      );
+      const [port] = contents.trim().split(/\r?\n/u);
+      return Number(port);
+    } catch {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(100, remaining));
+    }
   }
-  throw new Error("Timed out waiting for visible Chrome CDP.");
+  throw new StartupTimeout("Timed out waiting for visible Chrome CDP.");
 }
 
-async function pageTarget(port, expected) {
-  const deadline = Date.now() + BROWSER_TIMEOUT_MS;
+export async function pageTarget(port, expected, options = {}) {
+  const deadlineMs = positiveFiniteStartupOption(options.deadlineMs ?? BROWSER_TIMEOUT_MS, "pageTarget deadlineMs");
+  const requestTimeoutMs = positiveFiniteStartupOption(options.requestTimeoutMs ?? Math.min(STARTUP_REQUEST_TIMEOUT_MS, deadlineMs), "pageTarget requestTimeoutMs");
+  const fetchJson = options.fetchJson ?? ((target, timeoutMs) => fetchJsonWithStartupTimeout(target, timeoutMs, options.fetchImplementation ?? fetch));
+  const sleep = options.sleep ?? delay;
+  const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    const target = targets.find((entry) => entry.type === "page" && entry.url.startsWith(expected));
-    if (target) return target.webSocketDebuggerUrl;
-    await delay(100);
+    try {
+      const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`, Math.min(requestTimeoutMs, deadline - Date.now()));
+      const target = targets.find((entry) => entry.type === "page" && entry.url.startsWith(expected));
+      if (target) return target.webSocketDebuggerUrl;
+    } catch {
+      // Retry until the bounded startup deadline; a hung fetch/body is not allowed to escape it.
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(100, remaining));
   }
-  throw new Error("Timed out waiting for visible performance page.");
+  throw new StartupTimeout("Timed out waiting for visible performance page.");
+}
+
+class StartupTimeout extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "StartupTimeout";
+  }
+}
+
+function positiveFiniteStartupOption(value, name) {
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive finite number.`);
+  return value;
+}
+
+function withStartupTimeout(promise, timeoutMs, onTimeout, message) {
+  if (timeoutMs <= 0) return Promise.reject(new StartupTimeout(message));
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try { onTimeout(); } catch { /* Preserve the startup timeout if cleanup itself fails. */ }
+        reject(new StartupTimeout(message));
+      }, timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function readFileWithStartupTimeout(filePath, timeoutMs, readProfileFile) {
+  const controller = new AbortController();
+  try {
+    return await withStartupTimeout(
+      readProfileFile(filePath, { encoding: "utf8", signal: controller.signal }),
+      timeoutMs,
+      () => controller.abort(),
+      `Timed out reading ${filePath}.`
+    );
+  } finally {
+    controller.abort();
+  }
+}
+
+async function fetchJsonWithStartupTimeout(url, timeoutMs, fetchImplementation) {
+  const controller = new AbortController();
+  try {
+    const response = await withStartupTimeout(
+      fetchImplementation(url, { signal: controller.signal }),
+      timeoutMs,
+      () => controller.abort(),
+      `Timed out fetching ${url}.`
+    );
+    return await withStartupTimeout(
+      response.json(),
+      timeoutMs,
+      () => controller.abort(),
+      `Timed out reading ${url} response.`
+    );
+  } finally {
+    controller.abort();
+  }
 }
 
 async function waitForHarness(cdp) {
@@ -388,4 +521,4 @@ async function terminateChild(child) {
   });
 }
 
-await main();
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) await main();
