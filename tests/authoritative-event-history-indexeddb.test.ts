@@ -1363,42 +1363,42 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(await hasLegacyMarker(secondLegacyName, "owned-second", "legacy-second")).toBe(false);
   });
 
-  it("sweeps pre-ticket07 known legacy databases while preserving newer and unrecognized names", async () => {
+  it("sweeps pre-ticket07 legacy databases using descriptor version and preserves newer ones", async () => {
     const panelSessionId = "ownership-cleanup-pre-ticket07";
-    const recognizedLegacyName = "lsew-history-v1-ownership-pre-ticket07";
-    const newerLegacyName = "lsew-history-v3-ownership-pre-ticket07";
-    const unrecognizedLegacyName = "lsew-history-ownership-pre-ticket07";
+    const legacyName = "lsew-history-foo";
+    const newerLegacyName = "lsew-history-bar";
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await Promise.all([
-      createLegacyJournalByName(recognizedLegacyName, 1, "owned", "legacy-old"),
-      createLegacyJournalByName(newerLegacyName, 3, "owned", "legacy-new"),
-      createLegacyJournalByName(unrecognizedLegacyName, 1, "owned", "legacy-unknown")
+      createLegacyJournalByName(legacyName, 1, "owned", "legacy-old"),
+      createLegacyJournalByName(newerLegacyName, 3, "owned", "legacy-new")
     ]);
 
     const runtime: AuthoritativeEventDatabaseRuntime = {
       listDatabases: vi.fn(async () => [
-        { name: recognizedLegacyName, version: 1 },
-        { name: newerLegacyName, version: 3 },
-        { name: unrecognizedLegacyName, version: 1 }
+        { name: legacyName, version: 1 },
+        { name: newerLegacyName, version: 3 }
       ]),
       requestLock: vi.fn(async (_name, _options, callback) => callback())
     };
 
     const history = await openEventHistory({ panelSessionId, runtime });
+    let status: unknown;
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") {
+        status = publication.status;
+      }
+    });
     await history.close();
 
     expect((runtime.requestLock as ReturnType<typeof vi.fn>).mock.calls.map((entry) => entry[0])).toContain(
-      legacyOwnerLock(recognizedLegacyName)
+      legacyOwnerLock(legacyName)
     );
     expect((runtime.requestLock as ReturnType<typeof vi.fn>).mock.calls.map((entry) => entry[0])).not.toContain(
       legacyOwnerLock(newerLegacyName)
     );
-    expect((runtime.requestLock as ReturnType<typeof vi.fn>).mock.calls.map((entry) => entry[0])).not.toContain(
-      legacyOwnerLock(unrecognizedLegacyName)
-    );
-    expect(await hasLegacyMarker(recognizedLegacyName, "owned", "legacy-old")).toBe(false);
+    expect(await hasLegacyMarker(legacyName, "owned", "legacy-old")).toBe(false);
     expect(await hasLegacyMarker(newerLegacyName, "owned", "legacy-new")).toBe(true);
-    expect(await hasLegacyMarker(unrecognizedLegacyName, "owned", "legacy-unknown")).toBe(true);
+    expect(status).toMatchObject({ fallback: "UNKNOWN_NEWER_SCHEMA", capacity: { tier: "LOWER" } });
   });
 
   it("normalizes panel-session identifiers when matching crash residue journals", async () => {
