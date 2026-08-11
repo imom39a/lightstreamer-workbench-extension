@@ -10,6 +10,7 @@ import {
   CdpClient,
   evaluateByValue,
   listBrowserTargets,
+  readExtensionManifest,
   resolveChromeExecutable,
   terminateChild,
   waitForBrowserTargets,
@@ -51,6 +52,7 @@ async function runOfficialClientPanelJourney(
 
   try {
     await access(extensionDir, constants.R_OK);
+    const extensionManifest = await readExtensionManifest(extensionDir);
     const chromeArguments = [
       "--no-sandbox",
       "--disable-dev-shm-usage",
@@ -78,7 +80,9 @@ async function runOfficialClientPanelJourney(
     chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
 
     const debugging = await waitForDebuggingPort(profileDir, chrome);
-    latestTargets = await waitForBrowserTargets(debugging.port);
+    latestTargets = await waitForBrowserTargets(debugging.port, {
+      workbenchManifest: extensionManifest
+    });
     const inspectedTarget = latestTargets.find(
       (target) =>
         target.type === "page" &&

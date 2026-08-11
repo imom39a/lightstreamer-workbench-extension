@@ -23,10 +23,36 @@ type RuntimeEvaluation = {
   };
 };
 
+export type ExtensionManifest = {
+  manifest_version?: number;
+  name?: string;
+  version?: string;
+  devtools_page?: string;
+  background?: {
+    service_worker?: string;
+    type?: string;
+  };
+  content_scripts?: unknown[];
+  [key: string]: unknown;
+};
+
+export type CdpRequestClient = {
+  request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+};
+
+type ExtensionTargetDiscoveryOptions = {
+  connect(webSocketUrl: string): Promise<CdpRequestClient & { close(): void }>;
+  evaluateByValue<T>(cdp: CdpRequestClient, expression: string): Promise<T>;
+};
+
 export type DebuggingEndpoint = {
   port: number;
   browserWebSocketUrl: string;
 };
+
+export async function readExtensionManifest(extensionDir: string): Promise<ExtensionManifest> {
+  return JSON.parse(await readFile(join(extensionDir, "manifest.json"), "utf8")) as ExtensionManifest;
+}
 
 export class CdpClient {
   private nextId = 1;
@@ -109,10 +135,7 @@ export class CdpClient {
   }
 }
 
-export async function evaluateByValue<T>(
-  cdp: CdpClient,
-  expression: string
-): Promise<T> {
+export async function evaluateByValue<T>(cdp: CdpClient, expression: string): Promise<T> {
   const evaluation = (await cdp.request("Runtime.evaluate", {
     expression,
     awaitPromise: true,
@@ -214,9 +237,62 @@ export async function listBrowserTargets(port: number): Promise<BrowserTarget[]>
   return (await response.json()) as BrowserTarget[];
 }
 
+export async function findWorkbenchServiceWorkerTarget(
+  targets: readonly BrowserTarget[],
+  expectedManifest: ExtensionManifest,
+  options: ExtensionTargetDiscoveryOptions
+): Promise<BrowserTarget | null> {
+  const candidates = targets.filter(
+    (target) =>
+      target.type === "service_worker" &&
+      target.url?.startsWith("chrome-extension://") &&
+      typeof target.webSocketDebuggerUrl === "string"
+  );
+
+  for (const candidate of candidates) {
+    let cdp: (CdpRequestClient & { close(): void }) | null = null;
+    try {
+      cdp = await options.connect(candidate.webSocketDebuggerUrl!);
+      await cdp.request("Runtime.enable");
+      const runtimeManifest = await options.evaluateByValue<ExtensionManifest>(
+        cdp,
+        "chrome.runtime.getManifest()"
+      );
+      if (isWorkbenchManifest(runtimeManifest, expectedManifest)) return candidate;
+    } catch {
+      // A newly-created or unrelated extension target is not Workbench.
+    } finally {
+      cdp?.close();
+    }
+  }
+  return null;
+}
+
+export function isWorkbenchManifest(
+  actualManifest: unknown,
+  expectedManifest: ExtensionManifest
+): actualManifest is ExtensionManifest {
+  if (!isRecord(actualManifest) || !isRecord(actualManifest.background)) return false;
+  if (typeof actualManifest.background.service_worker !== "string") return false;
+  return (
+    actualManifest.manifest_version === expectedManifest.manifest_version &&
+    actualManifest.name === expectedManifest.name &&
+    actualManifest.version === expectedManifest.version &&
+    actualManifest.devtools_page === expectedManifest.devtools_page &&
+    stableSerialize(actualManifest.content_scripts ?? []) ===
+      stableSerialize(expectedManifest.content_scripts ?? [])
+  );
+}
+
 export async function waitForBrowserTargets(
   port: number,
-  options: { requireExtensionDevtools?: boolean; timeoutMs?: number } = {}
+  options: {
+    requireExtensionDevtools?: boolean;
+    timeoutMs?: number;
+    workbenchManifest?: ExtensionManifest;
+    connect?: ExtensionTargetDiscoveryOptions["connect"];
+    evaluateByValue?: ExtensionTargetDiscoveryOptions["evaluateByValue"];
+  } = {}
 ): Promise<BrowserTarget[]> {
   const deadline = Date.now() + (options.timeoutMs ?? 10_000);
   let targets: BrowserTarget[] = [];
@@ -226,21 +302,30 @@ export async function waitForBrowserTargets(
       (target) => target.type === "page" && !target.url?.startsWith("devtools://")
     );
     const hasDevtools = targets.some(
-      (target) => target.type === "page" && target.url?.startsWith("devtools://")
+      (target) =>
+        (target.type === "page" || target.type === "other") &&
+        target.url?.startsWith("devtools://")
     );
+    const workbenchWorker = options.workbenchManifest
+      ? await findWorkbenchServiceWorkerTarget(targets, options.workbenchManifest, {
+          connect: options.connect ?? CdpClient.connect,
+          evaluateByValue:
+            options.evaluateByValue ??
+            ((cdp, expression) => evaluateByValue(cdp as CdpClient, expression))
+        })
+      : null;
     const hasWorkbench = options.requireExtensionDevtools
-      ? targets.some(
-          (target) =>
-            target.type === "iframe" &&
-            target.url?.startsWith("chrome-extension://") &&
-            target.url.endsWith("/devtools.html")
+      ? Boolean(
+          workbenchWorker &&
+            targets.some(
+              (target) =>
+                target.type === "iframe" &&
+                target.url?.startsWith("chrome-extension://") &&
+                target.url.endsWith("/devtools.html") &&
+                extensionOrigin(target.url) === extensionOrigin(workbenchWorker.url)
+            )
         )
-      : targets.some(
-          (target) =>
-            target.type === "service_worker" &&
-            target.url?.startsWith("chrome-extension://") &&
-            target.url.endsWith("/extension/background.js")
-        );
+      : Boolean(workbenchWorker);
     if (hasPage && hasDevtools && hasWorkbench) return targets;
     await delay(100);
   }
@@ -290,6 +375,30 @@ function commandCandidatesFromPath(): string[] {
   return (process.env.PATH ?? "")
     .split(delimiter)
     .flatMap((directory) => names.map((name) => join(directory, name)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function extensionOrigin(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {

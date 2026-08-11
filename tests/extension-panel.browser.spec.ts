@@ -11,6 +11,7 @@ import {
   CdpClient,
   evaluateByValue,
   listBrowserTargets,
+  readExtensionManifest,
   resolveChromeExecutable,
   terminateChild,
   waitForBrowserTargets,
@@ -43,6 +44,7 @@ async function runExtensionPanelSmoke(): Promise<void> {
 
   try {
     await access(extensionDir, constants.R_OK);
+    const extensionManifest = await readExtensionManifest(extensionDir);
     inspectedPage = await startInspectedPage();
     const fixtureUrl = inspectedPage.url;
     const chromeArguments = [
@@ -72,7 +74,7 @@ async function runExtensionPanelSmoke(): Promise<void> {
     chrome.stderr?.on("data", (chunk: Buffer) => chromeLogs.push(String(chunk)));
 
     const debugging = await waitForDebuggingPort(profileDir, chrome);
-    await waitForBrowserTargets(debugging.port);
+    await waitForBrowserTargets(debugging.port, { workbenchManifest: extensionManifest });
     const panelSelection = await waitForWorkbenchPanel({
       listTargets: () => listBrowserTargets(debugging.port),
       connect: CdpClient.connect,

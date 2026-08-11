@@ -9,6 +9,7 @@ import {
   CdpClient,
   evaluateByValue,
   listBrowserTargets,
+  readExtensionManifest,
   resolveChromeExecutable,
   terminateChild,
   waitForBrowserTargets,
@@ -77,7 +78,11 @@ async function runBrowserProof(): Promise<void> {
   let panelCdp: CdpClient | null = null;
   try {
     const debugging = await waitForDebuggingPort(profileDir, chrome);
-    const targets = await waitForBrowserTargets(debugging.port, { requireExtensionDevtools: true });
+    const extensionManifest = await readExtensionManifest(extensionDir);
+    const targets = await waitForBrowserTargets(debugging.port, {
+      requireExtensionDevtools: true,
+      workbenchManifest: extensionManifest
+    });
     const pageTarget = targets.find(
       (target) =>
         target.type === "page" &&
