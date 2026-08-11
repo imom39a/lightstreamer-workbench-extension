@@ -215,15 +215,26 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     for (const capture of liveCaptures) {
       await evaluateByValue(pageCdp, `window.postMessage(${JSON.stringify(capture)}, "*")`);
     }
-    for (const connectedPanel of panelCdps) {
-      await waitForCondition(
-        connectedPanel,
-        `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
-          document.body.innerText.includes('cdp-same-tab-three')`,
-        "both same-tab panel instances to receive the live Capture",
-        SMOKE_TIMEOUT_MS
-      );
-    }
+    // Chrome can suspend the inactive DevTools panel's event loop. The page
+    // broadcast remains single-shot; selecting each already-registered panel
+    // only gives its production bridge/runtime a chance to drain the queued
+    // message before asserting both independent journals.
+    await selectWorkbenchTab(devtoolsFrontendCdp, selection.panelId);
+    await waitForCondition(
+      panelCdps[0]!,
+      `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
+        document.body.innerText.includes('cdp-same-tab-three')`,
+      "the first same-tab panel instance to receive the broadcast Capture",
+      SMOKE_TIMEOUT_MS
+    );
+    await selectWorkbenchTab(devtoolsFrontendCdp, secondPanelId);
+    await waitForCondition(
+      panelCdps[1]!,
+      `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
+        document.body.innerText.includes('cdp-same-tab-three')`,
+      "the second same-tab panel instance to receive the broadcast Capture",
+      SMOKE_TIMEOUT_MS
+    );
 
     const proofs = await Promise.all(
       panelCdps.map((connectedPanel) =>
