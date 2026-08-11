@@ -172,7 +172,7 @@ describe("bounded atomic topology synchronization", () => {
           captureSequence: 12,
           pageEpoch: "page-a",
           client: { id: "client-a" },
-          subscription: { id: "checkpoint" }
+          subscription: { id: "after-cutoff" }
         })
       ])
     });

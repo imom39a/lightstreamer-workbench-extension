@@ -12,7 +12,7 @@ import type { TopologyCheckpointEvidenceCandidate } from "./event-history-author
 
 export type TopologySyncResult =
   | { accepted: true; duplicate?: true; candidate?: TopologyCheckpointEvidenceCandidate }
-  | { accepted: false; reason: string };
+  | { accepted: false; reason: string; candidate?: undefined };
 
 export type TopologySyncStatus = {
   state: "idle" | "staging" | "complete" | "partial" | "retired";
@@ -261,9 +261,10 @@ export function createTopologySyncCoordinator<T>(
     }
 
     let replacement: T;
+    let tail: TopologyObservation[] = [];
     try {
       replacement = adapter.hydrate(activePageEpoch, records);
-      const tail = [...stage.live.values()]
+      tail = [...stage.live.values()]
         .map(({ observation }) => observation)
         .sort((left, right) => left.captureSequence - right.captureSequence);
       for (const observation of tail) {
@@ -426,12 +427,21 @@ function normalizeTopologyAbsoluteRecords(
 function normalizeTopologyObservations(
   observations: readonly TopologyObservation[]
 ): readonly TopologyObservation[] {
-  return observations
-    .map((observation) => ({
+  return [...observations]
+    .sort((left, right) => {
+      if (left.captureSequence !== right.captureSequence) {
+        return left.captureSequence - right.captureSequence;
+      }
+      if (left.kind !== right.kind) {
+        return left.kind.localeCompare(right.kind);
+      }
+      return String(left.subscription?.id ?? "").localeCompare(String(right.subscription?.id ?? ""));
+    })
+    .map((observation: TopologyObservation) => ({
       ...observation,
       values: observation.values ? { ...observation.values } : undefined
     }))
-    .map((observation) => deepFreeze(observation));
+    .map((observation: TopologyObservation) => deepFreeze(observation));
 }
 
 function isValidAbsoluteRecordSet(
