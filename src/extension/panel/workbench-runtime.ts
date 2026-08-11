@@ -7,6 +7,7 @@ import {
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
   createInMemoryEventHistory,
+  type EvidenceRef,
   type EventHistory,
   type HistoryPublication
 } from "../../core/event-history-authoritative";
@@ -68,6 +69,8 @@ export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 export type WorkbenchCaptureSnapshot = Readonly<{
   operation: "RUNNING" | "IDLE" | "STOPPED";
   coverage: "USEFUL" | "LIMITED" | "UNAVAILABLE";
+  firstMissingEventId: string | null;
+  committedEvidenceBoundary: EvidenceRef | null;
   detail?: string;
   recovery?: string;
 }>;
@@ -578,6 +581,7 @@ class Runtime implements WorkbenchRuntime {
     json: string;
     filename: string;
   } | null = null;
+  private exportPreparationGeneration = 0;
 
   constructor(options: WorkbenchRuntimeOptions) {
     this.history = options.history ?? createInMemoryEventHistory();
@@ -644,7 +648,7 @@ class Runtime implements WorkbenchRuntime {
         this.scopeId = command.scopeId ?? "page";
         this.scopeFocusedNodeId = command.scopeId ?? "page";
         this.clearedSelectionEventId = null;
-        this.preparedExport = null;
+        this.invalidatePreparedExport();
         this.refreshEvidence("scope");
         return;
       case "set-scope-focus":
@@ -674,12 +678,12 @@ class Runtime implements WorkbenchRuntime {
             TOPOLOGY_SENSITIVE_CATEGORIES.includes(category)
           )
         );
-        this.preparedExport = null;
+        this.invalidatePreparedExport();
         this.publish();
         return;
       case "set-export-complete-evidence":
         this.exportCompleteEvidence = command.complete;
-        this.preparedExport = null;
+        this.invalidatePreparedExport();
         this.publish();
         return;
       case "set-filters":
@@ -970,7 +974,7 @@ class Runtime implements WorkbenchRuntime {
   private applyTopologySyncFrame(frame: TopologySyncFrame): void {
     this.currentPageEpoch = frame.pageEpoch;
     const result = this.topologyProjection.applySyncFrame(frame);
-    this.preparedExport = null;
+    this.invalidatePreparedExport();
     this.topologyCoverage = frame.coverage.status === "partial" ? "LIMITED" : "USEFUL";
     if (!result.accepted) {
       this.topologyCoverage = "LIMITED";
@@ -1168,22 +1172,44 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private prepareExport(): void {
-    const topology = this.topologyProjection.snapshot();
-    const scopedTopology = topologyStateForScope(topology, this.scopeId);
-    const document = createTopologyStructuredSnapshot(
-      scopedTopology,
-      this.topologyProjection.status(),
-      {
-        retainedEventCount: this.storeStats.retained,
-        completeEvidence: this.exportCompleteEvidence,
-        redact: this.exportRedactions
-      }
+    const generation = ++this.exportPreparationGeneration;
+    void this.evidencePipeline.read({ order: "asc" }).then(
+      (result) => {
+        if (this.disposed || generation !== this.exportPreparationGeneration || !result.ok) return;
+        const boundary = result.value.committedEvidenceBoundary;
+        const boundaryEvidence = boundary
+          ? result.value.evidence.filter(
+              (entry) =>
+                entry.intervalId === boundary.intervalId &&
+                entry.sequence <= boundary.sequence
+            )
+          : [];
+        const projection = createTopologyProjection();
+        projection.ingestCommittedEvidence(boundaryEvidence);
+        const scopedTopology = topologyStateForScope(projection.snapshot(), this.scopeId);
+        const document = createTopologyStructuredSnapshot(
+          scopedTopology,
+          projection.status(),
+          {
+            retainedEventCount: result.value.total,
+            completeEvidence: this.exportCompleteEvidence,
+            redact: this.exportRedactions
+          }
+        );
+        this.preparedExport = {
+          document,
+          json: serializeTopologySnapshot(document),
+          filename: topologySnapshotFilename(document, "json")
+        };
+        this.publish();
+      },
+      () => undefined
     );
-    this.preparedExport = {
-      document,
-      json: serializeTopologySnapshot(document),
-      filename: topologySnapshotFilename(document, "json")
-    };
+  }
+
+  private invalidatePreparedExport(): void {
+    this.exportPreparationGeneration += 1;
+    this.preparedExport = null;
   }
 
   private setVisible(visible: boolean): void {
@@ -1212,7 +1238,7 @@ class Runtime implements WorkbenchRuntime {
       }
       const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
       if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
-      this.preparedExport = null;
+      this.invalidatePreparedExport();
       if (this.visible) this.schedulePassivePublication();
       else this.hiddenDirty = true;
       return;
@@ -1227,7 +1253,7 @@ class Runtime implements WorkbenchRuntime {
     this.storeStats.retained += 1;
     this.storeStats.totalAppended += 1;
     this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
-    this.preparedExport = null;
+    this.invalidatePreparedExport();
     if (!this.visible) {
       this.hiddenDirty = true;
       return;
@@ -1236,20 +1262,44 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private handleHistoryPublication(publication: HistoryPublication): void {
-    if (this.disposed || this.captureBoundary) return;
+    if (this.disposed) return;
     let reason: string | undefined;
+    const terminal = publication.type === "terminal"
+      ? publication.terminal
+      : publication.type === "status"
+        ? publication.status.terminal
+        : undefined;
     if (publication.type === "status") {
       if (publication.status.phase !== "DRAINING_TO_STOP" && publication.status.phase !== "STOPPED") {
         return;
       }
-      reason = publication.problem?.reason ?? publication.status.terminal?.reason;
+      reason = publication.problem?.reason ?? terminal?.reason;
     } else if (publication.type === "terminal") {
       reason = publication.terminal.reason;
     }
     if (!reason) return;
+    const exactBoundary = terminal?.committedEvidenceBoundary ??
+      (publication.type === "status" ? publication.status.committedEvidenceBoundary : null);
+    const exactFirstMissingEventId = terminal?.firstMissingEventId ?? null;
+    if (this.captureBoundary) {
+      if (
+        this.captureBoundary.committedEvidenceBoundary !== exactBoundary ||
+        this.captureBoundary.firstMissingEventId !== exactFirstMissingEventId
+      ) {
+        this.captureBoundary = Object.freeze({
+          ...this.captureBoundary,
+          committedEvidenceBoundary: exactBoundary,
+          firstMissingEventId: exactFirstMissingEventId
+        });
+        this.publish();
+      }
+      return;
+    }
     this.captureBoundary = Object.freeze({
       operation: "STOPPED",
       coverage: "LIMITED",
+      firstMissingEventId: exactFirstMissingEventId,
+      committedEvidenceBoundary: exactBoundary,
       detail: `Capture stopped at the committed Evidence boundary because ${reason}.`,
       recovery: "Reload the inspected page with DevTools open"
     });
@@ -1944,7 +1994,7 @@ class Runtime implements WorkbenchRuntime {
     if (this.currentScopeStructure(state).descriptorById.has(this.scopeId ?? "page")) return;
     this.scopeId = "page";
     this.scopeFocusedNodeId = "page";
-    this.preparedExport = null;
+    this.invalidatePreparedExport();
     this.invalidateEvidenceCopy();
   }
 
@@ -2070,6 +2120,8 @@ class Runtime implements WorkbenchRuntime {
     return Object.freeze({
       operation: boundary?.operation ?? this.captureOverride.operation ?? operation,
       coverage: boundary?.coverage ?? this.captureOverride.coverage ?? this.topologyCoverage ?? "USEFUL",
+      firstMissingEventId: boundary?.firstMissingEventId ?? null,
+      committedEvidenceBoundary: boundary?.committedEvidenceBoundary ?? null,
       ...(boundary?.detail
         ? { detail: boundary.detail }
         : this.captureOverride.detail

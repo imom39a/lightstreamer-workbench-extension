@@ -110,11 +110,17 @@ describe("history-impl-09 runtime cutover", () => {
     commit.resolve();
     await settle();
     expect(runtime.getSnapshot().evidence.total).toBe(1);
-    expect(degradedCaptures).toHaveLength(1);
+    expect(degradedCaptures).toHaveLength(2);
     expect(degradedCaptures[0]).toMatchObject({
       operation: "STOPPED",
       coverage: "LIMITED",
       detail: expect.stringContaining("RETAINED_BYTE_LIMIT")
+    });
+    expect(degradedCaptures[1]).toMatchObject({
+      operation: "STOPPED",
+      coverage: "LIMITED",
+      firstMissingEventId: "event-2",
+      committedEvidenceBoundary: { sequence: 1, eventId: "event-1" }
     });
     expect(stopPublications).toHaveLength(3);
     expect(stopPublications[0]).toMatchObject({

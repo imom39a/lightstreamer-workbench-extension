@@ -73,7 +73,12 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
     version: 0,
     visible: true,
     captureStatus: "capturing",
-    capture: { operation: "RUNNING", coverage: "USEFUL" },
+    capture: {
+      operation: "RUNNING",
+      coverage: "USEFUL",
+      firstMissingEventId: null,
+      committedEvidenceBoundary: null
+    },
     theme: "dark",
     evidence: {
       loading: false,

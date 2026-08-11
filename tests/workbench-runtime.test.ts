@@ -1178,6 +1178,7 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "set-export-complete-evidence", complete: true });
     runtime.dispatch({ type: "export-scope" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().export.json).toContain("large-1000");
     runtime.dispose();
   });
@@ -1536,6 +1537,7 @@ describe("WorkbenchRuntime", () => {
     });
     runtime.dispatch({ type: "set-export-complete-evidence", complete: true });
     runtime.dispatch({ type: "export-scope" });
+    await flushStoreNotifications();
 
     const exportState = runtime.getSnapshot().export;
     expect(exportState.activeScopeId).toBe("page");
@@ -2257,28 +2259,29 @@ describe("WorkbenchRuntime", () => {
     await flushStoreNotifications();
     const scopeNodes = runtime.getSnapshot().scope.nodes;
 
-    const assertExport = (scopeId: string) => {
+    const assertExport = async (scopeId: string) => {
       runtime.dispatch({ type: "set-scope", scopeId });
       runtime.dispatch({ type: "export-scope" });
+      await flushStoreNotifications();
       return runtime.getSnapshot().export.document;
     };
     const clientScope = scopeNodes.find(
       ({ kind, label }) => kind === "client" && label === "client-export-a"
     );
-    const clientDocument = assertExport(clientScope?.id ?? "page");
+    const clientDocument = await assertExport(clientScope?.id ?? "page");
     expect(clientDocument?.clients.map(({ id }) => id)).toEqual(["client-export-a"]);
 
     const subscriptionScope = scopeNodes.find(
       ({ kind, label }) => kind === "subscription" && label === "subscription-export-a"
     );
-    const subscriptionDocument = assertExport(subscriptionScope?.id ?? "page");
+    const subscriptionDocument = await assertExport(subscriptionScope?.id ?? "page");
     expect(subscriptionDocument?.overview.subscriptionCount).toBe(1);
     expect(subscriptionDocument?.clients[0]?.sessions[0]?.subscriptions).toHaveLength(1);
 
     const itemScope = scopeNodes.find(
       ({ kind, label }) => kind === "item" && label.includes("item-export-a")
     );
-    const itemDocument = assertExport(itemScope?.id ?? "page");
+    const itemDocument = await assertExport(itemScope?.id ?? "page");
     expect(itemDocument?.overview.itemCount).toBe(1);
     expect(itemDocument?.clients[0]?.sessions[0]?.subscriptions[0]?.items).toHaveLength(1);
     expect(itemDocument?.privacy.credentialsExcluded).toBe(true);
