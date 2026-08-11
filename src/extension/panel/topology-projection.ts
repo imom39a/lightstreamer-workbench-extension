@@ -19,6 +19,7 @@ import {
   type CommittedEvidence,
   type TopologyCheckpointEvidenceCandidate
 } from "../../core/event-history-authoritative";
+import { createTopologyCheckpointEvidenceCandidate } from "./topology-checkpoint-evidence-codec";
 import {
   createTopologyStateIndex,
   type TopologyClient,
@@ -53,6 +54,7 @@ export type TopologyProjectionStatus = {
 export type TopologyProjectionResult = {
   accepted: boolean;
   resetConsumerState: boolean;
+  candidate?: TopologyCheckpointEvidenceCandidate;
 };
 
 export type TopologyProjection = {
@@ -91,6 +93,12 @@ export function createTopologyProjection(): TopologyProjection {
   });
   let generation = 0;
   let syncCoordinator = createTopologySyncCoordinator("panel:legacy", syncAdapter);
+  let stagedSync: {
+    metadata: TopologySyncFrame;
+    frames: TopologySyncFrame[];
+    observations: Map<number, TopologyObservation>;
+  } | undefined;
+  let stagedSyncStatus: TopologySyncStatus = { state: "idle", retry: false };
   let semanticActive = false;
   let coverage: TopologyCoverage | null = null;
   const retiredPageEpochs = new Set<string>();
@@ -160,6 +168,13 @@ export function createTopologyProjection(): TopologyProjection {
     trimMap(retainedSemanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
     semanticEvents.set(key, event);
     trimMap(semanticEvents, MAX_RETAINED_SEMANTIC_EVENTS);
+    if (
+      stagedSync &&
+      observation.pageEpoch === stagedSync.metadata.pageEpoch &&
+      observation.captureSequence > stagedSync.metadata.cutoffCaptureSequence
+    ) {
+      stagedSync.observations.set(observation.captureSequence, observation);
+    }
     syncCoordinator.applyLive(observation);
     invalidateMaterializedState(scopeStructureMayHaveChanged);
     return activation;
@@ -224,15 +239,15 @@ export function createTopologyProjection(): TopologyProjection {
         (left, right) =>
           (left.topology?.captureSequence ?? 0) - (right.topology?.captureSequence ?? 0)
       );
-    const beginResult = applySyncFrame(reconstructed.begin);
+    const beginResult = applyCommittedSyncFrame(reconstructed.begin);
     if (!beginResult.accepted) return beginResult;
     for (const chunk of reconstructed.chunks) {
-      const chunkResult = applySyncFrame(chunk);
+      const chunkResult = applyCommittedSyncFrame(chunk);
       if (!chunkResult.accepted) {
         return chunkResult;
       }
     }
-    const completeResult = applySyncFrame(reconstructed.complete);
+    const completeResult = applyCommittedSyncFrame(reconstructed.complete);
     if (!completeResult.accepted) {
       return completeResult;
     }
@@ -327,6 +342,97 @@ export function createTopologyProjection(): TopologyProjection {
   }
 
   function applySyncFrame(frame: TopologySyncFrame): TopologyProjectionResult {
+    const result = stageSyncFrame(frame);
+    if (!result.accepted || !result.candidate) {
+      return result;
+    }
+    return { ...result, candidate: result.candidate };
+  }
+
+  function stageSyncFrame(frame: TopologySyncFrame): TopologyProjectionResult {
+    const reject = (reason: string): TopologyProjectionResult => {
+      stagedSyncStatus = { state: "partial", retry: true, reason };
+      return { accepted: false, resetConsumerState: false };
+    };
+
+    if (frame.type === TOPOLOGY_SYNC_BEGIN) {
+      if (stagedSync) {
+        return sameSyncFrame(stagedSync.frames[0], frame)
+          ? { accepted: true, resetConsumerState: false }
+          : reject("conflicting-stage");
+      }
+      stagedSync = {
+        metadata: frame,
+        frames: [frame],
+        observations: new Map()
+      };
+      stagedSyncStatus = { state: "staging", retry: false, coverage: frame.coverage };
+      coverage = frame.coverage;
+      return { accepted: true, resetConsumerState: false };
+    }
+
+    if (!stagedSync || !sameSyncMetadata(stagedSync.metadata, frame)) {
+      return reject(
+        frame.type === TOPOLOGY_SYNC_CHUNK
+          ? "unknown-or-conflicting-chunk"
+          : "unknown-or-conflicting-complete"
+      );
+    }
+
+    if (frame.type === TOPOLOGY_SYNC_CHUNK) {
+      const previous = stagedSync.frames.find(
+        (candidate) =>
+          candidate.type === TOPOLOGY_SYNC_CHUNK &&
+          candidate.chunkIndex === frame.chunkIndex
+      );
+      if (previous) {
+        return sameSyncFrame(previous, frame)
+          ? { accepted: true, resetConsumerState: false }
+          : reject("conflicting-duplicate-chunk");
+      }
+      stagedSync.frames.push(frame);
+      return { accepted: true, resetConsumerState: false };
+    }
+
+    const previousComplete = stagedSync.frames.find(
+      (candidate) => candidate.type === TOPOLOGY_SYNC_COMPLETE
+    );
+    if (previousComplete) {
+      return sameSyncFrame(previousComplete, frame)
+        ? { accepted: true, resetConsumerState: false }
+        : reject("conflicting-completed-sync");
+    }
+
+    stagedSync.frames.push(frame);
+    const encoded = createTopologyCheckpointEvidenceCandidate(
+      stagedSync.frames,
+      [...stagedSync.observations.values()]
+    );
+    stagedSync = undefined;
+    if (!encoded.ok) {
+      stagedSyncStatus = {
+        state: "partial",
+        retry: true,
+        reason: encoded.rejection.code,
+        coverage: frame.coverage
+      };
+      return { accepted: false, resetConsumerState: false };
+    }
+
+    stagedSyncStatus = {
+      state: frame.coverage.status === "partial" ? "partial" : "complete",
+      retry: frame.coverage.status === "partial",
+      ...(frame.coverage.status === "partial" ? { coverage: frame.coverage } : {})
+    };
+    coverage = frame.coverage;
+    return {
+      accepted: true,
+      resetConsumerState: false,
+      candidate: encoded.value
+    };
+  }
+
+  function applyCommittedSyncFrame(frame: TopologySyncFrame): TopologyProjectionResult {
     sensitiveStructureRevision += 1;
     const activation = activatePage(frame.pageEpoch);
     if (!activation.accepted) {
@@ -460,6 +566,8 @@ export function createTopologyProjection(): TopologyProjection {
       `panel:legacy:${generation}`,
       syncAdapter
     );
+    stagedSync = undefined;
+    stagedSyncStatus = { state: "idle", retry: false };
     semanticActive = false;
     coverage = null;
     semanticEvents.clear();
@@ -504,7 +612,11 @@ export function createTopologyProjection(): TopologyProjection {
       }
       return {
         semanticActive,
-        syncState: semanticActive ? syncCoordinator.status().state : "legacy",
+        syncState: semanticActive
+          ? syncCoordinator.status().state
+          : stagedSyncStatus.state === "idle"
+            ? "legacy"
+            : stagedSyncStatus.state,
         coverage
       };
     },
@@ -604,7 +716,10 @@ function reconstructCheckpointFrames(
     })),
     complete: {
       type: TOPOLOGY_SYNC_COMPLETE,
-      ...metadata
+      ...metadata,
+      ...(checkpoint.reason === "limit-exceeded" || checkpoint.reason === "serialization-failed"
+        ? { reason: checkpoint.reason }
+        : {})
     }
   };
 }
@@ -725,6 +840,32 @@ function stringValue(candidate: unknown): string | null {
 
 function isRecord(candidate: unknown): candidate is Record<string, unknown> {
   return candidate !== null && typeof candidate === "object" && !Array.isArray(candidate);
+}
+
+function sameSyncFrame(left: TopologySyncFrame, right: TopologySyncFrame): boolean {
+  return (
+    left.type === right.type &&
+    left.syncId === right.syncId &&
+    left.panelSessionId === right.panelSessionId &&
+    left.pageEpoch === right.pageEpoch &&
+    left.cutoffCaptureSequence === right.cutoffCaptureSequence &&
+    left.chunkCount === right.chunkCount &&
+    left.recordCount === right.recordCount &&
+    JSON.stringify(left.coverage) === JSON.stringify(right.coverage) &&
+    JSON.stringify(left) === JSON.stringify(right)
+  );
+}
+
+function sameSyncMetadata(left: TopologySyncFrame, right: TopologySyncFrame): boolean {
+  return (
+    left.syncId === right.syncId &&
+    left.panelSessionId === right.panelSessionId &&
+    left.pageEpoch === right.pageEpoch &&
+    left.cutoffCaptureSequence === right.cutoffCaptureSequence &&
+    left.chunkCount === right.chunkCount &&
+    left.recordCount === right.recordCount &&
+    JSON.stringify(left.coverage) === JSON.stringify(right.coverage)
+  );
 }
 
 function fallbackPreservesAndExtendsStructure(

@@ -9,7 +9,9 @@ import {
   createInMemoryEventHistory,
   type EventHistory
 } from "../../core/event-history-authoritative";
-import { type CommittedEvidence } from "../../core/event-history-authoritative";
+import {
+  type CommittedEvidence
+} from "../../core/event-history-authoritative";
 import { createEventSearchText, matchesEventFilters, type EventFilterState } from "../../core/event-filter";
 import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
 import {
@@ -494,6 +496,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
   private readonly retainedLocalEvidenceIds = new Set<string>();
+  private readonly offeredTopologyCheckpointIds = new Set<string>();
   private readonly topologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private visible: boolean;
@@ -957,6 +960,18 @@ class Runtime implements WorkbenchRuntime {
     if (!result.accepted) {
       this.topologyCoverage = "LIMITED";
     }
+    const candidate = result.candidate;
+    if (candidate && !this.offeredTopologyCheckpointIds.has(candidate.id)) {
+      this.offeredTopologyCheckpointIds.add(candidate.id);
+      const receipt = this.evidencePipeline.offer(candidate);
+      void receipt.settled.then((settled) => {
+        if (settled.outcome === "NOT_EVIDENCE") {
+          this.offeredTopologyCheckpointIds.delete(candidate.id);
+        }
+      }).catch(() => {
+        this.offeredTopologyCheckpointIds.delete(candidate.id);
+      });
+    }
     this.publish();
   }
 
@@ -1171,8 +1186,12 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private handleCommittedEvidence(entry: CommittedEvidence): void {
-    if (this.disposed || !isLightstreamerEvidenceCandidate(entry.candidate)) {
-      if (this.disposed) return;
+    if (this.disposed) {
+      return;
+    }
+    if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
+      const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
+      if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
       this.preparedExport = null;
       if (this.visible) this.schedulePassivePublication();
       else this.hiddenDirty = true;
