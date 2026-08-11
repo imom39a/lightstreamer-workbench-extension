@@ -1,4 +1,4 @@
-import { IDBCursor, IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBCursor, IDBDatabase, IDBFactory, IDBIndex, IDBObjectStore, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,12 +11,14 @@ import {
   type AuthoritativeEventDatabaseRuntime
 } from "../src/core/indexeddb/authoritative-event-db";
 import {
+  createInMemoryEventHistory,
   openEventHistory,
   type EvidenceCandidate,
   type HistoryPublication
 } from "../src/core/event-history-authoritative";
 import { createIndexedDbEventHistory, transactionDone, type IndexedDbEventHistoryOptions } from "../src/core/event-history-indexeddb";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
+import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 
 function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): EvidenceCandidate {
   return {
@@ -178,6 +180,7 @@ function transactionStub(abort: () => void, error: Error | null = null): IDBTran
 
 async function freshHistory(panelSessionId: string) {
   Reflect.set(globalThis, "indexedDB", new IDBFactory());
+  Reflect.set(globalThis, "IDBKeyRange", IDBKeyRange);
   await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
   return openEventHistory({ panelSessionId });
 }
@@ -187,11 +190,82 @@ async function freshIndexedHistory(
   options: Omit<IndexedDbEventHistoryOptions, "panelSessionId"> = {}
 ): Promise<Awaited<ReturnType<typeof createIndexedDbEventHistory>>> {
   Reflect.set(globalThis, "indexedDB", new IDBFactory());
+  Reflect.set(globalThis, "IDBKeyRange", IDBKeyRange);
   await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
   return createIndexedDbEventHistory({ panelSessionId, ...options });
 }
 
 describe("IndexedDB authoritative EventHistory", () => {
+  it("uses a reverse primary-key cursor and stops after a recent descending page", async () => {
+    const history = await freshIndexedHistory("query-plan-recent");
+    for (let index = 0; index < 200; index += 1) {
+      await history.offer(createEventHistoryWorkloadEvent("small-lifecycle", index, "query-plan")).settled;
+    }
+
+    const openCursor = vi.spyOn(IDBObjectStore.prototype, "openCursor");
+    const continueCursor = vi.spyOn(IDBCursor.prototype, "continue");
+    const result = await history.read({ order: "desc", limit: 5 });
+
+    expect(result).toMatchObject({ ok: true, value: { total: 200 } });
+    if (result.ok) expect(result.value.evidence.map((entry) => entry.sequence)).toEqual([200, 199, 198, 197, 196]);
+    expect(openCursor).toHaveBeenCalledWith(undefined, "prev");
+    expect(continueCursor).toHaveBeenCalledTimes(4);
+    openCursor.mockRestore();
+    continueCursor.mockRestore();
+    await history.close();
+  });
+
+  it("uses exact facet-index keys while preserving residual Find and ordered totals", async () => {
+    const history = await freshIndexedHistory("query-plan-facet");
+    for (let index = 0; index < 60; index += 1) {
+      await history.offer(candidate(index % 4 === 0 ? `needle-${index}` : `facet-${index}`, {
+        subscription: { id: "query-subscription", mode: index % 2 === 0 ? "COMMAND" : "MERGE" },
+        raw: index % 4 === 0 ? { marker: "needle" } : { marker: "other" }
+      })).settled;
+    }
+
+    const openIndexCursor = vi.spyOn(IDBIndex.prototype, "openCursor");
+    const result = await history.read({
+      order: "desc",
+      limit: 3,
+      filters: { mode: "COMMAND" },
+      find: "needle"
+    });
+
+    expect(result).toMatchObject({ ok: true, value: { total: 15 } });
+    if (result.ok) expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(["needle-56", "needle-52", "needle-48"]);
+    expect(openIndexCursor).toHaveBeenCalledWith(IDBKeyRange.only(JSON.stringify(["v1", "mode", "COMMAND"])), "prev");
+    openIndexCursor.mockRestore();
+    await history.close();
+  });
+
+  it("keeps large JSON structured-query results in parity with the memory seam", async () => {
+    const indexed = await freshIndexedHistory("query-plan-large-json");
+    const memory = createInMemoryEventHistory({ panelSessionId: "query-plan-large-json-memory" });
+    const events = Array.from({ length: 120 }, (_, index) => createEventHistoryWorkloadEvent("large-json-rich", index, "large-query"));
+    for (const event of events) {
+      await indexed.offer(event).settled;
+      await memory.offer(event).settled;
+    }
+    const query = {
+      order: "desc" as const,
+      offsetFromNewest: 3,
+      limit: 7,
+      filters: { subscriptionId: "portfolio-command", mode: "COMMAND" },
+      find: "official-public-api"
+    };
+    const indexedResult = await indexed.read(query);
+    const memoryResult = await memory.read(query);
+    expect(indexedResult).toMatchObject({ ok: true });
+    expect(memoryResult).toMatchObject({ ok: true });
+    if (indexedResult.ok && memoryResult.ok) {
+      expect(indexedResult.value.total).toBe(memoryResult.value.total);
+      expect(indexedResult.value.evidence.map((entry) => entry.eventId)).toEqual(memoryResult.value.evidence.map((entry) => entry.eventId));
+    }
+    await indexed.close();
+    await memory.close();
+  });
+
   it("defaults deleteAuthoritativeEventDatabase to the same fallback database used by open", async () => {
     const fallbackDbName = authoritativeEventDatabaseName();
     const staleLegacyName = AUTHORITATIVE_EVENT_DB_NAME;
