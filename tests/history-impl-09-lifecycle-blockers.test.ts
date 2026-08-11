@@ -129,7 +129,7 @@ describe("history-impl-09 shared lifecycle blockers", () => {
     await expect(history.offer(candidate("finalization-prior")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
     await expect(history.offer(candidate("finalization-crossing")).settled).resolves.toMatchObject({
       outcome: "NOT_EVIDENCE",
-      problem: { code: "RETAINED_COUNT_LIMIT" },
+      problem: { code: "JOURNAL_COMMIT_FAILED" },
       committedEvidenceBoundary: { sequence: 1, eventId: "finalization-prior" }
     });
 
@@ -185,7 +185,7 @@ describe("history-impl-09 shared lifecycle blockers", () => {
     failNormalControlPut = true;
     await expect(history.offer(candidate("intent-crossing")).settled).resolves.toMatchObject({
       outcome: "NOT_EVIDENCE",
-      problem: { code: "RETAINED_COUNT_LIMIT" },
+      problem: { code: "JOURNAL_COMMIT_FAILED" },
       committedEvidenceBoundary: { sequence: 1, eventId: "intent-prior" }
     });
     put.mockRestore();

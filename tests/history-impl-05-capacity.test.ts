@@ -505,7 +505,7 @@ describe.each([
 
     await expect(failed.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
     await expect(queuedTail.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
-    await expect(proactive.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "RETAINED_COUNT_LIMIT" } });
+    await expect(proactive.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
 
     const terminal = publications.find((entry) => entry.type === "terminal");
     expect(terminal).toMatchObject({
@@ -943,7 +943,7 @@ it("recovers a terminal-finalization failure as a durable journal-failed state",
   });
   await expect(history.offer(candidate("terminal-failure-prior")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
   const crossing = history.offer(candidate("terminal-failure-crossing"));
-  await expect(crossing.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "RETAINED_COUNT_LIMIT" } });
+  await expect(crossing.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
 
   const reopened = await openEventHistory({ panelSessionId });
   let reopenedStatus: unknown;
