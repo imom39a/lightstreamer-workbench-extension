@@ -141,8 +141,8 @@ class OrderedPollCdp {
     }
     if (this.calls.length === 4) {
       const response = this.capturePoll(params);
-      this.originalSnapshot = this.captureOriginal();
-      this.resolveOriginal(evaluated(this.originalSnapshot));
+      const originalResponse = this.captureOriginal();
+      this.resolveOriginal(originalResponse);
       return Promise.resolve(response) as CancelableFakeCdpRequest;
     }
     if (this.calls.length === 5) {
