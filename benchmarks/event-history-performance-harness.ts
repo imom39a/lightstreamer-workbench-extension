@@ -53,6 +53,79 @@ type EventHistoryPerformanceConfig = Readonly<{
   burstPauseMs: number;
 }>;
 
+export type PendingTelemetryEntry = Readonly<{ offeredAt: number; bytes: number }>;
+
+export type PendingTelemetrySnapshot = Readonly<{
+  pendingCount: number;
+  pendingBytes: number;
+  maxPendingCount: number;
+  maxPendingBytes: number;
+  maxOldestPendingAgeMs: number;
+}>;
+
+export type PendingTelemetryTracker = Readonly<{
+  add(id: string, entry: PendingTelemetryEntry): void;
+  settle(id: string): void;
+  refuse(id: string): void;
+  sample(): void;
+  snapshot(): PendingTelemetrySnapshot;
+  diagnostics(): Readonly<{ sampleCount: number; oldestQueueAdvances: number }>;
+}>;
+
+type PendingQueueEntry = Readonly<{ id: string; entry: PendingTelemetryEntry }>;
+
+export function createPendingTelemetryTracker(now: () => number = () => performance.now()): PendingTelemetryTracker {
+  const pending = new Map<string, PendingTelemetryEntry>();
+  const oldestQueue: PendingQueueEntry[] = [];
+  let oldestQueueHead = 0;
+  let pendingCount = 0;
+  let pendingBytes = 0;
+  let maxPendingCount = 0;
+  let maxPendingBytes = 0;
+  let maxOldestPendingAgeMs = 0;
+  let sampleCount = 0;
+  let oldestQueueAdvances = 0;
+
+  const remove = (id: string): void => {
+    const entry = pending.get(id);
+    if (!entry) return;
+    pending.delete(id);
+    pendingCount -= 1;
+    pendingBytes -= entry.bytes;
+  };
+
+  return {
+    add(id, entry) {
+      remove(id);
+      pending.set(id, entry);
+      oldestQueue.push({ id, entry });
+      pendingCount += 1;
+      pendingBytes += entry.bytes;
+    },
+    settle: remove,
+    refuse: remove,
+    sample() {
+      sampleCount += 1;
+      maxPendingCount = Math.max(maxPendingCount, pendingCount);
+      maxPendingBytes = Math.max(maxPendingBytes, pendingBytes);
+      while (oldestQueueHead < oldestQueue.length) {
+        const queued = oldestQueue[oldestQueueHead]!;
+        if (pending.get(queued.id) === queued.entry) break;
+        oldestQueueHead += 1;
+        oldestQueueAdvances += 1;
+      }
+      const oldest = oldestQueue[oldestQueueHead]?.entry;
+      if (oldest) maxOldestPendingAgeMs = Math.max(maxOldestPendingAgeMs, Math.max(0, now() - oldest.offeredAt));
+    },
+    snapshot() {
+      return { pendingCount, pendingBytes, maxPendingCount, maxPendingBytes, maxOldestPendingAgeMs };
+    },
+    diagnostics() {
+      return { sampleCount, oldestQueueAdvances };
+    }
+  };
+}
+
 type HarnessResult = Readonly<{
   schemaVersion: 2;
   anchors: { issue16TotalEvents: number };
@@ -211,7 +284,7 @@ async function runCell(
   document.body.replaceChildren(root);
 
   const offerTimes = new Map<string, number>();
-  const pending = new Map<string, { offeredAt: number; bytes: number }>();
+  const pending = createPendingTelemetryTracker();
   const publicationLatencies: number[] = [];
   const visibleLatencies: number[] = [];
   const committedBoundaryAt = new Map<string, number>();
@@ -221,18 +294,11 @@ async function runCell(
   const longTaskEntries: PerformanceEntry[] = [];
   let phase: PhaseName = "capture";
   let phaseStartedAt = performance.now();
-  let maxPendingBytes = 0;
-  let maxOldestPendingAgeMs = 0;
   const pressureTransitions: string[] = [];
   let terminalReason: string | null = null;
   let terminalPublication: Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null = null;
   let unsubscribe: () => void = () => undefined;
-  const samplePending = () => {
-    const now = performance.now();
-    maxPendingBytes = Math.max(maxPendingBytes, [...pending.values()].reduce((total, entry) => total + entry.bytes, 0));
-    const oldest = [...pending.values()].reduce((value, entry) => Math.min(value, entry.offeredAt), Number.POSITIVE_INFINITY);
-    if (Number.isFinite(oldest)) maxOldestPendingAgeMs = Math.max(maxOldestPendingAgeMs, now - oldest);
-  };
+  const samplePending = () => pending.sample();
   const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
   const longTaskObserver = longTaskSupported
     ? new PerformanceObserver((entries) => {
@@ -288,7 +354,7 @@ async function runCell(
     const now = performance.now();
     for (const evidence of publication.evidence) {
       publishedIds.push(evidence.eventId);
-      pending.delete(evidence.eventId);
+      pending.settle(evidence.eventId);
       const offeredAt = offerTimes.get(evidence.eventId);
       if (offeredAt !== undefined) publicationLatencies.push(Math.max(0, now - offeredAt));
     }
@@ -368,8 +434,8 @@ async function runCell(
         searchTokenCount: representativeEventHistoryShapeFacts().find((fact) => fact.id === shape)?.searchTokenCount ?? 0
       },
       pressure: {
-        maxPendingBytes,
-        maxOldestPendingAgeMs,
+        maxPendingBytes: pending.snapshot().maxPendingBytes,
+        maxOldestPendingAgeMs: pending.snapshot().maxOldestPendingAgeMs,
         transitions: pressureTransitions,
         limits: (() => {
           const limits = historyCapacityLimits(adapter === "indexeddb" ? "NORMAL" : "LOWER");
@@ -738,7 +804,7 @@ async function offerSustained(
   events: readonly EvidenceCandidate[],
   config: EventHistoryPerformanceConfig,
   offerTimes: Map<string, number>,
-  pending: Map<string, { offeredAt: number; bytes: number }>,
+  pending: PendingTelemetryTracker,
   onOffer: () => void,
   samplePending: () => void
 ): Promise<Promise<unknown>[]> {
@@ -751,9 +817,12 @@ async function offerSustained(
     onOffer();
     const offeredAt = performance.now();
     offerTimes.set(event.id, offeredAt);
-    pending.set(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
+    pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
     const receipt = history.offer(event);
-    if (receipt.intake !== "QUEUED") throw new Error(`Sustained offer was refused: ${event.id}`);
+    if (receipt.intake !== "QUEUED") {
+      pending.refuse(event.id);
+      throw new Error(`Sustained offer was refused: ${event.id}`);
+    }
     receipts.push(receipt.settled);
     samplePending();
   }
@@ -765,16 +834,19 @@ async function offerBurst(
   events: readonly EvidenceCandidate[],
   config: EventHistoryPerformanceConfig,
   offerTimes: Map<string, number>,
-  pending: Map<string, { offeredAt: number; bytes: number }>,
+  pending: PendingTelemetryTracker,
   samplePending: () => void
 ): Promise<Promise<unknown>[]> {
   const receipts: Promise<unknown>[] = [];
   for (const [index, event] of events.entries()) {
     const offeredAt = performance.now();
     offerTimes.set(event.id, offeredAt);
-    pending.set(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
+    pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
     const receipt = history.offer(event);
-    if (receipt.intake !== "QUEUED") throw new Error(`Burst offer was refused: ${event.id}`);
+    if (receipt.intake !== "QUEUED") {
+      pending.refuse(event.id);
+      throw new Error(`Burst offer was refused: ${event.id}`);
+    }
     receipts.push(receipt.settled);
     samplePending();
     if ((index + 1) % ISSUE_16_TOTAL_EVENTS === 0) await delay(config.burstPauseMs);

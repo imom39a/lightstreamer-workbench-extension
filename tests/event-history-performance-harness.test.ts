@@ -5,11 +5,56 @@ import {
   decodeTopologyCheckpointEvidenceCandidate
 } from "../src/extension/panel/topology-checkpoint-evidence-codec";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
-import { createStagedTopologyCheckpointCandidate } from "../benchmarks/event-history-performance-harness";
+import {
+  createPendingTelemetryTracker,
+  createStagedTopologyCheckpointCandidate
+} from "../benchmarks/event-history-performance-harness";
 import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  it("keeps pending telemetry exact across synchronous, asynchronous, and refused receipts without rescanning offers", () => {
+    let now = 100;
+    const tracker = createPendingTelemetryTracker(() => now);
+
+    tracker.add("sync", { offeredAt: 90, bytes: 10 });
+    tracker.sample();
+    tracker.settle("sync");
+    now = 110;
+    tracker.sample();
+
+    tracker.add("async-a", { offeredAt: 111, bytes: 20 });
+    tracker.add("async-b", { offeredAt: 112, bytes: 30 });
+    now = 120;
+    tracker.sample();
+    tracker.refuse("async-b");
+    now = 130;
+    tracker.sample();
+    tracker.settle("async-a");
+    now = 140;
+    tracker.sample();
+
+    expect(tracker.snapshot()).toEqual({
+      pendingCount: 0,
+      pendingBytes: 0,
+      maxPendingCount: 2,
+      maxPendingBytes: 50,
+      maxOldestPendingAgeMs: 19
+    });
+
+    const burst = createPendingTelemetryTracker(() => now);
+    for (let index = 0; index < 1_692; index += 1) {
+      burst.add(`burst-${index}`, { offeredAt: index, bytes: index + 1 });
+      burst.sample();
+    }
+    expect(burst.snapshot()).toMatchObject({ pendingCount: 1_692, maxPendingCount: 1_692 });
+    expect(burst.diagnostics()).toEqual({ sampleCount: 1_692, oldestQueueAdvances: 0 });
+    for (let index = 0; index < 1_692; index += 1) burst.settle(`burst-${index}`);
+    burst.sample();
+    expect(burst.snapshot()).toMatchObject({ pendingCount: 0, pendingBytes: 0 });
+    expect(burst.diagnostics()).toEqual({ sampleCount: 1_693, oldestQueueAdvances: 1_692 });
+  });
+
   it("constructs the exact browser checkpoint seeds at their requested sizes", () => {
     for (const [seed, syncId, minimumBytes] of [
       ["checkpoint-indexeddb-representative", "sync-representative", 64 * 1_024],
