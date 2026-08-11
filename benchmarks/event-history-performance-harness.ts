@@ -57,6 +57,124 @@ type EventHistoryPerformanceConfig = Readonly<{
   burstPauseMs: number;
 }>;
 
+export type HarnessProgress = Readonly<{
+  phase: "cells" | "terminal" | "checkpoint" | "heap" | "lifecycle";
+  stage: string;
+  cellIndex: number | null;
+  cellTotal: 36;
+  adapter: "indexeddb" | "memory" | null;
+  workload: "sustained" | "burst" | null;
+  shape: EventHistoryShape | null;
+  workloadPhase: "capture" | "commit" | "paint" | "query" | null;
+  offered: number | null;
+  settled: number | null;
+  query: string | null;
+}>;
+
+const PERFORMANCE_OPERATION_KEY = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+// These are local fail-closed ceilings for one page stage. They are deliberately
+// generous for the retained workloads and never extend the one-hour operation deadline.
+const STAGE_DEADLINES_MS = Object.freeze({
+  cellOffer: 120_000,
+  cellReceipts: 300_000,
+  query: 60_000,
+  read: 120_000,
+  close: 120_000,
+  terminalReceipts: 180_000,
+  checkpointReceipts: 180_000,
+  heapWarmupReceipts: 600_000,
+  heapSampleReceipts: 600_000
+});
+
+export class HarnessStageTimeout extends Error {
+  readonly code = "HARNESS_STAGE_TIMEOUT";
+  readonly stage: string;
+  readonly timeoutMs: number;
+  readonly progress: HarnessProgress;
+
+  constructor(stage: string, timeoutMs: number, progress: HarnessProgress) {
+    super(`Harness stage ${stage} exceeded its ${timeoutMs} ms deadline.`);
+    this.name = "HarnessStageTimeout";
+    this.stage = stage;
+    this.timeoutMs = timeoutMs;
+    this.progress = progress;
+  }
+}
+
+function publishHarnessProgress(progress: HarnessProgress): void {
+  const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+  if (!operation || typeof operation !== "object") return;
+  const record = operation as { state?: unknown; progress?: unknown };
+  if (record.state !== "pending") return;
+  record.progress = progress;
+}
+
+function normalizeHarnessError(error: unknown, stage: string, progress: HarnessProgress): Error {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  const record = normalized as Error & { stage?: string; progress?: HarnessProgress };
+  record.stage ??= stage;
+  record.progress ??= progress;
+  return normalized;
+}
+
+export function withStageDeadline<T>(
+  operation: PromiseLike<T> | T,
+  stage: string,
+  timeoutMs: number,
+  progress: () => HarnessProgress
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new HarnessStageTimeout(stage, timeoutMs, progress()));
+    }, timeoutMs);
+    Promise.resolve(operation).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        reject(normalizeHarnessError(error, stage, progress()));
+      }
+    );
+  });
+}
+
+export function settleReceiptStage<T>(
+  receipts: readonly PromiseLike<T>[],
+  stage: string,
+  timeoutMs: number,
+  progress: (settled: number) => HarnessProgress
+): Promise<T[]> {
+  let settled = 0;
+  const observedReceipts = receipts.map((receipt) => Promise.resolve(receipt).then(
+    (value) => {
+      settled += 1;
+      publishHarnessProgress(progress(settled));
+      return value;
+    },
+    (error: unknown) => {
+      settled += 1;
+      const contextual = normalizeHarnessError(error, stage, progress(settled));
+      publishHarnessProgress(progress(settled));
+      throw contextual;
+    }
+  ));
+  return withStageDeadline(
+    Promise.all(observedReceipts),
+    stage,
+    timeoutMs,
+    () => progress(settled)
+  );
+}
+
 export type PendingTelemetryEntry = Readonly<{ offeredAt: number; bytes: number }>;
 
 export type PendingTelemetrySnapshot = Readonly<{
@@ -322,11 +440,26 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
     const cells: EventHistoryPerformanceCell[] = [];
+    let cellIndex = 0;
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const workload of ["sustained", "burst"] as const) {
         for (const shape of EVENT_HISTORY_SHAPES) {
           for (const sample of [1, 2, 3] as const) {
-            cells.push(await runCell(adapter, workload, shape, sample, config));
+            cellIndex += 1;
+            publishHarnessProgress({
+              phase: "cells",
+              stage: "cell-start",
+              cellIndex,
+              cellTotal: 36,
+              adapter,
+              workload,
+              shape,
+              workloadPhase: null,
+              offered: 0,
+              settled: 0,
+              query: null
+            });
+            cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex));
           }
         }
       }
@@ -334,12 +467,38 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     const terminalScenarios: EventHistoryPerformanceTerminalScenario[] = [];
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const trigger of ["PENDING_BYTES", "PENDING_AGE"] as const) {
+        publishHarnessProgress({
+          phase: "terminal",
+          stage: trigger,
+          cellIndex: null,
+          cellTotal: 36,
+          adapter,
+          workload: null,
+          shape: null,
+          workloadPhase: null,
+          offered: null,
+          settled: null,
+          query: null
+        });
         terminalScenarios.push(await runTerminalScenario(adapter, trigger));
       }
     }
     const checkpointScenarios: EventHistoryPerformanceCheckpointScenario[] = [];
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const name of ["representative", "maximum-2MiB"] as const) {
+        publishHarnessProgress({
+          phase: "checkpoint",
+          stage: name,
+          cellIndex: null,
+          cellTotal: 36,
+          adapter,
+          workload: null,
+          shape: null,
+          workloadPhase: null,
+          offered: null,
+          settled: null,
+          query: null
+        });
         checkpointScenarios.push(await runCheckpointScenario(adapter, name));
       }
     }
@@ -390,7 +549,27 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       const events = Array.from({ length: count }, (_, sequence) =>
         createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
       );
-      await settleOffers(history, events);
+      const heapProgress = (settled: number | null = null): HarnessProgress => ({
+        phase: "heap",
+        stage: `${phase}-receipt-settlement`,
+        cellIndex: null,
+        cellTotal: 36,
+        adapter,
+        workload: null,
+        shape: null,
+        workloadPhase: null,
+        offered: events.length,
+        settled,
+        query: null
+      });
+      publishHarnessProgress(heapProgress());
+      await settleOffers(
+        history,
+        events,
+        `${phase}-heap-receipts`,
+        phase === "warmup" ? STAGE_DEADLINES_MS.heapWarmupReceipts : STAGE_DEADLINES_MS.heapSampleReceipts,
+        heapProgress
+      );
       await waitForFrame();
       retainedHeapSession = { adapter, count, retained: events.length, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
       return { adapter, count, retained: events.length, sessionId: runId, databaseName, phase, sample };
@@ -439,7 +618,8 @@ async function runCell(
   workload: EventHistoryPerformanceWorkload,
   shape: EventHistoryShape,
   sample: number,
-  config: EventHistoryPerformanceConfig
+  config: EventHistoryPerformanceConfig,
+  cellIndex: number
 ): Promise<EventHistoryPerformanceCell> {
   const runId = `${adapter}-${workload}-${shape}-sample-${sample}`;
   const history = adapter === "indexeddb"
@@ -461,6 +641,24 @@ async function runCell(
   const longTaskEntries: PerformanceEntry[] = [];
   let phase: PhaseName = "capture";
   let phaseStartedAt = performance.now();
+  let offeredCount = 0;
+  let settledCount = 0;
+  const progress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): HarnessProgress => ({
+    phase: "cells",
+    stage,
+    cellIndex,
+    cellTotal: 36,
+    adapter,
+    workload,
+    shape,
+    workloadPhase,
+    offered: offeredCount,
+    settled: settledCount,
+    query
+  });
+  const updateProgress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): void => {
+    publishHarnessProgress(progress(stage, workloadPhase, query));
+  };
   const pressureTransitions: string[] = [];
   let terminalReason: string | null = null;
   let terminalPublication: Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null = null;
@@ -526,28 +724,63 @@ async function runCell(
       if (offeredAt !== undefined) publicationLatencies.push(Math.max(0, now - offeredAt));
     }
     samplePending();
+    updateProgress("receipt-settled", "commit");
   });
 
+  let primaryFailure: Error | null = null;
   try {
     const startedAt = performance.now();
     const receipts = workload === "sustained"
-      ? await offerSustained(history, events, config, offerTimes, pending, () => enterPhase("capture"), samplePending)
-      : await offerBurst(history, events, config, offerTimes, pending, samplePending);
+      ? await withStageDeadline(
+        offerSustained(history, events, config, offerTimes, pending, () => {
+          enterPhase("capture");
+          offeredCount += 1;
+          updateProgress("offer", "capture");
+        }, samplePending),
+        `cell-${cellIndex}-offer`,
+        STAGE_DEADLINES_MS.cellOffer,
+        () => progress("offer", "capture")
+      )
+      : await withStageDeadline(
+        offerBurst(history, events, config, offerTimes, pending, () => {
+          offeredCount += 1;
+          updateProgress("offer", "capture");
+        }, samplePending),
+        `cell-${cellIndex}-offer`,
+        STAGE_DEADLINES_MS.cellOffer,
+        () => progress("offer", "capture")
+      );
     const enqueueElapsedMs = performance.now() - startedAt;
     enterPhase("commit");
-    await Promise.all(receipts);
+    updateProgress("receipt-settlement", "commit");
+    await settleReceiptStage(
+      receipts,
+      `cell-${cellIndex}-receipts`,
+      STAGE_DEADLINES_MS.cellReceipts,
+      (settled) => {
+        settledCount = settled;
+        return progress("receipt-settlement", "commit");
+      }
+    );
     const commitSettledAt = performance.now();
     enterPhase("paint");
+    updateProgress("visible-frame", "paint");
     await Promise.race([finalVisible, timeout(30_000)]);
     await waitForFrame();
     const readStartedAt = performance.now();
     enterPhase("query");
-    const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }));
-    const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }));
-    const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }));
-    const fullP95Ms = await measureQuery(history, () => history.read({ order: "asc" }));
+    const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"));
+    const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"));
+    const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"));
+    const fullP95Ms = await measureQuery(history, () => history.read({ order: "asc" }), "full", () => progress("query", "query", "full"));
     const queryElapsedMs = performance.now() - readStartedAt;
-    const read = await history.read({ order: "asc" });
+    updateProgress("read", "query", "final-read");
+    const read = await withStageDeadline(
+      history.read({ order: "asc" }),
+      `cell-${cellIndex}-read`,
+      STAGE_DEADLINES_MS.read,
+      () => progress("read", "query", "final-read")
+    );
     const expectedIds = events.map((event) => event.id);
     const retainedIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
     const boundary = read.ok ? read.value.committedEvidenceBoundary : null;
@@ -632,12 +865,60 @@ async function runCell(
       enqueueElapsedMs,
       queryElapsedMs,
     } as EventHistoryPerformanceCell;
+  } catch (error) {
+    primaryFailure = normalizeHarnessError(error, `cell-${cellIndex}`, progress("failed", phase));
+    throw primaryFailure;
   } finally {
     storageProbe?.restore();
     longTaskObserver?.disconnect();
-    unsubscribe();
-    panel.disposePanel();
-    await history.close();
+    try { unsubscribe(); } catch { /* Preserve the primary stage failure. */ }
+    let disposeError: Error | null = null;
+    let closeOutcome: Outcome<CloseResult> | null = null;
+    try { panel.disposePanel(); } catch (error) { disposeError = normalizeHarnessError(error, `cell-${cellIndex}-dispose`, progress("close", null)); }
+    let rootRemoved = false;
+    try {
+      root.remove();
+      rootRemoved = !root.isConnected;
+    } catch (error) {
+      disposeError ??= normalizeHarnessError(error, `cell-${cellIndex}-root`, progress("close", null));
+    }
+    let closeError: Error | null = null;
+    try {
+      closeOutcome = await withStageDeadline(
+        history.close(),
+        `cell-${cellIndex}-close`,
+        STAGE_DEADLINES_MS.close,
+        () => progress("close", null)
+      );
+      if (closeOutcome.ok !== true) throw new Error("Event History close did not complete successfully.");
+    } catch (error) {
+      closeError = normalizeHarnessError(error, `cell-${cellIndex}-close`, progress("close", null));
+    }
+    if (disposeError || closeError) {
+      const cleanupFailure = disposeError ?? closeError ?? new Error("Event History cleanup failed.");
+      const cleanupEvidence = {
+        adapter,
+        phase: "cleanup" as const,
+        sample,
+        eventCount: expectedCount,
+        retained: null,
+        sessionId: runId,
+        databaseName: adapter === "indexeddb" ? authoritativeEventDatabaseName(`event-history-performance-${runId}`) : null,
+        close: closeOutcome,
+        disposeError: disposeError?.message ?? null,
+        rootRemoved,
+        frameYielded: false,
+        gcPasses: null,
+        status: "FAIL" as const,
+        failure: { code: cleanupFailure.name, message: cleanupFailure.message }
+      };
+      if (primaryFailure) {
+        Object.assign(primaryFailure, { cleanupEvidence });
+      } else {
+        Object.assign(cleanupFailure, { cleanupEvidence });
+        throw cleanupFailure;
+      }
+    }
   }
 }
 
@@ -649,6 +930,23 @@ async function runTerminalScenario(
   let releaseCommit = (): void => undefined;
   const blockedCommit = new Promise<void>((resolve) => { releaseCommit = resolve; });
   const panelSessionId = `event-history-terminal-${adapter}-${trigger.toLowerCase()}`;
+  const progress = (
+    stage = `${trigger}-receipt-settlement`,
+    offered: number | null = null,
+    settled: number | null = null
+  ): HarnessProgress => ({
+    phase: "terminal",
+    stage,
+    cellIndex: null,
+    cellTotal: 36,
+    adapter,
+    workload: null,
+    shape: null,
+    workloadPhase: null,
+    offered,
+    settled,
+    query: null
+  });
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) })
     : createInMemoryEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) });
@@ -679,16 +977,35 @@ async function runTerminalScenario(
     receipts.push({ id: refused.id, receipt: history.offer(refused) });
     releaseCommit();
   }
-  const outcomes = await Promise.all(receipts.map(({ receipt }) => receipt.settled));
+  try {
+    publishHarnessProgress(progress());
+    const outcomes = await settleReceiptStage(
+      receipts.map(({ receipt }) => receipt.settled),
+      `terminal-${adapter}-${trigger}-receipts`,
+      STAGE_DEADLINES_MS.terminalReceipts,
+      (settled) => progress(`${trigger}-receipt-settlement`, receipts.length, settled)
+    );
   const accepted = outcomes.filter((outcome) => outcome.outcome === "BECAME_EVIDENCE");
   const refused = receipts.filter((entry, index) => outcomes[index]?.outcome === "NOT_EVIDENCE");
   const offeredEventIds = receipts.map((entry) => entry.id);
   const acceptedEventIds = receipts.filter((_entry, index) => outcomes[index]?.outcome === "BECAME_EVIDENCE").map((entry) => entry.id);
   const refusedEventIds = refused.map((entry) => entry.id);
-  const read = await history.read({ order: "asc" });
+  publishHarnessProgress({ ...progress(), stage: `${trigger}-read` });
+  const read = await withStageDeadline(
+    history.read({ order: "asc" }),
+    `terminal-${adapter}-${trigger}-read`,
+    STAGE_DEADLINES_MS.read,
+    () => ({ ...progress(), stage: `${trigger}-read` })
+  );
   const terminal = terminals.at(-1)?.terminal ?? null;
   unsubscribe();
-  await history.close();
+  const closeOutcome = await withStageDeadline(
+    history.close(),
+    `terminal-${adapter}-${trigger}-close`,
+    STAGE_DEADLINES_MS.close,
+    () => ({ ...progress(), stage: `${trigger}-close` })
+  );
+  if (closeOutcome.ok !== true) throw new Error(`Terminal ${adapter}/${trigger} Event History close failed.`);
   const finalEvidence = read.ok ? read.value.evidence.at(-1) ?? null : null;
   const retainedEventIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
   const boundaryEvidence = terminal?.committedEvidenceBoundary
@@ -698,7 +1015,7 @@ async function runTerminalScenario(
   const refusedIdentityCorrect = terminal?.firstMissingEventId === expectedFirstMissing
     && refused.length === 1
     && outcomes.at(-1)?.outcome === "NOT_EVIDENCE";
-  return {
+    return {
     adapter,
     trigger,
     tier,
@@ -718,7 +1035,41 @@ async function runTerminalScenario(
     refusedIdentityCorrect,
     exactOneTerminalPublication: terminals.length === 1,
     pressureTransitions
-  };
+    };
+  } catch (error) {
+    const failure = normalizeHarnessError(error, `terminal-${adapter}-${trigger}`, progress());
+    try { unsubscribe(); } catch { /* Preserve the terminal failure. */ }
+    let closeOutcome: Outcome<CloseResult> | null = null;
+    try {
+      closeOutcome = await withStageDeadline(
+        history.close(),
+        `terminal-${adapter}-${trigger}-close-after-failure`,
+        STAGE_DEADLINES_MS.close,
+        () => ({ ...progress(), stage: `${trigger}-close-after-failure` })
+      );
+    } catch (closeError) {
+      Object.assign(failure, { closeError: normalizeHarnessError(closeError, `terminal-${adapter}-${trigger}-close`, progress()).message });
+    }
+    Object.assign(failure, {
+      cleanupEvidence: {
+        adapter,
+        phase: "cleanup" as const,
+        sample: null,
+        eventCount: 0,
+        retained: null,
+        sessionId: panelSessionId,
+        databaseName: adapter === "indexeddb" ? authoritativeEventDatabaseName(panelSessionId) : null,
+        close: closeOutcome,
+        disposeError: null,
+        rootRemoved: true,
+        frameYielded: false,
+        gcPasses: null,
+        status: "FAIL" as const,
+        failure: { code: failure.name, message: failure.message }
+      }
+    });
+    throw failure;
+  }
 }
 
 async function runCheckpointScenario(
@@ -729,6 +1080,19 @@ async function runCheckpointScenario(
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier })
     : createInMemoryEventHistory({ panelSessionId: `event-history-checkpoint-${adapter}-${name}`, capacityTier: tier });
+  const progress = (stage: string, offered: number | null = null, settled: number | null = null): HarnessProgress => ({
+    phase: "checkpoint",
+    stage,
+    cellIndex: null,
+    cellTotal: 36,
+    adapter,
+    workload: null,
+    shape: null,
+    workloadPhase: null,
+    offered,
+    settled,
+    query: null
+  });
   const candidate = createStagedTopologyCheckpointCandidate(
     `checkpoint-${adapter}-${name}`,
     `sync-${name}`,
@@ -743,11 +1107,34 @@ async function runCheckpointScenario(
   const trafficAfter = Array.from({ length: 4 }, (_, index) =>
     createEventHistoryWorkloadEvent("ordinary-item-update", index, `${adapter}-${name}-after`)
   );
-  await Promise.all(trafficBefore.map((event) => history.offer(event).settled));
+  try {
+    publishHarnessProgress(progress(`${name}-traffic-before`, trafficBefore.length, 0));
+  await settleReceiptStage(
+    trafficBefore.map((event) => history.offer(event).settled),
+    `checkpoint-${adapter}-${name}-before`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    (settled) => progress(`${name}-traffic-before`, trafficBefore.length, settled)
+  );
   const receipt = history.offer(candidate);
-  const outcome = await receipt.settled;
-  await Promise.all(trafficAfter.map((event) => history.offer(event).settled));
-  const read = await history.read({ order: "asc" });
+  const [outcome] = await settleReceiptStage(
+    [receipt.settled],
+    `checkpoint-${adapter}-${name}-candidate`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    (settled) => progress(`${name}-candidate`, 1, settled)
+  );
+  if (!outcome) throw new Error(`Checkpoint ${adapter}/${name} candidate receipt did not settle.`);
+  await settleReceiptStage(
+    trafficAfter.map((event) => history.offer(event).settled),
+    `checkpoint-${adapter}-${name}-after`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    (settled) => progress(`${name}-traffic-after`, trafficAfter.length, settled)
+  );
+  const read = await withStageDeadline(
+    history.read({ order: "asc" }),
+    `checkpoint-${adapter}-${name}-read`,
+    STAGE_DEADLINES_MS.read,
+    () => progress(`${name}-read`)
+  );
   const committedPublication = publications.find((publication) =>
     publication.type === "committed-evidence" && publication.evidence.some((entry) => entry.eventId === candidate.id)
   );
@@ -758,8 +1145,14 @@ async function runCheckpointScenario(
   const trafficBeforeIds = trafficBefore.map((event) => event.id);
   const trafficAfterIds = trafficAfter.map((event) => event.id);
   unsubscribe();
-  await history.close();
-  return {
+  const closeOutcome = await withStageDeadline(
+    history.close(),
+    `checkpoint-${adapter}-${name}-close`,
+    STAGE_DEADLINES_MS.close,
+    () => progress(`${name}-close`)
+  );
+  if (closeOutcome.ok !== true) throw new Error(`Checkpoint ${adapter}/${name} Event History close failed.`);
+    return {
     name,
     adapter,
     accepted: outcome.outcome === "BECAME_EVIDENCE",
@@ -776,7 +1169,43 @@ async function runCheckpointScenario(
     canonicalBytes: journalAccountedBytes(serialized.bytes),
     committedBoundaryCorrect: outcome.outcome === "BECAME_EVIDENCE" && outcome.evidence.eventId === candidate.id,
     batchAcceptedAsOneOversizedUnit: committedPublication?.type === "committed-evidence" && committedPublication.evidence.length === 1
-  };
+    };
+  } catch (error) {
+    const failure = normalizeHarnessError(error, `checkpoint-${adapter}-${name}`, progress(`${name}-failed`));
+    try { unsubscribe(); } catch { /* Preserve the checkpoint failure. */ }
+    let closeOutcome: Outcome<CloseResult> | null = null;
+    try {
+      closeOutcome = await withStageDeadline(
+        history.close(),
+        `checkpoint-${adapter}-${name}-close-after-failure`,
+        STAGE_DEADLINES_MS.close,
+        () => progress(`${name}-close-after-failure`)
+      );
+    } catch (closeError) {
+      Object.assign(failure, { closeError: normalizeHarnessError(closeError, `checkpoint-${adapter}-${name}-close`, progress(`${name}-close`)).message });
+    }
+    Object.assign(failure, {
+      cleanupEvidence: {
+        adapter,
+        phase: "cleanup" as const,
+        sample: null,
+        eventCount: trafficBefore.length + trafficAfter.length + 1,
+        retained: null,
+        sessionId: `event-history-checkpoint-${adapter}-${name}`,
+        databaseName: adapter === "indexeddb"
+          ? authoritativeEventDatabaseName(`event-history-checkpoint-${adapter}-${name}`)
+          : null,
+        close: closeOutcome,
+        disposeError: null,
+        rootRemoved: true,
+        frameYielded: false,
+        gcPasses: null,
+        status: "FAIL" as const,
+        failure: { code: failure.name, message: failure.message }
+      }
+    });
+    throw failure;
+  }
 }
 
 export function createStagedTopologyCheckpointCandidate(
@@ -1024,10 +1453,12 @@ async function offerBurst(
   config: EventHistoryPerformanceConfig,
   offerTimes: Map<string, number>,
   pending: PendingTelemetryTracker,
+  onOffer: () => void,
   samplePending: () => void
 ): Promise<Promise<unknown>[]> {
   const receipts: Promise<unknown>[] = [];
   for (const [index, event] of events.entries()) {
+    onOffer();
     const offeredAt = performance.now();
     offerTimes.set(event.id, offeredAt);
     pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
@@ -1043,10 +1474,16 @@ async function offerBurst(
   return receipts;
 }
 
-async function settleOffers(history: EventHistory, events: readonly EvidenceCandidate[]): Promise<void> {
+async function settleOffers(
+  history: EventHistory,
+  events: readonly EvidenceCandidate[],
+  stage: string,
+  timeoutMs: number,
+  progress: (settled: number) => HarnessProgress
+): Promise<void> {
   const receipts = events.map((event) => history.offer(event));
   if (receipts.some((receipt) => receipt.intake !== "QUEUED")) throw new Error("Retained heap offer was refused.");
-  await Promise.all(receipts.map((receipt) => receipt.settled));
+  await settleReceiptStage(receipts.map((receipt) => receipt.settled), stage, timeoutMs, progress);
 }
 
 async function mountProductionPanel(
@@ -1088,11 +1525,17 @@ async function mountProductionPanel(
   throw new Error("Production panel mount did not render its React boundary.");
 }
 
-async function measureQuery(history: EventHistory, query: () => Promise<unknown>): Promise<number> {
+async function measureQuery(
+  history: EventHistory,
+  query: () => Promise<unknown>,
+  queryName: string,
+  progress: () => HarnessProgress
+): Promise<number> {
   const samples: number[] = [];
   for (let index = 0; index < 3; index += 1) {
+    publishHarnessProgress(progress());
     const startedAt = performance.now();
-    await query();
+    await withStageDeadline(query(), `query-${queryName}-${index + 1}`, STAGE_DEADLINES_MS.query, progress);
     samples.push(performance.now() - startedAt);
   }
   return percentile(samples, 0.95);

@@ -577,6 +577,39 @@ describe("Event History performance runner page operation", () => {
     expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
   });
 
+  it("propagates structured harness progress through operation status", async () => {
+    const progress = {
+      phase: "cells",
+      stage: "receipt-settlement",
+      cellIndex: 7,
+      cellTotal: 36,
+      adapter: "indexeddb",
+      workload: "burst",
+      shape: "large-json-rich",
+      workloadPhase: "commit",
+      offered: 1_692,
+      settled: 41,
+      query: null
+    };
+    const statuses: Array<Record<string, unknown>> = [];
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "progress-operation", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "progress-operation", state: "resolved", heartbeat: 1, progress, result: { complete: true } }),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", {
+      operationId: "progress-operation",
+      onHeartbeat: (status) => statuses.push(status as Record<string, unknown>)
+    })).resolves.toEqual({ complete: true });
+
+    expect(statuses.at(-1)).toMatchObject({
+      phase: "cells",
+      cellIndex: 7,
+      progress
+    });
+  });
+
   it("preserves the original rejected error fields and cleans the operation record", async () => {
     const neverSettles = new Promise<FakeCdpResponse>(() => undefined);
     const cdp = new FakeCdp([
@@ -591,6 +624,19 @@ describe("Event History performance runner page operation", () => {
           message: "original failure",
           stack: "TypeError: original failure\\n at page.js:4",
           code: "PREPARE_FAILED",
+          progress: {
+            phase: "heap",
+            stage: "sample-receipt-settlement",
+            cellIndex: null,
+            cellTotal: 36,
+            adapter: "indexeddb",
+            workload: null,
+            shape: null,
+            workloadPhase: null,
+            offered: 10_000,
+            settled: 9_999,
+            query: null
+          },
           cleanupEvidence: {
             adapter: "indexeddb",
             phase: "cleanup",
@@ -623,6 +669,13 @@ describe("Event History performance runner page operation", () => {
       message: "original failure",
       code: "PREPARE_FAILED",
       stack: "TypeError: original failure\\n at page.js:4",
+      progress: {
+        phase: "heap",
+        stage: "sample-receipt-settlement",
+        adapter: "indexeddb",
+        offered: 10_000,
+        settled: 9_999
+      },
       cleanupEvidence: {
         adapter: "indexeddb",
         phase: "cleanup",
@@ -666,7 +719,20 @@ describe("Event History performance runner page operation", () => {
         state: "pending",
         elapsedMs: 60_001,
         heartbeat: 12,
-        lastHeartbeatAt: 59_998
+        lastHeartbeatAt: 59_998,
+        progress: {
+          phase: "cells",
+          stage: "cell-36-read",
+          cellIndex: 36,
+          cellTotal: 36,
+          adapter: "memory",
+          workload: "burst",
+          shape: "ordinary-item-update",
+          workloadPhase: "query",
+          offered: 1_692,
+          settled: 1_692,
+          query: "full"
+        }
       }
     });
 
@@ -677,7 +743,13 @@ describe("Event History performance runner page operation", () => {
       environment: { chromeMajor: 151, headless: false },
       operation: {
         deadlineMs: 60_000,
-        lastStatus: { state: "pending", elapsedMs: 60_001, heartbeat: 12 }
+        lastStatus: {
+          state: "pending",
+          elapsedMs: 60_001,
+          heartbeat: 12,
+          progress: { phase: "cells", stage: "cell-36-read", cellIndex: 36, query: "full" }
+        },
+        progress: { phase: "cells", stage: "cell-36-read", cellIndex: 36, query: "full" }
       },
       classification: "NOT_CLASSIFIED",
       reference: { separatelyPinned: true, adopted: false },

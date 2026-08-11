@@ -4,6 +4,19 @@ export type PerformanceOperationRequestTimeout = Readonly<{
   timeoutMs: number;
   ceilingMs: number;
 }>;
+export type PerformanceOperationProgress = Readonly<{
+  phase: "cells" | "terminal" | "checkpoint" | "heap" | "lifecycle";
+  stage: string;
+  cellIndex: number | null;
+  cellTotal: 36;
+  adapter: HeapAdapter | null;
+  workload: "sustained" | "burst" | null;
+  shape: "small-lifecycle" | "ordinary-item-update" | "large-json-rich" | null;
+  workloadPhase: "capture" | "commit" | "paint" | "query" | null;
+  offered: number | null;
+  settled: number | null;
+  query: string | null;
+}>;
 
 export type HeapAdapter = "indexeddb" | "memory";
 export type HeapSession = Readonly<{
@@ -81,12 +94,14 @@ export type PerformanceOperationStatus = Readonly<{
   heartbeat: number;
   lastHeartbeatAt: number | null;
   lastRequestTimeout?: PerformanceOperationRequestTimeout;
+  progress?: PerformanceOperationProgress;
   result?: unknown;
   error?: Readonly<{
     name: string;
     message: string;
     stack: string | null;
     code?: string;
+    progress?: PerformanceOperationProgress;
     cleanupEvidence?: PerformanceCleanupEvidence;
   }>;
 }>;

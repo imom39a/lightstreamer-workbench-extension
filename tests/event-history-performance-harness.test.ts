@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createTopologyCheckpointEvidenceCandidate,
@@ -11,12 +11,68 @@ import {
   captureStorageEstimate,
   closeHeapSessionWithEvidence,
   createPendingTelemetryTracker,
-  createStagedTopologyCheckpointCandidate
+  createStagedTopologyCheckpointCandidate,
+  HarnessStageTimeout,
+  settleReceiptStage,
+  withStageDeadline,
+  type HarnessProgress
 } from "../benchmarks/event-history-performance-harness";
 import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  const progress = (stage: string): HarnessProgress => ({
+    phase: "cells",
+    stage,
+    cellIndex: 7,
+    cellTotal: 36,
+    adapter: "indexeddb",
+    workload: "burst",
+    shape: "large-json-rich",
+    workloadPhase: "commit",
+    offered: 1692,
+    settled: 41,
+    query: null
+  });
+
+  it("bounds a partial receipt stage and absorbs a late rejection without an unhandled rejection", async () => {
+    vi.useFakeTimers();
+    let rejectLate!: (error: Error) => void;
+    try {
+      const pending = settleReceiptStage(
+        [
+          Promise.resolve("settled-first"),
+          new Promise<never>((_, reject) => { rejectLate = reject; })
+        ],
+        "cell-7-receipts",
+        100,
+        (settled) => ({ ...progress("receipt-settlement"), settled })
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).rejects.toMatchObject({
+        name: "HarnessStageTimeout",
+        code: "HARNESS_STAGE_TIMEOUT",
+        stage: "cell-7-receipts",
+        progress: { offered: 1692, settled: 1 }
+      });
+      rejectLate(new Error("late receipt rejection"));
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["query-find-2", "cell-7-read", "cell-7-close"])("contextualizes bounded %s failures", async (stage) => {
+    vi.useFakeTimers();
+    try {
+      const pending = withStageDeadline(new Promise<never>(() => undefined), stage, 50, () => progress(stage));
+      await vi.advanceTimersByTimeAsync(50);
+      await expect(pending).rejects.toBeInstanceOf(HarnessStageTimeout);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("captures available page storage estimates as non-authoritative telemetry", async () => {
     await expect(captureStorageEstimate({ estimate: async () => ({ usage: 12, quota: 34 }) })).resolves.toEqual({
       source: "navigator.storage.estimate",

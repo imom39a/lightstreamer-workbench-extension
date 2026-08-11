@@ -461,7 +461,8 @@ export function createTimeoutDiagnostic({
     environment,
     operation: {
       deadlineMs,
-      lastStatus: operation
+      lastStatus: operation,
+      progress: operation.progress ?? null
     },
     classification: "NOT_CLASSIFIED",
     reference: {
@@ -533,12 +534,27 @@ function startOperationExpression(expression, operationId) {
             message: typeof rawCleanupEvidence.failure.message === "string" ? rawCleanupEvidence.failure.message : "Heap measurement failed."
           } : null
         } : null;
+        const rawProgress = error?.progress;
+        const progress = rawProgress && typeof rawProgress === "object" ? {
+          phase: ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(rawProgress.phase) ? rawProgress.phase : "cells",
+          stage: typeof rawProgress.stage === "string" ? rawProgress.stage : "unknown",
+          cellIndex: rawProgress.cellIndex === null || (Number.isSafeInteger(rawProgress.cellIndex) && rawProgress.cellIndex >= 1 && rawProgress.cellIndex <= 36) ? rawProgress.cellIndex : null,
+          cellTotal: 36,
+          adapter: rawProgress.adapter === "indexeddb" || rawProgress.adapter === "memory" ? rawProgress.adapter : null,
+          workload: rawProgress.workload === "sustained" || rawProgress.workload === "burst" ? rawProgress.workload : null,
+          shape: ["small-lifecycle", "ordinary-item-update", "large-json-rich"].includes(rawProgress.shape) ? rawProgress.shape : null,
+          workloadPhase: ["capture", "commit", "paint", "query"].includes(rawProgress.workloadPhase) ? rawProgress.workloadPhase : null,
+          offered: Number.isSafeInteger(rawProgress.offered) && rawProgress.offered >= 0 ? rawProgress.offered : null,
+          settled: Number.isSafeInteger(rawProgress.settled) && rawProgress.settled >= 0 ? rawProgress.settled : null,
+          query: typeof rawProgress.query === "string" ? rawProgress.query : null
+        } : null;
         operation.state = "rejected";
         operation.error = {
           name: typeof error?.name === "string" ? error.name : "Error",
           message: typeof error?.message === "string" ? error.message : String(error),
           stack: typeof error?.stack === "string" ? error.stack : null,
           ...(typeof error?.code === "string" ? { code: error.code } : {}),
+          ...(progress ? { progress } : {}),
           ...(cleanupEvidence ? { cleanupEvidence } : {})
         };
         operation.completedAt = performance.now();
@@ -562,7 +578,10 @@ function pollOperationExpression(operationId, logicalPollToken) {
       operation.lastHeartbeatAt = performance.now();
       operation.lastPollToken = logicalPollToken;
     }
-    return { ...operation };
+    return {
+      ...operation,
+      ...(operation.progress && typeof operation.progress === "object" ? operation.progress : {})
+    };
   })()`;
 }
 
@@ -584,6 +603,7 @@ function evaluationValue(response) {
 }
 
 function operationStatus(value, startedAt, now, lastRequestTimeout = null) {
+  const progress = value?.progress && typeof value.progress === "object" ? value.progress : null;
   return {
     operationId: value?.operationId ?? null,
     state: value?.state ?? "missing",
@@ -591,6 +611,7 @@ function operationStatus(value, startedAt, now, lastRequestTimeout = null) {
     heartbeat: Number.isFinite(value?.heartbeat) ? value.heartbeat : 0,
     lastHeartbeatAt: value?.lastHeartbeatAt ?? null,
     ...(lastRequestTimeout ? { lastRequestTimeout } : {}),
+    ...(progress ? { ...progress, progress } : {}),
     ...(value?.result !== undefined ? { result: value.result } : {}),
     ...(value?.error !== undefined ? { error: value.error } : {})
   };
@@ -608,10 +629,29 @@ function remoteOperationError(details) {
   const error = new Error(details?.message ?? "Performance operation rejected.");
   error.name = details?.name ?? "Error";
   if (typeof details?.code === "string") error.code = details.code;
+  const progress = serializeOperationProgress(details?.progress);
+  if (progress) error.progress = progress;
   const cleanupEvidence = serializeCleanupEvidence(details?.cleanupEvidence);
   if (cleanupEvidence) error.cleanupEvidence = cleanupEvidence;
   if (details?.stack) error.stack = details.stack;
   return error;
+}
+
+function serializeOperationProgress(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    phase: ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(value.phase) ? value.phase : "cells",
+    stage: typeof value.stage === "string" ? value.stage : "unknown",
+    cellIndex: value.cellIndex === null || (Number.isSafeInteger(value.cellIndex) && value.cellIndex >= 1 && value.cellIndex <= 36) ? value.cellIndex : null,
+    cellTotal: 36,
+    adapter: value.adapter === "indexeddb" || value.adapter === "memory" ? value.adapter : null,
+    workload: value.workload === "sustained" || value.workload === "burst" ? value.workload : null,
+    shape: ["small-lifecycle", "ordinary-item-update", "large-json-rich"].includes(value.shape) ? value.shape : null,
+    workloadPhase: ["capture", "commit", "paint", "query"].includes(value.workloadPhase) ? value.workloadPhase : null,
+    offered: Number.isSafeInteger(value.offered) && value.offered >= 0 ? value.offered : null,
+    settled: Number.isSafeInteger(value.settled) && value.settled >= 0 ? value.settled : null,
+    query: typeof value.query === "string" ? value.query : null
+  };
 }
 
 function serializeCleanupEvidence(value) {
