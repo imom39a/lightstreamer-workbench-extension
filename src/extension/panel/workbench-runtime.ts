@@ -446,7 +446,30 @@ export interface WorkbenchRuntime {
   reportVisibleFrame?(renderedBoundary?: EvidenceRef | null): void;
   /** Snapshot of identity-only state for the deliberate real-Chrome performance gate. */
   getPerformanceDiagnostics?(): WorkbenchRuntimePerformanceDiagnostics;
+  /** Records renderer lifecycle facts for timeout diagnosis; never carries Evidence payloads. */
+  reportPanelPerformanceEvent?(event: WorkbenchPanelPerformanceEvent): void;
 }
+
+export type WorkbenchPanelPerformanceEvent =
+  | Readonly<{ type: "root-mounted"; mounted: boolean }>
+  | Readonly<{ type: "subscription-active"; active: boolean }>
+  | Readonly<{ type: "layout-effect"; snapshotVersion: number; boundary: EvidenceRef | null }>
+  | Readonly<{ type: "animation-frame-requested"; timestampMs: number }>
+  | Readonly<{ type: "animation-frame-callback"; timestampMs: number }>
+  | Readonly<{ type: "animation-frame-cancelled" }>;
+
+export type WorkbenchPanelPerformanceDiagnostics = Readonly<{
+  rootMounted: boolean;
+  subscriptionActive: boolean;
+  lastLayoutEffectSnapshotVersion: number | null;
+  lastLayoutEffectBoundary: EvidenceRef | null;
+  animationFramePending: boolean;
+  animationFrameRequestCount: number;
+  lastAnimationFrameRequestedAtMs: number | null;
+  animationFrameCallbackCount: number;
+  lastAnimationFrameCallbackAtMs: number | null;
+  animationFrameCancelCount: number;
+}>;
 
 export type WorkbenchRuntimePerformanceDiagnostics = Readonly<{
   disposed: boolean;
@@ -465,6 +488,7 @@ export type WorkbenchRuntimePerformanceDiagnostics = Readonly<{
   documentVisibilityState: DocumentVisibilityState | "unavailable";
   visibleFrameHeartbeat: number;
   lastVisibleFrameAtMs: number | null;
+  panel: WorkbenchPanelPerformanceDiagnostics;
 }>;
 
 export type WorkbenchRuntimeScheduler = {
@@ -590,6 +614,18 @@ class Runtime implements WorkbenchRuntime {
   private pendingVisibleBoundaries: EvidenceRef[] = [];
   private visibleFrameHeartbeat = 0;
   private lastVisibleFrameAtMs: number | null = null;
+  private panelPerformanceDiagnostics: WorkbenchPanelPerformanceDiagnostics = {
+    rootMounted: false,
+    subscriptionActive: false,
+    lastLayoutEffectSnapshotVersion: null,
+    lastLayoutEffectBoundary: null,
+    animationFramePending: false,
+    animationFrameRequestCount: 0,
+    lastAnimationFrameRequestedAtMs: null,
+    animationFrameCallbackCount: 0,
+    lastAnimationFrameCallbackAtMs: null,
+    animationFrameCancelCount: 0
+  };
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
   private historyCondition: WorkbenchHistoryCondition | null = null;
   private historyAnnouncement = "";
@@ -696,6 +732,49 @@ class Runtime implements WorkbenchRuntime {
     this.performanceHooks.onVisibleFrame(boundary, performance.now(), coveredBoundaries);
   };
 
+  readonly reportPanelPerformanceEvent = (event: WorkbenchPanelPerformanceEvent): void => {
+    const current = this.panelPerformanceDiagnostics;
+    switch (event.type) {
+      case "root-mounted":
+        this.panelPerformanceDiagnostics = { ...current, rootMounted: event.mounted };
+        return;
+      case "subscription-active":
+        this.panelPerformanceDiagnostics = { ...current, subscriptionActive: event.active };
+        return;
+      case "layout-effect":
+        this.panelPerformanceDiagnostics = {
+          ...current,
+          lastLayoutEffectSnapshotVersion: event.snapshotVersion,
+          lastLayoutEffectBoundary: event.boundary
+            ? Object.freeze({ intervalId: event.boundary.intervalId, sequence: event.boundary.sequence, eventId: event.boundary.eventId })
+            : null
+        };
+        return;
+      case "animation-frame-requested":
+        this.panelPerformanceDiagnostics = {
+          ...current,
+          animationFramePending: true,
+          animationFrameRequestCount: current.animationFrameRequestCount + 1,
+          lastAnimationFrameRequestedAtMs: event.timestampMs
+        };
+        return;
+      case "animation-frame-callback":
+        this.panelPerformanceDiagnostics = {
+          ...current,
+          animationFramePending: false,
+          animationFrameCallbackCount: current.animationFrameCallbackCount + 1,
+          lastAnimationFrameCallbackAtMs: event.timestampMs
+        };
+        return;
+      case "animation-frame-cancelled":
+        this.panelPerformanceDiagnostics = {
+          ...current,
+          animationFramePending: false,
+          animationFrameCancelCount: current.animationFrameCancelCount + 1
+        };
+    }
+  };
+
   readonly getPerformanceDiagnostics = (): WorkbenchRuntimePerformanceDiagnostics => {
     const liveTail = this.liveEvidence.events.at(-1);
     const identity = (boundary: EvidenceRef | null | undefined): EvidenceRef | null => boundary
@@ -717,7 +796,11 @@ class Runtime implements WorkbenchRuntime {
       lastEvidenceQueryError: this.lastEvidenceQueryError,
       documentVisibilityState: typeof document === "undefined" ? "unavailable" : document.visibilityState,
       visibleFrameHeartbeat: this.visibleFrameHeartbeat,
-      lastVisibleFrameAtMs: this.lastVisibleFrameAtMs
+      lastVisibleFrameAtMs: this.lastVisibleFrameAtMs,
+      panel: Object.freeze({
+        ...this.panelPerformanceDiagnostics,
+        lastLayoutEffectBoundary: identity(this.panelPerformanceDiagnostics.lastLayoutEffectBoundary)
+      })
     });
   };
 

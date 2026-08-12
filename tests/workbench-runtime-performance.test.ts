@@ -85,6 +85,18 @@ describe("production React runtime performance boundary seam", () => {
       lastVisibleFrameAtMs: null
     });
     expect(JSON.stringify(beforeFrame)).not.toContain("payload");
+    expect(Object.keys(beforeFrame?.panel ?? {})).toEqual([
+      "rootMounted",
+      "subscriptionActive",
+      "lastLayoutEffectSnapshotVersion",
+      "lastLayoutEffectBoundary",
+      "animationFramePending",
+      "animationFrameRequestCount",
+      "lastAnimationFrameRequestedAtMs",
+      "animationFrameCallbackCount",
+      "lastAnimationFrameCallbackAtMs",
+      "animationFrameCancelCount"
+    ]);
 
     runtime.reportVisibleFrame?.();
     expect(runtime.getPerformanceDiagnostics?.()).toMatchObject({

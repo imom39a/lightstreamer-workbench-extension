@@ -185,6 +185,53 @@ describe("production panel mount wiring", () => {
     await disposePanel(dispose);
   });
 
+  it("reports mounted React scheduling state through the performance diagnostic seam", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory({ panelSessionId: PANEL_SESSION_ID });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    const animationFrames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      animationFrames.push(callback);
+      return animationFrames.length;
+    });
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory: async () => history,
+      createRuntime: () => runtime,
+      connectBridge: () => ({ reinjectDraft: vi.fn(), disconnect: vi.fn() })
+    });
+    await flushPanel();
+
+    expect(runtime.getPerformanceDiagnostics?.().panel).toMatchObject({
+      rootMounted: true,
+      subscriptionActive: true,
+      lastLayoutEffectSnapshotVersion: expect.any(Number),
+      lastLayoutEffectBoundary: null,
+      animationFramePending: true,
+      animationFrameRequestCount: 1,
+      lastAnimationFrameRequestedAtMs: expect.any(Number),
+      animationFrameCallbackCount: 0,
+      lastAnimationFrameCallbackAtMs: null,
+      animationFrameCancelCount: 0
+    });
+
+    await act(async () => animationFrames.shift()?.(performance.now()));
+    expect(runtime.getPerformanceDiagnostics?.().panel).toMatchObject({
+      animationFramePending: false,
+      animationFrameRequestCount: 1,
+      animationFrameCallbackCount: 1,
+      lastAnimationFrameCallbackAtMs: expect.any(Number)
+    });
+
+    await disposePanel(dispose);
+    expect(runtime.getPerformanceDiagnostics?.().panel).toMatchObject({
+      rootMounted: false,
+      subscriptionActive: false,
+      animationFramePending: false,
+      animationFrameCancelCount: 0
+    });
+  });
+
   it("mounts one DOM Workbench root over authoritative seed and live committed Evidence", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory({ panelSessionId: PANEL_SESSION_ID });

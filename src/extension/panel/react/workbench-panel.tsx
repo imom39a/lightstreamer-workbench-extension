@@ -293,7 +293,15 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 /** React presentation for the Slice 1 read-only Scoped Evidence Workspace. */
 export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
-  const snapshot = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot, runtime.getSnapshot);
+  const subscribe = useMemo(() => (listener: () => void) => {
+    runtime.reportPanelPerformanceEvent?.({ type: "subscription-active", active: true });
+    const unsubscribe = runtime.subscribe(listener);
+    return () => {
+      runtime.reportPanelPerformanceEvent?.({ type: "subscription-active", active: false });
+      unsubscribe();
+    };
+  }, [runtime]);
+  const snapshot = useSyncExternalStore(subscribe, runtime.getSnapshot, runtime.getSnapshot);
   const evidenceRows = useRef(new Map<string, HTMLButtonElement>());
   const evidenceRowActions = useRef<EvidenceRowActions>({ select: () => undefined });
   const evidenceLedger = useRef<HTMLDivElement | null>(null);
@@ -303,16 +311,34 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
 
   useLayoutEffect(() => {
     latestCommittedEvidenceBoundary.current = snapshot.renderedEvidenceBoundary;
+    runtime.reportPanelPerformanceEvent?.({
+      type: "layout-effect",
+      snapshotVersion: snapshot.version,
+      boundary: snapshot.renderedEvidenceBoundary
+    });
     if (!runtime.reportVisibleFrame) return;
     if (visibleFrame.current !== null) return;
-    visibleFrame.current = window.requestAnimationFrame(() => {
+    runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-requested", timestampMs: performance.now() });
+    let callbackRan = false;
+    const frame = window.requestAnimationFrame(() => {
+      callbackRan = true;
       visibleFrame.current = null;
+      runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-callback", timestampMs: performance.now() });
       runtime.reportVisibleFrame?.(latestCommittedEvidenceBoundary.current);
     });
+    if (!callbackRan) visibleFrame.current = frame;
   }, [runtime, snapshot.version]);
-  useLayoutEffect(() => () => {
-    if (visibleFrame.current !== null) window.cancelAnimationFrame(visibleFrame.current);
-  }, []);
+  useLayoutEffect(() => {
+    runtime.reportPanelPerformanceEvent?.({ type: "root-mounted", mounted: true });
+    return () => {
+      if (visibleFrame.current !== null) {
+        window.cancelAnimationFrame(visibleFrame.current);
+        visibleFrame.current = null;
+        runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-cancelled" });
+      }
+      runtime.reportPanelPerformanceEvent?.({ type: "root-mounted", mounted: false });
+    };
+  }, [runtime]);
   const scopeTree = useRef<HTMLDivElement | null>(null);
   const scopeNodesById = useRef(new Map<string, HTMLButtonElement>());
   const scopeTreeActions = useRef<ScopeTreeActions>({

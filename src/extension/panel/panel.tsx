@@ -170,6 +170,9 @@ function bindRuntime(runtime: WorkbenchRuntime, themeManager: ThemeManager): Wor
     disposeAndWait: runtime.disposeAndWait.bind(runtime),
     ...(runtime.reportVisibleFrame
       ? { reportVisibleFrame: runtime.reportVisibleFrame.bind(runtime) }
+      : {}),
+    ...(runtime.reportPanelPerformanceEvent
+      ? { reportPanelPerformanceEvent: runtime.reportPanelPerformanceEvent.bind(runtime) }
       : {})
   };
 }
