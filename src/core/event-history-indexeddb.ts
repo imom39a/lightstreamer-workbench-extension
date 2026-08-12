@@ -356,6 +356,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let terminalPersistenceFailed = false;
   let terminalIntentGeneration = 0;
   let lastNearLimit = false;
+  let awaitingCount = 0;
+  let awaitingBytes = 0;
   const capacityTier = options.capacityTier ?? "NORMAL";
   const limits = historyCapacityLimits(capacityTier, options.capacity);
   const clock = options.clock ?? Date.now;
@@ -363,15 +365,23 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
   function currentBoundary(): EvidenceRef | null { return committedEvidenceBoundary; }
   function currentRange(): { first: EvidenceRef; last: EvidenceRef } | null { return retainedRange; }
+  function oldestAwaiting(): Pending | undefined {
+    let oldest: Pending | undefined;
+    for (const candidate of [inFlight[0], pending[0], postClearPending[0]]) {
+      if (candidate !== undefined && (oldest === undefined || candidate.ordinal < oldest.ordinal)) oldest = candidate;
+    }
+    return oldest;
+  }
   function measurements(): HistoryPressureMeasurements {
-    const awaiting = [...inFlight, ...pending, ...postClearPending].sort((left, right) => left.ordinal - right.ordinal);
-    const oldest = awaiting[0];
     return Object.freeze({
       retainedCount,
       retainedBytes,
-      pendingCount: awaiting.length,
-      pendingBytes: awaiting.reduce((total, entry) => total + entry.bytes, 0),
-      oldestPendingAgeMs: oldest ? Math.max(0, clock() - oldest.offeredAt) : null
+      pendingCount: awaitingCount,
+      pendingBytes: awaitingBytes,
+      oldestPendingAgeMs: (() => {
+        const oldest = oldestAwaiting();
+        return oldest ? Math.max(0, clock() - oldest.offeredAt) : null;
+      })()
     });
   }
 
@@ -405,6 +415,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       return;
     }
     pending.length = 0;
+    awaitingCount -= rejected.length;
+    awaitingBytes -= rejected.reduce((total, entry) => total + entry.bytes, 0);
     notAccepted += rejected.length;
     discardedCount += rejected.length;
     discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
@@ -432,7 +444,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       capacity: { tier: capacityTier, state: phase !== "RUNNING" ? "EXHAUSTED" as const : pressure.nearLimit ? "NEAR_LIMIT" as const : "AVAILABLE" as const, limits, measurements: pressure.measurements },
       fallback: null,
       captured,
-      awaitingAcceptance: pending.length + postClearPending.length + inFlight.length,
+      awaitingAcceptance: awaitingCount,
       accepted,
       notAccepted,
       retained: retainedCount,
@@ -633,7 +645,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function scheduleAgeCheck(): void {
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
     ageTimer = null;
-    const oldest = [...inFlight, ...pending].sort((left, right) => left.ordinal - right.ordinal)[0];
+    const oldest = oldestAwaiting();
     if (!oldest || phase !== "RUNNING") return;
     const age = Math.max(0, clock() - oldest.offeredAt);
     const delay = Math.max(0, (age < limits.pendingAgeWarningMs ? limits.pendingAgeWarningMs : limits.pendingAgeStopMs) - age);
@@ -676,6 +688,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     const ordinal = captured + 1;
     captured += 1;
     clearQueueForCandidate().push({ ordinal, eventId: candidate.id, serialized, bytes, offeredAt: clock(), resolve });
+    awaitingCount += 1;
+    awaitingBytes += bytes;
     scheduleAgeCheck();
     pressureChanged();
     if (!clearInProgress) schedule();
@@ -743,6 +757,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
           ensureTerminalSettled();
           const discarded = [...batch, ...pending.splice(0)];
           inFlight.length = 0;
+          awaitingCount -= discarded.length;
+          awaitingBytes -= discarded.reduce((total, entry) => total + entry.bytes, 0);
           notAccepted += discarded.length;
           discardedCount += discarded.length;
           discardedBytes += discarded.reduce((sum, entry) => sum + entry.bytes, 0);
@@ -755,6 +771,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         replayPayloadBytes += batchSerializedBytes;
         durableAccountedBytes += batch.reduce((sum, entry) => sum + journalAccountedBytes(entry.serialized.bytes), 0);
         inFlight.length = 0;
+        awaitingCount -= batch.length;
+        awaitingBytes -= batch.reduce((total, entry) => total + entry.bytes, 0);
         committedEvidenceBoundary = toRef(evidence.at(-1)!);
         retainedBytes += batchAccountedBytes;
         retainedCount += evidence.length;

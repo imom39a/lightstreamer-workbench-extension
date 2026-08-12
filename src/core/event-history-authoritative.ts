@@ -332,6 +332,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   let nextCaptureOrdinal = 1;
   let nextEvidenceSequence = 1;
   let committedEvidenceBoundary: EvidenceRef | null = null;
+  let retainedCount = 0;
   let retainedBytes = 0;
   let accepted = 0;
   let notAccepted = 0;
@@ -359,16 +360,29 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   let terminalPersistenceFailed = false;
   let terminalIntentGeneration = 0;
   let lastNearLimit = false;
+  let awaitingCount = 0;
+  let awaitingBytes = 0;
+
+  function oldestAwaiting(): PendingCandidate | undefined {
+    let oldest: PendingCandidate | undefined;
+    for (const candidate of [inFlight[0], pending[0], postClearPending[0]]) {
+      if (candidate !== undefined && (oldest === undefined || candidate.ordinal < oldest.ordinal)) {
+        oldest = candidate;
+      }
+    }
+    return oldest;
+  }
 
   function measurements(): HistoryPressureMeasurements {
-    const awaiting = [...inFlight, ...pending, ...postClearPending].sort((left, right) => left.ordinal - right.ordinal);
-    const oldest = awaiting[0];
     return Object.freeze({
-      retainedCount: committed.filter((entry) => entry.intervalId === interval.id).length,
+      retainedCount,
       retainedBytes,
-      pendingCount: awaiting.length,
-      pendingBytes: awaiting.reduce((total, entry) => total + entry.bytes, 0),
-      oldestPendingAgeMs: oldest ? Math.max(0, clock() - oldest.offeredAt) : null
+      pendingCount: awaitingCount,
+      pendingBytes: awaitingBytes,
+      oldestPendingAgeMs: (() => {
+        const oldest = oldestAwaiting();
+        return oldest ? Math.max(0, clock() - oldest.offeredAt) : null;
+      })()
     });
   }
 
@@ -385,7 +399,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       capacity: { tier: capacityTier, state: phase !== "RUNNING" ? "EXHAUSTED" : pressure.nearLimit ? "NEAR_LIMIT" : "AVAILABLE", limits, measurements: pressure.measurements },
       fallback,
       captured: nextCaptureOrdinal - 1,
-      awaitingAcceptance: pending.length + postClearPending.length + inFlight.length,
+      awaitingAcceptance: awaitingCount,
       accepted,
       notAccepted,
       retained: intervalEvidence.length,
@@ -507,6 +521,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       return;
     }
     pending.length = 0;
+    awaitingCount -= rejected.length;
+    awaitingBytes -= rejected.reduce((total, entry) => total + entry.bytes, 0);
     notAccepted += rejected.length;
     discardedCount += rejected.length;
     discardedBytes += rejected.reduce((sum, entry) => sum + entry.bytes, 0);
@@ -536,6 +552,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       offeredAt: clock(),
       resolve: resolveReceipt
     });
+    awaitingCount += 1;
+    awaitingBytes += bytes;
     lastClearResult = null;
     scheduleAgeCheck();
     pressureChanged();
@@ -646,7 +664,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   function scheduleAgeCheck(): void {
     if (ageTimer !== null) timer.clearTimeout(ageTimer);
     ageTimer = null;
-    const oldest = [...inFlight, ...pending, ...postClearPending].sort((left, right) => left.ordinal - right.ordinal)[0];
+    const oldest = oldestAwaiting();
     if (!oldest || phase !== "RUNNING") return;
     const age = Math.max(0, clock() - oldest.offeredAt);
     const delay = Math.max(0, (age < limits.pendingAgeWarningMs ? limits.pendingAgeWarningMs : limits.pendingAgeStopMs) - age);
@@ -717,6 +735,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
           ensureTerminalSettled();
           const discarded = [...batch, ...pending.splice(0)];
           inFlight.length = 0;
+          awaitingCount -= discarded.length;
+          awaitingBytes -= discarded.reduce((total, entry) => total + entry.bytes, 0);
           notAccepted += discarded.length;
           discardedCount += discarded.length;
           discardedBytes += discarded.reduce((sum, entry) => sum + entry.bytes, 0);
@@ -732,7 +752,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
           return deepFreeze({ ...reference, candidate });
         });
         inFlight.length = 0;
+        awaitingCount -= batch.length;
+        awaitingBytes -= batch.reduce((total, entry) => total + entry.bytes, 0);
         committed.push(...evidence);
+        retainedCount += evidence.length;
         retainedBytes += batch.reduce((sum, entry) => sum + entry.bytes, 0);
         accepted += evidence.length;
         committedEvidenceBoundary = toRef(evidence.at(-1)!);
@@ -832,6 +855,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         interval = nextInterval;
         committed.length = 0;
         retainedBytes = 0;
+        retainedCount = 0;
         lastNearLimit = false;
         rejoinPostClearQueue();
         clearInProgress = false;
@@ -924,6 +948,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         const result = closeResult({ finalCommittedEvidenceBoundary, dataDisposition, cleanupDisposition });
         committed.length = 0;
         retainedBytes = 0;
+        retainedCount = 0;
         phase = "CLOSED";
         const outcome = { ok: true, value: result } as Outcome<CloseResult>;
         lastCloseOutcome = outcome;
