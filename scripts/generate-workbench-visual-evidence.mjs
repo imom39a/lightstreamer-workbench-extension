@@ -125,7 +125,7 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: "The diagnostic list is keyboard-focusable with a visible focus ring; the footer retains focus while the typed condition remains active; geometry checks cover normal, compact, shallow, and wide layouts plus forced colors. Clear confirmation is not auto-focused and retains its existing physical-Tab proof.",
-      baselineIntent: "Update the seven affected Darwin baselines for the intentional Panel Session lifecycle copy and typed lower-capacity footer condition; all other baselines remain unchanged."
+      baselineIntent: "Update the final two tracked Darwin baselines — normal-help-resources-light-darwin and normal-limited-capture-light-darwin — for the intentional Panel Session lifecycle copy and typed lower-capacity footer condition; all other baselines remain unchanged."
     },
     durationMs: Date.now() - startedAt,
     scenarios: results
