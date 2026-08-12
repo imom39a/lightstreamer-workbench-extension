@@ -228,19 +228,24 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       }
       return {
         ...localInjectionCapturedScenario(id),
-        initialEvents: [{
-          ...priorLocalSource,
-          id: "retained-prior-local-evidence",
-          timestamp: priorLocalSource.timestamp - 1,
-          source: "synthetic",
-          synthetic: true,
-          update: {
-            ...priorLocalSource.update,
-            command: "UPDATE",
-            fields: { command: "UPDATE", key: "small-alpha", value: "7" },
-            changedFields: { value: "7" }
+        initialEvents: [
+          ...topology.capturedEvents,
+          {
+            ...priorLocalSource,
+            id: "retained-prior-local-evidence",
+            timestamp: priorLocalSource.timestamp + 1,
+            source: "synthetic",
+            synthetic: false,
+            update: {
+              ...priorLocalSource.update,
+              command: "UPDATE",
+              fields: { command: "UPDATE", key: "small-alpha", value: "7" },
+              changedFields: { value: "7" }
+            }
           }
-        }],
+        ],
+        captureMessages: [],
+        selectedEventId: priorLocalSource.id,
         failLocalEvidenceRetention: true,
         localInjection: {
           entry: "selection",

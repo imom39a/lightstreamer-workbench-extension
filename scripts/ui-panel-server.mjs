@@ -133,8 +133,9 @@ if (scenario.filterQuery) runtime.dispatch({ type: "set-filters", filters: { que
 if (scenario.findQuery) runtime.dispatch({ type: "set-find", value: scenario.findQuery });
 if (scenario.freezeBeforeLaterEvents) runtime.dispatch({ type: "freeze-evidence" });
 await Promise.all((scenario.laterEvents ?? []).map((event) => history.offer(event).settled));
-failSyntheticEvidenceRetention = Boolean(scenario.failLocalEvidenceRetention);
 if (scenario.openRawEvidence && scenario.selectedEventId) runtime.dispatch({ type: "open-raw-evidence", eventId: scenario.selectedEventId });
+await new Promise((resolve) => setTimeout(resolve, 48));
+failSyntheticEvidenceRetention = Boolean(scenario.failLocalEvidenceRetention);
 if (scenario.localInjection) {
   runtime.dispatch({ type: scenario.localInjection.entry === "selection" ? "begin-local-injection-from-selection" : "begin-local-injection-from-scope" });
   if (scenario.localInjection.rawText !== undefined) runtime.dispatch({ type: "set-local-injection-json", text: scenario.localInjection.rawText });

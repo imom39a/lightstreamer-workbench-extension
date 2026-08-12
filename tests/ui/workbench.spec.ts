@@ -272,7 +272,7 @@ test("Workbench omits false supporting Evidence routes when Local Evidence reten
   await expect(draft.getByRole("heading", { name: "DELIVERED LOCALLY" })).toBeVisible();
   await draft.getByRole("button", { name: "Finish Local Injection" }).click();
 
-  const unrelatedPriorLocal = page.locator('[data-evidence-id="retained-prior-local-evidence"]');
+  const unrelatedPriorLocal = page.locator(".workbench-react__evidence-row", { hasText: "LOCAL" }).first();
   await expect(unrelatedPriorLocal).toBeVisible();
   await expect(page.getByRole("region", { name: "COMMAND projection summary" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /COMMAND projections/ })).toHaveCount(0);
