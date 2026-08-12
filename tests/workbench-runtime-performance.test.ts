@@ -49,6 +49,29 @@ async function flushPromises(): Promise<void> {
 }
 
 describe("production React runtime performance boundary seam", () => {
+  it("does not retain committed candidates when visible-frame telemetry is disabled", async () => {
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-no-visible-hook" });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    const receipts = Array.from({ length: 10_000 }, (_, index) =>
+      history.offer(createEventHistoryWorkloadEvent(
+        index % 10 === 9 ? "large-json-rich" : "ordinary-item-update",
+        index,
+        "no-visible-hook"
+      )).settled
+    );
+
+    await Promise.all(receipts);
+    expect(runtime.getPerformanceDiagnostics?.()).toMatchObject({
+      committedEvidenceBoundary: { sequence: 10_000 },
+      pendingVisibleCount: 0,
+      pendingVisibleHead: null,
+      pendingVisibleTail: null
+    });
+
+    runtime.dispose();
+    await history.close();
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it("reports identity-only runtime diagnostics without exposing Evidence payloads", async () => {

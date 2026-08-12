@@ -1442,7 +1442,13 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.committedEvidenceBoundary = entry;
-    this.pendingVisibleBoundaries.push(entry);
+    if (this.performanceHooks?.onVisibleFrame) {
+      this.pendingVisibleBoundaries.push(Object.freeze({
+        intervalId: entry.intervalId,
+        sequence: entry.sequence,
+        eventId: entry.eventId
+      }));
+    }
     this.performanceHooks?.onCommittedEvidenceBoundary?.(entry, performance.now());
     if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
       const syncId = topologyCheckpointSyncId(entry.candidate);
