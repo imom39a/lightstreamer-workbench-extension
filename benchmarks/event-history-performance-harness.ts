@@ -16,6 +16,46 @@ import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/ev
 
 type WorkloadKind = "sustained" | "burst";
 
+/** Keep each synchronous burst offer task below the Long Task envelope. */
+export const EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE = 64;
+
+export type BurstOfferScheduleOptions<T> = Readonly<{
+  events: readonly T[];
+  eventsPerBurst: number;
+  chunkSize?: number;
+  offer: (event: T, index: number) => void;
+  yieldBetweenChunks: () => Promise<void>;
+  pauseBetweenBursts?: () => Promise<void>;
+}>;
+
+/**
+ * Run a burst without changing offer semantics: each offer is still invoked
+ * synchronously, in capture order, while bounded chunks are separated by a
+ * real macrotask. The caller's elapsed measurement therefore includes every
+ * yield and any configured inter-burst pause.
+ */
+export async function runBurstOfferSchedule<T>(options: BurstOfferScheduleOptions<T>): Promise<void> {
+  const eventsPerBurst = Math.max(1, Math.floor(options.eventsPerBurst));
+  const chunkSize = Math.max(1, Math.floor(options.chunkSize ?? EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE));
+  let sequence = 0;
+  while (sequence < options.events.length) {
+    const burstEnd = Math.min(options.events.length, sequence + eventsPerBurst);
+    while (sequence < burstEnd) {
+      const chunkEnd = Math.min(burstEnd, sequence + chunkSize);
+      while (sequence < chunkEnd) {
+        const event = options.events[sequence];
+        if (event === undefined) throw new Error(`Missing burst event ${sequence}.`);
+        options.offer(event, sequence);
+        sequence += 1;
+      }
+      if (sequence < burstEnd) await options.yieldBetweenChunks();
+    }
+    if (sequence < options.events.length && options.pauseBetweenBursts) {
+      await options.pauseBetweenBursts();
+    }
+  }
+}
+
 type EventHistoryPerformanceConfig = {
   sustainedCount: number;
   sustainedEventsPerSecond: number;
@@ -372,15 +412,21 @@ async function appendBursts(
   const startedAt = performance.now();
   const accepted = [] as unknown as AcceptedAppends;
   accepted.emitterLatenessMs = [];
-  for (let sequence = 0; sequence < events.length; sequence += 1) {
-    const prepared = events[sequence];
-    if (!prepared) throw new Error(`Missing prepared burst event ${sequence}.`);
-    accepted.push(appendMeasured(history, prepared, pending));
-    if ((sequence + 1) % config.eventsPerBurst === 0 && sequence + 1 < events.length) {
+  await runBurstOfferSchedule({
+    events,
+    eventsPerBurst: config.eventsPerBurst,
+    offer(prepared) {
+      accepted.push(appendMeasured(history, prepared, pending));
+    },
+    async yieldBetweenChunks() {
+      sample();
+      await delay(0);
+    },
+    async pauseBetweenBursts() {
       sample();
       await delay(config.burstPauseMs);
     }
-  }
+  });
   sample();
   accepted.elapsedMs = performance.now() - startedAt;
   return accepted;

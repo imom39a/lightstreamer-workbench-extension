@@ -1271,13 +1271,43 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
 
 type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 
+const JOURNAL_READ_CHUNK_SIZE = 64;
+
+function yieldJournalRead(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
+async function materializeJournalRead(
+  records: readonly EvidenceRecord[],
+  latch: ReadLatch,
+  query: EvidenceQuery
+): Promise<JournalRead> {
+  const selected: CommittedEvidence[] = [];
+  let total = 0;
+  for (let offset = 0; offset < records.length; offset += JOURNAL_READ_CHUNK_SIZE) {
+    const end = Math.min(records.length, offset + JOURNAL_READ_CHUNK_SIZE);
+    for (let index = offset; index < end; index += 1) {
+      const record = records[index];
+      if (!record || record.intervalId !== latch.interval.id || record.sequence < latch.retainedRange!.first.sequence) {
+        continue;
+      }
+      const evidence = toCommittedEvidenceFromRecord(record);
+      if (matchesEvidenceQuery(evidence, query)) {
+        total += 1;
+        retainForJournalPage(selected, evidence, query);
+      }
+    }
+    if (end < records.length) await yieldJournalRead();
+  }
+  return { evidence: pageJournalSelection(selected, query, total), total };
+}
+
 function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, query: EvidenceQuery): Promise<JournalRead> {
   return new Promise((resolve, reject) => {
     const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
     const completed = transactionDone(transaction, "reading Event History");
     const request = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).openCursor();
-    const selected: CommittedEvidence[] = [];
-    let total = 0;
+    const records: EvidenceRecord[] = [];
     let settled = false;
     const fail = (error: unknown): void => {
       if (settled) return;
@@ -1287,10 +1317,16 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
     const finish = (): void => {
       if (settled) return;
       void completed.then(
-        () => {
+        async () => {
           if (settled) return;
-          settled = true;
-          resolve({ evidence: pageJournalSelection(selected, query, total), total });
+          try {
+            const result = await materializeJournalRead(records, latch, query);
+            if (settled) return;
+            settled = true;
+            resolve(result);
+          } catch (error) {
+            fail(error);
+          }
         },
         fail
       );
@@ -1307,13 +1343,7 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
         finish();
         return;
       }
-      if (record.intervalId === latch.interval.id && record.sequence >= latch.retainedRange.first.sequence) {
-        const evidence = toCommittedEvidenceFromRecord(record);
-        if (matchesEvidenceQuery(evidence, query)) {
-          total += 1;
-          retainForJournalPage(selected, evidence, query);
-        }
-      }
+      records.push(record);
       cursor.continue();
     };
     void completed.catch(fail);

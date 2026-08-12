@@ -10,8 +10,40 @@ import {
   representativeEventHistoryShapeFacts,
   utf8JsonBytes
 } from "../benchmarks/event-history-workloads";
+import {
+  EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE,
+  runBurstOfferSchedule
+} from "../benchmarks/event-history-performance-harness";
 
 describe("Event History benchmark workloads", () => {
+  it("yields between bounded burst offer chunks without changing capture order", async () => {
+    const events = Array.from({ length: ISSUE_16_TOTAL_EVENTS }, (_, index) => index);
+    const offered: number[] = [];
+    const taskSizes: number[] = [];
+    let currentTaskSize = 0;
+    let yields = 0;
+
+    await runBurstOfferSchedule({
+      events,
+      eventsPerBurst: ISSUE_16_TOTAL_EVENTS,
+      offer(event) {
+        offered.push(event);
+        currentTaskSize += 1;
+      },
+      async yieldBetweenChunks() {
+        taskSizes.push(currentTaskSize);
+        currentTaskSize = 0;
+        yields += 1;
+        await Promise.resolve();
+      }
+    });
+    taskSizes.push(currentTaskSize);
+
+    expect(offered).toEqual(events);
+    expect(Math.max(...taskSizes)).toBeLessThanOrEqual(EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE);
+    expect(yields).toBe(Math.ceil(ISSUE_16_TOTAL_EVENTS / EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE) - 1);
+  });
+
   const projectRoot =
     basename(process.cwd()) === "src" ? resolve(process.cwd(), "..") : process.cwd();
 
