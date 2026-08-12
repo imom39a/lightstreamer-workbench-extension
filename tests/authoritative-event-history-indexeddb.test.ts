@@ -1991,6 +1991,13 @@ describe("IndexedDB authoritative EventHistory", () => {
     const siblingName = authoritativeEventDatabaseName(siblingPanelSessionId);
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await createModernJournal(siblingPanelSessionId, 0);
+    const leaseKey = `lsew-events-panel-live-v2-${siblingName}`;
+    const storageValues = new Map([[leaseKey, String(Date.now())]]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storageValues.get(key) ?? null,
+      setItem: (key: string, value: string) => { storageValues.set(key, value); },
+      removeItem: (key: string) => { storageValues.delete(key); }
+    });
 
     const runtime: AuthoritativeEventDatabaseRuntime = {
       listDatabases: vi.fn(async () => [
@@ -2007,6 +2014,49 @@ describe("IndexedDB authoritative EventHistory", () => {
     );
     const sibling = await requestValue(indexedDB.open(siblingName));
     sibling.close();
+    vi.unstubAllGlobals();
+  });
+
+  it("sweeps an orphan current-schema journal while preserving a leased peer", async () => {
+    const currentPanelSessionId = "current-panel-session-with-orphan";
+    const leasedPanelSessionId = "leased-panel-session";
+    const orphanPanelSessionId = "orphan-panel-session";
+    const leasedName = authoritativeEventDatabaseName(leasedPanelSessionId);
+    const orphanName = authoritativeEventDatabaseName(orphanPanelSessionId);
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await Promise.all([
+      createModernJournal(leasedPanelSessionId, 1),
+      createModernJournal(orphanPanelSessionId, 1)
+    ]);
+    const storageValues = new Map([
+      [`lsew-events-panel-live-v2-${leasedName}`, String(Date.now())]
+    ]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storageValues.get(key) ?? null,
+      setItem: (key: string, value: string) => { storageValues.set(key, value); },
+      removeItem: (key: string) => { storageValues.delete(key); }
+    });
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [
+        { name: leasedName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION },
+        { name: orphanName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION }
+      ]),
+      requestLock: vi.fn(async (_name, _options, callback) => callback())
+    };
+
+    const history = await openEventHistory({ panelSessionId: currentPanelSessionId, runtime });
+    await history.close();
+
+    expect((runtime.requestLock as ReturnType<typeof vi.fn>).mock.calls.map((entry) => entry[0])).toContain(
+      legacyOwnerLock(orphanName)
+    );
+    expect((runtime.requestLock as ReturnType<typeof vi.fn>).mock.calls.map((entry) => entry[0])).not.toContain(
+      legacyOwnerLock(leasedName)
+    );
+    const remaining = await indexedDB.databases();
+    expect(remaining.map((database) => database.name)).toContain(leasedName);
+    expect(remaining.map((database) => database.name)).not.toContain(orphanName);
+    vi.unstubAllGlobals();
   });
 
   it("sweeps pre-ticket07 legacy databases using descriptor version and preserves newer ones", async () => {

@@ -61,6 +61,10 @@ export type { EventHistory };
 export const AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT = 256;
 export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 2_097_152;
 
+const LIVE_PANEL_LEASE_PREFIX = "lsew-events-panel-live-v2-";
+const LIVE_PANEL_LEASE_TTL_MS = 30_000;
+const LIVE_PANEL_LEASE_HEARTBEAT_MS = 5_000;
+
 type ControlRecord = {
   key: typeof AUTHORITATIVE_EVENT_CONTROL_KEY;
   schemaVersion: number;
@@ -128,6 +132,7 @@ export async function createIndexedDbEventHistory(
   const runtime = authoritativeEventDatabaseRuntime(options.runtime);
   const databaseName = authoritativeEventDatabaseName(panelSessionId);
   const canonicalPanelSessionId = parseAuthoritativeEventDatabaseName(databaseName)?.panelSessionId ?? panelSessionId;
+  const releaseLiveLease = claimLivePanelLease(databaseName);
   const ownerName = authoritativeOwnershipLockName(databaseName);
   let releaseOwnership: (() => void) | null = null;
   const ownershipRelease = new Promise<void>((resolve) => {
@@ -153,6 +158,7 @@ export async function createIndexedDbEventHistory(
         release();
       }
       database.db.close();
+      releaseLiveLease();
     }
   };
 
@@ -170,9 +176,9 @@ export async function createIndexedDbEventHistory(
   };
 
   const historyAcquisition = runtime.requestLock(ownerName, { mode: "exclusive", ifAvailable: true }, async () => {
+    let database: AuthoritativeEventDatabase | null = null;
     try {
-      await startupSweep();
-      const database = await openAuthoritativeEventDatabase(databaseName);
+      database = await openAuthoritativeEventDatabase(databaseName);
       const loaded = await loadJournal(database, canonicalPanelSessionId);
       const closeJournal = async (): Promise<void> => {
         await options.closeJournal?.();
@@ -182,27 +188,32 @@ export async function createIndexedDbEventHistory(
         ...options,
         closeJournal
       });
+      const ownedDatabase = database;
       const ownedHistory: EventHistory = {
         ...baseHistory,
-        close: () => closeCurrent(baseHistory, database)
+        close: () => closeCurrent(baseHistory, ownedDatabase)
       };
+      await startupSweep();
       settled = true;
       historyResolve(ownedHistory);
       await ownershipRelease;
       return ownedHistory;
     } catch (error) {
+      database?.db.close();
       settleHistoryFailure(error);
       throw error;
     }
   });
   void historyAcquisition.then((owned) => {
     if (owned === null) {
+      releaseLiveLease();
       settleHistoryFailure(new AuthoritativeDatabaseOpenError(
         "OWNERSHIP_COULD_NOT_BE_CONFIRMED",
         `Could not confirm exclusive ownership of ${databaseName}.`
       ));
     }
   }).catch((error) => {
+    releaseLiveLease();
     settleHistoryFailure(error);
   });
   const history = await historyReady;
@@ -215,6 +226,52 @@ const AUTHORITATIVE_EVENT_DATABASE_LEGACY_NAME_RE = /^lsew-history-(.+)$/;
 
 function authoritativeOwnershipLockName(databaseName: string): string {
   return `${AUTHORITATIVE_OWNERSHIP_LOCK_NAME_PREFIX}-${databaseName}`;
+}
+
+function livePanelLeaseKey(databaseName: string): string {
+  return `${LIVE_PANEL_LEASE_PREFIX}${databaseName}`;
+}
+
+function claimLivePanelLease(databaseName: string): () => void {
+  const storage = typeof localStorage === "undefined" ? null : localStorage;
+  if (!storage) return () => undefined;
+  const key = livePanelLeaseKey(databaseName);
+  let released = false;
+  const refresh = (): void => {
+    if (released) return;
+    try {
+      storage.setItem(key, String(Date.now()));
+    } catch {
+      // IndexedDB ownership remains authoritative when storage is unavailable.
+    }
+  };
+  refresh();
+  const heartbeat = globalThis.setInterval(refresh, LIVE_PANEL_LEASE_HEARTBEAT_MS);
+  return () => {
+    if (released) return;
+    released = true;
+    globalThis.clearInterval(heartbeat);
+    try {
+      storage.removeItem(key);
+    } catch {
+      // Best effort; the lease will expire and be treated as an orphan.
+    }
+  };
+}
+
+function hasFreshLivePanelLease(databaseName: string): boolean {
+  if (typeof localStorage === "undefined") return false;
+  const key = livePanelLeaseKey(databaseName);
+  try {
+    const timestamp = Number(localStorage.getItem(key));
+    if (Number.isFinite(timestamp) && Date.now() - timestamp < LIVE_PANEL_LEASE_TTL_MS) {
+      return true;
+    }
+    localStorage.removeItem(key);
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 function parseLegacyAuthoritativeEventDatabaseName(
@@ -264,13 +321,13 @@ async function runStartupSweep(
       unknownNewerVersion = true;
       continue;
     }
-    // Current-schema journals may belong to another live DevTools panel in
-    // this extension origin. Their ownership is scoped to that panel session;
-    // startup in one panel must never erase a sibling panel's journal.
-    if (identity.schemaVersion === AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+    if (name === databaseName) {
       continue;
     }
-    if (name === databaseName) {
+    // A current-schema journal with a fresh lease belongs to a live sibling
+    // panel. Without a lease it is crash residue and may be swept under its
+    // own Web Lock, just like an older-schema orphan.
+    if (hasFreshLivePanelLease(name)) {
       continue;
     }
     const result = await runtime.requestLock(
