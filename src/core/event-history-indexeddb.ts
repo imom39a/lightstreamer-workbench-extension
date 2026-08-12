@@ -1339,10 +1339,34 @@ function validateEvidenceRecord(record: EvidenceRecord, intervalId: string, expe
 
 type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 
-const JOURNAL_READ_CHUNK_SIZE = 8;
+const JOURNAL_READ_MAX_RECORDS_PER_CHUNK = 64;
+const JOURNAL_READ_TIME_BUDGET_MS = 8;
 
-function yieldJournalRead(): Promise<void> {
-  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+type JournalReadYield = () => Promise<void>;
+
+function createJournalReadYield(): JournalReadYield {
+  const browserGlobals = globalThis as typeof globalThis & {
+    MessageChannel?: typeof MessageChannel;
+  };
+  const MessageChannelConstructor = browserGlobals.MessageChannel;
+  if (typeof MessageChannelConstructor === "function") {
+    const channel = new MessageChannelConstructor();
+    let resolveYield: (() => void) | null = null;
+    channel.port1.onmessage = () => {
+      const resolve = resolveYield;
+      resolveYield = null;
+      resolve?.();
+    };
+    return () => new Promise<void>((resolve) => {
+      resolveYield = resolve;
+      channel.port2.postMessage(undefined);
+    });
+  }
+  return () => new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
+function journalReadNow(): number {
+  return typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : Date.now();
 }
 
 async function materializeJournalRead(
@@ -1355,10 +1379,19 @@ async function materializeJournalRead(
   const retainedRange = latch.retainedRange;
   if (retainedRange === null) return { evidence: [], total: 0 };
   const orderedRecords = [...records].sort((left, right) => left.sequence - right.sequence);
-  for (let offset = 0; offset < orderedRecords.length; offset += JOURNAL_READ_CHUNK_SIZE) {
-    const end = Math.min(orderedRecords.length, offset + JOURNAL_READ_CHUNK_SIZE);
-    for (let index = offset; index < end; index += 1) {
-      const record = orderedRecords[index];
+  let offset = 0;
+  let yieldJournalRead: JournalReadYield | null = null;
+  while (offset < orderedRecords.length) {
+    const startedAt = journalReadNow();
+    let processed = 0;
+    while (
+      offset < orderedRecords.length
+      && processed < JOURNAL_READ_MAX_RECORDS_PER_CHUNK
+      && (processed === 0 || journalReadNow() - startedAt < JOURNAL_READ_TIME_BUDGET_MS)
+    ) {
+      const record = orderedRecords[offset];
+      offset += 1;
+      processed += 1;
       if (!record || record.intervalId !== latch.interval.id || record.sequence < retainedRange.first.sequence) continue;
       const evidence = toCommittedEvidenceFromRecord(record);
       if (matchesEvidenceQuery(evidence, query)) {
@@ -1366,7 +1399,10 @@ async function materializeJournalRead(
         retainForJournalPage(selected, evidence, query);
       }
     }
-    if (end < orderedRecords.length) await yieldJournalRead();
+    if (offset < orderedRecords.length) {
+      if (yieldJournalRead === null) yieldJournalRead = createJournalReadYield();
+      await yieldJournalRead();
+    }
   }
   return { evidence: pageJournalSelection(selected, query, total), total };
 }
