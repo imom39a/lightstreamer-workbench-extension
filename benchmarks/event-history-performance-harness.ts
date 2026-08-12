@@ -529,8 +529,15 @@ type HarnessResult = Readonly<{
   config: EventHistoryPerformanceConfig;
   shapeFacts: ReturnType<typeof representativeEventHistoryShapeFacts>;
   cells: readonly EventHistoryPerformanceCell[];
+  cellCleanupGc: readonly InterCellGcEvidence[];
   terminalScenarios: readonly EventHistoryPerformanceTerminalScenario[];
   checkpointScenarios: readonly EventHistoryPerformanceCheckpointScenario[];
+}>;
+
+export type InterCellGcEvidence = Readonly<{
+  afterCellIndex: number;
+  gcPasses: 3;
+  phase: "BETWEEN_CELLS";
 }>;
 
 type RetainedHeapSession = Readonly<{
@@ -856,6 +863,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
     const cells: EventHistoryPerformanceCell[] = [];
+    const cellCleanupGc: InterCellGcEvidence[] = [];
     let cellIndex = 0;
     for (const adapter of ["indexeddb", "memory"] as const) {
       for (const workload of ["sustained", "burst"] as const) {
@@ -881,7 +889,38 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
               settled: 0,
               query: null
             });
-            cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard));
+            if (cellIndex === 36) {
+              cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard));
+              continue;
+            }
+            const completed = await runCellThenCollectGarbage(
+              () => runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard),
+              cellIndex,
+              runGuard,
+              async (afterCellIndex, guard) => {
+                publishHarnessProgress({
+                  operationId,
+                  phase: "cells",
+                  stage: "cell-cleanup-gc",
+                  substage: "cell-cleanup-gc",
+                  sample,
+                  trigger: null,
+                  scenario: null,
+                  cellIndex: afterCellIndex,
+                  cellTotal: 36,
+                  adapter,
+                  workload,
+                  shape,
+                  workloadPhase: null,
+                  offered: null,
+                  settled: null,
+                  query: null
+                });
+                return collectGarbageBetweenCells(afterCellIndex, guard);
+              }
+            );
+            cells.push(completed.cell);
+            cellCleanupGc.push(completed.gc);
           }
         }
       }
@@ -942,6 +981,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       config,
       shapeFacts: representativeEventHistoryShapeFacts(),
       cells,
+      cellCleanupGc,
       terminalScenarios,
       checkpointScenarios
     };
@@ -1111,6 +1151,32 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     return true;
   }
 };
+
+export async function runCellThenCollectGarbage<T>(
+  runMeasuredCell: () => Promise<T>,
+  afterCellIndex: number,
+  guard: HarnessStageGuard,
+  collect: (afterCellIndex: number, guard: HarnessStageGuard) => Promise<InterCellGcEvidence> = collectGarbageBetweenCells
+): Promise<Readonly<{ cell: T; gc: InterCellGcEvidence }>> {
+  const cell = await runMeasuredCell();
+  const gc = await collect(afterCellIndex, guard);
+  return Object.freeze({ cell, gc });
+}
+
+export async function collectGarbageBetweenCells(
+  afterCellIndex: number,
+  guard: HarnessStageGuard,
+  collect: (() => void) | null = (globalThis as typeof globalThis & { gc?: () => void }).gc ?? null
+): Promise<InterCellGcEvidence> {
+  if (!guard.isActive()) throw new Error("Inter-cell garbage collection was cancelled.");
+  if (typeof collect !== "function") {
+    throw new Error("Inter-cell garbage collection requires Chrome --expose-gc support.");
+  }
+  await delay(0);
+  if (!guard.isActive()) throw new Error("Inter-cell garbage collection was cancelled.");
+  for (let pass = 0; pass < 3; pass += 1) collect();
+  return Object.freeze({ afterCellIndex, gcPasses: 3, phase: "BETWEEN_CELLS" });
+}
 
 async function runCell(
   adapter: "indexeddb" | "memory",

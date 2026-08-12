@@ -35,6 +35,7 @@ describe("Event History performance startup fail-closed seams", () => {
       const args = chromeLaunchArguments("/tmp/lsew-profile", "http://127.0.0.1:4173/", "darwin");
       assert.equal(args.includes("--activate-on-launch"), true);
       assert.equal(args.includes("--headless"), false);
+      assert.equal(args.includes("--js-flags=--expose-gc"), true);
       assert.equal(args.at(-1), "http://127.0.0.1:4173/");
     `);
   });

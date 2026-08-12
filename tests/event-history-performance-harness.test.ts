@@ -17,6 +17,7 @@ import {
   createHarnessStageGuard,
   captureCellWorkloadFactScalars,
   burstOfferedEventsPerSecond,
+  collectGarbageBetweenCells,
   HarnessStageTimeout,
   measureCheckpointLiveCapture,
   measureAuthoritativeFullQuery,
@@ -26,6 +27,7 @@ import {
   settleReceiptStage,
   publishHarnessProgress,
   runCheckpointScenario,
+  runCellThenCollectGarbage,
   runTerminalScenario,
   waitForBoundedFrame,
   withStageDeadline,
@@ -57,6 +59,32 @@ describe("Event History performance checkpoint workload", () => {
   it("derives burst offer rate from enqueue duration only", () => {
     expect(burstOfferedEventsPerSecond(1_692, 2_000)).toBe(846);
     expect(burstOfferedEventsPerSecond(10, 0)).toBe(10_000);
+  });
+
+  it("collects exactly three times only after the measured cell and cleanup resolve", async () => {
+    const order: string[] = [];
+    const result = await runCellThenCollectGarbage(
+      async () => {
+        order.push("query");
+        await Promise.resolve();
+        order.push("cleanup");
+        return "cell-result";
+      },
+      7,
+      createHarnessStageGuard(),
+      async (afterCellIndex, guard) => {
+        expect(order).toEqual(["query", "cleanup"]);
+        return collectGarbageBetweenCells(afterCellIndex, guard, () => order.push("gc"));
+      }
+    );
+
+    expect(order).toEqual(["query", "cleanup", "gc", "gc", "gc"]);
+    expect(result).toEqual({ cell: "cell-result", gc: { afterCellIndex: 7, gcPasses: 3, phase: "BETWEEN_CELLS" } });
+  });
+
+  it("fails closed when exposed inter-cell garbage collection is unavailable", async () => {
+    await expect(collectGarbageBetweenCells(1, createHarnessStageGuard(), null))
+      .rejects.toThrow(/requires Chrome --expose-gc/u);
   });
 
   it("represents the real BEGIN/CHUNK/COMPLETE production staging sequence without journaling frames", () => {

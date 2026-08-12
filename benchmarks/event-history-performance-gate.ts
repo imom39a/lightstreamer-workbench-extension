@@ -223,6 +223,7 @@ export type EventHistoryPerformanceReport = Readonly<{
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
   cells: readonly EventHistoryPerformanceCell[];
+  cellCleanupGc: readonly EventHistoryPerformanceInterCellGc[];
   terminalScenarios: readonly EventHistoryPerformanceTerminalScenario[];
   checkpointScenarios: readonly EventHistoryPerformanceCheckpointScenario[];
   heapSamples: readonly EventHistoryPerformanceHeapSample[];
@@ -231,6 +232,12 @@ export type EventHistoryPerformanceReport = Readonly<{
     retainedHeapBytes: readonly number[];
     strictMonotonicGrowth: boolean;
   }>;
+}>;
+
+export type EventHistoryPerformanceInterCellGc = Readonly<{
+  afterCellIndex: number;
+  gcPasses: 3;
+  phase: "BETWEEN_CELLS";
 }>;
 
 export type EventHistoryPerformanceReference = Readonly<{
@@ -288,6 +295,7 @@ export function classifyEventHistoryPerformance(
       `Expected ${expectedKeys.size * SAMPLE_COUNT} matrix samples, received ${validReport.cells.length}.`
     );
   }
+  validateInterCellGc(validReport.cellCleanupGc, failures);
 
   for (const cell of validReport.cells) {
     const key = cellKey(cell);
@@ -437,6 +445,7 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && isRecord(environment) && environment.chromeMajor === 151 && typeof environment.platformClass === "string"
     && typeof environment.architectureClass === "string" && environment.headless === false
     && Array.isArray(value.cells) && value.cells.every(isPerformanceCell)
+    && Array.isArray(value.cellCleanupGc) && value.cellCleanupGc.every(isInterCellGc)
     && Array.isArray(value.terminalScenarios) && value.terminalScenarios.every(isTerminalScenario)
     && Array.isArray(value.checkpointScenarios) && value.checkpointScenarios.every(isCheckpointScenario)
     && Array.isArray(value.heapSamples) && value.heapSamples.every(isHeapSample)
@@ -445,6 +454,21 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && lifecycle.retainedHeapBytes.length === SAMPLE_COUNT && lifecycle.retainedHeapBytes.every(isFiniteNumber)
     && isBoolean(lifecycle.strictMonotonicGrowth);
   return valid;
+}
+
+function isInterCellGc(value: unknown): value is EventHistoryPerformanceInterCellGc {
+  return isRecord(value)
+    && Number.isSafeInteger(value.afterCellIndex)
+    && value.gcPasses === 3
+    && value.phase === "BETWEEN_CELLS";
+}
+
+function validateInterCellGc(evidence: readonly EventHistoryPerformanceInterCellGc[], failures: string[]): void {
+  const expected = Array.from({ length: 35 }, (_, index) => index + 1);
+  const actual = evidence.map(({ afterCellIndex }) => afterCellIndex);
+  if (actual.length !== expected.length || actual.some((cellIndex, index) => cellIndex !== expected[index])) {
+    failures.push("Inter-cell cleanup must record exactly one ordered three-pass GC boundary after cells 1 through 35.");
+  }
 }
 
 function isTerminalScenario(value: unknown): value is EventHistoryPerformanceTerminalScenario {

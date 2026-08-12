@@ -229,6 +229,11 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
     source: { revision: "clean-reference-revision", dirty: false },
     environment: { chromeMajor: 151, platformClass: "darwin", architectureClass: "arm64", headless: false },
     cells,
+    cellCleanupGc: Array.from({ length: 35 }, (_, index) => ({
+      afterCellIndex: index + 1,
+      gcPasses: 3 as const,
+      phase: "BETWEEN_CELLS" as const
+    })),
     terminalScenarios: ["indexeddb", "memory"].flatMap((adapter) => [
       {
         adapter: adapter as "indexeddb" | "memory",
@@ -288,6 +293,16 @@ function referenceFrom(reportValue: EventHistoryPerformanceReport): EventHistory
 }
 
 describe("Event History real-Chrome performance gate classifier", () => {
+  it("fails unless all 35 ordered inter-cell three-pass GC boundaries are recorded", () => {
+    const baseline = report();
+    const missing = classifyEventHistoryPerformance({ ...baseline, cellCleanupGc: baseline.cellCleanupGc.slice(0, -1) }, referenceFrom(baseline));
+    const reordered = classifyEventHistoryPerformance({ ...baseline, cellCleanupGc: [...baseline.cellCleanupGc].reverse() }, referenceFrom(baseline));
+
+    expect(missing.verdict).toBe("FAIL");
+    expect(reordered.verdict).toBe("FAIL");
+    expect(missing.failures.some((failure) => failure.includes("cells 1 through 35"))).toBe(true);
+  });
+
   it("returns PASS only when all three samples and the pinned reference pass", () => {
     const current = report();
     const decision = classifyEventHistoryPerformance(current, referenceFrom(current));
