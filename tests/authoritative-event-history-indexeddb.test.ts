@@ -1188,7 +1188,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(
         Array.from({ length: count }, (_, index) => `cooperative-${index}`)
       );
-      expect(timerSpy).toHaveBeenCalled();
+      expect(timerSpy.mock.calls.filter(([, delay]) => delay === 0)).toHaveLength(Math.ceil(count / 16) - 1);
     } finally {
       timerSpy.mockRestore();
       await history.close();
@@ -1252,6 +1252,36 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     continueSpy.mockRestore();
     await history.close();
+  });
+
+  it("pages a bounded Lightstreamer read without decoding the retained journal tail", async () => {
+    const history = await freshHistory("indexed-candidate-kind-page");
+    const count = 120;
+    for (let index = 0; index < count; index += 1) {
+      await history.offer(candidate(`kind-page-${index}`)).settled;
+    }
+
+    const parseSpy = vi.spyOn(JSON, "parse");
+    try {
+      const result = await history.read({ candidateKind: "lightstreamer", limit: 60, order: "desc" });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          total: count,
+          committedEvidenceBoundary: { sequence: count, eventId: `kind-page-${count - 1}` }
+        }
+      });
+      if (!result.ok) throw new Error("Expected the bounded candidate-kind read to succeed.");
+      expect(result.value.evidence).toHaveLength(60);
+      expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(
+        Array.from({ length: 60 }, (_, index) => `kind-page-${count - index - 1}`)
+      );
+      expect(parseSpy).toHaveBeenCalledTimes(60);
+    } finally {
+      parseSpy.mockRestore();
+      await history.close();
+    }
   });
 
   it("does not resolve a read before its readonly transaction completes", async () => {

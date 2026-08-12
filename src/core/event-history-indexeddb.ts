@@ -1339,7 +1339,7 @@ function validateEvidenceRecord(record: EvidenceRecord, intervalId: string, expe
 
 type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 
-const JOURNAL_READ_CHUNK_SIZE = 64;
+const JOURNAL_READ_CHUNK_SIZE = 16;
 
 function yieldJournalRead(): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
@@ -1491,6 +1491,70 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
       nextToken();
     };
     const facetTokens = exactFacetQueryTokens(query);
+    const canPageCandidateKind = query.limit !== undefined
+      && query.candidateKind !== undefined
+      && query.eventId === undefined
+      && query.filters === undefined
+      && query.find === undefined
+      && query.afterSequence === undefined;
+    if (canPageCandidateKind) {
+      const checkpointToken = facet("kind", "topology-checkpoint");
+      const countRequest = store.index("facets").count(exactFacetCursorKey(checkpointToken));
+      let kindCountReady = false;
+      let cursorDone = false;
+      const finishCandidateKind = (): void => {
+        if (!kindCountReady || !cursorDone || settled) return;
+        finish();
+      };
+      countRequest.onerror = () => fail(countRequest.error ?? new Error("IndexedDB Evidence kind count failed."));
+      countRequest.onsuccess = () => {
+        const checkpointCount = countRequest.result;
+        total = query.candidateKind === "topology-checkpoint"
+          ? checkpointCount
+          : Math.max(0, latch.retainedCount - checkpointCount);
+        kindCountReady = true;
+        finishCandidateKind();
+      };
+      const limit = Math.max(0, Math.floor(query.limit));
+      if (limit === 0) {
+        cursorDone = true;
+        finishCandidateKind();
+        return;
+      }
+      const offset = query.offsetFromNewest === undefined
+        ? 0
+        : Math.max(0, Math.floor(query.offsetFromNewest));
+      const pageStop = offset + limit;
+      const direction = query.offsetFromNewest !== undefined || query.order === "desc" ? "prev" : "next";
+      const request = store.openCursor(undefined, direction);
+      let matched = 0;
+      request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence candidate-kind read failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          cursorDone = true;
+          finishCandidateKind();
+          return;
+        }
+        const record = cursor.value as EvidenceRecord;
+        if (latch.retainedRange !== null
+          && record.sequence <= latch.retainedRange.last.sequence
+          && record.sequence >= latch.retainedRange.first.sequence
+          && record.intervalId === latch.interval.id
+          && recordMatchesCandidateKind(record, query.candidateKind!)) {
+          matched += 1;
+          if (matched > offset) selected.push(toCommittedEvidenceFromRecord(record));
+          if (matched >= pageStop) {
+            cursorDone = true;
+            finishCandidateKind();
+            return;
+          }
+        }
+        cursor.continue();
+      };
+      void completed.catch(fail);
+      return;
+    }
     if (query.eventId !== undefined) {
       const request = store.index("eventIdentity").get(query.eventId);
       request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence identity read failed."));
@@ -1629,6 +1693,11 @@ function exactFacetQueryTokens(query: EvidenceQuery): string[] {
     if (value !== undefined && value !== "") tokens.push(facet(name, value));
   }
   return tokens;
+}
+
+function recordMatchesCandidateKind(record: EvidenceRecord, candidateKind: NonNullable<EvidenceQuery["candidateKind"]>): boolean {
+  const isCheckpoint = record.facets.includes(facet("kind", "topology-checkpoint"));
+  return candidateKind === "topology-checkpoint" ? isCheckpoint : !isCheckpoint;
 }
 
 function pageJournalSelection(selected: readonly CommittedEvidence[], query: EvidenceQuery, total: number): CommittedEvidence[] {
