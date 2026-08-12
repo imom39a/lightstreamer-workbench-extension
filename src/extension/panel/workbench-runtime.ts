@@ -2003,6 +2003,7 @@ class Runtime implements WorkbenchRuntime {
             this.liveEvidence = emptyEvidence;
             if (this.visible) this.publish();
             else this.hiddenDirty = true;
+            this.drainPassiveRefresh();
             return;
           }
           this.evidenceQueryPending = false;

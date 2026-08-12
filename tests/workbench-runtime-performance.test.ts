@@ -209,6 +209,47 @@ describe("production React runtime performance boundary seam", () => {
     await history.close();
   });
 
+  it("drains a passive refresh queued behind an unsuccessful Evidence read", async () => {
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-read-recovery" });
+    const scheduler = createFrameScheduler();
+    type ReadResult = Awaited<ReturnType<typeof history.read>>;
+    let resolveInitialRead: ((result: ReadResult) => void) | undefined;
+    let readCalls = 0;
+    const runtime = createWorkbenchRuntime({
+      history: {
+        ...history,
+        read(query) {
+          readCalls += 1;
+          if (readCalls === 1) {
+            return new Promise<ReadResult>((resolve) => {
+              resolveInitialRead = resolve;
+            });
+          }
+          return history.read(query);
+        }
+      },
+      scheduler
+    });
+    await flushPromises();
+    // The runtime also performs an independent projection-hydration read.
+    expect(readCalls).toBe(2);
+
+    await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "read-recovery")).settled;
+    scheduler.flushFrame();
+    await flushPromises();
+    expect(readCalls).toBe(2);
+
+    resolveInitialRead?.({
+      ok: false,
+      problem: { code: "HISTORY_CLOSED", message: "Synthetic unsuccessful read." }
+    });
+    await flushPromises();
+
+    expect(readCalls).toBe(3);
+    runtime.dispose();
+    await history.close();
+  });
+
   it("lets the production panel hook report the rendered boundary", async () => {
     const visible: number[] = [];
     const history = createInMemoryEventHistory({ panelSessionId: "performance-react-hook" });
