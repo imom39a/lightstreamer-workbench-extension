@@ -54,7 +54,7 @@ It captures client, Session, Subscription, listener, Item Update, snapshot, and 
 Key features:
 
 - Runtime Scope for choosing the inspected page, client, Session, Subscription, item, or listener while retired objects remain readable but cannot become Local Injection targets.
-- Ordered Evidence with independent Find, Filter, selection, Capture, Coverage, and Live/Frozen controls, plus bounded rendering backed by complete committed current-session history.
+- Ordered Evidence with independent Find, Filter, selection, Capture, Coverage, and Live/Frozen controls, plus bounded rendering backed by committed Evidence through the current History Interval's Committed Evidence Boundary.
 - Context for the active runtime object or selected Evidence, including immutable raw Evidence, COMMAND lifecycle detail, and explicit provenance and limitations.
 - Side-by-side Observed Server COMMAND State and Local Effective COMMAND State projections; neither is presented as authoritative server state.
 - Exactly one protected Local Injection Draft, created from an immutable captured Source or authored from a live COMMAND scope.

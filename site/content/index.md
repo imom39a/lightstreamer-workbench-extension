@@ -77,7 +77,8 @@
     <h2>Keep the investigation useful without turning it into a data service.</h2>
   </div>
   <ul class="check-list">
-    <li>Current-DevTools-session Evidence uses temporary IndexedDB-backed batches with an in-memory fallback.</li>
+    <li>One Panel Session owns one temporary Event History: normal IndexedDB capacity is 10,000 records/64 MiB, startup memory fallback is 5,000 records/32 MiB, and the selected adapter stays fixed.</li>
+    <li>Complete History means accepted Evidence through the current History Interval's Committed Evidence Boundary; controlled Close attempts erasure, abnormal cleanup uses an ownership-safe guarded sweep, and a new Panel Session never replays residual data.</li>
     <li>Versioned JSON and offline HTML exports are deliberate downloads with credential exclusion.</li>
     <li>Version 2 and this website ship without analytics, tracking, accounts, advertising, or remote error logging.</li>
     <li>Observation limits remain explicit when instrumentation or runtime coverage is incomplete.</li>

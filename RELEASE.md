@@ -55,7 +55,7 @@ Complete History means committed Evidence through the current History Interval's
 
 Controlled Close attempts erasure and reports the confirmed result. Abnormal termination relies on a later ownership-safe sweep; residual temporary data may remain until Chrome next runs the extension. A new Panel Session starts empty and never replays stale Evidence. Deliberate user exports are the only Capture-derived artifacts intended to outlive the session.
 
-The release gate records an accepted `REVIEW` disposition for the delivered real-Chrome Event History cutover with zero absolute failures; this is not the same as `PASS`, and any `FAIL` remains a release blocker. The exact final current-HEAD report, environment, artifact hashes, visual-QA record, and package inspection belong in the related internal Project ticket rather than in this general release procedure.
+The orchestrator disposition for the prior real-Chrome Event History candidate is accepted `REVIEW` with zero absolute failures; this is not `PASS`, and any `FAIL` remains a release blocker. Final current-HEAD evidence, maintainer disposition, environment, artifact hashes, visual-QA record, and package inspection remain pending in the related internal Project ticket; this note does not claim final release approval.
 
 The packaged manifest must remain Manifest V3 without a new storage permission or `unlimitedStorage`. Before publication, inspect both `dist/manifest.json` and the ZIP-root `manifest.json`, confirm the package audit passes, and verify that the Store privacy answers, [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and `store-listing/LISTING.md` describe the same local, session-scoped behavior.
 

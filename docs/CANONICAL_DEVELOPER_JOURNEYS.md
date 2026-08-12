@@ -56,7 +56,7 @@ Where did behavior diverge: capture and coverage, client or Session lifecycle, S
 - Current Capture health and any known coverage limitation.
 - Detected clients, current or recent Sessions, and active or relevant Subscriptions.
 - Subscription identity and configuration, including mode, items, fields, snapshot state, and lifecycle.
-- Complete ordered evidence for the selected Subscription, item, or COMMAND key.
+- Accepted ordered Evidence for the selected Subscription, item, or COMMAND key through the current History Interval's Committed Evidence Boundary.
 - The distinction between a Logical Update and its Update Deliveries, including listener identity where available.
 - Captured values and changed fields, with raw evidence available for verification.
 - For COMMAND, Observed Server COMMAND State and Local Effective COMMAND State presented as distinct projections.
@@ -90,9 +90,15 @@ Workbench may show uncertainty when coverage cannot support a stronger claim. Ab
 - No Lightstreamer client or relevant activity has been detected.
 - Capture connected after the relevant lifecycle began or otherwise has limited coverage.
 - The DevTools bridge or inspected page is disconnected, navigating, or reloading.
-- Current-DevTools-session history is using its in-memory fallback or has a material retention limitation; this limits History Capacity without changing Observation Coverage.
+- The current Panel Session uses the lower-capacity memory fallback or has a material retention limitation; this limits History Capacity without changing Observation Coverage.
 - High event volume obscures the relevant interval; the developer must be able to Freeze, filter, and preserve selection without stopping Capture.
 - The selected runtime object retired while evidence was being inspected; historical evidence remains read-only and clearly distinguished from a live target.
+
+One Panel Session owns one temporary Event History. Normal IndexedDB capacity is
+10,000 Evidence records or 64 MiB; startup memory fallback is 5,000 records or
+32 MiB, with the adapter fixed before the first offer. Controlled Close attempts
+erasure and reports its outcome; abnormal cleanup may leave residual data until
+an ownership-safe guarded sweep, and a new Panel Session never replays it.
 
 ## Journey 2: reproduce or vary behavior with Local Injection
 

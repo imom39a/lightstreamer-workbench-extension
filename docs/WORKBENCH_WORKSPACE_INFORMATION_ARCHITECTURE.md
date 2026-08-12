@@ -136,7 +136,7 @@ Advanced tools inherit the active scope or selected evidence and remain one inte
 - complete COMMAND lifecycle analysis;
 - Frozen and high-volume session history;
 - versioned, credential-safe JSON or offline HTML export;
-- complete evidence copy without rendering all retained rows.
+- complete current-interval Evidence copy through the Committed Evidence Boundary without rendering all retained rows.
 
 Advanced tools do not become permanent top-level destinations. Opening and closing them preserves the originating scope, selection, filters, scroll anchor, Live/Frozen state, and safe draft.
 

@@ -34,7 +34,7 @@ The accepted contracts now require:
 - Exactly one target-anchored Local Injection Draft today. A future Draft Set does not imply ordering, timing, shared targets, or multi-event execution.
 - New permanent surfaces and shared UI abstractions to pass the explicit evidence and maintainer-approval gates.
 
-Consequently, this reassessment removes already-shipped foundations, narrows several oversized proposals into contextual lenses, and demotes controls whose main use case is already solved by Frozen Evidence and durable current-session history.
+Consequently, this reassessment removes already-shipped foundations, narrows several oversized proposals into contextual lenses, and demotes controls whose main use case is already solved by Frozen Evidence and accepted Evidence bounded by the current History Interval's Committed Evidence Boundary.
 
 ## Current Product Baseline
 
@@ -42,10 +42,10 @@ The redesigned production panel now provides:
 
 - A React **Scoped Evidence Workspace** with structural Page → client → Session → Subscription → item → listener Scope.
 - Live and retired runtime structure, Session recovery epochs, bounded historical Sessions, subscription configuration, duplicate/overlap findings, snapshot phase, listener and delivery counts, and COMMAND generation summaries.
-- Complete ordered current-session Evidence backed by one Panel Session-owned Event History, with an in-memory fallback, bounded query windows, high-volume navigation, and deliberate Clear. Normal capacity is 10,000 records/64 MiB; startup memory fallback is 5,000 records/32 MiB.
+- Accepted ordered Evidence through the current History Interval's Committed Evidence Boundary, backed by one Panel Session-owned Event History, with bounded query windows, high-volume navigation, and deliberate Clear. Normal capacity is 10,000 records/64 MiB; startup memory fallback is 5,000 records/32 MiB, and the adapter is fixed for the session.
 - A committed Evidence boundary, History Intervals, exact Clear cuts, fail-closed terminal stops, fixed adapter selection, and ownership-safe abnormal cleanup now define the shipped history contract. New Panel Sessions start empty and never replay stale Evidence.
 - Independent Scope, text Filter, Find, Evidence selection, Context, and Live/Frozen state. Frozen Evidence continues Capture and reports newer matching Evidence.
-- Full retained-Evidence copy plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in complete evidence, category redaction, and unconditional credential exclusion.
+- Full committed-Evidence copy for the current interval plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in interval-bounded evidence, category redaction, and unconditional credential exclusion.
 - Named **Observed Server COMMAND State** and **Local Effective COMMAND State** projections.
 - Exactly one protected Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, optional Source comparison, validation, Review, explicit local delivery, persistent outcome, and marked Local Evidence.
 - Primary public-API instrumentation plus WebSocket/TLCP fallback, including documented connection and subscription metadata, `onPropertyChange`, real maximum frequency, and second-level COMMAND error/loss callbacks.

@@ -134,7 +134,7 @@ Visual compatibility means conformance to the accepted prototype and UI standard
 | --- | --- | --- |
 | Capture | Remains observational; never alters or suppresses application updates or messages. Capture operation stays distinct from Coverage and Live/Frozen view state. | Shared Capture scenarios plus unpacked-extension fixture. |
 | Official Web Client instrumentation | Existing MAIN-world instrumentation and typed bridge envelopes remain unchanged unless separately approved. React never enters inspected-page code. | Build bundle audit and official-client fixture. |
-| Event history | Ordered IndexedDB batches, in-memory fallback, current-DevTools-session ownership, exact History Interval cuts, qualified Complete History through the Committed Evidence Boundary, fail-closed stopping, and guarded cleanup remain intact. | In-memory and IndexedDB sustained-Capture, Clear/Close, terminal, and lifecycle scenarios. |
+| Event history | Ordered IndexedDB batches, in-memory fallback, current Panel Session ownership, exact History Interval cuts, qualified Complete History through the Committed Evidence Boundary, fail-closed stopping, and guarded cleanup remain intact. | In-memory and IndexedDB sustained-Capture, Clear/Close, terminal, and lifecycle scenarios. |
 | Scope and Topology | Structural Topology chooses Scope; Evidence selection never silently changes it. Retired objects remain readable but cannot be targets. | Live, retired, limited-Coverage, and disconnected scenarios. |
 | COMMAND projections | Observed Server uses captured Server Updates only. Local Effective additionally applies successful Local Injected Updates. Names and provenance never collapse. | Projection comparison and lifecycle scenarios. |
 | Local Injection | Forks an immutable Source into one prospective Draft, remains local and Subscription-scoped, validates the exact live target, and uses the existing delivery path. | Draft, stale-target, delivered, partial-failure, and acknowledgement-loss scenarios plus extension fixture. |
@@ -156,7 +156,7 @@ This slice established the read-only Diagnose journey before Local Injection was
 - dominant ordered Evidence ledger with query-backed 60-event windows;
 - Scope, Filter, Find, focus, selection, Context, and Live/Frozen state kept independent;
 - runtime-object dossier and selected-Evidence Context;
-- raw Evidence and complete Evidence copy;
+- raw Evidence and complete current-interval Evidence copy through the Committed Evidence Boundary;
 - Observed Server and Local Effective COMMAND projections with exact names and provenance;
 - high-volume Frozen history and accurate filtered newer counts;
 - Capture limited, disconnected, recovering, retired-Scope, and in-memory-fallback states with safe conclusions and nearby recovery;
