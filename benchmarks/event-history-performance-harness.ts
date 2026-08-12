@@ -1277,6 +1277,7 @@ async function runCell(
     createEventHistoryWorkloadEvent(shape, sequence, runId)
   );
   const expectedIds = events.map((event) => event.id);
+  const workloadFactScalars = captureCellWorkloadFactScalars(shape, events[42] ?? events[0]!);
   try {
     unsubscribe = history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
       if (!runGuard.isActive()) return;
@@ -1437,11 +1438,8 @@ async function runCell(
       storageEstimate,
       workloadFacts: {
         expectedCount,
-        offeredEventsPerSecond: workload === "sustained" ? config.sustainedEventsPerSecond : events.length / Math.max(0.001, (performance.now() - startedAt) / 1_000),
-        shapeBytes: utf8JsonBytes(events[42] ?? events[0]!),
-        persistedJsonBytes: representativeEventHistoryShapeFacts().find((fact) => fact.id === shape)?.persistedJsonBytes ?? 0,
-        indexedDbWritesPerEvent: representativeEventHistoryShapeFacts().find((fact) => fact.id === shape)?.indexedDbWritesPerEvent ?? 0,
-        searchTokenCount: representativeEventHistoryShapeFacts().find((fact) => fact.id === shape)?.searchTokenCount ?? 0
+        offeredEventsPerSecond: workload === "sustained" ? config.sustainedEventsPerSecond : expectedCount / Math.max(0.001, (performance.now() - startedAt) / 1_000),
+        ...workloadFactScalars
       },
       pressure: {
         maxPendingBytes: pending.snapshot().maxPendingBytes,
@@ -1498,6 +1496,24 @@ async function runCell(
       throw cleanupFailure;
     }
   }
+}
+
+export function captureCellWorkloadFactScalars(
+  shape: EventHistoryShape,
+  representativeEvent: LightstreamerEventEnvelope
+): Readonly<{
+  shapeBytes: number;
+  persistedJsonBytes: number;
+  indexedDbWritesPerEvent: number;
+  searchTokenCount: number;
+}> {
+  const shapeFact = representativeEventHistoryShapeFacts().find((fact) => fact.id === shape);
+  return Object.freeze({
+    shapeBytes: utf8JsonBytes(representativeEvent),
+    persistedJsonBytes: shapeFact?.persistedJsonBytes ?? 0,
+    indexedDbWritesPerEvent: shapeFact?.indexedDbWritesPerEvent ?? 0,
+    searchTokenCount: shapeFact?.searchTokenCount ?? 0
+  });
 }
 
 export async function runTerminalScenario(

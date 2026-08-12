@@ -15,6 +15,7 @@ import {
   createReceiptStageController,
   createStagedTopologyCheckpointCandidate,
   createHarnessStageGuard,
+  captureCellWorkloadFactScalars,
   HarnessStageTimeout,
   measureCheckpointLiveCapture,
   measureAuthoritativeFullQuery,
@@ -36,6 +37,22 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  it("captures scalar workload facts before caller payloads are released", () => {
+    const events = [createEventHistoryWorkloadEvent("small-lifecycle", 0, "released-workload")];
+    const facts = captureCellWorkloadFactScalars("small-lifecycle", events[0]!);
+
+    events.length = 0;
+
+    expect(facts).toEqual({
+      shapeBytes: expect.any(Number),
+      persistedJsonBytes: expect.any(Number),
+      indexedDbWritesPerEvent: expect.any(Number),
+      searchTokenCount: expect.any(Number)
+    });
+    expect(Object.values(facts).every((value) => value > 0)).toBe(true);
+    expect(Object.isFrozen(facts)).toBe(true);
+  });
+
   it("represents the real BEGIN/CHUNK/COMPLETE production staging sequence without journaling frames", () => {
     const complete = createStagedTopologyCheckpointCandidate("frame-sequence", "frame-sequence-sync", 64 * 1_024);
     expect(complete.kind).toBe("topology-checkpoint");
