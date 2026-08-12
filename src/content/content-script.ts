@@ -15,6 +15,10 @@ import {
 
 const PAGE_REINJECT_TIMEOUT_MS = 5000;
 
+if (typeof chrome !== "undefined" && chrome.runtime) {
+  document.documentElement.dataset.lsewContentBridgeReady = "true";
+}
+
 window.addEventListener("message", (event) => {
   if (event.source !== window) {
     return;

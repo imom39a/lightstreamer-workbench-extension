@@ -9,46 +9,114 @@ import {
 } from "./event-history-workloads";
 import {
   createInMemoryEventHistory,
-  createIndexedDbEventHistory,
-  type EventHistory
-} from "../src/core/event-history";
-import { deleteEventDatabase, eventDatabaseName } from "../src/core/indexeddb/event-db";
+  type EvidenceCandidate,
+  type EventHistory,
+  type HistoryPublication,
+  type CloseResult,
+  type Outcome
+} from "../src/core/event-history-authoritative";
+import { historyCapacityLimits } from "../src/core/event-history-capacity";
+import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
+import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
+import { authoritativeEventDatabaseName } from "../src/core/indexeddb/authoritative-event-db";
+import {
+  TOPOLOGY_SYNC_BEGIN,
+  TOPOLOGY_SYNC_CHUNK,
+  TOPOLOGY_SYNC_COMPLETE,
+  TOPOLOGY_SYNC_LIMITS,
+  TOPOLOGY_SYNC_VERSION,
+  TOPOLOGY_OBSERVATION_VERSION,
+  topologySyncUtf8Bytes,
+  type TopologyAbsoluteRecord,
+  type TopologyCoverage,
+  type TopologyObservation,
+  type TopologySyncFrame
+} from "../src/bridge/messages";
+import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import {
+  classifyEventHistoryPerformance,
+  CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS,
+  CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND,
+  CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS,
+  TERMINAL_PENDING_BYTE_EVENT_COUNT,
+  type EventHistoryPerformanceCell,
+  type EventHistoryPerformanceCheckpointScenario,
+  type EventHistoryPerformanceHeapSample,
+  type EventHistoryPerformanceStorageEstimate,
+  type EventHistoryPerformanceReference,
+  type EventHistoryPerformanceReport,
+  type EventHistoryPerformanceShape,
+  type EventHistoryPerformanceTerminalScenario,
+  type EventHistoryPerformanceWorkload
+} from "./event-history-performance-gate";
+import { mountWorkbenchPanel } from "../src/extension/panel/panel";
+import {
+  createWorkbenchRuntime,
+  type WorkbenchRuntimePerformanceDiagnostics,
+  type WorkbenchRuntimePerformanceHooks
+} from "../src/extension/panel/workbench-runtime";
+import { createTopologyProjection } from "../src/extension/panel/topology-projection";
+import {
+  decodeTopologyCheckpointEvidenceCandidate
+} from "../src/extension/panel/topology-checkpoint-evidence-codec";
 
-type WorkloadKind = "sustained" | "burst";
+type EventHistoryPerformanceConfig = Readonly<{
+  sustainedCount: number;
+  sustainedEventsPerSecond: number;
+  burstCount: number;
+  burstPauseMs: number;
+}>;
 
 /** Keep each synchronous burst offer task below the Long Task envelope. */
 export const EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE = 64;
+/** Yield before a burst offer task reaches the 50 ms Long Task threshold. */
+export const EVENT_HISTORY_BURST_OFFER_BUDGET_MS = 35;
 
 export type BurstOfferScheduleOptions<T> = Readonly<{
   events: readonly T[];
   eventsPerBurst: number;
   chunkSize?: number;
+  maxChunkDurationMs?: number;
+  now?: () => number;
   offer: (event: T, index: number) => void;
   yieldBetweenChunks: () => Promise<void>;
   pauseBetweenBursts?: () => Promise<void>;
 }>;
 
 /**
- * Run a burst without changing offer semantics: each offer is still invoked
- * synchronously, in capture order, while bounded chunks are separated by a
- * real macrotask. The caller's elapsed measurement therefore includes every
- * yield and any configured inter-burst pause.
+ * Run bursts in capture order while yielding between bounded synchronous
+ * chunks. The caller controls the actual yield and pause primitives so the
+ * schedule remains usable by both the browser harness and deterministic tests.
  */
 export async function runBurstOfferSchedule<T>(options: BurstOfferScheduleOptions<T>): Promise<void> {
   const eventsPerBurst = Math.max(1, Math.floor(options.eventsPerBurst));
-  const chunkSize = Math.max(1, Math.floor(options.chunkSize ?? EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE));
+  const chunkSize = Math.min(
+    EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE,
+    Math.max(1, Math.floor(options.chunkSize ?? EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE))
+  );
+  const chunkBudgetMs = Math.max(0, options.maxChunkDurationMs ?? EVENT_HISTORY_BURST_OFFER_BUDGET_MS);
+  const readNow = options.now ?? (() => performance.now());
+  const now = (): number => {
+    const value = readNow();
+    return Number.isFinite(value) ? value : 0;
+  };
   let sequence = 0;
   while (sequence < options.events.length) {
     const burstEnd = Math.min(options.events.length, sequence + eventsPerBurst);
+    let chunkStartedAt = now();
+    let chunkCount = 0;
     while (sequence < burstEnd) {
-      const chunkEnd = Math.min(burstEnd, sequence + chunkSize);
-      while (sequence < chunkEnd) {
-        const event = options.events[sequence];
-        if (event === undefined) throw new Error(`Missing burst event ${sequence}.`);
-        options.offer(event, sequence);
-        sequence += 1;
+      const event = options.events[sequence];
+      if (event === undefined) throw new Error(`Missing burst event ${sequence}.`);
+      options.offer(event, sequence);
+      sequence += 1;
+      chunkCount += 1;
+      const elapsedMs = Math.max(0, now() - chunkStartedAt);
+      if (sequence < burstEnd && (chunkCount >= chunkSize || elapsedMs >= chunkBudgetMs)) {
+        await options.yieldBetweenChunks();
+        chunkStartedAt = now();
+        chunkCount = 0;
       }
-      if (sequence < burstEnd) await options.yieldBetweenChunks();
     }
     if (sequence < options.events.length && options.pauseBetweenBursts) {
       await options.pauseBetweenBursts();
@@ -56,81 +124,811 @@ export async function runBurstOfferSchedule<T>(options: BurstOfferScheduleOption
   }
 }
 
-type EventHistoryPerformanceConfig = {
-  sustainedCount: number;
-  sustainedEventsPerSecond: number;
-  burstCount: number;
-  eventsPerBurst: number;
-  burstPauseMs: number;
-  batchSize: number;
-};
+async function yieldBurstOfferMacrotask(): Promise<void> {
+  if (typeof MessageChannel === "function") {
+    await new Promise<void>((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close();
+        channel.port2.close();
+        resolve();
+      };
+      channel.port2.postMessage(undefined);
+    });
+    return;
+  }
+  await delay(0);
+}
 
-type LatencySummary = { count: number; minMs: number; p50Ms: number; p95Ms: number; maxMs: number; samplesMs: number[] };
+type HarnessSelection = Readonly<
+  | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string }
+  | { id: "scenarios"; kind: "scenarios"; pageToken: string }
+>;
 
-type WorkloadResult = {
-  adapter: "indexeddb" | "memory";
-  workload: WorkloadKind;
-  shape: EventHistoryShape;
-  accepted: number;
-  retained: number;
-  correctness: {
-    published: number;
-    retainedMatchesAccepted: boolean;
-    publicationMatchesAccepted: boolean;
-    retainedInOrder: boolean;
-    publicationInOrder: boolean;
+export type HarnessProgressInput = Readonly<{
+  operationId: string | null;
+  phase: "cells" | "terminal" | "checkpoint" | "heap" | "lifecycle";
+  stage: string;
+  substage: string;
+  sample: number | null;
+  trigger: "PENDING_BYTES" | "PENDING_AGE" | null;
+  scenario: string | null;
+  cellIndex: number | null;
+  cellTotal: 36;
+  adapter: "indexeddb" | "memory" | null;
+  workload: "sustained" | "burst" | null;
+  shape: EventHistoryShape | null;
+  workloadPhase: "capture" | "commit" | "paint" | "query" | "hygiene" | null;
+  offered: number | null;
+  settled: number | null;
+  query: string | null;
+  runtimeDiagnostics?: HarnessRuntimeDiagnostics;
+}>;
+
+export type HarnessRuntimeDiagnostics = WorkbenchRuntimePerformanceDiagnostics & Readonly<{
+  expectedFinalId: string;
+}>;
+
+export type HarnessProgress = HarnessProgressInput & Readonly<{
+  sequence: number;
+  pageElapsedMs: number;
+}>;
+
+export type HarnessScenarioTestHooks = Readonly<{
+  afterPanelMount?: (history: EventHistory) => void;
+  cleanupOverrides?: Readonly<{
+    disposePanel?: (disposePanel: () => void | Promise<void>) => void | Promise<void>;
+    removeRoot?: (removeRoot: () => boolean) => boolean;
+  }>;
+}>;
+
+const CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT = 300;
+const CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS = 4;
+const CHECKPOINT_LIVE_CAPTURE_TARGET_OVERLAP_MS = 1_100;
+
+export type CheckpointLiveCaptureMeasurement = Readonly<{
+  liveCaptureCount: number;
+  liveCaptureEventTimesMs: readonly number[];
+  liveCaptureStartedAtMs: number;
+  liveCaptureEndedAtMs: number;
+  liveCaptureDurationMs: number;
+  checkpointStagingStartedAtMs: number;
+  checkpointStagingEndedAtMs: number;
+  checkpointStagingDurationMs: number;
+  liveCaptureOverlapMs: number;
+  liveCaptureOverlapEventCount: number;
+  liveCaptureMaxInterEventGapMs: number;
+  liveCaptureRateEventsPerSecond: number;
+  liveCaptureRateSatisfied: boolean;
+  interleavedWhileStaging: boolean;
+}>;
+
+export function measureCheckpointLiveCapture(
+  input: Readonly<{
+    checkpointStagingStartedAtMs: number;
+    checkpointStagingEndedAtMs: number;
+    liveCaptureEventTimesMs: readonly number[];
+  }>
+): CheckpointLiveCaptureMeasurement {
+  const liveCaptureStartedAtMs = input.liveCaptureEventTimesMs[0] ?? 0;
+  const liveCaptureEndedAtMs = input.liveCaptureEventTimesMs.at(-1) ?? liveCaptureStartedAtMs;
+  const liveCaptureDurationMs = Math.max(0, liveCaptureEndedAtMs - liveCaptureStartedAtMs);
+  const checkpointStagingDurationMs = Math.max(0, input.checkpointStagingEndedAtMs - input.checkpointStagingStartedAtMs);
+  const overlapStart = Math.max(liveCaptureStartedAtMs, input.checkpointStagingStartedAtMs);
+  const overlapEnd = Math.min(liveCaptureEndedAtMs, input.checkpointStagingEndedAtMs);
+  const liveCaptureOverlapMs = Math.max(0, overlapEnd - overlapStart);
+  const liveCaptureOverlapEventCount = input.liveCaptureEventTimesMs.filter((timestamp) =>
+    timestamp >= input.checkpointStagingStartedAtMs && timestamp < input.checkpointStagingEndedAtMs
+  ).length;
+  const liveCaptureCount = input.liveCaptureEventTimesMs.length;
+  const liveCaptureMaxInterEventGapMs = input.liveCaptureEventTimesMs.slice(1).reduce(
+    (maximum, timestamp, index) => Math.max(maximum, timestamp - input.liveCaptureEventTimesMs[index]!),
+    0
+  );
+  const liveCaptureRateEventsPerSecond = liveCaptureDurationMs > 0
+    ? liveCaptureCount * 1_000 / liveCaptureDurationMs
+    : 0;
+  const liveCaptureRateSatisfied = liveCaptureRateEventsPerSecond >= CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND;
+  return {
+    liveCaptureCount,
+    liveCaptureEventTimesMs: [...input.liveCaptureEventTimesMs],
+    liveCaptureStartedAtMs,
+    liveCaptureEndedAtMs,
+    liveCaptureDurationMs,
+    checkpointStagingStartedAtMs: input.checkpointStagingStartedAtMs,
+    checkpointStagingEndedAtMs: input.checkpointStagingEndedAtMs,
+    checkpointStagingDurationMs,
+    liveCaptureOverlapMs,
+    liveCaptureOverlapEventCount,
+    liveCaptureMaxInterEventGapMs,
+    liveCaptureRateEventsPerSecond,
+    liveCaptureRateSatisfied,
+    interleavedWhileStaging: liveCaptureOverlapMs > 0
+      && liveCaptureOverlapEventCount > 0
+      && liveCaptureDurationMs >= CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
+      && checkpointStagingDurationMs >= CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
+      && liveCaptureOverlapMs >= CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
+      && liveCaptureMaxInterEventGapMs <= CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS
+      && liveCaptureRateSatisfied
   };
-  elapsedMs: number;
-  enqueueElapsedMs: number;
-  queryBehindBacklogMs: number;
-  drainElapsedMs: number;
-  throughputEventsPerSecond: number;
-  offeredEventsPerSecond: number;
-  targetOfferedEventsPerSecond: number | null;
-  emitterLatenessMs: LatencySummary;
+}
+
+const PERFORMANCE_OPERATION_KEY = "__LSEW_EVENT_HISTORY_PERFORMANCE_OPERATION__";
+// These are local fail-closed ceilings for one page stage. They are deliberately
+// generous for the retained workloads and never extend the one-hour operation deadline.
+const STAGE_DEADLINES_MS = Object.freeze({
+  cellOffer: 120_000,
+  cellReceipts: 120_000,
+  query: 30_000,
+  queryTotal: 120_000,
+  read: 30_000,
+  close: 30_000,
+  terminalReceipts: 120_000,
+  checkpointReceipts: 120_000,
+  heapWarmupReceipts: 240_000,
+  heapSampleReceipts: 240_000,
+  visibleFrame: 30_000,
+  frame: 30_000
+});
+
+export class HarnessStageTimeout extends Error {
+  readonly code = "HARNESS_STAGE_TIMEOUT";
+  readonly stage: string;
+  readonly timeoutMs: number;
+  readonly progress: HarnessProgress;
+
+  constructor(stage: string, timeoutMs: number, progress: HarnessProgress) {
+    super(`Harness stage ${stage} exceeded its ${timeoutMs} ms deadline.`);
+    this.name = "HarnessStageTimeout";
+    this.stage = stage;
+    this.timeoutMs = timeoutMs;
+    this.progress = progress;
+  }
+}
+
+export type HarnessStageGuard = Readonly<{
+  isActive(): boolean;
+  invalidate(): void;
+}>;
+
+export function createHarnessStageGuard(operationId: string | null = null): HarnessStageGuard {
+  let active = true;
+  return {
+    isActive: () => {
+      if (!active || operationId === null) return active;
+      const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+      return operation !== null
+        && typeof operation === "object"
+        && (operation as { operationId?: unknown }).operationId === operationId
+        && (operation as { state?: unknown }).state === "pending";
+    },
+    invalidate: () => { active = false; }
+  };
+}
+
+let harnessProgressSequence = 0;
+
+function currentHarnessOperationId(): string | null {
+  const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+  return operation && typeof operation === "object" && typeof (operation as { operationId?: unknown }).operationId === "string"
+    ? (operation as { operationId: string }).operationId
+    : null;
+}
+
+function observeHarnessProgress(progress: HarnessProgressInput): HarnessProgress {
+  const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+  const startedAt = operation && typeof operation === "object" && typeof (operation as { startedAt?: unknown }).startedAt === "number"
+    ? (operation as { startedAt: number }).startedAt
+    : performance.now();
+  return {
+    ...progress,
+    sequence: ++harnessProgressSequence,
+    pageElapsedMs: Math.max(0, performance.now() - startedAt)
+  };
+}
+
+export function publishHarnessProgress(progress: HarnessProgressInput): HarnessProgress {
+  const operation = (globalThis as unknown as Record<string, unknown>)[PERFORMANCE_OPERATION_KEY];
+  if (operation && typeof operation === "object"
+    && progress.operationId !== null
+    && (operation as { operationId?: unknown }).operationId !== progress.operationId) {
+    return {
+      ...progress,
+      sequence: ++harnessProgressSequence,
+      pageElapsedMs: 0
+    };
+  }
+  const observed = observeHarnessProgress(progress);
+  if (!operation || typeof operation !== "object") return observed;
+  const record = operation as { state?: unknown; progress?: unknown };
+  if (record.state === "pending") record.progress = observed;
+  return observed;
+}
+
+function publishStageProgress(progress: HarnessProgressInput, guard: HarnessStageGuard | undefined): HarnessProgress | null {
+  if (guard && !guard.isActive()) return null;
+  return publishHarnessProgress(progress);
+}
+
+function normalizeHarnessError(
+  error: unknown,
+  stage: string,
+  progress: HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): Error {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  const record = normalized as Error & { stage?: string; progress?: HarnessProgress };
+  record.stage ??= stage;
+  record.progress ??= guard && !guard.isActive()
+    ? observeHarnessProgress(progress)
+    : publishHarnessProgress(progress);
+  return normalized;
+}
+
+export function withStageDeadline<T>(
+  operation: PromiseLike<T> | T,
+  stage: string,
+  timeoutMs: number,
+  progress: () => HarnessProgressInput,
+  onTimeout: (() => void) | undefined = undefined,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      onTimeout?.();
+      const timeoutInput = progress();
+      const timeoutProgress = guard && !guard.isActive()
+        ? observeHarnessProgress(timeoutInput)
+        : publishHarnessProgress(timeoutInput);
+      guard?.invalidate();
+      reject(new HarnessStageTimeout(stage, timeoutMs, timeoutProgress));
+    }, timeoutMs);
+    Promise.resolve(operation).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        guard?.invalidate();
+        if (error && typeof error === "object" && "progress" in error) reject(error);
+        else reject(normalizeHarnessError(error, stage, progress(), guard));
+      }
+    );
+  });
+}
+
+export type ReceiptStageState = Readonly<{
+  terminal: boolean;
+  retired: boolean;
+  settled: number;
+  pending: number;
+}>;
+
+export type ReceiptStageController<T> = Readonly<{
+  promise: Promise<T[]>;
+  state(): ReceiptStageState;
+  retire(): void;
+}>;
+
+export function createReceiptStageController<T>(
+  receipts: readonly PromiseLike<T>[],
+  stage: string,
+  progress: (settled: number) => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): ReceiptStageController<T> {
+  let settled = 0;
+  let pending = receipts.length;
+  let terminal = false;
+  let retired = false;
+  let values: T[] | null = new Array<T>(receipts.length);
+  let progressCallback: ((settled: number) => HarnessProgressInput) | null = progress;
+  let resolveAggregate: ((value: T[]) => void) | null = null;
+  let rejectAggregate: ((error: unknown) => void) | null = null;
+  const promise = new Promise<T[]>((resolve, reject) => {
+    resolveAggregate = resolve;
+    rejectAggregate = reject;
+  });
+  const release = (): void => {
+    values = null;
+    progressCallback = null;
+    resolveAggregate = null;
+    rejectAggregate = null;
+  };
+  const complete = (): void => {
+    if (terminal) return;
+    terminal = true;
+    const result = values ? values.slice() : [];
+    const resolve = resolveAggregate;
+    release();
+    resolve?.(result);
+  };
+  const retire = (): void => {
+    if (terminal) {
+      retired = true;
+      release();
+      return;
+    }
+    terminal = true;
+    retired = true;
+    release();
+  };
+  receipts.forEach((receipt, index) => {
+    Promise.resolve(receipt).then(
+      (value) => {
+        if (terminal) return;
+        settled += 1;
+        pending -= 1;
+        const progressCallbackNow = progressCallback;
+        if (progressCallbackNow) publishStageProgress(progressCallbackNow(settled), guard);
+        if (values) values[index] = value;
+        if (pending === 0) complete();
+      },
+      (error: unknown) => {
+        if (terminal) return;
+        terminal = true;
+        retired = true;
+        settled += 1;
+        pending -= 1;
+        const progressCallbackNow = progressCallback;
+        const contextual = normalizeHarnessError(
+          error,
+          stage,
+          progressCallbackNow ? progressCallbackNow(settled) : {
+            operationId: null,
+            phase: "heap",
+            stage,
+            substage: stage,
+            sample: null,
+            trigger: null,
+            scenario: null,
+            cellIndex: null,
+            cellTotal: 36,
+            adapter: null,
+            workload: null,
+            shape: null,
+            workloadPhase: null,
+            offered: null,
+            settled,
+            query: null
+          },
+          guard
+        );
+        const reject = rejectAggregate;
+        release();
+        reject?.(contextual);
+      }
+    );
+  });
+  if (pending === 0) complete();
+  return { promise, state: () => ({ terminal, retired, settled, pending }), retire };
+}
+
+export function settleReceiptStage<T>(
+  receipts: readonly PromiseLike<T>[],
+  stage: string,
+  timeoutMs: number,
+  progress: (settled: number) => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<T[]> {
+  const controller = createReceiptStageController(receipts, stage, progress, guard);
+  return withStageDeadline(
+    controller.promise,
+    stage,
+    timeoutMs,
+    () => progress(controller.state().settled),
+    controller.retire,
+    guard
+  );
+}
+
+export type PendingTelemetryEntry = Readonly<{ offeredAt: number; bytes: number }>;
+
+export type PendingTelemetrySnapshot = Readonly<{
+  pendingCount: number;
+  pendingBytes: number;
+  maxPendingCount: number;
   maxPendingBytes: number;
   maxOldestPendingAgeMs: number;
-  commitToHistoryPublicationLatencyMs: LatencySummary;
-  transactionBatching: {
-    writeTransactions: number;
-    eventAddsPerTransaction: LatencySummary;
-    writeTransactionDurationMs: LatencySummary;
-  };
-  queryLatencyMs: Record<"recentPage" | "indexedSubscription" | "fullText" | "idLookup" | "fullHistory", LatencySummary>;
-  longTasksOver50Ms: number;
-  maxLongTaskMs: number;
-  supportedLongTaskObserver: boolean;
-};
+}>;
 
-type HarnessResult = {
-  runner: "real-chrome";
-  schemaVersion: 1;
+export type PendingTelemetryTracker = Readonly<{
+  add(id: string, entry: PendingTelemetryEntry): void;
+  settle(id: string): void;
+  refuse(id: string): void;
+  sample(): void;
+  snapshot(): PendingTelemetrySnapshot;
+  diagnostics(): Readonly<{ sampleCount: number; oldestQueueAdvances: number }>;
+}>;
+
+type PendingQueueEntry = Readonly<{ id: string; entry: PendingTelemetryEntry }>;
+
+export function createPendingTelemetryTracker(now: () => number = () => performance.now()): PendingTelemetryTracker {
+  const pending = new Map<string, PendingTelemetryEntry>();
+  const oldestQueue: PendingQueueEntry[] = [];
+  let oldestQueueHead = 0;
+  let pendingCount = 0;
+  let pendingBytes = 0;
+  let maxPendingCount = 0;
+  let maxPendingBytes = 0;
+  let maxOldestPendingAgeMs = 0;
+  let sampleCount = 0;
+  let oldestQueueAdvances = 0;
+
+  const remove = (id: string): void => {
+    const entry = pending.get(id);
+    if (!entry) return;
+    pending.delete(id);
+    pendingCount -= 1;
+    pendingBytes -= entry.bytes;
+  };
+
+  return {
+    add(id, entry) {
+      remove(id);
+      pending.set(id, entry);
+      oldestQueue.push({ id, entry });
+      pendingCount += 1;
+      pendingBytes += entry.bytes;
+    },
+    settle: remove,
+    refuse: remove,
+    sample() {
+      sampleCount += 1;
+      maxPendingCount = Math.max(maxPendingCount, pendingCount);
+      maxPendingBytes = Math.max(maxPendingBytes, pendingBytes);
+      while (oldestQueueHead < oldestQueue.length) {
+        const queued = oldestQueue[oldestQueueHead]!;
+        if (pending.get(queued.id) === queued.entry) break;
+        oldestQueueHead += 1;
+        oldestQueueAdvances += 1;
+      }
+      const oldest = oldestQueue[oldestQueueHead]?.entry;
+      if (oldest) maxOldestPendingAgeMs = Math.max(maxOldestPendingAgeMs, Math.max(0, now() - oldest.offeredAt));
+    },
+    snapshot() {
+      return { pendingCount, pendingBytes, maxPendingCount, maxPendingBytes, maxOldestPendingAgeMs };
+    },
+    diagnostics() {
+      return { sampleCount, oldestQueueAdvances };
+    }
+  };
+}
+
+type HarnessResult = Readonly<{
+  schemaVersion: 2;
   anchors: { issue16TotalEvents: number };
   config: EventHistoryPerformanceConfig;
   shapeFacts: ReturnType<typeof representativeEventHistoryShapeFacts>;
-  workloads: WorkloadResult[];
-};
+  cells: readonly EventHistoryPerformanceCell[];
+  cellCleanupGc: readonly InterCellGcEvidence[];
+  terminalScenarios: readonly EventHistoryPerformanceTerminalScenario[];
+  checkpointScenarios: readonly EventHistoryPerformanceCheckpointScenario[];
+}>;
 
-type RetainedSessionFacts = {
+export type InterCellGcEvidence = Readonly<{
+  afterCellIndex: number;
+  gcPasses: 3;
+  phase: "BETWEEN_CELLS";
+}>;
+
+export type QuerySampleGcEvidence = Readonly<{
+  query: string;
+  afterSample: 1 | 2;
+  gcPasses: 3;
+  phase: "BETWEEN_QUERY_SAMPLES";
+}>;
+
+type RetainedHeapSession = Readonly<{
+  operationId: string | null;
   adapter: "indexeddb" | "memory";
   count: number;
   retained: number;
-  appendElapsedMs: number;
-  longTasksOver50Ms: number;
-  maxLongTaskMs: number;
-  supportedLongTaskObserver: boolean;
-  queryLatencyMs: WorkloadResult["queryLatencyMs"];
-};
+  sessionId: string;
+  root: HTMLElement;
+  disposePanel: () => void | Promise<void>;
+  runtime: ReturnType<typeof createWorkbenchRuntime>;
+  history: EventHistory;
+  databaseName: string | null;
+}>;
+
+type StorageTelemetry = Readonly<{
+  transactionCount: number;
+  readwriteTransactionCount: number;
+  readonlyTransactionCount: number;
+  evidenceWriteCount: number;
+  controlWriteCount: number;
+  facetEntryCount: number;
+  indexEntryCount: number;
+}>;
+
+const TERMINAL_CHECKPOINT_PAYLOAD_BYTES = 2 * 1_048_576;
+
+type StorageProbe = Readonly<{
+  snapshot(): StorageTelemetry;
+  restore(): void;
+}>;
+
+type PhaseName = "capture" | "commit" | "paint" | "query" | "hygiene";
+type PhaseInterval = Readonly<{ phase: PhaseName; start: number; end: number }>;
+
+export type UnattributedLongTaskReason = Readonly<
+  | { reason: "no-overlap"; startTime: number; duration: number }
+  | { reason: "ambiguous"; overlaps: readonly Readonly<{ phase: PhaseName; duration: number }>[] }
+>;
+
+export type LongTaskAttribution = Readonly<{
+  capture: readonly number[];
+  commit: readonly number[];
+  paint: readonly number[];
+  query: readonly number[];
+  hygiene: readonly number[];
+  unattributed: number;
+  unattributedReasons: readonly UnattributedLongTaskReason[];
+}>;
+
+export type HeapPreparationCleanupEvidence = Readonly<{
+  adapter: "indexeddb" | "memory";
+  phase: "warmup" | "cleanup";
+  sample: number | null;
+  eventCount: number;
+  retained: number | null;
+  sessionId: string | null;
+  databaseName: string | null;
+  close: unknown;
+  disposeError: string | null;
+  rootRemoved: boolean;
+  frameYielded: boolean;
+  gcPasses: number | null;
+  status: "PASS" | "FAIL";
+  failure: Readonly<{ code: string; message: string }>;
+}>;
+
+export type HarnessCleanupEvidence = Readonly<{
+  stage: string;
+  unsubscribeAttempted: boolean;
+  unsubscribeError: string | null;
+  disposeAttempted: boolean;
+  disposeError: string | null;
+  rootRemovalAttempted: boolean;
+  rootRemoved: boolean;
+  rootError: string | null;
+  closeAttempted: boolean;
+  close: unknown;
+  closeError: string | null;
+}>;
+
+export async function cleanupHarnessResources(input: Readonly<{
+  history: EventHistory;
+  stage: string;
+  guard: HarnessStageGuard;
+  progress: () => HarnessProgressInput;
+  unsubscribe?: () => void;
+    disposePanel?: () => void | Promise<void>;
+  removeRoot?: () => boolean | void;
+  restoreStorage?: () => void;
+  disconnectObserver?: () => void;
+}>): Promise<HarnessCleanupEvidence> {
+  let unsubscribeError: string | null = null;
+  let disposeError: string | null = null;
+  let rootError: string | null = null;
+  let closeError: string | null = null;
+  let close: unknown = null;
+  let rootRemoved = false;
+  const unsubscribeAttempted = input.unsubscribe !== undefined;
+  const disposeAttempted = input.disposePanel !== undefined;
+  const rootRemovalAttempted = input.removeRoot !== undefined;
+
+  try { input.restoreStorage?.(); } catch (error) { closeError = `restoreStorage: ${error instanceof Error ? error.message : String(error)}`; }
+  try { input.disconnectObserver?.(); } catch (error) { closeError ??= `disconnectObserver: ${error instanceof Error ? error.message : String(error)}`; }
+  if (input.unsubscribe) {
+    try { input.unsubscribe(); } catch (error) { unsubscribeError = error instanceof Error ? error.message : String(error); }
+  }
+  if (input.disposePanel) {
+    try { await input.disposePanel(); } catch (error) { disposeError = error instanceof Error ? error.message : String(error); }
+  }
+  if (input.removeRoot) {
+    try {
+      const result = input.removeRoot();
+      rootRemoved = result === undefined ? true : result;
+    } catch (error) {
+      rootError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  try {
+    const closeOperation = input.history.close();
+    close = await withStageDeadline(
+      closeOperation,
+      `${input.stage}-cleanup-close`,
+      STAGE_DEADLINES_MS.close,
+      input.progress,
+      undefined,
+      input.guard
+    );
+    if (close && typeof close === "object" && "ok" in close && close.ok !== true) {
+      closeError ??= "Event History close returned a non-success outcome.";
+    }
+  } catch (error) {
+    closeError = error instanceof Error ? error.message : String(error);
+    close = {
+      ok: false,
+      problem: {
+        code: error instanceof HarnessStageTimeout ? "CLEANUP_CLOSE_TIMEOUT" : "CLEANUP_CLOSE_FAILED",
+        message: closeError
+      }
+    };
+  }
+  return {
+    stage: input.stage,
+    unsubscribeAttempted,
+    unsubscribeError,
+    disposeAttempted,
+    disposeError,
+    rootRemovalAttempted,
+    rootRemoved,
+    rootError,
+    closeAttempted: true,
+    close,
+    closeError
+  };
+}
+
+export async function bestEffortHeapPreparationCleanup(input: Readonly<{
+  adapter: "indexeddb" | "memory";
+  eventCount: number;
+  phase: "warmup" | "sample";
+  sample: number | null;
+  sessionId: string;
+  databaseName: string | null;
+  originalError: unknown;
+  disposePanel: () => void | Promise<void>;
+  closeHistory: () => Promise<unknown>;
+  removeRoot: () => void;
+  yieldFrame: () => Promise<void>;
+  progress?: () => HarnessProgressInput;
+  guard?: HarnessStageGuard;
+}>): Promise<HeapPreparationCleanupEvidence> {
+  let disposeError: string | null = null;
+  let close: unknown = null;
+  let rootRemoved = false;
+  let frameYielded = false;
+  const cleanupFailures: string[] = [];
+  const cleanupProgress = (): HarnessProgressInput => input.progress?.() ?? {
+    operationId: null,
+    phase: "heap",
+    stage: `${input.phase}-cleanup`,
+    substage: `${input.phase}-cleanup`,
+    sample: input.phase === "warmup" ? null : input.sample,
+    trigger: null,
+    scenario: null,
+    cellIndex: null,
+    cellTotal: 36,
+    adapter: input.adapter,
+    workload: null,
+    shape: null,
+    workloadPhase: null,
+    offered: input.eventCount,
+    settled: null,
+    query: null
+  };
+  try {
+    await input.disposePanel();
+  } catch (error) {
+    disposeError = error instanceof Error ? error.message : String(error);
+    cleanupFailures.push(`disposePanel: ${disposeError}`);
+  }
+  try {
+    close = await withStageDeadline(
+      input.closeHistory(),
+      `${input.phase}-cleanup-close`,
+      STAGE_DEADLINES_MS.close,
+      cleanupProgress,
+      undefined,
+      input.guard
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    close = {
+      ok: false,
+      problem: {
+        code: error instanceof HarnessStageTimeout ? "CLEANUP_CLOSE_TIMEOUT" : "CLEANUP_CLOSE_FAILED",
+        message
+      }
+    };
+    cleanupFailures.push(`closeHistory: ${message}`);
+  }
+  try {
+    input.removeRoot();
+    rootRemoved = true;
+  } catch (error) {
+    cleanupFailures.push(`removeRoot: ${error instanceof Error ? error.message : String(error)}`);
+    rootRemoved = false;
+  }
+  try {
+    await withStageDeadline(
+      input.yieldFrame(),
+      `${input.phase}-cleanup-frame`,
+      STAGE_DEADLINES_MS.frame,
+      cleanupProgress,
+      undefined,
+      input.guard
+    );
+    frameYielded = true;
+  } catch (error) {
+    cleanupFailures.push(`yieldFrame: ${error instanceof Error ? error.message : String(error)}`);
+    frameYielded = false;
+  }
+  return {
+    adapter: input.adapter,
+    phase: input.phase === "warmup" ? "warmup" as const : "cleanup" as const,
+    sample: input.phase === "warmup" ? null : input.sample,
+    eventCount: input.eventCount,
+    retained: null,
+    sessionId: input.sessionId,
+    databaseName: input.databaseName,
+    close,
+    disposeError,
+    rootRemoved,
+    frameYielded,
+    gcPasses: null,
+    status: "FAIL" as const,
+    failure: {
+      code: "PREPARE_FAILED",
+      message: [
+        input.originalError instanceof Error ? input.originalError.message : String(input.originalError),
+        ...cleanupFailures
+      ].join("; ")
+    }
+  };
+}
+
+export async function closeHeapSessionWithEvidence(input: Readonly<{
+    disposePanel: () => void | Promise<void>;
+  closeHistory: () => Promise<Outcome<CloseResult>>;
+}>): Promise<unknown> {
+  let disposeError: { code: string; message: string } | null = null;
+  let closeOutcome: Outcome<CloseResult> | null = null;
+  let closeError: { code: string; message: string } | null = null;
+  try {
+    await input.disposePanel();
+  } catch (error) {
+    disposeError = { code: "PANEL_DISPOSE_FAILED", message: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    closeOutcome = await input.closeHistory();
+  } catch (error) {
+    closeError = { code: "CLOSE_FAILED", message: error instanceof Error ? error.message : String(error) };
+  }
+  if (!disposeError && !closeError) return closeOutcome;
+  const problem = disposeError ?? closeError!;
+  return {
+    ok: false,
+    problem: {
+      code: problem.code,
+      message: [disposeError?.message, closeError?.message].filter(Boolean).join("; ")
+    },
+    ...(closeOutcome ? { closeOutcome } : {}),
+    ...(disposeError ? { disposeError } : {}),
+    ...(closeError ? { closeError } : {})
+  };
+}
 
 declare global {
   interface Window {
     __LSEW_EVENT_HISTORY_PERFORMANCE__?: {
-      run(overrides?: Partial<EventHistoryPerformanceConfig>): Promise<HarnessResult>;
-      prepareRetainedHeapSample(
-        adapter: "indexeddb" | "memory",
-        count: number
-      ): Promise<RetainedSessionFacts>;
-      releaseRetainedHeapSample(): Promise<void>;
+      run(overrides?: Partial<EventHistoryPerformanceConfig>, selection?: HarnessSelection): Promise<HarnessResult & { selection: HarnessSelection | null }>;
+      classify(report: EventHistoryPerformanceReport, reference: EventHistoryPerformanceReference): ReturnType<typeof classifyEventHistoryPerformance>;
+      prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number, phase: "warmup" | "sample", sample: number | null): Promise<{ adapter: string; count: number; retained: number; sessionId: string; databaseName: string | null; phase: "warmup" | "sample"; sample: number | null }>;
+      releaseRetainedHeapSample(): Promise<unknown>;
+      removeRetainedHeapRoot(): Promise<boolean>;
+      yieldRetainedHeapFrame(): Promise<boolean>;
     };
   }
 }
@@ -139,418 +937,1969 @@ const DEFAULT_CONFIG: EventHistoryPerformanceConfig = {
   sustainedCount: 1_000,
   sustainedEventsPerSecond: TIMELINE_SUSTAINED_EVENTS_PER_SECOND,
   burstCount: ISSUE_16_TOTAL_EVENTS,
-  eventsPerBurst: ISSUE_16_TOTAL_EVENTS,
-  burstPauseMs: 1,
-  batchSize: 256
+  burstPauseMs: 1
 };
 
-let retainedHeapHistory: EventHistory | null = null;
-let retainedHeapDatabaseName: string | null = null;
+let retainedHeapSession: RetainedHeapSession | null = null;
+let retainedHeapSequence = 0;
+
+function validateHarnessSelection(selection: HarnessSelection | undefined): HarnessSelection | null {
+  if (selection === undefined) return null;
+  if (typeof selection.pageToken !== "string" || selection.pageToken.length === 0) {
+    throw new Error("Performance shard requires a non-empty page token.");
+  }
+  if (selection.kind === "scenarios") {
+    if (selection.id !== "scenarios") throw new Error("Performance scenario shard identity is invalid.");
+    return selection;
+  }
+  const expected = [
+    ["matrix-indexeddb-sustained", "indexeddb", "sustained", 1, true],
+    ["matrix-indexeddb-burst", "indexeddb", "burst", 10, true],
+    ["matrix-memory-sustained", "memory", "sustained", 19, true],
+    ["matrix-memory-burst", "memory", "burst", 28, false]
+  ] as const;
+  if (!expected.some(([id, adapter, workload, firstCellIndex, collectAfterFinal]) =>
+    selection.id === id && selection.adapter === adapter && selection.workload === workload
+      && selection.firstCellIndex === firstCellIndex && selection.collectAfterFinal === collectAfterFinal
+  )) throw new Error("Performance matrix shard identity is invalid.");
+  return selection;
+}
 
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
-  async run(overrides = {}) {
+  async run(overrides = {}, requestedSelection) {
+    const operationId = currentHarnessOperationId();
+    const runGuard = createHarnessStageGuard(operationId);
+    const selection = validateHarnessSelection(requestedSelection);
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
-    const workloads: WorkloadResult[] = [];
-    for (const adapter of ["indexeddb", "memory"] as const) {
-      for (const workload of ["sustained", "burst"] as const) {
+    const cells: EventHistoryPerformanceCell[] = [];
+    const cellCleanupGc: InterCellGcEvidence[] = [];
+    let cellIndex = selection?.kind === "matrix" ? selection.firstCellIndex - 1 : 0;
+    let shardCellCount = 0;
+    const adapters = selection?.kind === "matrix" ? [selection.adapter] as const : ["indexeddb", "memory"] as const;
+    for (const adapter of adapters) {
+      const workloads = selection?.kind === "matrix" ? [selection.workload] as const : ["sustained", "burst"] as const;
+      for (const workload of workloads) {
         for (const shape of EVENT_HISTORY_SHAPES) {
-          workloads.push(await runWorkload(adapter, workload, shape, config));
+          for (const sample of [1, 2, 3] as const) {
+            if (selection?.kind === "scenarios") continue;
+            if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
+            cellIndex += 1;
+            shardCellCount += 1;
+            publishHarnessProgress({
+              operationId,
+              phase: "cells",
+              stage: "cell-start",
+              substage: "cell-start",
+              sample,
+              trigger: null,
+              scenario: null,
+              cellIndex,
+              cellTotal: 36,
+              adapter,
+              workload,
+              shape,
+              workloadPhase: null,
+              offered: 0,
+              settled: 0,
+              query: null
+            });
+            const collectAfterCell = selection?.kind === "matrix"
+              ? shardCellCount < 9 || selection.collectAfterFinal
+              : cellIndex < 36;
+            if (!collectAfterCell) {
+              cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard));
+              continue;
+            }
+            const completed = await runCellThenCollectGarbage(
+              () => runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard),
+              cellIndex,
+              runGuard,
+              async (afterCellIndex, guard) => {
+                publishHarnessProgress({
+                  operationId,
+                  phase: "cells",
+                  stage: "cell-cleanup-gc",
+                  substage: "cell-cleanup-gc",
+                  sample,
+                  trigger: null,
+                  scenario: null,
+                  cellIndex: afterCellIndex,
+                  cellTotal: 36,
+                  adapter,
+                  workload,
+                  shape,
+                  workloadPhase: null,
+                  offered: null,
+                  settled: null,
+                  query: null
+                });
+                return collectGarbageBetweenCells(afterCellIndex, guard);
+              }
+            );
+            cells.push(completed.cell);
+            cellCleanupGc.push(completed.gc);
+          }
         }
       }
     }
+    const terminalScenarios: EventHistoryPerformanceTerminalScenario[] = [];
+    if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
+      for (const trigger of ["PENDING_BYTES", "PENDING_AGE"] as const) {
+        if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
+        publishHarnessProgress({
+          operationId,
+          phase: "terminal",
+          stage: trigger,
+          substage: trigger,
+          sample: null,
+          trigger,
+          scenario: null,
+          cellIndex: null,
+          cellTotal: 36,
+          adapter,
+          workload: null,
+          shape: null,
+          workloadPhase: null,
+          offered: null,
+          settled: null,
+          query: null
+        });
+        terminalScenarios.push(await runTerminalScenario(adapter, trigger, operationId, runGuard));
+      }
+    }
+    const checkpointScenarios: EventHistoryPerformanceCheckpointScenario[] = [];
+    if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
+      for (const name of ["representative", "maximum-2MiB"] as const) {
+        if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
+        publishHarnessProgress({
+          operationId,
+          phase: "checkpoint",
+          stage: name,
+          substage: name,
+          sample: null,
+          trigger: null,
+          scenario: name,
+          cellIndex: null,
+          cellTotal: 36,
+          adapter,
+          workload: null,
+          shape: null,
+          workloadPhase: null,
+          offered: null,
+          settled: null,
+          query: null
+        });
+        checkpointScenarios.push(await runCheckpointScenario(adapter, name, operationId, runGuard));
+      }
+    }
     return {
-      runner: "real-chrome",
-      schemaVersion: 1,
+      schemaVersion: 2,
+      selection,
       anchors: { issue16TotalEvents: ISSUE_16_TOTAL_EVENTS },
       config,
       shapeFacts: representativeEventHistoryShapeFacts(),
-      workloads
+      cells,
+      cellCleanupGc,
+      terminalScenarios,
+      checkpointScenarios
     };
   },
-  async prepareRetainedHeapSample(adapter, count) {
-    await releaseRetainedHeapSample();
-    const runId = `heap-${adapter}-${Math.random().toString(36).slice(2)}`;
-    retainedHeapDatabaseName = adapter === "indexeddb" ? `event-history-performance-${runId}` : null;
-    retainedHeapHistory = adapter === "indexeddb"
-      ? await createIndexedDbEventHistory({ sessionId: retainedHeapDatabaseName, reset: true, batchSize: DEFAULT_CONFIG.batchSize })
-      : createInMemoryEventHistory({ batchSize: DEFAULT_CONFIG.batchSize });
-    const events = Array.from({ length: count }, (_, sequence) =>
-      createEventHistoryWorkloadEvent(EVENT_HISTORY_SHAPES[sequence % EVENT_HISTORY_SHAPES.length] ?? "small-lifecycle", sequence, runId)
-    );
-    const longTasks: number[] = [];
-    const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
-    const observer = longTaskSupported
-      ? new PerformanceObserver((entries) => {
-          for (const entry of entries.getEntries()) {
-            if (entry.duration > 50) longTasks.push(entry.duration);
-          }
-        })
-      : null;
-    observer?.observe({ entryTypes: ["longtask"] });
-    const startedAt = performance.now();
-    await Promise.all(events.map((event) => retainedHeapHistory?.append(event).toPromise()));
-    const appendElapsedMs = performance.now() - startedAt;
-    const stats = await retainedHeapHistory.stats().toPromise();
-    const queryLatencyMs = await measureQueries(
-      retainedHeapHistory,
-      "small-lifecycle",
-      runId
-    );
-    await delay(0);
-    for (const entry of observer?.takeRecords() ?? []) {
-      if (entry.duration > 50) longTasks.push(entry.duration);
+  classify(report, reference) {
+    try {
+      return classifyEventHistoryPerformance(report, reference);
+    } catch (error) {
+      return {
+        verdict: "FAIL",
+        failures: [`Classifier threw: ${error instanceof Error ? error.stack ?? error.message : String(error)}`],
+        reviewReasons: [],
+        checkedCells: 0,
+        checkedSamples: 0
+      };
     }
-    observer?.disconnect();
-    return {
-      adapter,
-      count,
-      retained: stats.retained,
-      appendElapsedMs,
-      longTasksOver50Ms: longTasks.length,
-      maxLongTaskMs: maximum(longTasks),
-      supportedLongTaskObserver: longTaskSupported,
-      queryLatencyMs
-    };
+  },
+  async prepareRetainedHeapSample(adapter, count, phase, sample) {
+    if (retainedHeapSession) throw new Error("A retained heap session is already active; cleanup must complete before the next sample.");
+    const runId = `heap-${adapter}-${phase}-${sample ?? "warmup"}-${retainedHeapSequence += 1}`;
+    const operationId = currentHarnessOperationId();
+    const heapGuard = createHarnessStageGuard(operationId);
+    const databaseName = adapter === "indexeddb" ? authoritativeEventDatabaseName(runId) : null;
+    const root = document.createElement("main");
+    let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+    let history: EventHistory | null = null;
+    try {
+      history = adapter === "indexeddb"
+        ? await createIndexedDbEventHistory({ panelSessionId: runId, capacityTier: "NORMAL" })
+        : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+      if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
+      root.id = "app";
+      document.body.replaceChildren(root);
+      panel = await mountProductionPanel(history, undefined, root);
+      if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
+      const heapShapes = adapter === "memory"
+        ? (["small-lifecycle", "ordinary-item-update"] as const)
+        : ([
+            "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
+            "small-lifecycle", "ordinary-item-update", "small-lifecycle", "ordinary-item-update",
+            "small-lifecycle", "large-json-rich"
+          ] as const);
+      const events = Array.from({ length: count }, (_, sequence) =>
+        createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
+      );
+      const offered = events.length;
+      const heapProgress = (settled: number | null = null): HarnessProgressInput => ({
+        operationId,
+        phase: "heap",
+        stage: `${phase}-receipt-settlement`,
+        substage: `${phase}-receipt-settlement`,
+        sample,
+        trigger: null,
+        scenario: null,
+        cellIndex: null,
+        cellTotal: 36,
+        adapter,
+        workload: null,
+        shape: null,
+        workloadPhase: null,
+        offered,
+        settled,
+        query: null
+      });
+      publishStageProgress(heapProgress(), heapGuard);
+      await settleOffers(
+        history,
+        events,
+        `${phase}-heap-receipts`,
+        phase === "warmup" ? STAGE_DEADLINES_MS.heapWarmupReceipts : STAGE_DEADLINES_MS.heapSampleReceipts,
+        heapProgress,
+        heapGuard
+      );
+      const retained = await releaseHeapWorkloadCandidates(
+        events,
+        () => waitForBoundedFrame(`${phase}-frame`, heapProgress, heapGuard)
+      );
+      if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
+      retainedHeapSession = { operationId, adapter, count, retained, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
+      return { adapter, count, retained, sessionId: runId, databaseName, phase, sample };
+    } catch (error) {
+      const originalError = error instanceof Error ? error : new Error(String(error));
+      const cleanupEvidence = await bestEffortHeapPreparationCleanup({
+        adapter,
+        eventCount: count,
+        phase,
+        sample,
+        sessionId: runId,
+        databaseName,
+        originalError,
+        disposePanel: () => panel?.disposePanel(),
+        closeHistory: () => history ? history.close() : Promise.resolve(null),
+        removeRoot: () => root.remove(),
+        yieldFrame: () => waitForBoundedFrame(`${phase}-cleanup-frame`, () => ({
+          operationId,
+          phase: "heap",
+          stage: `${phase}-cleanup-frame`,
+          substage: `${phase}-cleanup-frame`,
+          sample,
+          trigger: null,
+          scenario: null,
+          cellIndex: null,
+          cellTotal: 36,
+          adapter,
+          workload: null,
+          shape: null,
+          workloadPhase: null,
+          offered: count,
+          settled: null,
+          query: null
+        })),
+        progress: () => ({
+          operationId,
+          phase: "heap",
+          stage: `${phase}-cleanup`,
+          substage: `${phase}-cleanup`,
+          sample,
+          trigger: null,
+          scenario: null,
+          cellIndex: null,
+          cellTotal: 36,
+          adapter,
+          workload: null,
+          shape: null,
+          workloadPhase: null,
+          offered: count,
+          settled: null,
+          query: null
+        }),
+        guard: heapGuard
+      });
+      Object.assign(originalError, { code: "PREPARE_FAILED", cleanupEvidence });
+      throw originalError;
+    }
   },
   async releaseRetainedHeapSample() {
-    await releaseRetainedHeapSample();
+    const session = retainedHeapSession;
+    if (!session) throw new Error("No retained heap session is active.");
+    return closeHeapSessionWithEvidence({
+      disposePanel: session.disposePanel,
+      closeHistory: () => session.history.close()
+    });
+  },
+  async removeRetainedHeapRoot() {
+    const session = retainedHeapSession;
+    if (!session) return false;
+    session.root.remove();
+    retainedHeapSession = null;
+    return !session.root.isConnected;
+  },
+  async yieldRetainedHeapFrame() {
+    const operationId = currentHarnessOperationId();
+    await waitForBoundedFrame("heap-retained-frame", () => ({
+      operationId,
+      phase: "heap",
+      stage: "retained-frame",
+      substage: "retained-frame",
+      sample: null,
+      trigger: null,
+      scenario: null,
+      cellIndex: null,
+      cellTotal: 36,
+      adapter: null,
+      workload: null,
+      shape: null,
+      workloadPhase: "paint",
+      offered: null,
+      settled: null,
+      query: null
+    }));
+    return true;
   }
 };
 
-async function releaseRetainedHeapSample(): Promise<void> {
-  await retainedHeapHistory?.close().toPromise();
-  retainedHeapHistory = null;
-  if (retainedHeapDatabaseName) await deleteEventDatabase(eventDatabaseName(retainedHeapDatabaseName));
-  retainedHeapDatabaseName = null;
+export async function runCellThenCollectGarbage<T>(
+  runMeasuredCell: () => Promise<T>,
+  afterCellIndex: number,
+  guard: HarnessStageGuard,
+  collect: (afterCellIndex: number, guard: HarnessStageGuard) => Promise<InterCellGcEvidence> = collectGarbageBetweenCells
+): Promise<Readonly<{ cell: T; gc: InterCellGcEvidence }>> {
+  const cell = await runMeasuredCell();
+  const gc = await collect(afterCellIndex, guard);
+  return Object.freeze({ cell, gc });
 }
 
-async function runWorkload(
-  adapter: WorkloadResult["adapter"],
-  workload: WorkloadKind,
-  shape: EventHistoryShape,
-  config: EventHistoryPerformanceConfig
-): Promise<WorkloadResult> {
-  const runId = `${adapter}-${workload}-${shape}-${Math.random().toString(36).slice(2)}`;
-  const sessionId = `event-history-performance-${runId}`;
-  const pending = new Map<string, { acceptedAt: number; bytes: number }>();
-  const visibleLatencies: number[] = [];
-  const publishedIds: string[] = [];
-
-  let maxPendingBytes = 0;
-  let maxOldestPendingAgeMs = 0;
-  let history: EventHistory | null = null;
-  let unsubscribe: (() => void) | null = null;
-  let transactionProbe: ReturnType<typeof installTransactionProbe> | null = null;
-  let longTaskObserver: PerformanceObserver | null = null;
-
-  function samplePending(): void {
-    const now = performance.now();
-    const entries = [...pending.values()];
-    maxPendingBytes = Math.max(maxPendingBytes, entries.reduce((total, item) => total + item.bytes, 0));
-    const oldest = entries.reduce(
-      (oldestAt, item) => Math.min(oldestAt, item.acceptedAt),
-      Number.POSITIVE_INFINITY
-    );
-    if (Number.isFinite(oldest)) maxOldestPendingAgeMs = Math.max(maxOldestPendingAgeMs, now - oldest);
+export async function collectGarbageBetweenCells(
+  afterCellIndex: number,
+  guard: HarnessStageGuard,
+  collect: (() => void) | null = (globalThis as typeof globalThis & { gc?: () => void }).gc ?? null
+): Promise<InterCellGcEvidence> {
+  if (!guard.isActive()) throw new Error("Inter-cell garbage collection was cancelled.");
+  if (typeof collect !== "function") {
+    throw new Error("Inter-cell garbage collection requires Chrome --expose-gc support.");
   }
+  await delay(0);
+  if (!guard.isActive()) throw new Error("Inter-cell garbage collection was cancelled.");
+  for (let pass = 0; pass < 3; pass += 1) collect();
+  return Object.freeze({ afterCellIndex, gcPasses: 3, phase: "BETWEEN_CELLS" });
+}
 
-  try {
-    if (adapter === "indexeddb") {
-      await deleteEventDatabase(eventDatabaseName(sessionId));
-      history = await createIndexedDbEventHistory({ sessionId, reset: true, batchSize: config.batchSize });
-    } else {
-      history = createInMemoryEventHistory({ batchSize: config.batchSize });
-    }
-    const activeHistory = history;
-    const eventCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
-    const preparedEvents = Array.from({ length: eventCount }, (_, sequence) => {
-      const event = createEventHistoryWorkloadEvent(shape, sequence, runId);
-      return { event, bytes: utf8JsonBytes(event) };
+async function runCell(
+  adapter: "indexeddb" | "memory",
+  workload: EventHistoryPerformanceWorkload,
+  shape: EventHistoryShape,
+  sample: number,
+  config: EventHistoryPerformanceConfig,
+  cellIndex: number,
+  operationId: string | null,
+  runGuard: HarnessStageGuard
+): Promise<EventHistoryPerformanceCell> {
+  const runId = `${adapter}-${workload}-${shape}-sample-${sample}`;
+  const cancellationProgress = (): HarnessProgressInput => ({
+    operationId,
+    phase: "cells",
+    stage: "cleanup",
+    substage: "cleanup",
+    sample,
+    trigger: null,
+    scenario: null,
+    cellIndex,
+    cellTotal: 36,
+    adapter,
+    workload,
+    shape,
+    workloadPhase: null,
+    offered: null,
+    settled: null,
+    query: null
+  });
+  if (!runGuard.isActive()) throw new Error("Event History cell was cancelled.");
+  const history = adapter === "indexeddb"
+    ? await createIndexedDbEventHistory({ panelSessionId: `event-history-performance-${runId}`, capacityTier: "NORMAL" })
+    : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+  if (!runGuard.isActive()) {
+    const failure = new Error("Event History cell was cancelled after history acquisition.");
+    Object.assign(failure, {
+      cleanupEvidence: await cleanupHarnessResources({ history, stage: `cell-${cellIndex}`, guard: runGuard, progress: cancellationProgress })
     });
-    transactionProbe = installTransactionProbe();
-    unsubscribe = activeHistory.subscribe((change) => {
-      const events = change.type === "append" ? [change.event] : change.type === "append-batch" ? change.events : [];
-      const now = performance.now();
-      for (const event of events) {
-        publishedIds.push(event.id);
-        const pendingEntry = pending.get(event.id);
-        if (pendingEntry) {
-          const latency = now - pendingEntry.acceptedAt;
-          visibleLatencies.push(latency);
-          maxOldestPendingAgeMs = Math.max(maxOldestPendingAgeMs, latency);
-          // Publication is the measured pending boundary. In-memory append
-          // promises settle on a later microtask even though publication is synchronous.
-          pending.delete(event.id);
+    throw failure;
+  }
+  const storageProbe = adapter === "indexeddb" ? beginStorageProbe() : null;
+  const root = document.createElement("main");
+  root.id = "app";
+  document.body.replaceChildren(root);
+
+  const offerTimes = new Map<string, number>();
+  const pending = createPendingTelemetryTracker();
+  const publicationLatencies: number[] = [];
+  const visibleLatencies: number[] = [];
+  const committedBoundaryAt = new Map<string, number>();
+  const committedBoundaryVisibleLatencies: number[] = [];
+  const publishedIds: string[] = [];
+  const phaseIntervals: PhaseInterval[] = [];
+  const longTaskEntries: PerformanceEntry[] = [];
+  let phase: PhaseName = "capture";
+  let phaseStartedAt = performance.now();
+  let offeredCount = 0;
+  let settledCount = 0;
+  const expectedCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
+  const expectedFinalId = `${runId}-${shape}-${expectedCount - 1}`;
+  let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+  const runtimeDiagnostics = (): HarnessRuntimeDiagnostics | undefined => {
+    const diagnostics = panel?.runtime.getPerformanceDiagnostics?.();
+    return diagnostics ? { expectedFinalId, ...diagnostics } : undefined;
+  };
+  const progress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): HarnessProgressInput => ({
+    operationId,
+    phase: "cells",
+    stage,
+    substage: stage,
+    sample,
+    trigger: null,
+    scenario: null,
+    cellIndex,
+    cellTotal: 36,
+    adapter,
+    workload,
+    shape,
+    workloadPhase,
+    offered: offeredCount,
+    settled: settledCount,
+    query,
+    ...(() => {
+      if (stage !== "visible-frame" && query !== "final-read") return {};
+      const diagnostics = runtimeDiagnostics();
+      return diagnostics ? { runtimeDiagnostics: diagnostics } : {};
+    })()
+  });
+  const updateProgress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): void => {
+    publishStageProgress(progress(stage, workloadPhase, query), runGuard);
+  };
+  const pressureTransitions: string[] = [];
+  let terminalReason: string | null = null;
+  let terminalPublication: Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null = null;
+  let unsubscribe: (() => void) | undefined;
+  const samplePending = () => pending.sample();
+  const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
+  const longTaskObserver = longTaskSupported
+    ? new PerformanceObserver((entries) => {
+        longTaskEntries.push(...entries.getEntries());
+      })
+    : null;
+  longTaskObserver?.observe({ entryTypes: ["longtask"] });
+
+  const enterPhase = (next: PhaseName): void => {
+    if (next === phase) return;
+    const now = performance.now();
+    phaseIntervals.push({ phase, start: phaseStartedAt, end: now });
+    phase = next;
+    phaseStartedAt = now;
+  };
+
+  let resolveFinalVisible!: () => void;
+  let finalVisibleAt: number | null = null;
+  const finalVisible = new Promise<void>((resolve) => { resolveFinalVisible = resolve; });
+  const cleanupSetupFailure = async (error: unknown): Promise<never> => {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    Object.assign(failure, {
+      cleanupEvidence: await cleanupHarnessResources({
+        history,
+        stage: `cell-${cellIndex}`,
+        guard: runGuard,
+        progress: cancellationProgress,
+        unsubscribe,
+        disposePanel: panel?.disposePanel,
+        removeRoot: () => {
+          root.remove();
+          return !root.isConnected;
+        },
+        restoreStorage: () => storageProbe?.restore(),
+        disconnectObserver: () => longTaskObserver?.disconnect()
+      })
+    });
+    throw failure;
+  };
+  try {
+    panel = await mountProductionPanel(history, {
+      onCommittedEvidenceBoundary(boundary, timestampMs) {
+        if (!runGuard.isActive()) return;
+        committedBoundaryAt.set(boundary.eventId, timestampMs);
+      },
+      onVisibleFrame(_boundary, timestampMs, coveredBoundaries) {
+        if (!runGuard.isActive()) return;
+        for (const coveredBoundary of coveredBoundaries) {
+          const offeredAt = offerTimes.get(coveredBoundary.eventId);
+          if (offeredAt !== undefined) visibleLatencies.push(Math.max(0, timestampMs - offeredAt));
+          const committedAt = committedBoundaryAt.get(coveredBoundary.eventId);
+          if (committedAt !== undefined) committedBoundaryVisibleLatencies.push(Math.max(0, timestampMs - committedAt));
+          if (coveredBoundary.eventId === expectedFinalId) {
+            finalVisibleAt = timestampMs;
+            resolveFinalVisible();
+          }
         }
       }
+    }, root);
+  } catch (error) {
+    await cleanupSetupFailure(error);
+  }
+  if (!runGuard.isActive()) {
+    await cleanupSetupFailure(new Error("Event History cell was cancelled after panel acquisition."));
+  }
+  const events = Array.from({ length: expectedCount }, (_, sequence) =>
+    createEventHistoryWorkloadEvent(shape, sequence, runId)
+  );
+  const expectedIds = events.map((event) => event.id);
+  const workloadFactScalars = captureCellWorkloadFactScalars(shape, events[42] ?? events[0]!);
+  try {
+    unsubscribe = history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
+      if (!runGuard.isActive()) return;
+      if (publication.type === "status") {
+        const state = publication.status.capacity.state;
+        if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
+        return;
+      }
+      if (publication.type === "terminal") {
+        terminalReason = publication.terminal.reason;
+        terminalPublication = publication.terminal;
+      }
+      if (publication.type !== "committed-evidence") return;
+      const now = performance.now();
+      for (const evidence of publication.evidence) {
+        publishedIds.push(evidence.eventId);
+        pending.settle(evidence.eventId);
+        const offeredAt = offerTimes.get(evidence.eventId);
+        if (offeredAt !== undefined) publicationLatencies.push(Math.max(0, now - offeredAt));
+      }
+      samplePending();
+      updateProgress("receipt-settled", "commit");
     });
+  } catch (error) {
+    await cleanupSetupFailure(error);
+  }
 
-    const longTasks: number[] = [];
-    const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
-    longTaskObserver = longTaskSupported
-      ? new PerformanceObserver((entries) => {
-          for (const entry of entries.getEntries()) {
-            if (entry.duration > 50) longTasks.push(entry.duration);
-          }
-        })
-      : null;
-    longTaskObserver?.observe({ entryTypes: ["longtask"] });
-    const accepted = workload === "sustained"
-      ? await appendSustained(activeHistory, preparedEvents, config, pending, samplePending)
-      : await appendBursts(activeHistory, preparedEvents, config, pending, samplePending);
-    const enqueueElapsedMs = accepted.elapsedMs;
-    const backlogQueryStartedAt = performance.now();
-    await activeHistory.queryEvents({ limit: 1, order: "desc" }).toPromise();
-    const queryBehindBacklogMs = performance.now() - backlogQueryStartedAt;
-    const drainStartedAt = performance.now();
-    await Promise.all(accepted);
-    const drainElapsedMs = performance.now() - drainStartedAt;
-    samplePending();
-    const stats = await activeHistory.stats().toPromise();
-    const queryLatencyMs = await measureQueries(activeHistory, shape, runId);
-    const retainedEvents = await activeHistory.list().toPromise();
-    const expectedIds = preparedEvents.map(({ event }) => event.id);
-    for (const entry of longTaskObserver?.takeRecords() ?? []) {
-      if (entry.duration > 50) longTasks.push(entry.duration);
-    }
-    const elapsedMs = enqueueElapsedMs + queryBehindBacklogMs + drainElapsedMs;
+  let primaryFailure: Error | null = null;
+  try {
+    const startedAt = performance.now();
+    const receipts = workload === "sustained"
+      ? await withStageDeadline(
+        offerSustained(history, events, config, offerTimes, pending, () => {
+          if (!runGuard.isActive()) return;
+          enterPhase("capture");
+          offeredCount += 1;
+          updateProgress("offer", "capture");
+        }, samplePending, runGuard),
+        `cell-${cellIndex}-offer`,
+        STAGE_DEADLINES_MS.cellOffer,
+        () => progress("offer", "capture"),
+        undefined,
+        runGuard
+      )
+      : await withStageDeadline(
+        offerBurst(history, events, config, offerTimes, pending, () => {
+          if (!runGuard.isActive()) return;
+          offeredCount += 1;
+          updateProgress("offer", "capture");
+        }, samplePending, runGuard),
+        `cell-${cellIndex}-offer`,
+        STAGE_DEADLINES_MS.cellOffer,
+        () => progress("offer", "capture"),
+        undefined,
+        runGuard
+      );
+    const enqueueElapsedMs = performance.now() - startedAt;
+    enterPhase("commit");
+    updateProgress("receipt-settlement", "commit");
+    await settleReceiptStage(
+      receipts,
+      `cell-${cellIndex}-receipts`,
+      STAGE_DEADLINES_MS.cellReceipts,
+      (settled) => {
+        if (!runGuard.isActive()) return progress("receipt-settlement", "commit");
+        settledCount = settled;
+        return progress("receipt-settlement", "commit");
+      },
+      runGuard
+    );
+    const commitSettledAt = performance.now();
+    enterPhase("paint");
+    updateProgress("visible-frame", "paint");
+    await withStageDeadline(
+      finalVisible,
+      `cell-${cellIndex}-visible-frame`,
+      STAGE_DEADLINES_MS.visibleFrame,
+      () => progress("visible-frame", "paint"),
+      undefined,
+      runGuard
+    );
+    // The journal owns immutable deserialized Evidence after settlement. Drop
+    // the caller-owned large workload payloads before repeated queries so the
+    // final memory cell measures the journal rather than two complete copies.
+    events.length = 0;
+    await waitForBoundedFrame(
+      `cell-${cellIndex}-frame`,
+      () => progress("frame", "paint"),
+      runGuard
+    );
+    const readStartedAt = performance.now();
+    enterPhase("query");
+    const querySampleGc: QuerySampleGcEvidence[] = [];
+    const queryMeasurements = await withStageDeadline((async () => {
+      const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      const full = await measureAuthoritativeFullQuery(history, () => progress("query", "query", "full"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      return { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms: full.p95Ms, read: full.read };
+    })(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
+    const { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms, read } = queryMeasurements;
+    const queryElapsedMs = performance.now() - readStartedAt;
+    const retainedIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
+    const boundary = read.ok ? read.value.committedEvidenceBoundary : null;
+    const now = performance.now();
+    phaseIntervals.push({ phase, start: phaseStartedAt, end: now });
+    longTaskEntries.push(...(longTaskObserver?.takeRecords() ?? []));
+    longTaskObserver?.disconnect();
+    const attributedLongTasks = attributeLongTasks(longTaskEntries, phaseIntervals);
+    const storageEstimate = await withStageDeadline(
+      captureStorageEstimate(),
+      `cell-${cellIndex}-storage-estimate`,
+      STAGE_DEADLINES_MS.read,
+      () => progress("storage-estimate", "query", "storage-estimate"),
+      undefined,
+      runGuard
+    );
+    const terminal = terminalPublication as Extract<HistoryPublication, { type: "terminal" }>['terminal'] | null;
+    const firstMissingEventId = terminal?.firstMissingEventId ?? null;
+    const refusedCount = terminal?.rejected.count ?? 0;
+    const discardedCount = terminal?.discarded.count ?? 0;
     return {
       adapter,
       workload,
-      shape,
-      accepted: accepted.length,
-      retained: stats.retained,
+      shape: shape as EventHistoryPerformanceShape,
+      sample,
+      accepted: receipts.length,
+      published: publishedIds.length,
+      retained: read.ok ? read.value.total : 0,
       correctness: {
-        published: publishedIds.length,
-        retainedMatchesAccepted: stats.retained === accepted.length,
-        publicationMatchesAccepted: publishedIds.length === accepted.length,
-        retainedInOrder: idsMatch(retainedEvents.map((event) => event.id), expectedIds),
-        publicationInOrder: idsMatch(publishedIds, expectedIds)
+        retainedMatchesAccepted: read.ok && read.value.total === receipts.length,
+        publicationMatchesAccepted: publishedIds.length === receipts.length,
+        retainedInOrder: idsMatch(retainedIds, expectedIds),
+        publicationInOrder: idsMatch(publishedIds, expectedIds),
+        finalBoundaryCorrect: boundary?.eventId === expectedFinalId && boundary?.sequence === expectedCount,
+        terminalOutcomeCorrect: read.ok && terminalReason === null &&
+          boundary?.eventId === expectedFinalId && boundary.sequence === expectedCount &&
+          firstMissingEventId === null && refusedCount === 0 && discardedCount === 0
       },
-      elapsedMs,
+      identityEvidence: {
+        expectedEventIds: expectedIds,
+        retainedEventIds: retainedIds,
+        publishedEventIds: publishedIds
+      },
+      querySampleGc,
+      latency: {
+        offerToPublicationP95Ms: percentile(publicationLatencies, 0.95),
+        offerToVisibleFrameP95Ms: percentile(visibleLatencies, 0.95),
+        committedBoundaryToVisibleFrameP95Ms: percentile(committedBoundaryVisibleLatencies, 0.95),
+        finalBoundaryVisibleMs: finalVisibleAt === null
+          ? null
+          : Math.max(0, finalVisibleAt - (offerTimes.get(expectedFinalId) ?? startedAt)),
+        behindBacklogMs: Math.max(0, commitSettledAt - (startedAt + enqueueElapsedMs)),
+        recentPageP95Ms,
+        structuredIndexedP95Ms,
+        findFullP95Ms: Math.max(findP95Ms, fullP95Ms)
+      },
+      longTasks: { supported: longTaskSupported, ...attributedLongTasks },
+      storage: storageTelemetryForCell(storageProbe?.snapshot() ?? emptyStorageTelemetry()),
+      storageEstimate,
+      workloadFacts: {
+        expectedCount,
+        offeredEventsPerSecond: workload === "sustained"
+          ? config.sustainedEventsPerSecond
+          : burstOfferedEventsPerSecond(expectedCount, enqueueElapsedMs),
+        ...workloadFactScalars
+      },
+      pressure: {
+        maxPendingBytes: pending.snapshot().maxPendingBytes,
+        maxOldestPendingAgeMs: pending.snapshot().maxOldestPendingAgeMs,
+        transitions: pressureTransitions,
+        limits: (() => {
+          const limits = historyCapacityLimits(adapter === "indexeddb" ? "NORMAL" : "LOWER");
+          return {
+            retainedCount: limits.maxRetainedCount,
+            retainedBytes: limits.maxRetainedBytes,
+            pendingBytes: limits.pendingStopBytes,
+            pendingAgeMs: limits.pendingAgeStopMs
+          };
+        })()
+      },
+      terminal: {
+        phase: terminalReason ? "STOPPED" : "RUNNING",
+        reason: terminalReason,
+        committedEvidenceBoundary: boundary ? { sequence: boundary.sequence, eventId: boundary.eventId } : null,
+        firstMissingEventId,
+        refusedCount,
+        discardedCount
+      },
       enqueueElapsedMs,
-      queryBehindBacklogMs,
-      drainElapsedMs,
-      throughputEventsPerSecond: (accepted.length * 1_000) / Math.max(1, elapsedMs),
-      offeredEventsPerSecond: (accepted.length * 1_000) / Math.max(1, enqueueElapsedMs),
-      targetOfferedEventsPerSecond:
-        workload === "sustained" ? config.sustainedEventsPerSecond : null,
-      emitterLatenessMs: summarize(accepted.emitterLatenessMs),
-      maxPendingBytes,
-      maxOldestPendingAgeMs,
-      commitToHistoryPublicationLatencyMs: summarize(visibleLatencies),
-      transactionBatching: transactionProbe.summary(),
-      queryLatencyMs,
-      longTasksOver50Ms: longTasks.length,
-      maxLongTaskMs: maximum(longTasks),
-      supportedLongTaskObserver: longTaskSupported
-    };
+      queryElapsedMs,
+    } as EventHistoryPerformanceCell;
+  } catch (error) {
+    primaryFailure = normalizeHarnessError(error, `cell-${cellIndex}`, progress("failed", phase), runGuard);
+    throw primaryFailure;
   } finally {
-    longTaskObserver?.disconnect();
-    unsubscribe?.();
-    try {
-      await history?.close().toPromise();
-      if (adapter === "indexeddb") await deleteEventDatabase(eventDatabaseName(sessionId));
-    } finally {
-      transactionProbe?.restore();
+    const cleanupEvidence = await cleanupHarnessResources({
+      history,
+      stage: `cell-${cellIndex}`,
+      guard: runGuard,
+      progress: () => progress("close", null),
+      unsubscribe,
+      disposePanel: panel?.disposePanel,
+      removeRoot: () => {
+        root.remove();
+        return !root.isConnected;
+      },
+      restoreStorage: () => storageProbe?.restore(),
+      disconnectObserver: () => longTaskObserver?.disconnect()
+    });
+    const cleanupMessage = cleanupEvidence.unsubscribeError
+      ?? cleanupEvidence.disposeError
+      ?? cleanupEvidence.rootError
+      ?? cleanupEvidence.closeError;
+    if (primaryFailure) {
+      Object.assign(primaryFailure, { cleanupEvidence });
+    } else if (cleanupMessage) {
+      const cleanupFailure = new Error(cleanupMessage);
+      Object.assign(cleanupFailure, { cleanupEvidence });
+      throw cleanupFailure;
     }
   }
 }
 
-type PreparedWorkloadEvent = {
-  event: ReturnType<typeof createEventHistoryWorkloadEvent>;
-  bytes: number;
-};
+export function captureCellWorkloadFactScalars(
+  shape: EventHistoryShape,
+  representativeEvent: LightstreamerEventEnvelope
+): Readonly<{
+  shapeBytes: number;
+  persistedJsonBytes: number;
+  indexedDbWritesPerEvent: number;
+  searchTokenCount: number;
+}> {
+  const shapeFact = representativeEventHistoryShapeFacts().find((fact) => fact.id === shape);
+  return Object.freeze({
+    shapeBytes: utf8JsonBytes(representativeEvent),
+    persistedJsonBytes: shapeFact?.persistedJsonBytes ?? 0,
+    indexedDbWritesPerEvent: shapeFact?.indexedDbWritesPerEvent ?? 0,
+    searchTokenCount: shapeFact?.searchTokenCount ?? 0
+  });
+}
 
-type AcceptedAppends = Array<Promise<unknown>> & {
-  elapsedMs: number;
-  emitterLatenessMs: number[];
-};
+export function burstOfferedEventsPerSecond(expectedCount: number, enqueueElapsedMs: number): number {
+  return expectedCount / Math.max(0.001, enqueueElapsedMs / 1_000);
+}
 
-async function appendSustained(
-  history: EventHistory,
-  events: readonly PreparedWorkloadEvent[],
-  config: EventHistoryPerformanceConfig,
-  pending: Map<string, { acceptedAt: number; bytes: number }>,
-  sample: () => void
-): Promise<AcceptedAppends> {
-  const startedAt = performance.now();
-  const accepted = [] as unknown as AcceptedAppends;
-  accepted.emitterLatenessMs = [];
-  let sequence = 0;
-  while (sequence < events.length) {
-    const due = Math.min(
-      events.length,
-      Math.max(1, Math.floor(((performance.now() - startedAt) * config.sustainedEventsPerSecond) / 1_000) + 1)
+export async function runTerminalScenario(
+  adapter: "indexeddb" | "memory",
+  trigger: "PENDING_BYTES" | "PENDING_AGE",
+  operationId: string | null,
+  guard: HarnessStageGuard
+): Promise<EventHistoryPerformanceTerminalScenario> {
+  if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+  const tier = adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const;
+  let releaseCommit = (): void => undefined;
+  const blockedCommit = new Promise<void>((resolve) => { releaseCommit = resolve; });
+  const panelSessionId = `event-history-terminal-${adapter}-${trigger.toLowerCase()}`;
+  const progress = (
+    stage = `${trigger}-receipt-settlement`,
+    offered: number | null = null,
+    settled: number | null = null
+  ): HarnessProgressInput => ({
+    operationId,
+    phase: "terminal",
+    stage,
+    substage: stage,
+    sample: null,
+    trigger,
+    scenario: null,
+    cellIndex: null,
+    cellTotal: 36,
+    adapter,
+    workload: null,
+    shape: null,
+    workloadPhase: null,
+    offered,
+    settled,
+    query: null
+  });
+  const history = adapter === "indexeddb"
+    ? await createIndexedDbEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) })
+    : createInMemoryEventHistory({ panelSessionId, capacityTier: tier, ...(trigger === "PENDING_AGE" ? { commitBatch: () => blockedCommit } : {}) });
+  if (!guard.isActive()) {
+    const failure = new Error("Terminal scenario was cancelled after history acquisition.");
+    Object.assign(failure, {
+      cleanupEvidence: await cleanupHarnessResources({ history, stage: `terminal-${adapter}-${trigger}`, guard, progress })
+    });
+    throw failure;
+  }
+  const terminals: Array<Extract<HistoryPublication, { type: "terminal" }>> = [];
+  const publishedEventIds: string[] = [];
+  const pressureTransitions: string[] = [];
+  let unsubscribe: (() => void) | undefined;
+  let followCompleted = false;
+  try {
+    unsubscribe = history.follow({ from: "NOW" }, (publication) => {
+      if (!guard.isActive()) return;
+      if (publication.type === "terminal") terminals.push(publication);
+      if (publication.type === "status") {
+        const state = publication.status.capacity.state;
+        if (pressureTransitions.at(-1) !== state) pressureTransitions.push(state);
+      }
+      if (publication.type === "committed-evidence") {
+        publishedEventIds.push(...publication.evidence.map((evidence) => evidence.eventId));
+      }
+    });
+    followCompleted = true;
+    const receipts: Array<{ id: string; receipt: ReturnType<EventHistory["offer"]> }> = [];
+    const firstEvent = createEventHistoryWorkloadEvent("large-json-rich", 0, `${panelSessionId}-accepted`);
+    if (trigger === "PENDING_BYTES") {
+      const events = Array.from({ length: TERMINAL_PENDING_BYTE_EVENT_COUNT }, (_, index) =>
+        createStagedTopologyCheckpointCandidate(`${panelSessionId}-${index}`, "terminal-pressure", TERMINAL_CHECKPOINT_PAYLOAD_BYTES)
+      );
+      if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+      for (const event of events) {
+        if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+        receipts.push({ id: event.id, receipt: history.offer(event) });
+      }
+    } else {
+      if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+      receipts.push({ id: firstEvent.id, receipt: history.offer(firstEvent) });
+      await delay((tier === "NORMAL" ? 30_000 : 5_000) + 150);
+      if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+      const refused = createEventHistoryWorkloadEvent("small-lifecycle", 1, `${panelSessionId}-refused`);
+      receipts.push({ id: refused.id, receipt: history.offer(refused) });
+      releaseCommit();
+    }
+    publishStageProgress(progress(), guard);
+    const outcomes = await settleReceiptStage(
+      receipts.map(({ receipt }) => receipt.settled),
+      `terminal-${adapter}-${trigger}-receipts`,
+      STAGE_DEADLINES_MS.terminalReceipts,
+      (settled) => progress(`${trigger}-receipt-settlement`, receipts.length, settled),
+      guard
     );
-    while (sequence < due) {
-      const prepared = events[sequence];
-      if (!prepared) throw new Error(`Missing prepared sustained event ${sequence}.`);
-      const scheduledAt = startedAt + (sequence * 1_000) / config.sustainedEventsPerSecond;
-      accepted.emitterLatenessMs.push(Math.max(0, performance.now() - scheduledAt));
-      accepted.push(appendMeasured(history, prepared, pending));
-      sequence += 1;
-    }
-    sample();
-    if (sequence < events.length) {
-      const nextDueAt = startedAt + (sequence * 1_000) / config.sustainedEventsPerSecond;
-      await delay(Math.max(0, nextDueAt - performance.now()));
-    }
+  const accepted = outcomes.filter((outcome) => outcome.outcome === "BECAME_EVIDENCE");
+  const refused = receipts.filter((entry, index) => outcomes[index]?.outcome === "NOT_EVIDENCE");
+  const offeredEventIds = receipts.map((entry) => entry.id);
+  const acceptedEventIds = receipts.filter((_entry, index) => outcomes[index]?.outcome === "BECAME_EVIDENCE").map((entry) => entry.id);
+  const refusedEventIds = refused.map((entry) => entry.id);
+  if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+  publishStageProgress({ ...progress(), stage: `${trigger}-read` }, guard);
+  const read = await withStageDeadline(
+    history.read({ order: "asc" }),
+    `terminal-${adapter}-${trigger}-read`,
+    STAGE_DEADLINES_MS.read,
+    () => ({ ...progress(), stage: `${trigger}-read` }),
+    undefined,
+    guard
+  );
+  const terminal = terminals.at(-1)?.terminal ?? null;
+  unsubscribe?.();
+  unsubscribe = undefined;
+  if (!guard.isActive()) throw new Error("Terminal scenario was cancelled.");
+  const closeOutcome = await withStageDeadline(
+    history.close(),
+    `terminal-${adapter}-${trigger}-close`,
+    STAGE_DEADLINES_MS.close,
+    () => ({ ...progress(), stage: `${trigger}-close` }),
+    undefined,
+    guard
+  );
+  if (closeOutcome.ok !== true) throw new Error(`Terminal ${adapter}/${trigger} Event History close failed.`);
+  const finalEvidence = read.ok ? read.value.evidence.at(-1) ?? null : null;
+  const retainedEventIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
+  const boundaryEvidence = terminal?.committedEvidenceBoundary
+    ? { sequence: terminal.committedEvidenceBoundary.sequence, eventId: terminal.committedEvidenceBoundary.eventId }
+    : { sequence: 0, eventId: "" };
+  const expectedFirstMissing = refusedEventIds[0] ?? "";
+  const refusedIdentityCorrect = terminal?.firstMissingEventId === expectedFirstMissing
+    && refused.length === 1
+    && outcomes.at(-1)?.outcome === "NOT_EVIDENCE";
+    return {
+    adapter,
+    trigger,
+    tier,
+    terminalReason: trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT",
+    terminalReasonCorrect: terminal?.reason === (trigger === "PENDING_BYTES" ? "PENDING_BYTE_LIMIT" : "PENDING_AGE_LIMIT"),
+    offeredEventIds,
+    acceptedEventIds,
+    retainedEventIds,
+    publishedEventIds,
+    refusedEventIds,
+    acceptedCount: accepted.length,
+    refusedCount: refused.length,
+    firstMissingEventId: terminal?.firstMissingEventId ?? "",
+    committedBoundary: boundaryEvidence,
+    terminalPublicationCount: terminals.length,
+    finalBoundaryCorrect: terminal !== null && terminal.committedEvidenceBoundary?.sequence === accepted.length && finalEvidence?.eventId === terminal.committedEvidenceBoundary.eventId,
+    refusedIdentityCorrect,
+    exactOneTerminalPublication: terminals.length === 1,
+    pressureTransitions
+    };
+  } catch (error) {
+    const failure = followCompleted
+      ? normalizeHarnessError(error, `terminal-${adapter}-${trigger}`, progress(), guard)
+      : error instanceof Error ? error : new Error(String(error));
+    const resourceCleanup = await cleanupHarnessResources({
+      history,
+      stage: `terminal-${adapter}-${trigger}`,
+      guard,
+      progress: () => ({ ...progress(), stage: `${trigger}-cleanup` }),
+      unsubscribe
+    });
+    Object.assign(failure, {
+      cleanupEvidence: {
+        ...resourceCleanup,
+        adapter,
+        phase: "cleanup" as const,
+        sample: null,
+        eventCount: 0,
+        retained: null,
+        sessionId: panelSessionId,
+        databaseName: adapter === "indexeddb" ? authoritativeEventDatabaseName(panelSessionId) : null,
+        close: resourceCleanup.close,
+        disposeError: resourceCleanup.disposeError,
+        rootRemoved: resourceCleanup.rootRemoved,
+        frameYielded: false,
+        gcPasses: null,
+        status: "FAIL" as const,
+        failure: { code: failure.name, message: failure.message }
+      }
+    });
+    throw failure;
   }
-  accepted.elapsedMs = performance.now() - startedAt;
-  return accepted;
 }
 
-async function appendBursts(
+export async function runCheckpointScenario(
+  adapter: "indexeddb" | "memory",
+  name: "representative" | "maximum-2MiB",
+  operationId: string | null,
+  guard: HarnessStageGuard,
+  hooks: HarnessScenarioTestHooks = {}
+): Promise<EventHistoryPerformanceCheckpointScenario> {
+  const tier = adapter === "indexeddb" ? "NORMAL" as const : "LOWER" as const;
+  const panelSessionId = `event-history-checkpoint-${adapter}-${name}`;
+  const progress = (stage: string, offered: number | null = null, settled: number | null = null): HarnessProgressInput => ({
+    operationId,
+    phase: "checkpoint",
+    stage,
+    substage: stage,
+    sample: null,
+    trigger: null,
+    scenario: name,
+    cellIndex: null,
+    cellTotal: 36,
+    adapter,
+    workload: null,
+    shape: null,
+    workloadPhase: null,
+    offered,
+    settled,
+    query: null
+  });
+  const candidate = createStagedTopologyCheckpointCandidate(
+    `checkpoint-${adapter}-${name}`,
+    `sync-${name}`,
+    name === "representative" ? 64 * 1_024 : TERMINAL_CHECKPOINT_PAYLOAD_BYTES
+  );
+  if (candidate.kind !== "topology-checkpoint") throw new Error(`Checkpoint ${adapter}/${name} has an invalid candidate kind.`);
+  const checkpointFrames = decodeTopologyCheckpointEvidenceCandidate(candidate);
+  if (!checkpointFrames) throw new Error(`Checkpoint ${adapter}/${name} did not decode into sync frames.`);
+  let expectedCheckpointEventIds = [candidate.id];
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled before history acquisition.");
+  const serialized = serializeJournalEvidenceCandidate(candidate);
+  const rawHistory = adapter === "indexeddb"
+    ? await createIndexedDbEventHistory({ panelSessionId, capacityTier: tier })
+    : createInMemoryEventHistory({ panelSessionId, capacityTier: tier });
+  const offeredEventIds: string[] = [];
+  let resolveCompleteOffered!: () => void;
+  const completeOffered = new Promise<void>((resolve) => { resolveCompleteOffered = resolve; });
+  // Observe every offer made through the same history instance used by the
+  // mounted production runtime. This includes the runtime's sole validated
+  // COMPLETE candidate and keeps offer evidence independent from follow().
+  const history: EventHistory = {
+    storage: rawHistory.storage,
+    offer(candidate) {
+      offeredEventIds.push(candidate.id);
+      const receipt = rawHistory.offer(candidate);
+      if (candidate.kind === "topology-checkpoint") {
+        expectedCheckpointEventIds = [candidate.id];
+        resolveCompleteOffered();
+      }
+      return receipt;
+    },
+    read: rawHistory.read.bind(rawHistory),
+    clear: rawHistory.clear.bind(rawHistory),
+    follow: rawHistory.follow.bind(rawHistory),
+    close: rawHistory.close.bind(rawHistory)
+  };
+  if (!guard.isActive()) {
+    const failure = new Error("Checkpoint scenario was cancelled after history acquisition.");
+    Object.assign(failure, {
+      cleanupEvidence: await cleanupHarnessResources({ history, stage: `checkpoint-${adapter}-${name}`, guard, progress: () => progress(`${name}-cleanup`) })
+    });
+    throw failure;
+  }
+  const trafficBefore = Array.from({ length: 4 }, (_, index) =>
+    createEventHistoryWorkloadEvent("ordinary-item-update", index, `${adapter}-${name}-before`)
+  );
+  const trafficAfter = Array.from({ length: 4 }, (_, index) =>
+    createEventHistoryWorkloadEvent("ordinary-item-update", index, `${adapter}-${name}-after`)
+  );
+  const liveCaptureEvents = Array.from({ length: CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT }, (_, index) =>
+    createEventHistoryWorkloadEvent("ordinary-item-update", index, `${adapter}-${name}-live`)
+  );
+  const liveCaptureEventIdSet = new Set(liveCaptureEvents.map((event) => event.id));
+  const productionObservedLiveEventIds: string[] = [];
+  const productionObservedLiveEventTimesMs: number[] = [];
+  const productionPublishedEventIds: string[] = [];
+  const observedProductionLiveIds = new Set<string>();
+  let candidateObserved = false;
+  let stagingStartedAtMs: number | null = null;
+  let stagingEndedAtMs: number | null = null;
+  let resolveStagingStart!: () => void;
+  let resolveStagingEnd!: () => void;
+  const stagingStartObservation = new Promise<void>((resolve) => { resolveStagingStart = resolve; });
+  const stagingEndObservation = new Promise<void>((resolve) => { resolveStagingEnd = resolve; });
+  let resolveProductionObservation!: () => void;
+  const productionObservation = new Promise<void>((resolve) => { resolveProductionObservation = resolve; });
+  let resolveLiveCaptureObservation!: () => void;
+  const liveCaptureObservation = new Promise<void>((resolve) => { resolveLiveCaptureObservation = resolve; });
+  const root = document.createElement("main");
+  let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+  const cleanupDisposePanel = async (): Promise<void> => {
+    if (!panel) return;
+    const disposePanel = panel.disposePanel;
+    hooks.cleanupOverrides?.disposePanel
+      ? await hooks.cleanupOverrides.disposePanel(disposePanel)
+      : await disposePanel();
+  };
+  const cleanupRemoveRoot = (): boolean => {
+    const removeRoot = (): boolean => {
+      root.remove();
+      return !root.isConnected;
+    };
+    return hooks.cleanupOverrides?.removeRoot
+      ? hooks.cleanupOverrides.removeRoot(removeRoot)
+      : removeRoot();
+  };
+  try {
+    panel = await mountProductionPanel(history, {
+      onCommittedEvidenceBoundary(boundary, timestampMs) {
+        if (!guard.isActive()) return;
+        productionPublishedEventIds.push(boundary.eventId);
+        if (boundary.eventId === expectedCheckpointEventIds[0]) {
+          candidateObserved = true;
+        }
+        if (liveCaptureEventIdSet.has(boundary.eventId) && !observedProductionLiveIds.has(boundary.eventId)) {
+          observedProductionLiveIds.add(boundary.eventId);
+          productionObservedLiveEventIds.push(boundary.eventId);
+          productionObservedLiveEventTimesMs.push(timestampMs);
+          if (productionObservedLiveEventIds.length === liveCaptureEvents.length) resolveLiveCaptureObservation();
+        }
+        if (candidateObserved && productionObservedLiveEventIds.length === liveCaptureEvents.length) {
+          resolveProductionObservation();
+        }
+      },
+      onCheckpointStagingStart(syncId, timestampMs) {
+        if (syncId !== candidate.checkpoint.syncId || stagingStartedAtMs !== null) return;
+        stagingStartedAtMs = timestampMs;
+        resolveStagingStart();
+      },
+      onCheckpointStagingEnd(syncId, timestampMs) {
+        if (syncId !== candidate.checkpoint.syncId || stagingEndedAtMs !== null) return;
+        stagingEndedAtMs = timestampMs;
+        resolveStagingEnd();
+      }
+    }, root);
+    hooks.afterPanelMount?.(history);
+    if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled after panel acquisition.");
+    publishStageProgress(progress(`${name}-traffic-before`, trafficBefore.length, 0), guard);
+  await settleReceiptStage(
+    trafficBefore.map((event) => {
+      if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
+      return history.offer(event).settled;
+    }),
+    `checkpoint-${adapter}-${name}-before`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    (settled) => progress(`${name}-traffic-before`, trafficBefore.length, settled),
+    guard
+  );
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
+  panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame: checkpointFrames[0]! });
+  await withStageDeadline(
+    stagingStartObservation,
+    `checkpoint-${adapter}-${name}-production-panel-staging-start`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-staging-start`, 1, 1),
+    undefined,
+    guard
+  );
+  const checkpointStagingStartedAtMs = stagingStartedAtMs;
+  if (checkpointStagingStartedAtMs === null) throw new Error(`Checkpoint ${adapter}/${name} missing production staging start.`);
+  const liveCaptureEventIds: string[] = [];
+  const offeredLiveCaptureEventTimesMs: number[] = [];
+  const liveReceiptPromises: Array<Promise<Readonly<{ ok: true; value: unknown } | { ok: false; error: unknown }>>> = [];
+  const checkpointChunks = checkpointFrames.slice(1, -1).filter((frame): frame is Extract<TopologySyncFrame, { type: typeof TOPOLOGY_SYNC_CHUNK }> =>
+    frame.type === TOPOLOGY_SYNC_CHUNK
+  );
+  const checkpointChunkInterval = Math.max(1, Math.floor(CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT / Math.max(1, checkpointChunks.length)));
+  let nextCheckpointChunk = 0;
+  for (let index = 0; index < CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT; index += 1) {
+    if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled during live capture.");
+    const event = liveCaptureEvents[index]!;
+    const offeredAt = performance.now();
+    const liveReceipt = history.offer(event);
+    if (liveReceipt.intake !== "QUEUED") throw new Error(`Checkpoint ${adapter}/${name} live capture event was refused.`);
+    liveCaptureEventIds.push(event.id);
+    offeredLiveCaptureEventTimesMs.push(offeredAt);
+    liveReceiptPromises.push(Promise.resolve(liveReceipt.settled).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error })
+    ));
+    publishStageProgress(progress(`${name}-live-capture`, index + 1, null), guard);
+    await delay(CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS);
+    if ((index + 1) % checkpointChunkInterval === 0 && nextCheckpointChunk < checkpointChunks.length) {
+      panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame: checkpointChunks[nextCheckpointChunk++]! });
+    }
+  }
+  while (nextCheckpointChunk < checkpointChunks.length) {
+    panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame: checkpointChunks[nextCheckpointChunk++]! });
+  }
+  await withStageDeadline(
+    liveCaptureObservation,
+    `checkpoint-${adapter}-${name}-production-live-capture`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-production-live-capture`, productionObservedLiveEventIds.length, liveCaptureEvents.length),
+    undefined,
+    guard
+  );
+  const productionLiveSpanMs = productionObservedLiveEventTimesMs.at(-1)! - productionObservedLiveEventTimesMs[0]!;
+  const productionLiveMaxGapMs = productionObservedLiveEventTimesMs.slice(1).reduce(
+    (maximum, timestamp, index) => Math.max(maximum, timestamp - productionObservedLiveEventTimesMs[index]!),
+    0
+  );
+  if (productionLiveSpanMs < CHECKPOINT_LIVE_CAPTURE_TARGET_OVERLAP_MS) {
+    throw new Error(`Checkpoint ${adapter}/${name} production live capture spanned ${productionLiveSpanMs} ms before COMPLETE; expected at least ${CHECKPOINT_LIVE_CAPTURE_TARGET_OVERLAP_MS} ms.`);
+  }
+  if (productionLiveMaxGapMs > CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS) {
+    throw new Error(`Checkpoint ${adapter}/${name} production live capture gap ${productionLiveMaxGapMs} ms exceeded ${CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS} ms before COMPLETE.`);
+  }
+  panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame: checkpointFrames.at(-1)! });
+  await withStageDeadline(
+    completeOffered,
+    `checkpoint-${adapter}-${name}-complete-receipt`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-complete-receipt`, 1, 1),
+    undefined,
+    guard
+  );
+  const liveSettlements = await withStageDeadline(
+    Promise.all(liveReceiptPromises),
+    `checkpoint-${adapter}-${name}-live-receipts`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-live-capture-settle`, liveCaptureEventIds.length, liveCaptureEventIds.length),
+    undefined,
+    guard
+  );
+  const rejectedLiveSettlement = liveSettlements.find((settlement) => !settlement.ok);
+  if (rejectedLiveSettlement && !rejectedLiveSettlement.ok) throw rejectedLiveSettlement.error;
+  await withStageDeadline(
+    productionObservation,
+    `checkpoint-${adapter}-${name}-production-panel-observation`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-production-panel-observation`, productionObservedLiveEventIds.length, liveCaptureEvents.length),
+    undefined,
+    guard
+  );
+  await withStageDeadline(
+    stagingEndObservation,
+    `checkpoint-${adapter}-${name}-production-panel-staging-end`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-staging-end`, 1, 1),
+    undefined,
+    guard
+  );
+  const checkpointStagingEndedAtMs = stagingEndedAtMs;
+  if (checkpointStagingEndedAtMs === null) throw new Error(`Checkpoint ${adapter}/${name} missing production staging end.`);
+  await settleReceiptStage(
+    trafficAfter.map((event) => {
+      if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
+      return history.offer(event).settled;
+    }),
+    `checkpoint-${adapter}-${name}-after`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    (settled) => progress(`${name}-traffic-after`, trafficAfter.length, settled),
+    guard
+  );
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
+  const read = await withStageDeadline(
+    history.read({ order: "asc" }),
+    `checkpoint-${adapter}-${name}-read`,
+    STAGE_DEADLINES_MS.read,
+    () => progress(`${name}-read`),
+    undefined,
+    guard
+  );
+  const publishedOrder = productionPublishedEventIds;
+  const retainedEventIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
+  const publishedEventIds = publishedOrder;
+  const liveCapture = measureCheckpointLiveCapture({
+    checkpointStagingStartedAtMs,
+    checkpointStagingEndedAtMs,
+    liveCaptureEventTimesMs: productionObservedLiveEventTimesMs
+  });
+  const expectedEventIds = [
+    ...trafficBefore.map((event) => event.id),
+    ...liveCaptureEventIds,
+    expectedCheckpointEventIds[0]!,
+    ...trafficAfter.map((event) => event.id)
+  ];
+  const offeredCheckpointEventIds = offeredEventIds.filter((eventId) => eventId === expectedCheckpointEventIds[0]);
+  if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
+  const cleanupEvidence = await cleanupHarnessResources({
+    history,
+    stage: `checkpoint-${adapter}-${name}`,
+    guard,
+    progress: () => progress(`${name}-cleanup`),
+    disposePanel: panel ? cleanupDisposePanel : undefined,
+    removeRoot: cleanupRemoveRoot
+  });
+  const closeOutcome = cleanupEvidence.close;
+  const closeSucceeded = closeOutcome !== null
+    && typeof closeOutcome === "object"
+    && "ok" in closeOutcome
+    && closeOutcome.ok === true;
+  const cleanupSuccessful = cleanupEvidence.unsubscribeError === null
+    && cleanupEvidence.disposeAttempted
+    && cleanupEvidence.disposeError === null
+    && cleanupEvidence.rootRemovalAttempted
+    && cleanupEvidence.rootRemoved
+    && cleanupEvidence.rootError === null
+    && cleanupEvidence.closeAttempted
+    && closeSucceeded
+    && cleanupEvidence.closeError === null;
+  if (!cleanupSuccessful) {
+    const cleanupFailure = new Error(`Checkpoint ${adapter}/${name} cleanup evidence was incomplete.`);
+    Object.assign(cleanupFailure, { cleanupEvidence });
+    throw cleanupFailure;
+  }
+    return {
+    name,
+    adapter,
+    accepted: candidateObserved,
+    retained: read.ok ? read.value.total : 0,
+    trafficBefore: trafficBefore.length,
+    trafficAfter: trafficAfter.length,
+    liveCaptureEventIds,
+    productionObservedLiveEventIds,
+    productionObservedLiveEventTimesMs,
+    observationProvenance: "production-panel-committed-evidence-hook",
+    expectedCheckpointEventIds,
+    offeredCheckpointEventIds,
+    offeredEventIds,
+    offeredLiveCaptureEventTimesMs,
+    retainedEventIds,
+    publishedEventIds,
+    expectedEventIds,
+    ...liveCapture,
+    interleavedWhileStaging: liveCapture.interleavedWhileStaging && candidateObserved,
+    canonicalBytes: journalAccountedBytes(serialized.bytes),
+    committedBoundaryCorrect: candidateObserved,
+    batchAcceptedAsOneOversizedUnit: candidateObserved
+    };
+  } catch (error) {
+    const failure = normalizeHarnessError(error, `checkpoint-${adapter}-${name}`, progress(`${name}-failed`), guard);
+    const existingCleanupEvidence = error instanceof Error && "cleanupEvidence" in error
+      ? (error as Error & { cleanupEvidence?: HarnessCleanupEvidence }).cleanupEvidence
+      : undefined;
+    const resourceCleanup = existingCleanupEvidence ?? await cleanupHarnessResources({
+      history,
+      stage: `checkpoint-${adapter}-${name}`,
+      guard,
+      progress: () => progress(`${name}-cleanup`),
+      disposePanel: panel ? cleanupDisposePanel : undefined,
+      removeRoot: cleanupRemoveRoot
+    });
+    Object.assign(failure, {
+      cleanupEvidence: {
+        ...resourceCleanup,
+        adapter,
+        phase: "cleanup" as const,
+        sample: null,
+        eventCount: trafficBefore.length + trafficAfter.length + CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT + 1,
+        retained: null,
+        sessionId: `event-history-checkpoint-${adapter}-${name}`,
+        databaseName: adapter === "indexeddb"
+          ? authoritativeEventDatabaseName(`event-history-checkpoint-${adapter}-${name}`)
+          : null,
+        close: resourceCleanup.close,
+        disposeError: resourceCleanup.disposeError,
+        rootRemoved: resourceCleanup.rootRemoved,
+        frameYielded: false,
+        gcPasses: null,
+        status: "FAIL" as const,
+        failure: { code: failure.name, message: failure.message }
+      }
+    });
+    throw failure;
+  }
+}
+
+export function createStagedTopologyCheckpointCandidate(
+  seed: string,
+  syncId: string,
+  minimumCanonicalBytes: number
+): EvidenceCandidate {
+  const pageEpoch = `page-${seed}`;
+  const panelSessionId = "panel-00000000-0000-4000-8000-000000000099";
+  const coverage: TopologyCoverage = { status: "complete", getters: {} };
+  const recordCount = minimumCanonicalBytes >= TERMINAL_CHECKPOINT_PAYLOAD_BYTES ? 6_500 : 64;
+  let lastStagedBytes = 0;
+  let lastBaseBytes = 0;
+  for (let paddingLength = 64; paddingLength <= 256; paddingLength += 8) {
+    const baseRecords = createCheckpointRecords(pageEpoch, recordCount, paddingLength, 0);
+    const baseFrames = createCheckpointFrames(syncId, panelSessionId, pageEpoch, coverage, baseRecords);
+    lastStagedBytes = baseFrames.reduce((total, frame) => total + topologySyncUtf8Bytes(frame), 0);
+    if (lastStagedBytes > TOPOLOGY_SYNC_LIMITS.maxStagedBytes) continue;
+    const baseCandidate = stageCheckpointCandidate(baseFrames, []);
+    if (!baseCandidate) continue;
+    const baseBytes = journalAccountedBytes(serializeJournalEvidenceCandidate(baseCandidate).bytes);
+    lastBaseBytes = baseBytes;
+    const extraPaddingLength = minimumCanonicalBytes - baseBytes;
+    if (extraPaddingLength >= 0 && extraPaddingLength <= 4_096) {
+      const records = createCheckpointRecords(pageEpoch, recordCount, paddingLength, extraPaddingLength);
+      const frames = createCheckpointFrames(syncId, panelSessionId, pageEpoch, coverage, records);
+      const stagedBytes = frames.reduce((total, frame) => total + topologySyncUtf8Bytes(frame), 0);
+      lastStagedBytes = stagedBytes;
+      if (stagedBytes <= TOPOLOGY_SYNC_LIMITS.maxStagedBytes) {
+        const candidate = stageCheckpointCandidate(frames, []);
+        if (candidate && journalAccountedBytes(serializeJournalEvidenceCandidate(candidate).bytes) === minimumCanonicalBytes) {
+          return candidate;
+        }
+      }
+    }
+    if (minimumCanonicalBytes <= baseBytes) continue;
+
+    const oneObservation = createCheckpointObservationEvent(pageEpoch, recordCount + 1, 0);
+    const oneObservationCandidate = stageCheckpointCandidate(baseFrames, [oneObservation]);
+    if (!oneObservationCandidate) continue;
+    const oneObservationBytes = journalAccountedBytes(serializeJournalEvidenceCandidate(oneObservationCandidate).bytes);
+    const observationOverhead = oneObservationBytes - baseBytes;
+    if (observationOverhead <= 0) continue;
+    let observationCount = Math.max(
+      1,
+      Math.ceil((minimumCanonicalBytes - baseBytes - observationOverhead) / (4_096 + observationOverhead))
+    );
+    for (let adjustment = 0; adjustment < 4; adjustment += 1) {
+      const prefixObservations = createCheckpointObservationEvents(
+        pageEpoch,
+        recordCount,
+        observationCount,
+        4_096,
+        0
+      );
+      const prefixCandidate = stageCheckpointCandidate(baseFrames, prefixObservations);
+      if (!prefixCandidate) break;
+      const prefixBytes = journalAccountedBytes(serializeJournalEvidenceCandidate(prefixCandidate).bytes);
+      if (prefixBytes > minimumCanonicalBytes) {
+        observationCount -= 1;
+        continue;
+      }
+      if (prefixBytes + 4_096 < minimumCanonicalBytes) {
+        observationCount += 1;
+        continue;
+      }
+      let low = 0;
+      let high = 4_096;
+      while (low <= high) {
+        const padding = Math.floor((low + high) / 2);
+        const observations = createCheckpointObservationEvents(
+          pageEpoch,
+          recordCount,
+          observationCount,
+          4_096,
+          padding
+        );
+        const candidate = stageCheckpointCandidate(baseFrames, observations);
+        if (!candidate) break;
+        const bytes = journalAccountedBytes(serializeJournalEvidenceCandidate(candidate).bytes);
+        if (bytes === minimumCanonicalBytes) return candidate;
+        if (bytes < minimumCanonicalBytes) low = padding + 1;
+        else high = padding - 1;
+      }
+      break;
+    }
+  }
+  throw new Error(`Could not construct a codec-valid ${minimumCanonicalBytes}-byte topology checkpoint for ${seed}; last base bytes ${lastBaseBytes}, last staged bytes ${lastStagedBytes}.`);
+}
+
+function stageCheckpointCandidate(
+  frames: readonly TopologySyncFrame[],
+  observations: readonly LightstreamerEventEnvelope[]
+): EvidenceCandidate | undefined {
+  const projection = createTopologyProjection();
+  let candidate: EvidenceCandidate | undefined;
+  for (const frame of frames) {
+    if (frame.type === TOPOLOGY_SYNC_COMPLETE) {
+      for (const observation of observations) projection.ingestCapture(observation);
+    }
+    const result = projection.applySyncFrame(frame);
+    if (result.candidate) candidate = result.candidate;
+  }
+  return candidate;
+}
+
+function createCheckpointObservationEvents(
+  pageEpoch: string,
+  cutoffCaptureSequence: number,
+  count: number,
+  fullPaddingLength: number,
+  finalPaddingLength: number
+): LightstreamerEventEnvelope[] {
+  return Array.from({ length: count }, (_, index) =>
+    createCheckpointObservationEvent(
+      pageEpoch,
+      cutoffCaptureSequence + index + 1,
+      index === count - 1 ? finalPaddingLength : fullPaddingLength
+    )
+  );
+}
+
+function createCheckpointObservationEvent(
+  pageEpoch: string,
+  captureSequence: number,
+  paddingLength: number
+): LightstreamerEventEnvelope {
+  const topology: TopologyObservation = {
+    version: TOPOLOGY_OBSERVATION_VERSION,
+    kind: "item-update",
+    pageEpoch,
+    captureSequence,
+    timestamp: captureSequence,
+    provenance: { instrumentationSource: "official-public-api" },
+    coverage: { status: "complete", getters: {} },
+    values: { padding: { state: "real", value: "x".repeat(paddingLength) } }
+  };
+  return {
+    id: `checkpoint-live-${pageEpoch}-${captureSequence}`,
+    timestamp: captureSequence,
+    direction: "inbound",
+    source: "server",
+    synthetic: false,
+    kind: "item-update",
+    topology
+  };
+}
+
+function createCheckpointRecords(
+  pageEpoch: string,
+  recordCount: number,
+  paddingLength: number,
+  extraPaddingLength: number
+): TopologyAbsoluteRecord[] {
+  const cutoffCaptureSequence = recordCount;
+  const page: TopologyAbsoluteRecord = { kind: "page", id: pageEpoch, pageEpoch, captureSequence: 1 };
+  const client: TopologyAbsoluteRecord = { kind: "client", id: "checkpoint-client", pageEpoch, captureSequence: 2, parentId: pageEpoch, clientActive: true };
+  const subscription: TopologyAbsoluteRecord = {
+    kind: "subscription",
+    id: "checkpoint-subscription",
+    pageEpoch,
+    captureSequence: 3,
+    parentId: client.id,
+    clientId: client.id,
+    clientActive: true,
+    serverEstablished: true
+  };
+  const padding = "x".repeat(paddingLength);
+  const aggregates = Array.from({ length: Math.max(0, recordCount - 3) }, (_, index) => ({
+    kind: "aggregate" as const,
+    id: `checkpoint-aggregate-${index}`,
+    pageEpoch,
+    captureSequence: index + 4,
+    parentId: subscription.id,
+    subscriptionId: subscription.id,
+    values: { padding: `${padding}${index === 0 ? "x".repeat(extraPaddingLength) : ""}` }
+  }));
+  if (aggregates.at(-1)?.captureSequence !== cutoffCaptureSequence) {
+    throw new Error("Topology checkpoint record cutoff is incoherent.");
+  }
+  return [page, client, subscription, ...aggregates];
+}
+
+function createCheckpointFrames(
+  syncId: string,
+  panelSessionId: string,
+  pageEpoch: string,
+  coverage: TopologyCoverage,
+  records: readonly TopologyAbsoluteRecord[]
+): TopologySyncFrame[] {
+  const chunkSize = 500;
+  const chunks = Array.from({ length: Math.ceil(records.length / chunkSize) }, (_, index) =>
+    records.slice(index * chunkSize, (index + 1) * chunkSize)
+  );
+  const metadata = {
+    version: TOPOLOGY_SYNC_VERSION as 2,
+    syncId,
+    panelSessionId,
+    pageEpoch,
+    cutoffCaptureSequence: records.at(-1)?.captureSequence ?? 0,
+    chunkCount: chunks.length,
+    recordCount: records.length,
+    coverage
+  };
+  return [
+    { type: TOPOLOGY_SYNC_BEGIN, ...metadata },
+    ...chunks.map((chunk, chunkIndex) => ({ type: TOPOLOGY_SYNC_CHUNK, ...metadata, chunkIndex, records: chunk })),
+    { type: TOPOLOGY_SYNC_COMPLETE, ...metadata }
+  ];
+}
+
+export async function offerSustained(
   history: EventHistory,
-  events: readonly PreparedWorkloadEvent[],
+  events: readonly EvidenceCandidate[],
   config: EventHistoryPerformanceConfig,
-  pending: Map<string, { acceptedAt: number; bytes: number }>,
-  sample: () => void
-): Promise<AcceptedAppends> {
+  offerTimes: Map<string, number>,
+  pending: PendingTelemetryTracker,
+  onOffer: () => void,
+  samplePending: () => void,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<Promise<unknown>[]> {
+  const receipts: Promise<unknown>[] = [];
   const startedAt = performance.now();
-  const accepted = [] as unknown as AcceptedAppends;
-  accepted.emitterLatenessMs = [];
+  for (let sequence = 0; sequence < events.length; sequence += 1) {
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+    const dueAt = startedAt + (sequence * 1_000) / config.sustainedEventsPerSecond;
+    await delay(Math.max(0, dueAt - performance.now()));
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+    const event = events[sequence]!;
+    onOffer();
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+    const offeredAt = performance.now();
+    offerTimes.set(event.id, offeredAt);
+    pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
+    const receipt = history.offer(event);
+    if (receipt.intake !== "QUEUED") {
+      pending.refuse(event.id);
+      throw new Error(`Sustained offer was refused: ${event.id}`);
+    }
+    receipts.push(receipt.settled);
+    samplePending();
+  }
+  return receipts;
+}
+
+export async function offerBurst(
+  history: EventHistory,
+  events: readonly EvidenceCandidate[],
+  config: EventHistoryPerformanceConfig,
+  offerTimes: Map<string, number>,
+  pending: PendingTelemetryTracker,
+  onOffer: () => void,
+  samplePending: () => void,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<Promise<unknown>[]> {
+  const receipts: Promise<unknown>[] = [];
   await runBurstOfferSchedule({
     events,
-    eventsPerBurst: config.eventsPerBurst,
-    offer(prepared) {
-      accepted.push(appendMeasured(history, prepared, pending));
+    eventsPerBurst: ISSUE_16_TOTAL_EVENTS,
+    offer(event) {
+      if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+      onOffer();
+      if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+      const offeredAt = performance.now();
+      offerTimes.set(event.id, offeredAt);
+      pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
+      const receipt = history.offer(event);
+      if (receipt.intake !== "QUEUED") {
+        pending.refuse(event.id);
+        throw new Error(`Burst offer was refused: ${event.id}`);
+      }
+      receipts.push(receipt.settled);
+      samplePending();
     },
     async yieldBetweenChunks() {
-      sample();
-      await delay(0);
+      samplePending();
+      await yieldBurstOfferMacrotask();
     },
     async pauseBetweenBursts() {
-      sample();
+      samplePending();
       await delay(config.burstPauseMs);
     }
   });
-  sample();
-  accepted.elapsedMs = performance.now() - startedAt;
-  return accepted;
+  return receipts;
 }
 
-function appendMeasured(
+export async function settleOffers(
   history: EventHistory,
-  prepared: PreparedWorkloadEvent,
-  pending: Map<string, { acceptedAt: number; bytes: number }>
-): Promise<unknown> {
-  const { event, bytes } = prepared;
-  const acceptedAt = performance.now();
-  pending.set(event.id, { acceptedAt, bytes });
-  let operation;
-  try {
-    operation = history.append(event);
-  } catch (error) {
-    pending.delete(event.id);
-    throw error;
-  }
-  return operation.toPromise().catch((error) => {
-    pending.delete(event.id);
-    throw error;
+  events: readonly EvidenceCandidate[],
+  stage: string,
+  timeoutMs: number,
+  progress: (settled: number) => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<void> {
+  const receipts = events.map((event) => {
+    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+    return history.offer(event);
   });
+  if (receipts.some((receipt) => receipt.intake !== "QUEUED")) throw new Error("Retained heap offer was refused.");
+  await settleReceiptStage(receipts.map((receipt) => receipt.settled), stage, timeoutMs, progress, guard);
 }
 
-async function measureQueries(
+/**
+ * Releases caller-owned workload payloads before the retained heap frame while
+ * preserving the scalar count used as measurement identity.
+ */
+export async function releaseHeapWorkloadCandidates(
+  candidates: EvidenceCandidate[],
+  yieldRetainedFrame: () => Promise<void>
+): Promise<number> {
+  const retained = candidates.length;
+  candidates.length = 0;
+  await yieldRetainedFrame();
+  return retained;
+}
+
+async function mountProductionPanel(
   history: EventHistory,
-  shape: EventHistoryShape,
-  runId: string
-): Promise<WorkloadResult["queryLatencyMs"]> {
-  const repeat = async (run: () => Promise<unknown>): Promise<LatencySummary> => {
-    const durations: number[] = [];
-    for (let index = 0; index < 5; index += 1) {
-      const startedAt = performance.now();
-      await run();
-      durations.push(performance.now() - startedAt);
+  performanceHooks: WorkbenchRuntimePerformanceHooks | undefined = undefined,
+  root: HTMLElement = document.createElement("main")
+): Promise<{
+  root: HTMLElement;
+  runtime: ReturnType<typeof createWorkbenchRuntime>;
+  disposePanel: () => void | Promise<void>;
+}> {
+  root.id = "app";
+  document.body.replaceChildren(root);
+  let runtime: ReturnType<typeof createWorkbenchRuntime> | null = null;
+  const disposePanel = mountWorkbenchPanel(root, {
+    openHistory: async () => history,
+    createRuntime: (options) => {
+      runtime = createWorkbenchRuntime({
+        ...options,
+        captureStatus: "capturing",
+        performanceHooks
+      });
+      return runtime;
+    },
+    connectBridge: () => ({
+      reinjectDraft: async () => {
+        throw new Error("Performance harness does not execute injections.");
+      },
+      disconnect() {}
+    })
+  });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (runtime && root.querySelector(".workbench-react")) {
+      return { root, runtime, disposePanel };
     }
-    return summarize(durations);
-  };
+    await delay(0);
+  }
+  await disposePanel();
+  throw new Error("Production panel mount did not render its React boundary.");
+}
+
+export async function measureQuery(
+  history: EventHistory,
+  query: () => Promise<unknown>,
+  queryName: string,
+  progress: () => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined,
+  gcEvidence?: QuerySampleGcEvidence[],
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples,
+  transitionPhase?: (phase: "query" | "hygiene") => void
+): Promise<number> {
+  return (await measureQueryWithLastResult(history, query, queryName, progress, guard, gcEvidence, collectGc, transitionPhase)).p95Ms;
+}
+
+async function measureQueryWithLastResult<T>(
+  _history: EventHistory,
+  query: () => Promise<T>,
+  queryName: string,
+  progress: () => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined,
+  gcEvidence?: QuerySampleGcEvidence[],
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples,
+  transitionPhase?: (phase: "query" | "hygiene") => void
+): Promise<Readonly<{ p95Ms: number; result: T }>> {
+  const samples: number[] = [];
+  let result!: T;
+  for (let index = 0; index < 3; index += 1) {
+    publishStageProgress(progress(), guard);
+    const startedAt = performance.now();
+    result = await withStageDeadline(query(), `query-${queryName}-${index + 1}`, STAGE_DEADLINES_MS.query, progress, undefined, guard);
+    if (guard && !guard.isActive()) throw new Error(`Query stage ${queryName} was invalidated.`);
+    samples.push(performance.now() - startedAt);
+    if (index < 2 && gcEvidence) {
+      result = undefined as T;
+      transitionPhase?.("hygiene");
+      try {
+        gcEvidence.push(await collectGc(queryName, (index + 1) as 1 | 2, guard));
+      } finally {
+        transitionPhase?.("query");
+      }
+    }
+  }
+  return { p95Ms: percentile(samples, 0.95), result };
+}
+
+export async function measureAuthoritativeFullQuery(
+  history: EventHistory,
+  progress: () => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined,
+  gcEvidence?: QuerySampleGcEvidence[],
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples,
+  transitionPhase?: (phase: "query" | "hygiene") => void
+): Promise<Readonly<{ p95Ms: number; read: Awaited<ReturnType<EventHistory["read"]>> }>> {
+  const measurement = await measureQueryWithLastResult(
+    history,
+    () => history.read({ order: "asc" }),
+    "full",
+    progress,
+    guard,
+    gcEvidence,
+    collectGc,
+    transitionPhase
+  );
+  return { p95Ms: measurement.p95Ms, read: measurement.result };
+}
+
+export async function collectGarbageBetweenQuerySamples(
+  query: string,
+  afterSample: 1 | 2,
+  guard: HarnessStageGuard | undefined,
+  collect: (() => void) | null = (globalThis as typeof globalThis & { gc?: () => void }).gc ?? null
+): Promise<QuerySampleGcEvidence> {
+  if (guard && !guard.isActive()) throw new Error(`Query stage ${query} was invalidated before garbage collection.`);
+  if (typeof collect !== "function") throw new Error("Inter-query garbage collection requires Chrome --expose-gc support.");
+  await delay(0);
+  if (guard && !guard.isActive()) throw new Error(`Query stage ${query} was invalidated before garbage collection.`);
+  for (let pass = 0; pass < 3; pass += 1) collect();
+  return Object.freeze({ query, afterSample, gcPasses: 3, phase: "BETWEEN_QUERY_SAMPLES" });
+}
+
+function emptyStorageTelemetry(): StorageTelemetry {
   return {
-    recentPage: await repeat(() => history.queryEvents({ limit: 100, order: "desc" }).toPromise()),
-    indexedSubscription: await repeat(() =>
-      history.queryEvents({ filters: { subscriptionId: "portfolio-command" }, limit: 100 }).toPromise()
-    ),
-    fullText: await repeat(() =>
-      history.queryEvents({ filters: { query: shape === "small-lifecycle" ? "stream-sensing" : "order" }, limit: 100 }).toPromise()
-    ),
-    idLookup: await repeat(() => history.getEventById(`${runId}-${shape}-0`).toPromise()),
-    fullHistory: await repeat(() => history.list().toPromise())
+    transactionCount: 0,
+    readwriteTransactionCount: 0,
+    readonlyTransactionCount: 0,
+    evidenceWriteCount: 0,
+    controlWriteCount: 0,
+    facetEntryCount: 0,
+    indexEntryCount: 0
   };
 }
 
-function installTransactionProbe() {
-  const transactionRecords: Array<{ eventAdds: number; startedAt: number; completedAt?: number }> = [];
-  const recordByTransaction = new WeakMap<IDBTransaction, (typeof transactionRecords)[number]>();
-  const originalTransaction = IDBDatabase.prototype.transaction;
-  const originalAdd = IDBObjectStore.prototype.add;
-  IDBDatabase.prototype.transaction = function (...args: Parameters<IDBDatabase["transaction"]>) {
-    const transaction = originalTransaction.apply(this, args);
-    const mode = args[1] ?? "readonly";
-    const storeNames = typeof args[0] === "string" ? [args[0]] : Array.from(args[0]);
-    if (mode === "readwrite" && storeNames.includes("events")) {
-      const record = { eventAdds: 0, startedAt: performance.now() };
-      transactionRecords.push(record);
-      recordByTransaction.set(transaction, record);
-      transaction.addEventListener("complete", () => { record.completedAt = performance.now(); });
-    }
-    return transaction;
-  };
-  IDBObjectStore.prototype.add = function (...args: Parameters<IDBObjectStore["add"]>) {
-    const record = recordByTransaction.get(this.transaction);
-    if (record && this.name === "events") record.eventAdds += 1;
-    return originalAdd.apply(this, args);
-  };
-  return {
-    summary() {
-      const writes = transactionRecords.filter((record) => record.eventAdds > 0);
+export async function captureStorageEstimate(
+  storage: Pick<StorageManager, "estimate"> | undefined = typeof navigator === "undefined" ? undefined : navigator.storage
+): Promise<EventHistoryPerformanceStorageEstimate> {
+  if (!storage || typeof storage.estimate !== "function") {
+    return {
+      source: "navigator.storage.estimate",
+      status: "UNAVAILABLE",
+      usageBytes: null,
+      quotaBytes: null,
+      failure: { code: "STORAGE_ESTIMATE_UNAVAILABLE", message: "navigator.storage.estimate is unavailable." }
+    };
+  }
+  try {
+    const estimate = await storage.estimate();
+    const usage = estimate.usage;
+    const quota = estimate.quota;
+    if (typeof usage !== "number" || !Number.isFinite(usage) || usage < 0 || typeof quota !== "number" || !Number.isFinite(quota) || quota < 0) {
       return {
-        writeTransactions: writes.length,
-        eventAddsPerTransaction: summarize(writes.map((record) => record.eventAdds)),
-        writeTransactionDurationMs: summarize(
-          writes.flatMap((record) => record.completedAt === undefined ? [] : [record.completedAt - record.startedAt])
-        )
+        source: "navigator.storage.estimate",
+        status: "UNAVAILABLE",
+        usageBytes: null,
+        quotaBytes: null,
+        failure: { code: "STORAGE_ESTIMATE_INVALID", message: "navigator.storage.estimate returned invalid usage or quota." }
+      };
+    }
+    return {
+      source: "navigator.storage.estimate",
+      status: "AVAILABLE",
+      usageBytes: usage,
+      quotaBytes: quota,
+      failure: null
+    };
+  } catch (error) {
+    return {
+      source: "navigator.storage.estimate",
+      status: "UNAVAILABLE",
+      usageBytes: null,
+      quotaBytes: null,
+      failure: { code: "STORAGE_ESTIMATE_FAILED", message: error instanceof Error ? error.message : String(error) }
+    };
+  }
+}
+
+export function attributeLongTasks(
+  entries: readonly PerformanceEntry[],
+  intervals: readonly PhaseInterval[]
+): LongTaskAttribution {
+  const attributed: { capture: number[]; commit: number[]; paint: number[]; query: number[]; hygiene: number[] } = {
+    capture: [], commit: [], paint: [], query: [], hygiene: []
+  };
+  let unattributed = 0;
+  const unattributedReasons: UnattributedLongTaskReason[] = [];
+  for (const entry of entries) {
+    const start = entry.startTime;
+    const end = start + entry.duration;
+    const overlaps = intervals
+      .map((interval) => ({
+        phase: interval.phase,
+        duration: Math.max(0, Math.min(end, interval.end) - Math.max(start, interval.start))
+      }))
+      .filter(({ duration }) => duration > 0);
+    if (overlaps.length === 0) {
+      unattributed += 1;
+      unattributedReasons.push({ reason: "no-overlap", startTime: start, duration: entry.duration });
+      continue;
+    }
+    const greatestOverlap = Math.max(...overlaps.map(({ duration }) => duration));
+    const greatest = overlaps.filter(({ duration }) => duration === greatestOverlap);
+    if (greatest.length !== 1) {
+      unattributed += 1;
+      unattributedReasons.push({ reason: "ambiguous", overlaps: greatest });
+      continue;
+    }
+    attributed[greatest[0]!.phase].push(entry.duration);
+  }
+  return { ...attributed, unattributed, unattributedReasons };
+}
+
+function storageTelemetryForCell(base: StorageTelemetry): StorageTelemetry {
+  return base;
+}
+
+function beginStorageProbe(): StorageProbe {
+  const databasePrototype = IDBDatabase.prototype as unknown as {
+    transaction: (...args: unknown[]) => IDBTransaction;
+  };
+  const originalTransaction = databasePrototype.transaction;
+  const telemetry = emptyStorageTelemetry();
+  let transactionCount = 0;
+  let readwriteTransactionCount = 0;
+  let readonlyTransactionCount = 0;
+  let evidenceWriteCount = 0;
+  let controlWriteCount = 0;
+  let facetEntryCount = 0;
+  let indexEntryCount = 0;
+
+  databasePrototype.transaction = function (storeNames, mode, options) {
+    transactionCount += 1;
+    if (mode === "readwrite" || mode === "versionchange") readwriteTransactionCount += 1;
+    else readonlyTransactionCount += 1;
+    return originalTransaction.call(this, storeNames, mode, options);
+  };
+  const objectStorePrototype = IDBObjectStore.prototype as unknown as {
+    add: (...args: unknown[]) => IDBRequest;
+    put: (...args: unknown[]) => IDBRequest;
+  };
+  const originalAdd = objectStorePrototype.add;
+  const originalPut = objectStorePrototype.put;
+  objectStorePrototype.add = function (value, key) {
+    if ((this as unknown as IDBObjectStore).name === "evidence") {
+      const record = value as { facets?: unknown[] };
+      evidenceWriteCount += 1;
+      const facets = Array.isArray(record.facets) ? record.facets.length : 0;
+      facetEntryCount += facets;
+      indexEntryCount += facets + 1;
+    }
+    return originalAdd.call(this, value, key);
+  };
+  objectStorePrototype.put = function (value, key) {
+    if ((this as unknown as IDBObjectStore).name === "historyControl") controlWriteCount += 1;
+    return originalPut.call(this, value, key);
+  };
+
+  return {
+    snapshot() {
+      return {
+        ...telemetry,
+        transactionCount,
+        readwriteTransactionCount,
+        readonlyTransactionCount,
+        evidenceWriteCount,
+        controlWriteCount,
+        facetEntryCount,
+        indexEntryCount
       };
     },
     restore() {
-      IDBDatabase.prototype.transaction = originalTransaction;
-      IDBObjectStore.prototype.add = originalAdd;
+      databasePrototype.transaction = originalTransaction;
+      objectStorePrototype.add = originalAdd;
+      objectStorePrototype.put = originalPut;
     }
   };
-}
-
-function summarize(values: readonly number[]): LatencySummary {
-  const sorted = [...values].sort((left, right) => left - right);
-  return {
-    count: sorted.length,
-    minMs: sorted[0] ?? 0,
-    p50Ms: percentile(sorted, 0.5),
-    p95Ms: percentile(sorted, 0.95),
-    maxMs: sorted.at(-1) ?? 0,
-    samplesMs: [...values]
-  };
-}
-
-function percentile(sorted: readonly number[], quantile: number): number {
-  if (sorted.length === 0) return 0;
-  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * quantile))] ?? 0;
-}
-
-function maximum(values: readonly number[]): number {
-  return values.length === 0 ? 0 : Math.max(...values);
 }
 
 function idsMatch(actual: readonly string[], expected: readonly string[]): boolean {
   return actual.length === expected.length && actual.every((id, index) => id === expected[index]);
 }
 
+function percentile(values: readonly number[], quantile: number): number {
+  if (values.length === 0) return Number.NaN;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * quantile))] ?? Number.NaN;
+}
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+function waitForFrame(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+export function waitForBoundedFrame(
+  stage: string,
+  progress: () => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<void> {
+  publishStageProgress(progress(), guard);
+  return withStageDeadline(
+    waitForFrame(),
+    stage,
+    STAGE_DEADLINES_MS.frame,
+    progress,
+    undefined,
+    guard
+  );
+}
+
 function validateConfig(config: EventHistoryPerformanceConfig): void {
-  for (const value of Object.values(config)) {
-    if (!Number.isInteger(value) || value <= 0) throw new Error("Event History performance values must be positive integers.");
+  if (config.sustainedEventsPerSecond !== TIMELINE_SUSTAINED_EVENTS_PER_SECOND) {
+    throw new Error("The sustained workload must offer exactly 50 events per second.");
+  }
+  if (config.burstCount !== ISSUE_16_TOTAL_EVENTS) {
+    throw new Error("The release gate burst must contain exactly 1,692 events.");
+  }
+  if (!Number.isInteger(config.sustainedCount) || config.sustainedCount <= 0) {
+    throw new Error("The sustained workload count must be a positive integer.");
   }
 }

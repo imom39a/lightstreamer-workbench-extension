@@ -1,4 +1,4 @@
-import { IDBCursor, IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBCursor, IDBDatabase, IDBFactory, IDBIndex, IDBObjectStore, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,12 +11,15 @@ import {
   type AuthoritativeEventDatabaseRuntime
 } from "../src/core/indexeddb/authoritative-event-db";
 import {
+  createInMemoryEventHistory,
   openEventHistory,
   type EvidenceCandidate,
   type HistoryPublication
 } from "../src/core/event-history-authoritative";
+import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { createIndexedDbEventHistory, transactionDone, type IndexedDbEventHistoryOptions } from "../src/core/event-history-indexeddb";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
+import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 
 function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): EvidenceCandidate {
   return {
@@ -33,21 +36,34 @@ function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): Evid
 class FakeMessagePort {
   onmessage: ((event: MessageEvent) => void) | null = null;
   peer: FakeMessagePort | null = null;
+  closeCalls = 0;
 
   postMessage(data: unknown): void {
     FakeMessageChannel.posted += 1;
-    queueMicrotask(() => this.peer?.onmessage?.({ data } as MessageEvent));
+    FakeMessageChannel.order.push("message-posted");
+    queueMicrotask(() => FakeMessageChannel.order.push("microtask"));
+    setImmediate(() => {
+      FakeMessageChannel.order.push("message-task");
+      this.peer?.onmessage?.({ data } as MessageEvent);
+    });
+  }
+
+  close(): void {
+    this.closeCalls += 1;
   }
 }
 
 class FakeMessageChannel {
   static constructed = 0;
   static posted = 0;
+  static order: string[] = [];
+  static last: FakeMessageChannel | null = null;
   readonly port1 = new FakeMessagePort();
   readonly port2 = new FakeMessagePort();
 
   constructor() {
     FakeMessageChannel.constructed += 1;
+    FakeMessageChannel.last = this;
     this.port1.peer = this.port2;
     this.port2.peer = this.port1;
   }
@@ -201,6 +217,7 @@ function transactionStub(abort: () => void, error: Error | null = null): IDBTran
 
 async function freshHistory(panelSessionId: string) {
   Reflect.set(globalThis, "indexedDB", new IDBFactory());
+  Reflect.set(globalThis, "IDBKeyRange", IDBKeyRange);
   await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
   return openEventHistory({ panelSessionId });
 }
@@ -210,11 +227,412 @@ async function freshIndexedHistory(
   options: Omit<IndexedDbEventHistoryOptions, "panelSessionId"> = {}
 ): Promise<Awaited<ReturnType<typeof createIndexedDbEventHistory>>> {
   Reflect.set(globalThis, "indexedDB", new IDBFactory());
+  Reflect.set(globalThis, "IDBKeyRange", IDBKeyRange);
   await deleteAuthoritativeEventDatabase(authoritativeEventDatabaseName(panelSessionId));
   return createIndexedDbEventHistory({ panelSessionId, ...options });
 }
 
+type TestEvidenceRecord = {
+  intervalId: string;
+  sequence: number;
+  eventId: string;
+  replayPayload: string;
+  serializedBytes: number;
+  accountedBytes: number;
+  facets: string[];
+};
+
+async function mutateEvidenceRecord(
+  panelSessionId: string,
+  sequence: number,
+  mutate: (record: TestEvidenceRecord) => TestEvidenceRecord | undefined
+): Promise<void> {
+  const databaseRequest = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
+  const database = await requestValue(databaseRequest);
+  try {
+    const readTransaction = database.transaction("evidence", "readonly");
+    const record = await requestValue(readTransaction.objectStore("evidence").get(sequence)) as TestEvidenceRecord | undefined;
+    await transactionDone(readTransaction, "reading test Evidence record");
+    if (!record) throw new Error(`Missing test Evidence record ${sequence}.`);
+    const writeTransaction = database.transaction("evidence", "readwrite");
+    const store = writeTransaction.objectStore("evidence");
+    const replacement = mutate(record);
+    if (replacement) store.put(replacement);
+    else store.delete(sequence);
+    await transactionDone(writeTransaction, "mutating test Evidence record");
+  } finally {
+    database.close();
+  }
+}
+
 describe("IndexedDB authoritative EventHistory", () => {
+  it("takes an immutable offer snapshot and publishes only after the adapter commits it", async () => {
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const history = await freshIndexedHistory("indexed-offer-snapshot", {
+      commitBatch: async () => commitGate
+    });
+    const publications: HistoryPublication[] = [];
+    history.follow({ from: "NOW" }, (publication) => publications.push(publication));
+    const offered = candidate("immutable-offer", {
+      raw: { nested: { value: "before-commit" } }
+    }) as LightstreamerEventEnvelope;
+
+    const receipt = history.offer(offered);
+    offered.raw = { nested: { value: "after-offer" } };
+
+    expect(publications.some((publication) => publication.type === "committed-evidence")).toBe(false);
+    releaseCommit();
+    await expect(receipt.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { eventId: "immutable-offer" }
+    });
+    expect(publications.some((publication) => {
+      if (publication.type !== "committed-evidence") return false;
+      const committed = publication.evidence[0]?.candidate as LightstreamerEventEnvelope | undefined;
+      const raw = committed?.raw as { nested?: { value?: unknown } } | undefined;
+      return raw?.nested?.value === "before-commit";
+    })).toBe(true);
+    await history.close();
+  });
+
+  it("reads committed fake-IndexedDB evidence through structured and Find queries", async () => {
+    const history = await freshIndexedHistory("indexed-read-query-replay");
+    await history.offer(candidate("query-hit", {
+      subscription: { id: "query-subscription", mode: "COMMAND" },
+      raw: { marker: "needle" }
+    })).settled;
+    await history.offer(candidate("query-miss", {
+      subscription: { id: "query-subscription", mode: "MERGE" },
+      raw: { marker: "other" }
+    })).settled;
+
+    await expect(history.read({ filters: { mode: "COMMAND" }, find: "needle" })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        total: 1,
+        evidence: [expect.objectContaining({ eventId: "query-hit" })]
+      }
+    });
+    await history.close();
+  });
+
+  it("replays committed fake-IndexedDB evidence through the follow seam", async () => {
+    const history = await freshIndexedHistory("indexed-follow-replay");
+    await history.offer(candidate("follow-first")).settled;
+    await history.offer(candidate("follow-second")).settled;
+    const replayed: string[] = [];
+    let resolveReplay!: () => void;
+    const replayComplete = new Promise<void>((resolve) => {
+      resolveReplay = resolve;
+    });
+
+    history.follow({ from: "CURRENT_INTERVAL_START" }, (publication) => {
+      if (publication.type !== "committed-evidence") return;
+      replayed.push(...publication.evidence.map((entry) => entry.eventId));
+      if (replayed.length === 2) resolveReplay();
+    });
+
+    await replayComplete;
+    expect(replayed).toEqual(["follow-first", "follow-second"]);
+    await history.close();
+  });
+
+  it("round-trips JSON-native and special-tag values through fake IndexedDB", async () => {
+    const history = await freshIndexedHistory("indexed-special-tag-replay");
+    const specialObject = { __lsewReplayTag: "literal-key", nested: "value" };
+    const offered: EvidenceCandidate = {
+      id: "special-tag-round-trip",
+      kind: "topology-checkpoint",
+      checkpoint: {
+        json: { alpha: "first", omega: 2, nested: [true, null] },
+        special: [undefined, Number.NaN, Infinity, -Infinity, -0, 7n, new Date("2026-08-11T00:00:00.000Z")],
+        specialObject
+      }
+    };
+
+    await expect(history.offer(offered).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    const result = await history.read({ find: "literal-key" });
+
+    expect(result).toMatchObject({ ok: true, value: { total: 1 } });
+    if (result.ok) {
+      const checkpoint = result.value.evidence[0]?.candidate;
+      expect(checkpoint).toEqual(offered);
+      expect(checkpoint.kind).toBe("topology-checkpoint");
+      const values = checkpoint.kind === "topology-checkpoint" ? checkpoint.checkpoint.special as unknown[] : [];
+      expect(values[0]).toBeUndefined();
+      expect(Number.isNaN(values[1] as number)).toBe(true);
+      expect(values[2]).toBe(Infinity);
+      expect(values[3]).toBe(-Infinity);
+      expect(Object.is(values[4], -0)).toBe(true);
+      expect(values[5]).toBe(7n);
+      expect(values[6]).toEqual(new Date("2026-08-11T00:00:00.000Z"));
+    }
+    await history.close();
+  });
+
+  it("uses a reverse primary-key cursor and stops after a recent descending page", async () => {
+    const history = await freshIndexedHistory("query-plan-recent");
+    for (let index = 0; index < 200; index += 1) {
+      await history.offer(createEventHistoryWorkloadEvent("small-lifecycle", index, "query-plan")).settled;
+    }
+
+    const openCursor = vi.spyOn(IDBObjectStore.prototype, "openCursor");
+    const continueCursor = vi.spyOn(IDBCursor.prototype, "continue");
+    const result = await history.read({ order: "desc", limit: 5 });
+
+    expect(result).toMatchObject({ ok: true, value: { total: 200 } });
+    if (result.ok) expect(result.value.evidence.map((entry) => entry.sequence)).toEqual([200, 199, 198, 197, 196]);
+    expect(openCursor).toHaveBeenCalledWith(undefined, "prev");
+    expect(continueCursor).toHaveBeenCalledTimes(4);
+    openCursor.mockRestore();
+    continueCursor.mockRestore();
+    await history.close();
+  });
+
+  it("uses exact facet-index keys while preserving residual Find and ordered totals", async () => {
+    const history = await freshIndexedHistory("query-plan-facet");
+    for (let index = 0; index < 60; index += 1) {
+      await history.offer(candidate(index % 4 === 0 ? `needle-${index}` : `facet-${index}`, {
+        subscription: { id: "query-subscription", mode: index % 2 === 0 ? "COMMAND" : "MERGE" },
+        raw: index % 4 === 0 ? { marker: "needle" } : { marker: "other" }
+      })).settled;
+    }
+
+    const openIndexCursor = vi.spyOn(IDBIndex.prototype, "openCursor");
+    const result = await history.read({
+      order: "desc",
+      limit: 3,
+      filters: { mode: "COMMAND" },
+      find: "needle"
+    });
+
+    expect(result).toMatchObject({ ok: true, value: { total: 15 } });
+    if (result.ok) expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(["needle-56", "needle-52", "needle-48"]);
+    expect(openIndexCursor).toHaveBeenCalledWith(IDBKeyRange.only(JSON.stringify(["v1", "mode", "COMMAND"])), "prev");
+    openIndexCursor.mockRestore();
+    await history.close();
+  });
+
+  it("keeps large JSON structured-query results in parity with the memory seam", async () => {
+    const indexed = await freshIndexedHistory("query-plan-large-json");
+    const memory = createInMemoryEventHistory({ panelSessionId: "query-plan-large-json-memory" });
+    const events = Array.from({ length: 120 }, (_, index) => createEventHistoryWorkloadEvent("large-json-rich", index, "large-query"));
+    for (const event of events) {
+      await indexed.offer(event).settled;
+      await memory.offer(event).settled;
+    }
+    const query = {
+      order: "desc" as const,
+      offsetFromNewest: 3,
+      limit: 7,
+      filters: { subscriptionId: "portfolio-command", mode: "COMMAND" },
+      find: "official-public-api"
+    };
+    const indexedResult = await indexed.read(query);
+    const memoryResult = await memory.read(query);
+    expect(indexedResult).toMatchObject({ ok: true });
+    expect(memoryResult).toMatchObject({ ok: true });
+    if (indexedResult.ok && memoryResult.ok) {
+      expect(indexedResult.value.total).toBe(memoryResult.value.total);
+      expect(indexedResult.value.evidence.map((entry) => entry.eventId)).toEqual(memoryResult.value.evidence.map((entry) => entry.eventId));
+    }
+    await indexed.close();
+    await memory.close();
+  });
+
+  it("searches canonical IndexedDB replay rather than a caller object mutated after offer", async () => {
+    const indexed = await freshIndexedHistory("query-plan-search-owned-replay");
+    const raw = { marker: "indexed-original-marker" };
+    const offered = { ...createEventHistoryWorkloadEvent("large-json-rich", 1, "indexed-owned-replay"), raw };
+    await indexed.offer(offered).settled;
+    raw.marker = "indexed-mutated-marker";
+
+    await expect(indexed.read({ find: "indexed-original-marker" })).resolves.toMatchObject({
+      ok: true,
+      value: { total: 1 }
+    });
+    await expect(indexed.read({ find: "indexed-mutated-marker" })).resolves.toMatchObject({
+      ok: true,
+      value: { total: 0 }
+    });
+    const full = await indexed.read({});
+    expect(full.ok).toBe(true);
+    if (!full.ok) throw new Error("Expected an authoritative IndexedDB read.");
+    expect(Object.keys(full.value.evidence[0].candidate)).not.toContain("searchText");
+    expect(Object.keys(full.value.evidence[0].candidate)).not.toContain("cache");
+    await indexed.close();
+  });
+
+  it("pages exact facets before reconstructing large IndexedDB payloads", async () => {
+    const indexed = await freshIndexedHistory("query-plan-exact-facet-page-before-payload");
+    const memory = createInMemoryEventHistory({ panelSessionId: "query-plan-exact-facet-page-before-payload-memory" });
+    const events = Array.from({ length: 1_000 }, (_, index) => createEventHistoryWorkloadEvent("large-json-rich", index, "page-before-payload"));
+    for (const event of events) {
+      await indexed.offer(event).settled;
+      await memory.offer(event).settled;
+    }
+
+    const payloadReads = vi.spyOn(IDBObjectStore.prototype, "get");
+    const queries = [
+      { page: { order: "asc" as const, limit: 100 }, expectedReads: 100 },
+      { page: { order: "desc" as const, limit: 100 }, expectedReads: 100 },
+      { page: { order: "desc" as const, offsetFromNewest: 137, limit: 100 }, expectedReads: 100 },
+      { page: { order: "asc" as const, limit: 0 }, expectedReads: 0 },
+      { page: { order: "desc" as const, limit: -1 }, expectedReads: 0 },
+      { page: { order: "asc" as const, limit: 2_000 }, expectedReads: 1_000 }
+    ].map(({ page, expectedReads }) => ({
+      query: { ...page, filters: { subscriptionId: "portfolio-command", mode: "COMMAND" } },
+      expectedReads
+    }));
+
+    try {
+      for (const { query, expectedReads } of queries) {
+        const readsBefore = payloadReads.mock.calls.length;
+        const indexedResult = await indexed.read(query);
+        const memoryResult = await memory.read(query);
+        expect(indexedResult).toMatchObject({ ok: true });
+        expect(memoryResult).toMatchObject({ ok: true });
+        if (indexedResult.ok && memoryResult.ok) {
+          expect(indexedResult.value.total).toBe(1_000);
+          expect(indexedResult.value.total).toBe(memoryResult.value.total);
+          expect(indexedResult.value.evidence.map((entry) => entry.eventId)).toEqual(
+            memoryResult.value.evidence.map((entry) => entry.eventId)
+          );
+        }
+        expect(payloadReads.mock.calls.length - readsBefore).toBe(expectedReads);
+      }
+    } finally {
+      payloadReads.mockRestore();
+      await indexed.close();
+      await memory.close();
+    }
+  }, 15_000);
+
+  it("keeps exact-facet paging in parity for empty facets, malformed boundaries, and candidate kinds", async () => {
+    const indexed = await freshIndexedHistory("query-plan-exact-facet-edge-parity");
+    const memory = createInMemoryEventHistory({ panelSessionId: "query-plan-exact-facet-edge-parity-memory" });
+    const events = [
+      candidate("empty-facet-match", {
+        client: { id: "", sessionId: "" },
+        subscription: { id: "edge-subscription", mode: "COMMAND" }
+      }),
+      candidate("non-empty-facet-miss", {
+        client: { id: "client", sessionId: "session" },
+        subscription: { id: "edge-subscription", mode: "COMMAND" }
+      }),
+      {
+        id: "edge-topology",
+        kind: "topology-checkpoint" as const,
+        checkpoint: { pageEpoch: "edge" }
+      }
+    ];
+    for (const event of events) {
+      await indexed.offer(event).settled;
+      await memory.offer(event).settled;
+    }
+
+    const queries = [
+      {
+        filters: { clientId: "", sessionId: "", mode: "COMMAND" },
+        order: "asc" as const,
+        limit: 10
+      },
+      {
+        filters: { mode: "COMMAND" },
+        afterSequence: Number.NaN,
+        order: "asc" as const,
+        limit: 10
+      },
+      {
+        candidateKind: "lightstreamer" as const,
+        filters: { kind: "topology-checkpoint" as never },
+        order: "asc" as const,
+        limit: 10
+      }
+    ];
+
+    for (const query of queries) {
+      const indexedResult = await indexed.read(query);
+      const memoryResult = await memory.read(query);
+      expect(indexedResult).toMatchObject({ ok: true });
+      expect(memoryResult).toMatchObject({ ok: true });
+      if (indexedResult.ok && memoryResult.ok) {
+        expect(indexedResult.value.total).toBe(memoryResult.value.total);
+        expect(indexedResult.value.evidence.map((entry) => entry.eventId)).toEqual(
+          memoryResult.value.evidence.map((entry) => entry.eventId)
+        );
+      }
+    }
+
+    await indexed.close();
+    await memory.close();
+  });
+
+  it("fails closed when an exact-facet page record is missing or mismatches its indexed payload", async () => {
+    const missingPanelSessionId = "query-plan-exact-facet-missing-record";
+    const missing = await freshIndexedHistory(missingPanelSessionId);
+    await missing.offer(candidate("missing-first", { subscription: { id: "corrupt-subscription", mode: "COMMAND" } })).settled;
+    await missing.offer(candidate("missing-second", { subscription: { id: "corrupt-subscription", mode: "COMMAND" } })).settled;
+    const originalGet = IDBObjectStore.prototype.get;
+    const missingGet = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, key: IDBValidKey | IDBKeyRange) {
+      if (this.name === "evidence" && key === 2) {
+        const request = {
+          result: undefined,
+          error: null,
+          onsuccess: null as null | (() => void),
+          onerror: null as null | (() => void)
+        };
+        queueMicrotask(() => request.onsuccess?.());
+        return request as unknown as IDBRequest<unknown>;
+      }
+      return originalGet.call(this, key);
+    });
+    try {
+      await expect(missing.read({ filters: { mode: "COMMAND" }, order: "desc", limit: 1 })).rejects.toThrow(/exact-facet/i);
+    } finally {
+      missingGet.mockRestore();
+    }
+    await missing.close();
+
+    const mismatchPanelSessionId = "query-plan-exact-facet-payload-mismatch";
+    const mismatch = await freshIndexedHistory(mismatchPanelSessionId);
+    const original = candidate("mismatch-record", { subscription: { id: "corrupt-subscription", mode: "COMMAND" } });
+    await mismatch.offer(original).settled;
+    await mutateEvidenceRecord(mismatchPanelSessionId, 1, (record) => {
+      const replacement = candidate("mismatch-record", { subscription: { id: "corrupt-subscription", mode: "MERGE" } });
+      const serialized = serializeJournalEvidenceCandidate(replacement);
+      return { ...record, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: journalAccountedBytes(serialized.bytes) };
+    });
+    await expect(mismatch.read({ filters: { mode: "COMMAND" }, order: "desc", limit: 1 })).rejects.toThrow(/exact-facet|replay|facets|incoherent/i);
+    await mismatch.close();
+  });
+
+  it("fails closed for every incoherent selected exact-facet record", async () => {
+    const corruptions: Array<[string, (record: TestEvidenceRecord) => TestEvidenceRecord]> = [
+      ["event-id", (record) => ({ ...record, eventId: "wrong-event-id" })],
+      ["serialized-bytes", (record) => ({ ...record, serializedBytes: record.serializedBytes + 1 })],
+      ["accounted-bytes", (record) => ({ ...record, accountedBytes: record.accountedBytes + 1 })],
+      ["non-string-facet", (record) => ({ ...record, facets: [...record.facets, 42 as unknown as string] })],
+      ["incomplete-facets", (record) => ({ ...record, facets: record.facets.filter((value) => value !== JSON.stringify(["v1", "synthetic", false])) })],
+      ["malformed-payload", (record) => ({ ...record, replayPayload: "not-json" })]
+    ];
+
+    for (const [name, corruption] of corruptions) {
+      const panelSessionId = `query-plan-exact-facet-corruption-${name}`;
+      const history = await freshIndexedHistory(panelSessionId);
+      await history.offer(candidate(`corrupt-${name}`, { subscription: { id: "corrupt-subscription", mode: "COMMAND" } })).settled;
+      await mutateEvidenceRecord(panelSessionId, 1, corruption);
+      try {
+        await expect(history.read({ filters: { mode: "COMMAND" }, order: "desc", limit: 1 })).rejects.toThrow(/incoherent|exact-facet|replay|JSON|token/i);
+      } finally {
+        await history.close();
+      }
+    }
+  });
+
   it("defaults deleteAuthoritativeEventDatabase to the same fallback database used by open", async () => {
     const fallbackDbName = authoritativeEventDatabaseName();
     const staleLegacyName = AUTHORITATIVE_EVENT_DB_NAME;
@@ -241,6 +659,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       capacity: { tier: "NORMAL" },
       fallback: null
     });
+    expect(history.storage).toEqual({ mode: "indexeddb" });
     await history.close();
   });
 
@@ -647,6 +1066,74 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("does not project pending evidence before commit, keeping committed-only reads", async () => {
+    let allowCommit!: () => void;
+    let commitStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      commitStarted = resolve;
+    });
+    const history = await freshIndexedHistory("indexed-no-precommit-projection", {
+      commitBatch: async (batch) => {
+        if (batch.some((entry) => entry.id === "stalled")) {
+          commitStarted();
+          await new Promise<void>((resolve) => {
+            allowCommit = resolve;
+          });
+        }
+      }
+    });
+    const committedEvidence: string[] = [];
+    history.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "committed-evidence") {
+        committedEvidence.push(...publication.evidence.map((entry) => entry.eventId));
+      }
+    });
+
+    const pre = await history.offer(candidate("pre"));
+    await expect(pre.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 1, eventId: "pre" }
+    });
+    const stalled = history.offer(candidate("stalled"));
+    await started;
+
+    let stalledSettled = false;
+    void stalled.settled.finally(() => {
+      stalledSettled = true;
+    });
+    expect(stalled.intake).toBe("QUEUED");
+    expect(stalledSettled).toBe(false);
+    expect(committedEvidence).toEqual(["pre"]);
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: {
+        evidence: [expect.objectContaining({ eventId: "pre", sequence: 1 })],
+        total: 1,
+        committedEvidenceBoundary: { sequence: 1, eventId: "pre" }
+      }
+    });
+
+    allowCommit();
+    await expect(stalled.settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { sequence: 2, eventId: "stalled" }
+    });
+    expect(committedEvidence).toEqual(["pre", "stalled"]);
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: {
+        evidence: [
+          expect.objectContaining({ eventId: "pre" }),
+          expect.objectContaining({ eventId: "stalled" })
+        ],
+        total: 2,
+        committedEvidenceBoundary: { sequence: 2, eventId: "stalled" }
+      }
+    });
+
+    await history.close();
+  });
+
   it("keeps reads at the committed snapshot and preserves query parity", async () => {
     const history = await freshHistory("indexed-query");
     const events = [
@@ -722,26 +1209,6 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
-  it("yields while materializing a large journal read without changing order or totals", async () => {
-    const history = await freshHistory("indexed-cooperative-read");
-    const count = 129;
-    for (let index = 0; index < count; index += 1) {
-      await history.offer(candidate(`cooperative-${index}`)).settled;
-    }
-
-    const timerSpy = vi.spyOn(globalThis, "setTimeout");
-    const result = await history.read({ order: "asc" });
-
-    expect(result).toMatchObject({ ok: true, value: { total: count } });
-    if (!result.ok) throw new Error("Expected the cooperative read to succeed.");
-    expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(
-      Array.from({ length: count }, (_, index) => `cooperative-${index}`)
-    );
-    expect(timerSpy).toHaveBeenCalled();
-    timerSpy.mockRestore();
-    await history.close();
-  });
-
   it("uses one reusable MessageChannel macrotask yield per read and preserves exact ordering", async () => {
     const history = await freshHistory("indexed-message-channel-read");
     const count = 1692;
@@ -752,11 +1219,12 @@ describe("IndexedDB authoritative EventHistory", () => {
     const previousMessageChannel = Reflect.get(globalThis, "MessageChannel");
     FakeMessageChannel.constructed = 0;
     FakeMessageChannel.posted = 0;
+    FakeMessageChannel.order = [];
+    FakeMessageChannel.last = null;
     Reflect.set(globalThis, "MessageChannel", FakeMessageChannel);
     const timerSpy = vi.spyOn(globalThis, "setTimeout");
     try {
       const result = await history.read({ order: "asc" });
-
       expect(result).toMatchObject({ ok: true, value: { total: count } });
       if (!result.ok) throw new Error("Expected the MessageChannel read to succeed.");
       expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(
@@ -765,9 +1233,38 @@ describe("IndexedDB authoritative EventHistory", () => {
       expect(FakeMessageChannel.constructed).toBe(1);
       expect(FakeMessageChannel.posted).toBeGreaterThan(0);
       expect(FakeMessageChannel.posted).toBeLessThan(211);
+      expect(FakeMessageChannel.order.indexOf("microtask")).toBeLessThan(FakeMessageChannel.order.indexOf("message-task"));
+      const successfulChannel = FakeMessageChannel.last as FakeMessageChannel | null;
+      expect(successfulChannel?.port1.closeCalls).toBe(1);
+      expect(successfulChannel?.port2.closeCalls).toBe(1);
       expect(timerSpy.mock.calls.filter(([, delay]) => delay === 0)).toHaveLength(0);
     } finally {
       timerSpy.mockRestore();
+      Reflect.set(globalThis, "MessageChannel", previousMessageChannel);
+      await history.close();
+    }
+  });
+
+  it("disposes both journal MessageChannel ports exactly once when materialization throws", async () => {
+    const panelSessionId = "indexed-message-channel-read-error";
+    const history = await freshHistory(panelSessionId);
+    for (let index = 0; index < 129; index += 1) {
+      await history.offer(candidate(`message-channel-error-${index}`)).settled;
+    }
+    await mutateEvidenceRecord(panelSessionId, 100, (record) => ({ ...record, replayPayload: "{bad" }));
+
+    const previousMessageChannel = Reflect.get(globalThis, "MessageChannel");
+    FakeMessageChannel.constructed = 0;
+    FakeMessageChannel.posted = 0;
+    FakeMessageChannel.last = null;
+    Reflect.set(globalThis, "MessageChannel", FakeMessageChannel);
+    try {
+      await expect(history.read({ order: "asc" })).rejects.toThrow(SyntaxError);
+      expect(FakeMessageChannel.constructed).toBe(1);
+      const failedChannel = FakeMessageChannel.last as FakeMessageChannel | null;
+      expect(failedChannel?.port1.closeCalls).toBe(1);
+      expect(failedChannel?.port2.closeCalls).toBe(1);
+    } finally {
       Reflect.set(globalThis, "MessageChannel", previousMessageChannel);
       await history.close();
     }
@@ -830,6 +1327,57 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     continueSpy.mockRestore();
     await history.close();
+  });
+
+  it("pages a bounded Lightstreamer read without decoding the retained journal tail", async () => {
+    const history = await freshHistory("indexed-candidate-kind-page");
+    const count = 120;
+    for (let index = 0; index < count; index += 1) {
+      await history.offer(candidate(`kind-page-${index}`)).settled;
+    }
+
+    const parseSpy = vi.spyOn(JSON, "parse");
+    try {
+      const result = await history.read({ candidateKind: "lightstreamer", limit: 60, order: "desc" });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          total: count,
+          committedEvidenceBoundary: { sequence: count, eventId: `kind-page-${count - 1}` }
+        }
+      });
+      if (!result.ok) throw new Error("Expected the bounded candidate-kind read to succeed.");
+      expect(result.value.evidence).toHaveLength(60);
+      expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(
+        Array.from({ length: 60 }, (_, index) => `kind-page-${count - index - 1}`)
+      );
+      expect(parseSpy).toHaveBeenCalledTimes(60);
+    } finally {
+      parseSpy.mockRestore();
+      await history.close();
+    }
+  });
+
+  it("preserves ascending order when paging Lightstreamer Evidence from newest", async () => {
+    const history = await freshHistory("indexed-candidate-kind-ascending-offset");
+    for (let index = 0; index < 3; index += 1) {
+      await history.offer(candidate(`ascending-${index}`)).settled;
+    }
+
+    try {
+      const result = await history.read({
+        candidateKind: "lightstreamer",
+        order: "asc",
+        offsetFromNewest: 1,
+        limit: 2
+      });
+      expect(result).toMatchObject({ ok: true, value: { total: 3 } });
+      if (!result.ok) throw new Error("Expected the ascending candidate-kind read to succeed.");
+      expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(["ascending-1", "ascending-2"]);
+    } finally {
+      await history.close();
+    }
   });
 
   it("does not resolve a read before its readonly transaction completes", async () => {
@@ -1557,6 +2105,51 @@ describe("IndexedDB authoritative EventHistory", () => {
     await recovered.close();
   });
 
+  it("claims self ownership before sweeping concurrent startups' preexisting journals", async () => {
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const firstPanelSessionId = "ownership-concurrent-first";
+    const secondPanelSessionId = "ownership-concurrent-second";
+    const firstDatabaseName = authoritativeEventDatabaseName(firstPanelSessionId);
+    const secondDatabaseName = authoritativeEventDatabaseName(secondPanelSessionId);
+    await Promise.all([
+      createModernJournal(firstPanelSessionId, 1),
+      createModernJournal(secondPanelSessionId, 1)
+    ]);
+
+    const activeLocks = new Set<string>();
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [
+        { name: firstDatabaseName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION },
+        { name: secondDatabaseName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION }
+      ]),
+      requestLock: vi.fn(async (name, _options, callback) => {
+        if (activeLocks.has(name)) return null;
+        activeLocks.add(name);
+        try {
+          return await callback();
+        } finally {
+          activeLocks.delete(name);
+        }
+      })
+    };
+
+    const [first, second] = await Promise.all([
+      openEventHistory({ panelSessionId: firstPanelSessionId, runtime }),
+      openEventHistory({ panelSessionId: secondPanelSessionId, runtime })
+    ]);
+
+    await expect(first.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [{ sequence: 1, eventId: "event-0" }] }
+    });
+    await expect(second.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [{ sequence: 1, eventId: "event-0" }] }
+    });
+
+    await Promise.all([first.close(), second.close()]);
+  });
+
   it("keeps orphan journals when cleanup lock cannot be acquired", async () => {
     const panelSessionId = "ownership-lock-blocked";
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
@@ -1571,6 +2164,69 @@ describe("IndexedDB authoritative EventHistory", () => {
     const history = await openEventHistory({ panelSessionId, runtime });
     await history.close();
     expect(await hasLegacyMarker(legacyName, "owned", "legacy-blocked")).toBe(true);
+  });
+
+  it("preserves an actively locked peer while still cleaning up true orphan journals", async () => {
+    const activePeerSessionId = "ownership-active-peer";
+    const activePeerName = legacyJournalName(activePeerSessionId, 1);
+    const orphanSessionId = "ownership-true-orphan";
+    const orphanName = legacyJournalName(orphanSessionId, 1);
+    const currentSessionId = "ownership-second-startup";
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await Promise.all([
+      createLegacyJournal(activePeerSessionId, 1, "owned", "active-peer"),
+      createLegacyJournal(orphanSessionId, 1, "owned", "true-orphan")
+    ]);
+
+    const activeLocks = new Set<string>();
+    const request = vi.fn(async (
+      name: string,
+      options: LockOptions,
+      callback: (lock: Lock | null) => Promise<unknown> | unknown
+    ) => {
+      if (activeLocks.has(name)) {
+        return callback(options.ifAvailable ? null : ({ name, mode: options.mode } as Lock));
+      }
+      activeLocks.add(name);
+      try {
+        return await callback({ name, mode: options.mode } as Lock);
+      } finally {
+        activeLocks.delete(name);
+      }
+    });
+    const originalNavigatorLocks = navigator.locks;
+    Reflect.set(navigator, "locks", { request });
+
+    let releaseActivePeer!: () => void;
+    const activePeerRelease = new Promise<void>((resolve) => {
+      releaseActivePeer = resolve;
+    });
+    try {
+      const runtime = authoritativeEventDatabaseRuntime({
+        listDatabases: vi.fn(async () => [
+          { name: activePeerName, version: 1 },
+          { name: orphanName, version: 1 }
+        ])
+      });
+      const activePeerLock = runtime.requestLock(
+        legacyOwnerLock(activePeerName),
+        { mode: "exclusive", ifAvailable: false },
+        () => activePeerRelease
+      );
+      await vi.waitFor(() => expect(activeLocks.has(legacyOwnerLock(activePeerName))).toBe(true));
+
+      const history = await createIndexedDbEventHistory({ panelSessionId: currentSessionId, runtime });
+      expect(activeLocks.has(legacyOwnerLock(activePeerName))).toBe(true);
+      expect(activeLocks.has(legacyOwnerLock(authoritativeEventDatabaseName(currentSessionId)))).toBe(true);
+      expect(await hasLegacyMarker(activePeerName, "owned", "active-peer")).toBe(true);
+      expect(await hasLegacyMarker(orphanName, "owned", "true-orphan")).toBe(false);
+
+      await history.close();
+      releaseActivePeer();
+      await activePeerLock;
+    } finally {
+      Reflect.set(navigator, "locks", originalNavigatorLocks);
+    }
   });
 
   it("falls back to memory when the startup lock throws", async () => {

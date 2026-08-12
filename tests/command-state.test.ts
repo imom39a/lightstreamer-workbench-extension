@@ -159,6 +159,45 @@ describe("COMMAND state reducer", () => {
     });
   });
 
+  it("stores a payload-rich server lifecycle once until a Local Injection forks the projection", () => {
+    const projections = createCommandStateProjections();
+    const payload = "x".repeat(13_125);
+    for (let index = 0; index < 10_000; index += 1) {
+      projections.apply(commandEvent(`shared-server-${index}`, {
+        command: index === 0 ? "ADD" : "UPDATE",
+        key: "alpha",
+        fields: { command: index === 0 ? "ADD" : "UPDATE", key: "alpha", payload },
+        changedFields: { payload }
+      }));
+    }
+
+    const observedBeforeLocal = firstItem(projections.snapshot("observed-server")).activeRows[0];
+    const localBeforeLocal = firstItem(projections.snapshot("local-effective")).activeRows[0];
+    expect(observedBeforeLocal.lifecycle).toHaveLength(10_000);
+    expect(localBeforeLocal.lifecycle).toHaveLength(10_000);
+    expect(localBeforeLocal.lifecycle[0]).toBe(observedBeforeLocal.lifecycle[0]);
+    expect(localBeforeLocal.lifecycle.at(-1)).toBe(observedBeforeLocal.lifecycle.at(-1));
+    expect(Object.isFrozen(observedBeforeLocal.lifecycle[0])).toBe(true);
+
+    projections.apply(commandEvent("shared-local", {
+      command: "UPDATE",
+      key: "alpha",
+      fields: { command: "UPDATE", key: "alpha", payload: "local" },
+      changedFields: { payload: "local" },
+      source: "synthetic",
+      synthetic: true
+    }));
+
+    const observedAfterLocal = firstItem(projections.snapshot("observed-server")).activeRows[0];
+    const localAfterLocal = firstItem(projections.snapshot("local-effective")).activeRows[0];
+    expect(observedAfterLocal.lifecycle).toHaveLength(10_000);
+    expect(observedAfterLocal.fields.payload).toBe(payload);
+    expect(localAfterLocal.lifecycle).toHaveLength(10_001);
+    expect(localAfterLocal.fields.payload).toBe("local");
+    expect(localAfterLocal.lifecycle[0]).toBe(observedAfterLocal.lifecycle[0]);
+    expect(localAfterLocal.lifecycle.at(-1)?.eventId).toBe("shared-local");
+  });
+
   it("matches incremental COMMAND indexing with full reduction", () => {
     const events = [
       commandEvent("event-1", { key: "alpha", snapshot: true }),

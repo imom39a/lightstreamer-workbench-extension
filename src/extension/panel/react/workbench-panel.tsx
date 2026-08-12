@@ -293,11 +293,52 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 /** React presentation for the Slice 1 read-only Scoped Evidence Workspace. */
 export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
-  const snapshot = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot, runtime.getSnapshot);
+  const subscribe = useMemo(() => (listener: () => void) => {
+    runtime.reportPanelPerformanceEvent?.({ type: "subscription-active", active: true });
+    const unsubscribe = runtime.subscribe(listener);
+    return () => {
+      runtime.reportPanelPerformanceEvent?.({ type: "subscription-active", active: false });
+      unsubscribe();
+    };
+  }, [runtime]);
+  const snapshot = useSyncExternalStore(subscribe, runtime.getSnapshot, runtime.getSnapshot);
   const evidenceRows = useRef(new Map<string, HTMLButtonElement>());
   const evidenceRowActions = useRef<EvidenceRowActions>({ select: () => undefined });
   const evidenceLedger = useRef<HTMLDivElement | null>(null);
   const contextBody = useRef<HTMLDivElement | null>(null);
+  const visibleFrame = useRef<number | null>(null);
+  const latestCommittedEvidenceBoundary = useRef(snapshot.renderedEvidenceBoundary);
+
+  useLayoutEffect(() => {
+    latestCommittedEvidenceBoundary.current = snapshot.renderedEvidenceBoundary;
+    runtime.reportPanelPerformanceEvent?.({
+      type: "layout-effect",
+      snapshotVersion: snapshot.version,
+      boundary: snapshot.renderedEvidenceBoundary
+    });
+    if (!runtime.reportVisibleFrame) return;
+    if (visibleFrame.current !== null) return;
+    runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-requested", timestampMs: performance.now() });
+    let callbackRan = false;
+    const frame = window.requestAnimationFrame(() => {
+      callbackRan = true;
+      visibleFrame.current = null;
+      runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-callback", timestampMs: performance.now() });
+      runtime.reportVisibleFrame?.(latestCommittedEvidenceBoundary.current);
+    });
+    if (!callbackRan) visibleFrame.current = frame;
+  }, [runtime, snapshot.version]);
+  useLayoutEffect(() => {
+    runtime.reportPanelPerformanceEvent?.({ type: "root-mounted", mounted: true });
+    return () => {
+      if (visibleFrame.current !== null) {
+        window.cancelAnimationFrame(visibleFrame.current);
+        visibleFrame.current = null;
+        runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-cancelled" });
+      }
+      runtime.reportPanelPerformanceEvent?.({ type: "root-mounted", mounted: false });
+    };
+  }, [runtime]);
   const scopeTree = useRef<HTMLDivElement | null>(null);
   const scopeNodesById = useRef(new Map<string, HTMLButtonElement>());
   const scopeTreeActions = useRef<ScopeTreeActions>({
@@ -710,10 +751,28 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
 
   const commitScope = (scopeId: string) => {
     const compact = isCompactGeometry();
-    if (compact) pendingEvidenceFocus.current = focusedEventId ?? selectedEventId;
+    const evidenceId = compact ? focusedEventId ?? selectedEventId : null;
+    if (evidenceId) pendingEvidenceFocus.current = evidenceId;
     dispatch(runtime, { type: "set-scope", scopeId });
     if (scopePickerOpen) closeScope();
-    else if (compact) dispatch(runtime, { type: "set-context", contextId: null });
+    else if (compact) {
+      dispatch(runtime, { type: "set-context", contextId: null });
+      if (evidenceId) {
+        const restore = () => {
+          const row = evidenceRows.current.get(evidenceId);
+          if (!row) return false;
+          row.focus();
+          if (document.activeElement === row) {
+            pendingEvidenceFocus.current = null;
+            return true;
+          }
+          return false;
+        };
+        window.requestAnimationFrame(() => {
+          if (!restore()) window.requestAnimationFrame(restore);
+        });
+      }
+    }
   };
 
   const revealScopeNode = (scopeId: string) => {
@@ -936,7 +995,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     if (!eventId || snapshot.contextId) return;
     evidenceRows.current.get(eventId)?.focus();
     pendingEvidenceFocus.current = null;
-  }, [focusedEventId, snapshot.contextId]);
+  }, [focusedEventId, snapshot.contextId, snapshot.version, scopePickerOpen]);
 
   useLayoutEffect(() => {
     const boundary = pendingRetainedBoundaryFocus.current;
@@ -1298,7 +1357,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Scoped export" : selected ? "Selected Evidence" : "Runtime object"}</span><strong ref={contextLens} role="heading" aria-level={2} tabIndex={-1}>{contextMode === "actions" ? "Session operations" : contextMode === "export" ? "Export current Scope" : snapshot.context.title}</strong></div><div>{contextMode !== "actions" ? <button ref={contextCollapse} className="workbench-react__context-collapse" type="button" onClick={() => collapsePane("context", "collapse")}>Collapse Context</button> : null}{contextMode === "actions" ? <button type="button" onClick={closeActions}>Back to prior investigation</button> : <button className="workbench-react__compact-back" type="button" onClick={restoreEvidenceFocus}>Back to Evidence</button>}</div></header>
           <div className="workbench-react__context-body" ref={contextBody}>
             {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
-              <p>The current Panel Session history uses <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong> and is cleared when this Panel Session closes.</p>
+              <p>The current Panel Session owns one temporary Event History using <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong>. Closing attempts controlled erasure; abnormal termination relies on guarded cleanup, and residual data may remain until the extension next runs.</p>
               {geometry === "compact" ? <section><h3>Panel appearance</h3><label htmlFor="workbench-actions-theme">Panel theme</label><select id="workbench-actions-theme" value={snapshot.theme} onChange={(event) => dispatch(runtime, { type: "set-theme", theme: event.currentTarget.value as "auto" | "dark" | "light" })}><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select></section> : null}
               <section><h3>Retained Evidence copy</h3><p>{snapshot.retention.totalAppended.toLocaleString()} captured · {snapshot.retention.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter.</p><button type="button" disabled={snapshot.evidenceCopy.state === "preparing"} onClick={() => dispatch(runtime, { type: "prepare-scoped-evidence-copy" })}>{snapshot.evidenceCopy.state === "preparing" ? "Preparing complete Evidence…" : "Copy complete scoped Evidence"}</button></section>
               <section className="workbench-react__operations-danger"><h3>Clear retained Evidence</h3><p>Clear all {snapshot.retention.retained.toLocaleString()} retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>{snapshot.retention.clearState === "confirming" ? <div className="workbench-react__confirmation"><strong>Clear all {snapshot.retention.retained.toLocaleString()} retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button className="workbench-react__confirmation-primary" type="button" onClick={() => dispatch(runtime, { type: "confirm-clear-history" })}>Clear retained events</button><button type="button" onClick={() => dispatch(runtime, { type: "cancel-clear-history" })}>Keep Evidence</button></div></div> : <button type="button" onClick={() => dispatch(runtime, { type: "request-clear-history" })}>Clear retained Evidence…</button>}</section>
@@ -1339,8 +1398,9 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </aside>
       </main>}
       <footer className="workbench-react__status" role="region" aria-label="Workbench diagnostics" tabIndex={snapshot.diagnostics.length ? 0 : -1}>
-        {snapshot.diagnostics.length ? <div className="workbench-react__status-diagnostics" aria-live="polite">
-          {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-severity={diagnostic.severity.toLowerCase()} key={`${diagnostic.title}-${index}`}>
+        <div className="workbench-react__history-live-region" aria-live="polite" aria-atomic="true">{snapshot.historyAnnouncement}</div>
+        {snapshot.diagnostics.length ? <div className="workbench-react__status-diagnostics" tabIndex={0} aria-label="Workbench diagnostic entries">
+          {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-category={diagnostic.category} data-history-condition={diagnostic.category === "history" ? "true" : undefined} data-severity={diagnostic.severity.toLowerCase()} key={`${diagnostic.title}-${index}`}>
             <strong>{diagnostic.severity} · {diagnostic.title}</strong>
             <span className="workbench-react__status-affected">Affected: {diagnostic.affected}</span>
             <span className="workbench-react__status-detail">{diagnostic.detail}</span>

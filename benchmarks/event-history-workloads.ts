@@ -1,5 +1,6 @@
 import { type LightstreamerEventEnvelope, toPersistableEventEnvelope } from "../src/core/event-envelope";
 import { createEventSearchText } from "../src/core/event-filter";
+import { authoritativeEventFacetCount } from "../src/core/event-history-indexeddb";
 
 /** Kept in step with fixtures/lightstreamer/pages/fixture-client.js ISSUE_16_GROUPS. */
 export const ISSUE_16_TOTAL_EVENTS = 1_692;
@@ -135,14 +136,17 @@ export function createEventHistoryWorkloadEvent(
 }
 
 export function representativeEventHistoryShapeFacts(): EventHistoryShapeFact[] {
-  return EVENT_HISTORY_SHAPES.map((id) => ({
-    id,
-    description: shapeDescription(id),
-    provenance: shapeProvenance(id),
-    persistedJsonBytes: utf8JsonBytes(createEventHistoryWorkloadEvent(id, 42, "shape-fact")),
-    searchTokenCount: eventSearchTokenCount(createEventHistoryWorkloadEvent(id, 42, "shape-fact")),
-    indexedDbWritesPerEvent: 2 + eventSearchTokenCount(createEventHistoryWorkloadEvent(id, 42, "shape-fact"))
-  }));
+  return EVENT_HISTORY_SHAPES.map((id) => {
+    const event = createEventHistoryWorkloadEvent(id, 42, "shape-fact");
+    return {
+      id,
+      description: shapeDescription(id),
+      provenance: shapeProvenance(id),
+      persistedJsonBytes: utf8JsonBytes(event),
+      searchTokenCount: eventSearchTokenCount(event),
+      indexedDbWritesPerEvent: 2 + authoritativeEventFacetCount(event)
+    };
+  });
 }
 
 export function utf8JsonBytes(event: LightstreamerEventEnvelope): number {

@@ -33,6 +33,7 @@ function createTestRuntime(snapshot: WorkbenchSnapshot): TestRuntime {
       commands.push(command);
     },
     dispose: vi.fn(),
+    disposeAndWait: vi.fn(),
     setSnapshot(next) {
       current = withScopeContract(next);
       listeners.forEach((listener) => listener());
@@ -71,9 +72,15 @@ function withScopeContract(snapshot: WorkbenchSnapshot): WorkbenchSnapshot {
 function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
   return {
     version: 0,
+    renderedEvidenceBoundary: null,
     visible: true,
     captureStatus: "capturing",
-    capture: { operation: "RUNNING", coverage: "USEFUL" },
+    capture: {
+      operation: "RUNNING",
+      coverage: "USEFUL",
+      firstMissingEventId: null,
+      committedEvidenceBoundary: null
+    },
     theme: "dark",
     evidence: {
       loading: false,
@@ -165,6 +172,8 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       authoritativeLimit: "Neither projection is Authoritative COMMAND State."
     },
     diagnostics: [],
+    historyCondition: null,
+    historyAnnouncement: "",
     storage: { mode: "indexeddb" },
     retention: {
       retained: 2,

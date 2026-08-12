@@ -15,6 +15,7 @@ const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactRoot = resolve(projectRoot, "test-results/workbench-visual-qa");
 const prototypePort = Number(process.env.LSEW_VISUAL_PROTOTYPE_PORT ?? 4191);
 const panelPort = Number(process.env.LSEW_VISUAL_PANEL_PORT ?? 4192);
+const browserHeadless = process.env.LSEW_BROWSER_HEADLESS !== "false";
 const scenarios = JSON.parse(
   await readFile(resolve(projectRoot, "tests/ui/visual-matrix.json"), "utf8")
 );
@@ -67,7 +68,7 @@ try {
     readyUrl: `http://127.0.0.1:${panelPort}/index.html`
   }));
 
-  browser = await chromium.launch({ executablePath: await resolveChromeExecutable(), headless: true });
+  browser = await chromium.launch({ executablePath: await resolveChromeExecutable(), headless: browserHeadless });
   const results = [];
   for (const scenario of scenarios) {
     const reference = await capturePrototype(browser, scenario);
@@ -99,6 +100,7 @@ try {
     generatedAt: new Date().toISOString(),
     command: "npm run test:ui:visual",
     browser: await browser.version(),
+    browserMode: browserHeadless ? "headless" : "visible",
     source: {
       reference: "accepted prototypes/workbench-ui-10",
       current: "production Workbench scenario harness using shipped panel root document",
@@ -107,11 +109,11 @@ try {
     contactSheets,
     review: {
       classification: "Material UI",
-      changedWorkflow: "Session operations and the global footer now identify retained Evidence as owned by the current Panel Session, including its backing, close lifecycle, Clear scope, and irreversible consequence.",
+      changedWorkflow: "The global footer now presents one typed History condition with explicit precedence, a transition-only polite announcement, and a responsive/theme-safe diagnostic surface.",
       acceptanceCriteria: [
-        "The current Panel Session history names its selected IndexedDB or in-memory backing and states that it is cleared when this Panel Session closes.",
-        "Clear retained Evidence names the retained count and current Panel Session scope, while stating that Scope and Filter do not limit the destructive action.",
-        "The confirmation names retained Evidence from this Panel Session and its irreversible consequence; the healthy footer states that Evidence is retained for this Panel Session.",
+        "Exactly one typed History condition is selected by deterministic precedence; history conditions do not duplicate Coverage diagnostics.",
+        "A dedicated aria-live polite region announces condition transitions only and does not announce every retained Evidence update.",
+        "Normal, compact, shallow, and wide geometry remain reachable in Dark and Light themes, with forced-colors text and focus semantics preserved.",
         "The changed workflow has no serious or critical axe violations, browser diagnostics, clipping, or horizontal shell overflow."
       ],
       browserResult: {
@@ -122,8 +124,8 @@ try {
         checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "Clear confirmation is not auto-focused. Each focused-confirmation capture opens the confirmation, uses physical Tab navigation to reach Clear retained events, records the active element and its button-level focus ring, and verifies the action is unobscured without horizontal overflow. Memory-fallback captures use the existing keyboard route to Session operations and visibly identify in-memory backing and Panel Session close clearing.",
-      baselineIntent: "Update only copy-focused Material UI evidence: the existing compact-memory-fallback-dark Darwin/Linux pair and the new compact-clear-confirmation-light and normal-clear-confirmation-dark Darwin/Linux pairs. The changed scenarios cover compact, normal, shallow, and wide affected copy states as applicable; the limited-capture Darwin/Linux pair remains unchanged."
+      keyboardAndFocus: "The diagnostic list is keyboard-focusable with a visible focus ring; the footer retains focus while the typed condition remains active; geometry checks cover normal, compact, shallow, and wide layouts plus forced colors. Clear confirmation is not auto-focused and retains its existing physical-Tab proof.",
+      baselineIntent: "Update the seven affected Darwin baselines for the intentional Panel Session lifecycle copy and typed lower-capacity footer condition; all other baselines remain unchanged."
     },
     durationMs: Date.now() - startedAt,
     scenarios: results
@@ -553,7 +555,7 @@ async function prepareProductionState(page, setup) {
     const operations = page.getByRole("region", { name: "Session operations" });
     await operations.waitFor();
     const text = await operations.innerText();
-    if (!text.includes("in-memory fallback") || !text.includes("cleared when this Panel Session closes")) {
+    if (!text.includes("in-memory fallback") || !text.includes("Closing attempts controlled erasure")) {
       throw new Error("Memory fallback Session operations copy is incomplete.");
     }
     return;

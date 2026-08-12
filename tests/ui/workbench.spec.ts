@@ -496,7 +496,7 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   await more.focus();
   await page.keyboard.press("Enter");
   const operations = page.getByRole("region", { name: "Session operations" });
-  await expect(operations).toContainText("current Panel Session history");
+  await expect(operations).toContainText("current Panel Session owns one temporary Event History");
   await expect(page.getByRole("button", { name: "Collapse Context" })).toHaveCount(0);
   await expect(operations).toContainText("4,000 retained");
   await expect(operations).toContainText("4,000 captured");
@@ -1187,7 +1187,7 @@ test("Workbench retains ordered Evidence while a typed Session recovery is in pr
   await attachScenarioScreenshot(page, testInfo);
 });
 
-test("Workbench preserves footer focus when a passive diagnostic resolves", async ({
+test("Workbench preserves footer focus while lower-capacity history remains active", async ({
   page
 }, testInfo) => {
   await openScenario(page, "memory-fallback", { width: 900, height: 700 }, "dark");
@@ -1195,12 +1195,41 @@ test("Workbench preserves footer focus when a passive diagnostic resolves", asyn
 
   await diagnostics.focus();
   await expect(diagnostics).toBeFocused();
-  await page.evaluate(() => window.__setWorkbenchStorageMode("indexeddb"));
-
-  await expect(page.getByText("Warning · In-memory event history", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Warning · Lower History Capacity", { exact: true })).toBeVisible();
+  await expect(diagnostics).toContainText("Observation Coverage is unchanged");
   await expect(diagnostics).toBeFocused();
-  await expect(diagnostics).toHaveAttribute("tabindex", "-1");
+  await expect(diagnostics).toHaveAttribute("tabindex", "0");
   await expect(diagnostics).toHaveCSS("outline-style", "solid");
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
+test("Workbench renders one typed history condition across geometry, theme, and forced colors", async ({
+  page
+}, testInfo) => {
+  const scenes = [
+    { width: 900, height: 700, theme: "dark" as const },
+    { width: 563, height: 700, theme: "light" as const },
+    { width: 900, height: 320, theme: "dark" as const },
+    { width: 1440, height: 900, theme: "light" as const }
+  ];
+
+  for (const scene of scenes) {
+    await openScenario(page, "memory-fallback", scene, scene.theme);
+    const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+    await expect(diagnostics.getByText("Warning · Lower History Capacity", { exact: true })).toHaveCount(1);
+    await expect(diagnostics.locator("[data-history-condition='true']")).toHaveCount(1);
+    await expect(page.locator(".workbench-react__history-live-region")).toHaveCount(1);
+    await expect(page.locator(".workbench-react__history-live-region")).toHaveAttribute("aria-live", "polite");
+    await expect(diagnostics).toContainText("Observation Coverage is unchanged");
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+  }
+
+  await page.emulateMedia({ forcedColors: "active" });
+  const forcedColorsDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(forcedColorsDiagnostics.getByText("Warning · Lower History Capacity", { exact: true })).toHaveCount(1);
+  await expect(forcedColorsDiagnostics).toContainText("Observation Coverage is unchanged");
+  await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
@@ -1308,11 +1337,11 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
 
   await openScenario(page, "memory-fallback", { width: 563, height: 700 }, "dark");
   const fallbackDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
-  const fallbackDetail = "IndexedDB is unavailable. Evidence remains available only while this panel session stays open.";
+  const fallbackDetail = "PRIMARY_JOURNAL_UNAVAILABLE · the primary session journal is unavailable. Memory is limited to 5,000 Evidence records or 32 MiB.";
   await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
-  await expect(fallbackDiagnostics.getByText("Warning · In-memory event history", { exact: true })).toBeVisible();
-  await expect(fallbackDiagnostics.getByText(fallbackDetail, { exact: true })).toBeVisible();
-  await expect(page.getByText(fallbackDetail, { exact: true })).toHaveCount(1);
+  await expect(fallbackDiagnostics.getByText("Warning · Lower History Capacity", { exact: true })).toBeVisible();
+  await expect(fallbackDiagnostics).toContainText(fallbackDetail);
+  await expect(page.getByText(fallbackDetail, { exact: false })).toHaveCount(1);
   await expect.poll(() => page.getByLabel("Ordered Evidence").evaluate((evidence) => {
     const rect = evidence.getBoundingClientRect();
     return { left: rect.left, right: rect.right };

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { createInMemoryEventHistory, type EventHistory } from "../src/core/event-history";
 import {
   createWorkbenchRuntime,
   type LocalInjectionExecutionResult,
   type WorkbenchRuntimeScheduler
 } from "../src/extension/panel/workbench-runtime";
+import { createAuthoritativeHistory } from "./support/authoritative-history";
 
 type Identity = {
   clientId: string;
@@ -76,20 +76,19 @@ function commandEvent(
 }
 
 function historyWithCommandTarget() {
-  const history = createInMemoryEventHistory();
-  history.append(commandEvent("journey-1", "client-created"));
-  history.append(commandEvent("journey-2", "client-status"));
-  history.append(commandEvent("journey-3", "subscription-created"));
-  history.append(commandEvent("journey-4", "subscription-started"));
-  history.append(commandEvent("journey-5", "listener-added"));
-  history.append(commandEvent("source-6", "item-update"));
-  return history;
+  return createAuthoritativeHistory({
+    precommitted: [
+      commandEvent("journey-1", "client-created"),
+      commandEvent("journey-2", "client-status"),
+      commandEvent("journey-3", "subscription-created"),
+      commandEvent("journey-4", "subscription-started"),
+      commandEvent("journey-5", "listener-added"),
+      commandEvent("source-6", "item-update")
+    ]
+  });
 }
 
 function historyWithMergeTarget() {
-  const history = createInMemoryEventHistory();
-  history.append(commandEvent("merge-1", "client-created"));
-  history.append(commandEvent("merge-2", "client-status"));
   const subscription = {
     id: identity.subscriptionId,
     mode: "MERGE",
@@ -98,18 +97,23 @@ function historyWithMergeTarget() {
     active: true,
     subscribed: true
   };
-  history.append(commandEvent("merge-3", "subscription-created", { subscription }));
-  history.append(commandEvent("merge-4", "subscription-started", { subscription }));
-  history.append(commandEvent("merge-5", "listener-added", { subscription }));
-  history.append(commandEvent("merge-source-6", "item-update", {
-    subscription,
-    update: {
-      isSnapshot: false,
-      fields: { price: 101, halted: false },
-      changedFields: { price: 101, halted: false }
-    }
-  }));
-  return history;
+  return createAuthoritativeHistory({
+    precommitted: [
+      commandEvent("merge-1", "client-created"),
+      commandEvent("merge-2", "client-status"),
+      commandEvent("merge-3", "subscription-created", { subscription }),
+      commandEvent("merge-4", "subscription-started", { subscription }),
+      commandEvent("merge-5", "listener-added", { subscription }),
+      commandEvent("merge-source-6", "item-update", {
+        subscription,
+        update: {
+          isSnapshot: false,
+          fields: { price: 101, halted: false },
+          changedFields: { price: 101, halted: false }
+        }
+      })
+    ]
+  });
 }
 
 function beginSelected(runtime: ReturnType<typeof createWorkbenchRuntime>) {
@@ -169,8 +173,9 @@ function scheduler(): WorkbenchRuntimeScheduler & { flush(): void } {
 }
 
 describe("WorkbenchRuntime Local Injection", () => {
-  it("publishes semantic entry availability for selected updates and live COMMAND Scope", () => {
+  it("publishes semantic entry availability for selected updates and live COMMAND Scope", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
     expect(runtime.getSnapshot().localInjection.availability).toEqual({
       selectedUpdate: {
         available: false,
@@ -196,6 +201,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
 
     const merge = createWorkbenchRuntime({ history: historyWithMergeTarget(), captureStatus: "capturing" });
+    await flushAsync();
     merge.dispatch({ type: "select-evidence", eventId: "merge-source-6" });
     const mergeItem = merge.getSnapshot().scope.nodes.find(({ kind }) => kind === "item");
     merge.dispatch({ type: "set-scope", scopeId: mergeItem?.id ?? null });
@@ -209,8 +215,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     merge.dispose();
   });
 
-  it("creates one protected draft from exactly the selected compatible Item Update", () => {
+  it("creates one protected draft from exactly the selected compatible Item Update", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
     beginSelected(runtime);
 
     expect(runtime.getSnapshot().localInjection).toMatchObject({
@@ -252,8 +259,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("creates a valid captured MERGE draft without COMMAND-only diagnostics", () => {
+  it("creates a valid captured MERGE draft without COMMAND-only diagnostics", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithMergeTarget(), captureStatus: "capturing" });
+    await flushAsync();
     runtime.dispatch({ type: "select-evidence", eventId: "merge-source-6" });
     runtime.dispatch({ type: "begin-local-injection-from-selection" });
 
@@ -276,8 +284,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("blocks invalid raw JSON, then becomes ready after a corrected edit", () => {
+  it("blocks invalid raw JSON, then becomes ready after a corrected edit", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({
       type: "set-local-injection-json",
@@ -300,8 +309,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("authors one no-source Draft from a live single-item COMMAND Subscription or Item Scope", () => {
+  it("authors one no-source Draft from a live single-item COMMAND Subscription or Item Scope", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
     const subscription = runtime.getSnapshot().scope.nodes.find(({ kind }) => kind === "subscription");
     runtime.dispatch({ type: "set-scope", scopeId: subscription?.id ?? null });
     expect(runtime.getSnapshot().localInjection.availability.commandScope).toEqual({
@@ -324,6 +334,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
 
     const itemRuntime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
     const item = itemRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "item");
     itemRuntime.dispatch({ type: "set-scope", scopeId: item?.id ?? null });
     itemRuntime.dispatch({ type: "begin-local-injection-from-scope" });
@@ -348,7 +359,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     itemRuntime.dispose();
 
     const ambiguousHistory = historyWithCommandTarget();
-    ambiguousHistory.append(commandEvent("source-7", "item-update", {
+    ambiguousHistory.offer(commandEvent("source-7", "item-update", {
       subscription: {
         id: identity.subscriptionId,
         mode: "COMMAND",
@@ -367,6 +378,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       }
     }));
     const ambiguousRuntime = createWorkbenchRuntime({ history: ambiguousHistory, captureStatus: "capturing" });
+    await flushAsync();
     const ambiguousSubscription = ambiguousRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "subscription");
     ambiguousRuntime.dispatch({ type: "set-scope", scopeId: ambiguousSubscription?.id ?? null });
     expect(ambiguousRuntime.getSnapshot().localInjection.availability.commandScope).toMatchObject({
@@ -399,6 +411,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       history: historyWithMergeTarget(),
       captureStatus: "capturing"
     });
+    await flushAsync();
     const mergeItem = mergeRuntime.getSnapshot().scope.nodes.find(({ kind }) => kind === "item");
     mergeRuntime.dispatch({ type: "set-scope", scopeId: mergeItem?.id ?? null });
     mergeRuntime.dispatch({ type: "begin-local-injection-from-scope" });
@@ -410,8 +423,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     mergeRuntime.dispose();
   });
 
-  it("reveals the existing draft on a second entry and replaces it only after confirmed discard", () => {
+  it("reveals the existing draft on a second entry and replaces it only after confirmed discard", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
     beginSelected(runtime);
     const originalId = runtime.getSnapshot().localInjection.draft?.id;
     const originalAnchor = runtime.getSnapshot().localInjection.draft?.anchor;
@@ -437,8 +451,9 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("parks, resumes, minimizes, and discards without losing the safe draft or investigation origin", () => {
+  it("parks, resumes, minimizes, and discards without losing the safe draft or investigation origin", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(7) });
     const before = runtime.getSnapshot().localInjection.draft;
@@ -474,8 +489,9 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: beforeExecutor
     });
+    await flushAsync();
     beginSelected(before);
-    beforeHistory.append(commandEvent("retire-10", "subscription-ended", {
+    beforeHistory.offer(commandEvent("retire-10", "subscription-ended", {
       subscription: {
         id: identity.subscriptionId,
         mode: "COMMAND",
@@ -504,9 +520,10 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: betweenExecutor
     });
+    await flushAsync();
     beginSelected(between);
     between.dispatch({ type: "review-local-injection" });
-    betweenHistory.append(commandEvent("retire-11", "subscription-ended", {
+    betweenHistory.offer(commandEvent("retire-11", "subscription-ended", {
       subscription: {
         id: identity.subscriptionId,
         mode: "COMMAND",
@@ -517,6 +534,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     }));
     await flushAsync();
     betweenScheduler.flush();
+    await flushAsync();
     expect(between.getSnapshot().localInjection.draft).toMatchObject({
       phase: "edit",
       ready: false,
@@ -549,17 +567,19 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
 
-    history.append(commandEvent("listener-replacement-20", "listener-added", {
+    history.offer(commandEvent("listener-replacement-20", "listener-added", {
       listener: { id: "orders-listener-2", callbacks: ["onItemUpdate"] }
     }));
-    history.append(commandEvent("source-listener-retired-21", "listener-removed", {
+    history.offer(commandEvent("source-listener-retired-21", "listener-removed", {
       listener: { id: identity.listenerId, callbacks: ["onItemUpdate"] },
       item: { name: identity.itemName, position: 1 }
     }));
     await flushAsync();
     runtimeScheduler.flush();
+    await flushAsync();
 
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "edit",
@@ -592,16 +612,18 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
 
-    history.append(commandEvent("lifecycle-listener-22", "listener-added", {
+    history.offer(commandEvent("lifecycle-listener-22", "listener-added", {
       listener: { id: "orders-lifecycle-listener", callbacks: ["onSubscription"] }
     }));
-    history.append(commandEvent("source-listener-retired-23", "listener-removed", {
+    history.offer(commandEvent("source-listener-retired-23", "listener-removed", {
       listener: { id: identity.listenerId, callbacks: ["onItemUpdate"] }
     }));
     await flushAsync();
     runtimeScheduler.flush();
+    await flushAsync();
 
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "edit",
@@ -628,7 +650,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     [
       "Session",
       (_runtime: ReturnType<typeof createWorkbenchRuntime>, history: ReturnType<typeof historyWithCommandTarget>) =>
-        history.append(commandEvent("stale-session-20", "client-status", {
+        history.offer(commandEvent("stale-session-20", "client-status", {
           client: {
             id: identity.clientId,
             status: "CONNECTED:WS-STREAMING",
@@ -645,7 +667,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     [
       "listener",
       (_runtime: ReturnType<typeof createWorkbenchRuntime>, history: ReturnType<typeof historyWithCommandTarget>) =>
-        history.append(commandEvent("stale-listener-21", "listener-removed", {
+        history.offer(commandEvent("stale-listener-21", "listener-removed", {
           listener: { id: identity.listenerId, callbacks: ["onItemUpdate"] },
           item: { name: identity.itemName, position: 1 }
         })),
@@ -659,10 +681,12 @@ describe("WorkbenchRuntime Local Injection", () => {
       scheduler: runtimeScheduler,
       captureStatus: "capturing"
     });
+    await flushAsync();
     beginSelected(runtime);
     makeStale(runtime, history);
     await flushAsync();
     runtimeScheduler.flush();
+    await flushAsync();
     expect(runtime.getSnapshot().localInjection.availability.selectedUpdate).toMatchObject({
       available: false,
       reason: expect.any(String)
@@ -691,18 +715,20 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(7) });
     runtime.dispatch({ type: "review-local-injection" });
     const reviewedFingerprint = runtime.getSnapshot().localInjection.draft?.preflightFingerprint;
     const reviewedText = runtime.getSnapshot().localInjection.draft?.rawText;
 
-    history.append(commandEvent("listener-change-30", "listener-added", {
+    history.offer(commandEvent("listener-change-30", "listener-added", {
       listener: { id: "orders-listener-2", callbacks: ["onItemUpdate"] },
       item: { name: identity.itemName, position: 1 }
     }));
     await flushAsync();
     runtimeScheduler.flush();
+    await flushAsync();
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "edit",
       ready: true,
@@ -739,15 +765,17 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "review-local-injection" });
     const reviewedFingerprint = runtime.getSnapshot().localInjection.draft?.preflightFingerprint;
 
-    history.append(commandEvent("lifecycle-listener-added-36", "listener-added", {
+    history.offer(commandEvent("lifecycle-listener-added-36", "listener-added", {
       listener: { id: "orders-lifecycle-listener", callbacks: ["onSubscription"] }
     }));
     await flushAsync();
     runtimeScheduler.flush();
+    await flushAsync();
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "review",
       ready: true,
@@ -755,11 +783,12 @@ describe("WorkbenchRuntime Local Injection", () => {
       diagnostics: []
     });
 
-    history.append(commandEvent("lifecycle-listener-removed-37", "listener-removed", {
+    history.offer(commandEvent("lifecycle-listener-removed-37", "listener-removed", {
       listener: { id: "orders-lifecycle-listener", callbacks: ["onSubscription"] }
     }));
     await flushAsync();
     runtimeScheduler.flush();
+    await flushAsync();
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "review",
       ready: true,
@@ -783,10 +812,11 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "review-local-injection" });
 
-    history.append(commandEvent("listener-race-35", "listener-added", {
+    history.offer(commandEvent("listener-race-35", "listener-added", {
       listener: { id: "orders-listener-2", callbacks: ["onItemUpdate"] }
     }));
     runtime.dispatch({ type: "execute-local-injection" });
@@ -816,18 +846,20 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(11) });
     const retainedText = runtime.getSnapshot().localInjection.draft?.rawText;
     runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
 
-    history.append(commandEvent("pending-listener-retired-40", "listener-removed", {
+    history.offer(commandEvent("pending-listener-retired-40", "listener-removed", {
       listener: { id: identity.listenerId, callbacks: ["onItemUpdate"] },
       item: { name: identity.itemName, position: 1 }
     }));
     await flushAsync();
     runtimeScheduler.flush();
+    await flushAsync();
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "pending",
       rawText: retainedText,
@@ -846,7 +878,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       outcome: { disposition: "delivered", headline: "DELIVERED LOCALLY" }
     });
 
-    history.append(commandEvent("outcome-subscription-retired-41", "subscription-ended", {
+    history.offer(commandEvent("outcome-subscription-retired-41", "subscription-ended", {
       subscription: {
         id: identity.subscriptionId,
         mode: "COMMAND",
@@ -857,6 +889,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     }));
     await flushAsync();
     runtimeScheduler.flush();
+    await flushAsync();
     expect(runtime.getSnapshot().localInjection.draft).toMatchObject({
       phase: "outcome",
       rawText: retainedText,
@@ -880,14 +913,15 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
     await flushAsync();
 
     expect(runtime.getSnapshot().localInjection.draft?.outcome).toMatchObject({ disposition, headline });
-    const synthetic = await history.queryEvents({ filters: { synthetic: true } }).toPromise();
-    expect(synthetic.total).toBe(0);
+    const synthetic = await history.read({ filters: { synthetic: true } });
+    expect(synthetic).toMatchObject({ ok: true, value: { total: 0 } });
     runtime.dispose();
   });
 
@@ -905,6 +939,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "review-local-injection" });
     runtime.dispatch({ type: "execute-local-injection" });
@@ -915,8 +950,8 @@ describe("WorkbenchRuntime Local Injection", () => {
       headline: "DELIVERY FAILED",
       detail: expect.stringContaining("did not confirm any listener delivery")
     });
-    const synthetic = await history.queryEvents({ filters: { synthetic: true } }).toPromise();
-    expect(synthetic.total).toBe(0);
+    const synthetic = await history.read({ filters: { synthetic: true } });
+    expect(synthetic).toMatchObject({ ok: true, value: { total: 0 } });
     runtime.dispose();
   });
 
@@ -932,6 +967,7 @@ describe("WorkbenchRuntime Local Injection", () => {
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(9) });
     runtime.dispatch({ type: "review-local-injection" });
@@ -955,14 +991,22 @@ describe("WorkbenchRuntime Local Injection", () => {
       headline: "DELIVERED LOCALLY",
       requestId: "delivered-1"
     });
-    const synthetic = await history.queryEvents({ filters: { synthetic: true } }).toPromise();
-    expect(synthetic.events).toHaveLength(1);
-    expect(synthetic.events[0]).toMatchObject({
-      id: "synthetic-delivered-1",
-      source: "synthetic",
-      synthetic: true,
-      raw: { sourceListenerId: identity.listenerId },
-      update: { command: "UPDATE", key: "order-1", fields: { qty: 9 } }
+    const synthetic = await history.read({ filters: { synthetic: true } });
+    expect(synthetic).toMatchObject({
+      ok: true,
+      value: {
+        evidence: [
+          {
+            candidate: {
+              id: "synthetic-delivered-1",
+              source: "synthetic",
+              synthetic: true,
+              raw: { sourceListenerId: identity.listenerId },
+              update: { command: "UPDATE", key: "order-1", fields: { qty: 9 } }
+            }
+          }
+        ]
+      }
     });
     expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
     expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=9");
@@ -975,43 +1019,40 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
-  it("advances Local Effective COMMAND State once when delivered Evidence retention fails", async () => {
-    const retainedHistory = historyWithCommandTarget();
-    retainedHistory.append(commandEvent("synthetic-prior-7", "item-update", {
-      source: "synthetic",
-      synthetic: true,
-      update: {
-        isSnapshot: false,
-        command: "UPDATE",
-        key: "order-1",
-        fields: { command: "UPDATE", key: "order-1", qty: 9 },
-        changedFields: { qty: 9 }
-      }
-    }));
-    retainedHistory.append(commandEvent("server-overwrite-8", "item-update", {
-      update: {
-        isSnapshot: false,
-        command: "UPDATE",
-        key: "order-1",
-        fields: { command: "UPDATE", key: "order-1", qty: 1 },
-        changedFields: { qty: 1 }
-      }
-    }));
-    const retentionFailure = new Error("synthetic retention failed");
-    const history: EventHistory = {
-      ...retainedHistory,
-      append(event) {
-        if (!event.synthetic) return retainedHistory.append(event);
-        return {
-          receive(_onValue, onError) {
-            onError(retentionFailure);
-          },
-          toPromise() {
-            return Promise.reject(retentionFailure);
+  it("does not advance Local Effective COMMAND State when delivered Evidence retention fails", async () => {
+    const retainedHistory = createAuthoritativeHistory({
+      precommitted: [
+        commandEvent("journey-1", "client-created"),
+        commandEvent("journey-2", "client-status"),
+        commandEvent("journey-3", "subscription-created"),
+        commandEvent("journey-4", "subscription-started"),
+        commandEvent("journey-5", "listener-added"),
+        commandEvent("source-6", "item-update"),
+        commandEvent("synthetic-prior-7", "item-update", {
+          source: "synthetic",
+          synthetic: true,
+          update: {
+            isSnapshot: false,
+            command: "UPDATE",
+            key: "order-1",
+            fields: { command: "UPDATE", key: "order-1", qty: 9 },
+            changedFields: { qty: 9 }
           }
-        };
+        }),
+        commandEvent("server-overwrite-8", "item-update", {
+          update: {
+            isSnapshot: false,
+            command: "UPDATE",
+            key: "order-1",
+            fields: { command: "UPDATE", key: "order-1", qty: 1 },
+            changedFields: { qty: 1 }
+          }
+        })
+      ],
+      decideOffer(candidate) {
+        return candidate.kind !== "topology-checkpoint" && candidate.synthetic ? "refuse" : "commit";
       }
-    };
+    });
     const executor = {
       execute: vi.fn(async () => result("success", {
         requestId: "delivered-without-history",
@@ -1021,10 +1062,11 @@ describe("WorkbenchRuntime Local Injection", () => {
       }))
     };
     const runtime = createWorkbenchRuntime({
-      history,
+      history: retainedHistory,
       captureStatus: "capturing",
       localInjectionExecutor: executor
     });
+    await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(17) });
     runtime.dispatch({ type: "review-local-injection" });
@@ -1037,12 +1079,16 @@ describe("WorkbenchRuntime Local Injection", () => {
       detail: expect.stringContaining("could not be retained")
     });
     expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
-    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=17");
+    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=1");
+    expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).not.toContain("qty=17");
     expect(
       runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId
     ).toBeUndefined();
-    const synthetic = await retainedHistory.queryEvents({ filters: { synthetic: true } }).toPromise();
-    expect(synthetic.events.map(({ id }) => id)).toEqual(["synthetic-prior-7"]);
+    const synthetic = await retainedHistory.read({ filters: { synthetic: true } });
+    expect(synthetic).toMatchObject({
+      ok: true,
+      value: { evidence: [{ eventId: "synthetic-prior-7" }] }
+    });
     runtime.dispose();
   });
 });

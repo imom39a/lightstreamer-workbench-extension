@@ -30,7 +30,7 @@ export async function waitForWorkbenchPanel<TCdp extends DevtoolsCdpClient>(
   selection: PanelSelectionProof;
   targets: BrowserTarget[];
 }> {
-  const deadline = Date.now() + (options.timeoutMs ?? 10_000);
+  const deadline = Date.now() + (options.timeoutMs ?? 300_000);
   let latestSelection: PanelSelectionProof | null = null;
   let latestTargets: BrowserTarget[] = [];
   while (Date.now() < deadline) {

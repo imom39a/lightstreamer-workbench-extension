@@ -99,6 +99,144 @@ describe.each([
   ["indexeddb", async (options: Record<string, unknown> = {}) => indexedHistory("impl-05-indexeddb", options)]
 ])("history-impl-05 %s", (_name, create) => {
   it.each([
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY]
+  ] as const)("rejects a %s byte-estimator result before admission", async (_label, estimate) => {
+    const history = await create({ byteEstimator: () => estimate });
+
+    const refused = history.offer(candidate(`invalid-estimate-${_label}`));
+
+    expect(refused.intake).toBe("REFUSED");
+    await expect(refused.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "INVALID_CANDIDATE" }
+    });
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { total: 0, evidence: [] }
+    });
+    await history.close();
+  });
+
+  it.each([
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY]
+  ] as const)("does not corrupt terminal refusal accounting for a %s result", async (_label, estimate) => {
+    let calls = 0;
+    const history = await create({
+      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 },
+      byteEstimator: () => {
+        calls += 1;
+        return calls < 3 ? 8 : estimate;
+      }
+    });
+    const publications = collect(history);
+
+    await expect(history.offer(candidate(`accounted-${_label}-accepted`)).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE"
+    });
+    const crossing = history.offer(candidate(`accounted-${_label}-crossing`));
+    const afterStop = history.offer(candidate(`accounted-${_label}-after-stop`));
+
+    await expect(crossing.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT" }
+    });
+    await expect(afterStop.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT" }
+    });
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "terminal",
+      terminal: expect.objectContaining({ rejected: { count: 2, bytes: 8 } })
+    }));
+    await history.close();
+  });
+
+  it("keeps the offered snapshot immutable across a mutating custom estimator", async () => {
+    const accepted = {
+      id: "estimator-accepted",
+      timestamp: 1_700_000_000_000,
+      direction: "inbound" as const,
+      source: "server" as const,
+      synthetic: false,
+      kind: "item-update" as const,
+      update: { jsonPatches: { nested: { marker: "original" } } }
+    };
+    const expectedAccepted = {
+      id: "estimator-accepted",
+      timestamp: 1_700_000_000_000,
+      direction: "inbound" as const,
+      source: "server" as const,
+      synthetic: false,
+      kind: "item-update" as const,
+      update: { jsonPatches: { nested: { marker: "original" } } }
+    };
+    const crossing = {
+      id: "estimator-crossing",
+      timestamp: 1_700_000_000_001,
+      direction: "inbound" as const,
+      source: "server" as const,
+      synthetic: false,
+      kind: "item-update" as const,
+      update: { jsonPatches: { nested: { marker: "crossing-original" } } }
+    };
+    const mutateEstimator = (value: EvidenceCandidate): number => {
+      const mutable = value as unknown as {
+        update: { jsonPatches: { nested: { marker: string } } };
+        id: string;
+      };
+      mutable.id = "mutated-by-estimator";
+      mutable.update.jsonPatches.nested.marker = "mutated-by-estimator";
+      return 8;
+    };
+    const history = await create({
+      byteEstimator: mutateEstimator,
+      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
+    });
+    const publications = collect(history);
+
+    await expect(history.offer(accepted).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    expect(accepted).toEqual(expectedAccepted);
+
+    const refused = history.offer(crossing);
+    await expect(refused.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: { code: "RETAINED_COUNT_LIMIT" }
+    });
+    expect(crossing).toEqual({
+      id: "estimator-crossing",
+      timestamp: 1_700_000_000_001,
+      direction: "inbound",
+      source: "server",
+      synthetic: false,
+      kind: "item-update",
+      update: { jsonPatches: { nested: { marker: "crossing-original" } } }
+    });
+
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { evidence: [{ eventId: "estimator-accepted", candidate: expectedAccepted }] }
+    });
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "committed-evidence",
+      evidence: [expect.objectContaining({ eventId: "estimator-accepted", candidate: expectedAccepted })]
+    }));
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "terminal",
+      terminal: expect.objectContaining({
+        firstMissingEventId: "estimator-crossing",
+        rejected: { count: 1, bytes: 8 }
+      })
+    }));
+    await history.close();
+  });
+
+  it.each([
     ["NORMAL", {
       maxRetainedCount: 10_000,
       maxRetainedBytes: 64 * MIB,
@@ -152,6 +290,30 @@ describe.each([
     await history.close();
   });
 
+  it("settles a terminal refusal with the finalized fail-closed diagnostic", async () => {
+    const history = await create({
+      capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 }
+    });
+    await expect(history.offer(candidate("terminal-prefix")).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE"
+    });
+
+    const refused = history.offer(candidate("terminal-missing"));
+    await expect(refused.settled).resolves.toMatchObject({
+      outcome: "NOT_EVIDENCE",
+      problem: {
+        code: "RETAINED_COUNT_LIMIT",
+        terminal: {
+          reason: "RETAINED_COUNT_LIMIT",
+          committedEvidenceBoundary: { sequence: 1, eventId: "terminal-prefix" },
+          firstMissingEventId: "terminal-missing"
+        }
+      },
+      committedEvidenceBoundary: { sequence: 1, eventId: "terminal-prefix" }
+    });
+    await history.close();
+  });
+
   it("uses canonical replay payload plus logical framing for exact retained equality and crossing", async () => {
     const framed = candidate("canonical-frame");
     const expectedBytes = estimateHistoryCandidateBytes(framed);
@@ -168,6 +330,44 @@ describe.each([
     expect(crossing.intake).toBe("REFUSED");
     await expect(crossing.settled).resolves.toMatchObject({ problem: { code: "RETAINED_BYTE_LIMIT", dimension: "RETAINED_BYTES" } });
     expect(publications.filter((entry) => entry.type === "terminal")).toHaveLength(1);
+    await history.close();
+  });
+
+  it("reports pending pressure in canonical journal-accounted bytes", async () => {
+    const pendingCandidate = candidate("canonical-pending");
+    const expectedBytes = estimateHistoryCandidateBytes(pendingCandidate);
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const history = await create({
+      capacity: {
+        maxRetainedCount: 10,
+        maxRetainedBytes: 1_000_000,
+        pendingWarningBytes: expectedBytes,
+        pendingStopBytes: expectedBytes * 2
+      },
+      commitBatch: async () => {
+        started();
+        await gate;
+      }
+    });
+    const publications = collect(history);
+    const receipt = history.offer(pendingCandidate);
+    await startedPromise;
+
+    expect(publications).toContainEqual(expect.objectContaining({
+      type: "status",
+      status: expect.objectContaining({
+        capacity: expect.objectContaining({
+          state: "NEAR_LIMIT",
+          measurements: expect.objectContaining({ pendingBytes: expectedBytes })
+        })
+      })
+    }));
+
+    release();
+    await expect(receipt.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
     await history.close();
   });
 
@@ -443,7 +643,7 @@ describe.each([
 
     await expect(failed.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
     await expect(queuedTail.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
-    await expect(proactive.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "RETAINED_COUNT_LIMIT" } });
+    await expect(proactive.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
 
     const terminal = publications.find((entry) => entry.type === "terminal");
     expect(terminal).toMatchObject({
@@ -873,7 +1073,7 @@ it("does not let Close erase the journal while terminal finalization is in fligh
   expect(order).toEqual(["finalize-start", "finalize-end", "clear"]);
 });
 
-it("does not reopen a concurrently owned terminal-finalization failure state", async () => {
+it("recovers a terminal-finalization failure as a durable journal-failed state", async () => {
   const panelSessionId = "impl-05-reopen-terminal-failure";
   const history = await indexedHistory(panelSessionId, {
     capacity: { maxRetainedCount: 1, maxRetainedBytes: 1_000_000 },
@@ -881,7 +1081,7 @@ it("does not reopen a concurrently owned terminal-finalization failure state", a
   });
   await expect(history.offer(candidate("terminal-failure-prior")).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
   const crossing = history.offer(candidate("terminal-failure-crossing"));
-  await expect(crossing.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "RETAINED_COUNT_LIMIT" } });
+  await expect(crossing.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE", problem: { code: "JOURNAL_COMMIT_FAILED" } });
 
   const reopened = await openEventHistory({ panelSessionId });
   let reopenedStatus: unknown;
@@ -894,9 +1094,9 @@ it("does not reopen a concurrently owned terminal-finalization failure state", a
   });
   const reopenedControl = await readIndexedControl(panelSessionId);
   expect(reopenedControl).toMatchObject({
-    phase: "DRAINING_TO_STOP",
+    phase: "STOPPED",
     terminal: {
-      reason: "RETAINED_COUNT_LIMIT",
+      reason: "JOURNAL_COMMIT_FAILED",
       committedEvidenceBoundary: { sequence: 1, eventId: "terminal-failure-prior" },
       firstMissingEventId: "terminal-failure-crossing"
     },

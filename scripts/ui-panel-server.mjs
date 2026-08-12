@@ -52,7 +52,7 @@ function scenarioHarnessSource() {
   return `
 import { createRoot } from "react-dom/client";
 import { createElement } from "react";
-import { createInMemoryEventHistory } from ${source("src/core/event-history.ts")};
+import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 import { getWorkbenchScenario, isWorkbenchScenarioId } from ${source("tests/support/workbench-scenarios.ts")};
@@ -65,19 +65,29 @@ const root = document.querySelector("#app");
 if (!(root instanceof HTMLElement)) throw new Error("Workbench scenario requires #app.");
 
 const scenario = getWorkbenchScenario(scenarioId);
-const retainedHistory = createInMemoryEventHistory();
-for (const event of scenario.initialEvents) retainedHistory.append(event);
-const history = scenario.failLocalEvidenceRetention ? {
-  ...retainedHistory,
-  append(event) {
-    if (!event.synthetic) return retainedHistory.append(event);
-    const error = new Error("Synthetic Evidence retention failed in the browser scenario.");
-    return {
-      receive(_onValue, onError) { onError(error); },
-      toPromise() { return Promise.reject(error); }
-    };
-  }
-} : retainedHistory;
+let failSyntheticEvidenceRetention = false;
+const history = createInMemoryEventHistory({
+  ...(scenario.storage?.mode === "memory"
+    ? {
+        capacityTier: "LOWER",
+        fallback: scenario.storage.reason.includes("newer")
+          ? "UNKNOWN_NEWER_SCHEMA"
+          : "PRIMARY_JOURNAL_UNAVAILABLE"
+      }
+    : {}),
+  ...(scenario.failLocalEvidenceRetention
+    ? {
+        failure: {
+          commitBatch(batch) {
+            if (failSyntheticEvidenceRetention && batch.some((event) => event.synthetic)) {
+              throw new Error("Synthetic Evidence retention failed in the browser scenario.");
+            }
+          }
+        }
+      }
+    : {})
+});
+await Promise.all(scenario.initialEvents.map((event) => history.offer(event).settled));
 let localInjectionExecutionCount = 0;
 const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
   execute(request) {
@@ -92,6 +102,7 @@ const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
 } : undefined;
 const runtime = createWorkbenchRuntime({
   history,
+  storage: history.storage,
   captureStatus: scenario.captureStatus,
   capture: scenario.capture,
   theme,
@@ -118,11 +129,11 @@ if (scenario.selectedScope) {
   runtime.dispatch({ type: "set-scope-focus", scopeId: scope.id });
 }
 if (scenario.selectedEventId) runtime.dispatch({ type: "select-evidence", eventId: scenario.selectedEventId });
-if (scenario.storage) runtime.dispatch({ type: "set-storage-state", storage: scenario.storage });
 if (scenario.filterQuery) runtime.dispatch({ type: "set-filters", filters: { query: scenario.filterQuery } });
 if (scenario.findQuery) runtime.dispatch({ type: "set-find", value: scenario.findQuery });
 if (scenario.freezeBeforeLaterEvents) runtime.dispatch({ type: "freeze-evidence" });
-for (const event of scenario.laterEvents ?? []) history.append(event);
+await Promise.all((scenario.laterEvents ?? []).map((event) => history.offer(event).settled));
+failSyntheticEvidenceRetention = Boolean(scenario.failLocalEvidenceRetention);
 if (scenario.openRawEvidence && scenario.selectedEventId) runtime.dispatch({ type: "open-raw-evidence", eventId: scenario.selectedEventId });
 if (scenario.localInjection) {
   runtime.dispatch({ type: scenario.localInjection.entry === "selection" ? "begin-local-injection-from-selection" : "begin-local-injection-from-scope" });
@@ -150,7 +161,7 @@ let deferredEventsReleased = false;
 window.__appendDeferredWorkbenchEvents = () => {
   if (deferredEventsReleased) return 0;
   deferredEventsReleased = true;
-  for (const event of scenario.deferredEvents ?? []) history.append(event);
+  for (const event of scenario.deferredEvents ?? []) history.offer(event);
   return scenario.deferredEvents?.length ?? 0;
 };
 window.addEventListener("pagehide", () => { reactRoot.unmount(); runtime.dispose(); }, { once: true });

@@ -6,12 +6,17 @@ import {
 } from "../../core/event-envelope";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
-  createEventHistory,
   createInMemoryEventHistory,
-  type EventHistory
-} from "../../core/event-history";
+  type EvidenceRef,
+  type EventHistory,
+  type HistoryPublication,
+  type HistoryProblem,
+  type HistoryStatus
+} from "../../core/event-history-authoritative";
+import {
+  type CommittedEvidence
+} from "../../core/event-history-authoritative";
 import { createEventSearchText, matchesEventFilters, type EventFilterState } from "../../core/event-filter";
-import { type EventStore, type EventStoreChange, type EventStoreStats } from "../../core/event-store";
 import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
 import {
   analyzeLocalInjectionDocument,
@@ -59,12 +64,19 @@ import {
   type TopologyState,
   type TopologySubscription
 } from "../../core/topology-state";
+import { bindCommittedEvidencePipeline, type CommittedEvidencePipeline } from "./committed-evidence-pipeline";
+import {
+  historyConditionFor,
+  type WorkbenchHistoryCondition
+} from "./history-condition";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 
 export type WorkbenchCaptureSnapshot = Readonly<{
   operation: "RUNNING" | "IDLE" | "STOPPED";
   coverage: "USEFUL" | "LIMITED" | "UNAVAILABLE";
+  firstMissingEventId: string | null;
+  committedEvidenceBoundary: EvidenceRef | null;
   detail?: string;
   recovery?: string;
 }>;
@@ -178,6 +190,7 @@ export type WorkbenchDiagnostic = Readonly<{
   affected: string;
   detail: string;
   recovery?: string;
+  category?: "history" | "capture" | "session" | "retention";
 }>;
 
 export type WorkbenchEvidenceSnapshot = Readonly<{
@@ -315,6 +328,8 @@ export type WorkbenchLocalInjectionSnapshot = Readonly<{
 /** The immutable, renderer-neutral investigation state for one panel session. */
 export type WorkbenchSnapshot = Readonly<{
   version: number;
+  /** Identity-only boundary represented by this immutable renderer snapshot. */
+  renderedEvidenceBoundary: EvidenceRef | null;
   visible: boolean;
   theme: "auto" | "dark" | "light";
   captureStatus: CaptureStatus;
@@ -349,6 +364,8 @@ export type WorkbenchSnapshot = Readonly<{
     authoritativeLimit: string;
   }>;
   diagnostics: readonly WorkbenchDiagnostic[];
+  historyCondition: WorkbenchHistoryCondition | null;
+  historyAnnouncement: string;
   storage: WorkbenchStorageSnapshot;
   retention: WorkbenchRetentionSnapshot;
   export: WorkbenchExportSnapshot;
@@ -424,7 +441,55 @@ export interface WorkbenchRuntime {
   subscribe(listener: () => void): () => void;
   dispatch(command: WorkbenchCommand): void;
   dispose(): void;
+  disposeAndWait(): Promise<void>;
+  /** Reports the first animation frame after the named React snapshot rendered. */
+  reportVisibleFrame?(renderedBoundary?: EvidenceRef | null): void;
+  /** Snapshot of identity-only state for the deliberate real-Chrome performance gate. */
+  getPerformanceDiagnostics?(): WorkbenchRuntimePerformanceDiagnostics;
+  /** Records renderer lifecycle facts for timeout diagnosis; never carries Evidence payloads. */
+  reportPanelPerformanceEvent?(event: WorkbenchPanelPerformanceEvent): void;
 }
+
+export type WorkbenchPanelPerformanceEvent =
+  | Readonly<{ type: "root-mounted"; mounted: boolean }>
+  | Readonly<{ type: "subscription-active"; active: boolean }>
+  | Readonly<{ type: "layout-effect"; snapshotVersion: number; boundary: EvidenceRef | null }>
+  | Readonly<{ type: "animation-frame-requested"; timestampMs: number }>
+  | Readonly<{ type: "animation-frame-callback"; timestampMs: number }>
+  | Readonly<{ type: "animation-frame-cancelled" }>;
+
+export type WorkbenchPanelPerformanceDiagnostics = Readonly<{
+  rootMounted: boolean;
+  subscriptionActive: boolean;
+  lastLayoutEffectSnapshotVersion: number | null;
+  lastLayoutEffectBoundary: EvidenceRef | null;
+  animationFramePending: boolean;
+  animationFrameRequestCount: number;
+  lastAnimationFrameRequestedAtMs: number | null;
+  animationFrameCallbackCount: number;
+  lastAnimationFrameCallbackAtMs: number | null;
+  animationFrameCancelCount: number;
+}>;
+
+export type WorkbenchRuntimePerformanceDiagnostics = Readonly<{
+  disposed: boolean;
+  visible: boolean;
+  committedEvidenceBoundary: EvidenceRef | null;
+  renderedEvidenceBoundary: EvidenceRef | null;
+  pendingVisibleCount: number;
+  pendingVisibleHead: EvidenceRef | null;
+  pendingVisibleTail: EvidenceRef | null;
+  evidenceQueryPending: boolean;
+  passiveRefreshPending: boolean;
+  queryGeneration: number;
+  liveEvidenceTotal: number;
+  liveEvidenceTail: Readonly<{ eventId: string }> | null;
+  lastEvidenceQueryError: string | null;
+  documentVisibilityState: DocumentVisibilityState | "unavailable";
+  visibleFrameHeartbeat: number;
+  lastVisibleFrameAtMs: number | null;
+  panel: WorkbenchPanelPerformanceDiagnostics;
+}>;
 
 export type WorkbenchRuntimeScheduler = {
   requestFrame(callback: () => void): unknown;
@@ -433,10 +498,16 @@ export type WorkbenchRuntimeScheduler = {
   clearTimeout(handle: unknown): void;
 };
 
+/** Observational hooks used only by the deliberate real-Chrome performance gate. */
+export type WorkbenchRuntimePerformanceHooks = Readonly<{
+  onCommittedEvidenceBoundary?(boundary: EvidenceRef, timestampMs: number): void;
+  onCheckpointStagingStart?(syncId: string, timestampMs: number): void;
+  onCheckpointStagingEnd?(syncId: string, timestampMs: number): void;
+  onVisibleFrame?(boundary: EvidenceRef, timestampMs: number, coveredBoundaries: readonly EvidenceRef[]): void;
+}>;
+
 export type WorkbenchRuntimeOptions = {
   history?: EventHistory;
-  /** @deprecated Prefer the storage-independent history seam. */
-  store?: EventStore;
   visible?: boolean;
   theme?: "auto" | "dark" | "light";
   captureStatus?: CaptureStatus;
@@ -446,6 +517,7 @@ export type WorkbenchRuntimeOptions = {
   windowSize?: number;
   scheduler?: WorkbenchRuntimeScheduler;
   localInjectionExecutor?: LocalInjectionExecutor;
+  performanceHooks?: WorkbenchRuntimePerformanceHooks;
 };
 
 type EvidenceData = {
@@ -487,17 +559,20 @@ export function createWorkbenchRuntime(options: WorkbenchRuntimeOptions = {}): W
 
 class Runtime implements WorkbenchRuntime {
   private readonly history: EventHistory;
+  private readonly evidencePipeline: CommittedEvidencePipeline;
   private readonly scheduler: WorkbenchRuntimeScheduler;
   private readonly windowSize: number;
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
   private readonly normalizer: EventNormalizer;
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
+  private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
+  private readonly activeTopologyStagingSyncIds = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
   private readonly retainedLocalEvidenceIds = new Set<string>();
+  private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
   private readonly topologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
-  private readonly unsubscribeHistory: () => void;
   private visible: boolean;
   private theme: "auto" | "dark" | "light";
   private captureStatus: CaptureStatus;
@@ -524,16 +599,38 @@ class Runtime implements WorkbenchRuntime {
   private snapshot: WorkbenchSnapshot;
   private version = 0;
   private disposed = false;
+  private disposePromise: Promise<void> = Promise.resolve();
   private queryGeneration = 0;
   private evidenceQueryPending = false;
   private passiveRefreshPending = false;
+  private lastEvidenceQueryError: string | null = null;
   private selectionLookupGeneration = 0;
   private frameHandle: unknown | null = null;
   private fallbackHandle: unknown | null = null;
   private hiddenDirty = false;
+  private captureBoundary: WorkbenchCaptureSnapshot | null = null;
+  private committedEvidenceBoundary: EvidenceRef | null = null;
+  private renderedEvidenceBoundary: EvidenceRef | null = null;
+  private pendingVisibleBoundaries: EvidenceRef[] = [];
+  private visibleFrameHeartbeat = 0;
+  private lastVisibleFrameAtMs: number | null = null;
+  private panelPerformanceDiagnostics: WorkbenchPanelPerformanceDiagnostics = {
+    rootMounted: false,
+    subscriptionActive: false,
+    lastLayoutEffectSnapshotVersion: null,
+    lastLayoutEffectBoundary: null,
+    animationFramePending: false,
+    animationFrameRequestCount: 0,
+    lastAnimationFrameRequestedAtMs: null,
+    animationFrameCallbackCount: 0,
+    lastAnimationFrameCallbackAtMs: null,
+    animationFrameCancelCount: 0
+  };
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
+  private historyCondition: WorkbenchHistoryCondition | null = null;
+  private historyAnnouncement = "";
   private storage: WorkbenchStorageSnapshot;
-  private storeStats: EventStoreStats = {
+  private storeStats = {
     retained: 0,
     totalAppended: 0,
     warningThreshold: 10_000,
@@ -575,10 +672,10 @@ class Runtime implements WorkbenchRuntime {
     json: string;
     filename: string;
   } | null = null;
+  private exportPreparationGeneration = 0;
 
   constructor(options: WorkbenchRuntimeOptions) {
-    this.history =
-      options.history ?? (options.store ? createEventHistory(options.store) : createInMemoryEventHistory());
+    this.history = options.history ?? createInMemoryEventHistory();
     this.scheduler = options.scheduler ?? browserScheduler();
     this.windowSize = normalizeWindowSize(options.windowSize);
     this.visible = options.visible ?? true;
@@ -587,13 +684,17 @@ class Runtime implements WorkbenchRuntime {
     this.captureOverride = options.capture ?? {};
     this.normalizer = options.normalizer ?? createEventNormalizer();
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
+    this.performanceHooks = options.performanceHooks ?? null;
     this.storage = options.storage ?? { mode: "indexeddb" };
+    this.evidencePipeline = bindCommittedEvidencePipeline({
+      history: this.history,
+      onCommittedEvidence: (entry) => this.handleCommittedEvidence(entry),
+      onHistoryPublication: (publication) => this.handleHistoryPublication(publication)
+    });
     this.snapshot = this.createSnapshot();
 
+    this.evidencePipeline.start();
     this.refreshEvidence("initial");
-    this.unsubscribeHistory = this.history.subscribe((change, stats) =>
-      this.handleHistoryChange(change, stats)
-    );
     this.hydrateProjections();
   }
 
@@ -609,6 +710,98 @@ class Runtime implements WorkbenchRuntime {
     return () => {
       this.listeners.delete(listener);
     };
+  };
+
+  readonly reportVisibleFrame = (renderedBoundary = this.renderedEvidenceBoundary): void => {
+    if (!this.visible) return;
+    this.visibleFrameHeartbeat += 1;
+    this.lastVisibleFrameAtMs = performance.now();
+    const boundary = renderedBoundary;
+    if (!boundary || !this.performanceHooks?.onVisibleFrame || this.pendingVisibleBoundaries.length === 0) return;
+    const coveredBoundaries: EvidenceRef[] = [];
+    const pendingBoundaries: EvidenceRef[] = [];
+    for (const pending of this.pendingVisibleBoundaries) {
+      if (pending.intervalId === boundary.intervalId && pending.sequence <= boundary.sequence) {
+        coveredBoundaries.push(pending);
+      } else {
+        pendingBoundaries.push(pending);
+      }
+    }
+    if (coveredBoundaries.length === 0) return;
+    this.pendingVisibleBoundaries = pendingBoundaries;
+    this.performanceHooks.onVisibleFrame(boundary, performance.now(), coveredBoundaries);
+  };
+
+  readonly reportPanelPerformanceEvent = (event: WorkbenchPanelPerformanceEvent): void => {
+    const current = this.panelPerformanceDiagnostics;
+    switch (event.type) {
+      case "root-mounted":
+        this.panelPerformanceDiagnostics = { ...current, rootMounted: event.mounted };
+        return;
+      case "subscription-active":
+        this.panelPerformanceDiagnostics = { ...current, subscriptionActive: event.active };
+        return;
+      case "layout-effect":
+        this.panelPerformanceDiagnostics = {
+          ...current,
+          lastLayoutEffectSnapshotVersion: event.snapshotVersion,
+          lastLayoutEffectBoundary: event.boundary
+            ? Object.freeze({ intervalId: event.boundary.intervalId, sequence: event.boundary.sequence, eventId: event.boundary.eventId })
+            : null
+        };
+        return;
+      case "animation-frame-requested":
+        this.panelPerformanceDiagnostics = {
+          ...current,
+          animationFramePending: true,
+          animationFrameRequestCount: current.animationFrameRequestCount + 1,
+          lastAnimationFrameRequestedAtMs: event.timestampMs
+        };
+        return;
+      case "animation-frame-callback":
+        this.panelPerformanceDiagnostics = {
+          ...current,
+          animationFramePending: false,
+          animationFrameCallbackCount: current.animationFrameCallbackCount + 1,
+          lastAnimationFrameCallbackAtMs: event.timestampMs
+        };
+        return;
+      case "animation-frame-cancelled":
+        this.panelPerformanceDiagnostics = {
+          ...current,
+          animationFramePending: false,
+          animationFrameCancelCount: current.animationFrameCancelCount + 1
+        };
+    }
+  };
+
+  readonly getPerformanceDiagnostics = (): WorkbenchRuntimePerformanceDiagnostics => {
+    const liveTail = this.liveEvidence.events.at(-1);
+    const identity = (boundary: EvidenceRef | null | undefined): EvidenceRef | null => boundary
+      ? Object.freeze({ intervalId: boundary.intervalId, sequence: boundary.sequence, eventId: boundary.eventId })
+      : null;
+    return Object.freeze({
+      disposed: this.disposed,
+      visible: this.visible,
+      committedEvidenceBoundary: identity(this.committedEvidenceBoundary),
+      renderedEvidenceBoundary: identity(this.renderedEvidenceBoundary),
+      pendingVisibleCount: this.pendingVisibleBoundaries.length,
+      pendingVisibleHead: identity(this.pendingVisibleBoundaries[0]),
+      pendingVisibleTail: identity(this.pendingVisibleBoundaries.at(-1)),
+      evidenceQueryPending: this.evidenceQueryPending,
+      passiveRefreshPending: this.passiveRefreshPending,
+      queryGeneration: this.queryGeneration,
+      liveEvidenceTotal: this.liveEvidence.total,
+      liveEvidenceTail: liveTail ? Object.freeze({ eventId: liveTail.id }) : null,
+      lastEvidenceQueryError: this.lastEvidenceQueryError,
+      documentVisibilityState: typeof document === "undefined" ? "unavailable" : document.visibilityState,
+      visibleFrameHeartbeat: this.visibleFrameHeartbeat,
+      lastVisibleFrameAtMs: this.lastVisibleFrameAtMs,
+      panel: Object.freeze({
+        ...this.panelPerformanceDiagnostics,
+        lastLayoutEffectBoundary: identity(this.panelPerformanceDiagnostics.lastLayoutEffectBoundary)
+      })
+    });
   };
 
   dispatch(command: WorkbenchCommand): void {
@@ -639,7 +832,7 @@ class Runtime implements WorkbenchRuntime {
         this.scopeId = command.scopeId ?? "page";
         this.scopeFocusedNodeId = command.scopeId ?? "page";
         this.clearedSelectionEventId = null;
-        this.preparedExport = null;
+        this.invalidatePreparedExport();
         this.refreshEvidence("scope");
         return;
       case "set-scope-focus":
@@ -669,12 +862,12 @@ class Runtime implements WorkbenchRuntime {
             TOPOLOGY_SENSITIVE_CATEGORIES.includes(category)
           )
         );
-        this.preparedExport = null;
+        this.invalidatePreparedExport();
         this.publish();
         return;
       case "set-export-complete-evidence":
         this.exportCompleteEvidence = command.complete;
-        this.preparedExport = null;
+        this.invalidatePreparedExport();
         this.publish();
         return;
       case "set-filters":
@@ -898,14 +1091,17 @@ class Runtime implements WorkbenchRuntime {
     this.selectedEventEnvelope = null;
     if (reconcileFilterVisibility) this.selectionHiddenByFilter = false;
     let receiving = true;
-    this.history.getEventById(eventId).receive(
-      (event) => {
+    void this.evidencePipeline.read({ candidateKind: "lightstreamer", eventId }).then(
+      (result) => {
         if (
           this.disposed ||
           generation !== this.selectionLookupGeneration ||
           this.selectionEventId !== eventId
         ) return;
-        this.selectedEventEnvelope = event;
+        if (!result.ok) return;
+        const candidate = result.value.evidence[0]?.candidate;
+        if (!isLightstreamerEvidenceCandidate(candidate)) return;
+        this.selectedEventEnvelope = candidate;
         if (reconcileFilterVisibility) this.reconcileSelectedEnvelopeFilterVisibility();
         if (!receiving) this.publish();
       },
@@ -937,37 +1133,73 @@ class Runtime implements WorkbenchRuntime {
     }
     this.disposed = true;
     this.cancelPassivePublication();
-    this.unsubscribeHistory();
     this.listeners.clear();
+    this.disposePromise = this.evidencePipeline.close().then(
+      (result) => {
+        if (!result.ok) {
+          console.error("Failed to close panel event history.", result.problem.message);
+        }
+      },
+      (error: unknown) => {
+        console.error(
+          "Failed to close panel event history.",
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    );
+  }
+
+  async disposeAndWait(): Promise<void> {
+    this.dispose();
+    await this.disposePromise;
   }
 
   private ingestCaptureMessage(message: CaptureMessage): void {
     const event = this.normalizer.normalize(message);
-    this.currentPageEpoch = event.topology?.pageEpoch ?? this.currentPageEpoch;
-    this.captureStatus = "capturing";
-    this.topologyProjection.ingestCapture(event);
-    this.preparedExport = null;
-    this.history.append(event).receive(
-      () => undefined,
-      () => {
-        // Storage diagnostics are represented by the configured Capture state;
-        // a failed append must never fabricate Evidence.
-      }
-    );
-    // Capture remains lossless, but renderer notification is consolidated at
-    // the next paint boundary. The topology index is intentionally designed
-    // for many ingests followed by one snapshot at render cadence.
-    if (this.visible) this.schedulePassivePublication();
-    else this.hiddenDirty = true;
+    if (this.captureStatus !== "bridge disconnected") {
+      this.captureStatus = "capturing";
+    }
+    this.evidencePipeline.offer(event);
   }
 
   private applyTopologySyncFrame(frame: TopologySyncFrame): void {
     this.currentPageEpoch = frame.pageEpoch;
     const result = this.topologyProjection.applySyncFrame(frame);
-    this.preparedExport = null;
+    this.invalidatePreparedExport();
     this.topologyCoverage = frame.coverage.status === "partial" ? "LIMITED" : "USEFUL";
     if (!result.accepted) {
       this.topologyCoverage = "LIMITED";
+    }
+    const candidate = result.candidate;
+    const syncId = candidate ? topologyCheckpointSyncId(candidate) : null;
+    const stagingKey = `${frame.pageEpoch}\u0000${frame.syncId}`;
+    if (
+      result.accepted &&
+      frame.type === "lsew:topology-sync-begin" &&
+      !this.activeTopologyStagingSyncIds.has(stagingKey)
+    ) {
+      this.activeTopologyStagingSyncIds.add(stagingKey);
+      this.performanceHooks?.onCheckpointStagingStart?.(frame.syncId, performance.now());
+    }
+    if (
+      result.accepted &&
+      frame.type === "lsew:topology-sync-complete" &&
+      candidate &&
+      syncId === frame.syncId &&
+      this.activeTopologyStagingSyncIds.delete(stagingKey)
+    ) {
+      this.performanceHooks?.onCheckpointStagingEnd?.(frame.syncId, performance.now());
+    }
+    if (candidate && syncId !== null && !this.offeredTopologyCheckpointSyncIds.has(syncId)) {
+      this.offeredTopologyCheckpointSyncIds.add(syncId);
+      const receipt = this.evidencePipeline.offer(candidate);
+      void receipt.settled.then((settled) => {
+        if (settled.outcome === "NOT_EVIDENCE") {
+          this.offeredTopologyCheckpointSyncIds.delete(syncId);
+        }
+      }).catch(() => {
+        this.offeredTopologyCheckpointSyncIds.delete(syncId);
+      });
     }
     this.publish();
   }
@@ -998,10 +1230,18 @@ class Runtime implements WorkbenchRuntime {
     const topology = this.topologyProjection.snapshot();
     const target = findTopologySelection(topology, this.scopeId ?? "page");
     const filters = combineScopeAndUserFilters(eventFiltersForScope(target), this.filters);
-    this.history.queryEvents({ filters, order: "asc" }).receive(
+    void this.evidencePipeline.read({ candidateKind: "lightstreamer", filters, order: "asc" }).then(
       (result) => {
         if (this.disposed || generation !== this.findQueryGeneration) return;
-        const events = Object.freeze([...result.events]);
+        if (!result.ok) {
+          this.findResultEvents = Object.freeze([]);
+          this.findMatchIndexes = Object.freeze([]);
+          this.findCurrentEventId = null;
+          this.findEvidence = null;
+          this.publish();
+          return;
+        }
+        const events = Object.freeze(lightstreamerEvents(result.value.evidence));
         const matchIndexes = Object.freeze(events.flatMap((event, index) =>
           createEvidenceFindText(event).includes(query) ? [index] : []
         ));
@@ -1106,13 +1346,29 @@ class Runtime implements WorkbenchRuntime {
     if (this.clearState !== "confirming") {
       return;
     }
+    this.invalidatePreparedExport();
     this.clearState = "clearing";
     this.clearError = null;
     this.clearedSelectionEventId = this.selectionEventId;
     this.publish();
-    this.history.clear().receive(
-      () => {
+    void this.evidencePipeline.clear().then(
+      (result) => {
         if (this.disposed) return;
+        if (!result.ok) {
+          this.clearState = "error";
+          this.clearError = result.problem.message;
+          this.publish();
+          return;
+        }
+        this.commandStateProjections.clear();
+        this.retainedLocalEvidenceIds.clear();
+        this.topologyProjection.clear();
+        this.storeStats = {
+          ...this.storeStats,
+          retained: 0,
+          totalAppended: 0,
+          warningActive: false
+        };
         this.clearState = "idle";
         this.refreshEvidence("command");
       },
@@ -1126,22 +1382,44 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private prepareExport(): void {
-    const topology = this.topologyProjection.snapshot();
-    const scopedTopology = topologyStateForScope(topology, this.scopeId);
-    const document = createTopologyStructuredSnapshot(
-      scopedTopology,
-      this.topologyProjection.status(),
-      {
-        retainedEventCount: this.storeStats.retained,
-        completeEvidence: this.exportCompleteEvidence,
-        redact: this.exportRedactions
-      }
+    const generation = ++this.exportPreparationGeneration;
+    void this.evidencePipeline.read({ order: "asc" }).then(
+      (result) => {
+        if (this.disposed || generation !== this.exportPreparationGeneration || !result.ok) return;
+        const boundary = result.value.committedEvidenceBoundary;
+        const boundaryEvidence = boundary
+          ? result.value.evidence.filter(
+              (entry) =>
+                entry.intervalId === boundary.intervalId &&
+                entry.sequence <= boundary.sequence
+            )
+          : [];
+        const projection = createTopologyProjection();
+        projection.ingestCommittedEvidence(boundaryEvidence);
+        const scopedTopology = topologyStateForScope(projection.snapshot(), this.scopeId);
+        const document = createTopologyStructuredSnapshot(
+          scopedTopology,
+          projection.status(),
+          {
+            retainedEventCount: result.value.total,
+            completeEvidence: this.exportCompleteEvidence,
+            redact: this.exportRedactions
+          }
+        );
+        this.preparedExport = {
+          document,
+          json: serializeTopologySnapshot(document),
+          filename: topologySnapshotFilename(document, "json")
+        };
+        this.publish();
+      },
+      () => undefined
     );
-    this.preparedExport = {
-      document,
-      json: serializeTopologySnapshot(document),
-      filename: topologySnapshotFilename(document, "json")
-    };
+  }
+
+  private invalidatePreparedExport(): void {
+    this.exportPreparationGeneration += 1;
+    this.preparedExport = null;
   }
 
   private setVisible(visible: boolean): void {
@@ -1159,30 +1437,122 @@ class Runtime implements WorkbenchRuntime {
     this.refreshEvidence("visibility");
   }
 
-  private handleHistoryChange(change: EventStoreChange, stats: EventStoreStats): void {
-    if (this.disposed || change.type === "init") {
-      this.storeStats = stats;
+  private handleCommittedEvidence(entry: CommittedEvidence): void {
+    if (this.disposed) {
       return;
     }
-    this.storeStats = stats;
-    this.preparedExport = null;
-    if (change.type === "clear") {
-      this.commandStateProjections.clear();
-      this.retainedLocalEvidenceIds.clear();
-      this.topologyProjection.clear();
-    } else {
-      const events = change.type === "append" ? [change.event] : change.events;
-      for (const event of events) {
-        this.commandStateProjections.apply(event);
-        if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
-        this.topologyProjection.ingestHistory(event);
-      }
+    this.committedEvidenceBoundary = entry;
+    if (this.performanceHooks?.onVisibleFrame) {
+      this.pendingVisibleBoundaries.push(Object.freeze({
+        intervalId: entry.intervalId,
+        sequence: entry.sequence,
+        eventId: entry.eventId
+      }));
     }
+    this.performanceHooks?.onCommittedEvidenceBoundary?.(entry, performance.now());
+    if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
+      const syncId = topologyCheckpointSyncId(entry.candidate);
+      if (syncId !== null) {
+        this.offeredTopologyCheckpointSyncIds.add(syncId);
+      }
+      const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
+      if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
+      this.invalidatePreparedExport();
+      if (this.visible) this.schedulePassivePublication();
+      else this.hiddenDirty = true;
+      return;
+    }
+    const event = entry.candidate;
+    this.currentPageEpoch = event.topology?.pageEpoch ?? this.currentPageEpoch;
+    if (this.captureStatus !== "bridge disconnected") {
+      this.captureStatus = "capturing";
+    }
+    const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
+    if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
+    this.commandStateProjections.apply(event);
+    if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
+    this.storeStats.retained += 1;
+    this.storeStats.totalAppended += 1;
+    this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
+    this.invalidatePreparedExport();
     if (!this.visible) {
       this.hiddenDirty = true;
       return;
     }
     this.schedulePassivePublication();
+  }
+
+  private handleHistoryPublication(publication: HistoryPublication): void {
+    if (this.disposed) return;
+    let shouldPublish = false;
+    if (publication.type === "status") {
+      shouldPublish = this.updateHistoryCondition(publication.status, publication.problem);
+    } else if (publication.type === "interval-cleared") {
+      // A frame after Clear can only prove visibility for the new History
+      // Interval. Boundaries accepted before the clear are no longer part of
+      // the rendered Evidence snapshot and must not be coalesced into it.
+      this.pendingVisibleBoundaries = [];
+      this.renderedEvidenceBoundary = null;
+      shouldPublish = this.updateHistoryCondition(publication.status);
+    } else if (publication.type === "terminal") {
+      shouldPublish = this.updateHistoryCondition(publication.status);
+    }
+    let reason: string | undefined;
+    const terminal = publication.type === "terminal"
+      ? publication.terminal
+      : publication.type === "status"
+        ? publication.status.terminal
+        : undefined;
+    if (publication.type === "status") {
+      if (publication.status.phase !== "DRAINING_TO_STOP" && publication.status.phase !== "STOPPED") {
+        if (shouldPublish) this.publish();
+        return;
+      }
+      reason = publication.problem?.reason ?? terminal?.reason;
+    } else if (publication.type === "terminal") {
+      reason = publication.terminal.reason;
+    }
+    if (!reason) return;
+    const exactBoundary = terminal?.committedEvidenceBoundary ??
+      (publication.type === "status" ? publication.status.committedEvidenceBoundary : null);
+    const exactFirstMissingEventId = terminal?.firstMissingEventId ?? null;
+    if (this.captureBoundary) {
+      if (
+        this.captureBoundary.committedEvidenceBoundary !== exactBoundary ||
+        this.captureBoundary.firstMissingEventId !== exactFirstMissingEventId
+      ) {
+        this.captureBoundary = Object.freeze({
+          ...this.captureBoundary,
+          committedEvidenceBoundary: exactBoundary,
+          firstMissingEventId: exactFirstMissingEventId
+        });
+        shouldPublish = true;
+      }
+      if (shouldPublish) this.publish();
+      return;
+    }
+    this.captureBoundary = Object.freeze({
+      operation: "STOPPED",
+      coverage: "LIMITED",
+      firstMissingEventId: exactFirstMissingEventId,
+      committedEvidenceBoundary: exactBoundary,
+      detail: `Capture stopped at the committed Evidence boundary because ${reason}.`,
+      recovery: "Reload the inspected page with DevTools open"
+    });
+    if (shouldPublish || reason) this.publish();
+  }
+
+  private updateHistoryCondition(
+    status: HistoryStatus,
+    problem?: HistoryProblem
+  ): boolean {
+    const next = historyConditionFor({ status, problem });
+    const changed = this.historyCondition?.announcementKey !== next?.announcementKey;
+    this.historyCondition = next;
+    if (changed) {
+      this.historyAnnouncement = next?.announcement ?? "";
+    }
+    return changed;
   }
 
   private schedulePassivePublication(): void {
@@ -1254,19 +1624,29 @@ class Runtime implements WorkbenchRuntime {
     const filterSnapshot = Object.freeze({ ...this.filters });
     this.evidenceCopy = Object.freeze({ state: "preparing", eventCount: 0, text: null });
     this.publish();
-    this.history.queryEvents({ filters, order: "asc" }).receive(
+    void this.evidencePipeline.read({ candidateKind: "lightstreamer", filters, order: "asc" }).then(
       (result) => {
         if (this.disposed || generation !== this.evidenceCopyGeneration) return;
+        if (!result.ok) {
+          this.evidenceCopy = Object.freeze({
+            state: "error",
+            eventCount: 0,
+            text: null,
+            error: result.problem.message
+          });
+          this.publish();
+          return;
+        }
         const document = {
           format: "lightstreamer-workbench/scoped-evidence-copy/v1",
           scope: { id: scopeId, label: scope.label },
           filters: filterSnapshot,
-          count: result.total,
-          events: result.events.map(toPersistableEventEnvelope)
+          count: result.value.total,
+          events: lightstreamerEvents(result.value.evidence).map(toPersistableEventEnvelope)
         };
         this.evidenceCopy = Object.freeze({
           state: "ready",
-          eventCount: result.total,
+          eventCount: result.value.total,
           text: JSON.stringify(document, null, 2)
         });
         this.publish();
@@ -1520,12 +1900,22 @@ class Runtime implements WorkbenchRuntime {
         },
         draft.anchor.executionTarget
       );
-      // Successful delivery advances Local Effective COMMAND State even when
-      // retaining the corresponding synthetic Evidence fails. A successful
-      // history append echoes the same identity and is projection-deduplicated.
-      this.commandStateProjections.apply(synthetic);
-      this.history.append(synthetic).receive(
-        () => this.setLocalInjectionOutcome(executionId, deliveredLocalInjectionOutcome(executionId, result)),
+      const receipt = this.evidencePipeline.offer(synthetic);
+      void receipt.settled.then(
+        (settled) => {
+          if (settled.outcome === "BECAME_EVIDENCE") {
+            this.setLocalInjectionOutcome(executionId, deliveredLocalInjectionOutcome(executionId, result));
+          } else {
+            this.setLocalInjectionOutcome(
+              executionId,
+              deliveredLocalInjectionOutcome(
+                executionId,
+                result,
+                "Delivered locally, but the synthetic Evidence could not be retained in session history."
+              )
+            );
+          }
+        },
         () => this.setLocalInjectionOutcome(
           executionId,
           deliveredLocalInjectionOutcome(
@@ -1735,24 +2125,39 @@ class Runtime implements WorkbenchRuntime {
     }
     let completedSynchronously = false;
     this.evidenceQueryPending = true;
-    this.history
-      .queryEvents({
+    void this.evidencePipeline
+      .read({
+        candidateKind: "lightstreamer",
         filters,
         limit: this.windowSize,
-        offset,
+        offsetFromNewest: offset,
         order: "asc"
       })
-      .receive(
+      .then(
         (result) => {
           completedSynchronously = true;
           if (this.disposed || generation !== this.queryGeneration) {
             return;
           }
+          if (!result.ok) {
+            this.lastEvidenceQueryError = result.problem.code;
+            this.evidenceQueryPending = false;
+            this.evidenceLoading = false;
+            this.liveEvidence = emptyEvidence;
+            if (this.visible) this.publish();
+            else this.hiddenDirty = true;
+            this.drainPassiveRefresh();
+            return;
+          }
+          this.lastEvidenceQueryError = null;
           this.evidenceQueryPending = false;
           this.evidenceLoading = false;
+          this.storeStats.retained = result.value.total;
+          this.storeStats.totalAppended = result.value.total;
+          this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
           this.liveEvidence = freezeEvidence(
-            result.events,
-            result.total,
+            lightstreamerEvents(result.value.evidence),
+            result.value.total,
             offset
           );
           if (
@@ -1770,6 +2175,7 @@ class Runtime implements WorkbenchRuntime {
             this.refreshFindResults(source === "passive" || source === "visibility");
           }
           if (source === "initial") {
+            this.renderedEvidenceBoundary = result.value.committedEvidenceBoundary;
             this.snapshot = this.createSnapshot();
             this.drainPassiveRefresh();
             return;
@@ -1779,12 +2185,16 @@ class Runtime implements WorkbenchRuntime {
             this.drainPassiveRefresh();
             return;
           }
+          if (displayed === this.liveEvidence || displayed === this.frozenEvidence) {
+            this.renderedEvidenceBoundary = result.value.committedEvidenceBoundary;
+          }
           this.publish();
           this.drainPassiveRefresh();
         },
-        () => {
+        (error) => {
           completedSynchronously = true;
           if (this.disposed || generation !== this.queryGeneration) return;
+          this.lastEvidenceQueryError = error instanceof Error && error.name ? error.name : "UNKNOWN_REJECTION";
           this.evidenceQueryPending = false;
           if (changesEvidenceIdentity || this.evidenceLoading) {
             this.evidenceLoading = false;
@@ -1814,20 +2224,15 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private hydrateProjections(): void {
-    this.history.queryEvents().receive(
+    void this.evidencePipeline.read({ candidateKind: "lightstreamer", order: "asc" }).then(
       (result) => {
         if (this.disposed) {
           return;
         }
-        this.commandStateProjections.clear();
-        this.retainedLocalEvidenceIds.clear();
-        this.topologyProjection.replaceHistory(result.events);
-        for (const event of result.events) {
-          this.commandStateProjections.apply(event);
-          if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
-        }
-        // Hydration is passive. The initial constructor snapshot can be replaced
-        // without notification; later asynchronous hydration emits one update.
+        if (!result.ok) return;
+        this.storeStats.retained = result.value.total;
+        this.storeStats.totalAppended = result.value.total;
+        this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
         if (this.version === 0) {
           this.snapshot = this.createSnapshot();
         } else if (this.visible) {
@@ -1846,7 +2251,7 @@ class Runtime implements WorkbenchRuntime {
     if (this.currentScopeStructure(state).descriptorById.has(this.scopeId ?? "page")) return;
     this.scopeId = "page";
     this.scopeFocusedNodeId = "page";
-    this.preparedExport = null;
+    this.invalidatePreparedExport();
     this.invalidateEvidenceCopy();
   }
 
@@ -1898,6 +2303,9 @@ class Runtime implements WorkbenchRuntime {
     );
     return Object.freeze({
       version: this.version,
+      renderedEvidenceBoundary: this.renderedEvidenceBoundary
+        ? Object.freeze({ ...this.renderedEvidenceBoundary })
+        : null,
       visible: this.visible,
       theme: this.theme,
       captureStatus: this.captureStatus,
@@ -1913,6 +2321,8 @@ class Runtime implements WorkbenchRuntime {
       context: this.contextSnapshot(evidence.events, scope),
       commandProjections: this.commandProjectionSnapshot(),
       diagnostics: this.diagnosticSnapshot(scope),
+      historyCondition: this.historyCondition,
+      historyAnnouncement: this.historyAnnouncement,
       storage: Object.freeze({ ...this.storage }),
       retention: this.retentionSnapshot(),
       export: this.exportSnapshot(),
@@ -1962,6 +2372,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private captureSnapshot(): WorkbenchCaptureSnapshot {
+    const boundary = this.captureBoundary;
     const operation =
       this.captureStatus === "capturing"
         ? "RUNNING"
@@ -1969,10 +2380,20 @@ class Runtime implements WorkbenchRuntime {
           ? "STOPPED"
           : "IDLE";
     return Object.freeze({
-      operation: this.captureOverride.operation ?? operation,
-      coverage: this.captureOverride.coverage ?? this.topologyCoverage ?? "USEFUL",
-      ...(this.captureOverride.detail ? { detail: this.captureOverride.detail } : {}),
-      ...(this.captureOverride.recovery ? { recovery: this.captureOverride.recovery } : {})
+      operation: boundary?.operation ?? this.captureOverride.operation ?? operation,
+      coverage: boundary?.coverage ?? this.captureOverride.coverage ?? this.topologyCoverage ?? "USEFUL",
+      firstMissingEventId: boundary?.firstMissingEventId ?? null,
+      committedEvidenceBoundary: boundary?.committedEvidenceBoundary ?? null,
+      ...(boundary?.detail
+        ? { detail: boundary.detail }
+        : this.captureOverride.detail
+          ? { detail: this.captureOverride.detail }
+          : {}),
+      ...(boundary?.recovery
+        ? { recovery: boundary.recovery }
+        : this.captureOverride.recovery
+          ? { recovery: this.captureOverride.recovery }
+          : {})
     });
   }
 
@@ -2279,8 +2700,19 @@ class Runtime implements WorkbenchRuntime {
   private diagnosticSnapshot(scope: WorkbenchSnapshot["scope"]): readonly WorkbenchDiagnostic[] {
     const capture = this.captureSnapshot();
     const diagnostics: WorkbenchDiagnostic[] = [];
+    if (this.historyCondition) {
+      diagnostics.push({
+        category: "history",
+        severity: this.historyCondition.severity,
+        title: this.historyCondition.title,
+        affected: this.historyCondition.affected,
+        detail: this.historyCondition.detail,
+        recovery: this.historyCondition.recovery
+      });
+    }
     if (this.captureStatus === "bridge disconnected") {
       diagnostics.push({
+        category: "capture",
         severity: "Error",
         title: "Capture disconnected",
         affected: scope.label,
@@ -2300,6 +2732,7 @@ class Runtime implements WorkbenchRuntime {
     const recoveringObjects = recoveringSessions.length ? recoveringSessions : recoveringClients;
     if (recoveringObjects.length) {
       diagnostics.push({
+        category: "session",
         severity: "Warning",
         title: "Session recovering",
         affected: [...new Set(recoveringObjects)].join(", "),
@@ -2307,8 +2740,9 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Inspect the affected Session and wait for recovery or reconnect the inspected page"
       });
     }
-    if (capture.coverage !== "USEFUL") {
+    if (capture.coverage !== "USEFUL" && !this.captureBoundary) {
       diagnostics.push({
+        category: "capture",
         severity: capture.coverage === "UNAVAILABLE" ? "Error" : "Warning",
         title: `Coverage ${capture.coverage}`,
         affected: scope.label,
@@ -2320,15 +2754,6 @@ class Runtime implements WorkbenchRuntime {
           (capture.coverage === "UNAVAILABLE"
             ? "Reconnect the inspected page, then reload it with DevTools open"
             : "Reload the inspected page with DevTools open")
-      });
-    }
-    if (this.storage.mode === "memory") {
-      diagnostics.push({
-        severity: "Warning",
-        title: "In-memory event history",
-        affected: "Current panel session",
-        detail: `${this.storage.reason ? `${this.storage.reason}. ` : ""}Evidence remains available only while this panel session stays open.`,
-        recovery: "Restore IndexedDB availability and reopen DevTools"
       });
     }
     const scopeSelection = scope.selection;
@@ -2352,6 +2777,7 @@ class Runtime implements WorkbenchRuntime {
     }
     if (this.clearState === "error" && this.clearError) {
       diagnostics.push({
+        category: "retention",
         severity: "Error",
         title: "History could not be cleared",
         affected: "Current panel session",
@@ -2543,6 +2969,28 @@ function freezeEvidence(
   offset: number
 ): EvidenceData {
   return Object.freeze({ events: Object.freeze([...events]), total, offset });
+}
+
+function isLightstreamerEvidenceCandidate(
+  candidate: CommittedEvidence["candidate"] | undefined
+): candidate is LightstreamerEventEnvelope {
+  return Boolean(candidate && candidate.kind !== "topology-checkpoint");
+}
+
+function topologyCheckpointSyncId(
+  candidate: CommittedEvidence["candidate"]
+): string | null {
+  if (candidate.kind !== "topology-checkpoint") return null;
+  const syncId = candidate.checkpoint.syncId;
+  return typeof syncId === "string" && syncId.length > 0 ? syncId : null;
+}
+
+function lightstreamerEvents(
+  evidence: readonly CommittedEvidence[]
+): readonly LightstreamerEventEnvelope[] {
+  return evidence.flatMap(({ candidate }) =>
+    isLightstreamerEvidenceCandidate(candidate) ? [candidate] : []
+  );
 }
 
 function toWorkbenchEvidence(event: LightstreamerEventEnvelope): WorkbenchEvidence {

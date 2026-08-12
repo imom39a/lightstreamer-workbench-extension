@@ -26,6 +26,9 @@ import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const diagnosticDirectory = resolve(
+  process.env.LSEW_PANEL_DIAGNOSTIC_DIR?.trim() || join(tmpdir(), "lsew-panel-diagnostics")
+);
 const args = parseArgs(process.argv.slice(2));
 const defaultJsonPath = resolve(
   projectRoot,
@@ -58,6 +61,7 @@ Options:
   --lifecycle-scenario ID  mount, runtime, history, capture, visibility, or full-ui (default: full-ui).
   --print-config           Print resolved lifecycle configuration and exit.
   --inspect-harness        Bundle the standalone harness and print its resolved React build.
+  Visible proof requires LSEW_BROWSER_HEADLESS=false and LSEW_UI_HEADLESS=false.
   --help                   Show this help.`);
   process.exit(0);
 }
@@ -88,6 +92,10 @@ if (args.evaluate) {
   process.exit(gate.passed ? 0 : 1);
 }
 
+if (process.env.LSEW_BROWSER_HEADLESS !== "false" || process.env.LSEW_UI_HEADLESS !== "false") {
+  throw new Error("Panel performance proof requires LSEW_BROWSER_HEADLESS=false and LSEW_UI_HEADLESS=false; refusing to switch to headless Chrome.");
+}
+
 const jsonPath = resolve(projectRoot, args.json ?? defaultJsonPath);
 const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-panel-measure-"));
 let server;
@@ -102,9 +110,13 @@ try {
   const chromeExecutable = await resolveChromeExecutable();
   browser = await chromium.launch({
     executablePath: chromeExecutable,
-    headless: true,
+    headless: false,
     args: ["--js-flags=--expose-gc", "--disable-background-timer-throttling"]
   });
+  const measuredBrowserVersion = await browser.version();
+  if (!/\b151\./u.test(measuredBrowserVersion)) {
+    throw new Error(`Panel performance proof requires Chrome for Testing major 151, got ${measuredBrowserVersion}.`);
+  }
 
   const report = {
     schemaVersion: 1,
@@ -133,7 +145,7 @@ try {
     report.limitations = lifecycleLimitations(lifecycleRuns);
   } else {
     const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
-    report.coldLoads = await measureColdLoads(context, harness.url);
+    report.coldLoads = await measureColdLoads(context, harness.url, diagnosticDirectory);
     report.highVolume = await measureHighVolume(context, harness.url);
     report.lifecycle = await measureLifecycle(context, harness.url, lifecycleConfiguration);
     await context.close();
@@ -332,13 +344,15 @@ function harnessSource() {
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { createCaptureMessage } from ${source("src/bridge/messages.ts")};
-import { createInMemoryEventHistory } from ${source("src/core/event-history.ts")};
+import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
+import { offerAndAwaitCommitted, waitForCommittedCount } from ${source("src/extension/panel/performance-harness-history.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 
 const root = document.querySelector("#app");
 if (!(root instanceof HTMLElement)) throw new Error("Performance harness requires #app.");
 let session = null;
+const pendingBoundaryWaiters = new Set();
 let longTasks = [];
 const longTaskSupported = PerformanceObserver.supportedEntryTypes.includes("longtask");
 if (longTaskSupported) {
@@ -389,10 +403,10 @@ async function frame() {
 
 async function mount(initialCount = 12) {
   await dispose();
-  const { history, runtime } = createRuntimeSession(initialCount);
+  const { history, runtime, seededCount } = await createRuntimeSession(initialCount);
   const reactRoot = createRoot(root);
   reactRoot.render(createElement(WorkbenchPanel, { runtime }));
-  session = { history, runtime, reactRoot };
+  session = { history, runtime, reactRoot, seededCount };
   await frame();
   return { evidenceRows: root.querySelectorAll("[data-evidence-id]").length };
 }
@@ -412,10 +426,12 @@ async function ingest({ count = 180, intervalMs = 2 } = {}) {
   });
   observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
   const startedAt = performance.now();
+  const committed = beginCommittedWait(session.history, session.seededCount + count);
   for (let sequence = 1; sequence <= count; sequence += 1) {
     session.runtime.dispatch({ type: "ingest-capture-message", message: capture(sequence) });
     if (intervalMs > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+  await committed.promise;
   await new Promise((resolve) => setTimeout(resolve, 80));
   observer.disconnect();
   const gaps = mutationTimes.slice(1).map((time, index) => time - mutationTimes[index]);
@@ -430,17 +446,34 @@ async function ingest({ count = 180, intervalMs = 2 } = {}) {
   };
 }
 
-function createRuntimeSession(initialCount = 0) {
+async function createRuntimeSession(initialCount = 0) {
   const history = createInMemoryEventHistory();
-  for (let sequence = 1; sequence <= initialCount; sequence += 1) history.append(envelope(sequence));
+  const seed = Array.from({ length: initialCount }, (_, index) => envelope(index + 1));
+  await offerAndAwaitCommitted(history, seed);
   const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", theme: "dark" });
-  return { history, runtime };
+  return { history, runtime, seededCount: initialCount };
 }
 
 async function closeRuntimeSession(current) {
+  cancelPendingBoundaryWaiters();
   current.runtime.dispose();
-  await current.history.close().toPromise();
+  await current.history.close();
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function beginCommittedWait(history, expectedCount) {
+  const waiter = waitForCommittedCount(history, expectedCount);
+  pendingBoundaryWaiters.add(waiter);
+  void waiter.promise.then(
+    () => pendingBoundaryWaiters.delete(waiter),
+    () => pendingBoundaryWaiters.delete(waiter)
+  );
+  return waiter;
+}
+
+function cancelPendingBoundaryWaiters() {
+  for (const waiter of pendingBoundaryWaiters) waiter.cancel(new Error("Performance harness session disposed."));
+  pendingBoundaryWaiters.clear();
 }
 
 async function cycle({ scenario = "full-ui", captureCount = 60 } = {}) {
@@ -452,9 +485,11 @@ async function cycle({ scenario = "full-ui", captureCount = 60 } = {}) {
   if (scenario !== "full-ui") throw new Error("Unknown lifecycle scenario: " + scenario);
   await mount(12);
   session.runtime.dispatch({ type: "set-visible", visible: false });
+  const committed = beginCommittedWait(session.history, session.seededCount + captureCount);
   for (let sequence = 1; sequence <= captureCount; sequence += 1) {
     session.runtime.dispatch({ type: "ingest-capture-message", message: capture(1000 + sequence) });
   }
+  await committed.promise;
   session.runtime.dispatch({ type: "set-visible", visible: true });
   await new Promise((resolve) => setTimeout(resolve, 64));
   await dispose();
@@ -499,10 +534,12 @@ async function cycleTrivialRoot({ scenario, initialCount = 0, captureCount = 0, 
   const reactRoot = createRoot(root);
   reactRoot.render(createElement("div", { "data-perf-mount": "true" }, "Mount probe"));
   await frame();
-  const current = createRuntimeSession(initialCount);
+  const current = await createRuntimeSession(initialCount);
+  const committed = beginCommittedWait(current.history, initialCount + captureCount);
   for (let sequence = 1; sequence <= captureCount; sequence += 1) {
     current.runtime.dispatch({ type: "ingest-capture-message", message: capture(1000 + sequence) });
   }
+  await committed.promise;
   if (toggleVisibility) {
     current.runtime.dispatch({ type: "set-visible", visible: false });
     current.runtime.dispatch({ type: "set-visible", visible: true });
@@ -557,16 +594,33 @@ document.documentElement.dataset.panelPerfReady = "true";
 `;
 }
 
-async function measureColdLoads(context, url) {
+async function measureColdLoads(context, url, diagnosticsDirectory) {
   const runs = [];
   for (let run = 1; run <= 5; run += 1) {
     const page = await context.newPage();
+    const consoleMessages = [];
+    const pageErrors = [];
+    const failedRequests = [];
+    page.on("console", (message) => consoleMessages.push({ type: message.type(), text: message.text(), location: message.location() }));
+    page.on("pageerror", (error) => pageErrors.push({ name: error.name, message: error.message, stack: error.stack ?? null }));
+    page.on("requestfailed", (request) => failedRequests.push({ url: request.url(), method: request.method(), failure: request.failure() }));
     const cdp = await context.newCDPSession(page);
     await cdp.send("Performance.enable");
     await cdp.send("Network.enable");
     await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "Find", exact: true }).waitFor({ state: "visible" });
+    try {
+      await page.getByRole("region", { name: "Lightstreamer Workbench", exact: true }).waitFor({ state: "visible" });
+    } catch (error) {
+      await writeColdLoadDiagnostics(page, run, diagnosticsDirectory, {
+        expectedUrl: url,
+        consoleMessages,
+        pageErrors,
+        failedRequests,
+        error: { name: error.name, message: error.message, stack: error.stack ?? null }
+      });
+      throw error;
+    }
     const semanticReadyMs = await page.evaluate(() => performance.now());
     const after = await performanceMetrics(cdp);
     runs.push({
@@ -585,6 +639,35 @@ async function measureColdLoads(context, url) {
     parseCompileDurationMs: summarize(runs.map((run) => run.parseCompileDurationMs)),
     taskDurationMs: summarize(runs.map((run) => run.taskDurationMs))
   };
+}
+
+async function writeColdLoadDiagnostics(page, run, directory, telemetry) {
+  await mkdir(directory, { recursive: true });
+  const evidence = await page.evaluate(() => {
+    const root = document.querySelector('[aria-label="Lightstreamer Workbench"]');
+    const rootStyle = root ? getComputedStyle(root) : null;
+    const rootRect = root?.getBoundingClientRect();
+    return {
+      url: window.location.href,
+      readyState: document.readyState,
+      bodySnippet: document.body?.innerHTML.slice(0, 50_000) ?? null,
+      root: root ? {
+        tagName: root.tagName,
+        outerHTML: root.outerHTML.slice(0, 20_000),
+        display: rootStyle?.display ?? null,
+        visibility: rootStyle?.visibility ?? null,
+        opacity: rootStyle?.opacity ?? null,
+        rect: rootRect ? { x: rootRect.x, y: rootRect.y, width: rootRect.width, height: rootRect.height } : null
+      } : null,
+      scripts: [...document.scripts].map((script) => script.src || "inline"),
+      stylesheets: [...document.querySelectorAll("link[rel=stylesheet]")].map((link) => link.href),
+      resources: performance.getEntriesByType("resource").map((entry) => entry.name)
+    };
+  }).catch((error) => ({ evaluationError: String(error) }));
+  const artifactBase = join(directory, `cold-load-run-${run}`);
+  await page.screenshot({ path: `${artifactBase}.png`, fullPage: true });
+  await writeFile(`${artifactBase}.json`, `${JSON.stringify({ telemetry, evidence }, null, 2)}\n`);
+  process.stderr.write(`[PANEL-PERF-DIAGNOSTIC] ${artifactBase}.json\n`);
 }
 
 async function measureHighVolume(context, url) {
@@ -916,19 +999,10 @@ async function resolveChromeExecutable() {
   const cacheDir = process.env.LSEW_BROWSER_CACHE_DIR?.trim() || resolve(projectRoot, ".cache/lsew-browsers");
   const installed = new Cache(cacheDir)
     .getInstalledBrowsers()
-    .filter((entry) => entry.browser === Browser.CHROME)
+    .filter((entry) => entry.browser === Browser.CHROME && String(entry.buildId).startsWith("151."))
     .sort((left, right) => right.buildId.localeCompare(left.buildId, undefined, { numeric: true }))
     .map((entry) => entry.executablePath);
-  const candidates = [
-    process.env.CHROME_PATH?.trim(),
-    ...installed,
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser"
-  ].filter(Boolean);
-  for (const candidate of candidates) {
+  for (const candidate of installed) {
     try {
       await access(candidate, constants.X_OK);
       return candidate;
@@ -936,7 +1010,7 @@ async function resolveChromeExecutable() {
       // Try the next locally installed browser.
     }
   }
-  throw new Error("Chrome was not found. Run fixture:browser:install or set CHROME_PATH.");
+  throw new Error(`Chrome for Testing 151 was not found in ${cacheDir}; refusing a system-Chrome fallback.`);
 }
 
 async function listFiles(directory) {

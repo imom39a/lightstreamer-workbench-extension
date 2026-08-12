@@ -7,9 +7,10 @@ import {
 } from "../../bridge/messages";
 import {
   createInMemoryEventHistory,
-  createIndexedDbEventHistory,
+  openEventHistory,
+  type EventHistoryStorage,
   type EventHistory
-} from "../../core/event-history";
+} from "../../core/event-history-authoritative";
 import { connectPanelBridge, type PanelBridgeConnection } from "./bridge-client";
 import { clearLegacyPanelStorage } from "./legacy-storage";
 import { WorkbenchPanel } from "./react/workbench-panel";
@@ -22,19 +23,19 @@ import {
 
 export type WorkbenchPanelMountOptions = {
   createPanelSessionId?: () => PanelSessionId;
-  createIndexedDbHistory?: typeof createIndexedDbEventHistory;
+  openHistory?: typeof openEventHistory;
   createInMemoryHistory?: typeof createInMemoryEventHistory;
   createRuntime?: typeof createWorkbenchRuntime;
   connectBridge?: typeof connectPanelBridge;
 };
 
-export type DisposeWorkbenchPanel = () => void;
+export type DisposeWorkbenchPanel = () => Promise<void>;
 
 export function mountWorkbenchPanel(
   root: HTMLElement,
   options: WorkbenchPanelMountOptions = {}
 ): DisposeWorkbenchPanel {
-  const createIndexedHistory = options.createIndexedDbHistory ?? createIndexedDbEventHistory;
+  const openHistory = options.openHistory ?? openEventHistory;
   const createMemoryHistory = options.createInMemoryHistory ?? createInMemoryEventHistory;
   const createRuntime = options.createRuntime ?? createWorkbenchRuntime;
   const connectBridgeClient = options.connectBridge ?? connectPanelBridge;
@@ -60,7 +61,7 @@ export function mountWorkbenchPanel(
   window.addEventListener("message", onVisibilityMessage);
   void initialize();
 
-  return () => {
+  return async () => {
     if (disposed) {
       return;
     }
@@ -68,26 +69,25 @@ export function mountWorkbenchPanel(
     window.removeEventListener("message", onVisibilityMessage);
     bridge?.disconnect();
     reactRoot?.unmount();
-    runtime?.dispose();
+    if (runtime) {
+      await runtime.disposeAndWait();
+    }
     themeManager.dispose();
-    closeHistory();
+    if (!runtime) closeHistory();
     if (!reactRoot) {
       root.textContent = "";
     }
   };
 
   async function initialize(): Promise<void> {
-    let storageLimited = false;
+    let storage: EventHistoryStorage;
     try {
-      history = await createIndexedHistory({
-        panelSessionId,
-        reset: true,
-        clearOnClose: true
-      });
+      history = await openHistory({ panelSessionId });
+      storage = history.storage;
     } catch (error) {
       console.error("Falling back to in-memory event storage.", error);
-      history = createMemoryHistory();
-      storageLimited = true;
+      history = createMemoryHistory({ panelSessionId, fallback: "PRIMARY_JOURNAL_UNAVAILABLE" });
+      storage = { mode: "memory", reason: "IndexedDB is unavailable" };
     }
 
     if (disposed) {
@@ -115,15 +115,14 @@ export function mountWorkbenchPanel(
       visible,
       theme: themeManager.preference,
       localInjectionExecutor,
-      storage: storageLimited
-        ? { mode: "memory", reason: "IndexedDB is unavailable" }
-        : { mode: "indexeddb" }
+      storage
     });
     const presentationRuntime = bindRuntime(runtime, themeManager);
     reactRoot = createRoot(root);
     reactRoot.render(<WorkbenchPanel runtime={presentationRuntime} />);
     bridge = connectBridgeClient({
       onStatusChange(status) {
+        document.documentElement.dataset.lsewPanelBridgeStatus = status;
         runtime?.dispatch({ type: "set-capture-status", status });
       },
       onCaptureMessage(message) {
@@ -148,8 +147,10 @@ export function mountWorkbenchPanel(
       return;
     }
     historyClosed = true;
-    history.close().receive(
-      () => undefined,
+    void history.close().then(
+      (result) => {
+        if (!result.ok) console.error("Failed to close panel event history.", result.problem.message);
+      },
       (error) => console.error("Failed to close panel event history.", error)
     );
   }
@@ -165,6 +166,13 @@ function bindRuntime(runtime: WorkbenchRuntime, themeManager: ThemeManager): Wor
       }
       runtime.dispatch(command);
     },
-    dispose: runtime.dispose.bind(runtime)
+    dispose: runtime.dispose.bind(runtime),
+    disposeAndWait: runtime.disposeAndWait.bind(runtime),
+    ...(runtime.reportVisibleFrame
+      ? { reportVisibleFrame: runtime.reportVisibleFrame.bind(runtime) }
+      : {}),
+    ...(runtime.reportPanelPerformanceEvent
+      ? { reportPanelPerformanceEvent: runtime.reportPanelPerformanceEvent.bind(runtime) }
+      : {})
   };
 }

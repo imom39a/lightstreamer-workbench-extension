@@ -14,7 +14,8 @@ import {
 import {
   createInMemoryEventHistory,
   type EventHistory
-} from "../src/core/event-history";
+} from "../src/core/event-history-authoritative";
+import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import {
   THEME_STORAGE_KEY,
@@ -140,9 +141,9 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory,
-      createRuntime,
+      createRuntime: (options = {}) => createRuntime(options),
       connectBridge
     });
     await flushPanel();
@@ -160,6 +161,140 @@ describe("production panel mount wiring", () => {
     await disposePanel(dispose);
   });
 
+  it("keeps the visible-frame reporter when production mount binds the runtime", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory({ panelSessionId: PANEL_SESSION_ID });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    const reportVisibleFrame = vi.spyOn(runtime, "reportVisibleFrame");
+    const bridge = { reinjectDraft: vi.fn(), disconnect: vi.fn() };
+    const createRuntime = vi.fn(() => runtime);
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory: async () => history,
+      createRuntime,
+      connectBridge: () => bridge
+    });
+    await flushPanel();
+    await act(async () => {
+      await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "mount-boundary")).settled;
+      await Promise.resolve();
+    });
+
+    expect(createRuntime).toHaveBeenCalledOnce();
+    expect(reportVisibleFrame).toHaveBeenCalled();
+    await disposePanel(dispose);
+  });
+
+  it("reports mounted React scheduling state through the performance diagnostic seam", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory({ panelSessionId: PANEL_SESSION_ID });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    const animationFrames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      animationFrames.push(callback);
+      return animationFrames.length;
+    });
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory: async () => history,
+      createRuntime: () => runtime,
+      connectBridge: () => ({ reinjectDraft: vi.fn(), disconnect: vi.fn() })
+    });
+    await flushPanel();
+
+    expect(runtime.getPerformanceDiagnostics?.().panel).toMatchObject({
+      rootMounted: true,
+      subscriptionActive: true,
+      lastLayoutEffectSnapshotVersion: expect.any(Number),
+      lastLayoutEffectBoundary: null,
+      animationFramePending: true,
+      animationFrameRequestCount: 1,
+      lastAnimationFrameRequestedAtMs: expect.any(Number),
+      animationFrameCallbackCount: 0,
+      lastAnimationFrameCallbackAtMs: null,
+      animationFrameCancelCount: 0
+    });
+
+    await act(async () => animationFrames.shift()?.(performance.now()));
+    expect(runtime.getPerformanceDiagnostics?.().panel).toMatchObject({
+      animationFramePending: false,
+      animationFrameRequestCount: 1,
+      animationFrameCallbackCount: 1,
+      lastAnimationFrameCallbackAtMs: expect.any(Number)
+    });
+
+    await disposePanel(dispose);
+    expect(runtime.getPerformanceDiagnostics?.().panel).toMatchObject({
+      rootMounted: false,
+      subscriptionActive: false,
+      animationFramePending: false,
+      animationFrameCancelCount: 0
+    });
+  });
+
+  it("mounts one DOM Workbench root over authoritative seed and live committed Evidence", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory({ panelSessionId: PANEL_SESSION_ID });
+    const seed = createEventHistoryWorkloadEvent("small-lifecycle", 1, "authoritative-seed");
+    const live = createEventHistoryWorkloadEvent("ordinary-item-update", 2, "authoritative-live");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const createRuntime = vi.fn((options: WorkbenchRuntimeOptions = {}) => createWorkbenchRuntime(options));
+
+    await expect(history.offer(seed).settled).resolves.toMatchObject({
+      outcome: "BECAME_EVIDENCE",
+      evidence: { eventId: seed.id }
+    });
+    const seeded = await history.read({ order: "asc" });
+    expect(seeded).toMatchObject({
+      ok: true,
+      value: { total: 1, committedEvidenceBoundary: { eventId: seed.id } }
+    });
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory: async () => history,
+      createRuntime,
+      connectBridge: (handlers) => {
+        handlers.onStatusChange("capturing");
+        return { reinjectDraft: vi.fn(), disconnect: vi.fn() };
+      }
+    });
+    await flushPanel();
+
+    expect(root.querySelectorAll('[aria-label="Lightstreamer Workbench"]')).toHaveLength(1);
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: PANEL_VISIBILITY_MESSAGE, visible: false },
+        origin: window.location.origin
+      }));
+    });
+    await flushPanel();
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: PANEL_VISIBILITY_MESSAGE, visible: true },
+        origin: window.location.origin
+      }));
+    });
+    await flushPanel();
+    await act(async () => {
+      await expect(history.offer(live).settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { eventId: live.id }
+      });
+    });
+    await flushPanel();
+    const committed = await history.read({ order: "asc" });
+    expect(committed).toMatchObject({
+      ok: true,
+      value: { total: 2, committedEvidenceBoundary: { eventId: live.id } }
+    });
+    const mountedRuntime = createRuntime.mock.results[0]?.value as ReturnType<typeof createWorkbenchRuntime> | undefined;
+    expect(mountedRuntime?.getSnapshot().evidence.events.map((event) => event.id)).toContain(live.id);
+    expect(root.querySelector(`[data-evidence-id="${live.id}"]`)).not.toBeNull();
+    expect(consoleError).not.toHaveBeenCalled();
+
+    await disposePanel(dispose);
+  });
+
   it("starts from the developer's persisted theme preference", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
@@ -172,7 +307,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -195,7 +330,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -232,7 +367,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -263,7 +398,7 @@ describe("production panel mount wiring", () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
     const closeHistory = vi.spyOn(history, "close");
-    const createIndexedDbHistory = vi.fn(async () => history);
+    const openHistory = vi.fn(async () => history);
     const port = createFakePort();
     (globalThis as { chrome: typeof chrome }).chrome = {
       devtools: { inspectedWindow: { tabId: 42 } },
@@ -271,17 +406,13 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory,
+      openHistory,
       createInMemoryHistory: createInMemoryEventHistory,
       createPanelSessionId: () => PANEL_SESSION_ID
     });
     await flushPanel();
 
-    expect(createIndexedDbHistory).toHaveBeenCalledWith({
-      panelSessionId: PANEL_SESSION_ID,
-      reset: true,
-      clearOnClose: true
-    });
+    expect(openHistory).toHaveBeenCalledWith({ panelSessionId: PANEL_SESSION_ID });
     expect(port.postedMessages).toContainEqual({
       type: PANEL_REGISTER_MESSAGE,
       tabId: 42,
@@ -348,6 +479,66 @@ describe("production panel mount wiring", () => {
     expect(closeHistory).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards explicit opened-history storage metadata before the first Capture offer", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const history = createInMemoryEventHistory();
+    const openHistory = vi.fn(async () => history);
+    const createRuntime = vi.fn((options: WorkbenchRuntimeOptions = {}) => createWorkbenchRuntime(options));
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 44 } }
+    } as unknown as typeof chrome;
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory,
+      createRuntime
+    });
+    await flushPanel();
+
+    expect(openHistory).toHaveBeenCalledTimes(1);
+    expect(createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history,
+        storage: { mode: "memory" }
+      })
+    );
+    expect(root.textContent).toContain("Coverage USEFUL");
+    expect(root.textContent).not.toContain("Coverage LIMITED");
+
+    await disposePanel(dispose);
+  });
+
+  it("reports internal startup fallback without changing Capture coverage", async () => {
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const createRuntime = vi.fn((options: WorkbenchRuntimeOptions = {}) => createWorkbenchRuntime(options));
+    const port = createFakePort();
+    (globalThis as { chrome: typeof chrome }).chrome = {
+      devtools: { inspectedWindow: { tabId: 45 } },
+      runtime: { connect: vi.fn(() => port as unknown as chrome.runtime.Port) }
+    } as unknown as typeof chrome;
+
+    const dispose = mountWorkbenchPanel(root, {
+      openHistory: async () => createInMemoryEventHistory({
+        panelSessionId: "panel-internal-fallback",
+        fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+      }),
+      createRuntime
+    });
+    await flushPanel();
+
+    expect(createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storage: { mode: "memory", reason: "IndexedDB is unavailable" }
+      })
+    );
+    expect(root.textContent).toContain("Coverage USEFUL");
+    expect(root.textContent).not.toContain("Coverage LIMITED");
+    expect(root.textContent).not.toContain("Capture STOPPED");
+    expect(root.textContent).toContain("Warning · Lower History Capacity");
+    expect(root.textContent).toContain("Observation Coverage is unchanged");
+
+    await disposePanel(dispose);
+  });
+
   it("removes legacy telemetry state while keeping first-party resources available", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const history = createInMemoryEventHistory();
@@ -359,7 +550,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -390,7 +581,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: async () => history,
+      openHistory: async () => history,
       createInMemoryHistory: createInMemoryEventHistory
     });
     await flushPanel();
@@ -404,7 +595,11 @@ describe("production panel mount wiring", () => {
 
   it("states the storage limitation when IndexedDB falls back to session memory", async () => {
     const root = document.querySelector<HTMLElement>("#app")!;
-    const history = createInMemoryEventHistory();
+    const history = createInMemoryEventHistory({
+      panelSessionId: "panel-fallback-error",
+      capacityTier: "LOWER",
+      fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+    });
     const closeHistory = vi.spyOn(history, "close");
     const storageError = new Error("IndexedDB denied");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -413,24 +608,24 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: vi.fn(async () => Promise.reject(storageError)),
+      openHistory: vi.fn(async () => Promise.reject(storageError)),
       createInMemoryHistory: () => history
     });
     await flushPanel();
 
     const footerDiagnostics = root.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
-    const storageDetail = "IndexedDB is unavailable. Evidence remains available only while this panel session stays open.";
+    const storageDetail = "PRIMARY_JOURNAL_UNAVAILABLE · the primary session journal is unavailable. Memory is limited to 5,000 Evidence records or 32 MiB.";
 
     expect(root.textContent).toContain("Coverage USEFUL");
     expect(root.textContent).not.toContain("Coverage LIMITED");
-    expect(footerDiagnostics?.textContent).toContain("Warning · In-memory event history");
-    expect(footerDiagnostics?.textContent).toContain("Affected: Current panel session");
+    expect(footerDiagnostics?.textContent).toContain("Warning · Lower History Capacity");
+    expect(footerDiagnostics?.textContent).toContain("Affected: Current Panel Session");
     expect(footerDiagnostics?.textContent).toContain(storageDetail);
-    expect(footerDiagnostics?.textContent).toContain("Recovery: Restore IndexedDB availability and reopen DevTools");
+    expect(footerDiagnostics?.textContent).toContain("Recovery: Restore primary session storage");
     expect(root.textContent?.split(storageDetail)).toHaveLength(2);
     await clickButton(root, "More actions");
     expect(root.textContent).toContain(
-      "current Panel Session history uses in-memory fallback"
+      "current Panel Session owns one temporary Event History using in-memory fallback"
     );
     expect(consoleError).toHaveBeenCalledWith(
       "Falling back to in-memory event storage.",
@@ -454,7 +649,7 @@ describe("production panel mount wiring", () => {
     } as unknown as typeof chrome;
 
     const dispose = mountWorkbenchPanel(root, {
-      createIndexedDbHistory: () => pendingHistory.promise,
+      openHistory: () => pendingHistory.promise,
       createInMemoryHistory: createInMemoryEventHistory
     });
 

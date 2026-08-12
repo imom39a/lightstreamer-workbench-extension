@@ -1,6 +1,12 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { type EventFilterState, matchesEventFilters } from "./event-filter";
-import { serializeJournalEvidenceCandidate } from "./event-history-serialization";
+import {
+  deserializeJournalEvidenceCandidate,
+  journalCandidateSearchText,
+  registerJournalOwnedCandidate,
+  journalAccountedBytes,
+  serializeJournalEvidenceCandidate
+} from "./event-history-serialization";
 import { type AuthoritativeEventDatabaseRuntime } from "./indexeddb/authoritative-event-db";
 import {
   admissionFailure,
@@ -39,6 +45,8 @@ export type TopologyCheckpointEvidenceCandidate = Readonly<{
 }>;
 
 export type EvidenceCandidate = LightstreamerEventEnvelope | TopologyCheckpointEvidenceCandidate;
+
+export type EvidenceCandidateKind = "lightstreamer" | "topology-checkpoint";
 
 export type EvidenceRef = Readonly<{
   intervalId: string;
@@ -90,6 +98,7 @@ export type CaptureReceipt = Readonly<{
 }>;
 
 export type EvidenceQuery = Readonly<{
+  candidateKind?: EvidenceCandidateKind;
   intervalId?: string;
   afterSequence?: number;
   limit?: number;
@@ -146,6 +155,11 @@ export type HistoryStatus = Readonly<{
   terminal?: HistoryTerminalDiagnostic;
 }>;
 
+export type EventHistoryStorage = Readonly<{
+  mode: "indexeddb" | "memory";
+  reason?: string;
+}>;
+
 export type ClearResult = Readonly<{
   previousInterval: HistoryInterval;
   interval: HistoryInterval;
@@ -175,6 +189,7 @@ export type HistoryPublication =
   | Readonly<{ type: "terminal"; terminal: HistoryTerminalDiagnostic; status: HistoryStatus }>;
 
 export interface EventHistory {
+  readonly storage: EventHistoryStorage;
   offer(candidate: EvidenceCandidate): CaptureReceipt;
   read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>>;
   clear(): Promise<Outcome<ClearResult>>;
@@ -188,10 +203,15 @@ export interface EventHistory {
 export type OpenEventHistoryOptions = Readonly<{
   panelSessionId?: string;
   runtime?: AuthoritativeEventDatabaseRuntime;
+  clearJournal?: () => Promise<void | boolean> | void | boolean;
+  closeJournal?: () => Promise<void>;
+  commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void>;
+  failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
+  finalizeTerminal?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
 }> & HistoryCapacityOptions;
 
 type HistoryJournal = {
-  commitBatch(batch: readonly PendingCandidate[]): Promise<void>;
+  commitBatch(batch: readonly EvidenceCandidate[]): Promise<void>;
   persistTerminalIntent(terminal: HistoryTerminalDiagnostic): Promise<void>;
   finalizeTerminal(terminal: HistoryTerminalDiagnostic): Promise<void>;
   clear(): Promise<void>;
@@ -200,7 +220,7 @@ type HistoryJournal = {
 
 type PendingCandidate = Readonly<{
   ordinal: number;
-  candidate: EvidenceCandidate;
+  serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
   bytes: number;
   offeredAt: number;
   resolve: (result: ReceiptResult) => void;
@@ -255,7 +275,14 @@ export async function openEventHistory(
       clock: options.clock,
       timer: options.timer,
       byteEstimator: options.byteEstimator,
-      capacity: options.capacity
+      capacity: options.capacity,
+      clearJournal: options.clearJournal,
+      closeJournal: options.closeJournal,
+      commitBatch: options.commitBatch === undefined
+        ? undefined
+        : async (batch) => { await options.commitBatch!(batch); },
+      failure: options.failure,
+      finalizeTerminal: options.finalizeTerminal
     });
   }
 }
@@ -264,6 +291,13 @@ export async function openEventHistory(
 export async function createMemoryEventHistoryForTests(
   options: MemoryEventHistoryOptions = {}
 ): Promise<EventHistory> {
+  return createInMemoryEventHistory(options);
+}
+
+/** Synchronous memory authority used by synchronous runtime construction. */
+export function createInMemoryEventHistory(
+  options: MemoryEventHistoryOptions = {}
+): EventHistory {
   return createMemoryHistory(options);
 }
 
@@ -271,8 +305,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   const sessionId = options.panelSessionId ?? `session-${nextId()}`;
   const journal: HistoryJournal = {
     async commitBatch(batch) {
-      await options.failure?.commitBatch?.(batch.map((entry) => entry.candidate));
-      await options.commitBatch?.(batch.map((entry) => entry.candidate));
+      await options.failure?.commitBatch?.(batch);
+      await options.commitBatch?.(batch);
     },
     async persistTerminalIntent(terminal) { await options.persistTerminalIntent?.(terminal); },
     async finalizeTerminal(terminal) { await options.finalizeTerminal?.(terminal); },
@@ -286,6 +320,17 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   const clock = options.clock ?? Date.now;
   const timer = options.timer ?? defaultHistoryTimer();
   const fallback = options.fallback ?? null;
+  const storage: EventHistoryStorage = deepFreeze({
+    mode: "memory",
+    ...(fallback
+      ? {
+          reason:
+            fallback === "UNKNOWN_NEWER_SCHEMA"
+              ? "IndexedDB journal schema is newer than this Workbench version"
+              : "IndexedDB is unavailable"
+        }
+      : {})
+  });
   const subscribers = new Set<Subscriber>();
   const committed: CommittedEvidence[] = [];
   const pending: PendingCandidate[] = [];
@@ -425,11 +470,18 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       rejectedCount += 1;
       rejectedBytes += bytes;
     }
-    const receiptProblem = trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary.");
     const completion = terminalFinalization ?? terminalSettled;
     const settled = completion
-      ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary }))
-      : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
+      ? completion.then(() => ({
+          outcome: "NOT_EVIDENCE" as const,
+          problem: trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary."),
+          committedEvidenceBoundary
+        }))
+      : Promise.resolve({
+          outcome: "NOT_EVIDENCE" as const,
+          problem: trigger ? terminalProblem(trigger) : problem("HISTORY_STOPPED", "Event History stopped at its committed boundary."),
+          committedEvidenceBoundary
+        });
     return { intake: "REFUSED", settled };
   }
 
@@ -499,12 +551,15 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     resolveTerminalReceipts(issue);
   }
 
-  function offerForClearInProgress(candidate: EvidenceCandidate, bytes: number): CaptureReceipt {
+  function offerForClearInProgress(
+    serialized: ReturnType<typeof serializeJournalEvidenceCandidate>,
+    bytes: number
+  ): CaptureReceipt {
     let resolveReceipt!: (result: ReceiptResult) => void;
     const settled = new Promise<ReceiptResult>((resolve) => { resolveReceipt = resolve; });
     clearQueueForCandidate().push({
       ordinal: nextCaptureOrdinal++,
-      candidate,
+      serialized,
       bytes,
       offeredAt: clock(),
       resolve: resolveReceipt
@@ -580,7 +635,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     terminalPersistenceFailed = true;
     const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
     trigger = makeTrigger(reason, "JOURNAL", trigger?.firstMissingEventId ?? null);
+    const failedTerminal = terminalDiagnostic();
+    persistedTerminal = failedTerminal;
+    terminal = failedTerminal;
+    phase = "STOPPED";
     const issue = terminalProblem(trigger);
+    publish({ type: "terminal", terminal: failedTerminal, status: status(issue) });
     publish({ type: "status", status: status(issue), problem: issue });
     signalTerminalSettled();
   }
@@ -608,7 +668,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     phase = "DRAINING_TO_STOP";
     ensureTerminalSettled();
     trigger = makeTrigger(reason, dimension, firstMissingEventId);
-    publish({ type: "status", status: status(terminalProblem(trigger)) });
+    publish({ type: "status", status: status(), problem: terminalProblem(trigger) });
     startTerminalPersistence();
     finishTerminal();
   }
@@ -632,11 +692,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   function offer(candidate: EvidenceCandidate): CaptureReceipt {
     if (phase === "CLOSED" || closing) return refuseClosed();
     if (phase === "STOPPED" || phase === "DRAINING_TO_STOP") return refuseStopped(candidate);
-    let copied: EvidenceCandidate;
+    let serialized: ReturnType<typeof serializeJournalEvidenceCandidate>;
     let bytes: number;
     try {
-      copied = copyCandidate(candidate);
-      bytes = estimateHistoryCandidateBytes(copied, options.byteEstimator);
+      assertCandidate(candidate);
+      serialized = serializeJournalEvidenceCandidate(candidate);
+      bytes = estimateHistoryCandidateBytes(candidate, options.byteEstimator, serialized.bytes);
     } catch (error) {
       notAccepted += 1;
       const issue = problem("INVALID_CANDIDATE", error instanceof Error ? error.message : "Candidate is not valid Evidence input.");
@@ -648,15 +709,14 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       notAccepted += 1;
       rejectedCount += 1;
       rejectedBytes += bytes;
-      beginDrain(failure.reason, failure.dimension, copied.id);
-      const receiptProblem = terminalProblem(trigger!);
+      beginDrain(failure.reason, failure.dimension, candidate.id);
       const completion = terminalFinalization ?? terminalSettled;
       const settled = completion
-        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary }))
-        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: receiptProblem, committedEvidenceBoundary });
+        ? completion.then(() => ({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary }))
+        : Promise.resolve({ outcome: "NOT_EVIDENCE" as const, problem: terminalProblem(trigger!), committedEvidenceBoundary });
       return { intake: "REFUSED", settled };
     }
-    return offerForClearInProgress(copied, bytes);
+    return offerForClearInProgress(serialized, bytes);
   }
 
   function scheduleProcessing(): void {
@@ -672,11 +732,17 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       while (pending.length > 0 && (phase === "RUNNING" || phase === "DRAINING_TO_STOP")) {
         const batch = pending.splice(0);
         inFlight.push(...batch);
+        let candidates: EvidenceCandidate[] = [];
         try {
-          await journal.commitBatch(batch);
+          candidates = batch.map((entry) => {
+            const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
+            registerJournalOwnedCandidate(candidate, entry.serialized.payload);
+            return candidate;
+          });
+          await journal.commitBatch(candidates);
         } catch (error) {
           const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
-          const failedTrigger = makeTrigger(reason, "JOURNAL", batch[0]?.candidate.id ?? null);
+          const failedTrigger = makeTrigger(reason, "JOURNAL", candidates[0]?.id ?? null);
           trigger = failedTrigger;
           ensureTerminalSettled();
           const discarded = [...batch, ...pending.splice(0)];
@@ -692,9 +758,10 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
           finishTerminal();
           break;
         }
-        const evidence = batch.map((entry) => {
-          const reference = deepFreeze({ intervalId: interval.id, sequence: nextEvidenceSequence++, eventId: candidateId(entry.candidate) });
-          return deepFreeze({ ...reference, candidate: entry.candidate });
+        const evidence = batch.map((entry, index) => {
+          const candidate = candidates[index]!;
+          const reference = deepFreeze({ intervalId: interval.id, sequence: nextEvidenceSequence++, eventId: candidateId(candidate) });
+          return deepFreeze({ ...reference, candidate });
         });
         inFlight.length = 0;
         awaitingCount -= batch.length;
@@ -753,9 +820,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       : null;
     return Promise.resolve({
       ok: true,
-      value: deepFreeze({
+      value: freezeCommittedRead({
         interval,
-        evidence: [...evidence],
+        evidence,
         total: snapshot.length,
         committedEvidenceBoundary,
         retainedRange
@@ -982,11 +1049,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
   }
 
   function publish(publication: HistoryPublication): void {
+    const immutablePublication = deepFreeze(publication);
     for (const subscriber of [...subscribers]) {
       if (subscriber.replaying) {
-        subscriber.pending.push(publication);
+        subscriber.pending.push(immutablePublication);
       } else {
-        invoke(subscriber, publication);
+        invoke(subscriber, immutablePublication);
       }
     }
   }
@@ -1003,7 +1071,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     }
   }
 
-  return { offer, read, clear, follow, close };
+  return { storage, offer, read, clear, follow, close };
 }
 
 function createInterval(sessionId: string, ordinal: number): HistoryInterval {
@@ -1025,11 +1093,13 @@ export function selectEvidence(evidence: readonly CommittedEvidence[], query: Ev
 }
 
 export function matchesEvidenceQuery(entry: CommittedEvidence, query: EvidenceQuery): boolean {
+  if (query.candidateKind === "lightstreamer" && entry.candidate.kind === "topology-checkpoint") return false;
+  if (query.candidateKind === "topology-checkpoint" && entry.candidate.kind !== "topology-checkpoint") return false;
   if (query.afterSequence !== undefined && entry.sequence <= query.afterSequence) return false;
   if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
   if (query.filters && !matchesCandidateFilters(entry.candidate, query.filters)) return false;
   if (query.find) {
-    const text = serializeJournalEvidenceCandidate(entry.candidate).payload.toLowerCase();
+    const text = journalCandidateSearchText(entry.candidate);
     if (!text.includes(query.find.trim().toLowerCase())) return false;
   }
   return true;
@@ -1049,7 +1119,7 @@ export function pageEvidence(evidence: readonly CommittedEvidence[], query: Evid
 function matchesCandidateFilters(candidate: EvidenceCandidate, filters: EventFilterState): boolean {
   if (candidate.kind !== "topology-checkpoint") return matchesEventFilters(candidate, filters);
 
-  if (filters.query && !serializeJournalEvidenceCandidate(candidate).payload.toLowerCase().includes(filters.query.trim().toLowerCase())) {
+  if (filters.query && !journalCandidateSearchText(candidate).includes(filters.query.trim().toLowerCase())) {
     return false;
   }
   return !Object.entries(filters).some(([key, value]) => key !== "query" && value !== undefined && value !== "");
@@ -1064,19 +1134,30 @@ function toRef(evidence: CommittedEvidence): EvidenceRef {
 }
 
 export function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
+  assertCandidate(candidate);
+  return freezeCandidate(structuredClone(candidate));
+}
+
+/** @internal Validates an Evidence candidate without copying its payload. */
+export function assertCandidate(candidate: unknown): asserts candidate is EvidenceCandidate {
   if (!candidate || typeof candidate !== "object") {
     throw new Error("Candidate must be an object.");
   }
-  if (candidate.kind === "topology-checkpoint") {
+  const value = candidate as { kind?: unknown; id?: unknown };
+  if (value.kind === "topology-checkpoint") {
     if (!isTopologyCheckpointEvidenceCandidate(candidate)) {
       throw new Error("Topology checkpoint candidate is incomplete.");
     }
-    return deepFreeze(structuredClone(candidate));
+    return;
   }
-  if (typeof candidate.id !== "string" || candidate.id.length === 0) {
+  if (typeof value.id !== "string" || value.id.length === 0) {
     throw new Error("Capture candidate must have a stable event ID.");
   }
-  return deepFreeze(structuredClone(candidate));
+}
+
+/** @internal Freezes a candidate after its immutable serialized snapshot exists. */
+export function freezeCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
+  return deepFreeze(candidate);
 }
 
 function isTopologyCheckpointEvidenceCandidate(candidate: unknown): candidate is TopologyCheckpointEvidenceCandidate {
@@ -1123,4 +1204,26 @@ function deepFreeze<T>(value: T): T {
     deepFreeze(child);
   }
   return value;
+}
+
+/**
+ * Materializes a read without recursively walking every retained payload.
+ *
+ * This shortcut is intentionally limited to the committed journal read seam:
+ * candidates are serialized at intake, deserialized into journal-owned values,
+ * and deeply frozen before they enter `committed`. Callers therefore cannot
+ * smuggle a shallow-frozen candidate past the ownership boundary. The response
+ * containers remain newly frozen for each read.
+ */
+function freezeCommittedRead(value: EvidenceRead): EvidenceRead {
+  const retainedRange = value.retainedRange === null
+    ? null
+    : Object.freeze({ first: value.retainedRange.first, last: value.retainedRange.last });
+  return Object.freeze({
+    interval: value.interval,
+    evidence: Object.freeze([...value.evidence]),
+    total: value.total,
+    committedEvidenceBoundary: value.committedEvidenceBoundary,
+    retainedRange
+  });
 }

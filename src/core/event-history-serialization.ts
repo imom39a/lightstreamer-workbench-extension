@@ -41,7 +41,42 @@ export function serializeJournalEvidenceCandidate(
 }
 
 export function deserializeJournalEvidenceCandidate(payload: string): EvidenceCandidate {
-  return decode(JSON.parse(payload)) as EvidenceCandidate;
+  const parsed = JSON.parse(payload) as unknown;
+  // The common Lightstreamer envelope is already JSON-native. Avoid walking
+  // and copying every nested payload a second time unless canonical replay
+  // framing actually contains the tag as an object key. JSON string content
+  // cannot create this unescaped token, so a tag-shaped ordinary string stays
+  // on the fast path. The persisted payload remains JSON-compatible for
+  // backward reads, so there is no separate non-lexical framing marker; the
+  // residual risk is limited to non-canonical hand-authored payloads that use
+  // this reserved object key and bypass the encoder.
+  return payload.includes(`"${REPLAY_TAG}":`)
+    ? decode(parsed) as EvidenceCandidate
+    : parsed as EvidenceCandidate;
+}
+
+// Search materialization belongs to journal-owned replay candidates, never to
+// caller-owned intake objects. Weak keys keep the cache bounded by the owning
+// history/IndexedDB read and avoid adding observable fields to Evidence. Keep
+// the canonical replay payload rather than a second lower-case copy: the
+// payload already exists at admission (or in the IndexedDB record), and the
+// first query can lower-case it transiently without retaining another full
+// string for every Evidence candidate.
+const ownedCandidateReplayPayload = new WeakMap<object, string>();
+
+/** @internal Marks a deeply frozen candidate reconstructed from canonical journal replay as cacheable. */
+export function registerJournalOwnedCandidate(candidate: EvidenceCandidate, replayPayload?: string): void {
+  if (!Object.isFrozen(candidate)) throw new Error("Journal-owned search candidates must be frozen.");
+  if (replayPayload !== undefined) {
+    ownedCandidateReplayPayload.set(candidate, replayPayload);
+  }
+}
+
+/** @internal Returns canonical lowercase replay text for trusted journal-owned candidates. */
+export function journalCandidateSearchText(candidate: EvidenceCandidate): string {
+  const replayPayload = ownedCandidateReplayPayload.get(candidate);
+  if (replayPayload !== undefined) return replayPayload.toLowerCase();
+  return serializeJournalEvidenceCandidate(candidate).payload.toLowerCase();
 }
 
 const REPLAY_TAG = "__lsewReplayTag";

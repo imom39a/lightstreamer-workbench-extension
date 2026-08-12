@@ -105,17 +105,20 @@ npm run fixture:test
 
 This command builds the single Store extension and fixture adapter, starts a local Lightstreamer container, runs the static Capture assertions, then opens the shipped React Workbench in a real DevTools session. The browser proof selects compatible Item Update Evidence, creates exactly one Local Injection Draft, edits and reviews it, injects it through the inspected page's normal local delivery boundary, and verifies that the official Lightstreamer client updates the fixture application's rendered UI exactly once per successful action. Applicable direct and compatibility-fallback delivery checks remain part of the fixture packet.
 
-To run only the real-browser proof, use `npm run fixture:test:browser`. Set `LSEW_BROWSER_HEADLESS=false` when a visible Chrome for Testing window is useful for debugging.
+To run only the real-browser proof, use `npm run fixture:test:browser`. The acceptance browser path requires both `LSEW_BROWSER_HEADLESS=false` and `LSEW_UI_HEADLESS=false`; it uses only cached Chrome for Testing 151 and refuses a system-Chrome fallback.
 
 ## Shipped Extension Panel Smoke
 
 Run the independent DevTools-panel smoke proof with:
 
 ```bash
+LSEW_BROWSER_HEADLESS=false \
+LSEW_UI_HEADLESS=false \
+LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
 npm run test:ui:extension
 ```
 
-This command builds the extension, loads the generated `dist/` directory into Chrome through CDP, selects the real **Lightstreamer Workbench** DevTools panel, and verifies the accepted Scoped Evidence Workspace. It does not start the Lightstreamer fixture; keep `npm run fixture:test:browser` for the official-client Local Injection proof. Set `LSEW_BROWSER_HEADLESS=false` to use a visible Chrome window while diagnosing a failure. Headless failures include the available DevTools targets and a Chrome log tail.
+This command builds the extension, loads the generated `dist/` directory into visible Chrome for Testing 151 through CDP, selects the real **Lightstreamer Workbench** DevTools panel, and verifies the accepted Scoped Evidence Workspace. It does not start the Lightstreamer fixture; keep `npm run fixture:test:browser` for the official-client Local Injection proof. Browser/CDP waits are at least 240 seconds; failures include the available DevTools targets and a Chrome log tail.
 
 To validate the complete orchestration without starting Docker or Maven, run `npm run fixture:test:dry-run`.
 

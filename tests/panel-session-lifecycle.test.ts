@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 
-import { createInMemoryEventHistory } from "../src/core/event-history";
+import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -47,16 +47,14 @@ describe("Panel Session mount lifecycle", () => {
 
     const firstDispose = mountWorkbenchPanel(document.querySelector("#app")!, {
       createPanelSessionId: createIdentity,
-      createIndexedDbHistory: createHistory,
+      openHistory: createHistory,
       connectBridge
     });
     await act(settle);
 
     expect(createIdentity).toHaveBeenCalledTimes(1);
     expect(createHistory).toHaveBeenCalledWith({
-      panelSessionId: "panel-00000000-0000-4000-8000-000000000011",
-      reset: true,
-      clearOnClose: true
+      panelSessionId: "panel-00000000-0000-4000-8000-000000000011"
     });
     expect(connectBridge.mock.calls[0]?.[1]).toBe(
       "panel-00000000-0000-4000-8000-000000000011"
@@ -67,7 +65,7 @@ describe("Panel Session mount lifecycle", () => {
 
     const secondDispose = mountWorkbenchPanel(document.querySelector("#app")!, {
       createPanelSessionId: createIdentity,
-      createIndexedDbHistory: createHistory,
+      openHistory: createHistory,
       connectBridge
     });
     await act(settle);

@@ -1,96 +1,231 @@
 #!/usr/bin/env node
 
-/** Real-Chrome Event History evidence runner. fake-indexeddb is deliberately not used here. */
+/**
+ * Deliberate Event History release gate. This runner is intentionally visible:
+ * proof must not silently turn into a headless or synthetic measurement.
+ */
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { execFileSync, spawn } from "node:child_process";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
 import WebSocket from "ws";
+import {
+  collectHeapAfterRepeatedGc,
+  createTimeoutDiagnostic,
+  createPerformanceShardPlan,
+  aggregatePerformanceShardResults,
+  PerformanceOperationTimeout,
+  releaseHeapSessionWithCleanup,
+  runHeapMeasurementPlan,
+  runPageOperation
+} from "./event-history-performance-runner-operations.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_OUTPUT ?? "test-results/event-history-performance.json");
 const markdownPath = outputPath.replace(/\.json$/u, ".md");
-const overrides = envConfig();
-const heapSampleCount = positive(process.env.LSEW_EVENT_HISTORY_HEAP_SAMPLE_COUNT ?? "10000", "LSEW_EVENT_HISTORY_HEAP_SAMPLE_COUNT");
+const referencePath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_REFERENCE ?? "docs/reference/event-history-performance-reference.json");
+const BROWSER_TIMEOUT_MS = 240_000;
+const STARTUP_REQUEST_TIMEOUT_MS = 5_000;
+const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
+  "LSEW_EVENT_HISTORY_PERF_DEADLINE_MS",
+  3_600_000
+);
 
 async function main() {
+  requireVisibleEnvironment();
+  const reference = JSON.parse(await readFile(referencePath, "utf8"));
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-event-history-performance-"));
   const site = join(temporaryRoot, "site");
   const profile = join(temporaryRoot, "profile");
+  const gateModulePath = join(temporaryRoot, "event-history-performance-gate.mjs");
   let server;
   let chrome;
   let cdp;
+  let chromeOutput = "";
+  let chromeMetadata = null;
+  let environmentMetadata = null;
   try {
     await mkdir(site, { recursive: true });
-    await build({ entryPoints: [join(rootDir, "benchmarks/event-history-performance-harness.ts")], outfile: join(site, "harness.js"), bundle: true, format: "esm", platform: "browser", target: "chrome114", logLevel: "silent" });
-    await writeFile(join(site, "index.html"), '<!doctype html><meta charset="utf-8"><title>Event History performance</title><script type="module" src="/harness.js"></script>');
+    await build({ entryPoints: [join(rootDir, "benchmarks/event-history-performance-gate.ts")], outfile: gateModulePath, bundle: true, format: "esm", platform: "node", target: "node20", logLevel: "silent" });
+    const { classifyEventHistoryPerformance, validateEventHistoryPerformanceReference } = await import(pathToFileURL(gateModulePath).href);
+    if (!validateEventHistoryPerformanceReference(reference)) {
+      throw new Error(`Pinned reference preflight failed: ${referencePath}`);
+    }
+    await build({
+      entryPoints: [join(rootDir, "benchmarks/event-history-performance-harness.ts")],
+      outfile: join(site, "harness.js"),
+      bundle: true,
+      format: "esm",
+      platform: "browser",
+      target: "chrome151",
+      loader: { ".css": "css" },
+      logLevel: "silent"
+    });
+    await writeFile(join(site, "index.html"), '<!doctype html><meta charset="utf-8"><title>Event History performance gate</title><link rel="stylesheet" href="/harness.css"><main id="app"></main><script type="module" src="/harness.js"></script>');
     server = await serve(site);
     const port = server.address().port;
     const url = `http://127.0.0.1:${port}/`;
     const executable = await chromeExecutable();
-    chrome = spawn(executable, ["--headless=new", "--no-sandbox", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, url], { cwd: rootDir, stdio: "ignore" });
+    chrome = spawn(executable, chromeLaunchArguments(profile, url), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
+    chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
+    chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
-    cdp = await connect(await pageTarget(debugPort, url));
+    cdp = await connect(await pageTarget(debugPort, url, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
+    await preparePageForAuthoritativeRun(cdp);
     const environment = await cdp.request("Browser.getVersion");
-    await waitForHarness(cdp);
-    const origin = new URL(url).origin;
-    const baselineHeap = await gcHeap(cdp);
-    const storageBefore = await storageUsage(cdp, origin);
-    const result = await evaluate(cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run(${JSON.stringify(overrides)})`, 300_000);
-    const invalid = result.workloads.filter((workload) =>
-      !workload.correctness.retainedMatchesAccepted ||
-      !workload.correctness.publicationMatchesAccepted ||
-      !workload.correctness.retainedInOrder ||
-      !workload.correctness.publicationInOrder
-    );
-    if (invalid.length > 0) throw new Error(`Event History workload correctness failed: ${invalid.map((workload) => `${workload.adapter}/${workload.workload}/${workload.shape}`).join(", ")}`);
-    const storageAfterWorkloads = await storageUsage(cdp, origin);
-
-    const heapSamples = [];
-    for (const adapter of ["indexeddb", "memory"]) {
-      const adapterBaseline = await gcHeap(cdp);
-      const session = await evaluate(cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${heapSampleCount})`, 300_000);
-      const retained = await gcHeap(cdp);
-      const originUsageWhileRetained = await storageUsage(cdp, origin);
-      await evaluate(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", 30_000);
-      const released = await gcHeap(cdp);
-      heapSamples.push({
-        adapter,
-        eventCount: heapSampleCount,
-        baselineUsedSizeBytes: adapterBaseline.usedSize,
-        retainedUsedSizeBytes: retained.usedSize,
-        deltaFromAdapterBaselineBytes: retained.usedSize - adapterBaseline.usedSize,
-        releasedUsedSizeBytes: released.usedSize,
-        originUsageWhileRetained,
-        session
-      });
-    }
-    const report = {
-      schemaVersion: 1,
-      generatedAt: new Date().toISOString(),
-      runner: { kind: "real-chrome", fakeIndexedDbUsed: false, chrome: environment.product, userAgent: environment.userAgent, jsVersion: environment.jsVersion },
-      configuration: {
-        ...result.config,
-        issue16FixtureEvents: result.anchors.issue16TotalEvents,
-        usesIssue16ImmediateBurst:
-          result.config.burstCount === result.anchors.issue16TotalEvents &&
-          result.config.eventsPerBurst === result.anchors.issue16TotalEvents,
-        responsivenessCriterion: "Storage-harness long tasks over 50 ms are a review trigger; this does not measure panel rendering responsiveness."
-      },
-      shapeFacts: result.shapeFacts,
-      result,
-      heap: { method: "CDP HeapProfiler.collectGarbage + Runtime.getHeapUsage", initialBaselineUsedSizeBytes: baselineHeap.usedSize, samples: heapSamples, exclusions: "JS heap only; excludes browser-process memory, IndexedDB disk files, DevTools panel rendering, and extension IPC." },
-      storage: { method: "CDP Storage.getUsageAndQuota for the local harness origin", before: storageBefore, afterWorkloads: storageAfterWorkloads, limitation: "Origin usage is a whole-profile observation. Chrome may account for deleted session databases after deleteDatabase completes, so it is not a per-workload or checkpoint disk-footprint measurement." },
-      limitations: ["commitToHistoryPublication measures append intake to EventHistory subscriber publication; it is not panel DOM visibility or paint.", "Each IndexedDB operation persists an envelope, metadata record, and one record per search token; shape facts expose this write amplification.", "The existing Vitest fake-indexeddb benchmark remains a synthetic adapter check and is not compared with these Chrome figures.", "No memory breakpoint is inferred. If no >50 ms storage-harness long task occurs, the maximum tested retained session is reported rather than a claimed limit.", "Workloads use isolated Event History instances and IndexedDB session names but share one warmed Chrome page; compare adapters as same-run evidence, not cold-start samples.", "Origin-usage samples may include Chrome's delayed accounting for deleted session databases and are not attributed to one adapter or checkpoint."]
+    const chromeMajor = chromeMajorFromProduct(environment.product);
+    if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
+    chromeMetadata = {
+      kind: "real-chrome",
+      headless: false,
+      fakeIndexedDbUsed: false,
+      product: environment.product,
+      userAgent: environment.userAgent,
+      jsVersion: environment.jsVersion
     };
+    environmentMetadata = {
+      chromeMajor,
+      platformClass: process.platform === "darwin" ? "darwin" : process.platform,
+      architectureClass: process.arch,
+      headless: false
+    };
+    const shardResults = [];
+    const matrixRunStartedAt = Date.now();
+    for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
+      const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
+      const page = await openFreshHarnessPage(cdp, debugPort, url, selection.pageToken);
+      try {
+        const remainingDeadlineMs = EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS - (Date.now() - matrixRunStartedAt);
+        if (remainingDeadlineMs <= 0) throw new Error("Event History performance shards exceeded the shared operation deadline.");
+        shardResults.push(await runPageOperation(
+          page.cdp,
+          `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)})`,
+          {
+            deadlineMs: remainingDeadlineMs,
+            onHeartbeat(status) {
+              process.stderr.write(
+                `[event-history-performance:${selection.id}] state=${status.state} elapsedMs=${status.elapsedMs.toFixed(0)} heartbeat=${status.heartbeat}\n`
+              );
+            }
+          }
+        ));
+      } finally {
+        await closeFreshHarnessPage(cdp, page);
+      }
+    }
+    const result = aggregatePerformanceShardResults(shardResults);
+
+    const heapPage = await openFreshHarnessPage(cdp, debugPort, url, `heap-${randomUUID()}`);
+    let heapPlan;
+    try {
+      heapPlan = await runHeapMeasurementPlan({
+      eventCounts: { indexeddb: 10_000, memory: 5_000 },
+      prepare: ({ adapter, eventCount, phase, sample }) => runPageOperation(
+        heapPage.cdp,
+        `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${eventCount}, ${JSON.stringify(phase)}, ${sample === null ? "null" : sample})`,
+        { deadlineMs: 3_600_000 }
+      ),
+      forceGc: () => collectHeapAfterRepeatedGc(heapPage.cdp),
+      record: ({ adapter, eventCount, sample, session, baseline, retained }) => ({
+        adapter,
+        sample,
+        eventCount,
+        sessionId: session.sessionId,
+        databaseName: session.databaseName,
+        retained: session.retained,
+        baselineUsedSizeBytes: baseline.usedSize,
+        retainedUsedSizeBytes: retained.usedSize,
+        postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
+      }),
+      close: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+      removeRoot: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+      yieldFrame: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineMs: BROWSER_TIMEOUT_MS })
+      });
+    } finally {
+      await closeFreshHarnessPage(cdp, heapPage);
+    }
+    const heapSamples = heapPlan.heapSamples;
+
+    const lifecyclePage = await openFreshHarnessPage(cdp, debugPort, url, `lifecycle-${randomUUID()}`);
+    const lifecycleRetainedHeapBytes = [];
+    try {
+      for (let sample = 0; sample < 3; sample += 1) {
+        const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp);
+        await runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineMs: BROWSER_TIMEOUT_MS });
+        const released = await releaseHeapSessionWithCleanup({
+          release: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+          removeRoot: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+          yieldFrame: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+          forceGc: () => collectHeapAfterRepeatedGc(lifecyclePage.cdp)
+        });
+        lifecycleRetainedHeapBytes.push(released.usedSize - baseline.usedSize);
+      }
+    } finally {
+      await closeFreshHarnessPage(cdp, lifecyclePage);
+    }
+
+    const report = {
+      schemaVersion: 2,
+      generatedAt: new Date().toISOString(),
+      runner: chromeMetadata,
+      source: {
+        revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
+        dirty: execFileSync("git", ["status", "--porcelain"], { cwd: rootDir, encoding: "utf8" }).trim().length > 0
+      },
+      environment: {
+        ...environmentMetadata
+      },
+      anchors: result.anchors,
+      capabilities: {
+        interCellGc: "EXPOSED_THREE_PASS_V1",
+        interQuerySampleGc: "EXPOSED_THREE_PASS_V1",
+        interQueryGcLongTasks: "EXPLICIT_HYGIENE_PHASE_V1"
+      },
+      config: result.config,
+      shapeFacts: result.shapeFacts,
+      shards: result.shards,
+      cells: result.cells,
+      cellCleanupGc: result.cellCleanupGc,
+      terminalScenarios: result.terminalScenarios,
+      checkpointScenarios: result.checkpointScenarios,
+      heapSamples,
+      heapRuns: heapPlan.heapRuns,
+      lifecycle: {
+        retainedHeapBytes: lifecycleRetainedHeapBytes,
+        strictMonotonicGrowth: isStrictlyMonotonic(lifecycleRetainedHeapBytes)
+      },
+      telemetry: { storageEstimate: "Per-cell navigator.storage.estimate() telemetry is non-authoritative; unavailable/error states are retained and excluded from verdict gates." }
+    };
+    const decision = classifyEventHistoryPerformance(report, reference);
+    const complete = { ...report, decision, reference: { path: referencePath, separatelyPinned: true } };
     await mkdir(dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`);
-    await writeFile(markdownPath, markdown(report));
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    await writeFile(outputPath, `${JSON.stringify(complete, null, 2)}\n`);
+    await writeFile(markdownPath, markdown(complete));
+    process.stdout.write(`${JSON.stringify({ verdict: decision.verdict, failures: decision.failures, reviewReasons: decision.reviewReasons, report: outputPath }, null, 2)}\n`);
+    if (decision.verdict === "FAIL") throw new Error(`Event History performance gate failed. See ${outputPath}.`);
+  } catch (error) {
+    const timeout = normalizePerformanceTimeout(error);
+    if (timeout && chromeMetadata && environmentMetadata) {
+      const source = sourceState();
+      const diagnostic = createTimeoutDiagnostic({
+        generatedAt: new Date().toISOString(),
+        source,
+        runner: chromeMetadata,
+        environment: environmentMetadata,
+        referencePath,
+        deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
+        operation: timeout.status
+      });
+      await writeTimeoutEvidence({ outputPath, markdownPath, diagnostic });
+    }
+    if (chromeOutput) process.stderr.write(`\nChrome output:\n${chromeOutput.slice(-8_000)}\n`);
+    throw timeout ?? error;
   } finally {
     cdp?.close();
     if (chrome) await terminateChild(chrome);
@@ -99,60 +234,384 @@ async function main() {
   }
 }
 
+export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
+  await cdp.request("Page.bringToFront");
+  const visible = await evaluate(cdp, `new Promise((resolve) => {
+    if (document.visibilityState !== "visible") {
+      resolve(false);
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (document.visibilityState !== "visible") {
+        resolve(false);
+        return;
+      }
+      requestAnimationFrame(() => resolve(document.visibilityState === "visible"));
+    });
+  })`, timeoutMs);
+  if (visible !== true) {
+    throw new Error("Event History performance run requires a visible foreground page.");
+  }
+}
+
+export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageToken) {
+  if (typeof pageToken !== "string" || pageToken.length === 0) throw new Error("Fresh harness page requires a non-empty page token.");
+  const pageUrl = new URL(baseUrl);
+  pageUrl.searchParams.set("pageToken", pageToken);
+  const created = await controlCdp.request("Target.createTarget", { url: pageUrl.href });
+  if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
+  let pageCdp;
+  try {
+    pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
+    await waitForHarness(pageCdp);
+    await preparePageForAuthoritativeRun(pageCdp);
+    const observedToken = await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", BROWSER_TIMEOUT_MS);
+    if (observedToken !== pageToken) throw new Error("Fresh harness page token mismatch.");
+    return { cdp: pageCdp, targetId: created.targetId, pageToken, url: pageUrl.href };
+  } catch (error) {
+    pageCdp?.close();
+    const closed = await controlCdp.request("Target.closeTarget", { targetId: created.targetId });
+    if (closed?.success !== true) throw new Error("Fresh harness page setup failed and its target could not be closed.", { cause: error });
+    throw error;
+  }
+}
+
+export async function closeFreshHarnessPage(controlCdp, page) {
+  page.cdp.close();
+  const closed = await controlCdp.request("Target.closeTarget", { targetId: page.targetId });
+  if (closed?.success !== true) throw new Error(`Fresh harness page ${page.pageToken} did not close cleanly.`);
+  return { pageToken: page.pageToken, targetId: page.targetId, closed: true };
+}
+
+export function chromeLaunchArguments(profile, url, platformName = process.platform) {
+  return [
+    ...(platformName === "darwin" ? ["--activate-on-launch"] : []),
+    "--no-sandbox",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--js-flags=--expose-gc",
+    "--no-first-run",
+    "--remote-debugging-port=0",
+    `--user-data-dir=${profile}`,
+    url
+  ];
+}
+
+function requireVisibleEnvironment() {
+  if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
+    throw new Error("Event History proof requires LSEW_BROWSER_HEADLESS=false; refusing to switch to headless Chrome.");
+  }
+  if (process.env.LSEW_UI_HEADLESS !== "false") {
+    throw new Error("Event History proof requires LSEW_UI_HEADLESS=false; refusing to switch to headless Chrome.");
+  }
+}
+
+async function chromeExecutable() {
+  const cacheDir = process.env.LSEW_BROWSER_CACHE_DIR ?? join(rootDir, ".cache/lsew-browsers");
+  const installed = new Cache(cacheDir).getInstalledBrowsers().filter((entry) => entry.browser === Browser.CHROME && String(entry.buildId).startsWith("151."));
+  if (installed.length === 0) throw new Error(`Chrome for Testing 151 is not cached at ${cacheDir}; refusing a system-Chrome fallback.`);
+  const executable = installed[0].executablePath;
+  await access(executable);
+  return executable;
+}
+
+function chromeMajorFromProduct(product) {
+  const match = String(product).match(/\/(\d+)/u);
+  if (!match) throw new Error(`Could not determine Chrome major from ${product}.`);
+  return Number(match[1]);
+}
+
+function positiveFiniteEnvironment(name, fallback) {
+  const value = process.env[name] === undefined ? fallback : Number(process.env[name]);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive finite number.`);
+  return value;
+}
+
+function sourceState() {
+  return {
+    revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
+    dirty: execFileSync("git", ["status", "--porcelain"], { cwd: rootDir, encoding: "utf8" }).trim().length > 0
+  };
+}
+
+export function normalizePerformanceTimeout(error) {
+  if (error instanceof PerformanceOperationTimeout) return error;
+  if (!error || typeof error !== "object" || error.name !== "HarnessStageTimeout") return null;
+  const progress = error.progress && typeof error.progress === "object" ? error.progress : null;
+  const stage = typeof error.stage === "string" ? error.stage : (typeof progress?.stage === "string" ? progress.stage : null);
+  const status = {
+    operationId: typeof progress?.operationId === "string" ? progress.operationId : null,
+    state: "rejected",
+    elapsedMs: Number.isFinite(progress?.pageElapsedMs) ? progress.pageElapsedMs : 0,
+    heartbeat: null,
+    progress,
+    error: {
+      name: error.name,
+      message: typeof error.message === "string" ? error.message : String(error),
+      stack: typeof error.stack === "string" ? error.stack : null,
+      ...(typeof error.code === "string" ? { code: error.code } : {}),
+      ...(stage !== null ? { stage } : {})
+    }
+  };
+  return new PerformanceOperationTimeout("Event History performance harness stage timed out.", status);
+}
+
+export async function writeTimeoutEvidence({ outputPath: targetOutputPath, markdownPath: targetMarkdownPath, diagnostic }) {
+  await mkdir(dirname(targetOutputPath), { recursive: true });
+  await writeFile(targetOutputPath, `${JSON.stringify(diagnostic, null, 2)}\n`);
+  await writeFile(targetMarkdownPath, timeoutMarkdown(diagnostic));
+}
+
+function isStrictlyMonotonic(values) {
+  return values.length > 1 && values.every((value, index) => index === 0 || value > values[index - 1]);
+}
+
 function markdown(report) {
-  const workloads = report.result.workloads;
-  const longTasks = workloads.filter((entry) => entry.longTasksOver50Ms > 0);
-  const retainedLongTasks = report.heap.samples.filter((entry) => entry.session.longTasksOver50Ms > 0);
-  const maxRetained = Math.max(...workloads.map((entry) => entry.retained));
-  const idbSustainedLarge = workload(report, "indexeddb", "sustained", "large-json-rich");
-  const idbBurstLarge = workload(report, "indexeddb", "burst", "large-json-rich");
-  const memorySustainedLarge = workload(report, "memory", "sustained", "large-json-rich");
-  const indexedRetained = report.heap.samples.find((sample) => sample.adapter === "indexeddb");
-  const memoryRetained = report.heap.samples.find((sample) => sample.adapter === "memory");
-  const rows = workloads.map((entry) => [
-    entry.adapter,
-    entry.workload,
-    entry.shape,
-    entry.retained,
-    fixed(entry.offeredEventsPerSecond),
-    fixed(entry.commitToHistoryPublicationLatencyMs.p95Ms),
-    fixed(entry.maxOldestPendingAgeMs),
-    entry.maxPendingBytes,
-    fixed(entry.queryBehindBacklogMs),
-    fixed(entry.queryLatencyMs.fullText.p95Ms),
-    entry.transactionBatching.writeTransactions,
-    entry.longTasksOver50Ms
-  ].join(" | ")).join("\n");
-  const heapRows = report.heap.samples.map((sample) =>
-    `- ${sample.adapter}: ${sample.eventCount} mixed events, signed JS-heap delta ${sample.deltaFromAdapterBaselineBytes} bytes from its pre-sample baseline; append ${fixed(sample.session.appendElapsedMs)} ms; ${sample.session.longTasksOver50Ms} Long Task(s); Find p95 ${fixed(sample.session.queryLatencyMs.fullText.p95Ms)} ms; full-history p95 ${fixed(sample.session.queryLatencyMs.fullHistory.p95Ms)} ms.`
-  ).join("\n");
-  const responsiveness = [...longTasks, ...retainedLongTasks];
-  return `# Event History workload evidence\n\nReal-Chrome harness run: ${report.runner.chrome}. The existing \`benchmark:event-history\` fake-indexeddb Vitest benchmark is intentionally excluded from this report.\n\n## Interpretation\n\n- Shapes: ${report.shapeFacts.map((shape) => `${shape.id} (${shape.persistedJsonBytes} UTF-8 bytes, ${shape.indexedDbWritesPerEvent} indexed writes/event)`).join("; ")}\n- Workloads: ${workloads.length}; maximum retained session tested: ${Math.max(maxRetained, ...report.heap.samples.map((sample) => sample.eventCount))} events.\n- At 50 offered events/sec, large JSON IndexedDB publication p95 was ${fixed(idbSustainedLarge.commitToHistoryPublicationLatencyMs.p95Ms)} ms with ${fixed(idbSustainedLarge.maxOldestPendingAgeMs)} ms maximum pending age.\n- The 1,692-event immediate large JSON burst reached ${fixed(idbBurstLarge.commitToHistoryPublicationLatencyMs.p95Ms)} ms publication p95, ${idbBurstLarge.maxPendingBytes} peak pending bytes, and ${idbBurstLarge.transactionBatching.writeTransactions} write transactions.\n- At ${memorySustainedLarge.retained} retained large JSON events, memory Find p95 was ${fixed(memorySustainedLarge.queryLatencyMs.fullText.p95Ms)} ms and the measured window recorded ${memorySustainedLarge.longTasksOver50Ms} Long Task(s). At ${memoryRetained.eventCount} mixed events, memory used a signed ${memoryRetained.deltaFromAdapterBaselineBytes}-byte JS-heap delta and Find p95 was ${fixed(memoryRetained.session.queryLatencyMs.fullText.p95Ms)} ms.\n- The ${indexedRetained.eventCount}-event IndexedDB checkpoint took ${fixed(indexedRetained.session.appendElapsedMs)} ms to append and had Find p95 ${fixed(indexedRetained.session.queryLatencyMs.fullText.p95Ms)} ms.\n- Storage-harness long tasks >50 ms: ${responsiveness.length === 0 ? `not observed through ${Math.max(...report.heap.samples.map((sample) => sample.eventCount))} retained mixed events` : `${responsiveness.length} workload or retained-session sample(s) observed one or more`}. This is not a panel responsiveness claim.\n- \`commitToHistoryPublication\` ends at EventHistory subscriber publication, not DOM visibility or paint. A query queued behind pending appends is reported separately from settled query samples.\n- The run proved accepted, published, retained, and fully ordered IDs for every workload before writing this report.\n\n## Workload facts\n\nAdapter | Workload | Shape | Retained | Offered events/s | Publication p95 ms | Oldest pending ms | Peak pending bytes | Query behind backlog ms | Find p95 ms | Write tx | Long tasks\n--- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---:\n${rows}\n\n## Retained session and JS heap\n\n${heapRows}\n\nA small negative IndexedDB JS-heap delta can occur after GC because retained envelopes live in IndexedDB rather than the page heap; treat it as measurement noise, not negative usage. JS heap excludes browser-process memory, IndexedDB disk files, DevTools panel rendering, and extension IPC. Origin-usage samples are whole-profile observations and may include Chrome's delayed accounting for deleted session databases; do not attribute them to one adapter or checkpoint. The JSON companion records raw timing samples, transaction distributions, environment details, and all limitations.\n`;
+  const rows = report.cells.map((cell) => `| ${cell.adapter} | ${cell.workload} | ${cell.shape} | ${cell.sample} | ${cell.latency.offerToPublicationP95Ms.toFixed(2)} | ${cell.latency.offerToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.committedBoundaryToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.behindBacklogMs.toFixed(2)} | ${cell.latency.finalBoundaryVisibleMs === null ? "—" : cell.latency.finalBoundaryVisibleMs.toFixed(2)} | ${cell.latency.recentPageP95Ms.toFixed(2)} | ${cell.latency.structuredIndexedP95Ms.toFixed(2)} | ${cell.latency.findFullP95Ms.toFixed(2)} |`).join("\n");
+  const evidenceRows = report.cells.map((cell) => {
+    const key = `${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample}`;
+    const correctness = Object.entries(cell.correctness).every(([, value]) => value) ? "PASS" : "FAIL";
+    const workload = `${cell.workloadFacts.expectedCount} events; ${cell.workloadFacts.shapeBytes} shape bytes; ${cell.workloadFacts.persistedJsonBytes} persisted JSON bytes; ${cell.workloadFacts.offeredEventsPerSecond.toFixed(2)} events/sec`;
+    const storage = `${cell.storage.transactionCount} tx (${cell.storage.readwriteTransactionCount} rw/${cell.storage.readonlyTransactionCount} ro); ${cell.storage.evidenceWriteCount} evidence writes; ${cell.storage.controlWriteCount} control writes; ${cell.storage.facetEntryCount} facet entries; ${cell.storage.indexEntryCount} index entries`;
+    const pressure = `${cell.pressure.maxPendingBytes} pending bytes; ${cell.pressure.maxOldestPendingAgeMs.toFixed(2)} ms oldest; states=${cell.pressure.transitions.join(",") || "none"}`;
+    const terminal = `${cell.terminal.phase}; reason=${cell.terminal.reason ?? "none"}; boundary=${cell.terminal.committedEvidenceBoundary?.sequence ?? "none"}; missing=${cell.terminal.firstMissingEventId ?? "none"}; refused=${cell.terminal.refusedCount}; discarded=${cell.terminal.discardedCount}`;
+    return `| ${key} | ${correctness} (${cell.accepted}/${cell.published}/${cell.retained}) | ${workload} | ${storage} | ${pressure} | ${terminal} | ${JSON.stringify(cell.identityEvidence)} |`;
+  }).join("\n");
+  const storageEstimateRows = report.cells.map((cell) => {
+    const estimate = cell.storageEstimate.status === "AVAILABLE"
+      ? `usage=${cell.storageEstimate.usageBytes}; quota=${cell.storageEstimate.quotaBytes}`
+      : `unavailable=${cell.storageEstimate.failure?.code ?? "unknown"}: ${cell.storageEstimate.failure?.message ?? "missing diagnostic"}`;
+    return `| ${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample} | ${estimate} |`;
+  }).join("\n");
+  const longTaskRows = report.cells.map((cell) => `| ${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample} | capture=${JSON.stringify(cell.longTasks.capture)}; commit=${JSON.stringify(cell.longTasks.commit)}; paint=${JSON.stringify(cell.longTasks.paint)}; query=${JSON.stringify(cell.longTasks.query)}; unattributed=${cell.longTasks.unattributed}; reasons=${JSON.stringify(cell.longTasks.unattributedReasons ?? [])} |`).join("\n");
+  const terminalRows = report.terminalScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.trigger} | ${scenario.terminalReason} | ${scenario.acceptedCount} | ${scenario.refusedCount} | ${JSON.stringify(scenario.offeredEventIds)} | ${JSON.stringify(scenario.acceptedEventIds)} | ${JSON.stringify(scenario.retainedEventIds)} | ${JSON.stringify(scenario.publishedEventIds)} | ${JSON.stringify(scenario.refusedEventIds)} | ${scenario.firstMissingEventId} | ${scenario.committedBoundary.sequence}/${scenario.committedBoundary.eventId} | ${scenario.terminalPublicationCount} | ${scenario.pressureTransitions.join(",") || "none"} |`).join("\n");
+  const heapRunRows = report.heapRuns.map((run) => `| ${run.adapter} | ${run.phase} | ${run.sample ?? "warmup"} | ${JSON.stringify(run)} |`).join("\n");
+  const checkpointRows = report.checkpointScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.name} | ${scenario.accepted ? "PASS" : "FAIL"} | ${scenario.retained} | ${scenario.canonicalBytes} | ${scenario.interleavedWhileStaging} | ${scenario.committedBoundaryCorrect} | ${scenario.batchAcceptedAsOneOversizedUnit} | ${JSON.stringify(scenario)} |`).join("\n");
+  return `# Event History performance gate\n\nVerdict: **${report.decision.verdict}**\n\nVisible Chrome: ${report.runner.product}; user agent: ${report.runner.userAgent}; JS: ${report.runner.jsVersion}; matrix samples: ${report.cells.length}; reference: ${report.reference.path}.\n\nSource revision: ${report.source.revision}; dirty at run: ${report.source.dirty}; config: ${JSON.stringify(report.config)}; environment: ${JSON.stringify(report.environment)}.\n\nAbsolute gates are fail-closed and are evaluated per independent sample. No failure is averaged away.\n\n## Matrix\n\n| Adapter | Workload | Shape | Sample | Offer→publication p95 (ms) | Offer→visible p95 (ms) | Boundary→visible p95 (ms) | Behind-backlog (ms) | Burst final boundary (ms) | Recent p95 (ms) | Structured/indexed p95 (ms) | Find/full p95 (ms) |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${rows}\n\n## Correctness, workload, storage, pressure, and exact cell identity evidence\n\n| Cell | Counts and correctness | Workload | Transaction/facet/index amplification | Pressure | Terminal | Exact identity arrays |\n| --- | --- | --- | --- | --- | --- | --- |\n${evidenceRows}\n\n## Long Task phase attribution\n\n| Cell | Exact phase durations, unattributed count, and reasons |\n| --- | --- |\n${longTaskRows}\n\n## Terminal partial-acceptance evidence\n\n| Adapter | Trigger | Reason | Accepted | Refused | Offered IDs | Accepted IDs | Retained IDs | Published IDs | Refused IDs | First missing | Boundary | Terminal publications | Pressure transitions |\n| --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | --- |\n${terminalRows}\n\n## Checkpoint evidence\n\n| Adapter | Name | Accepted | Retained | canonicalBytes | interleavedWhileStaging | committedBoundaryCorrect | batchAcceptedAsOneOversizedUnit | Full scenario evidence |\n| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |\n${checkpointRows}\n\n## Heap cleanup-run evidence\n\n| Adapter | Phase | Sample | Full cleanup evidence |\n| --- | --- | --- | --- |\n${heapRunRows}\n\n## Non-authoritative page storage estimates\n\n| Cell | navigator.storage.estimate() |\n| --- | --- |\n${storageEstimateRows}\n\n## Decision\n\nFailures:\n${report.decision.failures.length ? report.decision.failures.map((failure) => `- ${failure}`).join("\n") : "- None"}\n\nReview reasons:\n${report.decision.reviewReasons.length ? report.decision.reviewReasons.map((reason) => `- ${reason}`).join("\n") : "- None"}\n\nHeap samples: ${JSON.stringify(report.heapSamples)}\n\nLifecycle retained heap deltas: ${JSON.stringify(report.lifecycle.retainedHeapBytes)}; strict monotonic growth: ${report.lifecycle.strictMonotonicGrowth}.\n\nStorage telemetry outside the authoritative verdict: ${JSON.stringify(report.telemetry)}\n`;
 }
 
-function fixed(value) { return Number(value).toFixed(2); }
-function workload(report, adapter, kind, shape) { const match = report.result.workloads.find((entry) => entry.adapter === adapter && entry.workload === kind && entry.shape === shape); if (!match) throw new Error(`Missing workload ${adapter}/${kind}/${shape}.`); return match; }
-
-function envConfig() {
-  const mapping = { LSEW_EVENT_HISTORY_SUSTAINED_COUNT: "sustainedCount", LSEW_EVENT_HISTORY_SUSTAINED_RATE: "sustainedEventsPerSecond", LSEW_EVENT_HISTORY_BURST_COUNT: "burstCount", LSEW_EVENT_HISTORY_BATCH_SIZE: "batchSize" };
-  return Object.fromEntries(Object.entries(mapping).flatMap(([env, key]) => {
-    const raw = process.env[env];
-    return raw ? [[key, positive(raw, env)]] : [];
-  }));
+function timeoutMarkdown(diagnostic) {
+  const operation = diagnostic.operation?.lastStatus ?? {};
+  const progress = diagnostic.operation?.progress ?? operation.progress ?? null;
+  return `# Event History performance gate\n\nVerdict: **FAIL**\n\nStatus: **TIMED_OUT**\n\nSource revision: ${diagnostic.source?.revision ?? "unknown"}; dirty at run: ${diagnostic.source?.dirty ?? "unknown"}.\n\nEnvironment: ${JSON.stringify(diagnostic.environment)}.\n\nGlobal deadline: ${diagnostic.operation?.deadlineMs ?? "unknown"} ms.\n\nLast operation status: ${JSON.stringify(operation)}\n\n## Latest harness progress\n\n${progress ? `\`${JSON.stringify(progress)}\`` : "No structured harness progress was observed."}\n\nThe timeout is fail-closed and was not classified as a performance PASS or REVIEW.\n`;
 }
 
-function positive(raw, name) { const value = Number(raw); if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer.`); return value; }
-async function serve(directory) { const server = createServer(async (request, response) => { try { const name = new URL(request.url ?? "/", "http://localhost").pathname === "/" ? "index.html" : "harness.js"; response.writeHead(200, { "content-type": name.endsWith("js") ? "text/javascript" : "text/html", "cache-control": "no-store" }); response.end(await readFile(join(directory, name))); } catch { response.writeHead(404).end(); } }); await new Promise((resolvePromise, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolvePromise); }); return server; }
-async function chromeExecutable() { const cache = process.env.LSEW_BROWSER_CACHE_DIR ?? join(rootDir, ".cache/lsew-browsers"); const cached = new Cache(cache).getInstalledBrowsers().filter((entry) => entry.browser === Browser.CHROME).map((entry) => entry.executablePath); const candidates = [process.env.CHROME_PATH, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium", "/usr/bin/google-chrome", "/usr/bin/chromium", ...cached, ...(process.env.PATH ?? "").split(delimiter).flatMap((dir) => [join(dir, "google-chrome"), join(dir, "chromium")])].filter(Boolean); for (const candidate of candidates) try { await access(candidate); return candidate; } catch {} throw new Error("Chrome not found; set CHROME_PATH or run npm run fixture:browser:install."); }
-async function debuggingPort(profile, child) { for (let tries = 0; tries < 150; tries += 1) { if (child.exitCode !== null) throw new Error("Chrome exited before CDP was ready."); try { const [port] = (await readFile(join(profile, "DevToolsActivePort"), "utf8")).trim().split(/\r?\n/u); return Number(port); } catch {} await delay(100); } throw new Error("Timed out waiting for Chrome CDP."); }
-async function pageTarget(port, expected) { for (let tries = 0; tries < 150; tries += 1) { const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json(); const target = targets.find((entry) => entry.type === "page" && entry.url.startsWith(expected)); if (target) return target.webSocketDebuggerUrl; await delay(100); } throw new Error("Timed out waiting for performance page."); }
-class Cdp { constructor(socket) { this.socket = socket; this.id = 0; this.pending = new Map(); socket.addEventListener("message", (event) => { const message = JSON.parse(String(event.data)); const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); message.error ? pending.reject(new Error(message.error.message)) : pending.resolve(message.result); }); } request(method, params = {}) { const id = ++this.id; return new Promise((resolvePromise, reject) => { this.pending.set(id, { resolve: resolvePromise, reject }); this.socket.send(JSON.stringify({ id, method, params })); }); } close() { this.socket.close(); } }
-async function connect(url) { const socket = new WebSocket(url); await new Promise((resolvePromise, reject) => { socket.addEventListener("open", resolvePromise, { once: true }); socket.addEventListener("error", reject, { once: true }); }); return new Cdp(socket); }
-async function waitForHarness(cdp) { for (let tries = 0; tries < 150; tries += 1) { if (await evaluate(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)")) return; await delay(100); } throw new Error("Timed out waiting for Event History harness."); }
-async function evaluate(cdp, expression, timeoutMs = 30000) { let timer; try { const response = await Promise.race([cdp.request("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("CDP evaluation timed out.")), timeoutMs); })]); if (response.exceptionDetails) throw new Error(response.exceptionDetails.text); return response.result.value; } finally { clearTimeout(timer); } }
-async function gcHeap(cdp) { await cdp.request("HeapProfiler.enable"); await cdp.request("HeapProfiler.collectGarbage"); return cdp.request("Runtime.getHeapUsage"); }
-async function storageUsage(cdp, origin) { try { return await cdp.request("Storage.getUsageAndQuota", { origin }); } catch (error) { return { unavailable: true, reason: String(error) }; } }
+async function serve(directory) {
+  const server = createServer(async (request, response) => {
+    try {
+      const path = new URL(request.url ?? "/", "http://localhost").pathname;
+      const name = path === "/" ? "index.html" : path.slice(1);
+      const content = await readFile(join(directory, name));
+      response.writeHead(200, { "content-type": name.endsWith(".js") ? "text/javascript" : name.endsWith(".css") ? "text/css" : "text/html", "cache-control": "no-store" });
+      response.end(content);
+    } catch {
+      response.writeHead(404).end();
+    }
+  });
+  await new Promise((resolvePromise, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolvePromise); });
+  return server;
+}
+
+class Cdp {
+  constructor(socket) {
+    this.socket = socket;
+    this.id = 0;
+    this.pending = new Map();
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(String(event.data));
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
+      this.pending.delete(message.id);
+      message.error ? pending.reject(new Error(message.error.message)) : pending.resolve(message.result);
+    });
+  }
+  request(method, params = {}) {
+    const id = ++this.id;
+    const request = new Promise((resolvePromise, reject) => {
+      this.pending.set(id, { resolve: resolvePromise, reject });
+      this.socket.send(JSON.stringify({ id, method, params }));
+    });
+    request.cancel = () => {
+      this.pending.delete(id);
+    };
+    return request;
+  }
+  close() { this.socket.close(); }
+}
+
+export async function connect(url, options = {}) {
+  const deadlineMs = positiveFiniteStartupOption(options.deadlineMs ?? BROWSER_TIMEOUT_MS, "connect deadlineMs");
+  const requestTimeoutMs = positiveFiniteStartupOption(options.requestTimeoutMs ?? Math.min(STARTUP_REQUEST_TIMEOUT_MS, deadlineMs), "connect requestTimeoutMs");
+  const createSocket = options.createSocket ?? ((target) => new WebSocket(target));
+  const socket = createSocket(url);
+  let onOpen;
+  let onError;
+  try {
+    await withStartupTimeout(new Promise((resolvePromise, reject) => {
+      onOpen = () => resolvePromise();
+      onError = (error) => reject(error);
+      socket.addEventListener("open", onOpen, { once: true });
+      socket.addEventListener("error", onError, { once: true });
+    }), Math.min(deadlineMs, requestTimeoutMs), () => socket.close(), "Timed out waiting for CDP WebSocket open.");
+    return new Cdp(socket);
+  } catch (error) {
+    socket.close();
+    throw error;
+  } finally {
+    if (onOpen) socket.removeEventListener?.("open", onOpen);
+    if (onError) socket.removeEventListener?.("error", onError);
+  }
+}
+
+export async function debuggingPort(profile, child, options = {}) {
+  const deadlineMs = positiveFiniteStartupOption(options.deadlineMs ?? BROWSER_TIMEOUT_MS, "debuggingPort deadlineMs");
+  const requestTimeoutMs = positiveFiniteStartupOption(options.requestTimeoutMs ?? Math.min(STARTUP_REQUEST_TIMEOUT_MS, deadlineMs), "debuggingPort requestTimeoutMs");
+  const readProfileFile = options.readProfileFile ?? readFile;
+  const sleep = options.sleep ?? delay;
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error("Visible Chrome exited before CDP was ready.");
+    try {
+      const remaining = deadline - Date.now();
+      const contents = await readFileWithStartupTimeout(
+        join(profile, "DevToolsActivePort"),
+        Math.min(requestTimeoutMs, remaining),
+        readProfileFile
+      );
+      const [port] = contents.trim().split(/\r?\n/u);
+      return Number(port);
+    } catch {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(100, remaining));
+    }
+  }
+  throw new StartupTimeout("Timed out waiting for visible Chrome CDP.");
+}
+
+export async function pageTarget(port, expected, options = {}) {
+  const deadlineMs = positiveFiniteStartupOption(options.deadlineMs ?? BROWSER_TIMEOUT_MS, "pageTarget deadlineMs");
+  const requestTimeoutMs = positiveFiniteStartupOption(options.requestTimeoutMs ?? Math.min(STARTUP_REQUEST_TIMEOUT_MS, deadlineMs), "pageTarget requestTimeoutMs");
+  const fetchJson = options.fetchJson ?? ((target, timeoutMs) => fetchJsonWithStartupTimeout(target, timeoutMs, options.fetchImplementation ?? fetch));
+  const sleep = options.sleep ?? delay;
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    try {
+      const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`, Math.min(requestTimeoutMs, deadline - Date.now()));
+      const target = targets.find((entry) => entry.type === "page" && entry.url.startsWith(expected));
+      if (target) return target.webSocketDebuggerUrl;
+    } catch {
+      // Retry until the bounded startup deadline; a hung fetch/body is not allowed to escape it.
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(100, remaining));
+  }
+  throw new StartupTimeout("Timed out waiting for visible performance page.");
+}
+
+class StartupTimeout extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "StartupTimeout";
+  }
+}
+
+function positiveFiniteStartupOption(value, name) {
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive finite number.`);
+  return value;
+}
+
+function withStartupTimeout(promise, timeoutMs, onTimeout, message) {
+  if (timeoutMs <= 0) return Promise.reject(new StartupTimeout(message));
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try { onTimeout(); } catch { /* Preserve the startup timeout if cleanup itself fails. */ }
+        reject(new StartupTimeout(message));
+      }, timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function readFileWithStartupTimeout(filePath, timeoutMs, readProfileFile) {
+  const controller = new AbortController();
+  try {
+    return await withStartupTimeout(
+      readProfileFile(filePath, { encoding: "utf8", signal: controller.signal }),
+      timeoutMs,
+      () => controller.abort(),
+      `Timed out reading ${filePath}.`
+    );
+  } finally {
+    controller.abort();
+  }
+}
+
+async function fetchJsonWithStartupTimeout(url, timeoutMs, fetchImplementation) {
+  const controller = new AbortController();
+  try {
+    const response = await withStartupTimeout(
+      fetchImplementation(url, { signal: controller.signal }),
+      timeoutMs,
+      () => controller.abort(),
+      `Timed out fetching ${url}.`
+    );
+    return await withStartupTimeout(
+      response.json(),
+      timeoutMs,
+      () => controller.abort(),
+      `Timed out reading ${url} response.`
+    );
+  } finally {
+    controller.abort();
+  }
+}
+
+async function waitForHarness(cdp) {
+  const deadline = Date.now() + BROWSER_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await evaluate(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", BROWSER_TIMEOUT_MS)) return;
+    await delay(100);
+  }
+  throw new Error("Timed out waiting for the visible Event History harness.");
+}
+
+async function evaluate(cdp, expression, timeoutMs = 30_000) {
+  let timer;
+  try {
+    const response = await Promise.race([
+      cdp.request("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("CDP evaluation timed out.")), timeoutMs); })
+    ]);
+    if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text);
+    return response.result.value;
+  } finally { clearTimeout(timer); }
+}
+
 function delay(milliseconds) { return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)); }
-async function terminateChild(child) { if (child.exitCode !== null || child.signalCode !== null) return; child.kill("SIGTERM"); await new Promise((resolvePromise) => { const force = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 5000); child.once("close", () => { clearTimeout(force); resolvePromise(); }); }); }
 
-await main();
+async function terminateChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise((resolvePromise) => {
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolvePromise();
+    };
+    child.once("close", settle);
+    child.kill("SIGTERM");
+    setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      setTimeout(settle, 1_000);
+    }, 1_000);
+  });
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) await main();
