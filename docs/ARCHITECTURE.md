@@ -467,17 +467,15 @@ close()
 
 The panel overlays a bounded 60-event live tail on the latest retained page while a query is in flight. The overlay is presentation-only; every accepted candidate still follows the ordered EventHistory path.
 
-Each `mountWorkbenchPanel()` allocates a cryptographically random Panel Session identity before starting storage or bridge work. It calls `createIndexedDbEventHistory()` with that identity:
+Each `mountWorkbenchPanel()` allocates a cryptographically random Panel Session identity before starting storage or bridge work. It calls `openEventHistory()` with that identity; the opener selects the IndexedDB journal before the first offer and falls back to the memory implementation only when startup, ownership, schema, or guarded cleanup cannot be confirmed:
 
 ```ts
-createIndexedDbEventHistory({
+openEventHistory({
   panelSessionId,
-  reset: true,
-  clearOnClose: true
 })
 ```
 
-If IndexedDB startup cannot be confirmed, the panel logs the error and falls back to `createInMemoryEventHistory()` for the remainder of that Panel Session. There is no mid-session migration. The panel closes Event History on `dispose` and the actual `pagehide` lifecycle event; IndexedDB-backed history created with `clearOnClose` drains accepted writes, clears that Panel Session's temporary history, and closes its handle before teardown completes.
+`createIndexedDbEventHistory()` acquires an exclusive per-journal ownership lock, claims a live Panel Session lease, validates and sweeps only recognized orphan generations, and keeps the selected journal implementation fixed for the Panel Session. If acquisition fails, `openEventHistory()` logs the error and creates `createInMemoryEventHistory()` with the lower-capacity fallback reason; there is no mid-session migration. The panel closes Event History on `dispose` and the actual `pagehide` lifecycle event. IndexedDB-backed `close()` drains accepted writes, clears the owned Panel Session journal, closes the database handle, and releases the ownership lock and live lease; cleanup outcomes are reported rather than assumed.
 
 ### History Status
 
