@@ -401,6 +401,64 @@ describe("Event History heap measurement plan", () => {
     });
   });
 
+  it("allows pending-age receipt settlement to cross its deliberate 30-second threshold", async () => {
+    let now = 0;
+    const progress = strictProgress("pending-age-operation", {
+      phase: "terminal",
+      stage: "PENDING_AGE-read",
+      substage: "PENDING_AGE-receipt-settlement",
+      trigger: "PENDING_AGE",
+      adapter: "indexeddb"
+    });
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "pending-age-operation", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "pending-age-operation", state: "pending", heartbeat: 1, progress }),
+      evaluated({ operationId: "pending-age-operation", state: "pending", heartbeat: 2, progress }),
+      evaluated({ operationId: "pending-age-operation", state: "resolved", heartbeat: 3, progress, result: { accepted: true } }),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", {
+      operationId: "pending-age-operation",
+      deadlineMs: 200_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 30_600; }
+    })).resolves.toEqual({ accepted: true });
+  });
+
+  it("fails closed when pending-age receipt settlement exceeds 120 seconds", async () => {
+    let now = 0;
+    const progress = strictProgress("pending-age-timeout", {
+      phase: "terminal",
+      stage: "PENDING_AGE-read",
+      substage: "PENDING_AGE-receipt-settlement",
+      trigger: "PENDING_AGE",
+      adapter: "indexeddb"
+    });
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "pending-age-timeout", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "pending-age-timeout", state: "pending", heartbeat: 1, progress }),
+      evaluated({ operationId: "pending-age-timeout", state: "pending", heartbeat: 2, progress }),
+      evaluated(true)
+    ]);
+    const error = await runPageOperation(cdp, "window.run()", {
+      operationId: "pending-age-timeout",
+      deadlineMs: 300_000,
+      pollIntervalMs: 1,
+      now: () => now,
+      sleep: async () => { now += 120_001; }
+    }).then(() => null, (failure) => failure);
+
+    expect(error).toBeInstanceOf(PerformanceOperationTimeout);
+    expect(error.status).toMatchObject({
+      progressAgeCeilingMs: 120_000,
+      progressStageDeadlineMs: 120_000,
+      progressStageAgeMs: 120_001,
+      progress: { stage: "PENDING_AGE-read", substage: "PENDING_AGE-receipt-settlement" }
+    });
+  });
+
   it("keeps lifecycle cleanup bounded when its repeated-GC request hangs", async () => {
     const events: string[] = [];
     const neverSettles = new Promise<FakeCdpResponse>(() => undefined);

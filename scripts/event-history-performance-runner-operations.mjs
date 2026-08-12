@@ -465,6 +465,13 @@ class CdpRequestTimeout extends Error {
 function progressAgeCeilingMs(progress) {
   if (!progress) return null;
   const stage = typeof progress.stage === "string" ? progress.stage : "";
+  const substage = typeof progress.substage === "string" ? progress.substage : "";
+  if (progress.phase === "terminal"
+    && progress.trigger === "PENDING_AGE"
+    && stage === "PENDING_AGE-read"
+    && substage === "PENDING_AGE-receipt-settlement") {
+    return 120_000;
+  }
   const phaseCeiling = progress.phase === "heap"
     ? 240_000
     : progress.phase === "terminal" || progress.phase === "checkpoint"
