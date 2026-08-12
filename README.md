@@ -18,7 +18,7 @@ Version 2 focuses on local, current-session debugging for the inspected tab thro
 
 - Adds a `Lightstreamer Workbench` panel to Chrome DevTools.
 - Instruments the inspected page at `document_start` to observe official Lightstreamer Web Client constructors and listeners.
-- Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into temporary session-scoped Event History for the current DevTools session.
+- Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into temporary session-scoped Event History for the current Panel Session.
 - Presents the accepted React **Scoped Evidence Workspace**: structural Topology chooses Scope, Ordered Evidence remains the dominant investigation surface, and Context explains the active runtime object or selected Evidence.
 - Keeps Capture operation, Coverage, Scope, Filter, Find, selection, and Live/Frozen Evidence position independent while retaining complete current-session history behind a bounded rendered window.
 - Reconstructs **Observed Server COMMAND State** from captured Server Updates and **Local Effective COMMAND State** from Server Updates plus successful Local Injected Updates.
@@ -30,7 +30,7 @@ Version 2 focuses on local, current-session debugging for the inspected tab thro
 ## What It Does Not Do
 
 - It does not send inspected URLs, Lightstreamer addresses, captured values, identifiers, search text, Injection Drafts, or error details to this project, the maintainers, analytics services, or any external backend.
-- It does not intentionally retain captured events after the current DevTools/tab session; temporary local storage is reset on panel startup and cleared on normal panel teardown.
+- It does not intentionally retain captured events after the current Panel Session; temporary local storage is reset on panel startup and cleared on normal panel teardown.
 - It does not inject data into the real Lightstreamer server stream.
 - It does not create a Lightstreamer client, call `connect()` or `subscribe()`, or establish a server session; capture only observes clients and WebSockets owned by the inspected page.
 - It does not provide app-specific interpretation rules in the core product.
@@ -80,7 +80,7 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 
 ## Privacy And Safety
 
-Lightstreamer Workbench keeps captured event data in temporary local storage for the current DevTools/tab session; that data is not transmitted off-device by the extension. Lightstreamer-provided client IP addresses are irreversibly masked before they cross the inspected-page capture boundary, so the panel never receives or offers a toggle for the exact address. Retired structural Scope remains readable historical Evidence only.
+Lightstreamer Workbench keeps captured event data in temporary local storage for the current Panel Session; that data is not transmitted off-device by the extension. Lightstreamer-provided client IP addresses are irreversibly masked before they cross the inspected-page capture boundary, so the panel never receives or offers a toggle for the exact address. Retired structural Scope remains readable historical Evidence only.
 
 Version 2 contains no product analytics UI, event code, configuration, network transport, or persistent installation identifier. On startup it clears retired preference and identifier records left by earlier versions. The public website is static HTML and CSS with no analytics, cookies, or executable JavaScript. The [public privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) documents the current release behavior.
 

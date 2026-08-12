@@ -73,7 +73,7 @@ type InstrumentationState = {
   syntheticWireEvents: WeakSet<object>;
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
-  emitLegacyToPanel(kind: CaptureKind, payload: CapturePayload, panelSessionId: PanelSessionId): void;
+  emitCaptureSyncReplayToPanel(kind: CaptureKind, payload: CapturePayload, panelSessionId: PanelSessionId): void;
 };
 
 type MethodOwner = Record<string, unknown>;
@@ -235,7 +235,7 @@ export function installLightstreamerInstrumentation(
         // Capture and its transport are best-effort and must never affect the page.
       }
     },
-    emitLegacyToPanel(kind, payload, panelSessionId) {
+    emitCaptureSyncReplayToPanel(kind, payload, panelSessionId) {
       try {
         const sanitizedPayload = sanitizeCapturePayload(payload);
         postMessage({
@@ -3258,7 +3258,7 @@ function installCaptureSyncHandler(host: LightstreamerHost, state: Instrumentati
         continue;
       }
       for (const row of Array.from(rows.values())) {
-        state.emitLegacyToPanel(
+        state.emitCaptureSyncReplayToPanel(
           "item-update",
           commandReplayPayload(row, activeSubscription),
           event.data.panelSessionId

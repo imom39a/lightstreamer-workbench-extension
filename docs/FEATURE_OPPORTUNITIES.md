@@ -72,7 +72,7 @@ Relevant implementation and product seams:
 - [Architecture and extension guide](ARCHITECTURE.md)
 - [Capture message contract](../src/bridge/messages.ts)
 - [Page instrumentation](../src/injected/lightstreamer-instrumentation.ts)
-- [Event History seam](../src/core/event-history.ts)
+- [Event History seam](../src/core/event-history-authoritative.ts)
 - [Workbench runtime](../src/extension/panel/workbench-runtime.ts)
 - [Event History workload evidence](research/event-history-workload-evidence.md)
 

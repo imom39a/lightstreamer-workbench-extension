@@ -283,7 +283,7 @@ sequenceDiagram
   UI-->>UI: normalize to LightstreamerEventEnvelope
   UI-->>UI: offer candidate to EventHistory
   BG-->>UI: repeat for every registered Panel Session on the tab when unscoped
-  UI-->>UI: each Panel Session normalizes, appends, and updates its history, topology, and COMMAND projections
+  UI-->>UI: each Panel Session normalizes and offers a candidate; committed publications update Event History, Topology, and COMMAND projections
 
   App->>LS: subscription listener receives onItemUpdate(update)
   Inj-->>Inj: proxy extracts item, fields, snapshot, command, key, raw diagnostics
@@ -869,7 +869,9 @@ Coverage is organized by architectural boundary:
 | `tests/instrumentation-lifecycle.test.ts` | Constructor hooks, namespace hooks, lifecycle wrappers, stable logical update IDs, listener registration/delivery metadata, connection details, WebSocket fallback, and page-side reinjection result behavior. |
 | `tests/event-normalizer.test.ts` | Capture-to-envelope normalization, COMMAND key/command preservation, current vs changed fields, snapshot status, and wire source mapping. |
 | `tests/event-filter.test.ts` | Event search text and structured filters. |
-| `tests/event-store.test.ts` | In-memory store behavior, high-volume stats, IndexedDB-backed queries, substring search parity, cursor paging, reset, and close cleanup behavior. |
+| `tests/authoritative-event-history.test.ts` | In-memory Event History acceptance, ordered Evidence, Clear/Close lifecycle, failure boundaries, and checkpoint candidates. |
+| `tests/authoritative-event-history-indexeddb.test.ts` | IndexedDB journal startup, ordered batching, committed reads, exact-facet paging, capacity accounting, failure boundaries, and guarded cleanup. |
+| `tests/authoritative-event-history-contract.test.ts` | Shared memory/IndexedDB Event History contract parity for ordered Evidence, Clear, failure, filtering, and lifecycle behavior. |
 | `tests/command-state.test.ts` | Full and incremental COMMAND reduction, grouping, metadata carry-forward, item identity, lifecycle, provenance, diagnostics, and draft validation against state. |
 | `tests/topology-state.test.ts` | Session authority and recovery epochs, waiting ownership, logical/delivery/synthetic counters, snapshots, compact five-session history, duplicate/overlap diagnostics, reset semantics, and unassigned subscriptions. |
 | `tests/reinjection-draft.test.ts` | Internal Injection Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
