@@ -329,6 +329,91 @@ describe("production React runtime performance boundary seam", () => {
     rootElement.remove();
   });
 
+  it("keeps one visible-frame callback alive across rapid React snapshot commits", async () => {
+    const visible: number[][] = [];
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-react-coalesced-frame" });
+    const scheduler = createFrameScheduler();
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler,
+      captureStatus: "capturing",
+      performanceHooks: {
+        onVisibleFrame(_boundary, _timestampMs, boundaries) {
+          visible.push((boundaries ?? []).map((entry) => entry.sequence));
+        }
+      }
+    });
+    const callbacks = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const frame = ++nextFrame;
+      callbacks.set(frame, callback);
+      return frame;
+    });
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+      callbacks.delete(frame);
+    });
+    const rootElement = document.createElement("main");
+    document.body.append(rootElement);
+    const root = createRoot(rootElement);
+
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    expect(callbacks.size).toBe(1);
+
+    for (let sequence = 1; sequence <= 3; sequence += 1) {
+      await act(async () => {
+        await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", sequence, "react-coalesced-frame")).settled;
+        scheduler.flushFrame();
+        await flushPromises();
+      });
+    }
+
+    expect(requestFrame).toHaveBeenCalledTimes(1);
+    expect(cancelFrame).not.toHaveBeenCalled();
+    const callback = callbacks.values().next().value;
+    expect(callback).toBeTypeOf("function");
+    await act(async () => callback?.(performance.now()));
+    expect(visible).toEqual([[1, 2, 3]]);
+
+    await act(async () => root.unmount());
+    runtime.dispose();
+    await history.close();
+    rootElement.remove();
+  });
+
+  it("attributes a visible frame to the React snapshot version that requested it", async () => {
+    const covered: number[][] = [];
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-versioned-frame" });
+    const scheduler = createFrameScheduler();
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler,
+      performanceHooks: {
+        onVisibleFrame(_boundary, _timestampMs, boundaries) {
+          covered.push((boundaries ?? []).map((entry) => entry.sequence));
+        }
+      }
+    });
+    await flushPromises();
+
+    await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "versioned-frame")).settled;
+    scheduler.flushFrame();
+    await flushPromises();
+    const firstVersion = runtime.getSnapshot().version;
+    await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 2, "versioned-frame")).settled;
+    scheduler.flushFrame();
+    await flushPromises();
+    const secondVersion = runtime.getSnapshot().version;
+
+    const reportVersion = runtime.reportVisibleFrame as ((version: number) => void) | undefined;
+    reportVersion?.(firstVersion);
+    reportVersion?.(secondVersion);
+    expect(covered).toEqual([[1], [2]]);
+
+    runtime.dispose();
+    await history.close();
+  });
+
   it("does not attribute a prior interval to a later visible frame", async () => {
     const covered: number[][] = [];
     const history = createInMemoryEventHistory({ panelSessionId: "performance-interval-boundary" });
