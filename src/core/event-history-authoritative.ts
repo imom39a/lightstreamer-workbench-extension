@@ -203,6 +203,11 @@ export interface EventHistory {
 export type OpenEventHistoryOptions = Readonly<{
   panelSessionId?: string;
   runtime?: AuthoritativeEventDatabaseRuntime;
+  clearJournal?: () => Promise<void | boolean> | void | boolean;
+  closeJournal?: () => Promise<void>;
+  commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void>;
+  failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
+  finalizeTerminal?: (terminal: HistoryTerminalDiagnostic) => void | Promise<void>;
 }> & HistoryCapacityOptions;
 
 type HistoryJournal = {
@@ -270,7 +275,14 @@ export async function openEventHistory(
       clock: options.clock,
       timer: options.timer,
       byteEstimator: options.byteEstimator,
-      capacity: options.capacity
+      capacity: options.capacity,
+      clearJournal: options.clearJournal,
+      closeJournal: options.closeJournal,
+      commitBatch: options.commitBatch === undefined
+        ? undefined
+        : async (batch) => { await options.commitBatch!(batch); },
+      failure: options.failure,
+      finalizeTerminal: options.finalizeTerminal
     });
   }
 }

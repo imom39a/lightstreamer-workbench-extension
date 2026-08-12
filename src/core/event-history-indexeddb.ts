@@ -1494,7 +1494,7 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
     const canPageCandidateKind = query.limit !== undefined
       && query.candidateKind !== undefined
       && query.eventId === undefined
-      && query.filters === undefined
+      && (query.filters === undefined || Object.keys(query.filters).length === 0)
       && query.find === undefined
       && query.afterSequence === undefined;
     if (canPageCandidateKind) {
@@ -1525,6 +1525,7 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
         ? 0
         : Math.max(0, Math.floor(query.offsetFromNewest));
       const pageStop = offset + limit;
+      preserveSelectionOrder = true;
       const direction = query.offsetFromNewest !== undefined || query.order === "desc" ? "prev" : "next";
       const request = store.openCursor(undefined, direction);
       let matched = 0;
