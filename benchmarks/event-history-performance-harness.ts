@@ -540,6 +540,13 @@ export type InterCellGcEvidence = Readonly<{
   phase: "BETWEEN_CELLS";
 }>;
 
+export type QuerySampleGcEvidence = Readonly<{
+  query: string;
+  afterSample: 1 | 2;
+  gcPasses: 3;
+  phase: "BETWEEN_QUERY_SAMPLES";
+}>;
+
 type RetainedHeapSession = Readonly<{
   operationId: string | null;
   adapter: "indexeddb" | "memory";
@@ -1436,11 +1443,12 @@ async function runCell(
     );
     const readStartedAt = performance.now();
     enterPhase("query");
+    const querySampleGc: QuerySampleGcEvidence[] = [];
     const queryMeasurements = await withStageDeadline((async () => {
-      const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard);
-      const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard);
-      const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard);
-      const full = await measureAuthoritativeFullQuery(history, () => progress("query", "query", "full"), runGuard);
+      const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard, querySampleGc);
+      const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard, querySampleGc);
+      const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard, querySampleGc);
+      const full = await measureAuthoritativeFullQuery(history, () => progress("query", "query", "full"), runGuard, querySampleGc);
       return { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms: full.p95Ms, read: full.read };
     })(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
     const { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms, read } = queryMeasurements;
@@ -1487,6 +1495,7 @@ async function runCell(
         retainedEventIds: retainedIds,
         publishedEventIds: publishedIds
       },
+      querySampleGc,
       latency: {
         offerToPublicationP95Ms: percentile(publicationLatencies, 0.95),
         offerToVisibleFrameP95Ms: percentile(visibleLatencies, 0.95),
@@ -2452,9 +2461,11 @@ export async function measureQuery(
   query: () => Promise<unknown>,
   queryName: string,
   progress: () => HarnessProgressInput,
-  guard: HarnessStageGuard | undefined = undefined
+  guard: HarnessStageGuard | undefined = undefined,
+  gcEvidence?: QuerySampleGcEvidence[],
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples
 ): Promise<number> {
-  return (await measureQueryWithLastResult(history, query, queryName, progress, guard)).p95Ms;
+  return (await measureQueryWithLastResult(history, query, queryName, progress, guard, gcEvidence, collectGc)).p95Ms;
 }
 
 async function measureQueryWithLastResult<T>(
@@ -2462,7 +2473,9 @@ async function measureQueryWithLastResult<T>(
   query: () => Promise<T>,
   queryName: string,
   progress: () => HarnessProgressInput,
-  guard: HarnessStageGuard | undefined = undefined
+  guard: HarnessStageGuard | undefined = undefined,
+  gcEvidence?: QuerySampleGcEvidence[],
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples
 ): Promise<Readonly<{ p95Ms: number; result: T }>> {
   const samples: number[] = [];
   let result!: T;
@@ -2472,6 +2485,10 @@ async function measureQueryWithLastResult<T>(
     result = await withStageDeadline(query(), `query-${queryName}-${index + 1}`, STAGE_DEADLINES_MS.query, progress, undefined, guard);
     if (guard && !guard.isActive()) throw new Error(`Query stage ${queryName} was invalidated.`);
     samples.push(performance.now() - startedAt);
+    if (index < 2 && gcEvidence) {
+      result = undefined as T;
+      gcEvidence.push(await collectGc(queryName, (index + 1) as 1 | 2, guard));
+    }
   }
   return { p95Ms: percentile(samples, 0.95), result };
 }
@@ -2479,16 +2496,34 @@ async function measureQueryWithLastResult<T>(
 export async function measureAuthoritativeFullQuery(
   history: EventHistory,
   progress: () => HarnessProgressInput,
-  guard: HarnessStageGuard | undefined = undefined
+  guard: HarnessStageGuard | undefined = undefined,
+  gcEvidence?: QuerySampleGcEvidence[],
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples
 ): Promise<Readonly<{ p95Ms: number; read: Awaited<ReturnType<EventHistory["read"]>> }>> {
   const measurement = await measureQueryWithLastResult(
     history,
     () => history.read({ order: "asc" }),
     "full",
     progress,
-    guard
+    guard,
+    gcEvidence,
+    collectGc
   );
   return { p95Ms: measurement.p95Ms, read: measurement.result };
+}
+
+export async function collectGarbageBetweenQuerySamples(
+  query: string,
+  afterSample: 1 | 2,
+  guard: HarnessStageGuard | undefined,
+  collect: (() => void) | null = (globalThis as typeof globalThis & { gc?: () => void }).gc ?? null
+): Promise<QuerySampleGcEvidence> {
+  if (guard && !guard.isActive()) throw new Error(`Query stage ${query} was invalidated before garbage collection.`);
+  if (typeof collect !== "function") throw new Error("Inter-query garbage collection requires Chrome --expose-gc support.");
+  await delay(0);
+  if (guard && !guard.isActive()) throw new Error(`Query stage ${query} was invalidated before garbage collection.`);
+  for (let pass = 0; pass < 3; pass += 1) collect();
+  return Object.freeze({ query, afterSample, gcPasses: 3, phase: "BETWEEN_QUERY_SAMPLES" });
 }
 
 function emptyStorageTelemetry(): StorageTelemetry {

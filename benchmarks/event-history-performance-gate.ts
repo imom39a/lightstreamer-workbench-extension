@@ -88,6 +88,7 @@ export type EventHistoryPerformanceCell = Readonly<{
     unattributedReasons: readonly EventHistoryPerformanceLongTaskReason[];
   }>;
   identityEvidence: EventHistoryPerformanceIdentityEvidence;
+  querySampleGc?: readonly EventHistoryPerformanceQuerySampleGc[];
   storage: Readonly<{
     transactionCount: number;
     readwriteTransactionCount: number;
@@ -123,6 +124,13 @@ export type EventHistoryPerformanceCell = Readonly<{
     refusedCount: number;
     discardedCount: number;
   }>;
+}>;
+
+export type EventHistoryPerformanceQuerySampleGc = Readonly<{
+  query: string;
+  afterSample: 1 | 2;
+  gcPasses: 3;
+  phase: "BETWEEN_QUERY_SAMPLES";
 }>;
 
 export type EventHistoryPerformanceHeapSample = Readonly<{
@@ -223,7 +231,10 @@ export type EventHistoryPerformanceReport = Readonly<{
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
   cells: readonly EventHistoryPerformanceCell[];
-  capabilities?: Readonly<{ interCellGc?: "EXPOSED_THREE_PASS_V1" }>;
+  capabilities?: Readonly<{
+    interCellGc?: "EXPOSED_THREE_PASS_V1";
+    interQuerySampleGc?: "EXPOSED_THREE_PASS_V1";
+  }>;
   cellCleanupGc?: readonly EventHistoryPerformanceInterCellGc[];
   terminalScenarios: readonly EventHistoryPerformanceTerminalScenario[];
   checkpointScenarios: readonly EventHistoryPerformanceCheckpointScenario[];
@@ -299,6 +310,9 @@ export function classifyEventHistoryPerformance(
   const requiresInterCellGc = validReport.capabilities?.interCellGc === "EXPOSED_THREE_PASS_V1"
     || validReport.cellCleanupGc !== undefined;
   if (requiresInterCellGc) validateInterCellGc(validReport.cellCleanupGc ?? [], failures);
+  const requiresQuerySampleGc = validReport.capabilities?.interQuerySampleGc === "EXPOSED_THREE_PASS_V1"
+    || validReport.cells.some((cell) => cell.querySampleGc !== undefined);
+  if (requiresQuerySampleGc) validateQuerySampleGc(validReport.cells, failures);
 
   for (const cell of validReport.cells) {
     const key = cellKey(cell);
@@ -451,6 +465,7 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && (value.capabilities === undefined || (
       isRecord(value.capabilities)
       && (value.capabilities.interCellGc === undefined || value.capabilities.interCellGc === "EXPOSED_THREE_PASS_V1")
+      && (value.capabilities.interQuerySampleGc === undefined || value.capabilities.interQuerySampleGc === "EXPOSED_THREE_PASS_V1")
     ))
     && (value.cellCleanupGc === undefined || (Array.isArray(value.cellCleanupGc) && value.cellCleanupGc.every(isInterCellGc)))
     && Array.isArray(value.terminalScenarios) && value.terminalScenarios.every(isTerminalScenario)
@@ -461,6 +476,16 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && lifecycle.retainedHeapBytes.length === SAMPLE_COUNT && lifecycle.retainedHeapBytes.every(isFiniteNumber)
     && isBoolean(lifecycle.strictMonotonicGrowth);
   return valid;
+}
+
+function validateQuerySampleGc(cells: readonly EventHistoryPerformanceCell[], failures: string[]): void {
+  const expected = ["recent-page:1", "recent-page:2", "structured-indexed:1", "structured-indexed:2", "find:1", "find:2", "full:1", "full:2"];
+  for (const cell of cells) {
+    const actual = (cell.querySampleGc ?? []).map(({ query, afterSample }) => `${query}:${afterSample}`);
+    if (actual.length !== expected.length || actual.some((entry, index) => entry !== expected[index])) {
+      failures.push(`${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample} must record all ordered inter-query GC boundaries.`);
+    }
+  }
 }
 
 function isInterCellGc(value: unknown): value is EventHistoryPerformanceInterCellGc {
@@ -734,6 +759,10 @@ function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell
   if (!isRecord(latency) || !["offerToPublicationP95Ms", "offerToVisibleFrameP95Ms", "committedBoundaryToVisibleFrameP95Ms", "behindBacklogMs", "recentPageP95Ms", "structuredIndexedP95Ms", "findFullP95Ms"].every((key) => isFiniteNumber(latency[key]) && (latency[key] as number) >= 0) || !(latency.finalBoundaryVisibleMs === null || (isFiniteNumber(latency.finalBoundaryVisibleMs) && latency.finalBoundaryVisibleMs >= 0))) return false;
   if (!isRecord(longTasks) || !isBoolean(longTasks.supported) || !Number.isSafeInteger(longTasks.unattributed) || (longTasks.unattributed as number) < 0 || !["capture", "commit", "paint", "query"].every((key) => Array.isArray(longTasks[key]) && (longTasks[key] as unknown[]).every((duration) => isFiniteNumber(duration) && duration >= 0)) || !Array.isArray(longTasks.unattributedReasons) || !longTasks.unattributedReasons.every(isLongTaskReason)) return false;
   if (!isIdentityEvidence(identityEvidence)) return false;
+  if (value.querySampleGc !== undefined && (!Array.isArray(value.querySampleGc) || !value.querySampleGc.every((entry) => isRecord(entry)
+    && typeof entry.query === "string" && entry.query.length > 0
+    && (entry.afterSample === 1 || entry.afterSample === 2)
+    && entry.gcPasses === 3 && entry.phase === "BETWEEN_QUERY_SAMPLES"))) return false;
   if (!isRecord(storage) || !["transactionCount", "readwriteTransactionCount", "readonlyTransactionCount", "evidenceWriteCount", "controlWriteCount", "facetEntryCount", "indexEntryCount"].every((key) => Number.isSafeInteger(storage[key]) && (storage[key] as number) >= 0)) return false;
   if (!isStorageEstimateTelemetry(storageEstimate)) return false;
   if (!isRecord(workloadFacts) || !["expectedCount", "offeredEventsPerSecond", "shapeBytes", "persistedJsonBytes", "indexedDbWritesPerEvent", "searchTokenCount"].every((key) => isFiniteNumber(workloadFacts[key]) && (workloadFacts[key] as number) >= 0)) return false;

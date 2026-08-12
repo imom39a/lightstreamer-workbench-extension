@@ -18,6 +18,7 @@ import {
   captureCellWorkloadFactScalars,
   burstOfferedEventsPerSecond,
   collectGarbageBetweenCells,
+  collectGarbageBetweenQuerySamples,
   HarnessStageTimeout,
   measureCheckpointLiveCapture,
   measureAuthoritativeFullQuery,
@@ -84,6 +85,43 @@ describe("Event History performance checkpoint workload", () => {
 
   it("fails closed when exposed inter-cell garbage collection is unavailable", async () => {
     await expect(collectGarbageBetweenCells(1, createHarnessStageGuard(), null))
+      .rejects.toThrow(/requires Chrome --expose-gc/u);
+  });
+
+  it("releases early query results and excludes inter-query GC from all three timings", async () => {
+    const evidence: Array<Awaited<ReturnType<typeof collectGarbageBetweenQuerySamples>>> = [];
+    const order: string[] = [];
+    let now = 0;
+    const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const p95 = await measureQuery(
+        {} as EventHistory,
+        async () => {
+          order.push("query");
+          now += 5;
+          return { large: "payload" };
+        },
+        "full",
+        () => progress("query"),
+        createHarnessStageGuard(),
+        evidence,
+        async (query, afterSample) => {
+          order.push("gc");
+          now += 1_000;
+          return { query, afterSample, gcPasses: 3, phase: "BETWEEN_QUERY_SAMPLES" };
+        }
+      );
+
+      expect(p95).toBe(5);
+      expect(order).toEqual(["query", "gc", "query", "gc", "query"]);
+      expect(evidence.map(({ query, afterSample }) => `${query}:${afterSample}`)).toEqual(["full:1", "full:2"]);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("fails closed when exposed inter-query garbage collection is unavailable", async () => {
+    await expect(collectGarbageBetweenQuerySamples("full", 1, createHarnessStageGuard(), null))
       .rejects.toThrow(/requires Chrome --expose-gc/u);
   });
 

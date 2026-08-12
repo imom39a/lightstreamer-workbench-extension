@@ -77,6 +77,12 @@ function cell(
       retainedEventIds: [...expectedEventIds],
       publishedEventIds: [...expectedEventIds]
     },
+    querySampleGc: ["recent-page", "structured-indexed", "find", "full"].flatMap((query) => [1, 2].map((afterSample) => ({
+      query,
+      afterSample: afterSample as 1 | 2,
+      gcPasses: 3 as const,
+      phase: "BETWEEN_QUERY_SAMPLES" as const
+    }))),
     workloadFacts: {
       expectedCount: 1_692,
       offeredEventsPerSecond: 50,
@@ -228,7 +234,7 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
     schemaVersion: 2,
     source: { revision: "clean-reference-revision", dirty: false },
     environment: { chromeMajor: 151, platformClass: "darwin", architectureClass: "arm64", headless: false },
-    capabilities: { interCellGc: "EXPOSED_THREE_PASS_V1" },
+    capabilities: { interCellGc: "EXPOSED_THREE_PASS_V1", interQuerySampleGc: "EXPOSED_THREE_PASS_V1" },
     cells,
     cellCleanupGc: Array.from({ length: 35 }, (_, index) => ({
       afterCellIndex: index + 1,
@@ -317,11 +323,26 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
   it("keeps an unmarked schema-v2 report and reference backward compatible", () => {
     const baseline = report();
-    const legacy = { ...baseline, capabilities: undefined, cellCleanupGc: undefined };
+    const legacy = {
+      ...baseline,
+      capabilities: undefined,
+      cellCleanupGc: undefined,
+      cells: baseline.cells.map(({ querySampleGc: _querySampleGc, ...cellValue }) => cellValue)
+    };
     const reference = referenceFrom(baseline);
 
     expect(classifyEventHistoryPerformance(legacy, reference).verdict).toBe("PASS");
     expect(validateEventHistoryPerformanceReference(reference)).toBe(true);
+  });
+
+  it("fails a current capable candidate when inter-query GC evidence is missing", () => {
+    const baseline = report();
+    const current = { ...baseline, cells: baseline.cells.map(({ querySampleGc: _querySampleGc, ...cellValue }) => cellValue) };
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("inter-query GC boundaries"))).toBe(true);
   });
 
   it("returns PASS only when all three samples and the pinned reference pass", () => {
