@@ -49,7 +49,11 @@ Scope selection and evidence selection are separate state. Selecting an evidence
 
 ### Ordered evidence ledger
 
-The evidence ledger is always the dominant working surface. It presents complete current-session evidence through a bounded or virtualized rendering while preserving chronological order.
+The evidence ledger is always the dominant working surface. It presents
+complete current-session Evidence only through the current History Interval's
+Committed Evidence Boundary, using bounded or virtualized rendering while
+preserving chronological order. A stopped or failed History Interval does not
+claim events beyond its final committed boundary.
 
 Its stable scanning grammar includes:
 
@@ -66,6 +70,23 @@ Scope, Filter, and Find remain distinct:
 - **Find** moves among matches without silently changing the evidence set.
 
 Live Capture never steals focus, selection, scroll position, or detail context. Frozen investigation preserves the historical window while Capture continues and reports newer matching evidence.
+
+### History and operating boundaries
+
+One Panel Session owns one temporary Event History. The normal IndexedDB journal
+supports 10,000 Evidence records or 64 MiB of retained serialized journal bytes;
+the startup in-memory fallback supports 5,000 records or 32 MiB. The selected
+adapter is fixed before the first offer and never changes during the session.
+Fallback changes History Capacity only; Capture Operation, Observation Coverage,
+and Live/Frozen position remain independent.
+
+Clear is a deliberate exact History Interval cut: accepted work settles before
+the old interval is removed and post-cut Evidence belongs only to the new
+interval. Capacity pressure or journal failure stops acceptance fail-closed at
+the final Committed Evidence Boundary; Clear cannot restart it. Controlled Close
+attempts erasure and reports its outcome. Abnormal termination can leave
+residual data until an ownership-safe guarded sweep, which never replays
+abandoned Evidence. A new Panel Session starts empty.
 
 ### Contextual secondary surface
 

@@ -46,4 +46,4 @@ Review the [Support page](https://imom39a.github.io/lightstreamer-workbench-exte
 
 ## Data-handling reminder
 
-Workbench is designed to process Lightstreamer Evidence locally in the inspected browser session. Do not attach raw production event streams, exports, or screenshots containing sensitive application data to public issues or pull requests.
+Workbench is designed to process Lightstreamer Evidence locally inside one Panel Session. The session owns one temporary Event History; controlled Close attempts erasure, while abnormal termination can defer cleanup to a later ownership-safe sweep. Residual data may remain until Chrome next runs the extension, but a new Panel Session never replays stale Evidence. Do not attach raw production event streams, exports, or screenshots containing sensitive application data to public issues or pull requests.

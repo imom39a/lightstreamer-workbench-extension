@@ -20,17 +20,33 @@ Version 2 focuses on local, current-session debugging for the inspected tab thro
 - Instruments the inspected page at `document_start` to observe official Lightstreamer Web Client constructors and listeners.
 - Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into temporary session-scoped Event History for the current Panel Session.
 - Presents the accepted React **Scoped Evidence Workspace**: structural Topology chooses Scope, Ordered Evidence remains the dominant investigation surface, and Context explains the active runtime object or selected Evidence.
-- Keeps Capture operation, Coverage, Scope, Filter, Find, selection, and Live/Frozen Evidence position independent while retaining complete current-session history behind a bounded rendered window.
+- Keeps Capture operation, Coverage, Scope, Filter, Find, selection, and Live/Frozen Evidence position independent while retaining accepted current-session Evidence through its Committed Evidence Boundary behind a bounded rendered window.
 - Reconstructs **Observed Server COMMAND State** from captured Server Updates and **Local Effective COMMAND State** from Server Updates plus successful Local Injected Updates.
 - Maintains exactly one target-anchored **Local Injection Draft**, created from an immutable selected Injection Source or authored from a live COMMAND scope, with raw JSON editing, validation, Review, and a persistent truthful outcome.
 - Delivers a reviewed Local Injection through a captured listener or captured Lightstreamer WebSocket path in the inspected page.
 - Provides WebSocket/TLCP fallback diagnostics when primary Web Client API instrumentation is unavailable.
 - Marks successful Local Injected Update Evidence clearly so it remains distinguishable from Server Evidence.
 
+### Event History contract
+
+Each Panel Session owns one temporary Event History. The normal IndexedDB journal
+supports up to 10,000 Evidence records or 64 MiB of retained serialized journal
+bytes; when startup selects the in-memory fallback, the truthful lower-capacity
+limits are 5,000 records or 32 MiB. The adapter is selected before the first
+offer and never changes during the session. The fallback changes History Capacity
+only; it does not by itself reduce Observation Coverage or alter Live/Frozen view
+state.
+
+Evidence is complete only through the current History Interval's Committed
+Evidence Boundary. A successful Clear makes an exact interval cut after already
+accepted work settles; it does not restart a stopped history. Capacity pressure or
+a journal failure stops acceptance fail-closed at the final committed boundary,
+with queued work settled explicitly and no silent drop or later resume.
+
 ## What It Does Not Do
 
 - It does not send inspected URLs, Lightstreamer addresses, captured values, identifiers, search text, Injection Drafts, or error details to this project, the maintainers, analytics services, or any external backend.
-- It does not intentionally retain captured events after the current Panel Session; temporary local storage is reset on panel startup and cleared on normal panel teardown.
+- It does not intentionally retain captured events beyond the current Panel Session. Controlled Close makes a final intake cut, attempts to erase the owned history, and reports whether erasure and cleanup were confirmed. A crash, renderer termination, extension reload, or blocked cleanup can leave residual temporary data until a later ownership-safe guarded sweep; that sweep never replays abandoned Evidence, and a new Panel Session starts empty.
 - It does not inject data into the real Lightstreamer server stream.
 - It does not create a Lightstreamer client, call `connect()` or `subscribe()`, or establish a server session; capture only observes clients and WebSockets owned by the inspected page.
 - It does not provide app-specific interpretation rules in the core product.
@@ -80,7 +96,7 @@ Please keep the core model Lightstreamer-native. App-specific business objects s
 
 ## Privacy And Safety
 
-Lightstreamer Workbench keeps captured event data in temporary local storage for the current Panel Session; that data is not transmitted off-device by the extension. Lightstreamer-provided client IP addresses are irreversibly masked before they cross the inspected-page capture boundary, so the panel never receives or offers a toggle for the exact address. Retired structural Scope remains readable historical Evidence only.
+Lightstreamer Workbench keeps captured event data in one temporary, Panel Session-owned Event History; that data is not transmitted off-device by the extension. Evidence is complete only through the current History Interval's Committed Evidence Boundary. Lightstreamer-provided client IP addresses are irreversibly masked before they cross the inspected-page capture boundary, so the panel never receives or offers a toggle for the exact address. Retired structural Scope remains readable historical Evidence only.
 
 Version 2 contains no product analytics UI, event code, configuration, network transport, or persistent installation identifier. On startup it clears retired preference and identifier records left by earlier versions. The public website is static HTML and CSS with no analytics, cookies, or executable JavaScript. The [public privacy policy](https://imom39a.github.io/lightstreamer-workbench-extension/privacy/) documents the current release behavior.
 

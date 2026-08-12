@@ -12,7 +12,7 @@ The redesign is complete. Workbench now has a stable product shape: compact live
 
 The highest-value direction is now:
 
-1. Make Event History acceptance, completeness, Clear, overload, and failure boundaries explicit and fail closed.
+1. Deepen Evidence inspection and diagnostics now that Event History acceptance, completeness, Clear, overload, and failure boundaries are explicit and fail closed.
 2. Make existing Evidence faster to narrow and more conclusive through contextual facets, changed-field and delivery inspection, diagnostics, connection recovery, and snapshot explanation.
 3. Add first-class Client Message Capture and the planned Server Injection workflow through the inspected client's normal `sendMessage` path.
 4. Design multi-event Local Injection as a real scenario model before adding any batch or run-all UI to the current one-Draft workflow.
@@ -42,7 +42,8 @@ The redesigned production panel now provides:
 
 - A React **Scoped Evidence Workspace** with structural Page → client → Session → Subscription → item → listener Scope.
 - Live and retired runtime structure, Session recovery epochs, bounded historical Sessions, subscription configuration, duplicate/overlap findings, snapshot phase, listener and delivery counts, and COMMAND generation summaries.
-- Complete ordered current-session Evidence backed by IndexedDB in bounded batches, with an in-memory fallback, bounded query windows, high-volume navigation, and deliberate Clear.
+- Complete ordered current-session Evidence backed by one Panel Session-owned Event History, with an in-memory fallback, bounded query windows, high-volume navigation, and deliberate Clear. Normal capacity is 10,000 records/64 MiB; startup memory fallback is 5,000 records/32 MiB.
+- A committed Evidence boundary, History Intervals, exact Clear cuts, fail-closed terminal stops, fixed adapter selection, and ownership-safe abnormal cleanup now define the shipped history contract. New Panel Sessions start empty and never replay stale Evidence.
 - Independent Scope, text Filter, Find, Evidence selection, Context, and Live/Frozen state. Frozen Evidence continues Capture and reports newer matching Evidence.
 - Full retained-Evidence copy plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in complete evidence, category redaction, and unconditional credential exclusion.
 - Named **Observed Server COMMAND State** and **Local Effective COMMAND State** projections.
@@ -52,7 +53,7 @@ The redesigned production panel now provides:
 
 The most important remaining gaps are:
 
-- The Event History vocabulary now defines Evidence acceptance, a Committed Evidence Boundary, History Intervals, Complete History, and History Capacity; these concepts still need one explicit production state machine and fail-closed contract across Capture, storage, projections, Clear, and Local Injection evidence retention.
+- Event History acceptance, the Committed Evidence Boundary, History Intervals, Complete History, History Capacity, fail-closed terminal behavior, and Local Injection retention are delivered through the production state machine. Complete History is only the committed boundary of the current interval; Clear cannot restart stopped Capture, and a storage fallback changes History Capacity without automatically changing Observation Coverage.
 - `ClientListener.onServerError` and `onServerKeepalive` are not captured as first-class Evidence.
 - `LightstreamerClient.sendMessage` calls and `ClientMessageListener` outcomes are not captured, so Captured Client Messages and Server Injection are not yet available.
 - The filter engine supports structured fields, but the redesigned panel primarily exposes Scope and free-text filtering rather than contextual facets and clickable values.
@@ -115,7 +116,7 @@ Effort includes the implementation and the proportional evidence required by the
 | 5 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Single Draft exists; scenario semantics undecided | L + design gate | P0 |
 | 6 | Snapshot bootstrap and resubscription correctness lens | 4.7/5 | Snapshot phases exist; explanation partial | M | P0 |
 | 7 | Captured Client Messages and deliberate Server Injection | 4.6/5 | Planned, not implemented | L | P0 |
-| 8 | Committed Evidence Boundary and fail-closed History Capacity | 4.5/5 | Foundation defined, production contract incomplete | M-L | P0 |
+| 8 | Committed Evidence Boundary and fail-closed History Capacity | 4.5/5 | Delivered through the Event History implementation train; future refinements remain possible | M-L | P0 |
 | 9 | Filtering, frequency, bandwidth, buffer, and loss profiler | 4.4/5 | Metadata exists; profiler absent | M | P1 |
 | 10 | Watch rules and conditional listener breakpoints | 4.3/5 | Not implemented | M | P1 |
 | 11 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 4.3/5 | COMMAND only | M-L | P1 |
@@ -160,9 +161,9 @@ Opportunity headings below carry the build number, not the usefulness rank. The 
 
 ## P0 Opportunity Details
 
-### Build 1 — Committed Evidence Boundary and Fail-Closed History Capacity
+### Build 1 — Committed Evidence Boundary and Fail-Closed History Capacity (delivered)
 
-Create one Event History state machine that owns:
+The implementation train delivered one Event History state machine that owns:
 
 - primary-versus-fallback adapter selection;
 - Capture Operation and the ability to accept new captured events;
@@ -172,7 +173,7 @@ Create one Event History state machine that owns:
 - capacity exhaustion, journal failure, Clear failure, and teardown;
 - publication of accepted Evidence to Topology and COMMAND projections.
 
-Required outcomes:
+The delivered contract guarantees:
 
 - A captured event becomes Evidence only after its whole accepted batch commits.
 - Only Evidence advances Topology or COMMAND projections.
@@ -182,12 +183,12 @@ Required outcomes:
 - A Local Injection may truthfully remain `DELIVERED LOCALLY` if retaining its synthetic event fails, but no Local Evidence or projection change may be manufactured from an unaccepted event.
 - Material state reaches the existing operating strip or diagnostic footer without exposing IndexedDB mechanics as product language.
 
-Why first:
+Why it was first:
 
 - Every additional capture kind, scenario, import, projection, and profiler depends on trustworthy ordered Evidence.
 - The workload measurements show that large JSON bursts can create long pending ages and material queued bytes. Capacity and overload need explicit behavior rather than an implicit performance assumption.
 
-This opportunity does not introduce rolling retention or a permanent history dashboard. The throwaway [Event History state-machine prototype](../prototypes/event-history-03/event-history-state-machine.html) is decision evidence only.
+This delivered opportunity does not introduce rolling retention or a permanent history dashboard. The throwaway [Event History state-machine prototype](../prototypes/event-history-03/event-history-state-machine.html) remains decision evidence only. Release proof, including the real-Chrome verdict and any accepted `REVIEW` disposition, is retained on the internal Project ticket; `FAIL` remains a release blocker.
 
 ### Build 2 — Contextual Faceted Evidence Filtering
 
@@ -494,17 +495,17 @@ For applications using the optional MPN module, inspect device registration/susp
 | Mobile Push Notification Workbench | Still specialized. |
 | Cross-Capture Comparison and Regression Diff | Keep after import. |
 
-**Committed Evidence Boundary and Fail-Closed History Capacity** was added after the redesign and high-volume history work made the Evidence-acceptance and capacity boundary explicit.
+**Committed Evidence Boundary and Fail-Closed History Capacity** was delivered after the redesign and high-volume history work made the Evidence-acceptance and capacity boundary explicit. Its real-Chrome cutover disposition and release artifacts are retained on the internal Project ticket.
 
 ## Suggested Delivery Increments
 
-### Increment A: Make Evidence Acceptance Truthful
+### Increment A: Make Evidence Acceptance Truthful (delivered)
 
-1. Implement the single Event History state machine and Committed Evidence Boundary.
-2. Make projections consume accepted Evidence only.
-3. Define fail-closed journal/capacity behavior and exact Clear cuts.
-4. Surface only material Capture Operation, Observation Coverage, History Capacity, and completeness consequences.
-5. Prove sustained, burst, failure, Clear, fallback, and teardown cases.
+1. Delivered the single Event History state machine and Committed Evidence Boundary.
+2. Made projections consume accepted Evidence only.
+3. Defined fail-closed journal/capacity behavior and exact Clear cuts.
+4. Surfaced only material Capture Operation, Observation Coverage, History Capacity, and completeness consequences.
+5. Proved sustained, burst, failure, Clear, fallback, and teardown cases; retain the exact final release packet on the Project ticket.
 
 ### Increment B: Make the Redesigned Diagnose Journey Conclusive
 

@@ -463,11 +463,30 @@ clear()
 close()
 ```
 
-`createIndexedDbEventHistory()` is the normal session-backed implementation. If IndexedDB startup cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the remainder of that Panel Session. This is a storage fallback within the same interface, not a second event model or a mid-session migration. Accepted candidates retain Capture order; committed publications drive the runtime's topology, COMMAND projections, and Evidence window.
+`createIndexedDbEventHistory()` is the normal session-backed implementation. If
+IndexedDB startup, ownership coordination, schema validation, or guarded cleanup
+cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the
+remainder of that Panel Session. This is a storage fallback within the same
+interface, not a second event model or a mid-session migration. The normal
+IndexedDB tier is bounded at 10,000 Evidence records or 64 MiB of retained
+serialized journal bytes; the startup memory tier is bounded at 5,000 records or
+32 MiB. Count and retained bytes are independent limits, and the first limit
+reached controls admission.
+
+Each Panel Session owns exactly one Event History. The selected adapter is fixed
+before the first offer. A lower-capacity memory fallback changes History Capacity
+only: it does not by itself reduce Observation Coverage, alter Capture semantics,
+or change Live/Frozen view state. Accepted candidates retain Capture order, and
+only committed publications drive Topology, COMMAND projections, and the
+Evidence window.
 
 The panel overlays a bounded 60-event live tail on the latest retained page while a query is in flight. The overlay is presentation-only; every accepted candidate still follows the ordered EventHistory path.
 
-Each `mountWorkbenchPanel()` allocates a cryptographically random Panel Session identity before starting storage or bridge work. It calls `openEventHistory()` with that identity; the opener selects the IndexedDB journal before the first offer and falls back to the memory implementation only when startup, ownership, schema, or guarded cleanup cannot be confirmed:
+Each `mountWorkbenchPanel()` allocates a cryptographically random Panel Session
+identity before starting storage or bridge work. It calls `openEventHistory()`
+with that identity; the opener selects the IndexedDB journal before the first
+offer and falls back to the memory implementation only when startup, ownership,
+schema, or guarded cleanup cannot be confirmed:
 
 ```ts
 openEventHistory({
@@ -475,11 +494,42 @@ openEventHistory({
 })
 ```
 
-`createIndexedDbEventHistory()` acquires an exclusive per-journal ownership lock, claims a live Panel Session lease, validates and sweeps only recognized orphan generations, and keeps the selected journal implementation fixed for the Panel Session. If acquisition fails, `openEventHistory()` logs the error and creates `createInMemoryEventHistory()` with the lower-capacity fallback reason; there is no mid-session migration. The panel closes Event History on `dispose` and the actual `pagehide` lifecycle event. IndexedDB-backed `close()` drains accepted writes, clears the owned Panel Session journal, closes the database handle, and releases the ownership lock and live lease; cleanup outcomes are reported rather than assumed.
+`createIndexedDbEventHistory()` acquires an exclusive per-journal ownership lock,
+claims a live Panel Session lease, validates and sweeps only recognized orphan
+generations, and keeps the selected journal implementation fixed for the Panel
+Session. If acquisition fails, `openEventHistory()` logs the error and creates
+`createInMemoryEventHistory()` with the lower-capacity fallback reason; there is
+no mid-session migration.
+
+The panel requests Close on `dispose` and the actual `pagehide` lifecycle event.
+Controlled Close makes a final synchronous intake cut, refuses later offers,
+settles the accepted prefix where possible, attempts to erase retained and
+pending data, releases ownership, and reports whether erasure and cleanup were
+confirmed. Close is best effort at a lifecycle boundary: a crash, renderer
+termination, extension reload, or blocked cleanup can leave residual data until
+a later guarded sweep. The sweep acquires the orphan's ownership guard, skips an
+active owner, preserves unknown newer schemas, and never reads, exports,
+projects, or replays abandoned Evidence. A new Panel Session starts with a new
+empty Event History; there is no cross-session recovery.
+
+Each successful `clear()` is an exact History Interval cut. Already accepted
+work settles before the prior interval is erased; post-cut offers belong only to
+the new interval. A failed Clear either proves the prior interval unchanged and
+continues in that interval, or becomes a terminal journal failure when that
+boundary cannot be proven. Clear never restarts a stopped history.
 
 ### History Status
 
 `EventHistory.status()` is the authoritative runtime status. It reports phase, capture operation, accepted and refused counts, retained range, and capacity pressure through `capacity.tier` and `capacity.state` (`AVAILABLE`, `NEAR_LIMIT`, or `EXHAUSTED`). The panel renders those fields directly and uses the same status publications to derive history diagnostics. There is no generic event-count warning threshold or parallel retained-count authority.
+
+Complete History is a qualified claim: it means every accepted candidate in the
+current History Interval through its Committed Evidence Boundary, not every event
+that the inspected page may have produced and not an unbounded panel-lifetime
+archive. On a retained-count, retained-byte, pending-byte, pending-age, or journal
+failure stop, Event History refuses later offers, settles any already queued
+prefix, records the final committed boundary and typed terminal cause, and cannot
+resume through Clear or an adapter switch. Failed, refused, or discarded
+candidates do not receive Evidence sequence numbers or projection effects.
 
 ## Topology State Architecture
 
@@ -761,7 +811,7 @@ Storage mode and retained-history capacity are independent of Observation Covera
 The accepted workspace has three semantic responsibilities rather than permanent feature views:
 
 1. **Scope** presents page → client → Session → Subscription → item → listener structure as a roving tree at wide geometry and a temporary picker when space is constrained. Retired objects remain readable but cannot become Local Injection targets.
-2. **Ordered Evidence** is the dominant surface. It renders a query-backed 60-event window while the complete current-session history remains in the store. Filter changes visibility, Find navigates matches, selection anchors Context, and Live/Frozen position remains independent from Capture.
+2. **Ordered Evidence** is the dominant surface. It renders a query-backed 60-event window while accepted current-session Evidence remains in the store through the current interval's Committed Evidence Boundary. Filter changes visibility, Find navigates matches, selection anchors Context, and Live/Frozen position remains independent from Capture.
 3. **Context** explains the active runtime object or selected Evidence and provides complete raw Evidence, named COMMAND projections, scoped export, session operations, and the contextual entry to Local Injection.
 
 Elastic Triad presentation moves, collapses, or temporarily promotes these responsibilities across wide, normal, shallow, and compact geometry without reconstructing semantic state. Scope, Evidence focus, selection, Filter, Find, Live/Frozen position, Context, and a safe Draft restore by stable identity.

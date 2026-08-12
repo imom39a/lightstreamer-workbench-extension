@@ -8,7 +8,7 @@ cutover, not current product behavior.
 
 This document records the completed move from the feature-first DOM renderer to the accepted [integrated Workbench direction](../prototypes/workbench-ui-10/README.md). The original slice gates and fallback reasoning remain as implementation history; the current production state is authoritative wherever it differs from an earlier slice description.
 
-The migration preserved the Lightstreamer and extension semantics that existed at cutover. It replaced the panel renderer and its state boundary without reinterpreting Capture, COMMAND state, Local Injection, storage, privacy, export, or the then-current analytics behavior.
+The migration preserved the Lightstreamer and extension semantics that existed at cutover. It replaced the panel renderer and its state boundary without reinterpreting Capture, COMMAND state, Local Injection, storage, privacy, export, or the then-current analytics behavior. The later Event History implementation and legacy contraction are now the current production boundary; the storage contract below is authoritative wherever this historical migration record is broader.
 
 ## Outcome
 
@@ -19,6 +19,27 @@ The accepted **Scoped Evidence Workspace** was implemented with React in three d
 3. **Cut over and remove the legacy renderer** — changed the approved Store build to React only, proved capability parity, and deleted the temporary renderer-selection machinery and obsolete interface.
 
 The current repository has one panel implementation and one production artifact. `npm run build` writes the accepted React Workbench to `dist/`; Store packaging consumes that same artifact. The temporary Slice 1/2 React-only commands, second output directory, compile-time renderer alias, and renderer environment gate no longer exist.
+
+## Current Event History outcome
+
+The production panel now gives each Panel Session exactly one temporary Event
+History. The normal IndexedDB journal allows 10,000 Evidence records or 64 MiB
+of retained serialized journal bytes; startup memory fallback allows 5,000
+records or 32 MiB. The adapter is selected before the first offer and is never
+switched during the session. Fallback changes History Capacity only, not Capture
+Operation, Observation Coverage, or Live/Frozen state.
+
+Complete History is qualified by the current History Interval's Committed
+Evidence Boundary. Clear is an exact interval cut after accepted work settles;
+it cannot restart a stopped history. Capacity pressure or journal failure stops
+acceptance fail-closed at the final committed boundary, and failed, refused, or
+discarded candidates never become Evidence or advance projections.
+
+Controlled Close makes a final intake cut, attempts erasure, and reports whether
+erasure and cleanup were confirmed. A crash, renderer termination, extension
+reload, or blocked cleanup may leave residual data until a later ownership-safe
+guarded sweep. The sweep never replays abandoned Evidence, and a new Panel
+Session starts empty without cross-session recovery.
 
 ## Decisions fixed by this plan
 
@@ -68,7 +89,7 @@ React components do not subscribe directly to Capture, history, bridge, or analy
 ### Evidence rendering
 
 - Preserve the existing query-backed **60-event bounded window** for the first production migration.
-- Preserve complete current-session history in the existing store; the bound applies only to rendered Evidence.
+- Preserve accepted current-session Evidence in the existing store through the current interval's Committed Evidence Boundary; the bound applies only to rendered Evidence.
 - Preserve chronological order, Live and Frozen semantics, filtered newer counts, stable event identity, selection, scroll anchoring, and deliberate Follow Live behavior.
 - React renders keyed rows from the bounded snapshot. Do not add a virtual-list dependency until measured production evidence shows missed frames, long tasks, or inadequate historical navigation.
 - A future virtualization change cannot alter Evidence, query, selection, or Live/Frozen semantics.
@@ -113,7 +134,7 @@ Visual compatibility means conformance to the accepted prototype and UI standard
 | --- | --- | --- |
 | Capture | Remains observational; never alters or suppresses application updates or messages. Capture operation stays distinct from Coverage and Live/Frozen view state. | Shared Capture scenarios plus unpacked-extension fixture. |
 | Official Web Client instrumentation | Existing MAIN-world instrumentation and typed bridge envelopes remain unchanged unless separately approved. React never enters inspected-page code. | Build bundle audit and official-client fixture. |
-| Event history | Ordered IndexedDB batches, in-memory fallback, current-DevTools-session teardown, filtering, counts, and complete retained history remain intact. | In-memory and IndexedDB sustained-Capture scenarios. |
+| Event history | Ordered IndexedDB batches, in-memory fallback, current-DevTools-session ownership, exact History Interval cuts, qualified Complete History through the Committed Evidence Boundary, fail-closed stopping, and guarded cleanup remain intact. | In-memory and IndexedDB sustained-Capture, Clear/Close, terminal, and lifecycle scenarios. |
 | Scope and Topology | Structural Topology chooses Scope; Evidence selection never silently changes it. Retired objects remain readable but cannot be targets. | Live, retired, limited-Coverage, and disconnected scenarios. |
 | COMMAND projections | Observed Server uses captured Server Updates only. Local Effective additionally applies successful Local Injected Updates. Names and provenance never collapse. | Projection comparison and lifecycle scenarios. |
 | Local Injection | Forks an immutable Source into one prospective Draft, remains local and Subscription-scoped, validates the exact live target, and uses the existing delivery path. | Draft, stale-target, delivered, partial-failure, and acknowledgement-loss scenarios plus extension fixture. |
@@ -161,7 +182,7 @@ Each extraction landed with a developer-visible React behavior and its scenario.
 - active Filter and separate Find navigation;
 - limited Coverage, inspected-page disconnect, recovery, retired Scope, and IndexedDB fallback;
 - raw Evidence, scoped export, and both COMMAND projections;
-- normal teardown and reopened panel state appropriate to current-session storage.
+- controlled Close and a new empty Panel Session, with abnormal-cleanup residuals never replayed.
 
 ### Slice 1 completion gate
 

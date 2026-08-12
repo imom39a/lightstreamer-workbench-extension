@@ -39,11 +39,25 @@ npm run release:package -- --skip-build
 
 The package step fails if `package.json` and `public/manifest.json` do not use the same version. Before every store update, bump both versions and rebuild.
 
+The local packager also enforces the Workbench release budget: the stored ZIP must remain below 1 MiB. Inspect the ZIP root, run its integrity check, and record the final byte count with the release evidence.
+
 ## No-analytics release invariant
 
 Version 2 official builds contain no product analytics, tracking transport, remote error logging, or persistent analytics identifier. `npm run build` audits the compiled extension for retired endpoints, configuration names, and identifier keys. The panel mount also clears legacy 0.1.x consent and identifier records without affecting investigation state when storage is unavailable.
 
 Any future off-device product data path requires a new explicit design decision, maintainer approval, policy and Store disclosure changes, and release-specific tests before code lands. Release credentials or environment variables must never be used to bypass this invariant.
+
+## Event History release contract
+
+The delivered Event History implementation has one temporary, Panel Session-owned journal. The normal IndexedDB tier supports 10,000 retained Evidence records or 64 MiB of canonical replay-complete journal bytes; the startup memory tier supports 5,000 records or 32 MiB. The first independent limit reached controls admission, and the selected adapter never changes during a Panel Session.
+
+Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary. Clear is an exact interval cut and cannot restart Capture after a terminal stop. A journal failure or capacity breach stops acceptance fail-closed at the trustworthy boundary; refused or failed candidates do not become Evidence or advance projections. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen state are separate, so startup memory fallback alone does not imply limited Coverage.
+
+Controlled Close attempts erasure and reports the confirmed result. Abnormal termination relies on a later ownership-safe sweep; residual temporary data may remain until Chrome next runs the extension. A new Panel Session starts empty and never replays stale Evidence. Deliberate user exports are the only Capture-derived artifacts intended to outlive the session.
+
+The release gate records an accepted `REVIEW` disposition for the delivered real-Chrome Event History cutover with zero absolute failures; this is not the same as `PASS`, and any `FAIL` remains a release blocker. The exact final current-HEAD report, environment, artifact hashes, visual-QA record, and package inspection belong in the related internal Project ticket rather than in this general release procedure.
+
+The packaged manifest must remain Manifest V3 without a new storage permission or `unlimitedStorage`. Before publication, inspect both `dist/manifest.json` and the ZIP-root `manifest.json`, confirm the package audit passes, and verify that the Store privacy answers, [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and `store-listing/LISTING.md` describe the same local, session-scoped behavior.
 
 ## Store Listing Assets
 

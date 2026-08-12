@@ -15,9 +15,11 @@ Live/Frozen position does not start or stop Capture. Likewise, Capture state doe
 
 ## Retained history
 
-Current-session history is held in temporary IndexedDB-backed batches when available, with an in-memory fallback. The DOM stays bounded even when thousands of events are retained. Use Oldest, Older, Newer, and Newest to move through retained regions.
+One Panel Session owns one temporary Event History. The normal IndexedDB tier supports 10,000 retained Evidence records or 64 MiB of canonical replay-complete journal bytes; the startup memory fallback supports 5,000 records or 32 MiB. The first independent limit reached controls admission, and the selected adapter does not switch during the session. The DOM stays bounded even when thousands of events are retained. Use Oldest, Older, Newer, and Newest to move through retained regions.
 
-**Clear retained Evidence** removes the whole current DevTools-session history, regardless of active Scope or Filter. It is deliberately separated from routine controls and requires inline confirmation.
+Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary. A journal failure or History Capacity breach stops acceptance fail-closed at that boundary; refused or failed candidates do not become Evidence or advance projections. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen position remain independent.
+
+**Clear retained Evidence** makes an exact History Interval cut, regardless of active Scope or Filter. It is deliberately separated from routine controls and requires inline confirmation; it cannot restart Capture after a terminal stop. Controlled Close attempts erasure of the owned journal. Abnormal termination may defer cleanup to a later ownership-safe sweep, residual data may remain until Chrome next runs the extension, and a new Panel Session never replays stale Evidence.
 
 ## Evidence provenance
 

@@ -6,6 +6,10 @@ status: accepted
 
 Workbench will use one Event History owned by each Panel Session as the acceptance boundary for Evidence. A captured event is not Evidence, does not extend the Committed Evidence Boundary, and cannot influence Topology or COMMAND projections until a successful ordered journal transaction accepts it. The journal publishes only committed Evidence in Capture order, and reads and replay use committed snapshots. This is the implementation contract for the later production cutover; this documentation increment does not change the current shipped architecture.
 
+> Historical context: the preceding sentence records the state when this ADR
+> was authored. The production cutover is complete; the current implementation
+> outcome is recorded below and is authoritative for shipped behavior.
+
 One Panel Session owns exactly one Event History and may contain multiple History Intervals separated by Clear. Clear is an ordered interval cut: a successful Clear ends the prior History Interval, publishes the reset, and starts the next interval while preserving the panel-lifetime Evidence sequence. Panel Session Close makes a final synchronous intake cut: it refuses post-cut offers, while candidates offered before the cut and already returned as `QUEUED` may still commit in Capture order. Close then applies the accepted drain or journal-failure boundary, performs controlled cleanup, and ends the Panel Session; a post-cut offer can never become Evidence. A new Panel Session starts a new, empty Event History and never replays or recovers a prior session's Evidence.
 
 Clear has an atomic failure rule. If a failed Clear transaction proves that the prior History Interval is unchanged, it publishes no reset and re-joins post-cut candidates to that old History Interval in Capture order; Capture continues. If preservation of the prior interval cannot be proven, the failure becomes a terminal journal failure at the preceding Committed Evidence Boundary, with no reset or later acceptance.
@@ -101,3 +105,24 @@ Abnormal termination cannot rely on an unload callback. A guarded cleanup sweep 
 - A bounded nonblocking offer protects the inspected application from journal latency, but a workload or transaction failure can stop Capture at a truthful final Committed Evidence Boundary and cannot be resumed by Clear or by switching journal implementations.
 - One Panel Session has one owned Event History, and cleanup is explicitly controlled or guarded rather than promised unconditionally. Abnormal cleanup may be deferred, but no cross-session replay is available.
 - Future production work must preserve the exact capacity envelope, fail-closed transaction boundary, ownership unit, and committed-publication contract recorded here. Current-behavior documents and shipped claims remain unchanged until the later production cutover.
+
+## Current production outcome (2026-08-12)
+
+The acceptance boundary described by this ADR is now the shipped Event History
+contract. One Panel Session owns one temporary journal. The normal IndexedDB
+tier supports 10,000 Evidence records or 64 MiB of retained serialized journal
+bytes; startup memory fallback supports 5,000 records or 32 MiB. The selected
+adapter is fixed before the first offer, and fallback changes History Capacity
+only, not Observation Coverage.
+
+Complete History means all accepted candidates in the current History Interval
+through its Committed Evidence Boundary. Clear is an exact interval cut after
+accepted work settles and cannot restart a stopped history. Capacity pressure or
+journal failure refuses later offers, settles any queued prefix, records the
+final boundary and terminal cause, and stops fail-closed; no adapter switch or
+later Clear resumes it.
+
+Controlled Close makes a final intake cut, attempts erasure, and reports whether
+data erasure and cleanup were confirmed. Abnormal termination can defer cleanup
+until a later ownership-safe guarded sweep, which never replays abandoned
+Evidence. A new Panel Session starts empty and has no cross-session recovery.

@@ -54,14 +54,16 @@ It captures client, Session, Subscription, listener, Item Update, snapshot, and 
 Key features:
 
 - Runtime Scope for choosing the inspected page, client, Session, Subscription, item, or listener while retired objects remain readable but cannot become Local Injection targets.
-- Ordered Evidence with independent Find, Filter, selection, Capture, Coverage, and Live/Frozen controls, plus bounded rendering backed by complete retained current-session history.
+- Ordered Evidence with independent Find, Filter, selection, Capture, Coverage, and Live/Frozen controls, plus bounded rendering backed by complete committed current-session history.
 - Context for the active runtime object or selected Evidence, including immutable raw Evidence, COMMAND lifecycle detail, and explicit provenance and limitations.
 - Side-by-side Observed Server COMMAND State and Local Effective COMMAND State projections; neither is presented as authoritative server state.
 - Exactly one protected Local Injection Draft, created from an immutable captured Source or authored from a live COMMAND scope.
 - Full-size raw JSON editing with validation, Review, and optional immutable Source/Draft comparison and diff.
 - Local-only delivery to the exact live Subscription through the inspected page, with delivered, failed, partial, unknown, and stale-target outcomes that state only what Workbench can prove.
 - WebSocket/TLCP fallback diagnostics when primary Web Client instrumentation is unavailable.
-- Current-DevTools-session history in temporary IndexedDB-backed batches, with an in-memory fallback when IndexedDB is unavailable; no backend service is required.
+- One temporary Event History per Panel Session, with normal 10,000-record/64 MiB and startup-memory 5,000-record/32 MiB History Capacity tiers; the selected adapter is fixed for the session and no backend service is required.
+- Complete History is limited to committed Evidence through the current History Interval's Committed Evidence Boundary. Clear makes an exact interval cut and cannot restart stopped Capture; journal or capacity failures stop acceptance fail-closed.
+- Controlled Close attempts erasure. Abnormal termination relies on a later ownership-safe sweep, so residual data may remain until Chrome next runs the extension; a new Panel Session starts empty and never replays stale Evidence. Storage fallback alone does not limit Observation Coverage.
 - No product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer-operated backend.
 - First-party Help links to versioned documentation, privacy, and support routes on the project site.
 
@@ -116,7 +118,8 @@ Unified Scoped Evidence Workspace and Local Injection release.
 - Keeps Scope, Find, Filter, Evidence selection, Capture, Coverage, and Live/Frozen position independent during ongoing activity.
 - Compares Observed Server and Local Effective COMMAND State with explicit provenance and authority limits.
 - Adds exactly one protected Local Injection Draft with raw JSON editing, immutable Source comparison, validation, Review, and truthful delivery outcomes.
-- Retains complete current-session Evidence in temporary IndexedDB-backed batches, with an in-memory fallback and bounded high-volume rendering.
+- Retains committed current-session Evidence in one Panel Session-owned temporary Event History, with explicit normal/lower History Capacity and bounded high-volume rendering.
+- Defines exact Clear, fail-closed terminal boundaries, guarded abnormal cleanup, and no cross-session Evidence recovery or replay.
 - Removes product analytics, tracking configuration, remote transport, and the persistent installation identifier; 2.0 also clears the two retired 0.1.x preference/identifier records.
 - Adds first-party Documentation, Privacy, and Support links in Session operations.
 ```
@@ -124,9 +127,11 @@ Unified Scoped Evidence Workspace and Local Injection release.
 ## Privacy Practices Draft
 
 ```text
-Lightstreamer Workbench processes inspected-page Lightstreamer event data locally inside the browser DevTools session. Captured Evidence is held in temporary IndexedDB-backed storage for the current tab/session, with an in-memory fallback when IndexedDB is unavailable. It is not transmitted to the developer, this extension's authors, an analytics service, or any other external service by the extension.
+Lightstreamer Workbench processes inspected-page Lightstreamer event data locally inside one Panel Session. Each Panel Session owns one temporary Event History: normal IndexedDB capacity is 10,000 Evidence records or 64 MiB, and startup memory fallback capacity is 5,000 records or 32 MiB. The selected adapter is fixed for that session. Captured Evidence is not transmitted to the developer, this extension's authors, an analytics service, or any other external service by the extension.
 
-Version 2 includes no product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer-operated backend. It creates no analytics identifier. On panel startup, it removes the retired 0.1.x analytics consent and random installation identifier records if present. This cleanup never sends data and cannot block the panel when local storage is unavailable.
+Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary. Clear makes an exact interval cut and cannot restart Capture after a terminal stop. Controlled Close attempts erasure; abnormal termination may defer cleanup to a later ownership-safe sweep, so residual data can remain until Chrome next runs the extension. A new Panel Session starts empty and never replays stale Evidence. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen state are independent, and storage fallback alone does not limit Coverage.
+
+Version 2 includes no product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer-operated backend. It creates no analytics identifier. It may remove retired 0.1.x analytics consent and random installation identifier records when local storage is available; this cleanup never sends data and cannot block the panel when local storage is unavailable.
 
 Required host/page access is used to instrument the inspected page's official Lightstreamer Web Client activity and support developer-controlled Local Injection within the inspected page. Local Injection does not contact the Lightstreamer Server. Versioned JSON and offline HTML exports occur only after an explicit user action, exclude credentials, and create local downloads for the user to review.
 ```
@@ -169,6 +174,8 @@ For deterministic local verification from the repository:
 - [ ] Review the privacy practices answer before submission.
 - [ ] Remove the retired product-usage analytics and identifier declarations from the dashboard privacy fields.
 - [ ] Confirm the packaged build contains no analytics endpoint, configuration, event, or identifier residue.
+- [ ] Confirm the packaged Manifest V3 has no new storage permission and no `unlimitedStorage` declaration.
+- [ ] Confirm the final Event History real-Chrome report is `PASS`, or retain the explicit maintainer-accepted `REVIEW` disposition in the internal Project ticket; a `FAIL` blocks publication.
 - [ ] Confirm the privacy policy URL is `https://imom39a.github.io/lightstreamer-workbench-extension/privacy/`.
 - [ ] Confirm the support URL is `https://imom39a.github.io/lightstreamer-workbench-extension/support/`.
 - [ ] Confirm the homepage URL is `https://imom39a.github.io/lightstreamer-workbench-extension/` and staged publishing remains enabled.

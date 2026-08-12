@@ -21,7 +21,9 @@ Workbench does not send inspected-page URLs, Lightstreamer Server addresses, ada
 
 ## Local storage and exports
 
-Version 2 stores current-DevTools-session Evidence in temporary IndexedDB-backed ordered batches, with an in-memory fallback when IndexedDB is unavailable. Workbench resets its session storage on panel startup and clears it during normal panel teardown. If Chrome or DevTools exits before teardown completes, leftover temporary data is cleared the next time the panel starts for that inspected tab.
+Version 2 stores current-DevTools-session Evidence in one temporary Event History owned by the Panel Session. The normal IndexedDB journal supports up to 10,000 Evidence records or 64 MiB of retained serialized journal bytes; if startup selects the in-memory fallback, the lower-capacity limits are 5,000 records or 32 MiB. The fallback changes History Capacity, not Observation Coverage, and the selected adapter does not change during a Panel Session.
+
+Controlled Close makes a final intake cut, settles accepted work, attempts to erase the owned retained and pending data, and reports whether erasure and cleanup were confirmed. A crash, renderer termination, extension reload, or blocked cleanup can defer erasure and leave residual temporary data until a later ownership-safe guarded sweep. The sweep considers only recognized orphan generations, skips active owners, and never reads, exports, projects, or replays abandoned Evidence. A new Panel Session starts empty and has no cross-session recovery.
 
 Versioned Topology JSON and offline HTML exports are deliberate user downloads. Workbench excludes connection credentials and masks client IP addresses before they enter Capture, but an export can still contain application data selected by the user. Review every export before sharing it.
 
