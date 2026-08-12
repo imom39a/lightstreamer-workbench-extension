@@ -323,6 +323,12 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     assert.ok(survivingPanel, "The primary real panel should have a retained CDP connection.");
     await closeWorkbenchTab(devtoolsFrontendCdp, secondPanelId);
     await waitForWorkbenchTabToClose(devtoolsFrontendCdp, secondPanelId);
+    // Chrome's headed DevTools tabbed pane removes a closed panel tab without
+    // unloading its extension iframe. Dispatch the production lifecycle seam
+    // so this smoke exercises the same mount disposal and ownership-safe close.
+    await panelToClose.request("Runtime.evaluate", {
+      expression: "window.dispatchEvent(new Event('pagehide'))"
+    });
     await selectWorkbenchTab(devtoolsFrontendCdp, selection.panelId);
     const survivingPanelTarget = await waitForNewInspectedPanelTarget(
       debugging.port,
@@ -381,7 +387,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
       context: string;
       hasLegacyViews: boolean;
       panel: { width: number; height: number; viewportWidth: number; viewportHeight: number };
-      }>(panelCdps[1]!, `({
+      }>(survivingPanel, `({
         scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
         evidence: document.querySelector('[aria-label="Ordered Evidence"]')?.textContent ?? "",
         context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
