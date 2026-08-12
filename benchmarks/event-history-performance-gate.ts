@@ -223,7 +223,8 @@ export type EventHistoryPerformanceReport = Readonly<{
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
   cells: readonly EventHistoryPerformanceCell[];
-  cellCleanupGc: readonly EventHistoryPerformanceInterCellGc[];
+  capabilities?: Readonly<{ interCellGc?: "EXPOSED_THREE_PASS_V1" }>;
+  cellCleanupGc?: readonly EventHistoryPerformanceInterCellGc[];
   terminalScenarios: readonly EventHistoryPerformanceTerminalScenario[];
   checkpointScenarios: readonly EventHistoryPerformanceCheckpointScenario[];
   heapSamples: readonly EventHistoryPerformanceHeapSample[];
@@ -295,7 +296,9 @@ export function classifyEventHistoryPerformance(
       `Expected ${expectedKeys.size * SAMPLE_COUNT} matrix samples, received ${validReport.cells.length}.`
     );
   }
-  validateInterCellGc(validReport.cellCleanupGc, failures);
+  const requiresInterCellGc = validReport.capabilities?.interCellGc === "EXPOSED_THREE_PASS_V1"
+    || validReport.cellCleanupGc !== undefined;
+  if (requiresInterCellGc) validateInterCellGc(validReport.cellCleanupGc ?? [], failures);
 
   for (const cell of validReport.cells) {
     const key = cellKey(cell);
@@ -445,7 +448,11 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && isRecord(environment) && environment.chromeMajor === 151 && typeof environment.platformClass === "string"
     && typeof environment.architectureClass === "string" && environment.headless === false
     && Array.isArray(value.cells) && value.cells.every(isPerformanceCell)
-    && Array.isArray(value.cellCleanupGc) && value.cellCleanupGc.every(isInterCellGc)
+    && (value.capabilities === undefined || (
+      isRecord(value.capabilities)
+      && (value.capabilities.interCellGc === undefined || value.capabilities.interCellGc === "EXPOSED_THREE_PASS_V1")
+    ))
+    && (value.cellCleanupGc === undefined || (Array.isArray(value.cellCleanupGc) && value.cellCleanupGc.every(isInterCellGc)))
     && Array.isArray(value.terminalScenarios) && value.terminalScenarios.every(isTerminalScenario)
     && Array.isArray(value.checkpointScenarios) && value.checkpointScenarios.every(isCheckpointScenario)
     && Array.isArray(value.heapSamples) && value.heapSamples.every(isHeapSample)

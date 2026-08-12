@@ -228,6 +228,7 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
     schemaVersion: 2,
     source: { revision: "clean-reference-revision", dirty: false },
     environment: { chromeMajor: 151, platformClass: "darwin", architectureClass: "arm64", headless: false },
+    capabilities: { interCellGc: "EXPOSED_THREE_PASS_V1" },
     cells,
     cellCleanupGc: Array.from({ length: 35 }, (_, index) => ({
       afterCellIndex: index + 1,
@@ -295,12 +296,32 @@ function referenceFrom(reportValue: EventHistoryPerformanceReport): EventHistory
 describe("Event History real-Chrome performance gate classifier", () => {
   it("fails unless all 35 ordered inter-cell three-pass GC boundaries are recorded", () => {
     const baseline = report();
-    const missing = classifyEventHistoryPerformance({ ...baseline, cellCleanupGc: baseline.cellCleanupGc.slice(0, -1) }, referenceFrom(baseline));
-    const reordered = classifyEventHistoryPerformance({ ...baseline, cellCleanupGc: [...baseline.cellCleanupGc].reverse() }, referenceFrom(baseline));
+    const evidence = baseline.cellCleanupGc!;
+    const missing = classifyEventHistoryPerformance({ ...baseline, cellCleanupGc: evidence.slice(0, -1) }, referenceFrom(baseline));
+    const reordered = classifyEventHistoryPerformance({ ...baseline, cellCleanupGc: [...evidence].reverse() }, referenceFrom(baseline));
 
     expect(missing.verdict).toBe("FAIL");
     expect(reordered.verdict).toBe("FAIL");
     expect(missing.failures.some((failure) => failure.includes("cells 1 through 35"))).toBe(true);
+  });
+
+  it("fails a current capable candidate when inter-cell GC evidence is missing", () => {
+    const baseline = report();
+    const current = { ...baseline, cellCleanupGc: undefined };
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("cells 1 through 35"))).toBe(true);
+  });
+
+  it("keeps an unmarked schema-v2 report and reference backward compatible", () => {
+    const baseline = report();
+    const legacy = { ...baseline, capabilities: undefined, cellCleanupGc: undefined };
+    const reference = referenceFrom(baseline);
+
+    expect(classifyEventHistoryPerformance(legacy, reference).verdict).toBe("PASS");
+    expect(validateEventHistoryPerformanceReference(reference)).toBe(true);
   });
 
   it("returns PASS only when all three samples and the pinned reference pass", () => {
