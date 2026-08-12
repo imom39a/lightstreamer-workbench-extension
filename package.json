@@ -14,7 +14,7 @@
     "site:serve": "node scripts/site-server.mjs",
     "test:site": "npm run site:check && playwright test --config playwright.site.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/test-unit.mjs",
     "test:release": "vitest run --no-file-parallelism --maxWorkers=1",
     "benchmark:panel": "vitest bench --run",
     "benchmark:event-history": "vitest bench --run benchmarks/event-history-indexeddb.bench.ts",
