@@ -26,3 +26,7 @@ Use the external controls for variant, geometry, theme, and deterministic state.
 
 The prototype is decision evidence for a future Material UI change, not a
 production implementation or accepted visual baseline.
+
+For executable state semantics, use `evidence-filter-07`. Its integrated proof
+supersedes this comparison mock while preserving the selected inline composer
+and bounded value explorer.

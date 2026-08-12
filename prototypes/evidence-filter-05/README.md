@@ -17,5 +17,10 @@ The decision under test is whether one storage-neutral query must own the page,
 exact totals, contextual facet discovery, selected-Evidence lookup, and one
 committed Evidence boundary.
 
+Build 7 subsequently tightened the chosen seam: active Find navigation is an
+optional result section on the same snapshot, while Find remains independent
+from Filter and totals. See the integrated validation amendment in
+`INTERFACES.md` and the executable `evidence-filter-07` proof.
+
 This is read-only, deterministic prototype code. It neither captures nor clears
 Evidence and it never contacts the inspected page or Lightstreamer Server.

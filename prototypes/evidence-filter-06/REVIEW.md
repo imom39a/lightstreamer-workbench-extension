@@ -28,14 +28,18 @@ an explicit forced-colors treatment.
 - Axe serious/critical findings — none across all seven captured cases.
 - Nested Escape restoration — value explorer → `Choose values`; add-criterion
   step → `Add structured criterion`; composer → labelled `Filter` trigger.
-- Ordered Evidence ArrowDown — focus and selection move together to the next
-  retained row.
 - Find and Filter remain separate controls and state.
-- Pointer and keyboard value actions share the same mutation path in the
-  prototype.
+- No dedicated keyboard shortcuts are part of the accepted feature; ordinary
+  Tab traversal, native button activation, and nested Escape remain accessible.
 - `node --check prototype.js` and `git diff --check` — passed.
 
 The screenshots and browser checks are prototype decision evidence, not the
 production Material UI gate. Production work still requires failing user-facing
 tests first, the maintained baseline/diff packet, extension/fixture/package/docs
 proof, and independent visual QA under `docs/WORKBENCH_UI_STANDARD.md`.
+
+Build 7 subsequently repaired the comparison mock's semantic shortcuts (draft
+isolation, additive same-facet authoring, global exact search, active-zero
+pinning, provenance vocabulary, focus restoration, Clear/retired/terminal
+states) without changing the selected Variant A direction. Its review record is
+the authoritative integrated prototype evidence.

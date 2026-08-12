@@ -32,3 +32,7 @@ exposes its extra lifecycle and materialization burden.
 The complete semantic, adapter, schema, performance, failure, test, and future
 leverage contract is recorded in `INTERFACES.md`. This is design evidence; the
 budgets are implementation acceptance targets, not measured production results.
+
+Build 7 supersedes one original omission by returning optional Find navigation
+inside the atomic snapshot. Its memory/IndexedDB parity suite and measured
+10,000-Evidence paths validate the amended contract.

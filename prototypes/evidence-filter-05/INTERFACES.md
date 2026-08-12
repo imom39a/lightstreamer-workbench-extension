@@ -28,6 +28,7 @@ type EvidenceQueryRequest = Readonly<{
   page: EvidencePageRequest;
   discover?: readonly FacetDiscoveryRequest[];
   lookup?: EvidenceIdentity;
+  find?: EvidenceFindRequest;
 }>;
 
 type EvidenceSnapshot = Readonly<{
@@ -36,13 +37,14 @@ type EvidenceSnapshot = Readonly<{
   totals: Readonly<{ matching: number; inScope: number }>;
   discoveries: ReadonlyMap<FacetId, FacetDiscoveryResult>;
   lookup: EvidenceLookupResult | null;
+  find: EvidenceFindResult | null;
 }>;
 ```
 
 `query()` is one deep, storage-neutral seam. A request omits `discover` and
-`lookup` when the caller only needs the common newest page, so that path does
-not enumerate facets or hydrate an unrelated record. All requested sections
-share the returned `readPoint`.
+`lookup`, and `find` when the caller only needs the common newest page, so that
+path does not enumerate facets, evaluate residual Find text, or hydrate an
+unrelated record. All requested sections share the returned `readPoint`.
 
 The result is deliberately not a storage cursor or open transaction. Page and
 facet cursors are opaque, signed-by-shape continuation values scoped to the
@@ -182,6 +184,19 @@ type EvidenceLookupResult =
       state: "NOT_RETAINED" | "OTHER_INTERVAL";
       identity: EvidenceIdentity;
     }>;
+
+type EvidenceFindRequest = Readonly<{
+  text: string;
+  current?: EvidenceIdentity;
+}>;
+
+type EvidenceFindResult = Readonly<{
+  text: string;
+  total: number;
+  current: EvidenceIdentity | null;
+  previous: EvidenceIdentity | null;
+  next: EvidenceIdentity | null;
+}>;
 ```
 
 Facet values use the collision-safe typed identities from Build 1. Display text
@@ -192,15 +207,16 @@ is no UI-maintained catalog.
 
 `shown` is `page.evidence.length`; it is not a third count query. `matching` is
 Scope plus the complete Filter. `inScope` ignores Filter and Find. Find remains
-outside this query state because it navigates matching Evidence without
-changing the matching set.
+an independent investigation control and never changes either count, but its
+optional current/previous/next navigation result is evaluated inside the same
+snapshot so it cannot silently navigate a different committed boundary.
 
 ### One read point
 
 For `LATEST_COMMITTED`, the adapter latches the current History Interval,
 committed Evidence boundary, and retained range before evaluating anything.
-Every page row, total, discovery count, and lookup is restricted to that latch.
-Capture may commit later without changing the result.
+Every page row, total, discovery count, lookup, and requested Find result is
+restricted to that latch. Capture may commit later without changing the result.
 
 An explicit read point is valid only while its interval remains current and
 its boundary is still addressable under retention. Clear makes every earlier
@@ -221,6 +237,9 @@ reinterpret it against the new interval or label partial data complete.
    exact and independently recoverable.
 5. Evaluate lookup with the same predicate implementation and return the exact
    blocking criterion identities used by Reveal.
+6. When requested, evaluate Find only within the matching set and return exact
+   circular previous/next identities at the same read point; it never changes
+   page or total semantics.
 
 The newest-page fast path does no discovery enumeration. Exact discovery is
 on-demand, searchable, and cursor-paged with an exact distinct total; it never
@@ -296,8 +315,24 @@ Run the same contract suite against memory and fake-IndexedDB adapters:
 8. unsupported criteria fail closed in both adapters;
 9. Clear invalidates prior read points and creates no cross-interval rows;
 10. terminal and memory-fallback results remain exact and adapter-equivalent;
-11. common page reads prove no facet aggregation work; benchmark all three
-    latency classes and the twelve-token fan-out bound.
+11. Find navigation shares the snapshot read point while remaining independent
+    from Filter totals, selection, and focus;
+12. common page reads prove no facet or Find aggregation work; benchmark all
+    three latency classes and the twelve-token fan-out bound.
+
+### Integrated validation amendment
+
+Build 7 found one coherence gap in the original comparison: describing Find as
+entirely outside `query()` would require a second read and could navigate H7/N+1
+while the ledger still rendered H7/N. The selected interface is amended with the
+optional `find` request/result section above. This does not merge Find into
+Filter: Find still changes no criterion or total. It only makes its navigation
+answer part of the same atomic Evidence Snapshot.
+
+The executable Build 7 prototype validates this amendment with an exact deep
+comparison of canonical memory and IndexedDB public snapshots for `Find at same
+read point`; diagnostic digests are not used as the equality oracle. The common
+newest-page path still omits Find when inactive.
 
 ### UI-to-runtime mutation seam
 

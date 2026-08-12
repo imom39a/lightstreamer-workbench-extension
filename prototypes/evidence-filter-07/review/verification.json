@@ -1,0 +1,1193 @@
+{
+  "checks": [
+    "Initial 10,000-Evidence snapshot is coherent and bounded",
+    "Find shares the atomic boundary without changing Filter totals",
+    "Memory and IndexedDB return fourteen exact public semantic snapshots",
+    "Pinned active values stay separate from concrete search totals and base-zero state",
+    "Around is half-open and cannot cross History Intervals",
+    "All representative p95 query paths remain within accepted budgets",
+    "Composer draft and Cancel do not mutate applied Filter or query generation",
+    "Apply sends one expected-revision mutation and publishes one new snapshot",
+    "A stale investigation revision refuses the entire draft and preserves recovery",
+    "Exact high-cardinality discovery returns page 37 of 3,842 without unbounded UI",
+    "Exact value search is global rather than local-page-only",
+    "Same-facet staged includes remain additive OR values",
+    "An active unobserved value is pinned at exact zero",
+    "Primary Include → Exclude → Reveal removes only exact blockers",
+    "Reveal removes an exact unsupported blocker rather than ignoring it",
+    "Reset changes only Filter and preserves every independent investigation axis",
+    "empty remains a truthful zero-result state",
+    "contradiction remains a truthful zero-result state",
+    "scopeConflict remains a truthful zero-result state",
+    "Discovery failure cannot blank the ledger or exact totals",
+    "Coverage and storage fallback remain independent semantic axes",
+    "Retired typed identity remains filterable while retained",
+    "Clear invalidates the old read point, removes Around, and preserves ordinary Criteria",
+    "Terminal History exposes one final exact boundary and no fictitious newer count",
+    "Unsupported Criterion is preserved and fails closed",
+    "Passive Capture advances Live while a Frozen read point remains inert",
+    "Nested Escape restores exact focus without introducing a shortcut scheme",
+    "compact dark geometry preserves investigation state",
+    "compact light geometry preserves investigation state",
+    "normal dark geometry preserves investigation state",
+    "normal light geometry preserves investigation state",
+    "shallow dark geometry preserves investigation state",
+    "shallow light geometry preserves investigation state",
+    "wide dark geometry preserves investigation state",
+    "wide light geometry preserves investigation state",
+    "No browser exceptions or console errors occurred"
+  ],
+  "benchmarks": [
+    {
+      "adapter": "memory",
+      "case": "recent-page",
+      "iterations": 12,
+      "p95Ms": 0.8,
+      "medianMs": 0.7,
+      "budgetMs": 50,
+      "withinBudget": true
+    },
+    {
+      "adapter": "memory",
+      "case": "structured",
+      "iterations": 12,
+      "p95Ms": 3.7,
+      "medianMs": 2.6,
+      "budgetMs": 100,
+      "withinBudget": true
+    },
+    {
+      "adapter": "memory",
+      "case": "residual-text",
+      "iterations": 12,
+      "p95Ms": 3.4,
+      "medianMs": 3,
+      "budgetMs": 500,
+      "withinBudget": true
+    },
+    {
+      "adapter": "memory",
+      "case": "exact-key-page-37",
+      "iterations": 12,
+      "p95Ms": 2.2,
+      "medianMs": 1.9,
+      "budgetMs": 500,
+      "withinBudget": true
+    },
+    {
+      "adapter": "indexeddb",
+      "case": "recent-page",
+      "iterations": 12,
+      "p95Ms": 10.7,
+      "medianMs": 10.2,
+      "budgetMs": 50,
+      "withinBudget": true
+    },
+    {
+      "adapter": "indexeddb",
+      "case": "structured",
+      "iterations": 12,
+      "p95Ms": 9,
+      "medianMs": 8.7,
+      "budgetMs": 100,
+      "withinBudget": true
+    },
+    {
+      "adapter": "indexeddb",
+      "case": "residual-text",
+      "iterations": 12,
+      "p95Ms": 123.2,
+      "medianMs": 119.6,
+      "budgetMs": 500,
+      "withinBudget": true
+    },
+    {
+      "adapter": "indexeddb",
+      "case": "exact-key-page-37",
+      "iterations": 12,
+      "p95Ms": 33,
+      "medianMs": 31.6,
+      "budgetMs": 500,
+      "withinBudget": true
+    }
+  ],
+  "semanticEdgeProbes": {
+    "activeZeroSearch": {
+      "memory": {
+        "discoveries": [
+          {
+            "baseEvidenceCount": 10000,
+            "distinctTotal": 1,
+            "facet": "key",
+            "nextOffset": null,
+            "reason": null,
+            "state": "AVAILABLE",
+            "values": [
+              {
+                "count": 0,
+                "pinned": true,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-missing-404\"]",
+                  "label": "order-missing-404",
+                  "type": "string",
+                  "value": "order-missing-404"
+                }
+              },
+              {
+                "count": 2,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-03842\"]",
+                  "label": "order-03842",
+                  "type": "string",
+                  "value": "order-03842"
+                }
+              }
+            ]
+          }
+        ],
+        "evaluation": "COMPLETE",
+        "find": null,
+        "lookup": null,
+        "page": {
+          "evidence": [],
+          "nextOffset": null
+        },
+        "readPoint": {
+          "committedBoundary": {
+            "eventId": "event-10000",
+            "intervalId": "H7",
+            "sequence": 10000
+          },
+          "intervalId": "H7",
+          "retainedRange": {
+            "first": 1,
+            "last": 10000
+          },
+          "terminal": false,
+          "terminalReason": null
+        },
+        "totals": {
+          "inScope": 10000,
+          "matching": 0
+        }
+      },
+      "indexeddb": {
+        "discoveries": [
+          {
+            "baseEvidenceCount": 10000,
+            "distinctTotal": 1,
+            "facet": "key",
+            "nextOffset": null,
+            "reason": null,
+            "state": "AVAILABLE",
+            "values": [
+              {
+                "count": 0,
+                "pinned": true,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-missing-404\"]",
+                  "label": "order-missing-404",
+                  "type": "string",
+                  "value": "order-missing-404"
+                }
+              },
+              {
+                "count": 2,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-03842\"]",
+                  "label": "order-03842",
+                  "type": "string",
+                  "value": "order-03842"
+                }
+              }
+            ]
+          }
+        ],
+        "evaluation": "COMPLETE",
+        "find": null,
+        "lookup": null,
+        "page": {
+          "evidence": [],
+          "nextOffset": null
+        },
+        "readPoint": {
+          "committedBoundary": {
+            "eventId": "event-10000",
+            "intervalId": "H7",
+            "sequence": 10000
+          },
+          "intervalId": "H7",
+          "retainedRange": {
+            "first": 1,
+            "last": 10000
+          },
+          "terminal": false,
+          "terminalReason": null
+        },
+        "totals": {
+          "inScope": 10000,
+          "matching": 0
+        }
+      },
+      "indexeddbTelemetry": {
+        "retainedCount": 10000,
+        "renderedCount": 0,
+        "requestedDiscoveryCount": 1,
+        "maximumFacetPage": 2,
+        "plan": "INDEXED_COMPOSITE",
+        "hydratedPayloadCount": 0,
+        "enumeratedIdentityCount": 0,
+        "enumeratedProjectionCount": 0,
+        "enumeratedFacetValueCount": 3842
+      }
+    },
+    "activeConcreteOutsideSearch": {
+      "memory": {
+        "discoveries": [
+          {
+            "baseEvidenceCount": 10000,
+            "distinctTotal": 1,
+            "facet": "key",
+            "nextOffset": null,
+            "reason": null,
+            "state": "AVAILABLE",
+            "values": [
+              {
+                "count": 2,
+                "pinned": true,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-03842\"]",
+                  "label": "order-03842",
+                  "type": "string",
+                  "value": "order-03842"
+                }
+              },
+              {
+                "count": 3,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-00001\"]",
+                  "label": "order-00001",
+                  "type": "string",
+                  "value": "order-00001"
+                }
+              }
+            ]
+          }
+        ],
+        "evaluation": "COMPLETE",
+        "find": null,
+        "lookup": null,
+        "page": {
+          "evidence": [
+            {
+              "eventId": "event-09916",
+              "facets": {
+                "client": {
+                  "facet": "client",
+                  "identity": "[\"v1\",\"client\",\"client\",\"client-main\"]",
+                  "label": "Client client-main",
+                  "type": "client",
+                  "value": "client-main"
+                },
+                "item": {
+                  "facet": "item",
+                  "identity": "[\"v1\",\"item\",\"item\",\"sub-command-1:orders.us\"]",
+                  "label": "orders.us",
+                  "type": "item",
+                  "value": "sub-command-1:orders.us"
+                },
+                "key": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-03842\"]",
+                  "label": "order-03842",
+                  "type": "string",
+                  "value": "order-03842"
+                },
+                "kind": {
+                  "facet": "kind",
+                  "identity": "[\"v1\",\"kind\",\"enum\",\"item-update\"]",
+                  "label": "Item Update",
+                  "type": "enum",
+                  "value": "item-update"
+                },
+                "mode": {
+                  "facet": "mode",
+                  "identity": "[\"v1\",\"mode\",\"enum\",\"COMMAND\"]",
+                  "label": "COMMAND",
+                  "type": "enum",
+                  "value": "COMMAND"
+                },
+                "observationPath": {
+                  "facet": "observationPath",
+                  "identity": "[\"v1\",\"observationPath\",\"enum\",\"LISTENER\"]",
+                  "label": "LISTENER",
+                  "type": "enum",
+                  "value": "LISTENER"
+                },
+                "operation": {
+                  "facet": "operation",
+                  "identity": "[\"v1\",\"operation\",\"enum\",\"UPDATE\"]",
+                  "label": "UPDATE",
+                  "type": "enum",
+                  "value": "UPDATE"
+                },
+                "phase": {
+                  "facet": "phase",
+                  "identity": "[\"v1\",\"phase\",\"enum\",\"LIVE\"]",
+                  "label": "LIVE",
+                  "type": "enum",
+                  "value": "LIVE"
+                },
+                "provenance": {
+                  "facet": "provenance",
+                  "identity": "[\"v1\",\"provenance\",\"enum\",\"SERVER\"]",
+                  "label": "SERVER",
+                  "type": "enum",
+                  "value": "SERVER"
+                },
+                "session": {
+                  "facet": "session",
+                  "identity": "[\"v1\",\"session\",\"session\",\"session-9f2a\"]",
+                  "label": "Session session-9f2a",
+                  "type": "session",
+                  "value": "session-9f2a"
+                },
+                "subscription": {
+                  "facet": "subscription",
+                  "identity": "[\"v1\",\"subscription\",\"subscription\",\"sub-command-1\"]",
+                  "label": "Subscription sub-command-1",
+                  "type": "subscription",
+                  "value": "sub-command-1"
+                }
+              },
+              "intervalId": "H7",
+              "item": "orders.us",
+              "key": "order-03842",
+              "kind": "item-update",
+              "listener": null,
+              "mode": "COMMAND",
+              "observationPath": "LISTENER",
+              "operation": "UPDATE",
+              "phase": "LIVE",
+              "provenance": "SERVER",
+              "searchText": "orders.us order-03842 state update qty 408 item-update sub-command-1 command orders.us order-03842 update live server listener",
+              "sequence": 9916,
+              "subscription": "sub-command-1",
+              "summary": "orders.us order-03842 state update qty 408",
+              "timestamp": 1786557634706
+            },
+            {
+              "eventId": "event-04941",
+              "facets": {
+                "client": {
+                  "facet": "client",
+                  "identity": "[\"v1\",\"client\",\"client\",\"client-main\"]",
+                  "label": "Client client-main",
+                  "type": "client",
+                  "value": "client-main"
+                },
+                "item": {
+                  "facet": "item",
+                  "identity": "[\"v1\",\"item\",\"item\",\"sub-command-1:orders.eu\"]",
+                  "label": "orders.eu",
+                  "type": "item",
+                  "value": "sub-command-1:orders.eu"
+                },
+                "key": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-03842\"]",
+                  "label": "order-03842",
+                  "type": "string",
+                  "value": "order-03842"
+                },
+                "kind": {
+                  "facet": "kind",
+                  "identity": "[\"v1\",\"kind\",\"enum\",\"item-update\"]",
+                  "label": "Item Update",
+                  "type": "enum",
+                  "value": "item-update"
+                },
+                "mode": {
+                  "facet": "mode",
+                  "identity": "[\"v1\",\"mode\",\"enum\",\"COMMAND\"]",
+                  "label": "COMMAND",
+                  "type": "enum",
+                  "value": "COMMAND"
+                },
+                "observationPath": {
+                  "facet": "observationPath",
+                  "identity": "[\"v1\",\"observationPath\",\"enum\",\"LISTENER\"]",
+                  "label": "LISTENER",
+                  "type": "enum",
+                  "value": "LISTENER"
+                },
+                "operation": {
+                  "facet": "operation",
+                  "identity": "[\"v1\",\"operation\",\"enum\",\"UPDATE\"]",
+                  "label": "UPDATE",
+                  "type": "enum",
+                  "value": "UPDATE"
+                },
+                "phase": {
+                  "facet": "phase",
+                  "identity": "[\"v1\",\"phase\",\"enum\",\"LIVE\"]",
+                  "label": "LIVE",
+                  "type": "enum",
+                  "value": "LIVE"
+                },
+                "provenance": {
+                  "facet": "provenance",
+                  "identity": "[\"v1\",\"provenance\",\"enum\",\"SERVER\"]",
+                  "label": "SERVER",
+                  "type": "enum",
+                  "value": "SERVER"
+                },
+                "session": {
+                  "facet": "session",
+                  "identity": "[\"v1\",\"session\",\"session\",\"session-9f2a\"]",
+                  "label": "Session session-9f2a",
+                  "type": "session",
+                  "value": "session-9f2a"
+                },
+                "subscription": {
+                  "facet": "subscription",
+                  "identity": "[\"v1\",\"subscription\",\"subscription\",\"sub-command-1\"]",
+                  "label": "Subscription sub-command-1",
+                  "type": "subscription",
+                  "value": "sub-command-1"
+                }
+              },
+              "intervalId": "H7",
+              "item": "orders.eu",
+              "key": "order-03842",
+              "kind": "item-update",
+              "listener": null,
+              "mode": "COMMAND",
+              "observationPath": "LISTENER",
+              "operation": "UPDATE",
+              "phase": "LIVE",
+              "provenance": "SERVER",
+              "searchText": "orders.eu order-03842 state update qty 233 item-update sub-command-1 command orders.eu order-03842 update live server listener",
+              "sequence": 4941,
+              "subscription": "sub-command-1",
+              "summary": "orders.eu order-03842 state update qty 233",
+              "timestamp": 1786557617290
+            }
+          ],
+          "nextOffset": null
+        },
+        "readPoint": {
+          "committedBoundary": {
+            "eventId": "event-10000",
+            "intervalId": "H7",
+            "sequence": 10000
+          },
+          "intervalId": "H7",
+          "retainedRange": {
+            "first": 1,
+            "last": 10000
+          },
+          "terminal": false,
+          "terminalReason": null
+        },
+        "totals": {
+          "inScope": 10000,
+          "matching": 2
+        }
+      },
+      "indexeddb": {
+        "discoveries": [
+          {
+            "baseEvidenceCount": 10000,
+            "distinctTotal": 1,
+            "facet": "key",
+            "nextOffset": null,
+            "reason": null,
+            "state": "AVAILABLE",
+            "values": [
+              {
+                "count": 2,
+                "pinned": true,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-03842\"]",
+                  "label": "order-03842",
+                  "type": "string",
+                  "value": "order-03842"
+                }
+              },
+              {
+                "count": 3,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-00001\"]",
+                  "label": "order-00001",
+                  "type": "string",
+                  "value": "order-00001"
+                }
+              }
+            ]
+          }
+        ],
+        "evaluation": "COMPLETE",
+        "find": null,
+        "lookup": null,
+        "page": {
+          "evidence": [
+            {
+              "eventId": "event-09916",
+              "facets": {
+                "client": {
+                  "facet": "client",
+                  "identity": "[\"v1\",\"client\",\"client\",\"client-main\"]",
+                  "label": "Client client-main",
+                  "type": "client",
+                  "value": "client-main"
+                },
+                "item": {
+                  "facet": "item",
+                  "identity": "[\"v1\",\"item\",\"item\",\"sub-command-1:orders.us\"]",
+                  "label": "orders.us",
+                  "type": "item",
+                  "value": "sub-command-1:orders.us"
+                },
+                "key": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-03842\"]",
+                  "label": "order-03842",
+                  "type": "string",
+                  "value": "order-03842"
+                },
+                "kind": {
+                  "facet": "kind",
+                  "identity": "[\"v1\",\"kind\",\"enum\",\"item-update\"]",
+                  "label": "Item Update",
+                  "type": "enum",
+                  "value": "item-update"
+                },
+                "mode": {
+                  "facet": "mode",
+                  "identity": "[\"v1\",\"mode\",\"enum\",\"COMMAND\"]",
+                  "label": "COMMAND",
+                  "type": "enum",
+                  "value": "COMMAND"
+                },
+                "observationPath": {
+                  "facet": "observationPath",
+                  "identity": "[\"v1\",\"observationPath\",\"enum\",\"LISTENER\"]",
+                  "label": "LISTENER",
+                  "type": "enum",
+                  "value": "LISTENER"
+                },
+                "operation": {
+                  "facet": "operation",
+                  "identity": "[\"v1\",\"operation\",\"enum\",\"UPDATE\"]",
+                  "label": "UPDATE",
+                  "type": "enum",
+                  "value": "UPDATE"
+                },
+                "phase": {
+                  "facet": "phase",
+                  "identity": "[\"v1\",\"phase\",\"enum\",\"LIVE\"]",
+                  "label": "LIVE",
+                  "type": "enum",
+                  "value": "LIVE"
+                },
+                "provenance": {
+                  "facet": "provenance",
+                  "identity": "[\"v1\",\"provenance\",\"enum\",\"SERVER\"]",
+                  "label": "SERVER",
+                  "type": "enum",
+                  "value": "SERVER"
+                },
+                "session": {
+                  "facet": "session",
+                  "identity": "[\"v1\",\"session\",\"session\",\"session-9f2a\"]",
+                  "label": "Session session-9f2a",
+                  "type": "session",
+                  "value": "session-9f2a"
+                },
+                "subscription": {
+                  "facet": "subscription",
+                  "identity": "[\"v1\",\"subscription\",\"subscription\",\"sub-command-1\"]",
+                  "label": "Subscription sub-command-1",
+                  "type": "subscription",
+                  "value": "sub-command-1"
+                }
+              },
+              "intervalId": "H7",
+              "item": "orders.us",
+              "key": "order-03842",
+              "kind": "item-update",
+              "listener": null,
+              "mode": "COMMAND",
+              "observationPath": "LISTENER",
+              "operation": "UPDATE",
+              "phase": "LIVE",
+              "provenance": "SERVER",
+              "searchText": "orders.us order-03842 state update qty 408 item-update sub-command-1 command orders.us order-03842 update live server listener",
+              "sequence": 9916,
+              "subscription": "sub-command-1",
+              "summary": "orders.us order-03842 state update qty 408",
+              "timestamp": 1786557634706
+            },
+            {
+              "eventId": "event-04941",
+              "facets": {
+                "client": {
+                  "facet": "client",
+                  "identity": "[\"v1\",\"client\",\"client\",\"client-main\"]",
+                  "label": "Client client-main",
+                  "type": "client",
+                  "value": "client-main"
+                },
+                "item": {
+                  "facet": "item",
+                  "identity": "[\"v1\",\"item\",\"item\",\"sub-command-1:orders.eu\"]",
+                  "label": "orders.eu",
+                  "type": "item",
+                  "value": "sub-command-1:orders.eu"
+                },
+                "key": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-03842\"]",
+                  "label": "order-03842",
+                  "type": "string",
+                  "value": "order-03842"
+                },
+                "kind": {
+                  "facet": "kind",
+                  "identity": "[\"v1\",\"kind\",\"enum\",\"item-update\"]",
+                  "label": "Item Update",
+                  "type": "enum",
+                  "value": "item-update"
+                },
+                "mode": {
+                  "facet": "mode",
+                  "identity": "[\"v1\",\"mode\",\"enum\",\"COMMAND\"]",
+                  "label": "COMMAND",
+                  "type": "enum",
+                  "value": "COMMAND"
+                },
+                "observationPath": {
+                  "facet": "observationPath",
+                  "identity": "[\"v1\",\"observationPath\",\"enum\",\"LISTENER\"]",
+                  "label": "LISTENER",
+                  "type": "enum",
+                  "value": "LISTENER"
+                },
+                "operation": {
+                  "facet": "operation",
+                  "identity": "[\"v1\",\"operation\",\"enum\",\"UPDATE\"]",
+                  "label": "UPDATE",
+                  "type": "enum",
+                  "value": "UPDATE"
+                },
+                "phase": {
+                  "facet": "phase",
+                  "identity": "[\"v1\",\"phase\",\"enum\",\"LIVE\"]",
+                  "label": "LIVE",
+                  "type": "enum",
+                  "value": "LIVE"
+                },
+                "provenance": {
+                  "facet": "provenance",
+                  "identity": "[\"v1\",\"provenance\",\"enum\",\"SERVER\"]",
+                  "label": "SERVER",
+                  "type": "enum",
+                  "value": "SERVER"
+                },
+                "session": {
+                  "facet": "session",
+                  "identity": "[\"v1\",\"session\",\"session\",\"session-9f2a\"]",
+                  "label": "Session session-9f2a",
+                  "type": "session",
+                  "value": "session-9f2a"
+                },
+                "subscription": {
+                  "facet": "subscription",
+                  "identity": "[\"v1\",\"subscription\",\"subscription\",\"sub-command-1\"]",
+                  "label": "Subscription sub-command-1",
+                  "type": "subscription",
+                  "value": "sub-command-1"
+                }
+              },
+              "intervalId": "H7",
+              "item": "orders.eu",
+              "key": "order-03842",
+              "kind": "item-update",
+              "listener": null,
+              "mode": "COMMAND",
+              "observationPath": "LISTENER",
+              "operation": "UPDATE",
+              "phase": "LIVE",
+              "provenance": "SERVER",
+              "searchText": "orders.eu order-03842 state update qty 233 item-update sub-command-1 command orders.eu order-03842 update live server listener",
+              "sequence": 4941,
+              "subscription": "sub-command-1",
+              "summary": "orders.eu order-03842 state update qty 233",
+              "timestamp": 1786557617290
+            }
+          ],
+          "nextOffset": null
+        },
+        "readPoint": {
+          "committedBoundary": {
+            "eventId": "event-10000",
+            "intervalId": "H7",
+            "sequence": 10000
+          },
+          "intervalId": "H7",
+          "retainedRange": {
+            "first": 1,
+            "last": 10000
+          },
+          "terminal": false,
+          "terminalReason": null
+        },
+        "totals": {
+          "inScope": 10000,
+          "matching": 2
+        }
+      },
+      "indexeddbTelemetry": {
+        "retainedCount": 10000,
+        "renderedCount": 2,
+        "requestedDiscoveryCount": 1,
+        "maximumFacetPage": 2,
+        "plan": "INDEXED_COMPOSITE",
+        "hydratedPayloadCount": 2,
+        "enumeratedIdentityCount": 2,
+        "enumeratedProjectionCount": 0,
+        "enumeratedFacetValueCount": 3842
+      }
+    },
+    "baseZeroWithPinned": {
+      "memory": {
+        "discoveries": [
+          {
+            "baseEvidenceCount": 0,
+            "distinctTotal": 0,
+            "facet": "key",
+            "nextOffset": null,
+            "reason": "NO_EVIDENCE_MATCHES_OTHER_CRITERIA",
+            "state": "BASE_ZERO",
+            "values": [
+              {
+                "count": 0,
+                "pinned": true,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-missing-404\"]",
+                  "label": "order-missing-404",
+                  "type": "string",
+                  "value": "order-missing-404"
+                }
+              }
+            ]
+          }
+        ],
+        "evaluation": "COMPLETE",
+        "find": null,
+        "lookup": null,
+        "page": {
+          "evidence": [],
+          "nextOffset": null
+        },
+        "readPoint": {
+          "committedBoundary": {
+            "eventId": "event-10000",
+            "intervalId": "H7",
+            "sequence": 10000
+          },
+          "intervalId": "H7",
+          "retainedRange": {
+            "first": 1,
+            "last": 10000
+          },
+          "terminal": false,
+          "terminalReason": null
+        },
+        "totals": {
+          "inScope": 10000,
+          "matching": 0
+        }
+      },
+      "indexeddb": {
+        "discoveries": [
+          {
+            "baseEvidenceCount": 0,
+            "distinctTotal": 0,
+            "facet": "key",
+            "nextOffset": null,
+            "reason": "NO_EVIDENCE_MATCHES_OTHER_CRITERIA",
+            "state": "BASE_ZERO",
+            "values": [
+              {
+                "count": 0,
+                "pinned": true,
+                "value": {
+                  "facet": "key",
+                  "identity": "[\"v1\",\"key\",\"string\",\"order-missing-404\"]",
+                  "label": "order-missing-404",
+                  "type": "string",
+                  "value": "order-missing-404"
+                }
+              }
+            ]
+          }
+        ],
+        "evaluation": "COMPLETE",
+        "find": null,
+        "lookup": null,
+        "page": {
+          "evidence": [],
+          "nextOffset": null
+        },
+        "readPoint": {
+          "committedBoundary": {
+            "eventId": "event-10000",
+            "intervalId": "H7",
+            "sequence": 10000
+          },
+          "intervalId": "H7",
+          "retainedRange": {
+            "first": 1,
+            "last": 10000
+          },
+          "terminal": false,
+          "terminalReason": null
+        },
+        "totals": {
+          "inScope": 10000,
+          "matching": 0
+        }
+      },
+      "indexeddbTelemetry": {
+        "retainedCount": 10000,
+        "renderedCount": 0,
+        "requestedDiscoveryCount": 1,
+        "maximumFacetPage": 1,
+        "plan": "INDEXED_COMPOSITE",
+        "hydratedPayloadCount": 0,
+        "enumeratedIdentityCount": 16088,
+        "enumeratedProjectionCount": 0,
+        "enumeratedFacetValueCount": 3842
+      }
+    },
+    "wrongIntervalAround": {
+      "memory": {
+        "discoveries": [],
+        "evaluation": "COMPLETE",
+        "find": null,
+        "lookup": {
+          "blockingCriteria": [
+            "around-evidence"
+          ],
+          "evidence": {
+            "eventId": "event-05000",
+            "facets": {
+              "client": {
+                "facet": "client",
+                "identity": "[\"v1\",\"client\",\"client\",\"client-main\"]",
+                "label": "Client client-main",
+                "type": "client",
+                "value": "client-main"
+              },
+              "item": {
+                "facet": "item",
+                "identity": "[\"v1\",\"item\",\"item\",\"sub-merge-2:quotes.primary\"]",
+                "label": "quotes.primary",
+                "type": "item",
+                "value": "sub-merge-2:quotes.primary"
+              },
+              "kind": {
+                "facet": "kind",
+                "identity": "[\"v1\",\"kind\",\"enum\",\"item-update\"]",
+                "label": "Item Update",
+                "type": "enum",
+                "value": "item-update"
+              },
+              "mode": {
+                "facet": "mode",
+                "identity": "[\"v1\",\"mode\",\"enum\",\"MERGE\"]",
+                "label": "MERGE",
+                "type": "enum",
+                "value": "MERGE"
+              },
+              "observationPath": {
+                "facet": "observationPath",
+                "identity": "[\"v1\",\"observationPath\",\"enum\",\"LISTENER\"]",
+                "label": "LISTENER",
+                "type": "enum",
+                "value": "LISTENER"
+              },
+              "phase": {
+                "facet": "phase",
+                "identity": "[\"v1\",\"phase\",\"enum\",\"LIVE\"]",
+                "label": "LIVE",
+                "type": "enum",
+                "value": "LIVE"
+              },
+              "provenance": {
+                "facet": "provenance",
+                "identity": "[\"v1\",\"provenance\",\"enum\",\"SERVER\"]",
+                "label": "SERVER",
+                "type": "enum",
+                "value": "SERVER"
+              },
+              "session": {
+                "facet": "session",
+                "identity": "[\"v1\",\"session\",\"session\",\"session-9f2a\"]",
+                "label": "Session session-9f2a",
+                "type": "session",
+                "value": "session-9f2a"
+              },
+              "subscription": {
+                "facet": "subscription",
+                "identity": "[\"v1\",\"subscription\",\"subscription\",\"sub-merge-2\"]",
+                "label": "Subscription sub-merge-2",
+                "type": "subscription",
+                "value": "sub-merge-2"
+              }
+            },
+            "intervalId": "H7",
+            "item": "quotes.primary",
+            "key": null,
+            "kind": "item-update",
+            "listener": null,
+            "mode": "MERGE",
+            "observationPath": "LISTENER",
+            "operation": null,
+            "phase": "LIVE",
+            "provenance": "SERVER",
+            "searchText": "quotes.primary quote state update qty 0 item-update sub-merge-2 merge quotes.primary live server listener",
+            "sequence": 5000,
+            "subscription": "sub-merge-2",
+            "summary": "quotes.primary quote state update qty 0",
+            "timestamp": 1786557617500
+          },
+          "inScope": true,
+          "matchesFilter": false,
+          "nearestMatchingEventId": null,
+          "state": "RETAINED"
+        },
+        "page": {
+          "evidence": [],
+          "nextOffset": null
+        },
+        "readPoint": {
+          "committedBoundary": {
+            "eventId": "event-10000",
+            "intervalId": "H7",
+            "sequence": 10000
+          },
+          "intervalId": "H7",
+          "retainedRange": {
+            "first": 1,
+            "last": 10000
+          },
+          "terminal": false,
+          "terminalReason": null
+        },
+        "totals": {
+          "inScope": 10000,
+          "matching": 0
+        }
+      },
+      "indexeddb": {
+        "discoveries": [],
+        "evaluation": "COMPLETE",
+        "find": null,
+        "lookup": {
+          "blockingCriteria": [
+            "around-evidence"
+          ],
+          "evidence": {
+            "eventId": "event-05000",
+            "facets": {
+              "client": {
+                "facet": "client",
+                "identity": "[\"v1\",\"client\",\"client\",\"client-main\"]",
+                "label": "Client client-main",
+                "type": "client",
+                "value": "client-main"
+              },
+              "item": {
+                "facet": "item",
+                "identity": "[\"v1\",\"item\",\"item\",\"sub-merge-2:quotes.primary\"]",
+                "label": "quotes.primary",
+                "type": "item",
+                "value": "sub-merge-2:quotes.primary"
+              },
+              "kind": {
+                "facet": "kind",
+                "identity": "[\"v1\",\"kind\",\"enum\",\"item-update\"]",
+                "label": "Item Update",
+                "type": "enum",
+                "value": "item-update"
+              },
+              "mode": {
+                "facet": "mode",
+                "identity": "[\"v1\",\"mode\",\"enum\",\"MERGE\"]",
+                "label": "MERGE",
+                "type": "enum",
+                "value": "MERGE"
+              },
+              "observationPath": {
+                "facet": "observationPath",
+                "identity": "[\"v1\",\"observationPath\",\"enum\",\"LISTENER\"]",
+                "label": "LISTENER",
+                "type": "enum",
+                "value": "LISTENER"
+              },
+              "phase": {
+                "facet": "phase",
+                "identity": "[\"v1\",\"phase\",\"enum\",\"LIVE\"]",
+                "label": "LIVE",
+                "type": "enum",
+                "value": "LIVE"
+              },
+              "provenance": {
+                "facet": "provenance",
+                "identity": "[\"v1\",\"provenance\",\"enum\",\"SERVER\"]",
+                "label": "SERVER",
+                "type": "enum",
+                "value": "SERVER"
+              },
+              "session": {
+                "facet": "session",
+                "identity": "[\"v1\",\"session\",\"session\",\"session-9f2a\"]",
+                "label": "Session session-9f2a",
+                "type": "session",
+                "value": "session-9f2a"
+              },
+              "subscription": {
+                "facet": "subscription",
+                "identity": "[\"v1\",\"subscription\",\"subscription\",\"sub-merge-2\"]",
+                "label": "Subscription sub-merge-2",
+                "type": "subscription",
+                "value": "sub-merge-2"
+              }
+            },
+            "intervalId": "H7",
+            "item": "quotes.primary",
+            "key": null,
+            "kind": "item-update",
+            "listener": null,
+            "mode": "MERGE",
+            "observationPath": "LISTENER",
+            "operation": null,
+            "phase": "LIVE",
+            "provenance": "SERVER",
+            "searchText": "quotes.primary quote state update qty 0 item-update sub-merge-2 merge quotes.primary live server listener",
+            "sequence": 5000,
+            "subscription": "sub-merge-2",
+            "summary": "quotes.primary quote state update qty 0",
+            "timestamp": 1786557617500
+          },
+          "inScope": true,
+          "matchesFilter": false,
+          "nearestMatchingEventId": null,
+          "state": "RETAINED"
+        },
+        "page": {
+          "evidence": [],
+          "nextOffset": null
+        },
+        "readPoint": {
+          "committedBoundary": {
+            "eventId": "event-10000",
+            "intervalId": "H7",
+            "sequence": 10000
+          },
+          "intervalId": "H7",
+          "retainedRange": {
+            "first": 1,
+            "last": 10000
+          },
+          "terminal": false,
+          "terminalReason": null
+        },
+        "totals": {
+          "inScope": 10000,
+          "matching": 0
+        }
+      },
+      "indexeddbTelemetry": {
+        "retainedCount": 10000,
+        "renderedCount": 0,
+        "requestedDiscoveryCount": 0,
+        "maximumFacetPage": 0,
+        "plan": "INDEXED_COMPOSITE",
+        "hydratedPayloadCount": 1,
+        "enumeratedIdentityCount": 0,
+        "enumeratedProjectionCount": 0,
+        "enumeratedFacetValueCount": 0
+      }
+    }
+  },
+  "axe": [
+    {
+      "label": "compact-dark",
+      "blocking": []
+    },
+    {
+      "label": "compact-light",
+      "blocking": []
+    },
+    {
+      "label": "normal-dark",
+      "blocking": []
+    },
+    {
+      "label": "normal-light",
+      "blocking": []
+    },
+    {
+      "label": "shallow-dark",
+      "blocking": []
+    },
+    {
+      "label": "shallow-light",
+      "blocking": []
+    },
+    {
+      "label": "wide-dark",
+      "blocking": []
+    },
+    {
+      "label": "wide-light",
+      "blocking": []
+    },
+    {
+      "label": "forced-colors-normal",
+      "blocking": []
+    }
+  ],
+  "screenshots": [
+    "review/matrix-compact-dark.png",
+    "review/matrix-compact-light.png",
+    "review/matrix-normal-dark.png",
+    "review/matrix-normal-light.png",
+    "review/matrix-shallow-dark.png",
+    "review/matrix-shallow-light.png",
+    "review/matrix-wide-dark.png",
+    "review/matrix-wide-light.png",
+    "review/state-high-cardinality-compact-light.png",
+    "review/state-discovery-unavailable-wide-dark.png",
+    "review/state-hidden-selection-normal-light.png",
+    "review/state-limited-coverage-wide-dark.png",
+    "review/state-terminal-shallow-light.png",
+    "review/forced-colors-normal.png"
+  ],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "failure": null
+}

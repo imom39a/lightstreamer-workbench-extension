@@ -161,18 +161,16 @@ hidden. The hidden-selection condition keeps `Reveal selected Evidence` and
 `Clear selection`; Reveal removes only exact blockers returned by the query
 lookup.
 
-### Pointer, keyboard, and focus
+### Pointer, accessible traversal, and focus
 
-- Tab/Shift+Tab remain the only cross-surface navigation commands.
-- The value list is one conventional composite: Up/Down changes the active
-  option, Home/End moves within the loaded page, Space changes polarity, and
-  Tab leaves the composite.
+- The feature adds no dedicated keyboard shortcut scheme. Native Tab/Shift+Tab
+  traversal reaches labelled value and polarity buttons.
 - Escape closes the value explorer first, then the add-criterion step, then the
   composer. Each close restores the exact trigger. Unowned Escape reaches
   Chrome DevTools.
 - Apply restores the Filter trigger; Cancel restores the trigger without
   changing Filter. Passive Capture moves neither focus nor selection.
-- Pointer and keyboard paths invoke the same typed mutation command.
+- Pointer and native button activation invoke the same typed mutation command.
 
 ### Geometry
 
@@ -202,6 +200,32 @@ Find hit, scroll anchor, or Live/Frozen state.
     forced-colors/non-color inspection.
 
 The production ticket remains Material UI and must collect the full UI-standard
-browser, baseline/diff, keyboard, axe, extension, fixture, package, docs, and
+browser, baseline/diff, focus/accessibility, axe, extension, fixture, package, docs, and
 independent visual-QA evidence. This prototype does not satisfy that gate by
 itself.
+
+## Integrated validation amendment
+
+The Build 6 scripts were visual comparison mocks, not a semantic oracle. Build
+7 keeps the selected inline-composer/value-explorer direction but supersedes the
+mock state behavior with one executable query truth. The integrated proof:
+
+- isolates the draft until Apply, uses one expected-revision mutation batch,
+  rejects a stale investigation without partial application, and makes Cancel
+  query-free;
+- amends rather than replaces same-facet values, searches all 3,842 exact keys
+  rather than only the loaded page, and pins only an actually active zero value;
+- derives page, counts, discovery, lookup blockers, and optional Find navigation
+  from one memory/IndexedDB-equivalent read point;
+- keeps `SERVER` and `LOCAL` as the only Provenance facet values (`RUNTIME` is
+  row-source presentation only when Provenance is not applicable);
+- validates exact nested Escape restoration and native focus traversal without
+  a dedicated shortcut scheme, plus Clear invalidation, retired identities,
+  lower-capacity fallback, Limited Coverage, and a terminal state with zero
+  fictitious newer Evidence; and
+- exercises all four geometries in both themes plus forced colors with no
+  serious or critical axe finding.
+
+Those corrections do not reopen the UI choice. They establish Build 7's
+integrated prototype and review record as the semantic evidence for Variant A;
+the original Build 6 screenshots remain comparison evidence only.
