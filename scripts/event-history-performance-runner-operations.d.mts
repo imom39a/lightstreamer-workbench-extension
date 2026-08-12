@@ -161,6 +161,29 @@ export type PerformanceOperationStatus = Readonly<{
 export const PERFORMANCE_OPERATION_KEY: string;
 export const FORCED_GC_PASSES: 3;
 
+export type PerformanceMatrixShard = Readonly<{
+  id: string;
+  kind: "matrix";
+  adapter: HeapAdapter;
+  workload: "sustained" | "burst";
+  firstCellIndex: number;
+  collectAfterFinal: boolean;
+}>;
+export type PerformanceScenarioShard = Readonly<{ id: "scenarios"; kind: "scenarios" }>;
+export type PerformanceShard = PerformanceMatrixShard | PerformanceScenarioShard;
+export function createPerformanceShardPlan(): PerformanceShard[];
+export function aggregatePerformanceShardResults(results: readonly Record<string, any>[]): Readonly<{
+  schemaVersion: 2;
+  anchors: unknown;
+  config: unknown;
+  shapeFacts: unknown;
+  cells: readonly any[];
+  cellCleanupGc: readonly any[];
+  terminalScenarios: readonly any[];
+  checkpointScenarios: readonly any[];
+  shards: readonly any[];
+}>;
+
 export class PerformanceOperationTimeout extends Error {
   readonly status: PerformanceOperationStatus;
 }

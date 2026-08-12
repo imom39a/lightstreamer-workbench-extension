@@ -7,6 +7,7 @@
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
@@ -17,6 +18,8 @@ import WebSocket from "ws";
 import {
   collectHeapAfterRepeatedGc,
   createTimeoutDiagnostic,
+  createPerformanceShardPlan,
+  aggregatePerformanceShardResults,
   PerformanceOperationTimeout,
   releaseHeapSessionWithCleanup,
   runHeapMeasurementPlan,
@@ -92,25 +95,43 @@ async function main() {
       architectureClass: process.arch,
       headless: false
     };
-    await waitForHarness(cdp);
-
-    await preparePageForAuthoritativeRun(cdp);
-    const result = await runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run()", {
-      deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
-      onHeartbeat(status) {
-        process.stderr.write(
-          `[event-history-performance] state=${status.state} elapsedMs=${status.elapsedMs.toFixed(0)} heartbeat=${status.heartbeat}\n`
-        );
+    const shardResults = [];
+    const matrixRunStartedAt = Date.now();
+    for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
+      const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
+      const page = await openFreshHarnessPage(cdp, debugPort, url, selection.pageToken);
+      try {
+        const remainingDeadlineMs = EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS - (Date.now() - matrixRunStartedAt);
+        if (remainingDeadlineMs <= 0) throw new Error("Event History performance shards exceeded the shared operation deadline.");
+        shardResults.push(await runPageOperation(
+          page.cdp,
+          `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)})`,
+          {
+            deadlineMs: remainingDeadlineMs,
+            onHeartbeat(status) {
+              process.stderr.write(
+                `[event-history-performance:${selection.id}] state=${status.state} elapsedMs=${status.elapsedMs.toFixed(0)} heartbeat=${status.heartbeat}\n`
+              );
+            }
+          }
+        ));
+      } finally {
+        await closeFreshHarnessPage(cdp, page);
       }
-    });
-    const heapPlan = await runHeapMeasurementPlan({
+    }
+    const result = aggregatePerformanceShardResults(shardResults);
+
+    const heapPage = await openFreshHarnessPage(cdp, debugPort, url, `heap-${randomUUID()}`);
+    let heapPlan;
+    try {
+      heapPlan = await runHeapMeasurementPlan({
       eventCounts: { indexeddb: 10_000, memory: 5_000 },
       prepare: ({ adapter, eventCount, phase, sample }) => runPageOperation(
-        cdp,
+        heapPage.cdp,
         `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${eventCount}, ${JSON.stringify(phase)}, ${sample === null ? "null" : sample})`,
         { deadlineMs: 3_600_000 }
       ),
-      forceGc: () => collectHeapAfterRepeatedGc(cdp),
+      forceGc: () => collectHeapAfterRepeatedGc(heapPage.cdp),
       record: ({ adapter, eventCount, sample, session, baseline, retained }) => ({
         adapter,
         sample,
@@ -122,23 +143,31 @@ async function main() {
         retainedUsedSizeBytes: retained.usedSize,
         postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
       }),
-      close: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineMs: BROWSER_TIMEOUT_MS }),
-      removeRoot: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineMs: BROWSER_TIMEOUT_MS }),
-      yieldFrame: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineMs: BROWSER_TIMEOUT_MS })
-    });
+      close: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+      removeRoot: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+      yieldFrame: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineMs: BROWSER_TIMEOUT_MS })
+      });
+    } finally {
+      await closeFreshHarnessPage(cdp, heapPage);
+    }
     const heapSamples = heapPlan.heapSamples;
 
+    const lifecyclePage = await openFreshHarnessPage(cdp, debugPort, url, `lifecycle-${randomUUID()}`);
     const lifecycleRetainedHeapBytes = [];
-    for (let sample = 0; sample < 3; sample += 1) {
-      const baseline = await collectHeapAfterRepeatedGc(cdp);
-      await runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineMs: BROWSER_TIMEOUT_MS });
-      const released = await releaseHeapSessionWithCleanup({
-        release: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineMs: BROWSER_TIMEOUT_MS }),
-        removeRoot: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineMs: BROWSER_TIMEOUT_MS }),
-        yieldFrame: () => runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineMs: BROWSER_TIMEOUT_MS }),
-        forceGc: () => collectHeapAfterRepeatedGc(cdp)
-      });
-      lifecycleRetainedHeapBytes.push(released.usedSize - baseline.usedSize);
+    try {
+      for (let sample = 0; sample < 3; sample += 1) {
+        const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp);
+        await runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineMs: BROWSER_TIMEOUT_MS });
+        const released = await releaseHeapSessionWithCleanup({
+          release: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+          removeRoot: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+          yieldFrame: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineMs: BROWSER_TIMEOUT_MS }),
+          forceGc: () => collectHeapAfterRepeatedGc(lifecyclePage.cdp)
+        });
+        lifecycleRetainedHeapBytes.push(released.usedSize - baseline.usedSize);
+      }
+    } finally {
+      await closeFreshHarnessPage(cdp, lifecyclePage);
     }
 
     const report = {
@@ -156,6 +185,7 @@ async function main() {
       capabilities: { interCellGc: "EXPOSED_THREE_PASS_V1", interQuerySampleGc: "EXPOSED_THREE_PASS_V1" },
       config: result.config,
       shapeFacts: result.shapeFacts,
+      shards: result.shards,
       cells: result.cells,
       cellCleanupGc: result.cellCleanupGc,
       terminalScenarios: result.terminalScenarios,
@@ -218,6 +248,35 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
   if (visible !== true) {
     throw new Error("Event History performance run requires a visible foreground page.");
   }
+}
+
+export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageToken) {
+  if (typeof pageToken !== "string" || pageToken.length === 0) throw new Error("Fresh harness page requires a non-empty page token.");
+  const pageUrl = new URL(baseUrl);
+  pageUrl.searchParams.set("pageToken", pageToken);
+  const created = await controlCdp.request("Target.createTarget", { url: pageUrl.href });
+  if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
+  let pageCdp;
+  try {
+    pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
+    await waitForHarness(pageCdp);
+    await preparePageForAuthoritativeRun(pageCdp);
+    const observedToken = await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", BROWSER_TIMEOUT_MS);
+    if (observedToken !== pageToken) throw new Error("Fresh harness page token mismatch.");
+    return { cdp: pageCdp, targetId: created.targetId, pageToken, url: pageUrl.href };
+  } catch (error) {
+    pageCdp?.close();
+    const closed = await controlCdp.request("Target.closeTarget", { targetId: created.targetId });
+    if (closed?.success !== true) throw new Error("Fresh harness page setup failed and its target could not be closed.", { cause: error });
+    throw error;
+  }
+}
+
+export async function closeFreshHarnessPage(controlCdp, page) {
+  page.cdp.close();
+  const closed = await controlCdp.request("Target.closeTarget", { targetId: page.targetId });
+  if (closed?.success !== true) throw new Error(`Fresh harness page ${page.pageToken} did not close cleanly.`);
+  return { pageToken: page.pageToken, targetId: page.targetId, closed: true };
 }
 
 export function chromeLaunchArguments(profile, url, platformName = process.platform) {

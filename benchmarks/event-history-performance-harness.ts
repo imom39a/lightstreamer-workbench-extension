@@ -67,6 +67,11 @@ type EventHistoryPerformanceConfig = Readonly<{
   burstPauseMs: number;
 }>;
 
+type HarnessSelection = Readonly<
+  | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string }
+  | { id: "scenarios"; kind: "scenarios"; pageToken: string }
+>;
+
 export type HarnessProgressInput = Readonly<{
   operationId: string | null;
   phase: "cells" | "terminal" | "checkpoint" | "heap" | "lifecycle";
@@ -843,7 +848,7 @@ export async function closeHeapSessionWithEvidence(input: Readonly<{
 declare global {
   interface Window {
     __LSEW_EVENT_HISTORY_PERFORMANCE__?: {
-      run(overrides?: Partial<EventHistoryPerformanceConfig>): Promise<HarnessResult>;
+      run(overrides?: Partial<EventHistoryPerformanceConfig>, selection?: HarnessSelection): Promise<HarnessResult & { selection: HarnessSelection | null }>;
       classify(report: EventHistoryPerformanceReport, reference: EventHistoryPerformanceReference): ReturnType<typeof classifyEventHistoryPerformance>;
       prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number, phase: "warmup" | "sample", sample: number | null): Promise<{ adapter: string; count: number; retained: number; sessionId: string; databaseName: string | null; phase: "warmup" | "sample"; sample: number | null }>;
       releaseRetainedHeapSample(): Promise<unknown>;
@@ -863,21 +868,49 @@ const DEFAULT_CONFIG: EventHistoryPerformanceConfig = {
 let retainedHeapSession: RetainedHeapSession | null = null;
 let retainedHeapSequence = 0;
 
+function validateHarnessSelection(selection: HarnessSelection | undefined): HarnessSelection | null {
+  if (selection === undefined) return null;
+  if (typeof selection.pageToken !== "string" || selection.pageToken.length === 0) {
+    throw new Error("Performance shard requires a non-empty page token.");
+  }
+  if (selection.kind === "scenarios") {
+    if (selection.id !== "scenarios") throw new Error("Performance scenario shard identity is invalid.");
+    return selection;
+  }
+  const expected = [
+    ["matrix-indexeddb-sustained", "indexeddb", "sustained", 1, true],
+    ["matrix-indexeddb-burst", "indexeddb", "burst", 10, true],
+    ["matrix-memory-sustained", "memory", "sustained", 19, true],
+    ["matrix-memory-burst", "memory", "burst", 28, false]
+  ] as const;
+  if (!expected.some(([id, adapter, workload, firstCellIndex, collectAfterFinal]) =>
+    selection.id === id && selection.adapter === adapter && selection.workload === workload
+      && selection.firstCellIndex === firstCellIndex && selection.collectAfterFinal === collectAfterFinal
+  )) throw new Error("Performance matrix shard identity is invalid.");
+  return selection;
+}
+
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
-  async run(overrides = {}) {
+  async run(overrides = {}, requestedSelection) {
     const operationId = currentHarnessOperationId();
     const runGuard = createHarnessStageGuard(operationId);
+    const selection = validateHarnessSelection(requestedSelection);
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
     const cells: EventHistoryPerformanceCell[] = [];
     const cellCleanupGc: InterCellGcEvidence[] = [];
-    let cellIndex = 0;
-    for (const adapter of ["indexeddb", "memory"] as const) {
-      for (const workload of ["sustained", "burst"] as const) {
+    let cellIndex = selection?.kind === "matrix" ? selection.firstCellIndex - 1 : 0;
+    let shardCellCount = 0;
+    const adapters = selection?.kind === "matrix" ? [selection.adapter] as const : ["indexeddb", "memory"] as const;
+    for (const adapter of adapters) {
+      const workloads = selection?.kind === "matrix" ? [selection.workload] as const : ["sustained", "burst"] as const;
+      for (const workload of workloads) {
         for (const shape of EVENT_HISTORY_SHAPES) {
           for (const sample of [1, 2, 3] as const) {
+            if (selection?.kind === "scenarios") continue;
             if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
             cellIndex += 1;
+            shardCellCount += 1;
             publishHarnessProgress({
               operationId,
               phase: "cells",
@@ -896,7 +929,10 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
               settled: 0,
               query: null
             });
-            if (cellIndex === 36) {
+            const collectAfterCell = selection?.kind === "matrix"
+              ? shardCellCount < 9 || selection.collectAfterFinal
+              : cellIndex < 36;
+            if (!collectAfterCell) {
               cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard));
               continue;
             }
@@ -933,7 +969,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       }
     }
     const terminalScenarios: EventHistoryPerformanceTerminalScenario[] = [];
-    for (const adapter of ["indexeddb", "memory"] as const) {
+    if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
       for (const trigger of ["PENDING_BYTES", "PENDING_AGE"] as const) {
         if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
         publishHarnessProgress({
@@ -958,7 +994,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       }
     }
     const checkpointScenarios: EventHistoryPerformanceCheckpointScenario[] = [];
-    for (const adapter of ["indexeddb", "memory"] as const) {
+    if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
       for (const name of ["representative", "maximum-2MiB"] as const) {
         if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
         publishHarnessProgress({
@@ -984,6 +1020,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     }
     return {
       schemaVersion: 2,
+      selection,
       anchors: { issue16TotalEvents: ISSUE_16_TOTAL_EVENTS },
       config,
       shapeFacts: representativeEventHistoryShapeFacts(),

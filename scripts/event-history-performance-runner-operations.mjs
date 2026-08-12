@@ -8,6 +8,102 @@ const DEFAULT_PROGRESS_AGE_CEILING_MS = 120_000;
 const DEFAULT_STARTUP_PROGRESS_CEILING_MS = 30_000;
 const DEFAULT_QUERY_TOTAL_PROGRESS_CEILING_MS = 120_000;
 
+const MATRIX_SHARDS = Object.freeze([
+  Object.freeze({ id: "matrix-indexeddb-sustained", kind: "matrix", adapter: "indexeddb", workload: "sustained", firstCellIndex: 1, collectAfterFinal: true }),
+  Object.freeze({ id: "matrix-indexeddb-burst", kind: "matrix", adapter: "indexeddb", workload: "burst", firstCellIndex: 10, collectAfterFinal: true }),
+  Object.freeze({ id: "matrix-memory-sustained", kind: "matrix", adapter: "memory", workload: "sustained", firstCellIndex: 19, collectAfterFinal: true }),
+  Object.freeze({ id: "matrix-memory-burst", kind: "matrix", adapter: "memory", workload: "burst", firstCellIndex: 28, collectAfterFinal: false })
+]);
+const SCENARIO_SHARD = Object.freeze({ id: "scenarios", kind: "scenarios" });
+
+export function createPerformanceShardPlan() {
+  return [...MATRIX_SHARDS, SCENARIO_SHARD].map((shard) => ({ ...shard }));
+}
+
+export function aggregatePerformanceShardResults(results) {
+  const plan = createPerformanceShardPlan();
+  if (!Array.isArray(results) || results.length !== plan.length) {
+    throw new Error(`Performance proof requires exactly ${plan.length} ordered shards.`);
+  }
+  const baseline = results[0];
+  const stableFields = ["anchors", "config", "shapeFacts"];
+  const pageTokens = new Set();
+  const cells = [];
+  const cellCleanupGc = [];
+  let terminalScenarios = null;
+  let checkpointScenarios = null;
+  const shards = [];
+  for (let index = 0; index < plan.length; index += 1) {
+    const expected = plan[index];
+    const result = results[index];
+    if (!result || typeof result !== "object") throw new Error(`Performance shard ${index + 1} result is missing.`);
+    const selection = result.selection;
+    if (!selection || selection.id !== expected.id || selection.kind !== expected.kind
+      || (expected.kind === "matrix" && (selection.adapter !== expected.adapter
+        || selection.workload !== expected.workload
+        || selection.firstCellIndex !== expected.firstCellIndex
+        || selection.collectAfterFinal !== expected.collectAfterFinal))) {
+      throw new Error(`Performance shard ${index + 1} identity does not match the deterministic plan.`);
+    }
+    if (typeof selection.pageToken !== "string" || selection.pageToken.length === 0 || pageTokens.has(selection.pageToken)) {
+      throw new Error(`Performance shard ${index + 1} must have a unique non-empty page token.`);
+    }
+    pageTokens.add(selection.pageToken);
+    for (const field of stableFields) {
+      if (JSON.stringify(result[field]) !== JSON.stringify(baseline[field])) {
+        throw new Error(`Performance shard ${index + 1} ${field} mismatch.`);
+      }
+    }
+    if (expected.kind === "matrix") {
+      if (!Array.isArray(result.cells) || result.cells.length !== 9) throw new Error(`Performance shard ${index + 1} must contain exactly 9 cells.`);
+      if ((result.terminalScenarios?.length ?? -1) !== 0 || (result.checkpointScenarios?.length ?? -1) !== 0) {
+        throw new Error(`Performance matrix shard ${index + 1} must not execute scenarios.`);
+      }
+      const shapes = ["small-lifecycle", "ordinary-item-update", "large-json-rich"];
+      const expectedCells = shapes.flatMap((shape) => [1, 2, 3].map((sample) => `${expected.adapter}/${expected.workload}/${shape}/${sample}`));
+      const actualCells = result.cells.map((cell) => `${cell.adapter}/${cell.workload}/${cell.shape}/${cell.sample}`);
+      if (actualCells.join("|") !== expectedCells.join("|")) throw new Error(`Performance shard ${index + 1} cell identity/order mismatch.`);
+      const expectedCleanupCount = expected.collectAfterFinal ? 9 : 8;
+      if (!Array.isArray(result.cellCleanupGc) || result.cellCleanupGc.length !== expectedCleanupCount) {
+        throw new Error(`Performance shard ${index + 1} cleanup evidence count mismatch.`);
+      }
+      const cleanupIndices = result.cellCleanupGc.map((entry) => entry.afterCellIndex);
+      const expectedCleanup = Array.from({ length: expectedCleanupCount }, (_, offset) => expected.firstCellIndex + offset);
+      if (cleanupIndices.join(",") !== expectedCleanup.join(",")) throw new Error(`Performance shard ${index + 1} cleanup evidence order mismatch.`);
+      cells.push(...result.cells);
+      cellCleanupGc.push(...result.cellCleanupGc);
+    } else {
+      if ((result.cells?.length ?? -1) !== 0 || (result.cellCleanupGc?.length ?? -1) !== 0) {
+        throw new Error("Performance scenario shard must not execute matrix cells.");
+      }
+      if (!Array.isArray(result.terminalScenarios) || result.terminalScenarios.length !== 4
+        || !Array.isArray(result.checkpointScenarios) || result.checkpointScenarios.length !== 4) {
+        throw new Error("Performance scenario shard must execute each terminal and checkpoint scenario exactly once.");
+      }
+      terminalScenarios = result.terminalScenarios;
+      checkpointScenarios = result.checkpointScenarios;
+    }
+    shards.push({ ...selection, cellCount: result.cells.length, cleanupCount: result.cellCleanupGc.length });
+  }
+  if (cells.length !== 36 || new Set(cells.map((cell) => `${cell.adapter}/${cell.workload}/${cell.shape}/${cell.sample}`)).size !== 36) {
+    throw new Error("Performance shard aggregation requires exactly 36 unique matrix cells.");
+  }
+  if (cellCleanupGc.length !== 35 || cellCleanupGc.some((entry, index) => entry.afterCellIndex !== index + 1)) {
+    throw new Error("Performance shard aggregation requires ordered cleanup evidence after cells 1 through 35.");
+  }
+  return {
+    schemaVersion: 2,
+    anchors: baseline.anchors,
+    config: baseline.config,
+    shapeFacts: baseline.shapeFacts,
+    cells,
+    cellCleanupGc,
+    terminalScenarios,
+    checkpointScenarios,
+    shards
+  };
+}
+
 export class PerformanceOperationTimeout extends Error {
   constructor(message, status) {
     super(message);

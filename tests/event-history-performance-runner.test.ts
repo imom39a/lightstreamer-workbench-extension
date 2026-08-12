@@ -5,13 +5,62 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
+  aggregatePerformanceShardResults,
   createTimeoutDiagnostic,
+  createPerformanceShardPlan,
   collectHeapAfterRepeatedGc,
   runHeapMeasurementPlan,
   PerformanceOperationTimeout,
   releaseHeapSessionWithCleanup,
   runPageOperation
 } from "../scripts/event-history-performance-runner-operations.mjs";
+
+describe("Event History fresh-page shard orchestration", () => {
+  const shapes = ["small-lifecycle", "ordinary-item-update", "large-json-rich"] as const;
+  const shardResult = (shard: ReturnType<typeof createPerformanceShardPlan>[number]) => ({
+    schemaVersion: 2,
+    selection: { ...shard, pageToken: `page-${shard.id}` },
+    anchors: { issue16TotalEvents: 10_000 },
+    config: { sustainedCount: 1_000, sustainedEventsPerSecond: 2_000, burstCount: 10_000, burstPauseMs: 1 },
+    shapeFacts: { stable: true },
+    cells: shard.kind === "matrix" ? shapes.flatMap((shape) => [1, 2, 3].map((sample) => ({ adapter: shard.adapter, workload: shard.workload, shape, sample }))) : [],
+    cellCleanupGc: shard.kind === "matrix"
+      ? Array.from({ length: shard.collectAfterFinal ? 9 : 8 }, (_, offset) => ({ afterCellIndex: shard.firstCellIndex + offset, gcPasses: 3, phase: "BETWEEN_CELLS" }))
+      : [],
+    terminalScenarios: shard.kind === "scenarios" ? [1, 2, 3, 4] : [],
+    checkpointScenarios: shard.kind === "scenarios" ? [1, 2, 3, 4] : []
+  });
+
+  it("defines four ordered nine-cell matrix shards plus one scenario shard", () => {
+    const plan = createPerformanceShardPlan();
+    expect(plan.map((shard) => shard.id)).toEqual([
+      "matrix-indexeddb-sustained", "matrix-indexeddb-burst", "matrix-memory-sustained", "matrix-memory-burst", "scenarios"
+    ]);
+    expect(plan.slice(0, 4).map((shard) => shard.kind === "matrix" ? [shard.firstCellIndex, shard.collectAfterFinal] : null)).toEqual([
+      [1, true], [10, true], [19, true], [28, false]
+    ]);
+  });
+
+  it("aggregates exactly 36 ordered cells, 35 cleanup proofs, and one scenario execution", () => {
+    const plan = createPerformanceShardPlan();
+    const aggregated = aggregatePerformanceShardResults(plan.map(shardResult));
+    expect(aggregated.cells).toHaveLength(36);
+    expect(aggregated.cellCleanupGc.map((entry: { afterCellIndex: number }) => entry.afterCellIndex)).toEqual(Array.from({ length: 35 }, (_, index) => index + 1));
+    expect(aggregated.terminalScenarios).toHaveLength(4);
+    expect(aggregated.checkpointScenarios).toHaveLength(4);
+    expect(aggregated.shards.map((shard: { id: string }) => shard.id)).toEqual(plan.map((shard) => shard.id));
+  });
+
+  it("fails closed for missing, duplicate, reordered, or mismatched shard evidence", () => {
+    const plan = createPerformanceShardPlan();
+    const results = plan.map(shardResult);
+    expect(() => aggregatePerformanceShardResults(results.slice(0, -1))).toThrow(/exactly 5 ordered shards/u);
+    expect(() => aggregatePerformanceShardResults([results[0], results[0], ...results.slice(2)])).toThrow(/shard 2 identity/u);
+    expect(() => aggregatePerformanceShardResults([results[1], results[0], ...results.slice(2)])).toThrow(/shard 1 identity/u);
+    expect(() => aggregatePerformanceShardResults(results.map((result, index) => index === 2 ? { ...result, config: { changed: true } } : result))).toThrow(/config mismatch/u);
+    expect(() => aggregatePerformanceShardResults(results.map((result, index) => index === 0 ? { ...result, cells: result.cells.slice(0, -1) } : result))).toThrow(/exactly 9 cells/u);
+  });
+});
 
 type FakeCdpResponse = Readonly<{
   result: Readonly<{ value: unknown }>;
