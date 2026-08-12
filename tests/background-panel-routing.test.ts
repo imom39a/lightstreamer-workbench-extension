@@ -190,7 +190,7 @@ describe("Panel Session background routing", () => {
     expect(secondMessages).not.toContainEqual(expect.objectContaining({ type: PANEL_CAPTURE_MESSAGE }));
   });
 
-  it("does not deliver a detached injection result after the callback already completed", async () => {
+  it("waits for the detached injection result after the response callback completes", async () => {
     let onConnect: ((port: chrome.runtime.Port) => void) | undefined;
     let onMessage: ((message: unknown, sender: chrome.runtime.MessageSender) => boolean) | undefined;
     const messages: unknown[] = [];
@@ -208,7 +208,7 @@ describe("Panel Session background routing", () => {
     portState.listeners[0]({ type: PANEL_REGISTER_MESSAGE, tabId: 7, panelSessionId: panelA });
     portState.listeners[0]({ type: PANEL_REINJECT_REQUEST, panelSessionId: panelA, requestId: "request-detached", draft: validDraft() });
     const resultCount = () => messages.filter((message) => (message as { type?: unknown }).type === PANEL_REINJECT_RESULT).length;
-    expect(resultCount()).toBe(1);
+    expect(resultCount()).toBe(0);
     onMessage?.({ type: "lsew:content-reinject-result", panelSessionId: panelA, result: { requestId: "request-detached", panelSessionId: panelA, ok: true, status: "success", timestamp: 2 } }, { tab: { id: 7 } } as chrome.runtime.MessageSender);
     expect(resultCount()).toBe(1);
   });
@@ -291,6 +291,11 @@ describe("Panel Session background routing", () => {
       requestId: "request-1",
       draft: validDraft()
     });
+    onMessage?.({
+      type: "lsew:content-reinject-result",
+      panelSessionId: panelA,
+      result: { requestId: "request-1", panelSessionId: panelA, ok: true, status: "success", timestamp: 2 }
+    }, { tab: { id: 7 } } as chrome.runtime.MessageSender);
 
     expect(firstMessages).toContainEqual({
       type: PANEL_REINJECT_RESULT,

@@ -73,7 +73,6 @@ type InstrumentationState = {
   syntheticWireEvents: WeakSet<object>;
   originalItemUpdateCallbacks: WeakMap<object, (update: SyntheticItemUpdate) => unknown>;
   emit(kind: CaptureKind, payload: CapturePayload): void;
-  emitLegacy(kind: CaptureKind, payload: CapturePayload): void;
   emitLegacyToPanel(kind: CaptureKind, payload: CapturePayload, panelSessionId: PanelSessionId): void;
 };
 
@@ -234,14 +233,6 @@ export function installLightstreamerInstrumentation(
         postMessage(createCaptureMessage(kind, sanitizedPayload, timestamp, topology));
       } catch (_error) {
         // Capture and its transport are best-effort and must never affect the page.
-      }
-    },
-    emitLegacy(kind, payload) {
-      try {
-        const sanitizedPayload = sanitizeCapturePayload(payload);
-        postMessage(createCaptureMessage(kind, sanitizedPayload));
-      } catch (_error) {
-        // Compatibility replay is optional and must remain fail-open.
       }
     },
     emitLegacyToPanel(kind, payload, panelSessionId) {

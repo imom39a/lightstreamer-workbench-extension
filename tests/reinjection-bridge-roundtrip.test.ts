@@ -63,8 +63,7 @@ describe("reinjection bridge round trip", () => {
         sendMessage(message: unknown, callback?: () => void) {
           backgroundMessageListener?.(
             message,
-            { tab: { id: 42 } } as chrome.runtime.MessageSender,
-            vi.fn()
+            { tab: { id: 42 } } as chrome.runtime.MessageSender
           );
           callback?.();
         }
@@ -79,16 +78,11 @@ describe("reinjection bridge round trip", () => {
             callback?.(undefined);
             return;
           }
-          let responded = false;
           contentMessageListener(
             message,
-            {} as chrome.runtime.MessageSender,
-            (response?: unknown) => {
-              responded = true;
-              callback?.(response);
-            }
+            {} as chrome.runtime.MessageSender
           );
-          if (!responded && isCaptureSyncRequest(message)) {
+          if (isCaptureSyncRequest(message)) {
             callback?.(undefined);
           }
         }
@@ -169,88 +163,6 @@ describe("reinjection bridge round trip", () => {
     ).toHaveLength(1);
   });
 
-  it("accepts a legacy content-script result returned through sendResponse", async () => {
-    let connectListener: ((port: chrome.runtime.Port) => void) | null = null;
-    const portMessageListeners: Array<(message: unknown) => void> = [];
-    const panelMessages: unknown[] = [];
-    const result = {
-      requestId: "legacy-response-1",
-      panelSessionId: PANEL_SESSION_ID,
-      ok: true,
-      status: "success",
-      timestamp: 1_784_737_272_925
-    } as const;
-    const port = {
-      name: PANEL_PORT_NAME,
-      onMessage: {
-        addListener(listener: (message: unknown) => void) {
-          portMessageListeners.push(listener);
-        }
-      },
-      onDisconnect: { addListener: vi.fn() },
-      postMessage(message: unknown) {
-        panelMessages.push(message);
-      }
-    } as unknown as chrome.runtime.Port;
-
-    (globalThis as { chrome: typeof chrome }).chrome = {
-      runtime: {
-        lastError: undefined,
-        onConnect: {
-          addListener(listener: (port: chrome.runtime.Port) => void) {
-            connectListener = listener;
-          }
-        },
-        onMessage: { addListener: vi.fn() }
-      },
-      tabs: {
-        sendMessage(
-          _tabId: number,
-          message: unknown,
-          callback?: (response?: unknown) => void
-        ) {
-          if (
-            typeof message === "object" &&
-            message !== null &&
-            (message as { type?: unknown }).type === PANEL_REINJECT_REQUEST
-          ) {
-            throw new Error("Background should send a content reinjection request.");
-          }
-          callback?.(
-            typeof message === "object" &&
-              message !== null &&
-              (message as { type?: unknown }).type === CONTENT_REINJECT_REQUEST
-              ? result
-              : undefined
-          );
-        }
-      }
-    } as unknown as typeof chrome;
-
-    await import("../src/extension/background");
-    const notifyConnect = connectListener as ((port: chrome.runtime.Port) => void) | null;
-    expect(notifyConnect).not.toBeNull();
-    notifyConnect?.(port);
-    portMessageListeners[0]?.({ type: PANEL_REGISTER_MESSAGE, tabId: 42, panelSessionId: PANEL_SESSION_ID });
-    portMessageListeners[0]?.({
-      type: PANEL_REINJECT_REQUEST,
-      panelSessionId: PANEL_SESSION_ID,
-      requestId: result.requestId,
-      draft: wireDraft()
-    });
-
-    expect(panelMessages).toContainEqual({
-      type: PANEL_REINJECT_RESULT,
-      panelSessionId: PANEL_SESSION_ID,
-      result
-    });
-    expect(panelMessages).not.toContainEqual(
-      expect.objectContaining({
-        result: expect.objectContaining({ status: "bridge-error" })
-      })
-    );
-  });
-
   it.each([
     {
       label: "a missing content-script receiver",
@@ -260,7 +172,7 @@ describe("reinjection bridge round trip", () => {
     {
       label: "a response channel that closes after dispatch",
       runtimeError: "The message port closed before a response was received.",
-      expectedStatus: "acknowledgement-unknown"
+      expectedStatus: null
     }
   ] as const)("classifies $label truthfully", async ({ runtimeError, expectedStatus }) => {
     let connectListener: ((port: chrome.runtime.Port) => void) | null = null;
@@ -311,16 +223,22 @@ describe("reinjection bridge round trip", () => {
       draft: wireDraft()
     });
 
-    expect(panelMessages).toContainEqual({
-      type: PANEL_REINJECT_RESULT,
-      panelSessionId: PANEL_SESSION_ID,
-      result: expect.objectContaining({
-        requestId: "ambiguous-background-result",
-        ok: false,
-        status: expectedStatus,
-        error: runtimeError
-      })
-    });
+    if (expectedStatus) {
+      expect(panelMessages).toContainEqual({
+        type: PANEL_REINJECT_RESULT,
+        panelSessionId: PANEL_SESSION_ID,
+        result: expect.objectContaining({
+          requestId: "ambiguous-background-result",
+          ok: false,
+          status: expectedStatus,
+          error: runtimeError
+        })
+      });
+    } else {
+      expect(panelMessages).not.toContainEqual(
+        expect.objectContaining({ type: PANEL_REINJECT_RESULT })
+      );
+    }
   });
 
   it("returns a partial listener result to the exact panel that originated the request", async () => {
@@ -407,8 +325,7 @@ describe("reinjection bridge round trip", () => {
         panelSessionId: PANEL_SESSION_ID,
         result
       },
-      { tab: { id: 42 } } as chrome.runtime.MessageSender,
-      vi.fn()
+      { tab: { id: 42 } } as chrome.runtime.MessageSender
     );
 
     expect(firstPanelMessages).toContainEqual({
@@ -425,8 +342,7 @@ describe("reinjection bridge round trip", () => {
 
 type RuntimeMessageListener = (
   message: unknown,
-  sender: chrome.runtime.MessageSender,
-  sendResponse: (response?: unknown) => void
+  sender: chrome.runtime.MessageSender
 ) => boolean | void;
 
 function isCaptureSyncRequest(message: unknown): boolean {

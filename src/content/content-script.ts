@@ -50,7 +50,7 @@ window.addEventListener("message", (event) => {
 });
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message) => {
     if (isContentCaptureSyncRequestMessage(message)) {
       window.postMessage({
         type: PAGE_CAPTURE_SYNC_REQUEST,
@@ -64,16 +64,8 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
     }
 
     void forwardReinjectionToPage(message.requestId, message.panelSessionId, message.draft).then((result) => {
-      // Return the final result on the original channel for compatibility with
-      // background workers that predate the detached result message.
-      try {
-        sendResponse(result);
-      } catch {
-        // The detached result below remains available if this channel closed.
-      }
-
-      // Also publish it independently. This survives a response channel that
-      // closes while the inspected page is processing the update.
+      // Publish independently of the original request channel so page delivery
+      // remains correlated even when the sender is already detached.
       chrome.runtime.sendMessage(
         {
           type: CONTENT_REINJECT_RESULT,
@@ -86,7 +78,7 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
       );
     });
 
-    return true;
+    return false;
   });
 
   window.postMessage({ type: CONTENT_BRIDGE_READY }, "*");

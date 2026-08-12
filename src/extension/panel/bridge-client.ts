@@ -8,12 +8,10 @@ import {
   type TopologySyncFrame,
   PAGE_REINJECTION_BRIDGE_GLOBAL,
   PAGE_REINJECTION_BRIDGE_VERSION,
-  PAGE_REINJECT_REQUEST,
   PANEL_PORT_NAME,
   PANEL_REGISTER_MESSAGE,
   PANEL_REINJECT_REQUEST,
   PANEL_REINJECT_RESULT,
-  RUNTIME_REINJECT_RESULT,
   createPanelSessionId,
   isPanelCaptureMessage,
   isPanelTopologySyncFrameMessage,
@@ -43,12 +41,9 @@ export type PanelBridgeConnection = {
 const RECONNECT_DELAY_MS = 500;
 const REINJECT_TIMEOUT_MS = 8000;
 const INSPECTED_PAGE_EVAL_TIMEOUT_MS = 5000;
-const LEGACY_PAGE_REINJECT_POLL_MS = 50;
-const LEGACY_PAGE_REINJECT_STATE_PREFIX = "__LSEW_LEGACY_REINJECTION__";
 
 type PageReinjectionEvaluation =
   | { bridgeState: "unavailable" }
-  | { bridgeState: "pending" }
   | { bridgeState: "result"; result: unknown };
 
 export function connectPanelBridge(
@@ -224,8 +219,6 @@ function reinjectThroughInspectedPage(
 ): Promise<ReinjectionResult | null> {
   return new Promise((resolve) => {
     let settled = false;
-    let legacyRequestStarted = false;
-    let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let timer: ReturnType<typeof setTimeout>;
     const finish = (result: ReinjectionResult | null) => {
       if (settled) {
@@ -233,22 +226,14 @@ function reinjectThroughInspectedPage(
       }
       settled = true;
       clearTimeout(timer);
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-      }
       resolve(result);
     };
     timer = setTimeout(() => {
-      if (legacyRequestStarted) {
-        cleanupLegacyPageReinjection(panelSessionId, requestId);
-      }
       finish(
         createAcknowledgementUnknownResult(
           requestId,
-            legacyRequestStarted
-              ? "Timed out waiting for the inspected-page reinjection result."
-              : "The DevTools page evaluation did not complete. Reload the inspected page and try again.",
-            panelSessionId
+          "The DevTools page evaluation did not complete. Reload the inspected page and try again.",
+          panelSessionId
         )
       );
     }, INSPECTED_PAGE_EVAL_TIMEOUT_MS);
@@ -264,9 +249,6 @@ function reinjectThroughInspectedPage(
               return;
             }
             if (exceptionInfo?.isError || exceptionInfo?.isException) {
-              if (legacyRequestStarted) {
-                cleanupLegacyPageReinjection(panelSessionId, requestId);
-              }
               finish(
                 createAcknowledgementUnknownResult(
                   requestId,
@@ -281,25 +263,7 @@ function reinjectThroughInspectedPage(
 
             const evaluation = readPageReinjectionEvaluation(result);
             if (evaluation?.bridgeState === "unavailable") {
-              if (legacyRequestStarted) {
-                finish(
-                  createAcknowledgementUnknownResult(
-                    requestId,
-                    "The inspected-page reinjection request lost its result channel. Reload the inspected page and capture a fresh update.",
-                    panelSessionId
-                  )
-                );
-                return;
-              }
               finish(null);
-              return;
-            }
-            if (evaluation?.bridgeState === "pending") {
-              legacyRequestStarted = true;
-              pollTimer = setTimeout(() => {
-                pollTimer = null;
-                evaluate(legacyPageReinjectionResultExpression(panelSessionId, requestId));
-              }, LEGACY_PAGE_REINJECT_POLL_MS);
               return;
             }
 
@@ -309,9 +273,6 @@ function reinjectThroughInspectedPage(
               result: evaluation?.bridgeState === "result" ? evaluation.result : undefined
             };
             if (!isPanelReinjectResultMessage(message) || message.result.requestId !== requestId) {
-              if (legacyRequestStarted) {
-                cleanupLegacyPageReinjection(panelSessionId, requestId);
-              }
               finish(
                 createAcknowledgementUnknownResult(
                   requestId,
@@ -325,9 +286,6 @@ function reinjectThroughInspectedPage(
           }
         );
       } catch (error) {
-        if (legacyRequestStarted) {
-          cleanupLegacyPageReinjection(panelSessionId, requestId);
-        }
         finish(
           createBridgeErrorResult(
             requestId,
@@ -348,12 +306,9 @@ export function pageReinjectionExpression(
   draft: ReinjectionDraftPayload
 ): string {
   const bridgeName = JSON.stringify(PAGE_REINJECTION_BRIDGE_GLOBAL);
-  const stateName = JSON.stringify(legacyPageReinjectionStateName(panelSessionId, requestId));
   const serializedRequestId = JSON.stringify(requestId);
   const serializedPanelSessionId = JSON.stringify(panelSessionId);
   const serializedDraft = JSON.stringify(draft);
-  const pageRequestType = JSON.stringify(PAGE_REINJECT_REQUEST);
-  const pageResultType = JSON.stringify(RUNTIME_REINJECT_RESULT);
   return `(() => {
     const host = globalThis;
     const bridge = host[${bridgeName}];
@@ -369,126 +324,8 @@ export function pageReinjectionExpression(
         result: bridge.reinject(${serializedRequestId}, ${serializedPanelSessionId}, ${serializedDraft})
       };
     }
-    if (
-      typeof host.addEventListener !== "function" ||
-      typeof host.removeEventListener !== "function" ||
-      typeof host.postMessage !== "function"
-    ) {
-      return { bridgeState: "unavailable" };
-    }
-    const stateName = ${stateName};
-    const existing = host[stateName];
-    if (existing?.status === "pending") {
-      return { bridgeState: "pending" };
-    }
-    if (existing?.status === "result") {
-      const result = existing.result;
-      existing.cleanup?.();
-      delete host[stateName];
-      return { bridgeState: "result", result };
-    }
-    let responsePort = null;
-    const state = {
-      status: "pending",
-      result: undefined,
-      cleanup: undefined
-    };
-    const accept = (value) => {
-      if (
-        !value ||
-        value.type !== ${pageResultType} ||
-        value.panelSessionId !== ${serializedPanelSessionId} ||
-        value.result?.panelSessionId !== ${serializedPanelSessionId} ||
-        value.result?.requestId !== ${serializedRequestId}
-      ) {
-        return;
-      }
-      state.status = "result";
-      state.result = value.result;
-      state.cleanup?.();
-    };
-    const onWindowMessage = (event) => {
-      if (event.source === host) {
-        accept(event.data);
-      }
-    };
-    const onPortMessage = (event) => accept(event.data);
-    state.cleanup = () => {
-      host.removeEventListener("message", onWindowMessage);
-      responsePort?.removeEventListener?.("message", onPortMessage);
-      responsePort?.close?.();
-      responsePort = null;
-    };
-    try {
-      Object.defineProperty(host, stateName, {
-        configurable: true,
-        enumerable: false,
-        value: state
-      });
-      host.addEventListener("message", onWindowMessage);
-      const request = {
-        type: ${pageRequestType},
-        requestId: ${serializedRequestId},
-        panelSessionId: ${serializedPanelSessionId},
-        draft: ${serializedDraft}
-      };
-      if (typeof host.MessageChannel === "function") {
-        const channel = new host.MessageChannel();
-        responsePort = channel.port1;
-        responsePort.addEventListener("message", onPortMessage);
-        responsePort.start();
-        host.postMessage(request, "*", [channel.port2]);
-      } else {
-        host.postMessage(request, "*");
-      }
-      return { bridgeState: "pending" };
-    } catch {
-      state.cleanup?.();
-      delete host[stateName];
-      return { bridgeState: "unavailable" };
-    }
+    return { bridgeState: "unavailable" };
   })()`;
-}
-
-function legacyPageReinjectionResultExpression(
-  panelSessionId: PanelSessionId,
-  requestId: string
-): string {
-  const stateName = JSON.stringify(legacyPageReinjectionStateName(panelSessionId, requestId));
-  return `(() => {
-    const stateName = ${stateName};
-    const state = globalThis[stateName];
-    if (!state) {
-      return { bridgeState: "unavailable" };
-    }
-    if (state.status !== "result") {
-      return { bridgeState: "pending" };
-    }
-    const result = state.result;
-    state.cleanup?.();
-    delete globalThis[stateName];
-    return { bridgeState: "result", result };
-  })()`;
-}
-
-function cleanupLegacyPageReinjection(panelSessionId: PanelSessionId, requestId: string): void {
-  const stateName = JSON.stringify(legacyPageReinjectionStateName(panelSessionId, requestId));
-  try {
-    chrome.devtools.inspectedWindow.eval(
-      `(() => {
-        const stateName = ${stateName};
-        const state = globalThis[stateName];
-        state?.cleanup?.();
-        delete globalThis[stateName];
-      })()`
-    );
-  } catch {
-    // The inspected page may already be gone; its listeners are gone with it.
-  }
-}
-
-function legacyPageReinjectionStateName(panelSessionId: PanelSessionId, requestId: string): string {
-  return `${LEGACY_PAGE_REINJECT_STATE_PREFIX}${JSON.stringify([panelSessionId, requestId])}`;
 }
 
 function readPageReinjectionEvaluation(value: unknown): PageReinjectionEvaluation | null {
@@ -498,9 +335,6 @@ function readPageReinjectionEvaluation(value: unknown): PageReinjectionEvaluatio
   const record = value as Record<string, unknown>;
   if (record.bridgeState === "unavailable") {
     return { bridgeState: "unavailable" };
-  }
-  if (record.bridgeState === "pending") {
-    return { bridgeState: "pending" };
   }
   if (record.bridgeState === "result" && Object.prototype.hasOwnProperty.call(record, "result")) {
     return { bridgeState: "result", result: record.result };

@@ -78,9 +78,6 @@ export const ALL_PANEL_SCENARIO_IDS = [
 
 export type PanelScenarioId = (typeof ALL_PANEL_SCENARIO_IDS)[number];
 
-/** @deprecated Use PanelScenarioId for browser and panel scenario tooling. */
-export type StoreListingScenarioId = PanelScenarioId;
-
 export function isPanelScenarioId(value: string): value is PanelScenarioId {
   return (ALL_PANEL_SCENARIO_IDS as readonly string[]).includes(value);
 }

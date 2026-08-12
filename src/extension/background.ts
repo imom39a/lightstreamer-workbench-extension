@@ -11,7 +11,6 @@ import {
   isContentReinjectResultMessage,
   isPanelRegisterMessage,
   isPanelReinjectRequestMessage,
-  isPanelReinjectResultMessage,
   isRuntimeCaptureMessage,
   isRuntimeTopologySyncFrameMessage
 } from "../bridge/messages";
@@ -75,26 +74,11 @@ chrome.runtime.onConnect.addListener((port) => {
         requestId: message.requestId,
         draft: message.draft
       },
-      (response: unknown) => {
+      () => {
         const runtimeError = chrome.runtime.lastError?.message;
-        if (!runtimeError && response === true) {
+        if (!runtimeError || isDetachedResultChannelClosedError(runtimeError)) {
           return;
         }
-
-        const resultMessage = {
-          type: PANEL_REINJECT_RESULT,
-          panelSessionId: message.panelSessionId,
-          result: response
-        };
-        if (
-          !runtimeError &&
-          isPanelReinjectResultMessage(resultMessage) &&
-          resultMessage.result.requestId === message.requestId
-        ) {
-          deliverReinjectionResult(registration, resultMessage.result);
-          return;
-        }
-
         deliverReinjectionResult(
           registration,
           runtimeError && !isMissingContentScriptReceiverError(runtimeError)
@@ -262,6 +246,10 @@ function isMissingContentScriptReceiverError(error: string): boolean {
     normalized.includes("receiving end does not exist") ||
     normalized.includes("could not establish connection")
   );
+}
+
+function isDetachedResultChannelClosedError(error: string): boolean {
+  return error.toLowerCase().includes("message port closed before a response was received");
 }
 
 function deliverReinjectionResult(

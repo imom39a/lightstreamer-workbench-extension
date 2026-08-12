@@ -69,7 +69,7 @@ describe("active subscription capture synchronization bridge", () => {
 
   it("forwards a content sync request into the inspected page", async () => {
     let runtimeMessageListener:
-      | ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: () => void) => boolean)
+      | ((message: unknown, sender: chrome.runtime.MessageSender) => boolean)
       | null = null;
     const postMessage = vi.spyOn(window, "postMessage").mockImplementation(() => undefined);
 
@@ -87,13 +87,12 @@ describe("active subscription capture synchronization bridge", () => {
     await import("../src/content/content-script");
     expect(postMessage).toHaveBeenCalledWith({ type: CONTENT_BRIDGE_READY }, "*");
     const forwardRuntimeMessage = runtimeMessageListener as
-      | ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: () => void) => boolean)
+      | ((message: unknown, sender: chrome.runtime.MessageSender) => boolean)
       | null;
     expect(forwardRuntimeMessage).not.toBeNull();
     const asyncResponse = forwardRuntimeMessage?.(
       { type: CONTENT_CAPTURE_SYNC_REQUEST, panelSessionId: PANEL_SESSION_ID },
-      {} as chrome.runtime.MessageSender,
-      vi.fn()
+      {} as chrome.runtime.MessageSender
     );
 
     expect(asyncResponse).toBe(false);
@@ -103,13 +102,9 @@ describe("active subscription capture synchronization bridge", () => {
     );
   });
 
-  it("returns the final page result through both feedback protocols", async () => {
+  it("publishes the final page result through the detached feedback protocol", async () => {
     let runtimeMessageListener:
-      | ((
-          message: unknown,
-          sender: chrome.runtime.MessageSender,
-          sendResponse: (response?: unknown) => void
-        ) => boolean)
+      | ((message: unknown, sender: chrome.runtime.MessageSender) => boolean)
       | null = null;
     const sendMessage = vi.fn((_message: unknown, callback?: () => void) => callback?.());
     vi.spyOn(window, "postMessage").mockImplementation((message) => {
@@ -153,10 +148,8 @@ describe("active subscription capture synchronization bridge", () => {
     await import("../src/content/content-script");
     const forwardRuntimeMessage = runtimeMessageListener as unknown as (
       message: unknown,
-      sender: chrome.runtime.MessageSender,
-      sendResponse: (response?: unknown) => void
+      sender: chrome.runtime.MessageSender
     ) => boolean;
-    const sendResponse = vi.fn();
     const asyncResponse = forwardRuntimeMessage(
       {
         type: CONTENT_REINJECT_REQUEST,
@@ -164,12 +157,10 @@ describe("active subscription capture synchronization bridge", () => {
         requestId: "success-request",
         draft: wireDraft()
       },
-      {} as chrome.runtime.MessageSender,
-      sendResponse
+      {} as chrome.runtime.MessageSender
     );
 
-    expect(asyncResponse).toBe(true);
-    expect(sendResponse).not.toHaveBeenCalled();
+    expect(asyncResponse).toBe(false);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -180,7 +171,6 @@ describe("active subscription capture synchronization bridge", () => {
       status: "success",
       timestamp: 1_784_737_272_925
     };
-    expect(sendResponse).toHaveBeenCalledWith(expectedResult);
     expect(sendMessage).toHaveBeenCalledWith(
       {
         type: CONTENT_REINJECT_RESULT,
@@ -194,11 +184,7 @@ describe("active subscription capture synchronization bridge", () => {
   it("uses a request-scoped response port when the page window result is blocked", async () => {
     vi.useFakeTimers();
     let runtimeMessageListener:
-      | ((
-          message: unknown,
-          sender: chrome.runtime.MessageSender,
-          sendResponse: (response?: unknown) => void
-        ) => boolean)
+      | ((message: unknown, sender: chrome.runtime.MessageSender) => boolean)
       | null = null;
     const sendMessage = vi.fn((_message: unknown, callback?: () => void) => callback?.());
     const channel = new TestMessageChannel();
@@ -256,10 +242,8 @@ describe("active subscription capture synchronization bridge", () => {
     await import("../src/content/content-script");
     const forwardRuntimeMessage = runtimeMessageListener as unknown as (
       message: unknown,
-      sender: chrome.runtime.MessageSender,
-      sendResponse: (response?: unknown) => void
+      sender: chrome.runtime.MessageSender
     ) => boolean;
-    const sendResponse = vi.fn();
     const asyncResponse = forwardRuntimeMessage(
       {
         type: CONTENT_REINJECT_REQUEST,
@@ -267,11 +251,10 @@ describe("active subscription capture synchronization bridge", () => {
         requestId: "request-scoped-channel",
         draft: wireDraft()
       },
-      {} as chrome.runtime.MessageSender,
-      sendResponse
+      {} as chrome.runtime.MessageSender
     );
 
-    expect(asyncResponse).toBe(true);
+    expect(asyncResponse).toBe(false);
     expect(listenerDeliveries).toBe(1);
     await Promise.resolve();
     await Promise.resolve();
@@ -284,7 +267,6 @@ describe("active subscription capture synchronization bridge", () => {
       timestamp: 1_784_737_272_925
     };
     expect(MessageChannelConstructor).toHaveBeenCalledTimes(1);
-    expect(sendResponse).toHaveBeenCalledWith(expectedResult);
     expect(sendMessage).toHaveBeenCalledWith(
       {
         type: CONTENT_REINJECT_RESULT,
@@ -295,14 +277,10 @@ describe("active subscription capture synchronization bridge", () => {
     );
   });
 
-  it("returns acknowledgement unknown through both protocols after a dispatched page request times out", async () => {
+  it("returns acknowledgement unknown through the detached protocol after a dispatched page request times out", async () => {
     vi.useFakeTimers();
     let runtimeMessageListener:
-      | ((
-          message: unknown,
-          sender: chrome.runtime.MessageSender,
-          sendResponse: (response?: unknown) => void
-        ) => boolean)
+      | ((message: unknown, sender: chrome.runtime.MessageSender) => boolean)
       | null = null;
     const sendMessage = vi.fn((_message: unknown, callback?: () => void) => callback?.());
 
@@ -321,10 +299,8 @@ describe("active subscription capture synchronization bridge", () => {
     await import("../src/content/content-script");
     const forwardRuntimeMessage = runtimeMessageListener as unknown as (
       message: unknown,
-      sender: chrome.runtime.MessageSender,
-      sendResponse: (response?: unknown) => void
+      sender: chrome.runtime.MessageSender
     ) => boolean;
-    const sendResponse = vi.fn();
     const asyncResponse = forwardRuntimeMessage(
       {
         type: CONTENT_REINJECT_REQUEST,
@@ -332,23 +308,13 @@ describe("active subscription capture synchronization bridge", () => {
         requestId: "timeout-request",
         draft: wireDraft()
       },
-      {} as chrome.runtime.MessageSender,
-      sendResponse
+      {} as chrome.runtime.MessageSender
     );
 
-    expect(asyncResponse).toBe(true);
-    expect(sendResponse).not.toHaveBeenCalled();
+    expect(asyncResponse).toBe(false);
 
     await vi.advanceTimersByTimeAsync(5_000);
 
-    expect(sendResponse).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestId: "timeout-request",
-        ok: false,
-        status: "acknowledgement-unknown",
-        error: "Timed out waiting for page reinjection result."
-      })
-    );
     expect(sendMessage).toHaveBeenCalledWith(
       {
         type: CONTENT_REINJECT_RESULT,
