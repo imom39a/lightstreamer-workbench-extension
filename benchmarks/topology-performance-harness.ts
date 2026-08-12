@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 
-import { createInMemoryEventHistory } from "../src/core/event-history";
+import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
 import { WorkbenchPanel } from "../src/extension/panel/react/workbench-panel";
 import {
   createWorkbenchRuntime,
@@ -195,11 +196,15 @@ window.__LSEW_TOPOLOGY_PERFORMANCE__ = {
     }
     longTaskObserver?.disconnect();
 
-    const retained = await history.list().toPromise();
-    const deliveredUpdates = retained.filter((event) =>
-      typeof event.raw?.logicalEventId === "string" &&
-      event.raw.logicalEventId.startsWith("performance-logical-update-")
-    );
+    const retained = await history.read({ order: "asc" });
+    if (!retained.ok) throw new Error(`Topology performance history read failed: ${retained.problem.message}`);
+    const deliveredUpdates = retained.value.evidence
+      .map(({ candidate }) => candidate)
+      .filter((candidate): candidate is LightstreamerEventEnvelope => candidate.kind === "item-update")
+      .filter((event) =>
+        typeof event.raw?.logicalEventId === "string" &&
+        event.raw.logicalEventId.startsWith("performance-logical-update-")
+      );
     const observedLogicalIds = new Set(deliveredUpdates.map((event) => String(event.raw?.logicalEventId)));
     const collapsedSamples = samples.filter(({ phase }) => phase === "collapsed");
     const expandedSamples = samples.filter(({ phase }) => phase === "expanded");

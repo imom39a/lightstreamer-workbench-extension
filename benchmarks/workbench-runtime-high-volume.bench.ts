@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, bench } from "vitest";
 
 import { createCaptureMessage } from "../src/bridge/messages";
-import { createInMemoryEventHistory, type EventHistory } from "../src/core/event-history";
+import { createInMemoryEventHistory, type EventHistory } from "../src/core/event-history-authoritative";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   createWorkbenchRuntime,
@@ -19,9 +19,15 @@ let history: EventHistory;
 let runtime: WorkbenchRuntime;
 let mutationIndex = 3_001;
 
-beforeAll(() => {
+beforeAll(async () => {
   history = createInMemoryEventHistory();
-  for (let index = 1; index <= 3_001; index += 1) history.append(commandEvent(index));
+  const receipts = Array.from({ length: 3_001 }, (_, index) =>
+    history.offer(commandEvent(index + 1)).settled
+  );
+  const outcomes = await Promise.all(receipts);
+  if (outcomes.some((outcome) => outcome.outcome !== "BECAME_EVIDENCE")) {
+    throw new Error("High-volume benchmark could not commit its initial Evidence.");
+  }
   runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
 });
 
@@ -51,7 +57,7 @@ bench(
 );
 
 bench(
-  "append and project one COMMAND update",
+  "offer and project one COMMAND update",
   () => {
     mutationIndex += 1;
     runtime.dispatch({

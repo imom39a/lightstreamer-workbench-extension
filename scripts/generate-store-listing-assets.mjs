@@ -84,7 +84,7 @@ function screenshotHarnessSource() {
   return `
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { createInMemoryEventHistory } from ${source("src/core/event-history.ts")};
+import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 import { getWorkbenchScenario } from ${source("tests/support/workbench-scenarios.ts")};
@@ -101,7 +101,12 @@ if (!(root instanceof HTMLElement)) throw new Error("Store-listing scenario requ
 
 const scenario = getWorkbenchScenario(scenarioId);
 const history = createInMemoryEventHistory();
-for (const event of scenario.initialEvents) history.append(event);
+await Promise.all(scenario.initialEvents.map(async (event) => {
+  const result = await history.offer(event).settled;
+  if (result.outcome !== "BECAME_EVIDENCE") {
+    throw new Error("Store-listing scenario could not commit initial Evidence.");
+  }
+}));
 const runtime = createWorkbenchRuntime({
   history,
   captureStatus: scenario.captureStatus,
