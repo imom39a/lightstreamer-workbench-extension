@@ -67,6 +67,45 @@ type EventHistoryPerformanceConfig = Readonly<{
   burstPauseMs: number;
 }>;
 
+/** Keep each synchronous burst offer task below the Long Task envelope. */
+export const EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE = 64;
+
+export type BurstOfferScheduleOptions<T> = Readonly<{
+  events: readonly T[];
+  eventsPerBurst: number;
+  chunkSize?: number;
+  offer: (event: T, index: number) => void;
+  yieldBetweenChunks: () => Promise<void>;
+  pauseBetweenBursts?: () => Promise<void>;
+}>;
+
+/**
+ * Run bursts in capture order while yielding between bounded synchronous
+ * chunks. The caller controls the actual yield and pause primitives so the
+ * schedule remains usable by both the browser harness and deterministic tests.
+ */
+export async function runBurstOfferSchedule<T>(options: BurstOfferScheduleOptions<T>): Promise<void> {
+  const eventsPerBurst = Math.max(1, Math.floor(options.eventsPerBurst));
+  const chunkSize = Math.max(1, Math.floor(options.chunkSize ?? EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE));
+  let sequence = 0;
+  while (sequence < options.events.length) {
+    const burstEnd = Math.min(options.events.length, sequence + eventsPerBurst);
+    while (sequence < burstEnd) {
+      const chunkEnd = Math.min(burstEnd, sequence + chunkSize);
+      while (sequence < chunkEnd) {
+        const event = options.events[sequence];
+        if (event === undefined) throw new Error(`Missing burst event ${sequence}.`);
+        options.offer(event, sequence);
+        sequence += 1;
+      }
+      if (sequence < burstEnd) await options.yieldBetweenChunks();
+    }
+    if (sequence < options.events.length && options.pauseBetweenBursts) {
+      await options.pauseBetweenBursts();
+    }
+  }
+}
+
 type HarnessSelection = Readonly<
   | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string }
   | { id: "scenarios"; kind: "scenarios"; pageToken: string }
@@ -2446,22 +2485,33 @@ export async function offerBurst(
   guard: HarnessStageGuard | undefined = undefined
 ): Promise<Promise<unknown>[]> {
   const receipts: Promise<unknown>[] = [];
-  for (const [index, event] of events.entries()) {
-    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
-    onOffer();
-    if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
-    const offeredAt = performance.now();
-    offerTimes.set(event.id, offeredAt);
-    pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
-    const receipt = history.offer(event);
-    if (receipt.intake !== "QUEUED") {
-      pending.refuse(event.id);
-      throw new Error(`Burst offer was refused: ${event.id}`);
+  await runBurstOfferSchedule({
+    events,
+    eventsPerBurst: ISSUE_16_TOTAL_EVENTS,
+    offer(event) {
+      if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+      onOffer();
+      if (guard && !guard.isActive()) throw new Error("Harness offer stage was invalidated.");
+      const offeredAt = performance.now();
+      offerTimes.set(event.id, offeredAt);
+      pending.add(event.id, { offeredAt, bytes: journalAccountedBytes(serializeJournalEvidenceCandidate(event).bytes) });
+      const receipt = history.offer(event);
+      if (receipt.intake !== "QUEUED") {
+        pending.refuse(event.id);
+        throw new Error(`Burst offer was refused: ${event.id}`);
+      }
+      receipts.push(receipt.settled);
+      samplePending();
+    },
+    async yieldBetweenChunks() {
+      samplePending();
+      await delay(0);
+    },
+    async pauseBetweenBursts() {
+      samplePending();
+      await delay(config.burstPauseMs);
     }
-    receipts.push(receipt.settled);
-    samplePending();
-    if ((index + 1) % ISSUE_16_TOTAL_EVENTS === 0) await delay(config.burstPauseMs);
-  }
+  });
   return receipts;
 }
 

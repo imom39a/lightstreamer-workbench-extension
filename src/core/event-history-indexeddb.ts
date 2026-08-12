@@ -1339,6 +1339,38 @@ function validateEvidenceRecord(record: EvidenceRecord, intervalId: string, expe
 
 type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 
+const JOURNAL_READ_CHUNK_SIZE = 64;
+
+function yieldJournalRead(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
+async function materializeJournalRead(
+  records: readonly EvidenceRecord[],
+  latch: ReadLatch,
+  query: EvidenceQuery
+): Promise<JournalRead> {
+  const selected: CommittedEvidence[] = [];
+  let total = 0;
+  const retainedRange = latch.retainedRange;
+  if (retainedRange === null) return { evidence: [], total: 0 };
+  const orderedRecords = [...records].sort((left, right) => left.sequence - right.sequence);
+  for (let offset = 0; offset < orderedRecords.length; offset += JOURNAL_READ_CHUNK_SIZE) {
+    const end = Math.min(orderedRecords.length, offset + JOURNAL_READ_CHUNK_SIZE);
+    for (let index = offset; index < end; index += 1) {
+      const record = orderedRecords[index];
+      if (!record || record.intervalId !== latch.interval.id || record.sequence < retainedRange.first.sequence) continue;
+      const evidence = toCommittedEvidenceFromRecord(record);
+      if (matchesEvidenceQuery(evidence, query)) {
+        total += 1;
+        retainForJournalPage(selected, evidence, query);
+      }
+    }
+    if (end < orderedRecords.length) await yieldJournalRead();
+  }
+  return { evidence: pageJournalSelection(selected, query, total), total };
+}
+
 function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, query: EvidenceQuery): Promise<JournalRead> {
   return new Promise((resolve, reject) => {
     const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
@@ -1473,6 +1505,7 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
       return;
     }
     const unfilteredPage = query.candidateKind === undefined && query.find === undefined && !query.filters && query.afterSequence === undefined;
+    const cooperativeRead = unfilteredPage && query.limit === undefined && query.offsetFromNewest === undefined;
     const limit = query.limit === undefined ? null : Math.max(0, Math.floor(query.limit));
     const offset = query.offsetFromNewest === undefined ? 0 : Math.max(0, Math.floor(query.offsetFromNewest));
     const pageStop = unfilteredPage && limit !== null ? offset + limit : null;
@@ -1484,25 +1517,42 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
     if (unfilteredPage) total = latch.retainedCount;
     const direction = query.offsetFromNewest !== undefined || query.order === "desc" ? "prev" : "next";
     const request = store.openCursor(undefined, direction);
+    const records: EvidenceRecord[] = [];
     let matched = 0;
     request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence read failed."));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) {
-        finish();
+        if (cooperativeRead) {
+          void completed.then(async () => {
+            if (settled) return;
+            try {
+              const result = await materializeJournalRead(records, latch, query);
+              if (settled) return;
+              settled = true;
+              resolve(result);
+            } catch (error) {
+              fail(error);
+            }
+          }, fail);
+        } else finish();
         return;
       }
       const record = cursor.value as EvidenceRecord;
       if (latch.retainedRange !== null && record.sequence <= latch.retainedRange.last.sequence
         && record.sequence >= latch.retainedRange.first.sequence && record.intervalId === latch.interval.id) {
-        const evidence = toCommittedEvidenceFromRecord(record);
-        if (matchesEvidenceQuery(evidence, query)) {
-          if (!unfilteredPage) total += 1;
-          selected.push(evidence);
-          matched += 1;
-          if (pageStop !== null && matched >= pageStop) {
-            finish();
-            return;
+        if (cooperativeRead) {
+          records.push(record);
+        } else {
+          const evidence = toCommittedEvidenceFromRecord(record);
+          if (matchesEvidenceQuery(evidence, query)) {
+            if (!unfilteredPage) total += 1;
+            selected.push(evidence);
+            matched += 1;
+            if (pageStop !== null && matched >= pageStop) {
+              finish();
+              return;
+            }
           }
         }
       }

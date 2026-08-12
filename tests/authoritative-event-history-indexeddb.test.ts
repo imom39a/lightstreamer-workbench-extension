@@ -1173,6 +1173,28 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("yields while materializing a large journal read without changing order or totals", async () => {
+    const history = await freshHistory("indexed-cooperative-read");
+    const count = 129;
+    for (let index = 0; index < count; index += 1) {
+      await history.offer(candidate(`cooperative-${index}`)).settled;
+    }
+
+    const timerSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const result = await history.read({ order: "asc" });
+      expect(result).toMatchObject({ ok: true, value: { total: count } });
+      if (!result.ok) throw new Error("Expected the cooperative read to succeed.");
+      expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(
+        Array.from({ length: count }, (_, index) => `cooperative-${index}`)
+      );
+      expect(timerSpy).toHaveBeenCalled();
+    } finally {
+      timerSpy.mockRestore();
+      await history.close();
+    }
+  });
+
   it("validates startup through a cursor without getAll and hands replay to live Capture exactly once", async () => {
     const panelSessionId = "indexed-replay-handoff";
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
