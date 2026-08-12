@@ -646,6 +646,14 @@ function validateCheckpointScenarios(
         scenario.offeredEventIds.filter((eventId) => scenario.expectedCheckpointEventIds.includes(eventId)),
         scenario.expectedCheckpointEventIds
       );
+      const semanticExpectedOrder = scenario.expectedEventIds.length
+        === scenario.trafficBefore + scenario.liveCaptureEventIds.length + scenario.expectedCheckpointEventIds.length + scenario.trafficAfter
+        && identifiersMatch(scenario.expectedEventIds, [
+          ...scenario.expectedEventIds.slice(0, scenario.trafficBefore),
+          ...scenario.liveCaptureEventIds,
+          ...scenario.expectedCheckpointEventIds,
+          ...scenario.expectedEventIds.slice(-scenario.trafficAfter)
+        ]);
       const offeredMatchesExpected = identifiersMatch(scenario.offeredEventIds, scenario.expectedEventIds);
       const retainedMatchesExpected = identifiersMatch(scenario.retainedEventIds, scenario.expectedEventIds);
       const publishedMatchesExpected = identifiersMatch(scenario.publishedEventIds, scenario.expectedEventIds);
@@ -690,6 +698,7 @@ function validateCheckpointScenarios(
         || !checkpointOfferMatchesExpected
         || !expectedCheckpointInExpected
         || !checkpointOfferMatchesFullOffer
+        || !semanticExpectedOrder
         || !offeredMatchesExpected
         || !retainedMatchesExpected
         || !publishedMatchesExpected

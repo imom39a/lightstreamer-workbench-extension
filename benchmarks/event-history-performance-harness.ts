@@ -109,8 +109,9 @@ export type HarnessScenarioTestHooks = Readonly<{
   }>;
 }>;
 
-const CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT = 180;
+const CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT = 300;
 const CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS = 4;
+const CHECKPOINT_LIVE_CAPTURE_TARGET_OVERLAP_MS = 1_100;
 
 export type CheckpointLiveCaptureMeasurement = Readonly<{
   liveCaptureCount: number;
@@ -1908,6 +1909,8 @@ export async function runCheckpointScenario(
   const stagingEndObservation = new Promise<void>((resolve) => { resolveStagingEnd = resolve; });
   let resolveProductionObservation!: () => void;
   const productionObservation = new Promise<void>((resolve) => { resolveProductionObservation = resolve; });
+  let resolveLiveCaptureObservation!: () => void;
+  const liveCaptureObservation = new Promise<void>((resolve) => { resolveLiveCaptureObservation = resolve; });
   const root = document.createElement("main");
   let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
   const cleanupDisposePanel = async (): Promise<void> => {
@@ -1938,6 +1941,7 @@ export async function runCheckpointScenario(
           observedProductionLiveIds.add(boundary.eventId);
           productionObservedLiveEventIds.push(boundary.eventId);
           productionObservedLiveEventTimesMs.push(timestampMs);
+          if (productionObservedLiveEventIds.length === liveCaptureEvents.length) resolveLiveCaptureObservation();
         }
         if (candidateObserved && productionObservedLiveEventIds.length === liveCaptureEvents.length) {
           resolveProductionObservation();
@@ -1982,6 +1986,11 @@ export async function runCheckpointScenario(
   const liveCaptureEventIds: string[] = [];
   const offeredLiveCaptureEventTimesMs: number[] = [];
   const liveReceiptPromises: Array<Promise<Readonly<{ ok: true; value: unknown } | { ok: false; error: unknown }>>> = [];
+  const checkpointChunks = checkpointFrames.slice(1, -1).filter((frame): frame is Extract<TopologySyncFrame, { type: typeof TOPOLOGY_SYNC_CHUNK }> =>
+    frame.type === TOPOLOGY_SYNC_CHUNK
+  );
+  const checkpointChunkInterval = Math.max(1, Math.floor(CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT / Math.max(1, checkpointChunks.length)));
+  let nextCheckpointChunk = 0;
   for (let index = 0; index < CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT; index += 1) {
     if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled during live capture.");
     const event = liveCaptureEvents[index]!;
@@ -1996,13 +2005,31 @@ export async function runCheckpointScenario(
     ));
     publishStageProgress(progress(`${name}-live-capture`, index + 1, null), guard);
     await delay(CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS);
-    const chunk = checkpointFrames[index % Math.max(1, checkpointFrames.length - 2) + 1];
-    if (chunk && chunk.type === TOPOLOGY_SYNC_CHUNK && index % 2 === 1) {
-      panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame: chunk });
+    if ((index + 1) % checkpointChunkInterval === 0 && nextCheckpointChunk < checkpointChunks.length) {
+      panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame: checkpointChunks[nextCheckpointChunk++]! });
     }
   }
-  for (const frame of checkpointFrames.slice(1, -1)) {
-    panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+  while (nextCheckpointChunk < checkpointChunks.length) {
+    panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame: checkpointChunks[nextCheckpointChunk++]! });
+  }
+  await withStageDeadline(
+    liveCaptureObservation,
+    `checkpoint-${adapter}-${name}-production-live-capture`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-production-live-capture`, productionObservedLiveEventIds.length, liveCaptureEvents.length),
+    undefined,
+    guard
+  );
+  const productionLiveSpanMs = productionObservedLiveEventTimesMs.at(-1)! - productionObservedLiveEventTimesMs[0]!;
+  const productionLiveMaxGapMs = productionObservedLiveEventTimesMs.slice(1).reduce(
+    (maximum, timestamp, index) => Math.max(maximum, timestamp - productionObservedLiveEventTimesMs[index]!),
+    0
+  );
+  if (productionLiveSpanMs < CHECKPOINT_LIVE_CAPTURE_TARGET_OVERLAP_MS) {
+    throw new Error(`Checkpoint ${adapter}/${name} production live capture spanned ${productionLiveSpanMs} ms before COMPLETE; expected at least ${CHECKPOINT_LIVE_CAPTURE_TARGET_OVERLAP_MS} ms.`);
+  }
+  if (productionLiveMaxGapMs > CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS) {
+    throw new Error(`Checkpoint ${adapter}/${name} production live capture gap ${productionLiveMaxGapMs} ms exceeded ${CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS} ms before COMPLETE.`);
   }
   panel!.runtime.dispatch({ type: "apply-topology-sync-frame", frame: checkpointFrames.at(-1)! });
   await withStageDeadline(

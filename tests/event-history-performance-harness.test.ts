@@ -173,6 +173,7 @@ describe("Event History performance checkpoint workload", () => {
     const overlapEventSpan = scenario.liveCaptureEventTimesMs.at(-1)! - scenario.liveCaptureEventTimesMs[0]!;
 
     expect(scenario.liveCaptureCount).toBe(scenario.liveCaptureEventIds.length);
+    expect(scenario.liveCaptureCount).toBe(300);
     expect(scenario.liveCaptureDurationMs).toBeGreaterThanOrEqual(1_000);
     expect(scenario.checkpointStagingDurationMs).toBeGreaterThanOrEqual(1_000);
     expect(scenario.liveCaptureOverlapMs).toBeGreaterThanOrEqual(1_000);

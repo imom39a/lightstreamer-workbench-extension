@@ -5,6 +5,7 @@ import {
   EVENT_HISTORY_PERFORMANCE_LIMITS,
   validateEventHistoryPerformanceReference,
   type EventHistoryPerformanceCell,
+  type EventHistoryPerformanceCheckpointScenario,
   type EventHistoryPerformanceHeapSample,
   type EventHistoryPerformanceReference,
   type EventHistoryPerformanceReport
@@ -219,6 +220,34 @@ function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "i
     canonicalBytes: name === "representative" ? 10_000 : 2 * 1_048_576,
     committedBoundaryCorrect: true,
     batchAcceptedAsOneOversizedUnit: true
+  };
+}
+
+function checkpointWithProductionTimes(
+  scenario: EventHistoryPerformanceCheckpointScenario,
+  times: number[]
+): EventHistoryPerformanceCheckpointScenario {
+  const startedAt = times[0]!;
+  const endedAt = times.at(-1)!;
+  const duration = endedAt - startedAt;
+  const maxGap = times.slice(1).reduce((maximum, timestamp, index) => Math.max(maximum, timestamp - times[index]!), 0);
+  return {
+    ...scenario,
+    productionObservedLiveEventTimesMs: times,
+    offeredLiveCaptureEventTimesMs: [...times],
+    liveCaptureEventTimesMs: [...times],
+    liveCaptureStartedAtMs: startedAt,
+    liveCaptureEndedAtMs: endedAt,
+    liveCaptureDurationMs: duration,
+    checkpointStagingStartedAtMs: startedAt - 10,
+    checkpointStagingEndedAtMs: endedAt + 10,
+    checkpointStagingDurationMs: duration + 20,
+    liveCaptureOverlapMs: duration,
+    liveCaptureOverlapEventCount: times.length,
+    liveCaptureMaxInterEventGapMs: maxGap,
+    liveCaptureRateEventsPerSecond: times.length * 1_000 / duration,
+    liveCaptureRateSatisfied: times.length * 1_000 / duration >= 50,
+    interleavedWhileStaging: duration >= 1_000 && maxGap <= 250
   };
 }
 
@@ -662,6 +691,58 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     expect(decision.verdict).toBe("FAIL");
     expect(decision.failures.some((failure) => failure.includes("concurrent live capture"))).toBe(true);
+  });
+
+  it.each([
+    [999, false],
+    [1_000, true]
+  ] as const)("enforces the checkpoint production-overlap boundary at %i ms", (duration, accepted) => {
+    const baseline = report();
+    const times = Array.from({ length: 72 }, (_, index) => 100 + index * duration / 71);
+    const current = report({
+      checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) =>
+        index === 0 ? checkpointWithProductionTimes(scenario, times) : scenario
+      )
+    });
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+    expect(decision.failures.some((failure) => failure.includes("concurrent live capture"))).toBe(!accepted);
+  });
+
+  it.each([
+    [250, true],
+    [251, false]
+  ] as const)("enforces the checkpoint production gap boundary at %i ms", (firstGap, accepted) => {
+    const baseline = report();
+    const times = [100, ...Array.from({ length: 71 }, (_, index) => 100 + firstGap + index * (1_000 / 70))];
+    const current = report({
+      checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) =>
+        index === 0 ? checkpointWithProductionTimes(scenario, times) : scenario
+      )
+    });
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+    expect(decision.failures.some((failure) => failure.includes("concurrent live capture"))).toBe(!accepted);
+  });
+
+  it("rejects internally consistent checkpoint-before-live evidence", () => {
+    const baseline = report();
+    const current = report({
+      checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) => {
+        if (index !== 0) return scenario;
+        const before = scenario.expectedEventIds.slice(0, scenario.trafficBefore);
+        const after = scenario.expectedEventIds.slice(-scenario.trafficAfter);
+        const wrongOrder = [...before, ...scenario.expectedCheckpointEventIds, ...scenario.liveCaptureEventIds, ...after];
+        return {
+          ...scenario,
+          expectedEventIds: wrongOrder,
+          offeredEventIds: [...wrongOrder],
+          retainedEventIds: [...wrongOrder],
+          publishedEventIds: [...wrongOrder]
+        };
+      })
+    });
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("checkpoint evidence"))).toBe(true);
   });
 
   it("fails checkpoint traffic that only surrounds staging without overlapping it", () => {
