@@ -196,7 +196,18 @@ describe("Event History performance timeout evidence", () => {
           progress: {
             operationId: "operation-1", phase: "cells", stage: "cellReceipts", substage: "receipts", sample: 1,
             cellIndex: 1, cellTotal: 36, adapter: "indexeddb", workload: "sustained", shape: "ordinary-item-update",
-            workloadPhase: "commit", sequence: 7, pageElapsedMs: 120001
+            workloadPhase: "commit", sequence: 7, pageElapsedMs: 120001,
+            runtimeDiagnostics: {
+              expectedFinalId: "expected-final", disposed: false, visible: true,
+              committedEvidenceBoundary: { intervalId: "interval-1", sequence: 100, eventId: "expected-final" },
+              renderedEvidenceBoundary: { intervalId: "interval-1", sequence: 99, eventId: "prior" },
+              pendingVisibleCount: 1,
+              pendingVisibleHead: { intervalId: "interval-1", sequence: 100, eventId: "expected-final" },
+              pendingVisibleTail: { intervalId: "interval-1", sequence: 100, eventId: "expected-final" },
+              evidenceQueryPending: true, passiveRefreshPending: true, queryGeneration: 4,
+              liveEvidenceTotal: 99, liveEvidenceTail: { eventId: "prior" }, lastEvidenceQueryError: null,
+              documentVisibilityState: "visible", visibleFrameHeartbeat: 3, lastVisibleFrameAtMs: 120000
+            }
           }
         });
         const timeout = normalizePerformanceTimeout(error);
@@ -220,6 +231,8 @@ describe("Event History performance timeout evidence", () => {
         assert.equal(json.classification, "NOT_CLASSIFIED");
         assert.equal(json.reference.adopted, false);
         assert.equal(json.operation.lastStatus.error.stage, "cellReceipts");
+        assert.equal(json.operation.progress.runtimeDiagnostics.expectedFinalId, "expected-final");
+        assert.equal(json.operation.progress.runtimeDiagnostics.committedEvidenceBoundary.eventId, "expected-final");
         assert.equal(json.decision.verdict, "FAIL");
         assert.match(markdown, /Status: \\*\\*TIMED_OUT\\*\\*/u);
         assert.match(markdown, /"stage":"cellReceipts"/u);

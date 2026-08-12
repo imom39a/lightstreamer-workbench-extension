@@ -442,7 +442,28 @@ export interface WorkbenchRuntime {
   disposeAndWait(): Promise<void>;
   /** Reports the first animation frame after the current committed boundary rendered. */
   reportVisibleFrame?(): void;
+  /** Snapshot of identity-only state for the deliberate real-Chrome performance gate. */
+  getPerformanceDiagnostics?(): WorkbenchRuntimePerformanceDiagnostics;
 }
+
+export type WorkbenchRuntimePerformanceDiagnostics = Readonly<{
+  disposed: boolean;
+  visible: boolean;
+  committedEvidenceBoundary: EvidenceRef | null;
+  renderedEvidenceBoundary: EvidenceRef | null;
+  pendingVisibleCount: number;
+  pendingVisibleHead: EvidenceRef | null;
+  pendingVisibleTail: EvidenceRef | null;
+  evidenceQueryPending: boolean;
+  passiveRefreshPending: boolean;
+  queryGeneration: number;
+  liveEvidenceTotal: number;
+  liveEvidenceTail: Readonly<{ eventId: string }> | null;
+  lastEvidenceQueryError: string | null;
+  documentVisibilityState: DocumentVisibilityState | "unavailable";
+  visibleFrameHeartbeat: number;
+  lastVisibleFrameAtMs: number | null;
+}>;
 
 export type WorkbenchRuntimeScheduler = {
   requestFrame(callback: () => void): unknown;
@@ -556,6 +577,7 @@ class Runtime implements WorkbenchRuntime {
   private queryGeneration = 0;
   private evidenceQueryPending = false;
   private passiveRefreshPending = false;
+  private lastEvidenceQueryError: string | null = null;
   private selectionLookupGeneration = 0;
   private frameHandle: unknown | null = null;
   private fallbackHandle: unknown | null = null;
@@ -564,6 +586,8 @@ class Runtime implements WorkbenchRuntime {
   private committedEvidenceBoundary: EvidenceRef | null = null;
   private renderedEvidenceBoundary: EvidenceRef | null = null;
   private pendingVisibleBoundaries: EvidenceRef[] = [];
+  private visibleFrameHeartbeat = 0;
+  private lastVisibleFrameAtMs: number | null = null;
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
   private historyCondition: WorkbenchHistoryCondition | null = null;
   private historyAnnouncement = "";
@@ -652,6 +676,8 @@ class Runtime implements WorkbenchRuntime {
 
   readonly reportVisibleFrame = (): void => {
     if (!this.visible) return;
+    this.visibleFrameHeartbeat += 1;
+    this.lastVisibleFrameAtMs = performance.now();
     const boundary = this.renderedEvidenceBoundary;
     if (!boundary || !this.performanceHooks?.onVisibleFrame || this.pendingVisibleBoundaries.length === 0) return;
     const coveredBoundaries: EvidenceRef[] = [];
@@ -666,6 +692,31 @@ class Runtime implements WorkbenchRuntime {
     if (coveredBoundaries.length === 0) return;
     this.pendingVisibleBoundaries = pendingBoundaries;
     this.performanceHooks.onVisibleFrame(boundary, performance.now(), coveredBoundaries);
+  };
+
+  readonly getPerformanceDiagnostics = (): WorkbenchRuntimePerformanceDiagnostics => {
+    const liveTail = this.liveEvidence.events.at(-1);
+    const identity = (boundary: EvidenceRef | null | undefined): EvidenceRef | null => boundary
+      ? Object.freeze({ intervalId: boundary.intervalId, sequence: boundary.sequence, eventId: boundary.eventId })
+      : null;
+    return Object.freeze({
+      disposed: this.disposed,
+      visible: this.visible,
+      committedEvidenceBoundary: identity(this.committedEvidenceBoundary),
+      renderedEvidenceBoundary: identity(this.renderedEvidenceBoundary),
+      pendingVisibleCount: this.pendingVisibleBoundaries.length,
+      pendingVisibleHead: identity(this.pendingVisibleBoundaries[0]),
+      pendingVisibleTail: identity(this.pendingVisibleBoundaries.at(-1)),
+      evidenceQueryPending: this.evidenceQueryPending,
+      passiveRefreshPending: this.passiveRefreshPending,
+      queryGeneration: this.queryGeneration,
+      liveEvidenceTotal: this.liveEvidence.total,
+      liveEvidenceTail: liveTail ? Object.freeze({ eventId: liveTail.id }) : null,
+      lastEvidenceQueryError: this.lastEvidenceQueryError,
+      documentVisibilityState: typeof document === "undefined" ? "unavailable" : document.visibilityState,
+      visibleFrameHeartbeat: this.visibleFrameHeartbeat,
+      lastVisibleFrameAtMs: this.lastVisibleFrameAtMs
+    });
   };
 
   dispatch(command: WorkbenchCommand): void {
@@ -1998,6 +2049,7 @@ class Runtime implements WorkbenchRuntime {
             return;
           }
           if (!result.ok) {
+            this.lastEvidenceQueryError = result.problem.code;
             this.evidenceQueryPending = false;
             this.evidenceLoading = false;
             this.liveEvidence = emptyEvidence;
@@ -2006,6 +2058,7 @@ class Runtime implements WorkbenchRuntime {
             this.drainPassiveRefresh();
             return;
           }
+          this.lastEvidenceQueryError = null;
           this.evidenceQueryPending = false;
           this.evidenceLoading = false;
           this.storeStats.retained = result.value.total;
@@ -2047,9 +2100,10 @@ class Runtime implements WorkbenchRuntime {
           this.publish();
           this.drainPassiveRefresh();
         },
-        () => {
+        (error) => {
           completedSynchronously = true;
           if (this.disposed || generation !== this.queryGeneration) return;
+          this.lastEvidenceQueryError = error instanceof Error && error.name ? error.name : "UNKNOWN_REJECTION";
           this.evidenceQueryPending = false;
           if (changesEvidenceIdentity || this.evidenceLoading) {
             this.evidenceLoading = false;

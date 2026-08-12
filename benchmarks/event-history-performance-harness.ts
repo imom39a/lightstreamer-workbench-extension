@@ -50,7 +50,11 @@ import {
   type EventHistoryPerformanceWorkload
 } from "./event-history-performance-gate";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
-import { createWorkbenchRuntime, type WorkbenchRuntimePerformanceHooks } from "../src/extension/panel/workbench-runtime";
+import {
+  createWorkbenchRuntime,
+  type WorkbenchRuntimePerformanceDiagnostics,
+  type WorkbenchRuntimePerformanceHooks
+} from "../src/extension/panel/workbench-runtime";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 import {
   decodeTopologyCheckpointEvidenceCandidate
@@ -80,6 +84,11 @@ export type HarnessProgressInput = Readonly<{
   offered: number | null;
   settled: number | null;
   query: string | null;
+  runtimeDiagnostics?: HarnessRuntimeDiagnostics;
+}>;
+
+export type HarnessRuntimeDiagnostics = WorkbenchRuntimePerformanceDiagnostics & Readonly<{
+  expectedFinalId: string;
 }>;
 
 export type HarnessProgress = HarnessProgressInput & Readonly<{
@@ -1161,6 +1170,13 @@ async function runCell(
   let phaseStartedAt = performance.now();
   let offeredCount = 0;
   let settledCount = 0;
+  const expectedCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
+  const expectedFinalId = `${runId}-${shape}-${expectedCount - 1}`;
+  let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+  const runtimeDiagnostics = (): HarnessRuntimeDiagnostics | undefined => {
+    const diagnostics = panel?.runtime.getPerformanceDiagnostics?.();
+    return diagnostics ? { expectedFinalId, ...diagnostics } : undefined;
+  };
   const progress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): HarnessProgressInput => ({
     operationId,
     phase: "cells",
@@ -1177,7 +1193,12 @@ async function runCell(
     workloadPhase,
     offered: offeredCount,
     settled: settledCount,
-    query
+    query,
+    ...(() => {
+      if (stage !== "visible-frame" && query !== "final-read") return {};
+      const diagnostics = runtimeDiagnostics();
+      return diagnostics ? { runtimeDiagnostics: diagnostics } : {};
+    })()
   });
   const updateProgress = (stage: string, workloadPhase: PhaseName | null = phase, query: string | null = null): void => {
     publishStageProgress(progress(stage, workloadPhase, query), runGuard);
@@ -1206,8 +1227,6 @@ async function runCell(
   let resolveFinalVisible!: () => void;
   let finalVisibleAt: number | null = null;
   const finalVisible = new Promise<void>((resolve) => { resolveFinalVisible = resolve; });
-  const expectedCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
-  const expectedFinalId = `${runId}-${shape}-${expectedCount - 1}`;
   const cleanupSetupFailure = async (error: unknown): Promise<never> => {
     const failure = error instanceof Error ? error : new Error(String(error));
     Object.assign(failure, {
@@ -1228,7 +1247,6 @@ async function runCell(
     });
     throw failure;
   };
-  let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
   try {
     panel = await mountProductionPanel(history, {
       onCommittedEvidenceBoundary(boundary, timestampMs) {

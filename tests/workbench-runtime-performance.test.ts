@@ -51,6 +51,52 @@ async function flushPromises(): Promise<void> {
 describe("production React runtime performance boundary seam", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("reports identity-only runtime diagnostics without exposing Evidence payloads", async () => {
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-diagnostics" });
+    const scheduler = createFrameScheduler();
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler,
+      captureStatus: "capturing",
+      performanceHooks: { onVisibleFrame() {} }
+    });
+    await flushPromises();
+
+    const event = createEventHistoryWorkloadEvent("large-json-rich", 1, "diagnostics");
+    await expect(history.offer(event).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE" });
+    scheduler.flushFrame();
+    await flushPromises();
+
+    const beforeFrame = runtime.getPerformanceDiagnostics?.();
+    expect(beforeFrame).toMatchObject({
+      disposed: false,
+      visible: true,
+      committedEvidenceBoundary: { sequence: 1, eventId: event.id },
+      renderedEvidenceBoundary: { sequence: 1, eventId: event.id },
+      pendingVisibleCount: 1,
+      pendingVisibleHead: { sequence: 1, eventId: event.id },
+      pendingVisibleTail: { sequence: 1, eventId: event.id },
+      evidenceQueryPending: false,
+      passiveRefreshPending: false,
+      liveEvidenceTotal: 1,
+      liveEvidenceTail: { eventId: event.id },
+      lastEvidenceQueryError: null,
+      visibleFrameHeartbeat: 0,
+      lastVisibleFrameAtMs: null
+    });
+    expect(JSON.stringify(beforeFrame)).not.toContain("payload");
+
+    runtime.reportVisibleFrame?.();
+    expect(runtime.getPerformanceDiagnostics?.()).toMatchObject({
+      pendingVisibleCount: 0,
+      visibleFrameHeartbeat: 1
+    });
+    expect(runtime.getPerformanceDiagnostics?.()?.lastVisibleFrameAtMs).toEqual(expect.any(Number));
+
+    runtime.dispose();
+    await history.close();
+  });
+
   it("reports authoritative commit and later visible-frame observations for the same boundary", async () => {
     const committed: Array<{ sequence: number; at: number }> = [];
     const visible: Array<{ sequence: number; at: number }> = [];

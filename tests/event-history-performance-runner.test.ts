@@ -1246,6 +1246,25 @@ describe("Event History performance runner page operation", () => {
       offered: 1_692,
       settled: 1_691,
       query: null,
+      runtimeDiagnostics: {
+        expectedFinalId: "cell-7-final",
+        disposed: false,
+        visible: true,
+        committedEvidenceBoundary: { intervalId: "interval-7", sequence: 1_692, eventId: "cell-7-final" },
+        renderedEvidenceBoundary: { intervalId: "interval-7", sequence: 1_691, eventId: "cell-7-prior" },
+        pendingVisibleCount: 1,
+        pendingVisibleHead: { intervalId: "interval-7", sequence: 1_692, eventId: "cell-7-final" },
+        pendingVisibleTail: { intervalId: "interval-7", sequence: 1_692, eventId: "cell-7-final" },
+        evidenceQueryPending: true,
+        passiveRefreshPending: true,
+        queryGeneration: 19,
+        liveEvidenceTotal: 1_691,
+        liveEvidenceTail: { eventId: "cell-7-prior" },
+        lastEvidenceQueryError: null,
+        documentVisibilityState: "visible",
+        visibleFrameHeartbeat: 14,
+        lastVisibleFrameAtMs: 4_300
+      },
       extraField: "must be dropped"
     };
     const expectedProgress = {
@@ -1266,7 +1285,26 @@ describe("Event History performance runner page operation", () => {
       workloadPhase: "commit",
       offered: 1_692,
       settled: 1_691,
-      query: null
+      query: null,
+      runtimeDiagnostics: {
+        expectedFinalId: "cell-7-final",
+        disposed: false,
+        visible: true,
+        committedEvidenceBoundary: { intervalId: "interval-7", sequence: 1_692, eventId: "cell-7-final" },
+        renderedEvidenceBoundary: { intervalId: "interval-7", sequence: 1_691, eventId: "cell-7-prior" },
+        pendingVisibleCount: 1,
+        pendingVisibleHead: { intervalId: "interval-7", sequence: 1_692, eventId: "cell-7-final" },
+        pendingVisibleTail: { intervalId: "interval-7", sequence: 1_692, eventId: "cell-7-final" },
+        evidenceQueryPending: true,
+        passiveRefreshPending: true,
+        queryGeneration: 19,
+        liveEvidenceTotal: 1_691,
+        liveEvidenceTail: { eventId: "cell-7-prior" },
+        lastEvidenceQueryError: null,
+        documentVisibilityState: "visible",
+        visibleFrameHeartbeat: 14,
+        lastVisibleFrameAtMs: 4_300
+      }
     };
     const normalStatuses: Array<Record<string, unknown>> = [];
     const normalCdp = new FakeCdp([
@@ -1293,6 +1331,24 @@ describe("Event History performance runner page operation", () => {
 
     expect(normalStatuses.at(-1)?.progress).toEqual(expectedProgress);
     expect(rejected).toMatchObject({ progress: { ...expectedProgress, operationId: "rejected-sanitized" } });
+  });
+
+  it("fails closed when timeout runtime diagnostics are incomplete", async () => {
+    const invalidDiagnosticsProgress = {
+      ...strictProgress("invalid-diagnostics"),
+      runtimeDiagnostics: { expectedFinalId: "final-without-required-runtime-state" }
+    };
+    const statuses: Array<Record<string, unknown>> = [];
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "invalid-diagnostics", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "invalid-diagnostics", state: "resolved", heartbeat: 1, progress: invalidDiagnosticsProgress, result: true }),
+      evaluated(true)
+    ]);
+    await expect(runPageOperation(cdp, "window.run()", {
+      operationId: "invalid-diagnostics",
+      onHeartbeat: (status) => statuses.push(status as Record<string, unknown>)
+    })).resolves.toBe(true);
+    expect(statuses.at(-1)).not.toHaveProperty("progress");
   });
 
   it("drops invalid progress for both normal and rejected CDP statuses", async () => {

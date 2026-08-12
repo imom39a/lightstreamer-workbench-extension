@@ -23,6 +23,32 @@ export type PerformanceOperationProgress = Readonly<{
   offered: number | null;
   settled: number | null;
   query: string | null;
+  runtimeDiagnostics?: PerformanceRuntimeDiagnostics;
+}>;
+
+export type PerformanceEvidenceRef = Readonly<{
+  intervalId: string;
+  sequence: number;
+  eventId: string;
+}>;
+export type PerformanceRuntimeDiagnostics = Readonly<{
+  expectedFinalId: string;
+  disposed: boolean;
+  visible: boolean;
+  committedEvidenceBoundary: PerformanceEvidenceRef | null;
+  renderedEvidenceBoundary: PerformanceEvidenceRef | null;
+  pendingVisibleCount: number;
+  pendingVisibleHead: PerformanceEvidenceRef | null;
+  pendingVisibleTail: PerformanceEvidenceRef | null;
+  evidenceQueryPending: boolean;
+  passiveRefreshPending: boolean;
+  queryGeneration: number;
+  liveEvidenceTotal: number;
+  liveEvidenceTail: Readonly<{ eventId: string }> | null;
+  lastEvidenceQueryError: string | null;
+  documentVisibilityState: "hidden" | "visible" | "prerender" | "unavailable";
+  visibleFrameHeartbeat: number;
+  lastVisibleFrameAtMs: number | null;
 }>;
 
 export type HeapAdapter = "indexeddb" | "memory";

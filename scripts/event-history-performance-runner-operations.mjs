@@ -804,6 +804,69 @@ function serializeOperationError(value, expectedOperationId = null) {
 
 function serializeOperationProgress(value, expectedOperationId = null) {
   if (!value || typeof value !== "object") return null;
+  const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+  const serializeBoundary = (boundary) => {
+    if (boundary === null) return null;
+    if (!boundary || typeof boundary !== "object"
+      || typeof boundary.intervalId !== "string" || boundary.intervalId.length === 0
+      || !Number.isSafeInteger(boundary.sequence) || boundary.sequence < 1
+      || typeof boundary.eventId !== "string" || boundary.eventId.length === 0) return undefined;
+    return { intervalId: boundary.intervalId, sequence: boundary.sequence, eventId: boundary.eventId };
+  };
+  const serializeRuntimeDiagnostics = (diagnostics) => {
+    if (!diagnostics || typeof diagnostics !== "object") return null;
+    const required = [
+      "expectedFinalId", "disposed", "visible", "committedEvidenceBoundary", "renderedEvidenceBoundary",
+      "pendingVisibleCount", "pendingVisibleHead", "pendingVisibleTail", "evidenceQueryPending",
+      "passiveRefreshPending", "queryGeneration", "liveEvidenceTotal", "liveEvidenceTail",
+      "lastEvidenceQueryError", "documentVisibilityState", "visibleFrameHeartbeat", "lastVisibleFrameAtMs"
+    ];
+    if (!required.every((field) => has(diagnostics, field))) return null;
+    const committedEvidenceBoundary = serializeBoundary(diagnostics.committedEvidenceBoundary);
+    const renderedEvidenceBoundary = serializeBoundary(diagnostics.renderedEvidenceBoundary);
+    const pendingVisibleHead = serializeBoundary(diagnostics.pendingVisibleHead);
+    const pendingVisibleTail = serializeBoundary(diagnostics.pendingVisibleTail);
+    const validBoundary = (boundary) => boundary !== undefined;
+    const liveEvidenceTail = diagnostics.liveEvidenceTail === null
+      ? null
+      : diagnostics.liveEvidenceTail && typeof diagnostics.liveEvidenceTail === "object"
+        && typeof diagnostics.liveEvidenceTail.eventId === "string" && diagnostics.liveEvidenceTail.eventId.length > 0
+        ? { eventId: diagnostics.liveEvidenceTail.eventId }
+        : undefined;
+    const validCount = (count) => Number.isSafeInteger(count) && count >= 0;
+    if (typeof diagnostics.expectedFinalId !== "string" || diagnostics.expectedFinalId.length === 0
+      || typeof diagnostics.disposed !== "boolean" || typeof diagnostics.visible !== "boolean"
+      || !validBoundary(committedEvidenceBoundary) || !validBoundary(renderedEvidenceBoundary)
+      || !validBoundary(pendingVisibleHead) || !validBoundary(pendingVisibleTail)
+      || !validCount(diagnostics.pendingVisibleCount)
+      || typeof diagnostics.evidenceQueryPending !== "boolean" || typeof diagnostics.passiveRefreshPending !== "boolean"
+      || !validCount(diagnostics.queryGeneration) || !validCount(diagnostics.liveEvidenceTotal)
+      || liveEvidenceTail === undefined
+      || (diagnostics.lastEvidenceQueryError !== null && typeof diagnostics.lastEvidenceQueryError !== "string")
+      || !["hidden", "visible", "prerender", "unavailable"].includes(diagnostics.documentVisibilityState)
+      || !validCount(diagnostics.visibleFrameHeartbeat)
+      || (diagnostics.lastVisibleFrameAtMs !== null
+        && (!Number.isFinite(diagnostics.lastVisibleFrameAtMs) || diagnostics.lastVisibleFrameAtMs < 0))) return null;
+    return {
+      expectedFinalId: diagnostics.expectedFinalId,
+      disposed: diagnostics.disposed,
+      visible: diagnostics.visible,
+      committedEvidenceBoundary,
+      renderedEvidenceBoundary,
+      pendingVisibleCount: diagnostics.pendingVisibleCount,
+      pendingVisibleHead,
+      pendingVisibleTail,
+      evidenceQueryPending: diagnostics.evidenceQueryPending,
+      passiveRefreshPending: diagnostics.passiveRefreshPending,
+      queryGeneration: diagnostics.queryGeneration,
+      liveEvidenceTotal: diagnostics.liveEvidenceTotal,
+      liveEvidenceTail,
+      lastEvidenceQueryError: diagnostics.lastEvidenceQueryError,
+      documentVisibilityState: diagnostics.documentVisibilityState,
+      visibleFrameHeartbeat: diagnostics.visibleFrameHeartbeat,
+      lastVisibleFrameAtMs: diagnostics.lastVisibleFrameAtMs
+    };
+  };
   const operationId = value.operationId === undefined ? null : value.operationId;
   const validPhase = ["cells", "terminal", "checkpoint", "heap", "lifecycle"].includes(value.phase);
   const validWorkload = value.workload === null || value.workload === "sustained" || value.workload === "burst";
@@ -813,6 +876,8 @@ function serializeOperationProgress(value, expectedOperationId = null) {
   const validSample = value.sample === null || (Number.isInteger(value.sample) && value.sample >= 1 && value.sample <= 3);
   const validCellIndex = value.cellIndex === null || (Number.isSafeInteger(value.cellIndex) && value.cellIndex >= 1 && value.cellIndex <= 36);
   const validCount = (count) => count === null || (Number.isSafeInteger(count) && count >= 0);
+  const hasRuntimeDiagnostics = has(value, "runtimeDiagnostics");
+  const runtimeDiagnostics = hasRuntimeDiagnostics ? serializeRuntimeDiagnostics(value.runtimeDiagnostics) : null;
   if (!validPhase
     || (operationId !== null && typeof operationId !== "string")
     || (expectedOperationId !== null && operationId !== expectedOperationId)
@@ -826,7 +891,8 @@ function serializeOperationProgress(value, expectedOperationId = null) {
     || (value.adapter !== null && value.adapter !== "indexeddb" && value.adapter !== "memory")
     || !validWorkload || !validShape || !validWorkloadPhase
     || !validCount(value.offered) || !validCount(value.settled)
-    || (value.query !== null && typeof value.query !== "string")) return null;
+    || (value.query !== null && typeof value.query !== "string")
+    || (hasRuntimeDiagnostics && runtimeDiagnostics === null)) return null;
   return {
     operationId,
     phase: value.phase,
@@ -845,7 +911,8 @@ function serializeOperationProgress(value, expectedOperationId = null) {
     workloadPhase: value.workloadPhase,
     offered: value.offered,
     settled: value.settled,
-    query: value.query
+    query: value.query,
+    ...(runtimeDiagnostics ? { runtimeDiagnostics } : {})
   };
 }
 
