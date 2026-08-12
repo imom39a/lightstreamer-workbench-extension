@@ -39,7 +39,6 @@ import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-wor
 import * as eventHistoryAuthoritative from "../src/core/event-history-authoritative";
 import type { EventHistory } from "../src/core/event-history-authoritative";
 import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
-import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
   it("releases caller-owned heap workload candidates before yielding the retained frame", async () => {
@@ -1099,7 +1098,7 @@ describe("Event History performance checkpoint workload", () => {
     }
   }, 30_000);
 
-  it("constructs representative and maximum checkpoints through production staging", () => {
+  it("constructs representative and maximum checkpoints through the performance fixture", () => {
     for (const [name, minimumBytes] of [
       ["representative", 64 * 1_024],
       ["maximum-2MiB", 2 * 1_048_576]
@@ -1128,7 +1127,7 @@ describe("Event History performance checkpoint workload", () => {
   it.each([
     ["representative", 64 * 1_024],
     ["maximum-2MiB", 2 * 1_048_576]
-  ] as const)("keeps %s checkpoint staging valid while observations interleave between chunks", (_name, minimumBytes) => {
+  ] as const)("keeps %s checkpoint evidence valid with performance-fixture observations", (_name, minimumBytes) => {
     const source = createStagedTopologyCheckpointCandidate(
       minimumBytes === 64 * 1_024 ? "harness-representative" : "harness-maximum-2MiB",
       `harness-interleave-sync-${minimumBytes}`,
@@ -1137,22 +1136,15 @@ describe("Event History performance checkpoint workload", () => {
     expect(journalAccountedBytes(serializeJournalEvidenceCandidate(source).bytes)).toBe(minimumBytes);
     const frames = decodeTopologyCheckpointEvidenceCandidate(source);
     expect(frames).not.toBeNull();
-    const projection = createTopologyProjection();
     const firstFrame = frames![0]!;
     const pageEpoch = firstFrame.pageEpoch;
     const cutoff = firstFrame.cutoffCaptureSequence;
     let observed = 0;
-
-    let finalResult: ReturnType<typeof projection.applySyncFrame> | null = null;
-    for (const frame of frames!) {
-      if (frame.type === "lsew:topology-sync-complete") {
-        finalResult = projection.applySyncFrame(frame);
-        continue;
-      }
-      expect(projection.applySyncFrame(frame).accepted).toBe(true);
-      if (frame.type !== "lsew:topology-sync-chunk") continue;
-      observed += 1;
-      expect(projection.ingestCapture({
+    const observations = frames!
+      .filter((frame) => frame.type === "lsew:topology-sync-chunk")
+      .flatMap((frame) => frame.records.map(() => {
+        observed += 1;
+        return {
         id: `interleaved-observation-${minimumBytes}-${observed}`,
         timestamp: cutoff + observed,
         direction: "inbound",
@@ -1168,12 +1160,16 @@ describe("Event History performance checkpoint workload", () => {
           coverage: { status: "complete", getters: {} },
           values: { interleaved: { state: "real", value: String(observed) } }
         }
-      }).accepted).toBe(true);
-    }
+      };
+      }));
+    const result = createTopologyCheckpointEvidenceCandidate(
+      frames!,
+      observations.flatMap((observation) => observation.topology ? [observation.topology] : [])
+    );
 
-    expect(finalResult?.accepted).toBe(true);
-    expect(finalResult?.candidate?.checkpoint.observations).toHaveLength(observed);
-    expect(finalResult?.candidate).toBeDefined();
-    expect(decodeTopologyCheckpointEvidenceCandidate(finalResult!.candidate!)).not.toBeNull();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.checkpoint.observations).toHaveLength(observations.length);
+    expect(decodeTopologyCheckpointEvidenceCandidate(result.value)).not.toBeNull();
   }, 30_000);
 });

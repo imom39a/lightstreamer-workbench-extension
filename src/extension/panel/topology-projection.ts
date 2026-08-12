@@ -60,8 +60,6 @@ export type TopologyProjectionResult = {
 };
 
 export type TopologyProjection = {
-  ingestCapture(event: LightstreamerEventEnvelope): TopologyProjectionResult;
-  ingestHistory(event: LightstreamerEventEnvelope): boolean;
   replaceHistory(events: readonly LightstreamerEventEnvelope[]): void;
   applySyncFrame(frame: TopologySyncFrame): TopologyProjectionResult;
   ingestCommittedEvidence(
@@ -142,7 +140,7 @@ export function createTopologyProjection(): TopologyProjection {
     return { accepted: true, resetConsumerState };
   }
 
-  function ingestCapture(event: LightstreamerEventEnvelope): TopologyProjectionResult {
+  function applyCommittedCapture(event: LightstreamerEventEnvelope): TopologyProjectionResult {
     const scopeStructureMayHaveChanged = eventMayChangeScopeStructure(
       event,
       materializedState
@@ -182,7 +180,7 @@ export function createTopologyProjection(): TopologyProjection {
     return activation;
   }
 
-  function ingestHistory(event: LightstreamerEventEnvelope): boolean {
+  function applyCommittedHistory(event: LightstreamerEventEnvelope): boolean {
     const scopeStructureMayHaveChanged = eventMayChangeScopeStructure(
       event,
       materializedState
@@ -203,7 +201,7 @@ export function createTopologyProjection(): TopologyProjection {
   function ingestCommittedTopologyEvent(
     event: LightstreamerEventEnvelope
   ): TopologyProjectionResult {
-    const captureResult = ingestCapture(event);
+    const captureResult = applyCommittedCapture(event);
     if (captureResult.accepted) {
       legacyIndex.ingest(event);
       return captureResult;
@@ -341,7 +339,7 @@ export function createTopologyProjection(): TopologyProjection {
       return ingestCommittedTopologyEvent(entry.candidate);
     }
     return {
-      accepted: ingestHistory(entry.candidate as LightstreamerEventEnvelope),
+      accepted: applyCommittedHistory(entry.candidate as LightstreamerEventEnvelope),
       resetConsumerState: false
     };
   }
@@ -618,8 +616,6 @@ export function createTopologyProjection(): TopologyProjection {
   }
 
   return {
-    ingestCapture,
-    ingestHistory,
     replaceHistory,
     applySyncFrame,
     ingestCommittedEvidence,

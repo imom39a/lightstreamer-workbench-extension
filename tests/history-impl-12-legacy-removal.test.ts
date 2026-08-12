@@ -3,6 +3,8 @@ import { basename, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { createTopologyProjection } from "../src/extension/panel/topology-projection";
+
 const root = basename(process.cwd()) === "src" ? resolve(process.cwd(), "..") : resolve(process.cwd());
 const legacyModules = [
   "src/core/event-store.ts",
@@ -39,5 +41,12 @@ describe("history-impl-12 legacy EventStore contraction", () => {
       expect(source, relativePath).not.toContain("EventRepository");
       expect(source, relativePath).not.toContain(".toPromise()");
     }
+  });
+
+  it("does not expose premature topology ingestion methods", () => {
+    const projection = createTopologyProjection() as unknown as Record<string, unknown>;
+
+    expect(projection).not.toHaveProperty("ingestCapture");
+    expect(projection).not.toHaveProperty("ingestHistory");
   });
 });

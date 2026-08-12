@@ -4,6 +4,20 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
+let nextEvidenceSequence = 0;
+
+function ingestCommitted(
+  projection: ReturnType<typeof createTopologyProjection>,
+  event: LightstreamerEventEnvelope
+) {
+  return projection.ingestCommittedEvidence({
+    intervalId: "topology-projection-test",
+    sequence: ++nextEvidenceSequence,
+    eventId: event.id,
+    candidate: event
+  });
+}
+
 function subscriptionEvent(
   id: string,
   subscriptionId: string,
@@ -52,7 +66,7 @@ function subscriptionEvent(
 describe("topology projection", () => {
   it("owns legacy reconstruction behind the same snapshot interface", () => {
     const projection = createTopologyProjection();
-    projection.ingestHistory(subscriptionEvent("legacy-1", "legacy-sub"));
+    ingestCommitted(projection, subscriptionEvent("legacy-1", "legacy-sub"));
 
     expect(projection.status()).toMatchObject({
       semanticActive: false,
@@ -69,7 +83,7 @@ describe("topology projection", () => {
     const pageA = subscriptionEvent("semantic-a", "sub-a", "page-a", 1);
     const pageB = subscriptionEvent("semantic-b", "sub-b", "page-b", 1);
 
-    expect(projection.ingestCapture(pageA)).toEqual({
+    expect(ingestCommitted(projection, pageA)).toEqual({
       accepted: true,
       resetConsumerState: true
     });
@@ -82,7 +96,7 @@ describe("topology projection", () => {
       "sub-a"
     );
 
-    expect(projection.ingestCapture(pageB)).toEqual({
+    expect(ingestCommitted(projection, pageB)).toEqual({
       accepted: true,
       resetConsumerState: true
     });
@@ -91,21 +105,20 @@ describe("topology projection", () => {
     );
 
     const stale = subscriptionEvent("semantic-stale", "stale-sub", "page-a", 2);
-    expect(projection.ingestCapture(stale).accepted).toBe(false);
-    expect(projection.ingestHistory({ ...stale, topology: undefined })).toBe(false);
+    expect(ingestCommitted(projection, stale).accepted).toBe(false);
     expect(JSON.stringify(projection.snapshot())).not.toContain("stale-sub");
   });
 
   it("uses an equal-depth fallback only when it preserves semantic nodes and adds live branches", () => {
     const projection = createTopologyProjection();
     const semantic = subscriptionEvent("semantic-1", "semantic-sub", "page-a", 1);
-    projection.ingestCapture(semantic);
-    projection.ingestCapture({
+    ingestCommitted(projection, semantic);
+    ingestCommitted(projection, {
       ...semantic,
       id: "legacy-semantic-copy",
       topology: undefined
     });
-    projection.ingestCapture(subscriptionEvent("legacy-extra", "legacy-sub"));
+    ingestCommitted(projection, subscriptionEvent("legacy-extra", "legacy-sub"));
 
     const state = projection.snapshot();
     const subscriptionIds = state.clients.flatMap((client) =>
@@ -125,8 +138,8 @@ describe("topology projection", () => {
   it("keeps semantic ownership when fallback evidence moves the same subscription", () => {
     const projection = createTopologyProjection();
     const semantic = subscriptionEvent("semantic-1", "semantic-sub", "page-a", 1);
-    projection.ingestCapture(semantic);
-    projection.ingestCapture({
+    ingestCommitted(projection, semantic);
+    ingestCommitted(projection, {
       ...semantic,
       id: "legacy-original-session",
       kind: "client-status",
@@ -143,8 +156,8 @@ describe("topology projection", () => {
         sessionId: "fallback-session"
       }
     };
-    projection.ingestCapture(moved);
-    projection.ingestCapture({
+    ingestCommitted(projection, moved);
+    ingestCommitted(projection, {
       ...moved,
       id: "legacy-extra",
       subscription: { ...moved.subscription, id: "legacy-sub" }
@@ -164,8 +177,7 @@ describe("topology projection", () => {
   it("refreshes volatile counters and newly observed Listener and Session membership", () => {
     const projection = createTopologyProjection();
     const base = subscriptionEvent("legacy-subscription", "legacy-sub");
-    projection.ingestCapture(base);
-    projection.ingestHistory(base);
+    ingestCommitted(projection, base);
     const update = (id: string, value: number): LightstreamerEventEnvelope => ({
       ...base,
       id,
@@ -177,8 +189,7 @@ describe("topology projection", () => {
       raw: { logicalEventId: id, callback: "onItemUpdate" }
     });
     const firstDelivery = update("delivery-1", 1);
-    projection.ingestCapture(firstDelivery);
-    projection.ingestHistory(firstDelivery);
+    ingestCommitted(projection, firstDelivery);
     const firstSnapshot = projection.snapshot();
     const firstStructureRevision = projection.scopeStructureRevision();
     expect(firstSnapshot.clients[0]?.sessions[0]?.subscriptions[0]).toMatchObject({
@@ -189,8 +200,7 @@ describe("topology projection", () => {
     });
 
     const secondDelivery = update("delivery-2", 2);
-    projection.ingestCapture(secondDelivery);
-    projection.ingestHistory(secondDelivery);
+    ingestCommitted(projection, secondDelivery);
     const secondSnapshot = projection.snapshot();
     expect(secondSnapshot).not.toBe(firstSnapshot);
     expect(projection.scopeStructureRevision()).toBe(firstStructureRevision);
@@ -210,8 +220,7 @@ describe("topology projection", () => {
       },
       listener: { id: "listener-2", callbacks: ["onItemUpdate"] }
     };
-    projection.ingestCapture(newMembership);
-    projection.ingestHistory(newMembership);
+    ingestCommitted(projection, newMembership);
     const membershipSnapshot = projection.snapshot();
     expect(projection.scopeStructureRevision()).toBeGreaterThan(firstStructureRevision);
     expect(membershipSnapshot.clients[0]?.sessions.map(({ id }) => id)).toEqual(

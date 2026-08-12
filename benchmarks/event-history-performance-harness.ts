@@ -55,8 +55,8 @@ import {
   type WorkbenchRuntimePerformanceDiagnostics,
   type WorkbenchRuntimePerformanceHooks
 } from "../src/extension/panel/workbench-runtime";
-import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 import {
+  createTopologyCheckpointEvidenceCandidate,
   decodeTopologyCheckpointEvidenceCandidate
 } from "../src/extension/panel/topology-checkpoint-evidence-codec";
 
@@ -2363,16 +2363,13 @@ function stageCheckpointCandidate(
   frames: readonly TopologySyncFrame[],
   observations: readonly LightstreamerEventEnvelope[]
 ): EvidenceCandidate | undefined {
-  const projection = createTopologyProjection();
-  let candidate: EvidenceCandidate | undefined;
-  for (const frame of frames) {
-    if (frame.type === TOPOLOGY_SYNC_COMPLETE) {
-      for (const observation of observations) projection.ingestCapture(observation);
-    }
-    const result = projection.applySyncFrame(frame);
-    if (result.candidate) candidate = result.candidate;
-  }
-  return candidate;
+  // Performance fixture: build codec-valid checkpoint evidence without
+  // advancing the production topology projection before Evidence commits.
+  const result = createTopologyCheckpointEvidenceCandidate(
+    frames,
+    observations.flatMap((observation) => observation.topology ? [observation.topology] : [])
+  );
+  return result.ok ? result.value : undefined;
 }
 
 function createCheckpointObservationEvents(

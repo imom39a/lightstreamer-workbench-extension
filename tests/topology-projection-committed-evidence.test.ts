@@ -216,62 +216,54 @@ function findSubscriptionStates(state: TopologyState, subscriptionId: string) {
 }
 
 function hydrateCaptureEvents(projection: TopologyProjection): void {
-  projection.ingestCapture(
-    topologyEvent("stale-seq-1", "stale-sub", 1, { kind: "subscription-started" })
-  );
-  projection.ingestCapture(
+  const events = [
+    topologyEvent("stale-seq-1", "stale-sub", 1, { kind: "subscription-started" }),
     topologyEvent("command-sub-start", COMMAND_SUBSCRIPTION, 2, {
       kind: "subscription-started",
       mode: "COMMAND"
-    })
-  );
-  projection.ingestCapture(
+    }),
     topologyEvent("command-add", COMMAND_SUBSCRIPTION, 3, {
       kind: "item-update",
       mode: "COMMAND",
       command: "ADD",
       key: "k1",
       value: "one"
-    })
-  );
-  projection.ingestCapture(
+    }),
     topologyEvent("command-update", COMMAND_SUBSCRIPTION, 4, {
       kind: "item-update",
       mode: "COMMAND",
       command: "UPDATE",
       key: "k1",
       value: "two"
-    })
-  );
-  projection.ingestCapture(
+    }),
     topologyEvent("command-delete", COMMAND_SUBSCRIPTION, 5, {
       kind: "item-update",
       mode: "COMMAND",
       command: "DELETE",
       key: "k1",
       value: "three"
-    })
-  );
-  projection.ingestCapture(
+    }),
     topologyEvent("value-sub-start", VALUE_SUBSCRIPTION, 6, {
       kind: "subscription-started",
       mode: "MERGE"
-    })
-  );
-  projection.ingestCapture(
+    }),
     topologyEvent("value-update-1", VALUE_SUBSCRIPTION, 7, {
       kind: "item-update",
       mode: "MERGE",
       value: "10"
-    })
-  );
-  projection.ingestCapture(
+    }),
     topologyEvent("value-update-2", VALUE_SUBSCRIPTION, 8, {
       kind: "item-update",
       mode: "MERGE",
       value: "20"
     })
-  );
+  ];
+  events.forEach((event, index) => {
+    projection.ingestCommittedEvidence(committedEvidence(event, {
+      intervalId: "hydrate",
+      sequence: index + 1
+    }));
+  });
 }
 
 function committedOrdinaryHistoryEvent(id: string): LightstreamerEventEnvelope {

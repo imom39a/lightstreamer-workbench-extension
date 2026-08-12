@@ -29,35 +29,26 @@ const PANEL_SESSION_ID = "panel-00000000-0000-4000-8000-000000000009";
 
 describe("history-impl-09 topology cutover", () => {
   it("keeps changed live observations in distinct candidates for one pending syncId", () => {
-    const projection = createTopologyProjection();
-    const normalizer = createEventNormalizer();
     const sequence = checkpointFrames("pending-live-observation-sync");
 
-    projection.applySyncFrame(sequence[0]);
-    projection.ingestCapture(normalizer.normalize(topologyCapture(observation("first", 2))));
-    projection.applySyncFrame(sequence[1]);
-    const first = projection.applySyncFrame(sequence[2]).candidate;
+    const first = checkpointCandidate(sequence, [observation("first", 2)]);
+    const second = checkpointCandidate(sequence, [observation("second", 3)]);
 
-    projection.applySyncFrame(sequence[0]);
-    projection.ingestCapture(normalizer.normalize(topologyCapture(observation("second", 3))));
-    projection.applySyncFrame(sequence[1]);
-    const second = projection.applySyncFrame(sequence[2]).candidate;
-
-    expect(first?.checkpoint.observations).toEqual([
+    expect(first.checkpoint.observations).toEqual([
       expect.objectContaining({
         captureSequence: 2,
         subscription: { id: "first" }
       })
     ]);
-    expect(second?.checkpoint.observations).toEqual([
+    expect(second.checkpoint.observations).toEqual([
       expect.objectContaining({
         captureSequence: 3,
         subscription: { id: "second" }
       })
     ]);
-    expect(first?.checkpoint.syncId).toBe("pending-live-observation-sync");
-    expect(second?.checkpoint.syncId).toBe(first?.checkpoint.syncId);
-    expect(second?.id).not.toBe(first?.id);
+    expect(first.checkpoint.syncId).toBe("pending-live-observation-sync");
+    expect(second.checkpoint.syncId).toBe(first.checkpoint.syncId);
+    expect(second.id).not.toBe(first.id);
   });
 
   it("offers one checkpoint per syncId when observations change while the candidate is pending", async () => {
@@ -216,7 +207,13 @@ describe("history-impl-09 topology cutover", () => {
     const projection = createTopologyProjection();
     const normalizer = createEventNormalizer();
     const retainedTail = observation("retained-tail", 3);
-    projection.ingestCapture(normalizer.normalize(topologyCapture(retainedTail)));
+    const retainedTailEvent = normalizer.normalize(topologyCapture(retainedTail));
+    projection.ingestCommittedEvidence({
+      intervalId: "interval-retained-tail",
+      sequence: 1,
+      eventId: retainedTailEvent.id,
+      candidate: retainedTailEvent
+    });
 
     const frames = checkpointFrames("retained-tail-sync");
     const candidate = checkpointCandidate(frames, [observation("persisted-tail", 2)]);
