@@ -46,7 +46,7 @@ function cell(
       structuredIndexedP95Ms: 10,
       findFullP95Ms: 20
     },
-    longTasks: { supported: true, unattributed: 0, capture: [], commit: [], paint: [], query: [], unattributedReasons: [] },
+    longTasks: { supported: true, unattributed: 0, capture: [], commit: [], paint: [], query: [], hygiene: [], unattributedReasons: [] },
     storage: adapter === "indexeddb"
       ? {
           transactionCount: 1,
@@ -263,7 +263,11 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
     schemaVersion: 2,
     source: { revision: "clean-reference-revision", dirty: false },
     environment: { chromeMajor: 151, platformClass: "darwin", architectureClass: "arm64", headless: false },
-    capabilities: { interCellGc: "EXPOSED_THREE_PASS_V1", interQuerySampleGc: "EXPOSED_THREE_PASS_V1" },
+    capabilities: {
+      interCellGc: "EXPOSED_THREE_PASS_V1",
+      interQuerySampleGc: "EXPOSED_THREE_PASS_V1",
+      interQueryGcLongTasks: "EXPLICIT_HYGIENE_PHASE_V1"
+    },
     cells,
     cellCleanupGc: Array.from({ length: 35 }, (_, index) => ({
       afterCellIndex: index + 1,
@@ -636,6 +640,50 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     expect(decision.verdict).toBe("FAIL");
     expect(decision.failures.some((failure) => failure.includes("Long Task telemetry"))).toBe(true);
+  });
+
+  it("reports proven inter-query GC hygiene without treating it as query production work", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry, index) => index === 0
+        ? { ...entry, longTasks: { ...entry.longTasks, hygiene: [100] } }
+        : entry)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(current.cells[0]!.longTasks.hygiene).toEqual([100]);
+    expect(decision.verdict).toBe("PASS");
+  });
+
+  it("fails closed when hygiene attribution is capability-marked but absent", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry, index) => {
+        if (index !== 0) return entry;
+        const { hygiene: _hygiene, ...longTasks } = entry.longTasks;
+        return { ...entry, longTasks };
+      })
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("hygiene Long Task attribution"))).toBe(true);
+  });
+
+  it("still rejects a real query-overlap Long Task when hygiene evidence is supported", () => {
+    const baseline = report();
+    const current = report({
+      cells: baseline.cells.map((entry, index) => index === 0
+        ? { ...entry, longTasks: { ...entry.longTasks, query: [60] } }
+        : entry)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("too many query Long Tasks"))).toBe(true);
   });
 
   it("keeps explicitly diagnosed ambiguity fail-closed", () => {

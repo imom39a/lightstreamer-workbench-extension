@@ -182,7 +182,11 @@ async function main() {
         ...environmentMetadata
       },
       anchors: result.anchors,
-      capabilities: { interCellGc: "EXPOSED_THREE_PASS_V1", interQuerySampleGc: "EXPOSED_THREE_PASS_V1" },
+      capabilities: {
+        interCellGc: "EXPOSED_THREE_PASS_V1",
+        interQuerySampleGc: "EXPOSED_THREE_PASS_V1",
+        interQueryGcLongTasks: "EXPLICIT_HYGIENE_PHASE_V1"
+      },
       config: result.config,
       shapeFacts: result.shapeFacts,
       shards: result.shards,

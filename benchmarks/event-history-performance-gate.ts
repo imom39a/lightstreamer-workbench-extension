@@ -51,9 +51,11 @@ export type EventHistoryPerformanceStorageEstimate = Readonly<{
   failure: Readonly<{ code: string; message: string }> | null;
 }>;
 
+type EventHistoryPerformancePhase = "capture" | "commit" | "paint" | "query" | "hygiene";
+
 export type EventHistoryPerformanceLongTaskReason =
   | Readonly<{ reason: "no-overlap"; startTime: number; duration: number }>
-  | Readonly<{ reason: "ambiguous"; overlaps: readonly Readonly<{ phase: "capture" | "commit" | "paint" | "query"; duration: number }>[] }>;
+  | Readonly<{ reason: "ambiguous"; overlaps: readonly Readonly<{ phase: EventHistoryPerformancePhase; duration: number }>[] }>;
 
 export type EventHistoryPerformanceCell = Readonly<{
   adapter: EventHistoryPerformanceAdapter;
@@ -85,6 +87,7 @@ export type EventHistoryPerformanceCell = Readonly<{
     commit: readonly number[];
     paint: readonly number[];
     query: readonly number[];
+    hygiene?: readonly number[];
     unattributedReasons: readonly EventHistoryPerformanceLongTaskReason[];
   }>;
   identityEvidence: EventHistoryPerformanceIdentityEvidence;
@@ -234,6 +237,7 @@ export type EventHistoryPerformanceReport = Readonly<{
   capabilities?: Readonly<{
     interCellGc?: "EXPOSED_THREE_PASS_V1";
     interQuerySampleGc?: "EXPOSED_THREE_PASS_V1";
+    interQueryGcLongTasks?: "EXPLICIT_HYGIENE_PHASE_V1";
   }>;
   cellCleanupGc?: readonly EventHistoryPerformanceInterCellGc[];
   terminalScenarios: readonly EventHistoryPerformanceTerminalScenario[];
@@ -313,6 +317,7 @@ export function classifyEventHistoryPerformance(
   const requiresQuerySampleGc = validReport.capabilities?.interQuerySampleGc === "EXPOSED_THREE_PASS_V1"
     || validReport.cells.some((cell) => cell.querySampleGc !== undefined);
   if (requiresQuerySampleGc) validateQuerySampleGc(validReport.cells, failures);
+  const requiresGcLongTaskAttribution = validReport.capabilities?.interQueryGcLongTasks === "EXPLICIT_HYGIENE_PHASE_V1";
 
   for (const cell of validReport.cells) {
     const key = cellKey(cell);
@@ -320,6 +325,9 @@ export function classifyEventHistoryPerformance(
     samples.push(cell);
     cellsByKey.set(key, samples);
     validateCell(cell, failures);
+    if (requiresGcLongTaskAttribution && !Array.isArray(cell.longTasks.hygiene)) {
+      failures.push(`${cellLabel(cell)} must include explicit hygiene Long Task attribution.`);
+    }
     validateStorageTelemetry(cell, failures);
   }
 
@@ -466,6 +474,7 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
       isRecord(value.capabilities)
       && (value.capabilities.interCellGc === undefined || value.capabilities.interCellGc === "EXPOSED_THREE_PASS_V1")
       && (value.capabilities.interQuerySampleGc === undefined || value.capabilities.interQuerySampleGc === "EXPOSED_THREE_PASS_V1")
+      && (value.capabilities.interQueryGcLongTasks === undefined || value.capabilities.interQueryGcLongTasks === "EXPLICIT_HYGIENE_PHASE_V1")
     ))
     && (value.cellCleanupGc === undefined || (Array.isArray(value.cellCleanupGc) && value.cellCleanupGc.every(isInterCellGc)))
     && Array.isArray(value.terminalScenarios) && value.terminalScenarios.every(isTerminalScenario)
@@ -766,7 +775,7 @@ function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell
   const terminal = value.terminal;
   if (!isRecord(correctness) || !["retainedMatchesAccepted", "publicationMatchesAccepted", "retainedInOrder", "publicationInOrder", "finalBoundaryCorrect", "terminalOutcomeCorrect"].every((key) => correctness[key] === true || correctness[key] === false)) return false;
   if (!isRecord(latency) || !["offerToPublicationP95Ms", "offerToVisibleFrameP95Ms", "committedBoundaryToVisibleFrameP95Ms", "behindBacklogMs", "recentPageP95Ms", "structuredIndexedP95Ms", "findFullP95Ms"].every((key) => isFiniteNumber(latency[key]) && (latency[key] as number) >= 0) || !(latency.finalBoundaryVisibleMs === null || (isFiniteNumber(latency.finalBoundaryVisibleMs) && latency.finalBoundaryVisibleMs >= 0))) return false;
-  if (!isRecord(longTasks) || !isBoolean(longTasks.supported) || !Number.isSafeInteger(longTasks.unattributed) || (longTasks.unattributed as number) < 0 || !["capture", "commit", "paint", "query"].every((key) => Array.isArray(longTasks[key]) && (longTasks[key] as unknown[]).every((duration) => isFiniteNumber(duration) && duration >= 0)) || !Array.isArray(longTasks.unattributedReasons) || !longTasks.unattributedReasons.every(isLongTaskReason)) return false;
+  if (!isRecord(longTasks) || !isBoolean(longTasks.supported) || !Number.isSafeInteger(longTasks.unattributed) || (longTasks.unattributed as number) < 0 || !["capture", "commit", "paint", "query"].every((key) => Array.isArray(longTasks[key]) && (longTasks[key] as unknown[]).every((duration) => isFiniteNumber(duration) && duration >= 0)) || !(longTasks.hygiene === undefined || (Array.isArray(longTasks.hygiene) && longTasks.hygiene.every((duration) => isFiniteNumber(duration) && duration >= 0))) || !Array.isArray(longTasks.unattributedReasons) || !longTasks.unattributedReasons.every(isLongTaskReason)) return false;
   if (!isIdentityEvidence(identityEvidence)) return false;
   if (value.querySampleGc !== undefined && (!Array.isArray(value.querySampleGc) || !value.querySampleGc.every((entry) => isRecord(entry)
     && typeof entry.query === "string" && entry.query.length > 0
@@ -784,7 +793,7 @@ function isLongTaskReason(value: unknown): value is EventHistoryPerformanceLongT
   if (!isRecord(value) || (value.reason !== "no-overlap" && value.reason !== "ambiguous")) return false;
   if (value.reason === "no-overlap") return isFiniteNumber(value.startTime) && value.startTime >= 0 && isFiniteNumber(value.duration) && value.duration >= 0;
   return Array.isArray(value.overlaps) && value.overlaps.every((overlap) => isRecord(overlap)
-    && ["capture", "commit", "paint", "query"].includes(overlap.phase as string)
+    && ["capture", "commit", "paint", "query", "hygiene"].includes(overlap.phase as string)
     && isFiniteNumber(overlap.duration) && overlap.duration > 0);
 }
 
@@ -995,7 +1004,8 @@ function validateCell(cell: EventHistoryPerformanceCell, failures: string[]): vo
   if (cell.terminal.refusedCount !== 0 || cell.terminal.discardedCount !== 0) {
     failures.push(`${label} reported refused or discarded events.`);
   }
-  for (const phase of ["capture", "commit", "paint", "query"] as const) {
+  for (const phase of ["capture", "commit", "paint", "query", "hygiene"] as const) {
+    if (cell.longTasks[phase] === undefined) continue;
     if (cell.longTasks[phase].some((duration) => !Number.isFinite(duration) || duration < 0)) {
       failures.push(`${label} contains invalid Long Task telemetry.`);
       break;
