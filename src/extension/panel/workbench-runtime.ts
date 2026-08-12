@@ -328,6 +328,8 @@ export type WorkbenchLocalInjectionSnapshot = Readonly<{
 /** The immutable, renderer-neutral investigation state for one panel session. */
 export type WorkbenchSnapshot = Readonly<{
   version: number;
+  /** Identity-only boundary represented by this immutable renderer snapshot. */
+  renderedEvidenceBoundary: EvidenceRef | null;
   visible: boolean;
   theme: "auto" | "dark" | "light";
   captureStatus: CaptureStatus;
@@ -441,7 +443,7 @@ export interface WorkbenchRuntime {
   dispose(): void;
   disposeAndWait(): Promise<void>;
   /** Reports the first animation frame after the named React snapshot rendered. */
-  reportVisibleFrame?(snapshotVersion?: number): void;
+  reportVisibleFrame?(renderedBoundary?: EvidenceRef | null): void;
   /** Snapshot of identity-only state for the deliberate real-Chrome performance gate. */
   getPerformanceDiagnostics?(): WorkbenchRuntimePerformanceDiagnostics;
 }
@@ -585,7 +587,6 @@ class Runtime implements WorkbenchRuntime {
   private captureBoundary: WorkbenchCaptureSnapshot | null = null;
   private committedEvidenceBoundary: EvidenceRef | null = null;
   private renderedEvidenceBoundary: EvidenceRef | null = null;
-  private readonly renderedEvidenceBoundaryByVersion = new Map<number, EvidenceRef | null>();
   private pendingVisibleBoundaries: EvidenceRef[] = [];
   private visibleFrameHeartbeat = 0;
   private lastVisibleFrameAtMs: number | null = null;
@@ -675,14 +676,11 @@ class Runtime implements WorkbenchRuntime {
     };
   };
 
-  readonly reportVisibleFrame = (snapshotVersion = this.snapshot.version): void => {
+  readonly reportVisibleFrame = (renderedBoundary = this.renderedEvidenceBoundary): void => {
     if (!this.visible) return;
     this.visibleFrameHeartbeat += 1;
     this.lastVisibleFrameAtMs = performance.now();
-    const boundary = this.renderedEvidenceBoundaryByVersion.get(snapshotVersion);
-    for (const version of this.renderedEvidenceBoundaryByVersion.keys()) {
-      if (version <= snapshotVersion) this.renderedEvidenceBoundaryByVersion.delete(version);
-    }
+    const boundary = renderedBoundary;
     if (!boundary || !this.performanceHooks?.onVisibleFrame || this.pendingVisibleBoundaries.length === 0) return;
     const coveredBoundaries: EvidenceRef[] = [];
     const pendingBoundaries: EvidenceRef[] = [];
@@ -1053,7 +1051,6 @@ class Runtime implements WorkbenchRuntime {
     this.disposed = true;
     this.cancelPassivePublication();
     this.listeners.clear();
-    this.renderedEvidenceBoundaryByVersion.clear();
     this.disposePromise = this.evidencePipeline.close().then(
       (result) => {
         if (!result.ok) {
@@ -2195,7 +2192,6 @@ class Runtime implements WorkbenchRuntime {
     }
     this.version += 1;
     this.snapshot = this.createSnapshot();
-    this.renderedEvidenceBoundaryByVersion.set(this.version, this.renderedEvidenceBoundary);
     for (const listener of this.listeners) {
       listener();
     }
@@ -2218,6 +2214,9 @@ class Runtime implements WorkbenchRuntime {
     );
     return Object.freeze({
       version: this.version,
+      renderedEvidenceBoundary: this.renderedEvidenceBoundary
+        ? Object.freeze({ ...this.renderedEvidenceBoundary })
+        : null,
       visible: this.visible,
       theme: this.theme,
       captureStatus: this.captureStatus,

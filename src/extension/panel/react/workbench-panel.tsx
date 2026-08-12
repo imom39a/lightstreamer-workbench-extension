@@ -299,15 +299,15 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const evidenceLedger = useRef<HTMLDivElement | null>(null);
   const contextBody = useRef<HTMLDivElement | null>(null);
   const visibleFrame = useRef<number | null>(null);
-  const latestCommittedSnapshotVersion = useRef(snapshot.version);
+  const latestCommittedEvidenceBoundary = useRef(snapshot.renderedEvidenceBoundary);
 
   useLayoutEffect(() => {
-    latestCommittedSnapshotVersion.current = snapshot.version;
+    latestCommittedEvidenceBoundary.current = snapshot.renderedEvidenceBoundary;
     if (!runtime.reportVisibleFrame) return;
     if (visibleFrame.current !== null) return;
     visibleFrame.current = window.requestAnimationFrame(() => {
       visibleFrame.current = null;
-      runtime.reportVisibleFrame?.(latestCommittedSnapshotVersion.current);
+      runtime.reportVisibleFrame?.(latestCommittedEvidenceBoundary.current);
     });
   }, [runtime, snapshot.version]);
   useLayoutEffect(() => () => {

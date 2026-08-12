@@ -72,6 +72,7 @@ function withScopeContract(snapshot: WorkbenchSnapshot): WorkbenchSnapshot {
 function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
   return {
     version: 0,
+    renderedEvidenceBoundary: null,
     visible: true,
     captureStatus: "capturing",
     capture: {

@@ -375,13 +375,21 @@ describe("production React runtime performance boundary seam", () => {
     await act(async () => callback?.(performance.now()));
     expect(visible).toEqual([[1, 2, 3]]);
 
+    for (let index = 0; index < 1_000; index += 1) {
+      await act(async () => {
+        runtime.dispatch({ type: "set-theme", theme: index % 2 === 0 ? "dark" : "light" });
+      });
+    }
+    expect(requestFrame).toHaveBeenCalledTimes(2);
+    expect(callbacks.size).toBe(2);
+
     await act(async () => root.unmount());
     runtime.dispose();
     await history.close();
     rootElement.remove();
   });
 
-  it("attributes a visible frame to the React snapshot version that requested it", async () => {
+  it("attributes a visible frame to the exact immutable boundary React committed", async () => {
     const covered: number[][] = [];
     const history = createInMemoryEventHistory({ panelSessionId: "performance-versioned-frame" });
     const scheduler = createFrameScheduler();
@@ -399,16 +407,42 @@ describe("production React runtime performance boundary seam", () => {
     await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "versioned-frame")).settled;
     scheduler.flushFrame();
     await flushPromises();
-    const firstVersion = runtime.getSnapshot().version;
+    const firstBoundary = runtime.getSnapshot().renderedEvidenceBoundary;
     await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 2, "versioned-frame")).settled;
     scheduler.flushFrame();
     await flushPromises();
-    const secondVersion = runtime.getSnapshot().version;
+    const secondBoundary = runtime.getSnapshot().renderedEvidenceBoundary;
 
-    const reportVersion = runtime.reportVisibleFrame as ((version: number) => void) | undefined;
-    reportVersion?.(firstVersion);
-    reportVersion?.(secondVersion);
+    runtime.reportVisibleFrame?.(firstBoundary);
+    runtime.reportVisibleFrame?.(secondBoundary);
     expect(covered).toEqual([[1], [2]]);
+
+    runtime.dispose();
+    await history.close();
+  });
+
+  it("ignores a held visible-frame callback after the panel becomes hidden", async () => {
+    const covered: number[][] = [];
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-hidden-held-frame" });
+    const scheduler = createFrameScheduler();
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler,
+      performanceHooks: {
+        onVisibleFrame(_boundary, _timestampMs, boundaries) {
+          covered.push((boundaries ?? []).map((entry) => entry.sequence));
+        }
+      }
+    });
+    await flushPromises();
+    await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "hidden-held-frame")).settled;
+    scheduler.flushFrame();
+    await flushPromises();
+    const committedBoundary = runtime.getSnapshot().renderedEvidenceBoundary;
+
+    runtime.dispatch({ type: "set-visible", visible: false });
+    runtime.reportVisibleFrame?.(committedBoundary);
+    expect(covered).toEqual([]);
 
     runtime.dispose();
     await history.close();
