@@ -41,7 +41,7 @@ if (!args.skipTypecheck) {
 }
 
 if (!args.skipTests) {
-  run("npm", ["test"]);
+  run("npm", ["run", "test:release"]);
 }
 
 if (!args.skipBuild) {
