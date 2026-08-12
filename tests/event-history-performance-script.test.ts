@@ -28,12 +28,23 @@ const runNode = (source: string) => execFileSync(process.execPath, ["--input-typ
 afterAll(cleanupTemporaryModuleRoot);
 
 describe("Event History performance startup fail-closed seams", () => {
-  it("launches headed Chrome with macOS foreground activation enabled", () => {
+  it("includes macOS foreground activation for headed Chrome", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
-      const args = chromeLaunchArguments("/tmp/lsew-profile", "http://127.0.0.1:4173/");
+      const args = chromeLaunchArguments("/tmp/lsew-profile", "http://127.0.0.1:4173/", "darwin");
       assert.equal(args.includes("--activate-on-launch"), true);
+      assert.equal(args.includes("--headless"), false);
+      assert.equal(args.at(-1), "http://127.0.0.1:4173/");
+    `);
+  });
+
+  it("omits macOS foreground activation on non-macOS platforms", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
+      const args = chromeLaunchArguments("/tmp/lsew-profile", "http://127.0.0.1:4173/", "linux");
+      assert.equal(args.includes("--activate-on-launch"), false);
       assert.equal(args.includes("--headless"), false);
       assert.equal(args.at(-1), "http://127.0.0.1:4173/");
     `);

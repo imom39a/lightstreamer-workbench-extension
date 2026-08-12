@@ -69,7 +69,7 @@ async function main() {
     const port = server.address().port;
     const url = `http://127.0.0.1:${port}/`;
     const executable = await chromeExecutable();
-      chrome = spawn(executable, chromeLaunchArguments(profile, url), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
+    chrome = spawn(executable, chromeLaunchArguments(profile, url), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
     chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
@@ -218,9 +218,9 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
   }
 }
 
-export function chromeLaunchArguments(profile, url) {
+export function chromeLaunchArguments(profile, url, platformName = process.platform) {
   return [
-    "--activate-on-launch",
+    ...(platformName === "darwin" ? ["--activate-on-launch"] : []),
     "--no-sandbox",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
