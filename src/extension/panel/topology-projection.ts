@@ -67,10 +67,6 @@ export type TopologyProjection = {
   ingestCommittedEvidence(
     evidence: CommittedEvidence | readonly CommittedEvidence[]
   ): TopologyProjectionResult;
-  ingestCommittedSyncFrame(
-    frame: TopologySyncFrame,
-    observations?: readonly TopologyObservation[]
-  ): TopologyProjectionResult;
   snapshot(): TopologyState;
   scopeStructureRevision(): number;
   sensitiveStructureRevision(): number;
@@ -333,30 +329,6 @@ export function createTopologyProjection(): TopologyProjection {
     }
 
     return { accepted: true, resetConsumerState };
-  }
-
-  function ingestCommittedSyncFrame(
-    frame: TopologySyncFrame,
-    observations: readonly TopologyObservation[] = []
-  ): TopologyProjectionResult {
-    const staged = stageSyncFrame(frame);
-    if (!staged.accepted) return staged;
-
-    const applied = applyCommittedSyncFrame(frame);
-    if (!applied.accepted) return applied;
-    if (frame.type === TOPOLOGY_SYNC_COMPLETE) {
-      dropCommittedEventsAtOrBelowCutoff(frame.pageEpoch, frame.cutoffCaptureSequence);
-      for (const observation of [...observations].sort(
-        (left, right) => left.captureSequence - right.captureSequence
-      )) {
-        const replayResult = syncCoordinator.applyLive(observation);
-        if (!replayResult.accepted) {
-          return { accepted: false, resetConsumerState: applied.resetConsumerState };
-        }
-      }
-    }
-    invalidateMaterializedState();
-    return { ...applied, candidate: staged.candidate };
   }
 
   function ingestCommittedEvidenceEntry(
@@ -651,7 +623,6 @@ export function createTopologyProjection(): TopologyProjection {
     replaceHistory,
     applySyncFrame,
     ingestCommittedEvidence,
-    ingestCommittedSyncFrame,
 
     snapshot() {
       return currentMaterializedState();

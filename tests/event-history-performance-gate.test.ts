@@ -169,19 +169,15 @@ function terminalEvidence(acceptedCount: number, refusedEventId: string) {
 
 function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "indexeddb" | "memory") {
   const liveCaptureEventIds = Array.from({ length: 72 }, (_, index) => `${adapter}-${name}-live-${index + 1}`);
-  const checkpointFrameEventIds = [
-    `${adapter}-${name}-checkpoint-begin`,
-    `${adapter}-${name}-checkpoint-chunk`,
-    `${adapter}-${name}-checkpoint-complete`
-  ];
+  const checkpointEventId = `${adapter}-${name}-checkpoint-complete`;
   const liveCaptureEventTimesMs = Array.from({ length: 72 }, (_, index) => 100 + index * (1_200 / 71));
   const retainedEventIds = [
     ...Array.from({ length: 4 }, (_, index) => `${adapter}-${name}-before-${index}`),
-    checkpointFrameEventIds[0]!,
     ...liveCaptureEventIds,
-    ...checkpointFrameEventIds.slice(1),
+    checkpointEventId,
     ...Array.from({ length: 4 }, (_, index) => `${adapter}-${name}-after-${index}`)
   ];
+  const expectedEventIds = [...retainedEventIds];
   return {
     name,
     adapter,
@@ -190,7 +186,9 @@ function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "i
     trafficBefore: 4,
     trafficAfter: 4,
     liveCaptureEventIds,
-    checkpointFrameEventIds,
+    expectedCheckpointEventIds: [checkpointEventId],
+    offeredCheckpointEventIds: [checkpointEventId],
+    offeredEventIds: [...expectedEventIds],
     productionObservedLiveEventIds: [...liveCaptureEventIds],
     productionObservedLiveEventTimesMs: [...liveCaptureEventTimesMs],
     observationProvenance: "production-panel-committed-evidence-hook" as const,
@@ -198,6 +196,7 @@ function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "i
     liveCaptureEventTimesMs,
     retainedEventIds,
     publishedEventIds: [...retainedEventIds],
+    expectedEventIds,
     liveCaptureCount: liveCaptureEventIds.length,
     liveCaptureStartedAtMs: 100,
     liveCaptureEndedAtMs: 1_300,
@@ -634,6 +633,56 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.verdict).toBe("FAIL");
     expect(decision.failures.some((failure) => failure.includes("concurrent live capture"))).toBe(true);
   });
+
+  it.each(["dropped", "substituted", "reordered"] as const)(
+    "fails checkpoint evidence with a %s retained or published identifier",
+    (mutation) => {
+      const baseline = report();
+      const current = report({
+        checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) => {
+          if (index !== 0) return scenario;
+          const mutated = [...scenario.retainedEventIds];
+          if (mutation === "dropped") {
+            mutated.splice(5, 1);
+          } else if (mutation === "substituted") {
+            mutated[5] = `${mutated[5]}-substituted`;
+          } else {
+            [mutated[5], mutated[6]] = [mutated[6]!, mutated[5]!];
+          }
+          return { ...scenario, retainedEventIds: mutated, publishedEventIds: [...mutated] };
+        })
+      });
+
+      const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+      expect(decision.verdict).toBe("FAIL");
+    }
+  );
+
+  it.each(["dropped", "substituted", "reordered"] as const)(
+    "fails checkpoint evidence with a %s offered identifier",
+    (mutation) => {
+      const baseline = report();
+      const current = report({
+        checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) => {
+          if (index !== 0) return scenario;
+          const mutated = [...scenario.offeredEventIds];
+          if (mutation === "dropped") {
+            mutated.splice(5, 1);
+          } else if (mutation === "substituted") {
+            mutated[5] = `${mutated[5]}-substituted`;
+          } else {
+            [mutated[5], mutated[6]] = [mutated[6]!, mutated[5]!];
+          }
+          return { ...scenario, offeredEventIds: mutated };
+        })
+      });
+
+      const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+      expect(decision.verdict).toBe("FAIL");
+    }
+  );
 
   it("fails a short high-rate burst even when it overlaps staging", () => {
     const baseline = report();

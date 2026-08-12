@@ -6,6 +6,7 @@ import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-wor
 import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
 import { WorkbenchPanel } from "../src/extension/panel/react/workbench-panel";
 import { createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
+import { getPanelScenario } from "./support/panel-scenarios";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -37,6 +38,45 @@ describe("production React runtime performance boundary seam", () => {
     expect(visible).toHaveLength(1);
     expect(visible[0]?.sequence).toBe(committed[0]?.sequence);
     expect(visible[0]?.at).toBeGreaterThanOrEqual(committed[0]?.at ?? 0);
+
+    runtime.dispose();
+    await history.close();
+  });
+
+  it("times only an accepted topology staging exchange, not duplicate or mismatched frames", async () => {
+    const starts: string[] = [];
+    const ends: string[] = [];
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-topology-staging" });
+    const runtime = createWorkbenchRuntime({
+      history,
+      performanceHooks: {
+        onCheckpointStagingStart(syncId) {
+          starts.push(syncId);
+        },
+        onCheckpointStagingEnd(syncId) {
+          ends.push(syncId);
+        }
+      }
+    });
+    const frames = getPanelScenario("topology-small").topologySyncFrames ?? [];
+    const begin = frames[0];
+    const complete = frames.at(-1);
+    if (!begin || !complete) throw new Error("topology-small scenario is missing sync frames");
+
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: complete });
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: begin });
+    runtime.dispatch({ type: "apply-topology-sync-frame", frame: begin });
+    runtime.dispatch({
+      type: "apply-topology-sync-frame",
+      frame: { ...complete, pageEpoch: "spoofed-page" }
+    });
+    expect(starts).toEqual([begin.syncId]);
+    expect(ends).toEqual([]);
+
+    for (const frame of frames.slice(1)) {
+      runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    }
+    expect(ends).toEqual([begin.syncId]);
 
     runtime.dispose();
     await history.close();

@@ -35,7 +35,6 @@ import {
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
 import { createTopologyProjection } from "./topology-projection";
-import { decodeTopologyCheckpointFrameCandidate } from "./topology-checkpoint-evidence-codec";
 import {
   selectedUpdateSnapshot,
   type SelectedUpdateSnapshot
@@ -519,6 +518,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly normalizer: EventNormalizer;
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
+  private readonly activeTopologyStagingSyncIds = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
   private readonly retainedLocalEvidenceIds = new Set<string>();
@@ -1018,6 +1018,24 @@ class Runtime implements WorkbenchRuntime {
     }
     const candidate = result.candidate;
     const syncId = candidate ? topologyCheckpointSyncId(candidate) : null;
+    const stagingKey = `${frame.pageEpoch}\u0000${frame.syncId}`;
+    if (
+      result.accepted &&
+      frame.type === "lsew:topology-sync-begin" &&
+      !this.activeTopologyStagingSyncIds.has(stagingKey)
+    ) {
+      this.activeTopologyStagingSyncIds.add(stagingKey);
+      this.performanceHooks?.onCheckpointStagingStart?.(frame.syncId, performance.now());
+    }
+    if (
+      result.accepted &&
+      frame.type === "lsew:topology-sync-complete" &&
+      candidate &&
+      syncId === frame.syncId &&
+      this.activeTopologyStagingSyncIds.delete(stagingKey)
+    ) {
+      this.performanceHooks?.onCheckpointStagingEnd?.(frame.syncId, performance.now());
+    }
     if (candidate && syncId !== null && !this.offeredTopologyCheckpointSyncIds.has(syncId)) {
       this.offeredTopologyCheckpointSyncIds.add(syncId);
       const receipt = this.evidencePipeline.offer(candidate);
@@ -1273,31 +1291,6 @@ class Runtime implements WorkbenchRuntime {
     this.pendingVisibleBoundaries.push(entry);
     this.performanceHooks?.onCommittedEvidenceBoundary?.(entry, performance.now());
     if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
-      if (entry.candidate.kind === "topology-checkpoint") {
-        const frameCandidate = decodeTopologyCheckpointFrameCandidate(entry.candidate);
-        if (frameCandidate) {
-          const topologyResult = this.topologyProjection.ingestCommittedSyncFrame(
-            frameCandidate.frame,
-            frameCandidate.observations
-          );
-          if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
-          if (frameCandidate.stage === "begin" && topologyResult.accepted) {
-            this.performanceHooks?.onCheckpointStagingStart?.(
-              frameCandidate.checkpointId,
-              performance.now()
-            );
-          } else if (frameCandidate.stage === "complete" && topologyResult.accepted) {
-            this.performanceHooks?.onCheckpointStagingEnd?.(
-              frameCandidate.checkpointId,
-              performance.now()
-            );
-          }
-          this.invalidatePreparedExport();
-          if (this.visible) this.schedulePassivePublication();
-          else this.hiddenDirty = true;
-          return;
-        }
-      }
       const syncId = topologyCheckpointSyncId(entry.candidate);
       if (syncId !== null) {
         this.offeredTopologyCheckpointSyncIds.add(syncId);

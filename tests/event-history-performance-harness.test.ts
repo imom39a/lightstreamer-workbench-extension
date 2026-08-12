@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  createTopologyCheckpointFrameCandidate,
   createTopologyCheckpointEvidenceCandidate,
-  decodeTopologyCheckpointEvidenceCandidate,
-  decodeTopologyCheckpointFrameCandidate
+  decodeTopologyCheckpointEvidenceCandidate
 } from "../src/extension/panel/topology-checkpoint-evidence-codec";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 import {
@@ -37,26 +35,19 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
-  it("represents the real BEGIN/CHUNK/COMPLETE journal sequence without collapsing it", () => {
+  it("represents the real BEGIN/CHUNK/COMPLETE production staging sequence without journaling frames", () => {
     const complete = createStagedTopologyCheckpointCandidate("frame-sequence", "frame-sequence-sync", 64 * 1_024);
     expect(complete.kind).toBe("topology-checkpoint");
     if (complete.kind !== "topology-checkpoint") return;
     const frames = decodeTopologyCheckpointEvidenceCandidate(complete);
     expect(frames).not.toBeNull();
-    const frameCandidates = frames!.map((frame) => createTopologyCheckpointFrameCandidate(
-      frame,
-      complete.id,
-      frame.type === "lsew:topology-sync-complete" ? complete : undefined
-    ));
-    expect(frameCandidates.map((candidate) => decodeTopologyCheckpointFrameCandidate(candidate)?.stage))
-      .toEqual(["begin", ...frames!.slice(1, -1).map(() => "chunk"), "complete"]);
-    expect(frameCandidates.at(-1)!.id).toBe(complete.id);
+    expect(frames!.at(0)!.type).toBe("lsew:topology-sync-begin");
+    expect(frames!.at(-1)!.type).toBe("lsew:topology-sync-complete");
+    expect(frames!.slice(1, -1).every((frame) => frame.type === "lsew:topology-sync-chunk")).toBe(true);
   });
 
   it("fails closed for before-and-after-only traffic and accepts measured concurrent staging traffic", () => {
     const beforeAndAfter = measureCheckpointLiveCapture({
-      liveCaptureStartedAtMs: 0,
-      liveCaptureEndedAtMs: 10,
       checkpointStagingStartedAtMs: 20,
       checkpointStagingEndedAtMs: 30,
       liveCaptureEventTimesMs: [0, 5, 10]
@@ -66,27 +57,24 @@ describe("Event History performance checkpoint workload", () => {
     expect(beforeAndAfter.liveCaptureOverlapEventCount).toBe(0);
 
     const shortBurst = measureCheckpointLiveCapture({
-      liveCaptureStartedAtMs: 100,
-      liveCaptureEndedAtMs: 110,
       checkpointStagingStartedAtMs: 90,
       checkpointStagingEndedAtMs: 120,
       liveCaptureEventTimesMs: [100, 101, 102, 103, 104, 105]
     });
     expect(shortBurst.liveCaptureRateEventsPerSecond).toBeGreaterThan(50);
-    expect(shortBurst.liveCaptureOverlapMs).toBe(10);
+    expect(shortBurst.liveCaptureOverlapMs).toBe(5);
     expect(shortBurst.interleavedWhileStaging).toBe(false);
 
     const concurrent = measureCheckpointLiveCapture({
-      liveCaptureStartedAtMs: 100,
-      liveCaptureEndedAtMs: 1_300,
       checkpointStagingStartedAtMs: 90,
       checkpointStagingEndedAtMs: 1_310,
       liveCaptureEventTimesMs: Array.from({ length: 72 }, (_, index) => 100 + index * (1_200 / 72))
     });
+    const expectedDuration = 1_200 * 71 / 72;
     expect(concurrent.interleavedWhileStaging).toBe(true);
-    expect(concurrent.liveCaptureOverlapMs).toBe(1_200);
+    expect(concurrent.liveCaptureOverlapMs).toBeCloseTo(expectedDuration, 10);
     expect(concurrent.liveCaptureOverlapEventCount).toBe(72);
-    expect(concurrent.liveCaptureRateEventsPerSecond).toBe(60);
+    expect(concurrent.liveCaptureRateEventsPerSecond).toBeCloseTo(72_000 / expectedDuration, 10);
     expect(concurrent.liveCaptureMaxInterEventGapMs).toBeCloseTo(1_200 / 72, 10);
   });
 
@@ -103,8 +91,11 @@ describe("Event History performance checkpoint workload", () => {
     expect(scenario.liveCaptureRateEventsPerSecond).toBeGreaterThanOrEqual(50);
     expect(scenario.interleavedWhileStaging).toBe(true);
     expect(scenario.observationProvenance).toBe("production-panel-committed-evidence-hook");
-    expect(scenario.checkpointFrameEventIds.length).toBeGreaterThanOrEqual(2);
-    expect(scenario.retainedEventIds).toEqual(expect.arrayContaining([...scenario.checkpointFrameEventIds]));
+    expect(scenario.expectedCheckpointEventIds).toHaveLength(1);
+    expect(scenario.offeredCheckpointEventIds).toEqual(scenario.expectedCheckpointEventIds);
+    expect(scenario.offeredEventIds).toEqual(scenario.expectedEventIds);
+    expect(scenario.retainedEventIds).toEqual(scenario.expectedEventIds);
+    expect(scenario.publishedEventIds).toEqual(scenario.expectedEventIds);
     expect(scenario.productionObservedLiveEventIds).toEqual(scenario.liveCaptureEventIds);
     expect(scenario.productionObservedLiveEventTimesMs).toHaveLength(scenario.liveCaptureEventIds.length);
   });
