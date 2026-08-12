@@ -1276,6 +1276,7 @@ async function runCell(
   const events = Array.from({ length: expectedCount }, (_, sequence) =>
     createEventHistoryWorkloadEvent(shape, sequence, runId)
   );
+  const expectedIds = events.map((event) => event.id);
   try {
     unsubscribe = history.follow({ from: "NOW" }, (publication: HistoryPublication) => {
       if (!runGuard.isActive()) return;
@@ -1357,6 +1358,10 @@ async function runCell(
       undefined,
       runGuard
     );
+    // The journal owns immutable deserialized Evidence after settlement. Drop
+    // the caller-owned large workload payloads before repeated queries so the
+    // final memory cell measures the journal rather than two complete copies.
+    events.length = 0;
     await waitForBoundedFrame(
       `cell-${cellIndex}-frame`,
       () => progress("frame", "paint"),
@@ -1373,7 +1378,6 @@ async function runCell(
     })(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
     const { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms, read } = queryMeasurements;
     const queryElapsedMs = performance.now() - readStartedAt;
-    const expectedIds = events.map((event) => event.id);
     const retainedIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
     const boundary = read.ok ? read.value.committedEvidenceBoundary : null;
     const now = performance.now();

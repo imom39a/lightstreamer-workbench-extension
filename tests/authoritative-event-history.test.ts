@@ -45,6 +45,52 @@ describe("commit-authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("reuses deeply immutable committed candidates across repeated read wrappers", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "read-materialization" });
+    const hostileNested = { value: "original" };
+    const hostile = Object.freeze({
+      ...createEventHistoryWorkloadEvent("large-json-rich", 1, "read-materialization"),
+      raw: hostileNested
+    });
+    await history.offer(hostile).settled;
+    hostileNested.value = "mutated-after-offer";
+
+    const reads = await Promise.all([history.read({}), history.read({}), history.read({})]);
+    const values = reads.map((read) => {
+      expect(read.ok).toBe(true);
+      if (!read.ok) throw new Error("Expected a successful read.");
+      return read.value;
+    });
+
+    expect(values[0].evidence).not.toBe(values[1].evidence);
+    expect(Object.isFrozen(values[0])).toBe(true);
+    expect(Object.isFrozen(values[0].evidence)).toBe(true);
+    expect(values[0].evidence[0]).toBe(values[1].evidence[0]);
+    const committedCandidate = values[0].evidence[0].candidate;
+    expect(committedCandidate.kind).not.toBe("topology-checkpoint");
+    if (committedCandidate.kind === "topology-checkpoint") throw new Error("Expected Lightstreamer Evidence.");
+    expect(Object.isFrozen(committedCandidate)).toBe(true);
+    expect(Object.isFrozen(committedCandidate.raw)).toBe(true);
+    expect(committedCandidate.raw).toEqual({ value: "original" });
+    await history.close();
+  });
+
+  it("does not recursively revisit 1,692 committed JSON-rich payloads on three full reads", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "large-full-reads" });
+    const receipts = Array.from({ length: 1_692 }, (_, sequence) =>
+      history.offer(createEventHistoryWorkloadEvent("large-json-rich", sequence, "large-full-reads"))
+    );
+    await Promise.all(receipts.map(({ settled }) => settled));
+    const frozenChecks = vi.spyOn(Object, "isFrozen");
+
+    const reads = await Promise.all([history.read({ order: "asc" }), history.read({ order: "asc" }), history.read({ order: "asc" })]);
+
+    expect(reads.every((read) => read.ok && read.value.total === 1_692)).toBe(true);
+    expect(frozenChecks.mock.calls.length).toBeLessThan(100);
+    frozenChecks.mockRestore();
+    await history.close();
+  }, 30_000);
+
   it("opens the dormant memory adapter through the backend-independent public factory", async () => {
     const history = await openEventHistory({ panelSessionId: "public-factory" });
     let initialStatus: unknown;

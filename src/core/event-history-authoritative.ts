@@ -779,9 +779,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
       : null;
     return Promise.resolve({
       ok: true,
-      value: deepFreeze({
+      value: freezeCommittedRead({
         interval,
-        evidence: [...evidence],
+        evidence,
         total: snapshot.length,
         committedEvidenceBoundary,
         retainedRange
@@ -1161,4 +1161,26 @@ function deepFreeze<T>(value: T): T {
     deepFreeze(child);
   }
   return value;
+}
+
+/**
+ * Materializes a read without recursively walking every retained payload.
+ *
+ * This shortcut is intentionally limited to the committed journal read seam:
+ * candidates are serialized at intake, deserialized into journal-owned values,
+ * and deeply frozen before they enter `committed`. Callers therefore cannot
+ * smuggle a shallow-frozen candidate past the ownership boundary. The response
+ * containers remain newly frozen for each read.
+ */
+function freezeCommittedRead(value: EvidenceRead): EvidenceRead {
+  const retainedRange = value.retainedRange === null
+    ? null
+    : Object.freeze({ first: value.retainedRange.first, last: value.retainedRange.last });
+  return Object.freeze({
+    interval: value.interval,
+    evidence: Object.freeze([...value.evidence]),
+    total: value.total,
+    committedEvidenceBoundary: value.committedEvidenceBoundary,
+    retainedRange
+  });
 }
