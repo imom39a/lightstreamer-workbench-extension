@@ -5,10 +5,48 @@ import { createRoot } from "react-dom/client";
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
 import { WorkbenchPanel } from "../src/extension/panel/react/workbench-panel";
-import { createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
+import {
+  createWorkbenchRuntime,
+  type WorkbenchRuntimeScheduler
+} from "../src/extension/panel/workbench-runtime";
 import { getPanelScenario } from "./support/panel-scenarios";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+function createFrameScheduler(): WorkbenchRuntimeScheduler & { flushFrame(): void } {
+  let nextId = 0;
+  const frames = new Map<number, () => void>();
+  const fallbacks = new Map<number, () => void>();
+  return {
+    requestFrame(callback) {
+      const id = ++nextId;
+      frames.set(id, callback);
+      return id;
+    },
+    cancelFrame(id) {
+      frames.delete(id as number);
+    },
+    setTimeout(callback) {
+      const id = ++nextId;
+      fallbacks.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      fallbacks.delete(id as number);
+    },
+    flushFrame() {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      callbacks.forEach((callback) => callback());
+    }
+  };
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
 
 describe("production React runtime performance boundary seam", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -17,8 +55,10 @@ describe("production React runtime performance boundary seam", () => {
     const committed: Array<{ sequence: number; at: number }> = [];
     const visible: Array<{ sequence: number; at: number }> = [];
     const history = createInMemoryEventHistory({ panelSessionId: "performance-seam" });
+    const scheduler = createFrameScheduler();
     const runtime = createWorkbenchRuntime({
       history,
+      scheduler,
       captureStatus: "capturing",
       performanceHooks: {
         onCommittedEvidenceBoundary(boundary, timestampMs) {
@@ -32,6 +72,8 @@ describe("production React runtime performance boundary seam", () => {
 
     const receipt = history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "seam"));
     await expect(receipt.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 1 } });
+    scheduler.flushFrame();
+    await flushPromises();
     runtime.reportVisibleFrame?.();
 
     expect(committed).toHaveLength(1);
@@ -85,8 +127,10 @@ describe("production React runtime performance boundary seam", () => {
   it("reports every committed boundary covered by one coalesced visible frame", async () => {
     const covered: number[][] = [];
     const history = createInMemoryEventHistory({ panelSessionId: "performance-coalesced" });
+    const scheduler = createFrameScheduler();
     const runtime = createWorkbenchRuntime({
       history,
+      scheduler,
       captureStatus: "capturing",
       performanceHooks: {
         onVisibleFrame(_boundary, _timestampMs, boundaries) {
@@ -98,9 +142,69 @@ describe("production React runtime performance boundary seam", () => {
     const first = history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "coalesced"));
     const second = history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 2, "coalesced"));
     await Promise.all([first.settled, second.settled]);
+    scheduler.flushFrame();
+    await flushPromises();
     runtime.reportVisibleFrame?.();
 
     expect(covered).toEqual([[1, 2]]);
+    runtime.dispose();
+    await history.close();
+  });
+
+  it("reports only boundaries covered by the Evidence snapshot that actually rendered", async () => {
+    const covered: number[][] = [];
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-rendered-boundary" });
+    const scheduler = createFrameScheduler();
+    type ReadResult = Awaited<ReturnType<typeof history.read>>;
+    const deferredReads: Array<{ result: ReadResult; resolve(result: ReadResult): void }> = [];
+    let deferReads = false;
+    const runtime = createWorkbenchRuntime({
+      history: {
+        ...history,
+        read(query) {
+          const snapshot = history.read(query);
+          if (!deferReads) return snapshot;
+          return snapshot.then(
+            (result) => new Promise<ReadResult>((resolve) => deferredReads.push({ result, resolve }))
+          );
+        }
+      },
+      scheduler,
+      windowSize: 25,
+      performanceHooks: {
+        onVisibleFrame(_boundary, _timestampMs, boundaries) {
+          covered.push((boundaries ?? []).map((boundary) => boundary.sequence));
+        }
+      }
+    });
+    await flushPromises();
+
+    deferReads = true;
+    await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "rendered-boundary")).settled;
+    scheduler.flushFrame();
+    await flushPromises();
+    expect(deferredReads).toHaveLength(1);
+
+    const laterReceipts = Array.from({ length: 999 }, (_, index) =>
+      history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", index + 2, "rendered-boundary")).settled
+    );
+    await Promise.all(laterReceipts);
+    scheduler.flushFrame();
+    await flushPromises();
+
+    deferredReads[0]?.resolve(deferredReads[0].result);
+    await flushPromises();
+    expect(deferredReads).toHaveLength(2);
+    runtime.reportVisibleFrame?.();
+    expect(covered.flat()).toEqual([1]);
+    expect(covered.flat()).not.toContain(1000);
+
+    deferredReads[1]?.resolve(deferredReads[1].result);
+    await flushPromises();
+    runtime.reportVisibleFrame?.();
+    expect(covered.flat()).toHaveLength(1000);
+    expect(covered.flat().filter((sequence) => sequence === 1000)).toEqual([1000]);
+
     runtime.dispose();
     await history.close();
   });
@@ -141,8 +245,10 @@ describe("production React runtime performance boundary seam", () => {
   it("does not attribute a prior interval to a later visible frame", async () => {
     const covered: number[][] = [];
     const history = createInMemoryEventHistory({ panelSessionId: "performance-interval-boundary" });
+    const scheduler = createFrameScheduler();
     const runtime = createWorkbenchRuntime({
       history,
+      scheduler,
       captureStatus: "capturing",
       performanceHooks: {
         onVisibleFrame(_boundary, _timestampMs, boundaries) {
@@ -157,6 +263,8 @@ describe("production React runtime performance boundary seam", () => {
     await expect(history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 2, "after-clear")).settled)
       .resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 2 } });
 
+    scheduler.flushFrame();
+    await flushPromises();
     runtime.reportVisibleFrame?.();
 
     expect(covered).toEqual([[2]]);
@@ -167,8 +275,10 @@ describe("production React runtime performance boundary seam", () => {
   it("does not report a visible frame while the panel is hidden", async () => {
     const visibleReports: number[] = [];
     const history = createInMemoryEventHistory({ panelSessionId: "performance-hidden-frame" });
+    const scheduler = createFrameScheduler();
     const runtime = createWorkbenchRuntime({
       history,
+      scheduler,
       visible: false,
       performanceHooks: {
         onVisibleFrame(boundary) {
@@ -182,6 +292,7 @@ describe("production React runtime performance boundary seam", () => {
     expect(visibleReports).toEqual([]);
 
     runtime.dispatch({ type: "set-visible", visible: true });
+    await flushPromises();
     runtime.reportVisibleFrame?.();
     expect(visibleReports).toEqual([1]);
     runtime.dispose();

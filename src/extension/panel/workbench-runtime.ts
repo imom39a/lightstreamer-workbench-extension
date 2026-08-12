@@ -562,6 +562,7 @@ class Runtime implements WorkbenchRuntime {
   private hiddenDirty = false;
   private captureBoundary: WorkbenchCaptureSnapshot | null = null;
   private committedEvidenceBoundary: EvidenceRef | null = null;
+  private renderedEvidenceBoundary: EvidenceRef | null = null;
   private pendingVisibleBoundaries: EvidenceRef[] = [];
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
   private historyCondition: WorkbenchHistoryCondition | null = null;
@@ -651,9 +652,19 @@ class Runtime implements WorkbenchRuntime {
 
   readonly reportVisibleFrame = (): void => {
     if (!this.visible) return;
-    const boundary = this.committedEvidenceBoundary;
+    const boundary = this.renderedEvidenceBoundary;
     if (!boundary || !this.performanceHooks?.onVisibleFrame || this.pendingVisibleBoundaries.length === 0) return;
-    const coveredBoundaries = this.pendingVisibleBoundaries.splice(0);
+    const coveredBoundaries: EvidenceRef[] = [];
+    const pendingBoundaries: EvidenceRef[] = [];
+    for (const pending of this.pendingVisibleBoundaries) {
+      if (pending.intervalId === boundary.intervalId && pending.sequence <= boundary.sequence) {
+        coveredBoundaries.push(pending);
+      } else {
+        pendingBoundaries.push(pending);
+      }
+    }
+    if (coveredBoundaries.length === 0) return;
+    this.pendingVisibleBoundaries = pendingBoundaries;
     this.performanceHooks.onVisibleFrame(boundary, performance.now(), coveredBoundaries);
   };
 
@@ -1339,6 +1350,7 @@ class Runtime implements WorkbenchRuntime {
       // Interval. Boundaries accepted before the clear are no longer part of
       // the rendered Evidence snapshot and must not be coalesced into it.
       this.pendingVisibleBoundaries = [];
+      this.renderedEvidenceBoundary = null;
       shouldPublish = this.updateHistoryCondition(publication.status);
     } else if (publication.type === "terminal") {
       shouldPublish = this.updateHistoryCondition(publication.status);
@@ -2018,6 +2030,7 @@ class Runtime implements WorkbenchRuntime {
             this.refreshFindResults(source === "passive" || source === "visibility");
           }
           if (source === "initial") {
+            this.renderedEvidenceBoundary = result.value.committedEvidenceBoundary;
             this.snapshot = this.createSnapshot();
             this.drainPassiveRefresh();
             return;
@@ -2026,6 +2039,9 @@ class Runtime implements WorkbenchRuntime {
             this.hiddenDirty = true;
             this.drainPassiveRefresh();
             return;
+          }
+          if (displayed === this.liveEvidence || displayed === this.frozenEvidence) {
+            this.renderedEvidenceBoundary = result.value.committedEvidenceBoundary;
           }
           this.publish();
           this.drainPassiveRefresh();
