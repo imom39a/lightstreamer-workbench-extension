@@ -190,8 +190,19 @@ export function reduceCommandState(events: readonly LightstreamerEventEnvelope[]
 }
 
 export function createCommandStateIndex(): CommandStateIndex {
-  let accumulator = createCommandStateAccumulator();
-  return {
+  return createCommandStateIndexController().index;
+}
+
+type CommandStateIndexController = Readonly<{
+  index: CommandStateIndex;
+  fork(): CommandStateIndexController;
+}>;
+
+function createCommandStateIndexController(
+  initial: CommandStateAccumulator = createCommandStateAccumulator()
+): CommandStateIndexController {
+  let accumulator = initial;
+  const index: CommandStateIndex = {
     apply(event) {
       applyCommandEvent(accumulator, event);
     },
@@ -204,11 +215,15 @@ export function createCommandStateIndex(): CommandStateIndex {
       return commandStateFromAccumulator(accumulator);
     }
   };
+  return {
+    index,
+    fork: () => createCommandStateIndexController(cloneCommandStateAccumulator(accumulator))
+  };
 }
 
 export function createCommandStateProjections(): CommandStateProjections {
-  const observedServer = createCommandStateIndex();
-  const localEffective = createCommandStateIndex();
+  const observedServer = createCommandStateIndexController();
+  let localEffective: CommandStateIndexController | null = null;
   const appliedEventIds = new Set<string>();
 
   return {
@@ -220,22 +235,25 @@ export function createCommandStateProjections(): CommandStateProjections {
         if (oldest === undefined) break;
         appliedEventIds.delete(oldest);
       }
-      localEffective.apply(event);
-      if (!isLocalInjectedEvent(event)) {
-        observedServer.apply(event);
+      if (isLocalInjectedEvent(event)) {
+        localEffective ??= observedServer.fork();
+        localEffective.index.apply(event);
+      } else {
+        observedServer.index.apply(event);
+        localEffective?.index.apply(event);
       }
     },
 
     clear() {
-      observedServer.clear();
-      localEffective.clear();
+      observedServer.index.clear();
+      localEffective = null;
       appliedEventIds.clear();
     },
 
     snapshot(projection) {
       return projection === "observed-server"
-        ? observedServer.snapshot()
-        : localEffective.snapshot();
+        ? observedServer.index.snapshot()
+        : (localEffective ?? observedServer).index.snapshot();
     }
   };
 }
@@ -249,6 +267,53 @@ function createCommandStateAccumulator(): CommandStateAccumulator {
     subscriptions: new Map(),
     knownSubscriptions: new Map(),
     diagnostics: []
+  };
+}
+
+function cloneCommandStateAccumulator(source: CommandStateAccumulator): CommandStateAccumulator {
+  return {
+    subscriptions: new Map(
+      [...source.subscriptions].map(([subscriptionId, subscription]) => [
+        subscriptionId,
+        {
+          ...subscription,
+          subscription: mergeSubscriptionMetadata(undefined, subscription.subscription),
+          items: new Map(
+            [...subscription.items].map(([itemId, item]) => [
+              itemId,
+              {
+                ...item,
+                activeRows: new Map(
+                  [...item.activeRows].map(([key, row]) => [
+                    key,
+                    { ...row, fields: cloneFields(row.fields), lifecycle: [...row.lifecycle] }
+                  ])
+                ),
+                deletedKeys: new Map(
+                  [...item.deletedKeys].map(([key, deleted]) => [
+                    key,
+                    { ...deleted, lifecycle: [...deleted.lifecycle] }
+                  ])
+                ),
+                lifecycleByKey: new Map(
+                  [...item.lifecycleByKey].map(([key, lifecycle]) => [key, [...lifecycle]])
+                ),
+                lifecycle: [...item.lifecycle],
+                diagnostics: [...item.diagnostics]
+              }
+            ])
+          ),
+          diagnostics: [...subscription.diagnostics]
+        }
+      ])
+    ),
+    knownSubscriptions: new Map(
+      [...source.knownSubscriptions].map(([subscriptionId, subscription]) => [
+        subscriptionId,
+        mergeSubscriptionMetadata(undefined, subscription)
+      ])
+    ),
+    diagnostics: [...source.diagnostics]
   };
 }
 
@@ -359,8 +424,8 @@ function applyCommandEvent(
     return;
   }
 
-  const provenance = createProvenance(commandEvent);
-  const lifecycleEntry: CommandLifecycleEntry = {
+  const provenance = Object.freeze(createProvenance(commandEvent));
+  const lifecycleEntry = Object.freeze({
     eventId: commandEvent.id,
     timestamp: commandEvent.timestamp,
     key,
@@ -368,10 +433,10 @@ function applyCommandEvent(
     effectiveCommand,
     isSnapshot,
     provenance,
-    fields: cloneFields(commandEvent.update?.fields),
-    changedFields: cloneFields(commandEvent.update?.changedFields),
-    diagnosticCodes: eventDiagnostics.map((diagnostic) => diagnostic.code)
-  };
+    fields: Object.freeze(cloneFields(commandEvent.update?.fields)) as CommandFields,
+    changedFields: Object.freeze(cloneFields(commandEvent.update?.changedFields)) as CommandFields,
+    diagnosticCodes: Object.freeze(eventDiagnostics.map((diagnostic) => diagnostic.code)) as CommandDiagnosticCode[]
+  }) as CommandLifecycleEntry;
 
   appendLifecycle(item, key, lifecycleEntry);
 
@@ -676,12 +741,7 @@ function cloneFields(fields: CommandFields | undefined): CommandFields {
 }
 
 function cloneLifecycleEntry(entry: CommandLifecycleEntry): CommandLifecycleEntry {
-  return {
-    ...entry,
-    fields: { ...entry.fields },
-    changedFields: { ...entry.changedFields },
-    diagnosticCodes: [...entry.diagnosticCodes]
-  };
+  return entry;
 }
 
 function itemIdentity(itemName: string | null, itemPosition: number | null): string {
