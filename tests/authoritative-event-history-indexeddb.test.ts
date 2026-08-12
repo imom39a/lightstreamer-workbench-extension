@@ -407,6 +407,29 @@ describe("IndexedDB authoritative EventHistory", () => {
     await memory.close();
   });
 
+  it("searches canonical IndexedDB replay rather than a caller object mutated after offer", async () => {
+    const indexed = await freshIndexedHistory("query-plan-search-owned-replay");
+    const raw = { marker: "indexed-original-marker" };
+    const offered = { ...createEventHistoryWorkloadEvent("large-json-rich", 1, "indexed-owned-replay"), raw };
+    await indexed.offer(offered).settled;
+    raw.marker = "indexed-mutated-marker";
+
+    await expect(indexed.read({ find: "indexed-original-marker" })).resolves.toMatchObject({
+      ok: true,
+      value: { total: 1 }
+    });
+    await expect(indexed.read({ find: "indexed-mutated-marker" })).resolves.toMatchObject({
+      ok: true,
+      value: { total: 0 }
+    });
+    const full = await indexed.read({});
+    expect(full.ok).toBe(true);
+    if (!full.ok) throw new Error("Expected an authoritative IndexedDB read.");
+    expect(Object.keys(full.value.evidence[0].candidate)).not.toContain("searchText");
+    expect(Object.keys(full.value.evidence[0].candidate)).not.toContain("cache");
+    await indexed.close();
+  });
+
   it("pages exact facets before reconstructing large IndexedDB payloads", async () => {
     const indexed = await freshIndexedHistory("query-plan-exact-facet-page-before-payload");
     const memory = createInMemoryEventHistory({ panelSessionId: "query-plan-exact-facet-page-before-payload-memory" });

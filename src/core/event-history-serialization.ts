@@ -55,6 +55,28 @@ export function deserializeJournalEvidenceCandidate(payload: string): EvidenceCa
     : parsed as EvidenceCandidate;
 }
 
+// Search materialization belongs to journal-owned replay candidates, never to
+// caller-owned intake objects. Weak keys keep the cache bounded by the owning
+// history/IndexedDB read and avoid adding observable fields to Evidence.
+const ownedCandidateSearchText = new WeakMap<object, string>();
+const journalOwnedCandidates = new WeakSet<object>();
+
+/** @internal Registers a deeply frozen candidate reconstructed from canonical journal replay. */
+export function registerJournalOwnedCandidateSearchText(candidate: EvidenceCandidate, canonicalPayload: string): void {
+  if (!Object.isFrozen(candidate)) throw new Error("Journal-owned search candidates must be frozen.");
+  journalOwnedCandidates.add(candidate);
+  ownedCandidateSearchText.set(candidate, canonicalPayload.toLowerCase());
+}
+
+/** @internal Returns canonical lowercase replay text, caching only trusted journal-owned candidates. */
+export function journalCandidateSearchText(candidate: EvidenceCandidate): string {
+  const cached = ownedCandidateSearchText.get(candidate);
+  if (cached !== undefined) return cached;
+  const text = serializeJournalEvidenceCandidate(candidate).payload.toLowerCase();
+  if (journalOwnedCandidates.has(candidate)) ownedCandidateSearchText.set(candidate, text);
+  return text;
+}
+
 const REPLAY_TAG = "__lsewReplayTag";
 
 function canonicalJson(value: unknown): string {

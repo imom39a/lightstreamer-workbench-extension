@@ -2,6 +2,8 @@ import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { type EventFilterState, matchesEventFilters } from "./event-filter";
 import {
   deserializeJournalEvidenceCandidate,
+  journalCandidateSearchText,
+  registerJournalOwnedCandidateSearchText,
   journalAccountedBytes,
   serializeJournalEvidenceCandidate
 } from "./event-history-serialization";
@@ -702,7 +704,11 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         inFlight.push(...batch);
         let candidates: EvidenceCandidate[] = [];
         try {
-          candidates = batch.map((entry) => freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload)));
+          candidates = batch.map((entry) => {
+            const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
+            registerJournalOwnedCandidateSearchText(candidate, entry.serialized.payload);
+            return candidate;
+          });
           await journal.commitBatch(candidates);
         } catch (error) {
           const reason = isQuotaError(error) ? "QUOTA_EXCEEDED" as const : "JOURNAL_COMMIT_FAILED" as const;
@@ -1056,7 +1062,7 @@ export function matchesEvidenceQuery(entry: CommittedEvidence, query: EvidenceQu
   if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
   if (query.filters && !matchesCandidateFilters(entry.candidate, query.filters)) return false;
   if (query.find) {
-    const text = serializeJournalEvidenceCandidate(entry.candidate).payload.toLowerCase();
+    const text = journalCandidateSearchText(entry.candidate);
     if (!text.includes(query.find.trim().toLowerCase())) return false;
   }
   return true;
@@ -1076,7 +1082,7 @@ export function pageEvidence(evidence: readonly CommittedEvidence[], query: Evid
 function matchesCandidateFilters(candidate: EvidenceCandidate, filters: EventFilterState): boolean {
   if (candidate.kind !== "topology-checkpoint") return matchesEventFilters(candidate, filters);
 
-  if (filters.query && !serializeJournalEvidenceCandidate(candidate).payload.toLowerCase().includes(filters.query.trim().toLowerCase())) {
+  if (filters.query && !journalCandidateSearchText(candidate).includes(filters.query.trim().toLowerCase())) {
     return false;
   }
   return !Object.entries(filters).some(([key, value]) => key !== "query" && value !== undefined && value !== "");

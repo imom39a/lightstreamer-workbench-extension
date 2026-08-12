@@ -29,6 +29,7 @@ import {
 } from "./indexeddb/authoritative-event-db";
 import {
   deserializeJournalEvidenceCandidate,
+  registerJournalOwnedCandidateSearchText,
   journalAccountedBytes,
   serializeJournalEvidenceCandidate
 } from "./event-history-serialization";
@@ -708,11 +709,11 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         let evidence: CommittedEvidence[] = [];
         let candidates: EvidenceCandidate[] = [];
         try {
-          evidence = batch.map((entry, index) => toCommittedEvidence(
-            freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload)),
-            interval,
-            nextSequence + index
-          ));
+          evidence = batch.map((entry, index) => {
+            const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
+            registerJournalOwnedCandidateSearchText(candidate, entry.serialized.payload);
+            return toCommittedEvidence(candidate, interval, nextSequence + index);
+          });
           candidates = evidence.map((entry) => entry.candidate);
           await options.failure?.commitBatch?.(candidates);
           await options.commitBatch?.(candidates);
@@ -1314,6 +1315,7 @@ function validateEvidenceRecord(record: EvidenceRecord, intervalId: string, expe
     || JSON.stringify(exactFacets(candidate)) !== JSON.stringify(record.facets)) {
     throw new Error("An evidence record does not match its replay payload or facets.");
   }
+  registerJournalOwnedCandidateSearchText(candidate, record.replayPayload);
   return candidate;
 }
 
@@ -1736,7 +1738,9 @@ function toCommittedEvidence(candidate: EvidenceCandidate, interval: HistoryInte
 }
 
 function toCommittedEvidenceFromRecord(record: EvidenceRecord): CommittedEvidence {
-  return deepFreeze({ intervalId: record.intervalId, sequence: record.sequence, eventId: record.eventId, candidate: deserializeJournalEvidenceCandidate(record.replayPayload) });
+  const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(record.replayPayload));
+  registerJournalOwnedCandidateSearchText(candidate, record.replayPayload);
+  return deepFreeze({ intervalId: record.intervalId, sequence: record.sequence, eventId: record.eventId, candidate });
 }
 
 function toRef(evidence: CommittedEvidence): EvidenceRef {
