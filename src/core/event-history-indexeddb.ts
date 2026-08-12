@@ -1271,10 +1271,34 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
 
 type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 
-const JOURNAL_READ_CHUNK_SIZE = 64;
+const JOURNAL_READ_MAX_RECORDS_PER_CHUNK = 64;
+const JOURNAL_READ_TIME_BUDGET_MS = 8;
 
-function yieldJournalRead(): Promise<void> {
-  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+type JournalReadYield = () => Promise<void>;
+
+function createJournalReadYield(): JournalReadYield {
+  const browserGlobals = globalThis as typeof globalThis & {
+    MessageChannel?: typeof MessageChannel;
+  };
+  const MessageChannelConstructor = browserGlobals.MessageChannel;
+  if (typeof MessageChannelConstructor === "function") {
+    const channel = new MessageChannelConstructor();
+    let resolveYield: (() => void) | null = null;
+    channel.port1.onmessage = () => {
+      const resolve = resolveYield;
+      resolveYield = null;
+      resolve?.();
+    };
+    return () => new Promise<void>((resolve) => {
+      resolveYield = resolve;
+      channel.port2.postMessage(undefined);
+    });
+  }
+  return () => new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
+function journalReadNow(): number {
+  return typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : Date.now();
 }
 
 async function materializeJournalRead(
@@ -1284,10 +1308,19 @@ async function materializeJournalRead(
 ): Promise<JournalRead> {
   const selected: CommittedEvidence[] = [];
   let total = 0;
-  for (let offset = 0; offset < records.length; offset += JOURNAL_READ_CHUNK_SIZE) {
-    const end = Math.min(records.length, offset + JOURNAL_READ_CHUNK_SIZE);
-    for (let index = offset; index < end; index += 1) {
-      const record = records[index];
+  let offset = 0;
+  let yieldJournalRead: JournalReadYield | null = null;
+  while (offset < records.length) {
+    const startedAt = journalReadNow();
+    let processed = 0;
+    while (
+      offset < records.length
+      && processed < JOURNAL_READ_MAX_RECORDS_PER_CHUNK
+      && (processed === 0 || journalReadNow() - startedAt < JOURNAL_READ_TIME_BUDGET_MS)
+    ) {
+      const record = records[offset];
+      offset += 1;
+      processed += 1;
       if (!record || record.intervalId !== latch.interval.id || record.sequence < latch.retainedRange!.first.sequence) {
         continue;
       }
@@ -1297,7 +1330,10 @@ async function materializeJournalRead(
         retainForJournalPage(selected, evidence, query);
       }
     }
-    if (end < records.length) await yieldJournalRead();
+    if (offset < records.length) {
+      if (yieldJournalRead === null) yieldJournalRead = createJournalReadYield();
+      await yieldJournalRead();
+    }
   }
   return { evidence: pageJournalSelection(selected, query, total), total };
 }

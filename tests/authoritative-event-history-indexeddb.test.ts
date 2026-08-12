@@ -30,6 +30,29 @@ function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): Evid
   } as EvidenceCandidate;
 }
 
+class FakeMessagePort {
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  peer: FakeMessagePort | null = null;
+
+  postMessage(data: unknown): void {
+    FakeMessageChannel.posted += 1;
+    queueMicrotask(() => this.peer?.onmessage?.({ data } as MessageEvent));
+  }
+}
+
+class FakeMessageChannel {
+  static constructed = 0;
+  static posted = 0;
+  readonly port1 = new FakeMessagePort();
+  readonly port2 = new FakeMessagePort();
+
+  constructor() {
+    FakeMessageChannel.constructed += 1;
+    this.port1.peer = this.port2;
+    this.port2.peer = this.port1;
+  }
+}
+
 function itemUpdateFacets(): string[] {
   return [
     ["v1", "kind", "item-update"],
@@ -717,6 +740,37 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(timerSpy).toHaveBeenCalled();
     timerSpy.mockRestore();
     await history.close();
+  });
+
+  it("uses one reusable MessageChannel macrotask yield per read and preserves exact ordering", async () => {
+    const history = await freshHistory("indexed-message-channel-read");
+    const count = 1692;
+    for (let index = 0; index < count; index += 1) {
+      await history.offer(candidate(`message-channel-${index}`)).settled;
+    }
+
+    const previousMessageChannel = Reflect.get(globalThis, "MessageChannel");
+    FakeMessageChannel.constructed = 0;
+    FakeMessageChannel.posted = 0;
+    Reflect.set(globalThis, "MessageChannel", FakeMessageChannel);
+    const timerSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const result = await history.read({ order: "asc" });
+
+      expect(result).toMatchObject({ ok: true, value: { total: count } });
+      if (!result.ok) throw new Error("Expected the MessageChannel read to succeed.");
+      expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(
+        Array.from({ length: count }, (_, index) => `message-channel-${index}`)
+      );
+      expect(FakeMessageChannel.constructed).toBe(1);
+      expect(FakeMessageChannel.posted).toBeGreaterThan(0);
+      expect(FakeMessageChannel.posted).toBeLessThan(211);
+      expect(timerSpy.mock.calls.filter(([, delay]) => delay === 0)).toHaveLength(0);
+    } finally {
+      timerSpy.mockRestore();
+      Reflect.set(globalThis, "MessageChannel", previousMessageChannel);
+      await history.close();
+    }
   });
 
   it("validates startup through a cursor without getAll and hands replay to live Capture exactly once", async () => {
