@@ -44,6 +44,61 @@ describe("Event History benchmark workloads", () => {
     expect(yields).toBe(Math.ceil(ISSUE_16_TOTAL_EVENTS / EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE) - 1);
   });
 
+  it("yields on the injected elapsed-time budget before a cold chunk reaches 50 ms", async () => {
+    const events = Array.from({ length: 9 }, (_, index) => index);
+    const offered: number[] = [];
+    const offeredAt: number[] = [];
+    const taskSizes: number[] = [];
+    let clock = 0;
+    let currentTaskSize = 0;
+
+    await runBurstOfferSchedule({
+      events,
+      eventsPerBurst: events.length,
+      chunkSize: EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE,
+      maxChunkDurationMs: 35,
+      now: () => clock,
+      offer(event) {
+        offered.push(event);
+        offeredAt.push(clock);
+        currentTaskSize += 1;
+        clock += 10;
+      },
+      async yieldBetweenChunks() {
+        taskSizes.push(currentTaskSize);
+        currentTaskSize = 0;
+        await Promise.resolve();
+      }
+    });
+    taskSizes.push(currentTaskSize);
+
+    expect(offered).toEqual(events);
+    expect(offeredAt).toEqual([0, 10, 20, 30, 40, 50, 60, 70, 80]);
+    expect(taskSizes).toEqual([4, 4, 1]);
+    expect(offeredAt[4]! - offeredAt[0]!).toBeLessThan(50);
+  });
+
+  it("uses the count bound when the injected clock moves backwards", async () => {
+    const events = Array.from({ length: EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE + 1 }, (_, index) => index);
+    let clock = 100;
+    let yields = 0;
+
+    await runBurstOfferSchedule({
+      events,
+      eventsPerBurst: events.length,
+      now: () => clock,
+      offer() {
+        clock -= 1;
+      },
+      async yieldBetweenChunks() {
+        yields += 1;
+        await Promise.resolve();
+      }
+    });
+
+    expect(yields).toBe(1);
+  });
+
   const projectRoot =
     basename(process.cwd()) === "src" ? resolve(process.cwd(), "..") : process.cwd();
 

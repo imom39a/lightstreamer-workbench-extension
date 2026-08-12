@@ -114,6 +114,7 @@ describe("Event History performance checkpoint workload", () => {
   it("releases early query results and excludes inter-query GC from all three timings", async () => {
     const evidence: Array<Awaited<ReturnType<typeof collectGarbageBetweenQuerySamples>>> = [];
     const order: string[] = [];
+    const phases: string[] = [];
     let now = 0;
     const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => now);
     try {
@@ -132,11 +133,13 @@ describe("Event History performance checkpoint workload", () => {
           order.push("gc");
           now += 1_000;
           return { query, afterSample, gcPasses: 3, phase: "BETWEEN_QUERY_SAMPLES" };
-        }
+        },
+        (phase) => phases.push(phase)
       );
 
       expect(p95).toBe(5);
       expect(order).toEqual(["query", "gc", "query", "gc", "query"]);
+      expect(phases).toEqual(["hygiene", "query", "hygiene", "query"]);
       expect(evidence.map(({ query, afterSample }) => `${query}:${afterSample}`)).toEqual(["full:1", "full:2"]);
     } finally {
       nowSpy.mockRestore();
@@ -993,13 +996,15 @@ describe("Event History performance checkpoint workload", () => {
       { phase: "capture" as const, start: 0, end: 10 },
       { phase: "commit" as const, start: 10, end: 30 },
       { phase: "paint" as const, start: 30, end: 40 },
-      { phase: "query" as const, start: 40, end: 50 }
+      { phase: "query" as const, start: 40, end: 50 },
+      { phase: "hygiene" as const, start: 50, end: 160 }
     ];
     const entries = [
       { startTime: 2, duration: 4 },
       { startTime: 8, duration: 14 },
       { startTime: 20, duration: 15 },
-      { startTime: 60, duration: 5 },
+      { startTime: 60, duration: 100 },
+      { startTime: 170, duration: 5 },
       { startTime: 10, duration: 0 }
     ] as PerformanceEntry[];
 
@@ -1009,13 +1014,14 @@ describe("Event History performance checkpoint workload", () => {
     expect(result.commit).toEqual([14, 15]);
     expect(result.paint).toEqual([]);
     expect(result.query).toEqual([]);
+    expect(result.hygiene).toEqual([100]);
     expect(result.unattributed).toBe(2);
     expect(result.unattributedReasons).toEqual([
-      { reason: "no-overlap", startTime: 60, duration: 5 },
+      { reason: "no-overlap", startTime: 170, duration: 5 },
       { reason: "no-overlap", startTime: 10, duration: 0 }
     ]);
     expect(
-      result.capture.length + result.commit.length + result.paint.length + result.query.length
+      result.capture.length + result.commit.length + result.paint.length + result.query.length + result.hygiene.length
       + result.unattributedReasons.length
     ).toBe(entries.length);
   });

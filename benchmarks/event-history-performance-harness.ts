@@ -69,11 +69,15 @@ type EventHistoryPerformanceConfig = Readonly<{
 
 /** Keep each synchronous burst offer task below the Long Task envelope. */
 export const EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE = 64;
+/** Yield before a burst offer task reaches the 50 ms Long Task threshold. */
+export const EVENT_HISTORY_BURST_OFFER_BUDGET_MS = 35;
 
 export type BurstOfferScheduleOptions<T> = Readonly<{
   events: readonly T[];
   eventsPerBurst: number;
   chunkSize?: number;
+  maxChunkDurationMs?: number;
+  now?: () => number;
   offer: (event: T, index: number) => void;
   yieldBetweenChunks: () => Promise<void>;
   pauseBetweenBursts?: () => Promise<void>;
@@ -86,24 +90,54 @@ export type BurstOfferScheduleOptions<T> = Readonly<{
  */
 export async function runBurstOfferSchedule<T>(options: BurstOfferScheduleOptions<T>): Promise<void> {
   const eventsPerBurst = Math.max(1, Math.floor(options.eventsPerBurst));
-  const chunkSize = Math.max(1, Math.floor(options.chunkSize ?? EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE));
+  const chunkSize = Math.min(
+    EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE,
+    Math.max(1, Math.floor(options.chunkSize ?? EVENT_HISTORY_BURST_OFFER_CHUNK_SIZE))
+  );
+  const chunkBudgetMs = Math.max(0, options.maxChunkDurationMs ?? EVENT_HISTORY_BURST_OFFER_BUDGET_MS);
+  const readNow = options.now ?? (() => performance.now());
+  const now = (): number => {
+    const value = readNow();
+    return Number.isFinite(value) ? value : 0;
+  };
   let sequence = 0;
   while (sequence < options.events.length) {
     const burstEnd = Math.min(options.events.length, sequence + eventsPerBurst);
+    let chunkStartedAt = now();
+    let chunkCount = 0;
     while (sequence < burstEnd) {
-      const chunkEnd = Math.min(burstEnd, sequence + chunkSize);
-      while (sequence < chunkEnd) {
-        const event = options.events[sequence];
-        if (event === undefined) throw new Error(`Missing burst event ${sequence}.`);
-        options.offer(event, sequence);
-        sequence += 1;
+      const event = options.events[sequence];
+      if (event === undefined) throw new Error(`Missing burst event ${sequence}.`);
+      options.offer(event, sequence);
+      sequence += 1;
+      chunkCount += 1;
+      const elapsedMs = Math.max(0, now() - chunkStartedAt);
+      if (sequence < burstEnd && (chunkCount >= chunkSize || elapsedMs >= chunkBudgetMs)) {
+        await options.yieldBetweenChunks();
+        chunkStartedAt = now();
+        chunkCount = 0;
       }
-      if (sequence < burstEnd) await options.yieldBetweenChunks();
     }
     if (sequence < options.events.length && options.pauseBetweenBursts) {
       await options.pauseBetweenBursts();
     }
   }
+}
+
+async function yieldBurstOfferMacrotask(): Promise<void> {
+  if (typeof MessageChannel === "function") {
+    await new Promise<void>((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close();
+        channel.port2.close();
+        resolve();
+      };
+      channel.port2.postMessage(undefined);
+    });
+    return;
+  }
+  await delay(0);
 }
 
 type HarnessSelection = Readonly<
@@ -124,7 +158,7 @@ export type HarnessProgressInput = Readonly<{
   adapter: "indexeddb" | "memory" | null;
   workload: "sustained" | "burst" | null;
   shape: EventHistoryShape | null;
-  workloadPhase: "capture" | "commit" | "paint" | "query" | null;
+  workloadPhase: "capture" | "commit" | "paint" | "query" | "hygiene" | null;
   offered: number | null;
   settled: number | null;
   query: string | null;
@@ -622,7 +656,7 @@ type StorageProbe = Readonly<{
   restore(): void;
 }>;
 
-type PhaseName = "capture" | "commit" | "paint" | "query";
+type PhaseName = "capture" | "commit" | "paint" | "query" | "hygiene";
 type PhaseInterval = Readonly<{ phase: PhaseName; start: number; end: number }>;
 
 export type UnattributedLongTaskReason = Readonly<
@@ -635,6 +669,7 @@ export type LongTaskAttribution = Readonly<{
   commit: readonly number[];
   paint: readonly number[];
   query: readonly number[];
+  hygiene: readonly number[];
   unattributed: number;
   unattributedReasons: readonly UnattributedLongTaskReason[];
 }>;
@@ -1526,10 +1561,10 @@ async function runCell(
     enterPhase("query");
     const querySampleGc: QuerySampleGcEvidence[] = [];
     const queryMeasurements = await withStageDeadline((async () => {
-      const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard, querySampleGc);
-      const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard, querySampleGc);
-      const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard, querySampleGc);
-      const full = await measureAuthoritativeFullQuery(history, () => progress("query", "query", "full"), runGuard, querySampleGc);
+      const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      const full = await measureAuthoritativeFullQuery(history, () => progress("query", "query", "full"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
       return { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms: full.p95Ms, read: full.read };
     })(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
     const { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms, read } = queryMeasurements;
@@ -2509,7 +2544,7 @@ export async function offerBurst(
     },
     async yieldBetweenChunks() {
       samplePending();
-      await delay(0);
+      await yieldBurstOfferMacrotask();
     },
     async pauseBetweenBursts() {
       samplePending();
@@ -2595,9 +2630,10 @@ export async function measureQuery(
   progress: () => HarnessProgressInput,
   guard: HarnessStageGuard | undefined = undefined,
   gcEvidence?: QuerySampleGcEvidence[],
-  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples,
+  transitionPhase?: (phase: "query" | "hygiene") => void
 ): Promise<number> {
-  return (await measureQueryWithLastResult(history, query, queryName, progress, guard, gcEvidence, collectGc)).p95Ms;
+  return (await measureQueryWithLastResult(history, query, queryName, progress, guard, gcEvidence, collectGc, transitionPhase)).p95Ms;
 }
 
 async function measureQueryWithLastResult<T>(
@@ -2607,7 +2643,8 @@ async function measureQueryWithLastResult<T>(
   progress: () => HarnessProgressInput,
   guard: HarnessStageGuard | undefined = undefined,
   gcEvidence?: QuerySampleGcEvidence[],
-  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples,
+  transitionPhase?: (phase: "query" | "hygiene") => void
 ): Promise<Readonly<{ p95Ms: number; result: T }>> {
   const samples: number[] = [];
   let result!: T;
@@ -2619,7 +2656,12 @@ async function measureQueryWithLastResult<T>(
     samples.push(performance.now() - startedAt);
     if (index < 2 && gcEvidence) {
       result = undefined as T;
-      gcEvidence.push(await collectGc(queryName, (index + 1) as 1 | 2, guard));
+      transitionPhase?.("hygiene");
+      try {
+        gcEvidence.push(await collectGc(queryName, (index + 1) as 1 | 2, guard));
+      } finally {
+        transitionPhase?.("query");
+      }
     }
   }
   return { p95Ms: percentile(samples, 0.95), result };
@@ -2630,7 +2672,8 @@ export async function measureAuthoritativeFullQuery(
   progress: () => HarnessProgressInput,
   guard: HarnessStageGuard | undefined = undefined,
   gcEvidence?: QuerySampleGcEvidence[],
-  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples
+  collectGc: typeof collectGarbageBetweenQuerySamples = collectGarbageBetweenQuerySamples,
+  transitionPhase?: (phase: "query" | "hygiene") => void
 ): Promise<Readonly<{ p95Ms: number; read: Awaited<ReturnType<EventHistory["read"]>> }>> {
   const measurement = await measureQueryWithLastResult(
     history,
@@ -2639,7 +2682,8 @@ export async function measureAuthoritativeFullQuery(
     progress,
     guard,
     gcEvidence,
-    collectGc
+    collectGc,
+    transitionPhase
   );
   return { p95Ms: measurement.p95Ms, read: measurement.result };
 }
@@ -2717,8 +2761,8 @@ export function attributeLongTasks(
   entries: readonly PerformanceEntry[],
   intervals: readonly PhaseInterval[]
 ): LongTaskAttribution {
-  const attributed: { capture: number[]; commit: number[]; paint: number[]; query: number[] } = {
-    capture: [], commit: [], paint: [], query: []
+  const attributed: { capture: number[]; commit: number[]; paint: number[]; query: number[]; hygiene: number[] } = {
+    capture: [], commit: [], paint: [], query: [], hygiene: []
   };
   let unattributed = 0;
   const unattributedReasons: UnattributedLongTaskReason[] = [];
