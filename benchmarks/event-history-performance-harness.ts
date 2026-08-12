@@ -52,6 +52,10 @@ import {
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import { createWorkbenchRuntime, type WorkbenchRuntimePerformanceHooks } from "../src/extension/panel/workbench-runtime";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
+import {
+  createTopologyCheckpointFrameCandidate,
+  decodeTopologyCheckpointEvidenceCandidate
+} from "../src/extension/panel/topology-checkpoint-evidence-codec";
 
 type EventHistoryPerformanceConfig = Readonly<{
   sustainedCount: number;
@@ -86,10 +90,14 @@ export type HarnessProgress = HarnessProgressInput & Readonly<{
 
 export type HarnessScenarioTestHooks = Readonly<{
   afterPanelMount?: (history: EventHistory) => void;
+  cleanupOverrides?: Readonly<{
+    disposePanel?: (disposePanel: () => void) => void;
+    removeRoot?: (removeRoot: () => boolean) => boolean;
+  }>;
 }>;
 
 const CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT = 180;
-const CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS = 16;
+const CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS = 4;
 
 export type CheckpointLiveCaptureMeasurement = Readonly<{
   liveCaptureCount: number;
@@ -1692,23 +1700,22 @@ export async function runCheckpointScenario(
     `sync-${name}`,
     name === "representative" ? 64 * 1_024 : TERMINAL_CHECKPOINT_PAYLOAD_BYTES
   );
+  if (candidate.kind !== "topology-checkpoint") throw new Error(`Checkpoint ${adapter}/${name} has an invalid candidate kind.`);
+  const checkpointFrames = decodeTopologyCheckpointEvidenceCandidate(candidate);
+  if (!checkpointFrames) throw new Error(`Checkpoint ${adapter}/${name} did not decode into sync frames.`);
+  const checkpointFrameCandidates = checkpointFrames.map((frame) =>
+    createTopologyCheckpointFrameCandidate(
+      frame,
+      candidate.id,
+      frame.type === TOPOLOGY_SYNC_COMPLETE ? candidate : undefined
+    )
+  );
+  const checkpointFrameEventIds = checkpointFrameCandidates.map((frameCandidate) => frameCandidate.id);
   if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled before history acquisition.");
   const serialized = serializeJournalEvidenceCandidate(candidate);
-  let releaseCandidateStageResolver: (() => void) | null = null;
-  let candidateStageReleased = false;
-  const candidateStage = new Promise<void>((resolve) => { releaseCandidateStageResolver = resolve; });
-  const releaseCandidateStage = (): void => {
-    if (candidateStageReleased) return;
-    candidateStageReleased = true;
-    releaseCandidateStageResolver?.();
-    releaseCandidateStageResolver = null;
-  };
-  const commitBatch = async (batch: readonly EvidenceCandidate[]): Promise<void> => {
-    if (batch.some((entry) => entry.id === candidate.id)) await candidateStage;
-  };
   const history = adapter === "indexeddb"
-    ? await createIndexedDbEventHistory({ panelSessionId, capacityTier: tier, commitBatch })
-    : createInMemoryEventHistory({ panelSessionId, capacityTier: tier, commitBatch });
+    ? await createIndexedDbEventHistory({ panelSessionId, capacityTier: tier })
+    : createInMemoryEventHistory({ panelSessionId, capacityTier: tier });
   if (!guard.isActive()) {
     const failure = new Error("Checkpoint scenario was cancelled after history acquisition.");
     Object.assign(failure, {
@@ -1731,16 +1738,40 @@ export async function runCheckpointScenario(
   const productionPublishedEventIds: string[] = [];
   const observedProductionLiveIds = new Set<string>();
   let candidateObserved = false;
+  let stagingStartedAtMs: number | null = null;
+  let stagingEndedAtMs: number | null = null;
+  let resolveStagingStart!: () => void;
+  let resolveStagingEnd!: () => void;
+  const stagingStartObservation = new Promise<void>((resolve) => { resolveStagingStart = resolve; });
+  const stagingEndObservation = new Promise<void>((resolve) => { resolveStagingEnd = resolve; });
   let resolveProductionObservation!: () => void;
   const productionObservation = new Promise<void>((resolve) => { resolveProductionObservation = resolve; });
   const root = document.createElement("main");
   let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+  const cleanupDisposePanel = (): void => {
+    if (!panel) return;
+    const disposePanel = panel.disposePanel;
+    hooks.cleanupOverrides?.disposePanel
+      ? hooks.cleanupOverrides.disposePanel(disposePanel)
+      : disposePanel();
+  };
+  const cleanupRemoveRoot = (): boolean => {
+    const removeRoot = (): boolean => {
+      root.remove();
+      return !root.isConnected;
+    };
+    return hooks.cleanupOverrides?.removeRoot
+      ? hooks.cleanupOverrides.removeRoot(removeRoot)
+      : removeRoot();
+  };
   try {
     panel = await mountProductionPanel(history, {
       onCommittedEvidenceBoundary(boundary, timestampMs) {
         if (!guard.isActive()) return;
         productionPublishedEventIds.push(boundary.eventId);
-        if (boundary.eventId === candidate.id) candidateObserved = true;
+        if (boundary.eventId === candidate.id) {
+          candidateObserved = true;
+        }
         if (liveCaptureEventIdSet.has(boundary.eventId) && !observedProductionLiveIds.has(boundary.eventId)) {
           observedProductionLiveIds.add(boundary.eventId);
           productionObservedLiveEventIds.push(boundary.eventId);
@@ -1749,6 +1780,16 @@ export async function runCheckpointScenario(
         if (candidateObserved && productionObservedLiveEventIds.length === liveCaptureEvents.length) {
           resolveProductionObservation();
         }
+      },
+      onCheckpointStagingStart(syncId, timestampMs) {
+        if (syncId !== candidate.id || stagingStartedAtMs !== null) return;
+        stagingStartedAtMs = timestampMs;
+        resolveStagingStart();
+      },
+      onCheckpointStagingEnd(syncId, timestampMs) {
+        if (syncId !== candidate.id || stagingEndedAtMs !== null) return;
+        stagingEndedAtMs = timestampMs;
+        resolveStagingEnd();
       }
     }, root);
     hooks.afterPanelMount?.(history);
@@ -1765,19 +1806,31 @@ export async function runCheckpointScenario(
     guard
   );
   if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
-  const checkpointStagingStartedAtMs = performance.now();
-  const receipt = history.offer(candidate);
-  const candidateReceiptPromise = settleReceiptStage(
-    [receipt.settled],
-    `checkpoint-${adapter}-${name}-candidate`,
+  const beginReceipt = history.offer(checkpointFrameCandidates[0]!);
+  const beginOutcomePromise = settleReceiptStage(
+    [beginReceipt.settled],
+    `checkpoint-${adapter}-${name}-begin`,
     STAGE_DEADLINES_MS.checkpointReceipts,
-    (settled) => progress(`${name}-candidate`, 1, settled),
+    (settled) => progress(`${name}-begin`, 1, settled),
     guard
   );
-  await Promise.resolve();
+  const [beginOutcome] = await beginOutcomePromise;
+  if (!beginOutcome || beginOutcome.outcome !== "BECAME_EVIDENCE") {
+    throw new Error(`Checkpoint ${adapter}/${name} BEGIN receipt did not become evidence.`);
+  }
+  await withStageDeadline(
+    stagingStartObservation,
+    `checkpoint-${adapter}-${name}-production-panel-staging-start`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-staging-start`, 1, 1),
+    undefined,
+    guard
+  );
+  const checkpointStagingStartedAtMs = stagingStartedAtMs;
+  if (checkpointStagingStartedAtMs === null) throw new Error(`Checkpoint ${adapter}/${name} missing production staging start.`);
   const liveCaptureStartedAtMs = performance.now();
   const liveCaptureEventIds: string[] = [];
-  const liveCaptureEventTimesMs: number[] = [];
+  const offeredLiveCaptureEventTimesMs: number[] = [];
   const liveReceiptPromises: Array<Promise<Readonly<{ ok: true; value: unknown } | { ok: false; error: unknown }>>> = [];
   for (let index = 0; index < CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT; index += 1) {
     if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled during live capture.");
@@ -1786,7 +1839,7 @@ export async function runCheckpointScenario(
     const liveReceipt = history.offer(event);
     if (liveReceipt.intake !== "QUEUED") throw new Error(`Checkpoint ${adapter}/${name} live capture event was refused.`);
     liveCaptureEventIds.push(event.id);
-    liveCaptureEventTimesMs.push(offeredAt);
+    offeredLiveCaptureEventTimesMs.push(offeredAt);
     liveReceiptPromises.push(Promise.resolve(liveReceipt.settled).then(
       (value) => ({ ok: true as const, value }),
       (error: unknown) => ({ ok: false as const, error })
@@ -1795,9 +1848,6 @@ export async function runCheckpointScenario(
     await delay(CHECKPOINT_LIVE_CAPTURE_INTERVAL_MS);
   }
   const liveCaptureEndedAtMs = performance.now();
-  releaseCandidateStage();
-  const [outcome] = await candidateReceiptPromise;
-  if (!outcome) throw new Error(`Checkpoint ${adapter}/${name} candidate receipt did not settle.`);
   const liveSettlements = await withStageDeadline(
     Promise.all(liveReceiptPromises),
     `checkpoint-${adapter}-${name}-live-receipts`,
@@ -1808,6 +1858,18 @@ export async function runCheckpointScenario(
   );
   const rejectedLiveSettlement = liveSettlements.find((settlement) => !settlement.ok);
   if (rejectedLiveSettlement && !rejectedLiveSettlement.ok) throw rejectedLiveSettlement.error;
+  const frameReceipts = checkpointFrameCandidates.slice(1).map((frameCandidate) => history.offer(frameCandidate));
+  const frameOutcomes = await settleReceiptStage(
+    frameReceipts.map((receipt) => receipt.settled),
+    `checkpoint-${adapter}-${name}-chunk-complete`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    (settled) => progress(`${name}-chunk-complete`, frameReceipts.length, settled),
+    guard
+  );
+  const outcome = frameOutcomes.at(-1);
+  if (!outcome || outcome.outcome !== "BECAME_EVIDENCE") {
+    throw new Error(`Checkpoint ${adapter}/${name} COMPLETE receipt did not become evidence.`);
+  }
   await withStageDeadline(
     productionObservation,
     `checkpoint-${adapter}-${name}-production-panel-observation`,
@@ -1816,7 +1878,16 @@ export async function runCheckpointScenario(
     undefined,
     guard
   );
-  const checkpointStagingEndedAtMs = performance.now();
+  await withStageDeadline(
+    stagingEndObservation,
+    `checkpoint-${adapter}-${name}-production-panel-staging-end`,
+    STAGE_DEADLINES_MS.checkpointReceipts,
+    () => progress(`${name}-staging-end`, checkpointFrameCandidates.length, checkpointFrameCandidates.length),
+    undefined,
+    guard
+  );
+  const checkpointStagingEndedAtMs = stagingEndedAtMs;
+  if (checkpointStagingEndedAtMs === null) throw new Error(`Checkpoint ${adapter}/${name} missing production staging end.`);
   await settleReceiptStage(
     trafficAfter.map((event) => {
       if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
@@ -1837,9 +1908,6 @@ export async function runCheckpointScenario(
     guard
   );
   const publishedOrder = productionPublishedEventIds;
-  const candidateIndex = publishedOrder.indexOf(candidate.id);
-  const trafficBeforeIds = trafficBefore.map((event) => event.id);
-  const trafficAfterIds = trafficAfter.map((event) => event.id);
   const retainedEventIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
   const publishedEventIds = publishedOrder;
   const liveCapture = measureCheckpointLiveCapture({
@@ -1847,7 +1915,7 @@ export async function runCheckpointScenario(
     liveCaptureEndedAtMs,
     checkpointStagingStartedAtMs,
     checkpointStagingEndedAtMs,
-    liveCaptureEventTimesMs
+    liveCaptureEventTimesMs: productionObservedLiveEventTimesMs
   });
   if (!guard.isActive()) throw new Error("Checkpoint scenario was cancelled.");
   const cleanupEvidence = await cleanupHarnessResources({
@@ -1855,18 +1923,28 @@ export async function runCheckpointScenario(
     stage: `checkpoint-${adapter}-${name}`,
     guard,
     progress: () => progress(`${name}-cleanup`),
-    disposePanel: panel?.disposePanel,
-    removeRoot: () => {
-      root.remove();
-      return !root.isConnected;
-    }
+    disposePanel: panel ? cleanupDisposePanel : undefined,
+    removeRoot: cleanupRemoveRoot
   });
   const closeOutcome = cleanupEvidence.close;
   const closeSucceeded = closeOutcome !== null
     && typeof closeOutcome === "object"
     && "ok" in closeOutcome
     && closeOutcome.ok === true;
-  if (!closeSucceeded) throw new Error(`Checkpoint ${adapter}/${name} Event History close failed.`);
+  const cleanupSuccessful = cleanupEvidence.unsubscribeError === null
+    && cleanupEvidence.disposeAttempted
+    && cleanupEvidence.disposeError === null
+    && cleanupEvidence.rootRemovalAttempted
+    && cleanupEvidence.rootRemoved
+    && cleanupEvidence.rootError === null
+    && cleanupEvidence.closeAttempted
+    && closeSucceeded
+    && cleanupEvidence.closeError === null;
+  if (!cleanupSuccessful) {
+    const cleanupFailure = new Error(`Checkpoint ${adapter}/${name} cleanup evidence was incomplete.`);
+    Object.assign(cleanupFailure, { cleanupEvidence });
+    throw cleanupFailure;
+  }
     return {
     name,
     adapter,
@@ -1878,31 +1956,29 @@ export async function runCheckpointScenario(
     productionObservedLiveEventIds,
     productionObservedLiveEventTimesMs,
     observationProvenance: "production-panel-committed-evidence-hook",
+    checkpointFrameEventIds,
+    offeredLiveCaptureEventTimesMs,
     retainedEventIds,
     publishedEventIds,
     ...liveCapture,
-    interleavedWhileStaging: liveCapture.interleavedWhileStaging && candidateObserved &&
-      candidateIndex > -1 &&
-      trafficBeforeIds.every((eventId) => publishedOrder.indexOf(eventId) < candidateIndex) &&
-      liveCaptureEventIds.every((eventId) => publishedOrder.indexOf(eventId) > candidateIndex) &&
-      trafficAfterIds.every((eventId) => publishedOrder.indexOf(eventId) > candidateIndex),
+    interleavedWhileStaging: liveCapture.interleavedWhileStaging && candidateObserved,
     canonicalBytes: journalAccountedBytes(serialized.bytes),
     committedBoundaryCorrect: outcome.outcome === "BECAME_EVIDENCE" && outcome.evidence.eventId === candidate.id,
     batchAcceptedAsOneOversizedUnit: outcome.outcome === "BECAME_EVIDENCE" && candidateObserved
+      && frameOutcomes.every((frameOutcome) => frameOutcome.outcome === "BECAME_EVIDENCE")
     };
   } catch (error) {
-    releaseCandidateStage();
     const failure = normalizeHarnessError(error, `checkpoint-${adapter}-${name}`, progress(`${name}-failed`), guard);
-    const resourceCleanup = await cleanupHarnessResources({
+    const existingCleanupEvidence = error instanceof Error && "cleanupEvidence" in error
+      ? (error as Error & { cleanupEvidence?: HarnessCleanupEvidence }).cleanupEvidence
+      : undefined;
+    const resourceCleanup = existingCleanupEvidence ?? await cleanupHarnessResources({
       history,
       stage: `checkpoint-${adapter}-${name}`,
       guard,
       progress: () => progress(`${name}-cleanup`),
-      disposePanel: panel?.disposePanel,
-      removeRoot: () => {
-        root.remove();
-        return !root.isConnected;
-      }
+      disposePanel: panel ? cleanupDisposePanel : undefined,
+      removeRoot: cleanupRemoveRoot
     });
     Object.assign(failure, {
       cleanupEvidence: {
@@ -1910,7 +1986,7 @@ export async function runCheckpointScenario(
         adapter,
         phase: "cleanup" as const,
         sample: null,
-        eventCount: trafficBefore.length + trafficAfter.length + CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT + 1,
+        eventCount: trafficBefore.length + trafficAfter.length + CHECKPOINT_LIVE_CAPTURE_EVENT_COUNT + checkpointFrameCandidates.length,
         retained: null,
         sessionId: `event-history-checkpoint-${adapter}-${name}`,
         databaseName: adapter === "indexeddb"

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createTopologyCheckpointFrameCandidate,
   createTopologyCheckpointEvidenceCandidate,
-  decodeTopologyCheckpointEvidenceCandidate
+  decodeTopologyCheckpointEvidenceCandidate,
+  decodeTopologyCheckpointFrameCandidate
 } from "../src/extension/panel/topology-checkpoint-evidence-codec";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 import {
@@ -35,6 +37,22 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  it("represents the real BEGIN/CHUNK/COMPLETE journal sequence without collapsing it", () => {
+    const complete = createStagedTopologyCheckpointCandidate("frame-sequence", "frame-sequence-sync", 64 * 1_024);
+    expect(complete.kind).toBe("topology-checkpoint");
+    if (complete.kind !== "topology-checkpoint") return;
+    const frames = decodeTopologyCheckpointEvidenceCandidate(complete);
+    expect(frames).not.toBeNull();
+    const frameCandidates = frames!.map((frame) => createTopologyCheckpointFrameCandidate(
+      frame,
+      complete.id,
+      frame.type === "lsew:topology-sync-complete" ? complete : undefined
+    ));
+    expect(frameCandidates.map((candidate) => decodeTopologyCheckpointFrameCandidate(candidate)?.stage))
+      .toEqual(["begin", ...frames!.slice(1, -1).map(() => "chunk"), "complete"]);
+    expect(frameCandidates.at(-1)!.id).toBe(complete.id);
+  });
+
   it("fails closed for before-and-after-only traffic and accepts measured concurrent staging traffic", () => {
     const beforeAndAfter = measureCheckpointLiveCapture({
       liveCaptureStartedAtMs: 0,
@@ -85,6 +103,8 @@ describe("Event History performance checkpoint workload", () => {
     expect(scenario.liveCaptureRateEventsPerSecond).toBeGreaterThanOrEqual(50);
     expect(scenario.interleavedWhileStaging).toBe(true);
     expect(scenario.observationProvenance).toBe("production-panel-committed-evidence-hook");
+    expect(scenario.checkpointFrameEventIds.length).toBeGreaterThanOrEqual(2);
+    expect(scenario.retainedEventIds).toEqual(expect.arrayContaining([...scenario.checkpointFrameEventIds]));
     expect(scenario.productionObservedLiveEventIds).toEqual(scenario.liveCaptureEventIds);
     expect(scenario.productionObservedLiveEventTimesMs).toHaveLength(scenario.liveCaptureEventIds.length);
   });
@@ -104,6 +124,47 @@ describe("Event History performance checkpoint workload", () => {
     expect((thrown as Error & { cleanupEvidence: { closeAttempted: boolean; rootRemovalAttempted: boolean } }).cleanupEvidence)
       .toMatchObject({ closeAttempted: true, rootRemovalAttempted: true });
   });
+
+  it.each(["dispose", "root"] as const)(
+    "fails closed when checkpoint success cleanup reports a %s failure",
+    async (failureFacet) => {
+      let thrown: unknown;
+      let disposeCalls = 0;
+      let rootCalls = 0;
+      try {
+        await runCheckpointScenario("memory", "representative", null, createHarnessStageGuard(), {
+          cleanupOverrides: {
+            disposePanel: (dispose) => {
+                disposeCalls += 1;
+                dispose();
+                if (failureFacet === "dispose") throw new Error("injected panel disposal failure");
+              },
+            removeRoot: failureFacet === "root"
+              ? (removeRoot) => {
+                rootCalls += 1;
+                removeRoot();
+                return false;
+              }
+              : undefined
+          }
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      const cleanupEvidence = (thrown as Error & { cleanupEvidence?: { disposeError: string | null; rootRemoved: boolean; rootError: string | null; closeError: string | null } }).cleanupEvidence;
+      expect(cleanupEvidence).toBeDefined();
+      if (failureFacet === "dispose") {
+        expect(cleanupEvidence).toMatchObject({ disposeError: "injected panel disposal failure", rootRemoved: true, closeError: null });
+        expect(disposeCalls).toBe(1);
+        expect(rootCalls).toBe(0);
+      } else {
+        expect(cleanupEvidence).toMatchObject({ disposeError: null, rootRemoved: false, rootError: null, closeError: null });
+        expect(disposeCalls).toBe(1);
+        expect(rootCalls).toBe(1);
+      }
+    }
+  );
 
   const progress = (stage: string): HarnessProgressInput => ({
     operationId: null,

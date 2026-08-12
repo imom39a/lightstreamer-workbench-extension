@@ -18,6 +18,16 @@ import {
 } from "../../bridge/messages";
 import type { TopologyCheckpointEvidenceCandidate } from "../../core/event-history-authoritative";
 
+export type TopologyCheckpointFrameStage = "begin" | "chunk" | "complete";
+
+export type TopologyCheckpointFrameCandidate = Readonly<{
+  candidate: TopologyCheckpointEvidenceCandidate;
+  frame: TopologySyncFrame;
+  stage: TopologyCheckpointFrameStage;
+  checkpointId: string;
+  observations: readonly TopologyObservation[];
+}>;
+
 export type TopologyCheckpointEvidenceCodecRejectionCode =
   | "INVALID_FRAME"
   | "UNSUPPORTED_FRAME_SEQUENCE"
@@ -109,6 +119,78 @@ export function decodeTopologyCheckpointEvidenceCandidate(
     return null;
   }
   return frames;
+}
+
+/**
+ * Makes one journal candidate for a real staged sync frame. The complete
+ * candidate keeps the original replay-complete checkpoint payload so the
+ * existing oversized-unit accounting remains authoritative; BEGIN/CHUNK use
+ * only their frame payload until COMPLETE is committed.
+ */
+export function createTopologyCheckpointFrameCandidate(
+  frame: TopologySyncFrame,
+  checkpointId: string,
+  completeCandidate?: TopologyCheckpointEvidenceCandidate
+): TopologyCheckpointEvidenceCandidate {
+  const stage = topologyCheckpointFrameStage(frame);
+  const frameKey = frame.type === TOPOLOGY_SYNC_CHUNK ? `chunk-${frame.chunkIndex}` : stage;
+  if (stage === "complete" && completeCandidate) {
+    return deepFreeze({
+      ...completeCandidate,
+      checkpoint: {
+        ...completeCandidate.checkpoint,
+        __lsewFrameStage: stage,
+        __lsewFrameCheckpointId: checkpointId,
+        __lsewFrame: frame
+      }
+    });
+  }
+  return deepFreeze({
+    kind: "topology-checkpoint",
+    id: `${checkpointId}:frame:${frameKey}`,
+    checkpoint: {
+      __lsewFrameStage: stage,
+      __lsewFrameCheckpointId: checkpointId,
+      __lsewFrame: frame,
+      syncId: frame.syncId
+    }
+  });
+}
+
+export function decodeTopologyCheckpointFrameCandidate(
+  candidate: TopologyCheckpointEvidenceCandidate
+): TopologyCheckpointFrameCandidate | null {
+  const checkpoint = candidate.checkpoint as {
+    __lsewFrameStage?: unknown;
+    __lsewFrameCheckpointId?: unknown;
+    __lsewFrame?: unknown;
+    observations?: unknown;
+  };
+  if (
+    (checkpoint.__lsewFrameStage !== "begin" &&
+      checkpoint.__lsewFrameStage !== "chunk" &&
+      checkpoint.__lsewFrameStage !== "complete") ||
+    typeof checkpoint.__lsewFrameCheckpointId !== "string" ||
+    !isTopologySyncFrame(checkpoint.__lsewFrame)
+  ) {
+    return null;
+  }
+  const observations = checkpoint.observations;
+  return {
+    candidate,
+    frame: checkpoint.__lsewFrame,
+    stage: checkpoint.__lsewFrameStage,
+    checkpointId: checkpoint.__lsewFrameCheckpointId,
+    observations: Array.isArray(observations) && observations.every(isTopologyObservation)
+      ? observations
+      : []
+  };
+}
+
+function topologyCheckpointFrameStage(frame: TopologySyncFrame): TopologyCheckpointFrameStage {
+  if (frame.type === TOPOLOGY_SYNC_BEGIN) return "begin";
+  if (frame.type === TOPOLOGY_SYNC_COMPLETE) return "complete";
+  return "chunk";
 }
 
 type ValidatedFrameSequence = Readonly<{

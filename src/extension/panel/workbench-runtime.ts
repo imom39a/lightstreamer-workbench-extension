@@ -35,6 +35,7 @@ import {
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
 import { createTopologyProjection } from "./topology-projection";
+import { decodeTopologyCheckpointFrameCandidate } from "./topology-checkpoint-evidence-codec";
 import {
   selectedUpdateSnapshot,
   type SelectedUpdateSnapshot
@@ -453,6 +454,8 @@ export type WorkbenchRuntimeScheduler = {
 /** Observational hooks used only by the deliberate real-Chrome performance gate. */
 export type WorkbenchRuntimePerformanceHooks = Readonly<{
   onCommittedEvidenceBoundary?(boundary: EvidenceRef, timestampMs: number): void;
+  onCheckpointStagingStart?(syncId: string, timestampMs: number): void;
+  onCheckpointStagingEnd?(syncId: string, timestampMs: number): void;
   onVisibleFrame?(boundary: EvidenceRef, timestampMs: number, coveredBoundaries: readonly EvidenceRef[]): void;
 }>;
 
@@ -1270,6 +1273,31 @@ class Runtime implements WorkbenchRuntime {
     this.pendingVisibleBoundaries.push(entry);
     this.performanceHooks?.onCommittedEvidenceBoundary?.(entry, performance.now());
     if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
+      if (entry.candidate.kind === "topology-checkpoint") {
+        const frameCandidate = decodeTopologyCheckpointFrameCandidate(entry.candidate);
+        if (frameCandidate) {
+          const topologyResult = this.topologyProjection.ingestCommittedSyncFrame(
+            frameCandidate.frame,
+            frameCandidate.observations
+          );
+          if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
+          if (frameCandidate.stage === "begin" && topologyResult.accepted) {
+            this.performanceHooks?.onCheckpointStagingStart?.(
+              frameCandidate.checkpointId,
+              performance.now()
+            );
+          } else if (frameCandidate.stage === "complete" && topologyResult.accepted) {
+            this.performanceHooks?.onCheckpointStagingEnd?.(
+              frameCandidate.checkpointId,
+              performance.now()
+            );
+          }
+          this.invalidatePreparedExport();
+          if (this.visible) this.schedulePassivePublication();
+          else this.hiddenDirty = true;
+          return;
+        }
+      }
       const syncId = topologyCheckpointSyncId(entry.candidate);
       if (syncId !== null) {
         this.offeredTopologyCheckpointSyncIds.add(syncId);

@@ -182,9 +182,11 @@ export type EventHistoryPerformanceCheckpointScenario = Readonly<{
   trafficBefore: number;
   trafficAfter: number;
   liveCaptureEventIds: readonly string[];
+  checkpointFrameEventIds: readonly string[];
   productionObservedLiveEventIds: readonly string[];
   productionObservedLiveEventTimesMs: readonly number[];
   observationProvenance: "production-panel-committed-evidence-hook";
+  offeredLiveCaptureEventTimesMs: readonly number[];
   liveCaptureEventTimesMs: readonly number[];
   retainedEventIds: readonly string[];
   publishedEventIds: readonly string[];
@@ -471,11 +473,15 @@ function isCheckpointScenario(value: unknown): value is EventHistoryPerformanceC
     && Number.isSafeInteger(value.trafficAfter) && (value.trafficAfter as number) >= 1
     && Array.isArray(value.liveCaptureEventIds) && value.liveCaptureEventIds.length > 0
     && value.liveCaptureEventIds.every((id) => typeof id === "string" && id.length > 0)
+    && Array.isArray(value.checkpointFrameEventIds) && value.checkpointFrameEventIds.length >= 2
+    && value.checkpointFrameEventIds.every((id) => typeof id === "string" && id.length > 0)
     && Array.isArray(value.productionObservedLiveEventIds) && value.productionObservedLiveEventIds.length > 0
     && value.productionObservedLiveEventIds.every((id) => typeof id === "string" && id.length > 0)
     && Array.isArray(value.productionObservedLiveEventTimesMs) && value.productionObservedLiveEventTimesMs.length > 0
     && value.productionObservedLiveEventTimesMs.every((timestamp) => isFiniteNumber(timestamp) && timestamp >= 0)
     && value.observationProvenance === "production-panel-committed-evidence-hook"
+    && Array.isArray(value.offeredLiveCaptureEventTimesMs) && value.offeredLiveCaptureEventTimesMs.length > 0
+    && value.offeredLiveCaptureEventTimesMs.every((timestamp) => isFiniteNumber(timestamp) && timestamp >= 0)
     && Array.isArray(value.liveCaptureEventTimesMs) && value.liveCaptureEventTimesMs.length > 0
     && value.liveCaptureEventTimesMs.every((timestamp) => isFiniteNumber(timestamp) && timestamp >= 0)
     && Array.isArray(value.retainedEventIds) && value.retainedEventIds.length > 0
@@ -548,14 +554,15 @@ function validateCheckpointScenarios(
       const productionLiveTimesOrdered = scenario.productionObservedLiveEventTimesMs.every((timestamp, index) =>
         index === 0 || timestamp >= scenario.productionObservedLiveEventTimesMs[index - 1]!
       );
+      const productionLiveTimes = scenario.productionObservedLiveEventTimesMs;
       const eventTimesOrdered = scenario.liveCaptureEventTimesMs.every((timestamp, index) =>
         index === 0 || timestamp >= scenario.liveCaptureEventTimesMs[index - 1]!
       );
-      const overlapEventTimes = scenario.liveCaptureEventTimesMs.filter((timestamp) =>
+      const overlapEventTimes = productionLiveTimes.filter((timestamp) =>
         timestamp >= scenario.checkpointStagingStartedAtMs && timestamp < scenario.checkpointStagingEndedAtMs
       );
-      const calculatedMaxInterEventGap = scenario.liveCaptureEventTimesMs.slice(1).reduce(
-        (maximum, timestamp, index) => Math.max(maximum, timestamp - scenario.liveCaptureEventTimesMs[index]!),
+      const calculatedMaxInterEventGap = productionLiveTimes.slice(1).reduce(
+        (maximum, timestamp, index) => Math.max(maximum, timestamp - productionLiveTimes[index]!),
         0
       );
       const overlapEventSpan = overlapEventTimes.length > 1
@@ -563,36 +570,66 @@ function validateCheckpointScenarios(
         : 0;
       const retainedIdsUnique = new Set(scenario.retainedEventIds).size === scenario.retainedEventIds.length;
       const publishedIdsUnique = new Set(scenario.publishedEventIds).size === scenario.publishedEventIds.length;
+      const checkpointFrameIdsUnique = new Set(scenario.checkpointFrameEventIds).size === scenario.checkpointFrameEventIds.length;
+      const checkpointFramesRetainedInOrder = containsOrderedSubsequence(scenario.retainedEventIds, scenario.checkpointFrameEventIds);
+      const checkpointFramesPublishedInOrder = containsOrderedSubsequence(scenario.publishedEventIds, scenario.checkpointFrameEventIds);
+      const publishedBeginIndex = scenario.publishedEventIds.indexOf(scenario.checkpointFrameEventIds[0]!);
+      const publishedCompleteIndex = scenario.publishedEventIds.indexOf(scenario.checkpointFrameEventIds.at(-1)!);
+      const livePublishedBetweenFrames = publishedBeginIndex >= 0
+        && publishedCompleteIndex > publishedBeginIndex
+        && scenario.liveCaptureEventIds.every((eventId) => {
+          const index = scenario.publishedEventIds.indexOf(eventId);
+          return index > publishedBeginIndex && index < publishedCompleteIndex;
+        });
+      const beforePublishedBeforeBegin = scenario.retainedEventIds
+        .slice(0, scenario.trafficBefore)
+        .every((eventId) => scenario.publishedEventIds.indexOf(eventId) < publishedBeginIndex);
+      const afterPublishedAfterComplete = scenario.retainedEventIds
+        .slice(-scenario.trafficAfter)
+        .every((eventId) => scenario.publishedEventIds.indexOf(eventId) > publishedCompleteIndex);
       const liveIdsRetained = scenario.liveCaptureEventIds.every((eventId) => scenario.retainedEventIds.includes(eventId));
       const liveIdsPublished = scenario.liveCaptureEventIds.every((eventId) => scenario.publishedEventIds.includes(eventId));
       const liveRetainedInOrder = containsOrderedSubsequence(scenario.retainedEventIds, scenario.liveCaptureEventIds);
       const livePublishedInOrder = containsOrderedSubsequence(scenario.publishedEventIds, scenario.liveCaptureEventIds);
-      const liveDuration = scenario.liveCaptureEndedAtMs - scenario.liveCaptureStartedAtMs;
+      const productionLiveStartedAt = productionLiveTimes[0] ?? -1;
+      const productionLiveEndedAt = productionLiveTimes.at(-1) ?? -1;
+      const productionTimesWithinStaging = productionLiveTimes.every((timestamp) =>
+        timestamp >= scenario.checkpointStagingStartedAtMs && timestamp <= scenario.checkpointStagingEndedAtMs
+      );
+      const liveDuration = productionLiveEndedAt - productionLiveStartedAt;
       const stagingDuration = scenario.checkpointStagingEndedAtMs - scenario.checkpointStagingStartedAtMs;
-      const overlapStart = Math.max(scenario.liveCaptureStartedAtMs, scenario.checkpointStagingStartedAtMs);
-      const overlapEnd = Math.min(scenario.liveCaptureEndedAtMs, scenario.checkpointStagingEndedAtMs);
+      const overlapStart = Math.max(productionLiveStartedAt, scenario.checkpointStagingStartedAtMs);
+      const overlapEnd = Math.min(productionLiveEndedAt, scenario.checkpointStagingEndedAtMs);
       const calculatedOverlap = Math.max(0, overlapEnd - overlapStart);
       const durationEvidence = Math.abs(liveDuration - scenario.liveCaptureDurationMs) < 1
         && Math.abs(stagingDuration - scenario.checkpointStagingDurationMs) < 1
-        && Math.abs(calculatedOverlap - scenario.liveCaptureOverlapMs) < 1;
-      const rate = scenario.liveCaptureDurationMs > 0
-        ? scenario.liveCaptureCount * 1_000 / scenario.liveCaptureDurationMs
+        && Math.abs(calculatedOverlap - scenario.liveCaptureOverlapMs) < 1
+        && Math.abs(productionLiveStartedAt - scenario.liveCaptureStartedAtMs) < 1
+        && Math.abs(productionLiveEndedAt - scenario.liveCaptureEndedAtMs) < 1;
+      const rate = liveDuration > 0
+        ? productionLiveTimes.length * 1_000 / liveDuration
         : 0;
       if (!scenario.accepted
         || scenario.liveCaptureCount !== scenario.liveCaptureEventIds.length
         || !productionLiveIdsMatch
         || !productionLiveTimesMatch
         || !productionLiveTimesOrdered
+        || !productionTimesWithinStaging
+        || scenario.offeredLiveCaptureEventTimesMs.length !== scenario.liveCaptureCount
         || scenario.liveCaptureEventTimesMs.length !== scenario.liveCaptureCount
         || !eventTimesOrdered
-        || scenario.liveCaptureEventTimesMs[0]! < scenario.liveCaptureStartedAtMs
-        || scenario.liveCaptureEventTimesMs.at(-1)! > scenario.liveCaptureEndedAtMs
-        || scenario.retained !== scenario.trafficBefore + scenario.trafficAfter + scenario.liveCaptureCount + 1
+        || scenario.retained !== scenario.trafficBefore + scenario.trafficAfter + scenario.liveCaptureCount + scenario.checkpointFrameEventIds.length
         || scenario.retainedEventIds.length !== scenario.retained
         || scenario.publishedEventIds.length !== scenario.retained
         || !liveIdsUnique
         || !retainedIdsUnique
         || !publishedIdsUnique
+        || !checkpointFrameIdsUnique
+        || !checkpointFramesRetainedInOrder
+        || !checkpointFramesPublishedInOrder
+        || !livePublishedBetweenFrames
+        || !beforePublishedBeforeBegin
+        || !afterPublishedAfterComplete
         || !liveIdsRetained
         || !liveIdsPublished
         || !liveRetainedInOrder
@@ -602,7 +639,7 @@ function validateCheckpointScenarios(
         || scenario.liveCaptureDurationMs < CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
         || scenario.checkpointStagingDurationMs < CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
         || scenario.liveCaptureOverlapMs < CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
-        || scenario.liveCaptureOverlapEventCount < 1
+        || scenario.liveCaptureOverlapEventCount !== overlapEventTimes.length
         || overlapEventSpan < CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS
         || Math.abs(calculatedMaxInterEventGap - scenario.liveCaptureMaxInterEventGapMs) >= 1
         || scenario.liveCaptureMaxInterEventGapMs > CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS

@@ -169,11 +169,17 @@ function terminalEvidence(acceptedCount: number, refusedEventId: string) {
 
 function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "indexeddb" | "memory") {
   const liveCaptureEventIds = Array.from({ length: 72 }, (_, index) => `${adapter}-${name}-live-${index + 1}`);
-  const liveCaptureEventTimesMs = Array.from({ length: 72 }, (_, index) => 100 + index * (1_200 / 72));
+  const checkpointFrameEventIds = [
+    `${adapter}-${name}-checkpoint-begin`,
+    `${adapter}-${name}-checkpoint-chunk`,
+    `${adapter}-${name}-checkpoint-complete`
+  ];
+  const liveCaptureEventTimesMs = Array.from({ length: 72 }, (_, index) => 100 + index * (1_200 / 71));
   const retainedEventIds = [
     ...Array.from({ length: 4 }, (_, index) => `${adapter}-${name}-before-${index}`),
-    `${adapter}-${name}-candidate`,
+    checkpointFrameEventIds[0]!,
     ...liveCaptureEventIds,
+    ...checkpointFrameEventIds.slice(1),
     ...Array.from({ length: 4 }, (_, index) => `${adapter}-${name}-after-${index}`)
   ];
   return {
@@ -184,9 +190,11 @@ function checkpointEvidence(name: "representative" | "maximum-2MiB", adapter: "i
     trafficBefore: 4,
     trafficAfter: 4,
     liveCaptureEventIds,
+    checkpointFrameEventIds,
     productionObservedLiveEventIds: [...liveCaptureEventIds],
     productionObservedLiveEventTimesMs: [...liveCaptureEventTimesMs],
     observationProvenance: "production-panel-committed-evidence-hook" as const,
+    offeredLiveCaptureEventTimesMs: [...liveCaptureEventTimesMs],
     liveCaptureEventTimesMs,
     retainedEventIds,
     publishedEventIds: [...retainedEventIds],
@@ -288,6 +296,23 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.verdict).toBe("PASS");
     expect(decision.checkedCells).toBe(12);
     expect(decision.checkedSamples).toBe(36);
+  });
+
+  it("fails when production-hook timestamps are a short burst despite sustained offer timestamps", () => {
+    const baseline = report();
+    const current = report({
+      checkpointScenarios: baseline.checkpointScenarios.map((scenario, index) => index === 0
+        ? {
+            ...scenario,
+            productionObservedLiveEventTimesMs: scenario.productionObservedLiveEventTimesMs.map((_timestamp, eventIndex) => 100 + eventIndex * 5)
+          }
+        : scenario)
+    });
+
+    const decision = classifyEventHistoryPerformance(current, referenceFrom(baseline));
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.some((failure) => failure.includes("checkpoint"))).toBe(true);
   });
 
   it("accepts an initial AVAILABLE state before the terminal pressure transition", () => {
