@@ -69,16 +69,7 @@ async function main() {
     const port = server.address().port;
     const url = `http://127.0.0.1:${port}/`;
     const executable = await chromeExecutable();
-    chrome = spawn(executable, [
-      "--no-sandbox",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-renderer-backgrounding",
-      "--no-first-run",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profile}`,
-      url
-    ], { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
+      chrome = spawn(executable, chromeLaunchArguments(profile, url), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
     chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
@@ -209,10 +200,36 @@ async function main() {
 
 export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
   await cdp.request("Page.bringToFront");
-  const visible = await evaluate(cdp, 'document.visibilityState === "visible"', timeoutMs);
+  const visible = await evaluate(cdp, `new Promise((resolve) => {
+    if (document.visibilityState !== "visible") {
+      resolve(false);
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (document.visibilityState !== "visible") {
+        resolve(false);
+        return;
+      }
+      requestAnimationFrame(() => resolve(document.visibilityState === "visible"));
+    });
+  })`, timeoutMs);
   if (visible !== true) {
     throw new Error("Event History performance run requires a visible foreground page.");
   }
+}
+
+export function chromeLaunchArguments(profile, url) {
+  return [
+    "--activate-on-launch",
+    "--no-sandbox",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--no-first-run",
+    "--remote-debugging-port=0",
+    `--user-data-dir=${profile}`,
+    url
+  ];
 }
 
 function requireVisibleEnvironment() {

@@ -28,6 +28,17 @@ const runNode = (source: string) => execFileSync(process.execPath, ["--input-typ
 afterAll(cleanupTemporaryModuleRoot);
 
 describe("Event History performance startup fail-closed seams", () => {
+  it("launches headed Chrome with macOS foreground activation enabled", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
+      const args = chromeLaunchArguments("/tmp/lsew-profile", "http://127.0.0.1:4173/");
+      assert.equal(args.includes("--activate-on-launch"), true);
+      assert.equal(args.includes("--headless"), false);
+      assert.equal(args.at(-1), "http://127.0.0.1:4173/");
+    `);
+  });
+
   it("brings the attached page to the foreground before checking visibility", () => {
     runNode(`
       import assert from "node:assert/strict";
@@ -43,6 +54,8 @@ describe("Event History performance startup fail-closed seams", () => {
       await preparePageForAuthoritativeRun(cdp, 100);
       assert.deepEqual(calls.map(({ method }) => method), ["Page.bringToFront", "Runtime.evaluate"]);
       assert.match(calls[1].params.expression, /document\\.visibilityState/u);
+      assert.equal(calls[1].params.expression.match(/requestAnimationFrame/gu)?.length, 2);
+      assert.equal(calls[1].params.awaitPromise, true);
     `);
   });
 
@@ -62,6 +75,40 @@ describe("Event History performance startup fail-closed seams", () => {
         preparePageForAuthoritativeRun(cdp, 100),
         (error) => /visible foreground page/u.test(error?.message ?? "")
       );
+      assert.deepEqual(calls.map(({ method }) => method), ["Page.bringToFront", "Runtime.evaluate"]);
+    `);
+  });
+
+  it("fails closed when the double-frame visibility evaluation is rejected", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { preparePageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const calls = [];
+      const cdp = {
+        request(method, params) {
+          calls.push({ method, params });
+          if (method === "Page.bringToFront") return Promise.resolve({});
+          return Promise.reject(new Error("renderer unavailable"));
+        }
+      };
+      await assert.rejects(preparePageForAuthoritativeRun(cdp, 100), /renderer unavailable/u);
+      assert.deepEqual(calls.map(({ method }) => method), ["Page.bringToFront", "Runtime.evaluate"]);
+    `);
+  });
+
+  it("fails closed when the double-frame visibility evaluation times out", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { preparePageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const calls = [];
+      const cdp = {
+        request(method, params) {
+          calls.push({ method, params });
+          if (method === "Page.bringToFront") return Promise.resolve({});
+          return new Promise(() => undefined);
+        }
+      };
+      await assert.rejects(preparePageForAuthoritativeRun(cdp, 10), /CDP evaluation timed out/u);
       assert.deepEqual(calls.map(({ method }) => method), ["Page.bringToFront", "Runtime.evaluate"]);
     `);
   });
