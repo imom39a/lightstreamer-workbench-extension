@@ -28,6 +28,44 @@ const runNode = (source: string) => execFileSync(process.execPath, ["--input-typ
 afterAll(cleanupTemporaryModuleRoot);
 
 describe("Event History performance startup fail-closed seams", () => {
+  it("brings the attached page to the foreground before checking visibility", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { preparePageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const calls = [];
+      const cdp = {
+        request(method, params) {
+          calls.push({ method, params });
+          if (method === "Page.bringToFront") return Promise.resolve({});
+          return Promise.resolve({ result: { value: true } });
+        }
+      };
+      await preparePageForAuthoritativeRun(cdp, 100);
+      assert.deepEqual(calls.map(({ method }) => method), ["Page.bringToFront", "Runtime.evaluate"]);
+      assert.match(calls[1].params.expression, /document\\.visibilityState/u);
+    `);
+  });
+
+  it("rejects a hidden page after bringing it to the foreground", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { preparePageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const calls = [];
+      const cdp = {
+        request(method, params) {
+          calls.push({ method, params });
+          if (method === "Page.bringToFront") return Promise.resolve({});
+          return Promise.resolve({ result: { value: false } });
+        }
+      };
+      await assert.rejects(
+        preparePageForAuthoritativeRun(cdp, 100),
+        (error) => /visible foreground page/u.test(error?.message ?? "")
+      );
+      assert.deepEqual(calls.map(({ method }) => method), ["Page.bringToFront", "Runtime.evaluate"]);
+    `);
+  });
+
   it("bounds a hung CDP WebSocket open and closes the socket", () => {
     runNode(`
       import assert from "node:assert/strict";

@@ -83,6 +83,7 @@ async function main() {
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
     cdp = await connect(await pageTarget(debugPort, url, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
+    await preparePageForAuthoritativeRun(cdp);
     const environment = await cdp.request("Browser.getVersion");
     const chromeMajor = chromeMajorFromProduct(environment.product);
     if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
@@ -102,6 +103,7 @@ async function main() {
     };
     await waitForHarness(cdp);
 
+    await preparePageForAuthoritativeRun(cdp);
     const result = await runPageOperation(cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run()", {
       deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
       onHeartbeat(status) {
@@ -202,6 +204,14 @@ async function main() {
     if (chrome) await terminateChild(chrome);
     if (server) await new Promise((done) => server.close(done));
     await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
+  await cdp.request("Page.bringToFront");
+  const visible = await evaluate(cdp, 'document.visibilityState === "visible"', timeoutMs);
+  if (visible !== true) {
+    throw new Error("Event History performance run requires a visible foreground page.");
   }
 }
 
