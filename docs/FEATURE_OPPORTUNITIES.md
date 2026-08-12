@@ -2,7 +2,7 @@
 
 Original source review: 2026-07-28
 
-Reassessment date: 2026-08-09
+Reassessment date: 2026-08-12
 
 Status: product opportunity assessment, not an implementation commitment
 
@@ -12,11 +12,13 @@ The redesign is complete. Workbench now has a stable product shape: compact live
 
 The highest-value direction is now:
 
-1. Deepen Evidence inspection and diagnostics now that Event History acceptance, completeness, Clear, overload, and failure boundaries are explicit and fail closed.
-2. Make existing Evidence faster to narrow and more conclusive through contextual facets, changed-field and delivery inspection, diagnostics, connection recovery, and snapshot explanation.
+1. Finish contextual faceted Evidence filtering, then add a scoped graphical **Observed Activity** dashboard that turns accepted Evidence into fast live-session orientation and reversible Evidence drill-down.
+2. Make selected Evidence more conclusive through changed-field and delivery inspection, diagnostics, connection recovery, and snapshot explanation.
 3. Add first-class Client Message Capture and the planned Server Injection workflow through the inspected client's normal `sendMessage` path.
 4. Design multi-event Local Injection as a real scenario model before adding any batch or run-all UI to the current one-Draft workflow.
 5. Add deeper QoS, mode, two-level COMMAND, listener, and protocol diagnostics only after the primary Diagnose and Injection journeys remain coherent under the extra evidence.
+
+The Observed Activity dashboard is not a permanent metric-card destination and does not replace Ordered Evidence. A concise runtime-dossier summary opens one temporary promoted document that inherits Scope, Filter, the current History Interval, Observation Coverage, and Live/Frozen position. It visualizes what Workbench actually observed and keeps every aggregate traceable to supporting Evidence; it does not manufacture a composite health score or call callback activity end-to-end performance.
 
 The public Lightstreamer Web Client API remains the semantic source of truth. Raw TLCP and client logs are valuable opt-in evidence for difficult incidents, but they remain supplemental. Every new UI capability must fit Scope, Ordered Evidence, Context, a bounded transient, or a temporary promoted document unless it passes the permanent-surface gate in the [Workbench UI Standard](WORKBENCH_UI_STANDARD.md).
 
@@ -57,6 +59,7 @@ The most important remaining gaps are:
 - `ClientListener.onServerError` and `onServerKeepalive` are not captured as first-class Evidence.
 - `LightstreamerClient.sendMessage` calls and `ClientMessageListener` outcomes are not captured, so Captured Client Messages and Server Injection are not yet available.
 - The filter engine supports structured fields, but the redesigned panel primarily exposes Scope and free-text filtering rather than contextual facets and clickable values.
+- Workbench already retains timestamps, Logical Update and Update Delivery identity, Server/Local provenance, snapshot/live phase, loss and subscription-error Evidence, client-status and Session transitions, requested/real bandwidth and frequency, and scoped runtime counts. It does not yet turn those facts into a graphical activity overview or provide chart-to-Evidence drill-down.
 - Selected Item Update Context shows resolved fields but does not yet make changed fields, per-listener Update Deliveries, JSON Patch evidence, and value ambiguity equally easy to inspect.
 - Snapshot, connection recovery, subscription configuration, and duplicate data exist, but most higher-order explanations remain facts rather than conclusions.
 - Only COMMAND has reconstructed state. MERGE, DISTINCT, and RAW remain ordered Evidence without point-in-time state lenses.
@@ -72,6 +75,8 @@ Relevant implementation and product seams:
 - [Production UI migration record](WORKBENCH_UI_MIGRATION_PLAN.md)
 - [Architecture and extension guide](ARCHITECTURE.md)
 - [Capture message contract](../src/bridge/messages.ts)
+- [Normalized Evidence envelope](../src/core/event-envelope.ts)
+- [Topology state](../src/core/topology-state.ts)
 - [Page instrumentation](../src/injected/lightstreamer-instrumentation.ts)
 - [Event History seam](../src/core/event-history-authoritative.ts)
 - [Workbench runtime](../src/extension/panel/workbench-runtime.ts)
@@ -101,34 +106,36 @@ Equal scores are ordered by the accepted journey priority—Diagnose before Loca
 Effort includes the implementation and the proportional evidence required by the UI standard:
 
 - **S**: localized aggregation or contextual UI using existing Capture.
-- **M**: a new capture field/kind, reducer, contextual lens, and browser verification.
+- **M**: a new capture field/kind, reducer or derived projection, contextual or promoted lens, and browser verification.
 - **L**: a workflow spanning instrumentation, history, runtime, bridge, UI, privacy, and failure semantics.
 - **Design gate**: implementation must wait for an explicit domain and interaction decision; a prototype alone is not acceptance.
+- **Material UI gate**: implementation must pass the complete Material UI evidence and maintainer-approval requirements in the Workbench UI Standard.
 
 ## Developer Usefulness Ranking
 
 | Usefulness rank | Opportunity | Developer usefulness | Current state | Effort | Priority |
 | ---: | --- | :---: | --- | :---: | :---: |
 | 1 | Contextual faceted Evidence filtering | 5.0/5 | Filter engine exists; UI partial | S-M | P0 |
-| 2 | Changed-field, delivery, provenance, and value-semantics inspection | 4.9/5 | Capture partial; Context partial | M | P0 |
-| 3 | Contextual Lightstreamer diagnostics and subscription linting | 4.9/5 | Operational diagnostics exist; semantic explanation partial | M | P0 |
-| 4 | Connection, transport, recovery, and Session-epoch lens | 4.8/5 | Topology facts exist; correlated lens absent | M | P0 |
-| 5 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Single Draft exists; scenario semantics undecided | L + design gate | P0 |
-| 6 | Snapshot bootstrap and resubscription correctness lens | 4.7/5 | Snapshot phases exist; explanation partial | M | P0 |
-| 7 | Captured Client Messages and deliberate Server Injection | 4.6/5 | Planned, not implemented | L | P0 |
-| 8 | Committed Evidence Boundary and fail-closed History Capacity | 4.5/5 | Delivered through the Event History implementation train; future refinements remain possible | M-L | P0 |
-| 9 | Filtering, frequency, bandwidth, buffer, and loss profiler | 4.4/5 | Metadata exists; profiler absent | M | P1 |
-| 10 | Watch rules and conditional listener breakpoints | 4.3/5 | Not implemented | M | P1 |
-| 11 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 4.3/5 | COMMAND only | M-L | P1 |
-| 12 | Two-level COMMAND dependency and merged-row inspector | 4.2/5 | Capture/summary partial; deep inspection absent | M-L | P1 |
-| 13 | Capture import, offline investigation, and fixture generation | 4.2/5 | Export exists; reverse workflow absent | M-L | P1 |
-| 14 | Listener performance, exception, and registration-churn profiler | 4.0/5 | Counts exist; timing and exceptions absent | M | P1 |
-| 15 | Correlated Lightstreamer client-log and TLCP evidence | 3.9/5 | Wire fallback partial; opt-in console absent | M-L | P1 |
-| 16 | Multi-client, version, duplicate-session, and churn audit | 3.9/5 | Duplicate/overlap and Session history partial | M | P1 |
-| 17 | Cross-capture comparison and regression diff | 3.8/5 | Depends on import | M | P2 |
-| 18 | Cross-frame, worker, HTTP transport, and bundled-client coverage | 3.7/5 | Limited coverage reporting exists | L | P2 |
-| 19 | Guarded live QoS and transport tuning lab | 3.5/5 | Not implemented; consequential | M-L | P2 |
-| 20 | Mobile Push Notification Workbench | 3.0/5 | Not implemented; specialized | L | P2 |
+| 2 | Scoped Observed Activity Dashboard | 4.9/5 | Counts and metadata exist; aggregation and graphical lens absent | M + Material UI gate | P0 |
+| 3 | Changed-field, delivery, provenance, and value-semantics inspection | 4.9/5 | Capture partial; Context partial | M | P0 |
+| 4 | Contextual Lightstreamer diagnostics and subscription linting | 4.9/5 | Operational diagnostics exist; semantic explanation partial | M | P0 |
+| 5 | Connection, transport, recovery, and Session-epoch lens | 4.8/5 | Topology facts exist; correlated lens absent | M | P0 |
+| 6 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Single Draft exists; scenario semantics undecided | L + design gate | P0 |
+| 7 | Snapshot bootstrap and resubscription correctness lens | 4.7/5 | Snapshot phases exist; explanation partial | M | P0 |
+| 8 | Captured Client Messages and deliberate Server Injection | 4.6/5 | Planned, not implemented | L | P0 |
+| 9 | Committed Evidence Boundary and fail-closed History Capacity | 4.5/5 | Delivered through the Event History implementation train; future refinements remain possible | M-L | P0 |
+| 10 | Deep Delivery QoS and Loss Profiler | 4.4/5 | Metadata and basic activity Evidence exist; deeper profiler absent | M | P1 |
+| 11 | Watch rules and conditional listener breakpoints | 4.3/5 | Not implemented | M | P1 |
+| 12 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 4.3/5 | COMMAND only | M-L | P1 |
+| 13 | Two-level COMMAND dependency and merged-row inspector | 4.2/5 | Capture/summary partial; deep inspection absent | M-L | P1 |
+| 14 | Capture import, offline investigation, and fixture generation | 4.2/5 | Export exists; reverse workflow absent | M-L | P1 |
+| 15 | Listener performance, exception, and registration-churn profiler | 4.0/5 | Counts exist; timing and exceptions absent | M | P1 |
+| 16 | Correlated Lightstreamer client-log and TLCP evidence | 3.9/5 | Wire fallback partial; opt-in console absent | M-L | P1 |
+| 17 | Multi-client, version, duplicate-session, and churn audit | 3.9/5 | Duplicate/overlap and Session history partial | M | P1 |
+| 18 | Cross-capture comparison and regression diff | 3.8/5 | Depends on import | M | P2 |
+| 19 | Cross-frame, worker, HTTP transport, and bundled-client coverage | 3.7/5 | Limited coverage reporting exists | L | P2 |
+| 20 | Guarded live QoS and transport tuning lab | 3.5/5 | Not implemented; consequential | M-L | P2 |
+| 21 | Mobile Push Notification Workbench | 3.0/5 | Not implemented; specialized | L | P2 |
 
 ## Dependency-Safe Build Order
 
@@ -138,24 +145,25 @@ This is the execution order for incremental delivery. Do not start an opportunit
 | ---: | --- | --- | :---: |
 | 1 | Committed Evidence Boundary and fail-closed History Capacity | Existing Event History vocabulary and workload evidence | A |
 | 2 | Contextual faceted Evidence filtering | 1 | B |
-| 3 | Changed-field, delivery, provenance, and value-semantics inspection | 1 | B |
-| 4 | Contextual Lightstreamer diagnostics and subscription linting | 1 | B |
-| 5 | Connection, transport, recovery, and Session-epoch lens | 1, 4 | B |
-| 6 | Snapshot bootstrap and resubscription correctness lens | 1, 3, 4 | B |
-| 7 | Captured Client Messages and deliberate Server Injection | 1, 4, existing one-Draft contract, accepted Server Injection ADRs | C |
-| 8 | Deterministic multi-event Local Injection scenarios | 1, 2, 3, 4, accepted Scenario domain and interaction model | D |
-| 9 | Filtering, frequency, bandwidth, buffer, and loss profiler | 1, 4, 5 | E |
-| 10 | Watch rules and conditional listener breakpoints | 1, 2, 4 | E |
-| 11 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 1, 3, 6 | E |
-| 12 | Two-level COMMAND dependency and merged-row inspector | 1, 3, 4, 6 | E |
-| 13 | Capture import, offline investigation, and fixture generation | 1; Scenario fixture generation also requires 8 | E |
-| 14 | Listener performance, exception, and registration-churn profiler | 1, 3 | E |
-| 15 | Correlated Lightstreamer client-log and TLCP evidence | 1, 4, 5 | E |
-| 16 | Multi-client, version, duplicate-session, and churn audit | 1, 4, 5 | E |
-| 17 | Cross-capture comparison and regression diff | 13 | F |
-| 18 | Cross-frame, worker, HTTP transport, and bundled-client coverage | 1, 4 | F |
-| 19 | Guarded live QoS and transport tuning lab | 5, 9 | F |
-| 20 | Mobile Push Notification Workbench | 1, 4 | F |
+| 3 | Scoped Observed Activity Dashboard | 1, 2 | B |
+| 4 | Changed-field, delivery, provenance, and value-semantics inspection | 1 | B |
+| 5 | Contextual Lightstreamer diagnostics and subscription linting | 1 | B |
+| 6 | Connection, transport, recovery, and Session-epoch lens | 1, 5 | B |
+| 7 | Snapshot bootstrap and resubscription correctness lens | 1, 4, 5 | B |
+| 8 | Captured Client Messages and deliberate Server Injection | 1, 5, existing one-Draft contract, accepted Server Injection ADRs | C |
+| 9 | Deterministic multi-event Local Injection scenarios | 1, 2, 4, 5, accepted Scenario domain and interaction model | D |
+| 10 | Deep Delivery QoS and Loss Profiler | 1, 3, 4, 5, 6 | E |
+| 11 | Watch rules and conditional listener breakpoints | 1, 2, 5 | E |
+| 12 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 1, 4, 7 | E |
+| 13 | Two-level COMMAND dependency and merged-row inspector | 1, 4, 5, 7 | E |
+| 14 | Capture import, offline investigation, and fixture generation | 1; Scenario fixture generation also requires 9 | E |
+| 15 | Listener performance, exception, and registration-churn profiler | 1, 3, 4 | E |
+| 16 | Correlated Lightstreamer client-log and TLCP evidence | 1, 5, 6 | E |
+| 17 | Multi-client, version, duplicate-session, and churn audit | 1, 5, 6 | E |
+| 18 | Cross-capture comparison and regression diff | 3, 14 | F |
+| 19 | Cross-frame, worker, HTTP transport, and bundled-client coverage | 1, 5 | F |
+| 20 | Guarded live QoS and transport tuning lab | 6, 10 | F |
+| 21 | Mobile Push Notification Workbench | 1, 5 | F |
 
 Opportunity headings below carry the build number, not the usefulness rank. The two tables above are authoritative: feature names identify the work, developer usefulness determines value rank, and build order determines safe execution sequence.
 
@@ -209,7 +217,57 @@ Required behavior:
 
 This replaces the old “faceted Timeline” proposal. It deepens Ordered Evidence and does not add a query-builder destination or permanent chip bar at every geometry.
 
-### Build 3 — Changed-Field, Delivery, Provenance, and Value-Semantics Inspection
+### Build 3 — Scoped Observed Activity Dashboard
+
+Give a developer a graphical answer to the initial diagnostic question: **where is observed activity or degradation concentrated, and which supporting Evidence should I inspect?** This is fast orientation over accepted Evidence, not a generic verdict that a Lightstreamer client is healthy or performing well.
+
+The first release contains four coordinated views:
+
+1. An activity timeline with aligned small multiples for Server Logical Updates and Update Deliveries. Logical Updates are divided into snapshot and live counts. Optional Local activity is a separate text-labelled series and is never blended into Server totals.
+2. A discrete connection rail with captured client-status transitions and Lightstreamer Session boundaries. It does not fill the space between observations or calculate time in a state before the correlated interval model exists.
+3. Timestamped markers for captured lost-update callbacks and subscription errors. A loss marker reports the captured count at that callback; it does not spread missing updates across earlier buckets or claim why they were lost.
+4. A ranked breakdown of the busiest Subscriptions at Page, client, or Session Scope and the busiest items at Subscription Scope. Horizontal bars print exact counts and default to Server Logical Updates within the plotted Scope, Filter, and interval; Update Deliveries remain a separate sortable column. Graphical ranking shows the top 10 plus an explicit `Other`, ties use stable identity order, and a synchronized table exposes every identity.
+
+Requested and real bandwidth and maximum-frequency values appear as labelled contextual facts. They become a plotted series only when Workbench has captured meaningful changes over time.
+
+Truth and aggregation contract:
+
+- A renderer-independent `ActivityProjection` consumes accepted Evidence only after commit and never reads pending capture messages as Evidence. Clear resets it with the other derived projections. It rebuilds from the current Event History rather than persisting a second aggregate history.
+- Activity inherits the current Scope, Filter, History Interval, Retained Range, Committed Evidence Boundary, Observation Coverage, and Live/Frozen position. It has no parallel object selector, private Filter, private pause, or cross-session persistence.
+- Page, client, Session, and Subscription Scope are supported. At Page Scope the connection rail keeps a bounded set of clients separate in recent-activity order and provides an explicit route to the remaining clients; client Scope shows its Session epochs; Session and Subscription Scope show only the owning Session. Multiple clients never become one synthetic connection state.
+- With no provenance Filter, Server activity is the default and Local activity is an optional separate series. An explicit provenance Filter is authoritative and may require or exclude Local activity; a presentation toggle never silently changes the Filter.
+- Logical Updates are counted once by logical identity. When object identity is unavailable, only the designated metric-owner observation contributes. Every listener callback remains a separate Update Delivery; one count is never estimated from the other.
+- Exact counts use deterministic, consistently aligned bucket durations such as one second, five seconds, fifteen seconds, or one minute, selected from the retained time span rather than viewport width. Presentation is bounded to roughly 120 buckets without sampling Evidence. First, current, and final partial buckets remain explicit.
+- A zero means zero matching accepted Evidence, not proof that the inspected client produced no activity. Limited or unavailable Observation Coverage remains visible and qualifies the conclusion. A metric Workbench cannot distinguish is `Unavailable`, not zero.
+- A selected current bucket remains `LIVE · PARTIAL` and may grow until it closes. Deterministic rebucketing preserves a selected absolute interval rather than silently coercing it into a different bucket.
+- A backward captured timestamp creates a textual clock discontinuity and splits the time visualization. Evidence sequence remains authoritative for supporting order; Workbench never smooths the regression or calculates an interval across it.
+- Aggregation is exact within History Capacity. It never samples events, invents values, or silently presents a partial result as complete. An aggregation failure makes Activity explicitly unavailable without stopping Capture, acceptance, Ordered Evidence, or other projections.
+
+Interaction and placement contract:
+
+- A concise runtime-dossier summary exposes **Open Activity**. The full **Observed Activity** document is temporarily promoted and preserves the originating Scope, Filter, selection, scroll anchor, and Live/Frozen state. It is not a permanent peer destination.
+- A deliberate Scope or Filter change recomputes every aggregate, clears any stale aggregate selection, preserves Panel Session-local presentation preferences, and creates a navigation entry that Back can restore.
+- Selecting a bucket, marker, or ranked row first shows its exact interval, counts, provenance, and limitations. **Show supporting Evidence** then adds visible, removable time, type, provenance, Subscription, or item criteria as applicable; it never silently changes structural Scope.
+- A time criterion uses `start <= timestamp < end`, clipped to the Retained Range, with Evidence sequence as the tie-breaker for equal timestamps. Back restores the prior dashboard selection, focus, chart and document scroll, Local-series visibility, ranked-table sort, Scope, Filter, and Live/Frozen boundary.
+- Active Filters affect every view. A series excluded by Filter is named as excluded rather than silently replaced with unfiltered Scope data; **Show this context** may deliberately amend the visible Filter.
+- Chart and table representations share one selection model. Each chart has a labelled synchronized data table, persistent textual selection detail, and a complete non-color meaning.
+- Time charts use zero-based linear scales and no logarithmic fallback, clipping, normalization, or dual axes. Logical Updates, Update Deliveries, and Local activity remain distinct even when one series compresses another visually.
+- Each chart is one keyboard composite: Left/Right moves between buckets, Up/Down moves between series or lanes, Home/End moves to the bounds, and Enter opens supporting Evidence. Tab and Shift+Tab remain the only cross-surface navigation commands.
+- Live graphical publication is coalesced to approximately once per second even though every accepted event is aggregated. Hidden panels do not redraw; returning publishes one consolidated snapshot without replay animation. Passive updates never move focus, selection, or scroll and do not flash or pulse.
+- Wide and normal layouts use the full canvas for aligned charts and the ranked breakdown. Compact and shallow layouts stack the same sections in one document scroll; an inherently two-dimensional time plot may own bounded horizontal scrolling, while the panel shell never scrolls horizontally.
+- Confirmed Clear empties the prior interval and invalidates its aggregate selections; Back never manufactures removed Evidence. A capacity or journal stop leaves the final dashboard inspectable through its last Committed Evidence Boundary with the terminal limitation visible.
+
+Explicitly deferred from this first release:
+
+- end-to-end latency, source-to-client conflation, server throughput, server queue occupancy, and composite client-health scoring;
+- synchronous listener duration, averages, percentiles, exceptions, and Long Task correlation;
+- connection-state duration totals, recovery-loop conclusions, and complete server-error/keepalive analysis;
+- changed-field density, approximate payload-byte profiling, buffering/loss correlation, and deeper requested-versus-real QoS conclusions;
+- manual time-range editing or chart zoom, cross-capture comparison, and dashboard-specific import or export.
+
+This is a Material UI change. Delivery requires deterministic primary, empty, limited-Coverage, aggregation-failure, clock-discontinuity, Clear, terminal-history, and 10,000-record scenarios; compact, normal, shallow, and wide geometry; Dark, Light, forced-colors, keyboard, focus, chart/table parity, and accessibility evidence; base/current/diff artifacts; independent visual QA; extension and official-client fixture proof; and explicit maintainer approval.
+
+### Build 4 — Changed-Field, Delivery, Provenance, and Value-Semantics Inspection
 
 Make a selected Item Update answer four questions without opening raw JSON:
 
@@ -233,7 +291,7 @@ Important limitation:
 
 JSON Patch remains a specialist sub-lens. Verify that applying a patch to the previous JSON produces the captured result when both sides are actually available; do not imply that every delta or field has a reconstructible patch.
 
-### Build 4 — Contextual Lightstreamer Diagnostics and Subscription Linting
+### Build 5 — Contextual Lightstreamer Diagnostics and Subscription Linting
 
 Extend the existing diagnostic footer and runtime dossiers rather than create a permanent Diagnostics Center.
 
@@ -271,7 +329,7 @@ Correctness limits:
 - A lost-update callback does not enumerate every update filtered or conflated by the server.
 - A warning remains evidence-based guidance, not proof that an unusual configuration is wrong.
 
-### Build 5 — Connection, Transport, Recovery, and Session-Epoch Lens
+### Build 6 — Connection, Transport, Recovery, and Session-Epoch Lens
 
 Provide a contextual client or Session lens over existing ordered Evidence:
 
@@ -286,7 +344,9 @@ Useful conclusions include repeated recovery loops, a new Session after failed r
 
 Do not claim that a high-level recovery status proves the exact progressive position resumed. Exact proof requires optional protocol evidence.
 
-### Build 6 — Snapshot Bootstrap and Resubscription Correctness Lens
+This lens owns the correlated interval model and recovery conclusions. Once that model is accepted, it may enrich the Observed Activity connection rail with proven state segments and durations; the Build 3 rail remains limited to captured transitions until then.
+
+### Build 7 — Snapshot Bootstrap and Resubscription Correctness Lens
 
 Build on the shipped per-item snapshot phase and explain:
 
@@ -313,7 +373,9 @@ Mode-specific limits:
 
 This is an item/Subscription Context lens with related Evidence actions, not a new Snapshot destination.
 
-### Build 7 — Captured Client Messages and Deliberate Server Injection
+Observed Activity may show snapshot/live counts and captured boundaries, but this lens owns mode-aware duration, completion, reset, and resubscription conclusions.
+
+### Build 8 — Captured Client Messages and Deliberate Server Injection
 
 Instrument `LightstreamerClient.sendMessage` and the associated `ClientMessageListener` as first-class outbound Evidence:
 
@@ -346,7 +408,7 @@ Boundary:
 
 Accepted decisions: [observational Capture](adr/0001-keep-capture-observational.md), [unknown outcome handling](adr/0003-do-not-automatically-retry-unknown-server-injections.md), [Client Message boundary](adr/0004-send-server-injections-as-client-messages.md), and [advisory COMMAND state](adr/0005-treat-observed-command-state-as-advisory.md).
 
-### Build 8 — Deterministic Multi-Event Local Injection Scenarios
+### Build 9 — Deterministic Multi-Event Local Injection Scenarios
 
 Preserve the current one-Draft contract until the product explicitly decides a scenario model.
 
@@ -379,19 +441,27 @@ Guardrails:
 
 ## P1 Opportunity Details
 
-### Build 9 — Filtering, Frequency, Bandwidth, Buffer, and Loss Profiler
+### Build 10 — Deep Delivery QoS and Loss Profiler
 
-For a client or Subscription, compare requested and real bandwidth/frequency with measured callback rates, changed-field density, approximate payload bytes, lost-update intervals, and snapshot/live rates.
+Extend Observed Activity with a separately labelled Delivery QoS layer. For a client or Subscription, compare requested and real bandwidth/frequency with measured application-boundary callback rates, changed-field density, approximate captured-payload bytes, requested buffer settings, lost-update intervals, and snapshot/live rates.
+
+Keep each measurement qualified:
+
+- callback rate is observed at the captured application boundary, not source or server throughput;
+- real maximum frequency is a Subscription-level constraint, not a measured per-item server rate;
+- approximate captured-payload bytes are not exact network or protocol bytes;
+- lost-update callbacks do not enumerate every update filtered or conflated upstream;
+- buffering, filtering, frequency, bandwidth, and loss may be correlated in time without claiming an unsupported cause.
 
 Do not claim an exact source-to-client conflation ratio, per-item server frequency from a Subscription-wide callback, server queue occupancy, or end-to-end latency without a trustworthy application timestamp.
 
-### Build 10 — Watch Rules and Conditional Listener Breakpoints
+### Build 11 — Watch Rules and Conditional Listener Breakpoints
 
 Define rules over status, error, Subscription, mode, item, listener, key, command, snapshot/live phase, field change/value/threshold, lost updates, or diagnostic severity.
 
 Safe actions can freeze Evidence, pin the triggering event, increment a counter, or open Context. Pausing JavaScript with `debugger` is opt-in and must state whether it occurs before or after the application listener. Capture must remain observational and listener exceptions must still propagate normally.
 
-### Build 11 — MERGE, DISTINCT, and RAW State Reconstruction With Point-in-Time Inspection
+### Build 12 — MERGE, DISTINCT, and RAW State Reconstruction With Point-in-Time Inspection
 
 Add contextual reducers rather than permanent mode views:
 
@@ -402,7 +472,7 @@ Add contextual reducers rather than permanent mode views:
 
 Time travel is a lens anchored to Scope and Evidence selection. It must state where Capture began too late or a boundary makes reconstruction incomplete.
 
-### Build 12 — Two-Level COMMAND Dependency and Merged-Row Inspector
+### Build 13 — Two-Level COMMAND Dependency and Merged-Row Inspector
 
 Explain the relationship:
 
@@ -412,7 +482,7 @@ first-level COMMAND item -> key -> implicit second-level MERGE item
 
 Show first- and second-level fields with provenance, Data Adapters, automatic subscribe/unsubscribe behavior, second-level loss/errors, field-name conflicts, current merged row, and the key's lifecycle. Internal second-level subscriptions remain Evidence attached to structural Scope; they do not become ordinary Topology nodes or pretend to be returned by `getSubscriptions()`.
 
-### Build 13 — Capture Import, Offline Investigation, and Fixture Generation
+### Build 14 — Capture Import, Offline Investigation, and Fixture Generation
 
 Extend the versioned export schema into an explicit imported-capture identity and offline investigation mode. Imported Evidence must be read-only, visibly separate from live Capture, and incapable of becoming a live Injection Target without an explicit compatible current-runtime selection.
 
@@ -427,13 +497,15 @@ Useful generators:
 
 Import requires schema migration, provenance, corruption handling, payload-size limits, and privacy review. It must not turn IndexedDB into implicit cross-session persistence.
 
-### Build 14 — Listener Performance, Exception, and Registration-Churn Profiler
+### Build 15 — Listener Performance, Exception, and Registration-Churn Profiler
 
 Measure synchronous callback duration, count/average/p95/max by listener and Subscription, exceptions recorded before rethrow, duplicate registration, add/remove churn, and optional Long Task correlation.
 
 Use it to explain browser-side processing cost and duplicate Update Deliveries. Never call it end-to-end latency without a reliable source timestamp.
 
-### Build 15 — Correlated Lightstreamer Client-Log and TLCP Evidence
+When integrated with Observed Activity, these measurements occupy a separately named **Listener execution cost** section. They never merge with delivery volume, connection reliability, or Workbench rendering into one health score.
+
+### Build 16 — Correlated Lightstreamer Client-Log and TLCP Evidence
 
 Offer two opt-in levels:
 
@@ -444,7 +516,7 @@ The advanced lens may explain `SUBOK`, `SUBCMD`, `EOS`, `CS`, `OV`, `PROBE`, `LO
 
 Detect the negotiated protocol version, treat decoding as stateful, tee rather than silently replace the application's logger provider, keep raw logging off by default, and redact credentials and application data from shared artifacts.
 
-### Build 16 — Multi-Client, Version, Duplicate-Session, and Churn Audit
+### Build 17 — Multi-Client, Version, Duplicate-Session, and Churn Audit
 
 Extend the shipped duplicate/overlap and historical-Session facts to detect mixed discoverable Web Client versions, repeated client/session creation, repeated subscribe/unsubscribe cycles, duplicate listeners, and unusually high counts.
 
@@ -452,19 +524,21 @@ All findings remain heuristic. Multiple clients, overlapping Subscriptions, and 
 
 ## P2 Opportunity Details
 
-### Build 17 — Cross-Capture Comparison and Regression Diff
+### Build 18 — Cross-Capture Comparison and Regression Diff
 
 After import exists, compare two captures by client/connection configuration, Subscription sets, snapshot duration/completeness, diagnostics, loss, update rate, changed-field density, COMMAND end state, and Scenario outcomes. Primary uses are working-versus-broken, before-versus-after upgrade, and production-versus-local reproduction.
 
-### Build 18 — Cross-Frame, Worker, HTTP Transport, and Bundled-Client Coverage
+The comparison may extend Observed Activity with aligned graphical captures, but each side retains its own History Interval, Scope, Filter, Observation Coverage, provenance, and completeness limits. It does not reduce the two captures to one regression or health score.
+
+### Build 19 — Cross-Frame, Worker, HTTP Transport, and Bundled-Client Coverage
 
 Expand Observation Coverage reporting across same-origin/cross-origin frames, workers, ESM/bundled constructors, HTTP streaming/polling, and WebSocket fallback. Report what was observed and what may have been missed; never present an absent hook as proof that no client exists.
 
-### Build 19 — Guarded Live QoS and Transport Tuning Lab
+### Build 20 — Guarded Live QoS and Transport Tuning Lab
 
 Allow explicit, reversible experiments with requested maximum frequency, requested session bandwidth, or forced transport where the public API permits it. Keep inspection read-only by default, state that each change performs a real client control operation, retain the observed baseline, and never imply that the client can raise a server-enforced limit.
 
-### Build 20 — Mobile Push Notification Workbench
+### Build 21 — Mobile Push Notification Workbench
 
 For applications using the optional MPN module, inspect device registration/suspension, MPN Subscription inventory, triggers, notification format, modification/unsubscription, and errors. This remains specialized and license-dependent.
 
@@ -479,7 +553,7 @@ For applications using the optional MPN module, inspect device registration/susp
 | Snapshot Bootstrap Visualizer and Correctness Checker | Snapshot phase shipped; keep the higher-order **Snapshot Bootstrap and Resubscription Correctness Lens**. |
 | Faceted Timeline Filters and Clickable Filter Chips | Core filter support partially shipped; adapt it into **Contextual Faceted Evidence Filtering**. |
 | Subscription Semantics Inspector and Configuration Linter | Inspector facts shipped; merge the remaining explanation into **Contextual Lightstreamer Diagnostics and Subscription Linting**. |
-| Filtering, Frequency, Bandwidth, Buffer, and Loss Profiler | Still valuable as the profiler of the same name. |
+| Filtering, Frequency, Bandwidth, Buffer, and Loss Profiler | Move exact activity buckets and captured loss markers into **Scoped Observed Activity Dashboard**; retain richer measurement and correlation as **Deep Delivery QoS and Loss Profiler**. |
 | Capture Freeze, Pause/Resume, and Retention Controls | Freeze and complete session-local history shipped. Do not prioritize pause/rolling retention without measured capacity pressure and a new completeness decision. |
 | Conditional Event Breakpoints and Watch Rules | Still valuable as **Watch Rules and Conditional Listener Breakpoints**. |
 | MERGE, DISTINCT, and RAW State Views With Time Travel | Keep reducers and point-in-time value as contextual state reconstruction; reject peer views. |
@@ -497,6 +571,8 @@ For applications using the optional MPN module, inspect device registration/susp
 
 **Committed Evidence Boundary and Fail-Closed History Capacity** was delivered after the redesign and high-volume history work made the Evidence-acceptance and capacity boundary explicit. Its real-Chrome cutover disposition and release artifacts are retained on the internal Project ticket.
 
+**Scoped Observed Activity Dashboard** is a newly identified opportunity in the 2026-08-12 reassessment rather than a renamed 2026-07-28 backlog row. It unifies already captured activity facts graphically while keeping the deeper QoS and listener measurements as separate later opportunities.
+
 ## Suggested Delivery Increments
 
 ### Increment A: Make Evidence Acceptance Truthful (delivered)
@@ -507,13 +583,14 @@ For applications using the optional MPN module, inspect device registration/susp
 4. Surfaced only material Capture Operation, Observation Coverage, History Capacity, and completeness consequences.
 5. Proved sustained, burst, failure, Clear, fallback, and teardown cases; retain the exact final release packet on the Project ticket.
 
-### Increment B: Make the Redesigned Diagnose Journey Conclusive
+### Increment B: Make the Redesigned Diagnose Journey Fast and Conclusive
 
 1. Contextual filter facets and click-to-filter actions.
-2. Changed fields, delivery identity, provenance, and value semantics.
-3. Missing client callbacks and normalized diagnostic explanations.
-4. Subscription linting.
-5. Connection/recovery and snapshot correctness lenses.
+2. Scoped Observed Activity with exact accepted-Evidence aggregation and reversible graphical drill-down.
+3. Changed fields, delivery identity, provenance, and value semantics.
+4. Missing client callbacks and normalized diagnostic explanations.
+5. Subscription linting.
+6. Connection/recovery and snapshot correctness lenses.
 
 ### Increment C: Complete the Planned Server Boundary
 
@@ -533,7 +610,7 @@ For applications using the optional MPN module, inspect device registration/susp
 
 ### Increment E: Add Deep Diagnostics and Sharing
 
-1. QoS/loss profiler.
+1. Deep Delivery QoS and loss profiling as a separately bounded Observed Activity layer.
 2. Watch rules and conditional listener breakpoints.
 3. Mode reducers and point-in-time state.
 4. Two-level COMMAND inspection.
@@ -542,7 +619,7 @@ For applications using the optional MPN module, inspect device registration/susp
 
 ### Increment F: Expand Coverage and Specialized Workflows
 
-1. Cross-capture comparison.
+1. Cross-capture comparison, including aligned graphical Activity only when each capture's boundaries remain explicit.
 2. Frames, workers, HTTP transports, and bundled clients.
 3. Guarded live tuning.
 4. MPN tooling.
@@ -552,13 +629,14 @@ For applications using the optional MPN module, inspect device registration/susp
 | Area | Additions or changes |
 | --- | --- |
 | Event History | Explicit pending/accepted states, Evidence sequence, Committed Evidence Boundary, History Interval, exact Clear cut, capacity/failure stop, adapter-independent state contract |
+| Activity projection | Accepted-Evidence-only Logical Update deduplication, Update Delivery counts, deterministic time buckets, Scope/Filter aggregation, snapshot/live and Server/Local separation, connection/error/loss markers, ranked identities, Clear reset, clock-discontinuity handling, and explicit aggregation failure |
 | Client listener | `onServerError` and `onServerKeepalive`; retain synchronous property reads in `onPropertyChange` |
 | Outbound client API | `sendMessage` call, protected arguments, and every `ClientMessageListener` outcome |
 | Event envelope | First-class Captured Client Message and Injection outcome data; accepted Evidence identity/sequence and History Interval |
 | Connection/snapshot state | Correlated status intervals, transport and Session epochs, snapshot bootstrap epochs and completeness limits |
 | Mode state | MERGE, DISTINCT, RAW, two-level COMMAND, and optional point-in-time reducers |
-| Query/indexes | Diagnostic severity/code, outbound sequence/outcome, QoS metrics, imported-capture identity |
-| Runtime/UI | Contextual lenses and typed commands inside the existing Scope/Evidence/Context model; no feature-first peer navigation |
+| Query/indexes | Visible bounded-time criteria, diagnostic severity/code, outbound sequence/outcome, QoS metrics, and imported-capture identity |
+| Runtime/UI | Contextual lenses, the temporary promoted Observed Activity document, synchronized chart/table selection, and typed Evidence drill-down commands inside the existing Scope/Evidence/Context model; no feature-first peer navigation |
 
 ## Correctness and Product Guardrails
 
@@ -567,6 +645,12 @@ Workbench must not claim:
 - that a captured event is Evidence before acceptance completes;
 - Complete History beyond its History Interval and Committed Evidence Boundary;
 - that History Capacity, Observation Coverage, Capture Operation, or Live/Frozen position are the same state;
+- that zero matching accepted Evidence proves zero inspected-client activity when Observation Coverage cannot support that conclusion;
+- that observed Logical Update or Update Delivery counts are server throughput, source-to-client delivery, end-to-end latency, or a composite client-performance score;
+- that a Logical Update and its listener-specific Update Deliveries are interchangeable metrics;
+- that captured connection transitions alone prove time in a state;
+- that requested or real Subscription-level limits are measured per-item activity;
+- that Server and Local activity may be blended into one unattributed total;
 - that every missing source update was lost rather than filtered or conflated;
 - that COMMAND operations preserve a dependable order across keys;
 - that end-of-snapshot proves every two-level row is complete;
@@ -586,14 +670,17 @@ Product boundaries to preserve:
 - Raw TLCP as supplemental diagnostics.
 - Current-session operational storage, not implicit cross-session persistence.
 - Observational Capture and immutable Evidence.
+- Observed Activity derived from accepted Evidence only, with Scope, Filter, History Interval, Retained Range, Committed Evidence Boundary, Observation Coverage, and provenance visible at the aggregate decision boundary.
 - Explicitly marked Local Evidence and separate COMMAND projections.
 - One protected Local Injection Draft until a separate Scenario decision changes that contract.
 - Consequential client/server operations explicit, reviewed, and scoped.
 - No permanent surface or navigation category without the accepted UI gate.
+- No silent event sampling or partial aggregate presented as complete; Activity failure remains isolated from Capture and Event History.
 
 ## Not Recommended as Near-Term Core
 
 - Reintroducing permanent Timeline, Topology, COMMAND State, Diagnostics, Snapshot, or Message peer destinations.
+- A permanent card-style dashboard destination, decorative metric tiles, or a composite client-health score.
 - A generic WebSocket inspector.
 - Direct server-stream or Data Adapter Item Update injection.
 - A generic Item-Update-to-Client-Message translator.
@@ -617,6 +704,9 @@ Repository decisions and implementation:
 - [Workbench UI Standard](WORKBENCH_UI_STANDARD.md)
 - [Production UI Migration Plan](WORKBENCH_UI_MIGRATION_PLAN.md)
 - [Architecture](ARCHITECTURE.md)
+- [Normalized Evidence envelope](../src/core/event-envelope.ts)
+- [Event filtering](../src/core/event-filter.ts)
+- [Topology state](../src/core/topology-state.ts)
 - [Raw-JSON Local Injection editor research](research/local-injection-json-editor-patterns.md)
 - [Event History workload facts](research/event-history-workload-facts.md)
 - [Accepted ADRs](adr/)
