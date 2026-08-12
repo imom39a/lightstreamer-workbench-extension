@@ -16,6 +16,7 @@ import {
   createStagedTopologyCheckpointCandidate,
   createHarnessStageGuard,
   captureCellWorkloadFactScalars,
+  burstOfferedEventsPerSecond,
   HarnessStageTimeout,
   measureCheckpointLiveCapture,
   measureAuthoritativeFullQuery,
@@ -51,6 +52,11 @@ describe("Event History performance checkpoint workload", () => {
     });
     expect(Object.values(facts).every((value) => value > 0)).toBe(true);
     expect(Object.isFrozen(facts)).toBe(true);
+  });
+
+  it("derives burst offer rate from enqueue duration only", () => {
+    expect(burstOfferedEventsPerSecond(1_692, 2_000)).toBe(846);
+    expect(burstOfferedEventsPerSecond(10, 0)).toBe(10_000);
   });
 
   it("represents the real BEGIN/CHUNK/COMPLETE production staging sequence without journaling frames", () => {

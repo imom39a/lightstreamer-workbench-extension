@@ -1438,7 +1438,9 @@ async function runCell(
       storageEstimate,
       workloadFacts: {
         expectedCount,
-        offeredEventsPerSecond: workload === "sustained" ? config.sustainedEventsPerSecond : expectedCount / Math.max(0.001, (performance.now() - startedAt) / 1_000),
+        offeredEventsPerSecond: workload === "sustained"
+          ? config.sustainedEventsPerSecond
+          : burstOfferedEventsPerSecond(expectedCount, enqueueElapsedMs),
         ...workloadFactScalars
       },
       pressure: {
@@ -1514,6 +1516,10 @@ export function captureCellWorkloadFactScalars(
     indexedDbWritesPerEvent: shapeFact?.indexedDbWritesPerEvent ?? 0,
     searchTokenCount: shapeFact?.searchTokenCount ?? 0
   });
+}
+
+export function burstOfferedEventsPerSecond(expectedCount: number, enqueueElapsedMs: number): number {
+  return expectedCount / Math.max(0.001, enqueueElapsedMs / 1_000);
 }
 
 export async function runTerminalScenario(
