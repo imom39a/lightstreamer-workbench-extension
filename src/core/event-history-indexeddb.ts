@@ -1394,7 +1394,12 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
           if (settled) return;
           settled = true;
           if (!preserveSelectionOrder) selected.sort((left, right) => left.sequence - right.sequence);
-          resolve({ evidence: preserveSelectionOrder ? selected : pageJournalSelection(selected, query, total), total });
+        resolve({
+          evidence: preserveSelectionOrder
+            ? selected
+            : pageJournalSelection(selected, query, total),
+          total
+        });
         },
         fail
       );
@@ -1526,7 +1531,7 @@ function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, que
         : Math.max(0, Math.floor(query.offsetFromNewest));
       const pageStop = offset + limit;
       preserveSelectionOrder = true;
-      const direction = query.offsetFromNewest !== undefined || query.order === "desc" ? "prev" : "next";
+      const direction = query.order === "desc" ? "prev" : "next";
       const request = store.openCursor(undefined, direction);
       let matched = 0;
       request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence candidate-kind read failed."));

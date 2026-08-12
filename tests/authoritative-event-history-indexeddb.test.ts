@@ -1284,6 +1284,27 @@ describe("IndexedDB authoritative EventHistory", () => {
     }
   });
 
+  it("preserves ascending order when paging Lightstreamer Evidence from newest", async () => {
+    const history = await freshHistory("indexed-candidate-kind-ascending-offset");
+    for (let index = 0; index < 3; index += 1) {
+      await history.offer(candidate(`ascending-${index}`)).settled;
+    }
+
+    try {
+      const result = await history.read({
+        candidateKind: "lightstreamer",
+        order: "asc",
+        offsetFromNewest: 1,
+        limit: 2
+      });
+      expect(result).toMatchObject({ ok: true, value: { total: 3 } });
+      if (!result.ok) throw new Error("Expected the ascending candidate-kind read to succeed.");
+      expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(["ascending-1", "ascending-2"]);
+    } finally {
+      await history.close();
+    }
+  });
+
   it("does not resolve a read before its readonly transaction completes", async () => {
     const history = await freshHistory("indexed-read-abort");
     await history.offer(candidate("read-abort-before")).settled;
