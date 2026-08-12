@@ -1342,7 +1342,10 @@ type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 const JOURNAL_READ_MAX_RECORDS_PER_CHUNK = 64;
 const JOURNAL_READ_TIME_BUDGET_MS = 8;
 
-type JournalReadYield = () => Promise<void>;
+type JournalReadYield = Readonly<{
+  yield: () => Promise<void>;
+  dispose: () => void;
+}>;
 
 function createJournalReadYield(): JournalReadYield {
   const browserGlobals = globalThis as typeof globalThis & {
@@ -1352,17 +1355,60 @@ function createJournalReadYield(): JournalReadYield {
   if (typeof MessageChannelConstructor === "function") {
     const channel = new MessageChannelConstructor();
     let resolveYield: (() => void) | null = null;
+    let disposed = false;
     channel.port1.onmessage = () => {
       const resolve = resolveYield;
       resolveYield = null;
       resolve?.();
     };
-    return () => new Promise<void>((resolve) => {
-      resolveYield = resolve;
-      channel.port2.postMessage(undefined);
-    });
+    return {
+      yield: () => {
+        if (disposed) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          resolveYield = resolve;
+          channel.port2.postMessage(undefined);
+        });
+      },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        channel.port1.onmessage = null;
+        const resolve = resolveYield;
+        resolveYield = null;
+        resolve?.();
+        channel.port1.close();
+        channel.port2.close();
+      }
+    };
   }
-  return () => new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+  let disposed = false;
+  let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
+  let resolveYield: (() => void) | null = null;
+  return {
+    yield: () => {
+      if (disposed) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        resolveYield = resolve;
+        timeout = globalThis.setTimeout(() => {
+          timeout = null;
+          const finish = resolveYield;
+          resolveYield = null;
+          finish?.();
+        }, 0);
+      });
+    },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (timeout !== null) {
+        globalThis.clearTimeout(timeout);
+        timeout = null;
+      }
+      const resolve = resolveYield;
+      resolveYield = null;
+      resolve?.();
+    }
+  };
 }
 
 function journalReadNow(): number {
@@ -1381,30 +1427,34 @@ async function materializeJournalRead(
   const orderedRecords = [...records].sort((left, right) => left.sequence - right.sequence);
   let offset = 0;
   let yieldJournalRead: JournalReadYield | null = null;
-  while (offset < orderedRecords.length) {
-    const startedAt = journalReadNow();
-    let processed = 0;
-    while (
-      offset < orderedRecords.length
-      && processed < JOURNAL_READ_MAX_RECORDS_PER_CHUNK
-      && (processed === 0 || journalReadNow() - startedAt < JOURNAL_READ_TIME_BUDGET_MS)
-    ) {
-      const record = orderedRecords[offset];
-      offset += 1;
-      processed += 1;
-      if (!record || record.intervalId !== latch.interval.id || record.sequence < retainedRange.first.sequence) continue;
-      const evidence = toCommittedEvidenceFromRecord(record);
-      if (matchesEvidenceQuery(evidence, query)) {
-        total += 1;
-        retainForJournalPage(selected, evidence, query);
+  try {
+    while (offset < orderedRecords.length) {
+      const startedAt = journalReadNow();
+      let processed = 0;
+      while (
+        offset < orderedRecords.length
+        && processed < JOURNAL_READ_MAX_RECORDS_PER_CHUNK
+        && (processed === 0 || journalReadNow() - startedAt < JOURNAL_READ_TIME_BUDGET_MS)
+      ) {
+        const record = orderedRecords[offset];
+        offset += 1;
+        processed += 1;
+        if (!record || record.intervalId !== latch.interval.id || record.sequence < retainedRange.first.sequence) continue;
+        const evidence = toCommittedEvidenceFromRecord(record);
+        if (matchesEvidenceQuery(evidence, query)) {
+          total += 1;
+          retainForJournalPage(selected, evidence, query);
+        }
+      }
+      if (offset < orderedRecords.length) {
+        if (yieldJournalRead === null) yieldJournalRead = createJournalReadYield();
+        await yieldJournalRead.yield();
       }
     }
-    if (offset < orderedRecords.length) {
-      if (yieldJournalRead === null) yieldJournalRead = createJournalReadYield();
-      await yieldJournalRead();
-    }
+    return { evidence: pageJournalSelection(selected, query, total), total };
+  } finally {
+    yieldJournalRead?.dispose();
   }
-  return { evidence: pageJournalSelection(selected, query, total), total };
 }
 
 function readJournal(database: AuthoritativeEventDatabase, latch: ReadLatch, query: EvidenceQuery): Promise<JournalRead> {

@@ -36,21 +36,34 @@ function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): Evid
 class FakeMessagePort {
   onmessage: ((event: MessageEvent) => void) | null = null;
   peer: FakeMessagePort | null = null;
+  closeCalls = 0;
 
   postMessage(data: unknown): void {
     FakeMessageChannel.posted += 1;
-    queueMicrotask(() => this.peer?.onmessage?.({ data } as MessageEvent));
+    FakeMessageChannel.order.push("message-posted");
+    queueMicrotask(() => FakeMessageChannel.order.push("microtask"));
+    setImmediate(() => {
+      FakeMessageChannel.order.push("message-task");
+      this.peer?.onmessage?.({ data } as MessageEvent);
+    });
+  }
+
+  close(): void {
+    this.closeCalls += 1;
   }
 }
 
 class FakeMessageChannel {
   static constructed = 0;
   static posted = 0;
+  static order: string[] = [];
+  static last: FakeMessageChannel | null = null;
   readonly port1 = new FakeMessagePort();
   readonly port2 = new FakeMessagePort();
 
   constructor() {
     FakeMessageChannel.constructed += 1;
+    FakeMessageChannel.last = this;
     this.port1.peer = this.port2;
     this.port2.peer = this.port1;
   }
@@ -1206,6 +1219,8 @@ describe("IndexedDB authoritative EventHistory", () => {
     const previousMessageChannel = Reflect.get(globalThis, "MessageChannel");
     FakeMessageChannel.constructed = 0;
     FakeMessageChannel.posted = 0;
+    FakeMessageChannel.order = [];
+    FakeMessageChannel.last = null;
     Reflect.set(globalThis, "MessageChannel", FakeMessageChannel);
     const timerSpy = vi.spyOn(globalThis, "setTimeout");
     try {
@@ -1218,9 +1233,38 @@ describe("IndexedDB authoritative EventHistory", () => {
       expect(FakeMessageChannel.constructed).toBe(1);
       expect(FakeMessageChannel.posted).toBeGreaterThan(0);
       expect(FakeMessageChannel.posted).toBeLessThan(211);
+      expect(FakeMessageChannel.order.indexOf("microtask")).toBeLessThan(FakeMessageChannel.order.indexOf("message-task"));
+      const successfulChannel = FakeMessageChannel.last as FakeMessageChannel | null;
+      expect(successfulChannel?.port1.closeCalls).toBe(1);
+      expect(successfulChannel?.port2.closeCalls).toBe(1);
       expect(timerSpy.mock.calls.filter(([, delay]) => delay === 0)).toHaveLength(0);
     } finally {
       timerSpy.mockRestore();
+      Reflect.set(globalThis, "MessageChannel", previousMessageChannel);
+      await history.close();
+    }
+  });
+
+  it("disposes both journal MessageChannel ports exactly once when materialization throws", async () => {
+    const panelSessionId = "indexed-message-channel-read-error";
+    const history = await freshHistory(panelSessionId);
+    for (let index = 0; index < 129; index += 1) {
+      await history.offer(candidate(`message-channel-error-${index}`)).settled;
+    }
+    await mutateEvidenceRecord(panelSessionId, 100, (record) => ({ ...record, replayPayload: "{bad" }));
+
+    const previousMessageChannel = Reflect.get(globalThis, "MessageChannel");
+    FakeMessageChannel.constructed = 0;
+    FakeMessageChannel.posted = 0;
+    FakeMessageChannel.last = null;
+    Reflect.set(globalThis, "MessageChannel", FakeMessageChannel);
+    try {
+      await expect(history.read({ order: "asc" })).rejects.toThrow(SyntaxError);
+      expect(FakeMessageChannel.constructed).toBe(1);
+      const failedChannel = FakeMessageChannel.last as FakeMessageChannel | null;
+      expect(failedChannel?.port1.closeCalls).toBe(1);
+      expect(failedChannel?.port2.closeCalls).toBe(1);
+    } finally {
       Reflect.set(globalThis, "MessageChannel", previousMessageChannel);
       await history.close();
     }
