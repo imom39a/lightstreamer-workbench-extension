@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import rawMatrix from "./visual-matrix.json" with { type: "json" };
+import { waitForVisualReadiness, warmVisualRenderer } from "./visual-readiness";
 
 type VisualCase = Readonly<{
   id: string;
@@ -15,6 +16,7 @@ for (const visual of matrix) {
   test(`visual baseline: ${visual.id} · ${visual.theme} · ${visual.viewport.width}x${visual.viewport.height}`, async ({ page }) => {
     await openScenario(page, visual);
     await prepareProductionState(page, visual);
+    await waitForVisualReadiness(page, ".workbench-react");
     await expect(page.locator(".workbench-react")).toHaveScreenshot(`${visual.id}.png`);
   });
 }
@@ -24,6 +26,7 @@ async function openScenario(page: Page, visual: VisualCase): Promise<void> {
   await page.emulateMedia({ colorScheme: visual.theme });
   await page.goto(`/?scenario=${visual.production.scenario}&theme=${visual.theme}`);
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
+  await warmVisualRenderer(page, ".workbench-react");
   const workbench = page.locator(".workbench-react");
   await expect(workbench).toBeVisible();
   const dimensions = await workbench.evaluate((element) => {
