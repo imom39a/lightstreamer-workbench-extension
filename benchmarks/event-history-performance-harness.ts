@@ -1111,6 +1111,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       const events = Array.from({ length: count }, (_, sequence) =>
         createEventHistoryWorkloadEvent(heapShapes[sequence % heapShapes.length]!, sequence, runId)
       );
+      const offered = events.length;
       const heapProgress = (settled: number | null = null): HarnessProgressInput => ({
         operationId,
         phase: "heap",
@@ -1125,7 +1126,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         workload: null,
         shape: null,
         workloadPhase: null,
-        offered: events.length,
+        offered,
         settled,
         query: null
       });
@@ -1138,10 +1139,13 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         heapProgress,
         heapGuard
       );
-      await waitForBoundedFrame(`${phase}-frame`, heapProgress, heapGuard);
+      const retained = await releaseHeapWorkloadCandidates(
+        events,
+        () => waitForBoundedFrame(`${phase}-frame`, heapProgress, heapGuard)
+      );
       if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
-      retainedHeapSession = { operationId, adapter, count, retained: events.length, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
-      return { adapter, count, retained: events.length, sessionId: runId, databaseName, phase, sample };
+      retainedHeapSession = { operationId, adapter, count, retained, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
+      return { adapter, count, retained, sessionId: runId, databaseName, phase, sample };
     } catch (error) {
       const originalError = error instanceof Error ? error : new Error(String(error));
       const cleanupEvidence = await bestEffortHeapPreparationCleanup({
@@ -2529,6 +2533,20 @@ export async function settleOffers(
   });
   if (receipts.some((receipt) => receipt.intake !== "QUEUED")) throw new Error("Retained heap offer was refused.");
   await settleReceiptStage(receipts.map((receipt) => receipt.settled), stage, timeoutMs, progress, guard);
+}
+
+/**
+ * Releases caller-owned workload payloads before the retained heap frame while
+ * preserving the scalar count used as measurement identity.
+ */
+export async function releaseHeapWorkloadCandidates(
+  candidates: EvidenceCandidate[],
+  yieldRetainedFrame: () => Promise<void>
+): Promise<number> {
+  const retained = candidates.length;
+  candidates.length = 0;
+  await yieldRetainedFrame();
+  return retained;
 }
 
 async function mountProductionPanel(

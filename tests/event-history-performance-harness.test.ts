@@ -27,6 +27,7 @@ import {
   settleOffers,
   settleReceiptStage,
   publishHarnessProgress,
+  releaseHeapWorkloadCandidates,
   runCheckpointScenario,
   runCellThenCollectGarbage,
   runTerminalScenario,
@@ -41,6 +42,28 @@ import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 import { createTopologyProjection } from "../src/extension/panel/topology-projection";
 
 describe("Event History performance checkpoint workload", () => {
+  it("releases caller-owned heap workload candidates before yielding the retained frame", async () => {
+    const candidates = [
+      createEventHistoryWorkloadEvent("large-json-rich", 0, "heap-release"),
+      createEventHistoryWorkloadEvent("large-json-rich", 1, "heap-release")
+    ];
+    const identities = [...candidates];
+    const order: string[] = [];
+
+    const retained = await releaseHeapWorkloadCandidates(candidates, async () => {
+      order.push("yield");
+      expect(candidates).toEqual([]);
+    });
+
+    expect(order).toEqual(["yield"]);
+    expect(retained).toBe(2);
+    expect(candidates).toEqual([]);
+    expect(identities.map((candidate) => candidate.id)).toEqual([
+      "heap-release-large-json-rich-0",
+      "heap-release-large-json-rich-1"
+    ]);
+  });
+
   it("captures scalar workload facts before caller payloads are released", () => {
     const events = [createEventHistoryWorkloadEvent("small-lifecycle", 0, "released-workload")];
     const facts = captureCellWorkloadFactScalars("small-lifecycle", events[0]!);
