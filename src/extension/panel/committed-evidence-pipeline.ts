@@ -237,8 +237,19 @@ export function bindCommittedEvidencePipeline(
   let running = false;
   let closed = false;
   let restarting = false;
+  let closePromise: Promise<Outcome<CloseResult>> | null = null;
   let firstMissingIdentity: string | null = null;
   let startupMetadata: CommittedEvidencePipelineStartupMetadata = Object.freeze({ coverage: "USEFUL" });
+  const activeReads = new Set<Promise<unknown>>();
+
+  function trackRead<T>(operation: Promise<T>): Promise<T> {
+    activeReads.add(operation);
+    void operation.then(
+      () => activeReads.delete(operation),
+      () => activeReads.delete(operation)
+    );
+    return operation;
+  }
 
   function startFollowing(): void {
     if (closed || !running) {
@@ -341,21 +352,20 @@ export function bindCommittedEvidencePipeline(
       return tracked;
     },
     async read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>> {
-      return history.read(query);
+      return trackRead(history.read(query));
     },
     async clear(): Promise<Outcome<ClearResult>> {
       return history.clear();
     },
     async close(): Promise<Outcome<CloseResult>> {
-      if (closed) {
-        return history.close();
-      }
+      if (closePromise) return closePromise;
       closed = true;
       if (subscribe !== null) {
         subscribe();
         subscribe = null;
       }
-      return history.close();
+      closePromise = Promise.allSettled([...activeReads]).then(() => history.close());
+      return closePromise;
     },
     startupMetadata() {
       return startupMetadata;

@@ -90,7 +90,7 @@ export type HarnessProgress = HarnessProgressInput & Readonly<{
 export type HarnessScenarioTestHooks = Readonly<{
   afterPanelMount?: (history: EventHistory) => void;
   cleanupOverrides?: Readonly<{
-    disposePanel?: (disposePanel: () => void) => void;
+    disposePanel?: (disposePanel: () => void | Promise<void>) => void | Promise<void>;
     removeRoot?: (removeRoot: () => boolean) => boolean;
   }>;
 }>;
@@ -531,7 +531,7 @@ type RetainedHeapSession = Readonly<{
   retained: number;
   sessionId: string;
   root: HTMLElement;
-  disposePanel: () => void;
+  disposePanel: () => void | Promise<void>;
   runtime: ReturnType<typeof createWorkbenchRuntime>;
   history: EventHistory;
   databaseName: string | null;
@@ -608,7 +608,7 @@ export async function cleanupHarnessResources(input: Readonly<{
   guard: HarnessStageGuard;
   progress: () => HarnessProgressInput;
   unsubscribe?: () => void;
-  disposePanel?: () => void;
+    disposePanel?: () => void | Promise<void>;
   removeRoot?: () => boolean | void;
   restoreStorage?: () => void;
   disconnectObserver?: () => void;
@@ -629,7 +629,7 @@ export async function cleanupHarnessResources(input: Readonly<{
     try { input.unsubscribe(); } catch (error) { unsubscribeError = error instanceof Error ? error.message : String(error); }
   }
   if (input.disposePanel) {
-    try { input.disposePanel(); } catch (error) { disposeError = error instanceof Error ? error.message : String(error); }
+    try { await input.disposePanel(); } catch (error) { disposeError = error instanceof Error ? error.message : String(error); }
   }
   if (input.removeRoot) {
     try {
@@ -685,7 +685,7 @@ export async function bestEffortHeapPreparationCleanup(input: Readonly<{
   sessionId: string;
   databaseName: string | null;
   originalError: unknown;
-  disposePanel: () => void;
+  disposePanel: () => void | Promise<void>;
   closeHistory: () => Promise<unknown>;
   removeRoot: () => void;
   yieldFrame: () => Promise<void>;
@@ -716,7 +716,7 @@ export async function bestEffortHeapPreparationCleanup(input: Readonly<{
     query: null
   };
   try {
-    input.disposePanel();
+    await input.disposePanel();
   } catch (error) {
     disposeError = error instanceof Error ? error.message : String(error);
     cleanupFailures.push(`disposePanel: ${disposeError}`);
@@ -787,14 +787,14 @@ export async function bestEffortHeapPreparationCleanup(input: Readonly<{
 }
 
 export async function closeHeapSessionWithEvidence(input: Readonly<{
-  disposePanel: () => void;
+    disposePanel: () => void | Promise<void>;
   closeHistory: () => Promise<Outcome<CloseResult>>;
 }>): Promise<unknown> {
   let disposeError: { code: string; message: string } | null = null;
   let closeOutcome: Outcome<CloseResult> | null = null;
   let closeError: { code: string; message: string } | null = null;
   try {
-    input.disposePanel();
+    await input.disposePanel();
   } catch (error) {
     disposeError = { code: "PANEL_DISPOSE_FAILED", message: error instanceof Error ? error.message : String(error) };
   }
@@ -1762,12 +1762,12 @@ export async function runCheckpointScenario(
   const productionObservation = new Promise<void>((resolve) => { resolveProductionObservation = resolve; });
   const root = document.createElement("main");
   let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
-  const cleanupDisposePanel = (): void => {
+  const cleanupDisposePanel = async (): Promise<void> => {
     if (!panel) return;
     const disposePanel = panel.disposePanel;
     hooks.cleanupOverrides?.disposePanel
-      ? hooks.cleanupOverrides.disposePanel(disposePanel)
-      : disposePanel();
+      ? await hooks.cleanupOverrides.disposePanel(disposePanel)
+      : await disposePanel();
   };
   const cleanupRemoveRoot = (): boolean => {
     const removeRoot = (): boolean => {
@@ -2313,7 +2313,7 @@ async function mountProductionPanel(
 ): Promise<{
   root: HTMLElement;
   runtime: ReturnType<typeof createWorkbenchRuntime>;
-  disposePanel: () => void;
+  disposePanel: () => void | Promise<void>;
 }> {
   root.id = "app";
   document.body.replaceChildren(root);

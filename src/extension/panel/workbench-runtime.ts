@@ -439,6 +439,7 @@ export interface WorkbenchRuntime {
   subscribe(listener: () => void): () => void;
   dispatch(command: WorkbenchCommand): void;
   dispose(): void;
+  disposeAndWait(): Promise<void>;
   /** Reports the first animation frame after the current committed boundary rendered. */
   reportVisibleFrame?(): void;
 }
@@ -551,6 +552,7 @@ class Runtime implements WorkbenchRuntime {
   private snapshot: WorkbenchSnapshot;
   private version = 0;
   private disposed = false;
+  private disposePromise: Promise<void> = Promise.resolve();
   private queryGeneration = 0;
   private evidenceQueryPending = false;
   private passiveRefreshPending = false;
@@ -985,7 +987,7 @@ class Runtime implements WorkbenchRuntime {
     this.disposed = true;
     this.cancelPassivePublication();
     this.listeners.clear();
-    void this.evidencePipeline.close().then(
+    this.disposePromise = this.evidencePipeline.close().then(
       (result) => {
         if (!result.ok) {
           console.error("Failed to close panel event history.", result.problem.message);
@@ -998,6 +1000,11 @@ class Runtime implements WorkbenchRuntime {
         );
       }
     );
+  }
+
+  async disposeAndWait(): Promise<void> {
+    this.dispose();
+    await this.disposePromise;
   }
 
   private ingestCaptureMessage(message: CaptureMessage): void {

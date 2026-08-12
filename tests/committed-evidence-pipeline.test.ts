@@ -463,6 +463,33 @@ describe("committed-evidence pipeline", () => {
     );
   });
 
+  it("drains an outstanding evidence read before teardown closes the history", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "pipeline-read-teardown" });
+    const settledRead = await history.read({});
+    let releaseRead!: (result: Awaited<ReturnType<EventHistory["read"]>>) => void;
+    const readGate = new Promise<Awaited<ReturnType<EventHistory["read"]>>>((resolve) => {
+      releaseRead = resolve;
+    });
+    const readSpy = vi.spyOn(history, "read").mockReturnValue(readGate);
+    const closeSpy = vi.spyOn(history, "close");
+    const pipeline = bindCommittedEvidencePipeline({
+      history,
+      onCommittedEvidence: () => undefined
+    });
+
+    const pendingRead = pipeline.read({ order: "asc" });
+    const pendingClose = pipeline.close();
+    await Promise.resolve();
+
+    expect(readSpy).toHaveBeenCalledWith({ order: "asc" });
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    releaseRead(settledRead);
+    await expect(pendingRead).resolves.toEqual(settledRead);
+    await pendingClose;
+    expect(closeSpy).toHaveBeenCalledOnce();
+  });
+
   it("creates local delivery outcomes that stay DELIVERED while callbacking only on BECAME_EVIDENCE", async () => {
     const successOnly = createLocalDeliveryHelper("exec-success", {
       requestId: "request-success",

@@ -29,7 +29,7 @@ export type WorkbenchPanelMountOptions = {
   connectBridge?: typeof connectPanelBridge;
 };
 
-export type DisposeWorkbenchPanel = () => void;
+export type DisposeWorkbenchPanel = () => Promise<void>;
 
 export function mountWorkbenchPanel(
   root: HTMLElement,
@@ -61,7 +61,7 @@ export function mountWorkbenchPanel(
   window.addEventListener("message", onVisibilityMessage);
   void initialize();
 
-  return () => {
+  return async () => {
     if (disposed) {
       return;
     }
@@ -69,7 +69,9 @@ export function mountWorkbenchPanel(
     window.removeEventListener("message", onVisibilityMessage);
     bridge?.disconnect();
     reactRoot?.unmount();
-    runtime?.dispose();
+    if (runtime) {
+      await runtime.disposeAndWait();
+    }
     themeManager.dispose();
     if (!runtime) closeHistory();
     if (!reactRoot) {
@@ -165,6 +167,7 @@ function bindRuntime(runtime: WorkbenchRuntime, themeManager: ThemeManager): Wor
       runtime.dispatch(command);
     },
     dispose: runtime.dispose.bind(runtime),
+    disposeAndWait: runtime.disposeAndWait.bind(runtime),
     ...(runtime.reportVisibleFrame
       ? { reportVisibleFrame: runtime.reportVisibleFrame.bind(runtime) }
       : {})

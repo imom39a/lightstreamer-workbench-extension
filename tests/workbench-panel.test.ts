@@ -33,6 +33,7 @@ function createTestRuntime(snapshot: WorkbenchSnapshot): TestRuntime {
       commands.push(command);
     },
     dispose: vi.fn(),
+    disposeAndWait: vi.fn(),
     setSnapshot(next) {
       current = withScopeContract(next);
       listeners.forEach((listener) => listener());
