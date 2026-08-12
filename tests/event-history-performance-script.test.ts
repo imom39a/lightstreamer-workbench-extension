@@ -71,6 +71,62 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("readies the initial target document before the harness paint probe", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { prepareInitialPageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const expected = "http://127.0.0.1:4173/";
+      const calls = [];
+      const cdp = {
+        request(method, params) {
+          calls.push({ method, params });
+          if (method === "Page.navigate") return Promise.resolve({});
+          if (method === "Runtime.evaluate" && params.expression === "location.href") {
+            return Promise.resolve({ result: { value: expected } });
+          }
+          if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: true } });
+          return Promise.resolve({});
+        }
+      };
+      await prepareInitialPageForAuthoritativeRun(cdp, expected, 100);
+      assert.deepEqual(calls.map(({ method }) => method), [
+        "Page.enable",
+        "Runtime.enable",
+        "Page.navigate",
+        "Runtime.evaluate",
+        "Page.bringToFront",
+        "Runtime.evaluate"
+      ]);
+      assert.equal(calls[3].params.expression, "location.href");
+      assert.match(calls[5].params.expression, /requestAnimationFrame/);
+    `);
+  });
+
+  it("fails closed when the foreground paint rAF callbacks are never delivered", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { preparePageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const calls = [];
+      const cdp = {
+        request(method, params) {
+          calls.push({ method, params });
+          if (method === "Page.bringToFront") return Promise.resolve({});
+          if (method === "Runtime.evaluate") {
+            const expression = params.expression;
+            const probe = new Function("document", "requestAnimationFrame", "return " + expression);
+            return probe({ visibilityState: "visible" }, () => undefined).then((value) => ({ result: { value } }));
+          }
+          return Promise.resolve({});
+        }
+      };
+      await assert.rejects(
+        preparePageForAuthoritativeRun(cdp, 100),
+        (error) => /visible foreground page/u.test(error?.message ?? "")
+      );
+      assert.equal(calls.length, 2);
+    `);
+  });
+
   it("rejects a hidden page after bringing it to the foreground", () => {
     runNode(`
       import assert from "node:assert/strict";

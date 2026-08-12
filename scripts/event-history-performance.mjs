@@ -77,7 +77,7 @@ async function main() {
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
     cdp = await connect(await pageTarget(debugPort, url, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
-    await preparePageForAuthoritativeRun(cdp);
+    await prepareInitialPageForAuthoritativeRun(cdp, url);
     const environment = await cdp.request("Browser.getVersion");
     const chromeMajor = chromeMajorFromProduct(environment.product);
     if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
@@ -234,19 +234,34 @@ async function main() {
   }
 }
 
+export async function prepareInitialPageForAuthoritativeRun(cdp, expectedUrl, timeoutMs = 30_000) {
+  await ensureFreshHarnessDocument(cdp, expectedUrl, Math.min(timeoutMs, 15_000));
+  await preparePageForAuthoritativeRun(cdp, timeoutMs);
+}
+
 export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
   await cdp.request("Page.bringToFront");
+  const probeTimeoutMs = Math.max(1, Math.min(1_000, timeoutMs - 1));
   const visible = await evaluate(cdp, `new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => finish(false), ${probeTimeoutMs});
     if (document.visibilityState !== "visible") {
-      resolve(false);
+      finish(false);
       return;
     }
     requestAnimationFrame(() => {
       if (document.visibilityState !== "visible") {
-        resolve(false);
+        finish(false);
         return;
       }
-      requestAnimationFrame(() => resolve(document.visibilityState === "visible"));
+      requestAnimationFrame(() => finish(document.visibilityState === "visible"));
     });
   })`, timeoutMs);
   if (visible !== true) {
