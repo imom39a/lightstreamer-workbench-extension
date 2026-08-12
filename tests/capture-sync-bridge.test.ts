@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   CONTENT_CAPTURE_SYNC_REQUEST,
+  CONTENT_BRIDGE_READY,
   CONTENT_REINJECT_REQUEST,
   CONTENT_REINJECT_RESULT,
   PAGE_CAPTURE_SYNC_REQUEST,
@@ -84,6 +85,7 @@ describe("active subscription capture synchronization bridge", () => {
     } as unknown as typeof chrome;
 
     await import("../src/content/content-script");
+    expect(postMessage).toHaveBeenCalledWith({ type: CONTENT_BRIDGE_READY }, "*");
     const forwardRuntimeMessage = runtimeMessageListener as
       | ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: () => void) => boolean)
       | null;

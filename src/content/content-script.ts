@@ -1,5 +1,6 @@
 import {
   CONTENT_REINJECT_RESULT,
+  CONTENT_BRIDGE_READY,
   PAGE_CAPTURE_SYNC_REQUEST,
   PAGE_REINJECT_REQUEST,
   RUNTIME_CAPTURE_MESSAGE,
@@ -87,6 +88,8 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
 
     return true;
   });
+
+  window.postMessage({ type: CONTENT_BRIDGE_READY }, "*");
 }
 
 function forwardReinjectionToPage(

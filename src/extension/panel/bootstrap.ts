@@ -8,6 +8,7 @@ function bootPanel(): void {
 
   const dispose = mountWorkbenchPanel(root);
   window.addEventListener("pagehide", dispose, { once: true });
+  window.addEventListener("unload", dispose, { once: true });
 }
 
 if (document.readyState === "loading") {

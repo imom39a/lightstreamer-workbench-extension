@@ -40,6 +40,10 @@ export type CdpRequestClient = {
   request(method: string, params?: Record<string, unknown>): Promise<unknown>;
 };
 
+type CdpEventClient = CdpRequestClient & {
+  on(method: string, listener: (params: unknown) => void): () => void;
+};
+
 type ExtensionTargetDiscoveryOptions = {
   connect(webSocketUrl: string): Promise<CdpRequestClient & { close(): void }>;
   evaluateByValue<T>(cdp: CdpRequestClient, expression: string): Promise<T>;
@@ -157,17 +161,77 @@ export async function evaluateByValue<T>(cdp: CdpClient, expression: string): Pr
 }
 
 export async function waitForCondition(
-  cdp: CdpClient,
+  cdp: CdpRequestClient,
   expression: string,
   description: string,
-  timeoutMs = 300_000
+  timeoutMs = 15_000
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await evaluateByValue<boolean>(cdp, `Boolean(${expression})`)) return;
+    if (await evaluateRequestByValue<boolean>(cdp, `Boolean(${expression})`)) return;
     await delay(100);
   }
   throw new Error(`Timed out waiting for ${description}.`);
+}
+
+async function evaluateRequestByValue<T>(cdp: CdpRequestClient, expression: string): Promise<T> {
+  const evaluation = (await cdp.request("Runtime.evaluate", {
+    expression,
+    awaitPromise: true,
+    returnByValue: true
+  })) as RuntimeEvaluation;
+  if (evaluation.exceptionDetails) {
+    throw new Error(
+      evaluation.exceptionDetails.exception?.description ??
+        evaluation.exceptionDetails.text ??
+        "Browser evaluation failed"
+    );
+  }
+  return evaluation.result?.value as T;
+}
+
+export async function waitForNewLoadedDocument(
+  cdp: CdpEventClient,
+  options: Readonly<{
+    url: string;
+    readyExpression: string;
+    timeoutMs?: number;
+  }>
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  await cdp.request("Page.enable");
+  await cdp.request("Runtime.enable");
+
+  const navigation = new Promise<void>((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      settle(() => rejectPromise(new Error(`Timed out waiting for a new document at ${options.url}.`)));
+    }, timeoutMs);
+    const removeListener = cdp.on("Page.frameNavigated", (params) => {
+      const frame = readNavigatedFrame(params);
+      if (!frame || frame.parentId !== undefined || frame.url !== options.url || !frame.loaderId) {
+        return;
+      }
+      settle(resolvePromise);
+    });
+
+    function settle(done: () => void): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      removeListener();
+      done();
+    }
+  });
+
+  await cdp.request("Page.reload", { ignoreCache: true });
+  await navigation;
+  await waitForCondition(
+    cdp,
+    `document.readyState === "complete" && (${options.readyExpression})`,
+    `the new ${options.url} document to finish loading with Workbench readiness`,
+    timeoutMs
+  );
 }
 
 export async function resolveChromeExecutable(rootDir: string): Promise<string> {
@@ -362,6 +426,20 @@ export function delay(milliseconds: number): Promise<void> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function readNavigatedFrame(value: unknown): {
+  parentId?: unknown;
+  url?: unknown;
+  loaderId?: unknown;
+} | null {
+  if (!isRecord(value) || !isRecord(value.frame)) return null;
+  const frame = value.frame;
+  return {
+    parentId: frame.parentId,
+    url: frame.url,
+    loaderId: frame.loaderId
+  };
 }
 
 function stableSerialize(value: unknown): string {

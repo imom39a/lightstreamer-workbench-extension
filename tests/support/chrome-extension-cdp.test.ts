@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   type CdpRequestClient,
   findWorkbenchServiceWorkerTarget,
+  waitForNewLoadedDocument,
   type ExtensionManifest
 } from "./chrome-extension-cdp";
 
@@ -84,4 +85,38 @@ test("does not treat an unrelated extension service worker as Workbench", async 
   );
 
   assert.equal(discovered, null);
+});
+
+test("waits for a new main-frame document before accepting page readiness", async () => {
+  const listeners = new Map<string, (params: unknown) => void>();
+  const requests: string[] = [];
+  let newDocumentObserved = false;
+  const cdp = {
+    on(method: string, listener: (params: unknown) => void) {
+      listeners.set(method, listener);
+      return () => listeners.delete(method);
+    },
+    async request(method: string) {
+      requests.push(method);
+      if (method === "Page.reload") {
+        setTimeout(() => {
+          newDocumentObserved = true;
+          listeners.get("Page.frameNavigated")?.({
+            frame: { id: "main", url: "http://fixture.test/", loaderId: "new-loader" }
+          });
+        }, 20);
+      }
+      return method === "Runtime.evaluate" ? { result: { value: true } } : {};
+    }
+  } as unknown as CdpRequestClient & {
+    on(method: string, listener: (params: unknown) => void): () => void;
+  };
+
+  await waitForNewLoadedDocument(cdp, {
+    url: "http://fixture.test/",
+    readyExpression: "document.readyState === 'complete'"
+  });
+
+  assert.equal(newDocumentObserved, true);
+  assert.deepEqual(requests.slice(0, 3), ["Page.enable", "Runtime.enable", "Page.reload"]);
 });

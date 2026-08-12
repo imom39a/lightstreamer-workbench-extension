@@ -16,8 +16,10 @@ import {
   terminateChild,
   waitForBrowserTargets,
   waitForCondition,
-  waitForDebuggingPort
+  waitForDebuggingPort,
+  waitForNewLoadedDocument
 } from "./support/chrome-extension-cdp";
+import { CONTENT_BRIDGE_READY } from "../src/bridge/messages";
 import {
   formatTargets,
   type BrowserTarget,
@@ -99,8 +101,20 @@ async function runExtensionPanelSmoke(): Promise<void> {
     );
     assert.ok(inspectedTarget?.id, "Chrome should expose the inspected page target id.");
 
-    extensionDevtoolsCdp = await waitForInspectedExtensionDevtools(debugging.port, fixtureUrl);
     const originalPanelIds = selection.availableTabIds;
+    await selectWorkbenchTab(devtoolsFrontendCdp, selection.panelId);
+    const primaryPanelTarget = await waitForNewInspectedPanelTarget(
+      debugging.port,
+      fixtureUrl,
+      new Set()
+    );
+    await waitForDatabaseCount(
+      primaryPanelTarget.cdp,
+      1,
+      "the primary real panel session journal to open"
+    );
+
+    extensionDevtoolsCdp = await waitForInspectedExtensionDevtools(debugging.port, fixtureUrl);
     const panelCreated = await evaluateByValue<boolean>(
       extensionDevtoolsCdp,
       `(new Promise((resolve) => {
@@ -121,12 +135,18 @@ async function runExtensionPanelSmoke(): Promise<void> {
       devtoolsFrontendCdp,
       originalPanelIds
     );
-    await selectWorkbenchTab(devtoolsFrontendCdp, selection.panelId);
     await selectWorkbenchTab(devtoolsFrontendCdp, secondPanelId);
-    latestTargets = await listBrowserTargets(debugging.port);
-    panelCdps.push(
-      ...(await waitForInspectedPanelTargets(debugging.port, fixtureUrl, 2))
+    const secondaryPanelTarget = await waitForNewInspectedPanelTarget(
+      debugging.port,
+      fixtureUrl,
+      new Set([primaryPanelTarget.id])
     );
+    assert.notEqual(
+      primaryPanelTarget.id,
+      secondaryPanelTarget.id,
+      "The same inspected tab should expose two distinct real Workbench panel targets."
+    );
+    panelCdps.push(primaryPanelTarget.cdp, secondaryPanelTarget.cdp);
     panelCdp = panelCdps[0] ?? null;
     assert.equal(
       panelCdps.length,
@@ -190,12 +210,17 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     );
     pageCdp = await CdpClient.connect(pageTarget.webSocketDebuggerUrl);
     await pageCdp.request("Runtime.enable");
-    await waitForCondition(
-      pageCdp,
-      `document.documentElement.dataset.lsewContentBridgeReady === "true"`,
-      "the inspected-page content bridge to become ready",
-      SMOKE_TIMEOUT_MS
-    );
+    await pageCdp.request("Page.addScriptToEvaluateOnNewDocument", {
+      source: `window.addEventListener("message", (event) => {
+        if (event.source === window && event.data?.type === ${JSON.stringify(CONTENT_BRIDGE_READY)}) {
+          window.__LSEW_TEST_CONTENT_BRIDGE_READY__ = true;
+        }
+      });`
+    });
+    await waitForNewLoadedDocument(pageCdp, {
+      url: fixtureUrl,
+      readyExpression: "window.__LSEW_TEST_CONTENT_BRIDGE_READY__ === true"
+    });
 
     const liveCaptures = ["one", "two", "three"].map((suffix, index) => ({
       namespace: "__LSEW_CAPTURE__",
@@ -215,26 +240,20 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     for (const capture of liveCaptures) {
       await evaluateByValue(pageCdp, `window.postMessage(${JSON.stringify(capture)}, "*")`);
     }
-    // Chrome can suspend the inactive DevTools panel's event loop. The page
-    // broadcast remains single-shot; selecting each already-registered panel
-    // only gives its production bridge/runtime a chance to drain the queued
-    // message before asserting both independent journals.
-    await selectWorkbenchTab(devtoolsFrontendCdp, selection.panelId);
-    await waitForCondition(
-      panelCdps[0]!,
-      `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
-        document.body.innerText.includes('cdp-same-tab-three')`,
-      "the first same-tab panel instance to receive the broadcast Capture",
-      SMOKE_TIMEOUT_MS
-    );
-    await selectWorkbenchTab(devtoolsFrontendCdp, secondPanelId);
-    await waitForCondition(
-      panelCdps[1]!,
-      `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
-        document.body.innerText.includes('cdp-same-tab-three')`,
-      "the second same-tab panel instance to receive the broadcast Capture",
-      SMOKE_TIMEOUT_MS
-    );
+    const panelById = new Map<string, CdpClient>([
+      [selection.panelId!, primaryPanelTarget.cdp],
+      [secondPanelId, secondaryPanelTarget.cdp]
+    ]);
+    for (const panelId of [selection.panelId, secondPanelId]) {
+      await selectWorkbenchTab(devtoolsFrontendCdp, panelId);
+      await waitForCondition(
+        panelById.get(panelId)!,
+        `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
+          document.body.innerText.includes('cdp-same-tab-three')`,
+        `the selected real panel ${panelId} to retain cdp-same-tab-three`
+      );
+    }
+    assert.equal(panelById.size, 2, "Each real Workbench panel should publish its retained Evidence after selection.");
 
     const proofs = await Promise.all(
       panelCdps.map((connectedPanel) =>
@@ -296,6 +315,64 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     );
     console.log(
       "Same-tab two-DevTools-panel proof passed: each selected panel retained ordered unique live Capture, shared the inspected-page scope, and exposed two distinct Panel Session journals."
+    );
+
+    const panelToClose = panelById.get(secondPanelId);
+    let survivingPanel = panelById.get(selection.panelId);
+    assert.ok(panelToClose, "The secondary real panel should have a retained CDP connection.");
+    assert.ok(survivingPanel, "The primary real panel should have a retained CDP connection.");
+    await closeWorkbenchTab(devtoolsFrontendCdp, secondPanelId);
+    await waitForWorkbenchTabToClose(devtoolsFrontendCdp, secondPanelId);
+    await selectWorkbenchTab(devtoolsFrontendCdp, selection.panelId);
+    const survivingPanelTarget = await waitForNewInspectedPanelTarget(
+      debugging.port,
+      fixtureUrl,
+      new Set([secondaryPanelTarget.id])
+    );
+    survivingPanel = survivingPanelTarget.cdp;
+    await waitForCondition(
+      survivingPanel,
+      `document.querySelectorAll('[data-evidence-id]').length >= 3 &&
+        document.body.innerText.includes('cdp-same-tab-three')`,
+      "the surviving real panel to retain its original Evidence after the other panel closes"
+    );
+    await waitForDatabaseCount(survivingPanel, 1, "the closed panel's journal cleanup");
+
+    const finalCapture = {
+      namespace: "__LSEW_CAPTURE__",
+      version: 1,
+      kind: "item-update",
+      timestamp: 10_004,
+      payload: {
+        client: { id: "cdp-same-tab-client" },
+        subscription: { id: "cdp-same-tab-subscription", mode: "MERGE" },
+        item: { name: "cdp-same-tab-four", position: 1 },
+        update: {
+          fields: { value: "cdp-live-four" },
+          changedFields: { value: "cdp-live-four" }
+        }
+      }
+    };
+    await evaluateByValue(pageCdp, `window.postMessage(${JSON.stringify(finalCapture)}, "*")`);
+    await waitForCondition(
+      survivingPanel,
+      `document.querySelectorAll('[data-evidence-id]').length >= 4 &&
+        document.body.innerText.includes('cdp-same-tab-four')`,
+      "the surviving panel to retain a Capture posted after the other panel closes"
+    );
+    const survivingRows = await evaluateByValue<string[]>(
+      survivingPanel,
+      `Array.from(document.querySelectorAll('[data-evidence-id]')).map((row) => row.textContent ?? "")`
+    );
+    for (const marker of ["cdp-same-tab-one", "cdp-same-tab-two", "cdp-same-tab-three", "cdp-same-tab-four"]) {
+      assert.equal(
+        survivingRows.filter((row) => row.includes(marker)).length,
+        1,
+        `The surviving panel should retain exactly one row for ${marker} after sibling disposal.`
+      );
+    }
+    console.log(
+      "Authentic panel disposal proof passed: the secondary real panel closed and its journal was cleaned up while the primary panel retained its session and accepted later Capture."
     );
 
     const proof = await evaluateByValue<{
@@ -440,11 +517,61 @@ async function selectWorkbenchTab(frontendCdp: CdpClient, panelId: string | null
   );
 }
 
-async function waitForInspectedPanelTargets(
+async function closeWorkbenchTab(frontendCdp: CdpClient, panelId: string): Promise<void> {
+  await evaluateByValue(
+    frontendCdp,
+    `(async () => {
+      const UI = await import("devtools://devtools/bundled/ui/legacy/legacy.js");
+      const tabbedPane = UI.InspectorView.InspectorView.instance().tabbedPane;
+      tabbedPane.setCloseableTabs(true);
+      tabbedPane.closeTabs([${JSON.stringify(panelId)}]);
+      return true;
+    })()`
+  );
+}
+
+async function waitForWorkbenchTabToClose(frontendCdp: CdpClient, panelId: string): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const remaining = await evaluateByValue<string[]>(
+      frontendCdp,
+      `(async () => {
+        const UI = await import("devtools://devtools/bundled/ui/legacy/legacy.js");
+        return UI.InspectorView.InspectorView.instance().tabbedPane.tabIds();
+      })()`
+    );
+    if (!remaining.includes(panelId)) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error(`Timed out waiting for the real DevTools panel ${panelId} to close.`);
+}
+
+async function waitForDatabaseCount(
+  cdp: CdpClient,
+  expectedCount: number,
+  description: string
+): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const names = await evaluateByValue<string[]>(
+      cdp,
+      `(async () => (typeof indexedDB.databases === "function"
+        ? (await indexedDB.databases()).map((database) => database.name ?? "")
+        : []))()`
+    );
+    if (names.filter((name) => name.startsWith("lsew-events-panel-")).length === expectedCount) {
+      return;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error(`Timed out waiting for ${description} to leave ${expectedCount} journal.`);
+}
+
+async function waitForNewInspectedPanelTarget(
   port: number,
   inspectedUrl: string,
-  count: number
-): Promise<CdpClient[]> {
+  excludedTargetIds: ReadonlySet<string>
+): Promise<{ id: string; cdp: CdpClient }> {
   const deadline = Date.now() + SMOKE_TIMEOUT_MS;
   let latestTargets: BrowserTarget[] = [];
   while (Date.now() < deadline) {
@@ -454,9 +581,10 @@ async function waitForInspectedPanelTargets(
         target.type === "iframe" &&
         target.url?.startsWith("chrome-extension://") &&
         target.url.endsWith("/extension/panel/index.html") &&
+        typeof target.id === "string" &&
+        !excludedTargetIds.has(target.id) &&
         typeof target.webSocketDebuggerUrl === "string"
     );
-    const matching: CdpClient[] = [];
     for (const panel of panels) {
       const cdp = await CdpClient.connect(panel.webSocketDebuggerUrl!);
       try {
@@ -482,20 +610,17 @@ async function waitForInspectedPanelTargets(
           }))`
         );
         if (typeof inspectedTabId === "number" && inspection.result === inspectedUrl) {
-          matching.push(cdp);
-          if (matching.length === count) return matching;
-          continue;
+          return { id: panel.id!, cdp };
         }
       } catch {
         // A stale or still-initializing panel is not attached to the fixture.
       }
       cdp.close();
     }
-    for (const cdp of matching) cdp.close();
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
   throw new Error(
-    `Timed out waiting for ${count} Workbench panels inspecting ${inspectedUrl}. Observed: ${formatTargets(latestTargets)}`
+    `Timed out waiting for a new Workbench panel inspecting ${inspectedUrl}. Observed: ${formatTargets(latestTargets)}`
   );
 }
 

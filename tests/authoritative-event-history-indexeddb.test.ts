@@ -1985,6 +1985,30 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(await hasLegacyMarker(secondLegacyName, "owned-second", "legacy-second")).toBe(false);
   });
 
+  it("preserves a live current-schema sibling panel journal during startup", async () => {
+    const currentPanelSessionId = "current-panel-session";
+    const siblingPanelSessionId = "sibling-panel-session";
+    const siblingName = authoritativeEventDatabaseName(siblingPanelSessionId);
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    await createModernJournal(siblingPanelSessionId, 0);
+
+    const runtime: AuthoritativeEventDatabaseRuntime = {
+      listDatabases: vi.fn(async () => [
+        { name: siblingName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION }
+      ]),
+      requestLock: vi.fn(async (_name, _options, callback) => callback())
+    };
+
+    const history = await openEventHistory({ panelSessionId: currentPanelSessionId, runtime });
+    await history.close();
+
+    expect((runtime.requestLock as ReturnType<typeof vi.fn>).mock.calls.map((entry) => entry[0])).not.toContain(
+      legacyOwnerLock(siblingName)
+    );
+    const sibling = await requestValue(indexedDB.open(siblingName));
+    sibling.close();
+  });
+
   it("sweeps pre-ticket07 legacy databases using descriptor version and preserves newer ones", async () => {
     const panelSessionId = "ownership-cleanup-pre-ticket07";
     const legacyName = "lsew-history-foo";

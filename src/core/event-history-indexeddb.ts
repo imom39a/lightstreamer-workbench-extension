@@ -264,6 +264,12 @@ async function runStartupSweep(
       unknownNewerVersion = true;
       continue;
     }
+    // Current-schema journals may belong to another live DevTools panel in
+    // this extension origin. Their ownership is scoped to that panel session;
+    // startup in one panel must never erase a sibling panel's journal.
+    if (identity.schemaVersion === AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+      continue;
+    }
     if (name === databaseName) {
       continue;
     }

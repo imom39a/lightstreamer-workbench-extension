@@ -32,6 +32,7 @@ export const CONTENT_REINJECT_RESULT = "lsew:content-reinject-result" as const;
 export const PAGE_REINJECT_REQUEST = "lsew:page-reinject-request" as const;
 export const CONTENT_CAPTURE_SYNC_REQUEST = "lsew:content-capture-sync-request" as const;
 export const PAGE_CAPTURE_SYNC_REQUEST = "lsew:page-capture-sync-request" as const;
+export const CONTENT_BRIDGE_READY = "lsew:content-bridge-ready" as const;
 export const TOPOLOGY_SYNC_BEGIN = "lsew:topology-sync-begin" as const;
 export const TOPOLOGY_SYNC_CHUNK = "lsew:topology-sync-chunk" as const;
 export const TOPOLOGY_SYNC_COMPLETE = "lsew:topology-sync-complete" as const;
