@@ -18,7 +18,7 @@ Version 2 focuses on local, current-session debugging for the inspected tab thro
 
 - Adds a `Lightstreamer Workbench` panel to Chrome DevTools.
 - Instruments the inspected page at `document_start` to observe official Lightstreamer Web Client constructors and listeners.
-- Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into a temporary local event store for the current DevTools session.
+- Captures client, subscription, listener, item update, snapshot, and COMMAND lifecycle events into temporary session-scoped Event History for the current DevTools session.
 - Presents the accepted React **Scoped Evidence Workspace**: structural Topology chooses Scope, Ordered Evidence remains the dominant investigation surface, and Context explains the active runtime object or selected Evidence.
 - Keeps Capture operation, Coverage, Scope, Filter, Find, selection, and Live/Frozen Evidence position independent while retaining complete current-session history behind a bounded rendered window.
 - Reconstructs **Observed Server COMMAND State** from captured Server Updates and **Local Effective COMMAND State** from Server Updates plus successful Local Injected Updates.

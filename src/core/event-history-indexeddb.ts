@@ -1150,7 +1150,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   }
 
   const storage: EventHistoryStorage = Object.freeze({ mode: "indexeddb" });
-  return { storage, offer, read, clear, follow, close };
+  return { storage, status, offer, read, clear, follow, close };
 }
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {

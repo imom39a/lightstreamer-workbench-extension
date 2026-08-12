@@ -213,6 +213,35 @@ function contextFields(runtime: ReturnType<typeof createWorkbenchRuntime>): Reco
 }
 
 describe("WorkbenchRuntime", () => {
+  it("exposes authoritative history capacity status instead of a generic warning threshold", async () => {
+    const history = createAuthoritativeHistory();
+    const scheduler = createScheduler();
+    const runtime = createWorkbenchRuntime({ history, scheduler });
+    await flushStoreNotifications();
+
+    expect(runtime.getSnapshot().retention.historyStatus).toMatchObject({
+      captured: 0,
+      accepted: 0,
+      notAccepted: 0,
+      retained: 0,
+      capacity: { tier: "NORMAL", state: "AVAILABLE" }
+    });
+    expect(runtime.getSnapshot().retention).not.toHaveProperty("warningThreshold");
+
+    history.offer(event("authoritative-status-1"));
+    await flushStoreNotifications();
+    scheduler.flushFrame();
+    await flushStoreNotifications();
+
+    expect(runtime.getSnapshot().retention.historyStatus).toMatchObject({
+      captured: 1,
+      accepted: 1,
+      retained: 1,
+      capacity: { state: "AVAILABLE" }
+    });
+    runtime.dispose();
+  });
+
   it("keeps getSnapshot and subscribe callback-safe for useSyncExternalStore", async () => {
     const runtime = createWorkbenchRuntime();
     await flushStoreNotifications();

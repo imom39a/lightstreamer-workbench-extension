@@ -151,10 +151,7 @@ export type WorkbenchStorageSnapshot = Readonly<{
 }>;
 
 export type WorkbenchRetentionSnapshot = Readonly<{
-  retained: number;
-  totalAppended: number;
-  warningThreshold: number;
-  warningActive: boolean;
+  historyStatus: HistoryStatus;
   clearState: "idle" | "confirming" | "clearing" | "error";
   clearError?: string;
 }>;
@@ -630,12 +627,7 @@ class Runtime implements WorkbenchRuntime {
   private historyCondition: WorkbenchHistoryCondition | null = null;
   private historyAnnouncement = "";
   private storage: WorkbenchStorageSnapshot;
-  private storeStats = {
-    retained: 0,
-    totalAppended: 0,
-    warningThreshold: 10_000,
-    warningActive: false
-  };
+  private historyStatus: HistoryStatus;
   private clearState: WorkbenchRetentionSnapshot["clearState"] = "idle";
   private clearError: string | null = null;
   private clearedSelectionEventId: string | null = null;
@@ -676,6 +668,7 @@ class Runtime implements WorkbenchRuntime {
 
   constructor(options: WorkbenchRuntimeOptions) {
     this.history = options.history ?? createInMemoryEventHistory();
+    this.historyStatus = this.history.status();
     this.scheduler = options.scheduler ?? browserScheduler();
     this.windowSize = normalizeWindowSize(options.windowSize);
     this.visible = options.visible ?? true;
@@ -1363,12 +1356,7 @@ class Runtime implements WorkbenchRuntime {
         this.commandStateProjections.clear();
         this.retainedLocalEvidenceIds.clear();
         this.topologyProjection.clear();
-        this.storeStats = {
-          ...this.storeStats,
-          retained: 0,
-          totalAppended: 0,
-          warningActive: false
-        };
+        this.historyStatus = this.history.status();
         this.clearState = "idle";
         this.refreshEvidence("command");
       },
@@ -1441,6 +1429,7 @@ class Runtime implements WorkbenchRuntime {
     if (this.disposed) {
       return;
     }
+    this.historyStatus = this.history.status();
     this.committedEvidenceBoundary = entry;
     if (this.performanceHooks?.onVisibleFrame) {
       this.pendingVisibleBoundaries.push(Object.freeze({
@@ -1471,9 +1460,6 @@ class Runtime implements WorkbenchRuntime {
     if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
     this.commandStateProjections.apply(event);
     if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
-    this.storeStats.retained += 1;
-    this.storeStats.totalAppended += 1;
-    this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
     this.invalidatePreparedExport();
     if (!this.visible) {
       this.hiddenDirty = true;
@@ -1486,8 +1472,10 @@ class Runtime implements WorkbenchRuntime {
     if (this.disposed) return;
     let shouldPublish = false;
     if (publication.type === "status") {
+      this.historyStatus = publication.status;
       shouldPublish = this.updateHistoryCondition(publication.status, publication.problem);
     } else if (publication.type === "interval-cleared") {
+      this.historyStatus = publication.status;
       // A frame after Clear can only prove visibility for the new History
       // Interval. Boundaries accepted before the clear are no longer part of
       // the rendered Evidence snapshot and must not be coalesced into it.
@@ -1495,6 +1483,7 @@ class Runtime implements WorkbenchRuntime {
       this.renderedEvidenceBoundary = null;
       shouldPublish = this.updateHistoryCondition(publication.status);
     } else if (publication.type === "terminal") {
+      this.historyStatus = publication.status;
       shouldPublish = this.updateHistoryCondition(publication.status);
     }
     let reason: string | undefined;
@@ -2152,9 +2141,7 @@ class Runtime implements WorkbenchRuntime {
           this.lastEvidenceQueryError = null;
           this.evidenceQueryPending = false;
           this.evidenceLoading = false;
-          this.storeStats.retained = result.value.total;
-          this.storeStats.totalAppended = result.value.total;
-          this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
+          this.historyStatus = this.history.status();
           this.liveEvidence = freezeEvidence(
             lightstreamerEvents(result.value.evidence),
             result.value.total,
@@ -2230,9 +2217,7 @@ class Runtime implements WorkbenchRuntime {
           return;
         }
         if (!result.ok) return;
-        this.storeStats.retained = result.value.total;
-        this.storeStats.totalAppended = result.value.total;
-        this.storeStats.warningActive = this.storeStats.retained >= this.storeStats.warningThreshold;
+        this.historyStatus = this.history.status();
         if (this.version === 0) {
           this.snapshot = this.createSnapshot();
         } else if (this.visible) {
@@ -2591,10 +2576,7 @@ class Runtime implements WorkbenchRuntime {
 
   private retentionSnapshot(): WorkbenchRetentionSnapshot {
     return Object.freeze({
-      retained: this.storeStats.retained,
-      totalAppended: this.storeStats.totalAppended,
-      warningThreshold: this.storeStats.warningThreshold,
-      warningActive: this.storeStats.warningActive,
+      historyStatus: this.historyStatus,
       clearState: this.clearState,
       ...(this.clearError ? { clearError: this.clearError } : {})
     });

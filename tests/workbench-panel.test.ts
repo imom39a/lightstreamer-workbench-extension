@@ -176,10 +176,20 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
     historyAnnouncement: "",
     storage: { mode: "indexeddb" },
     retention: {
-      retained: 2,
-      totalAppended: 2,
-      warningThreshold: 10_000,
-      warningActive: false,
+      historyStatus: {
+        phase: "RUNNING",
+        captureOperation: "RUNNING",
+        interval: { id: "panel-test:interval-1", ordinal: 1 },
+        committedEvidenceBoundary: null,
+        retainedRange: null,
+        capacity: { tier: "NORMAL", state: "AVAILABLE" },
+        fallback: null,
+        captured: 2,
+        awaitingAcceptance: 0,
+        accepted: 2,
+        notAccepted: 0,
+        retained: 2
+      },
       clearState: "idle"
     },
     export: {
@@ -784,6 +794,7 @@ describe("React Workbench Diagnose panel", () => {
     await click("Newest");
     await click("More actions");
     await act(async () => runtime.setSnapshot(operationsSnapshot));
+    expect(document.body.textContent).toContain("Capacity AVAILABLE (NORMAL)");
     const resourceLinks = Object.fromEntries(
       Array.from(document.querySelectorAll<HTMLAnchorElement>(".workbench-react__resource-link"))
         .map((link) => [link.textContent, link.href])

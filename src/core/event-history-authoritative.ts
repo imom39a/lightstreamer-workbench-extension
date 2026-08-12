@@ -190,6 +190,7 @@ export type HistoryPublication =
 
 export interface EventHistory {
   readonly storage: EventHistoryStorage;
+  status(): HistoryStatus;
   offer(candidate: EvidenceCandidate): CaptureReceipt;
   read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>>;
   clear(): Promise<Outcome<ClearResult>>;
@@ -1071,7 +1072,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     }
   }
 
-  return { storage, offer, read, clear, follow, close };
+  return { storage, status, offer, read, clear, follow, close };
 }
 
 function createInterval(sessionId: string, ordinal: number): HistoryInterval {

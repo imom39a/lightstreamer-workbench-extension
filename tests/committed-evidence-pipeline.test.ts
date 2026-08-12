@@ -12,7 +12,8 @@ import {
   type EvidenceCandidate,
   type EventHistory,
   type CaptureReceipt,
-  type HistoryPublication
+  type HistoryPublication,
+  type HistoryStatus
 } from "../src/core/event-history-authoritative";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
@@ -68,6 +69,20 @@ function createReplayableHistory(initial: EvidenceCandidate[]): EventHistory {
 
   return {
     storage: { mode: "memory" },
+    status: (): HistoryStatus => ({
+      phase: "RUNNING",
+      captureOperation: "RUNNING",
+      interval,
+      committedEvidenceBoundary: evidence[evidence.length - 1] ?? null,
+      retainedRange: evidence.length === 0 ? null : { first: evidence[0]!, last: evidence[evidence.length - 1]! },
+      capacity: { tier: "NORMAL", state: "AVAILABLE" },
+      fallback: null,
+      captured: evidence.length,
+      awaitingAcceptance: 0,
+      accepted: evidence.length,
+      notAccepted: 0,
+      retained: evidence.length
+    }),
     offer(candidate) {
       const snapshot = {
         intervalId,

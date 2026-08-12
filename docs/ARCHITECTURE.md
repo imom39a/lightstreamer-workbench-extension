@@ -281,7 +281,7 @@ sequenceDiagram
   CS-->>BG: chrome.runtime.sendMessage(RuntimeCaptureMessage)
   BG-->>UI: PanelCaptureMessage over lsew-panel port
   UI-->>UI: normalize to LightstreamerEventEnvelope
-  UI-->>UI: append to EventStore
+  UI-->>UI: offer candidate to EventHistory
   BG-->>UI: repeat for every registered Panel Session on the tab when unscoped
   UI-->>UI: each Panel Session normalizes, appends, and updates its history, topology, and COMMAND projections
 
@@ -450,32 +450,22 @@ Synthetic events are created separately by `createSyntheticEventFromDraft()` in 
 - `subscription.mode: "COMMAND"`
 - raw provenance including source event ID, target subscription/listener IDs, request ID, result status, edited fields, and draft provenance
 
-## Storage Architecture
+## Event History Architecture
 
-The panel depends on the `EventStore` interface from `src/core/event-store.ts`:
+The panel uses the authoritative `EventHistory` interface from `src/core/event-history-authoritative.ts` as its sole capture and query path:
 
 ```text
-append(event)
-queryEvents(query)
-getEventById(id)
-list(filters)
-count()
-stats()
+offer(candidate)
+read(query)
+follow({ from }, observer)
+status()
 clear()
-subscribe(listener)
-close?()
+close()
 ```
 
-There are two concrete storage paths:
+`createIndexedDbEventHistory()` is the normal session-backed implementation. If IndexedDB startup cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the remainder of that Panel Session. This is a storage fallback within the same interface, not a second event model or a mid-session migration. Accepted candidates retain Capture order; committed publications drive the runtime's topology, COMMAND projections, and Evidence window.
 
-| Store | Factory | Backing Storage | Notes |
-| --- | --- | --- | --- |
-| In-memory store | `createEventStore()` | Array in panel runtime memory | Synchronous, test-friendly, returns immutable list snapshots; burst notifications are bounded. |
-| IndexedDB store | `createIndexedDbEventStore()` | IndexedDB via `EventRepository` | Async, stores event envelopes plus derived metadata and search tokens in ordered batches. |
-
-Both stores retain accepted events in capture order and coalesce burst work into bounded batches. IndexedDB commits one transaction per batch, while retained counts are maintained from successful batch completions instead of issuing a count request for every event. Subscriber append notifications carry either one event or an `append-batch`; `clear()` waits behind accepted writes, and `close()` drains accepted writes before closing the backend. This keeps one-off events observable while allowing sustained capture to continue while persistence drains.
-
-The panel overlays a bounded 60-event live tail on the latest durable page so current activity remains visible while an IndexedDB batch is committing. Latest-page reconciliation is single-flight: activity during an active query marks it dirty and causes one follow-up query, rather than invalidating every completed query. The overlay is presentation-only; every accepted event still follows the ordered durable history path.
+The panel overlays a bounded 60-event live tail on the latest retained page while a query is in flight. The overlay is presentation-only; every accepted candidate still follows the ordered EventHistory path.
 
 Each `mountWorkbenchPanel()` allocates a cryptographically random Panel Session identity before starting storage or bridge work. It calls `createIndexedDbEventHistory()` with that identity:
 
@@ -489,36 +479,9 @@ createIndexedDbEventHistory({
 
 If IndexedDB startup cannot be confirmed, the panel logs the error and falls back to `createInMemoryEventHistory()` for the remainder of that Panel Session. There is no mid-session migration. The panel closes Event History on `dispose` and the actual `pagehide` lifecycle event; IndexedDB-backed history created with `clearOnClose` drains accepted writes, clears that Panel Session's temporary history, and closes its handle before teardown completes.
 
-### IndexedDB Schema
+### History Status
 
-`src/core/indexeddb/event-db.ts` uses schema version `1` and the default database name `lsew-events-session`. Panel Session temporary names are generated as `lsew-events-{sanitizedPanelSessionId}` so separate mounted Panel Sessions do not share a backing database.
-
-Object stores:
-
-| Store | Key | Purpose |
-| --- | --- | --- |
-| `events` | auto-increment `seq` | Stores `{ id, envelope }`; has unique `id` index. |
-| `eventMeta` | `seq` | Stores denormalized filter fields such as kind, subscription ID, mode, item, command key, command value, snapshot, and synthetic marker. |
-| `eventSearchTokens` | `[token, seq]` | Stores tokenized text search metadata for future query acceleration; has `token` and `seq` indexes. |
-
-`src/core/event-repository.ts` handles IndexedDB queries by:
-
-1. Fast-pathing unfiltered limited queries through a cursor so Ordered Evidence does not read every metadata row for the common latest-events view.
-2. Selecting one indexed structured filter when possible.
-3. Applying residual structured filters through metadata.
-4. Loading full envelopes and using `matchesEventFilters()` when free-text search is active so IndexedDB-backed search keeps the same substring semantics as the in-memory store.
-5. Sorting by sequence and paging.
-
-### Event Store Stats
-
-Both store implementations track:
-
-- retained event count
-- total appended event count
-- warning threshold
-- warning active flag
-
-`DEFAULT_EVENT_WARNING_THRESHOLD` is `10_000`. The panel does not prune retained events when the warning is active. It shows a high-volume notice with `Keep events` and `Clear events` actions.
+`EventHistory.status()` is the authoritative runtime status. It reports phase, capture operation, accepted and refused counts, retained range, and capacity pressure through `capacity.tier` and `capacity.state` (`AVAILABLE`, `NEAR_LIMIT`, or `EXHAUSTED`). The panel renders those fields directly and uses the same status publications to derive history diagnostics. There is no generic event-count warning threshold or parallel retained-count authority.
 
 ## Topology State Architecture
 
@@ -697,7 +660,7 @@ sequenceDiagram
   participant Inj as MAIN-world instrumentation
   participant Listener as Original onItemUpdate
   participant WS as Captured page WebSocket
-  participant Store as Panel EventStore
+  participant History as Panel EventHistory
 
   UI->>UI: create or edit one Injection Draft
   UI->>PBC: reinjectDraft(draft, executionTarget)
@@ -734,7 +697,7 @@ sequenceDiagram
     BG-->>PBC: PANEL_REINJECT_RESULT
   end
   PBC-->>UI: ReinjectionResult
-  UI->>Store: append(createSyntheticEventFromDraft)
+  UI->>History: offer(createSyntheticEventFromDraft)
 ```
 
 ### Synthetic ItemUpdate Shape

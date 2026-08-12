@@ -1943,6 +1943,7 @@ export async function runCheckpointScenario(
   // COMPLETE candidate and keeps offer evidence independent from follow().
   const history: EventHistory = {
     storage: rawHistory.storage,
+    status: rawHistory.status.bind(rawHistory),
     offer(candidate) {
       offeredEventIds.push(candidate.id);
       const receipt = rawHistory.offer(candidate);
