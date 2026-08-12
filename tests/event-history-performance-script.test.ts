@@ -179,6 +179,25 @@ describe("Event History performance startup fail-closed seams", () => {
       );
     `);
   });
+
+  it("re-navigates a fresh target whose metadata URL precedes renderer commit", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
+      const expected = "http://127.0.0.1:4173/?pageToken=fresh";
+      const calls = [];
+      let href = "about:blank";
+      const cdp = { request(method, params) {
+        calls.push({ method, params });
+        if (method === "Page.navigate") { href = expected; return Promise.resolve({}); }
+        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: href } });
+        return Promise.resolve({});
+      }};
+      await ensureFreshHarnessDocument(cdp, expected, 100);
+      assert.deepEqual(calls.slice(0, 3).map(({ method }) => method), ["Page.enable", "Runtime.enable", "Page.navigate"]);
+      assert.equal(calls.some(({ method, params }) => method === "Runtime.evaluate" && params.expression === "location.href"), true);
+    `);
+  });
 });
 
 describe("Event History performance timeout evidence", () => {

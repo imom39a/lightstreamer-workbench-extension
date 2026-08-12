@@ -263,6 +263,7 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
   let pageCdp;
   try {
     pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
+    await ensureFreshHarnessDocument(pageCdp, pageUrl.href);
     await waitForHarness(pageCdp);
     await preparePageForAuthoritativeRun(pageCdp);
     const observedToken = await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", BROWSER_TIMEOUT_MS);
@@ -274,6 +275,30 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
     if (closed?.success !== true) throw new Error("Fresh harness page setup failed and its target could not be closed.", { cause: error });
     throw error;
   }
+}
+
+export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 15_000) {
+  await cdp.request("Page.enable");
+  await cdp.request("Runtime.enable");
+  // Target.createTarget can publish the requested URL before the renderer has
+  // committed it. Re-issue navigation after attaching so a fresh target cannot
+  // leave the first Runtime.evaluate pointed at about:blank indefinitely.
+  await cdp.request("Page.navigate", { url: expectedUrl });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    const response = await Promise.race([
+      cdp.request("Runtime.evaluate", {
+        expression: "location.href",
+        awaitPromise: true,
+        returnByValue: true
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("CDP evaluation timed out.")), Math.min(1_000, remaining)))
+    ]);
+    if (response?.result?.value === expectedUrl) return;
+    await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+  }
+  throw new Error(`Timed out waiting for fresh performance document ${expectedUrl}.`);
 }
 
 export async function closeFreshHarnessPage(controlCdp, page) {
