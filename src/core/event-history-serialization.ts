@@ -61,11 +61,10 @@ export function deserializeJournalEvidenceCandidate(payload: string): EvidenceCa
 const ownedCandidateSearchText = new WeakMap<object, string>();
 const journalOwnedCandidates = new WeakSet<object>();
 
-/** @internal Registers a deeply frozen candidate reconstructed from canonical journal replay. */
-export function registerJournalOwnedCandidateSearchText(candidate: EvidenceCandidate, canonicalPayload: string): void {
+/** @internal Marks a deeply frozen candidate reconstructed from canonical journal replay as cacheable. */
+export function registerJournalOwnedCandidate(candidate: EvidenceCandidate): void {
   if (!Object.isFrozen(candidate)) throw new Error("Journal-owned search candidates must be frozen.");
   journalOwnedCandidates.add(candidate);
-  ownedCandidateSearchText.set(candidate, canonicalPayload.toLowerCase());
 }
 
 /** @internal Returns canonical lowercase replay text, caching only trusted journal-owned candidates. */

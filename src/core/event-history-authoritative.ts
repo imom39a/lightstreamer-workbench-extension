@@ -3,7 +3,7 @@ import { type EventFilterState, matchesEventFilters } from "./event-filter";
 import {
   deserializeJournalEvidenceCandidate,
   journalCandidateSearchText,
-  registerJournalOwnedCandidateSearchText,
+  registerJournalOwnedCandidate,
   journalAccountedBytes,
   serializeJournalEvidenceCandidate
 } from "./event-history-serialization";
@@ -724,7 +724,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         try {
           candidates = batch.map((entry) => {
             const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
-            registerJournalOwnedCandidateSearchText(candidate, entry.serialized.payload);
+            registerJournalOwnedCandidate(candidate);
             return candidate;
           });
           await journal.commitBatch(candidates);

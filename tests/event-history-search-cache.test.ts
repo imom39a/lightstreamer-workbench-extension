@@ -1,42 +1,41 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const serialization = vi.hoisted(() => ({ calls: 0 }));
-
-vi.mock("../src/core/event-history-serialization", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../src/core/event-history-serialization")>();
-  return {
-    ...original,
-    serializeJournalEvidenceCandidate(candidate: Parameters<typeof original.serializeJournalEvidenceCandidate>[0]) {
-      serialization.calls += 1;
-      return original.serializeJournalEvidenceCandidate(candidate);
-    }
-  };
-});
+import { describe, expect, it, vi } from "vitest";
 
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
+import { journalCandidateSearchText } from "../src/core/event-history-serialization";
 
 describe("owned Event History search text", () => {
-  beforeEach(() => {
-    serialization.calls = 0;
-  });
-
-  it("canonicalizes each of 1,692 large retained candidates only at intake across three find reads", async () => {
+  it("materializes search text once per owned candidate only after the first find", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "search-cache-large" });
-    const receipts = Array.from({ length: 1_692 }, (_, sequence) =>
-      history.offer(createEventHistoryWorkloadEvent("large-json-rich", sequence, "search-cache-large"))
+    const candidates = Array.from({ length: 10_000 }, (_, sequence) =>
+      createEventHistoryWorkloadEvent("small-lifecycle", sequence, "search-cache-large")
     );
-    await Promise.all(receipts.map((receipt) => receipt.settled));
-
-    expect(serialization.calls).toBe(1_692);
-    for (let sample = 0; sample < 3; sample += 1) {
-      const read = await history.read({ find: "order", order: "asc" });
-      expect(read.ok && read.value.total).toBe(1_692);
+    const lowercase = vi.spyOn(String.prototype, "toLowerCase");
+    for (let offset = 0; offset < candidates.length; offset += 500) {
+      const receipts = candidates.slice(offset, offset + 500).map((candidate) => history.offer(candidate));
+      await Promise.all(receipts.map((receipt) => receipt.settled));
     }
+    const admissionLowercaseCalls = lowercase.mock.calls.length;
+    lowercase.mockRestore();
 
-    expect(serialization.calls).toBe(1_692);
+    expect(admissionLowercaseCalls).toBe(0);
+
+    const stringify = vi.spyOn(JSON, "stringify");
+    const first = await history.read({ find: "search-cache-large", order: "asc" });
+    const firstFindSerializations = stringify.mock.calls.length;
+    stringify.mockClear();
+    const second = await history.read({ find: "search-cache-large", order: "asc" });
+    const third = await history.read({ find: "search-cache-large", order: "asc" });
+    const repeatedFindSerializations = stringify.mock.calls.length;
+    stringify.mockRestore();
+
+    expect(first.ok && first.value.total).toBe(10_000);
+    expect(second.ok && second.value.total).toBe(10_000);
+    expect(third.ok && third.value.total).toBe(10_000);
+    expect(firstFindSerializations).toBe(10_000);
+    expect(repeatedFindSerializations).toBe(0);
     await history.close();
-  }, 30_000);
+  }, 60_000);
 
   it("searches the owned replay snapshot without exposing cache state or observing post-offer mutation", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "search-cache-isolation" });
@@ -55,7 +54,18 @@ describe("owned Event History search text", () => {
     if (!full.ok) throw new Error("Expected an authoritative read.");
     expect(Object.keys(full.value.evidence[0].candidate)).not.toContain("searchText");
     expect(Object.keys(full.value.evidence[0].candidate)).not.toContain("cache");
-    expect(serialization.calls).toBe(1);
     await history.close();
+  });
+
+  it("never caches search text for an unowned caller candidate", () => {
+    const candidate = createEventHistoryWorkloadEvent("large-json-rich", 1, "search-cache-unowned");
+    const stringify = vi.spyOn(JSON, "stringify");
+
+    journalCandidateSearchText(candidate);
+    journalCandidateSearchText(candidate);
+    const serializations = stringify.mock.calls.length;
+    stringify.mockRestore();
+
+    expect(serializations).toBe(2);
   });
 });
