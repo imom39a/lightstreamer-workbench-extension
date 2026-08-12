@@ -352,6 +352,15 @@ export function bindCommittedEvidencePipeline(
       return tracked;
     },
     async read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>> {
+      if (closed) {
+        return {
+          ok: false,
+          problem: {
+            code: "HISTORY_CLOSED",
+            message: "The committed-evidence pipeline is closed and cannot read evidence."
+          }
+        };
+      }
       return trackRead(history.read(query));
     },
     async clear(): Promise<Outcome<ClearResult>> {

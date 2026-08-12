@@ -2341,7 +2341,7 @@ async function mountProductionPanel(
     }
     await delay(0);
   }
-  disposePanel();
+  await disposePanel();
   throw new Error("Production panel mount did not render its React boundary.");
 }
 

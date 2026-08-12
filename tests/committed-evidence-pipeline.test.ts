@@ -490,6 +490,40 @@ describe("committed-evidence pipeline", () => {
     expect(closeSpy).toHaveBeenCalledOnce();
   });
 
+  it("fails closed for a read that starts after teardown begins", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "pipeline-read-after-close" });
+    const settledRead = await history.read({});
+    let releaseRead!: (result: Awaited<ReturnType<EventHistory["read"]>>) => void;
+    const readGate = new Promise<Awaited<ReturnType<EventHistory["read"]>>>((resolve) => {
+      releaseRead = resolve;
+    });
+    const readSpy = vi.spyOn(history, "read")
+      .mockImplementationOnce(() => readGate)
+      .mockImplementation(() => Promise.resolve(settledRead));
+    const closeSpy = vi.spyOn(history, "close");
+    const pipeline = bindCommittedEvidencePipeline({
+      history,
+      onCommittedEvidence: () => undefined
+    });
+
+    const pendingRead = pipeline.read({ order: "asc" });
+    const pendingClose = pipeline.close();
+    await Promise.resolve();
+
+    const readAfterClose = pipeline.read({ order: "desc" });
+    releaseRead(settledRead);
+
+    await expect(pendingRead).resolves.toEqual(settledRead);
+    await expect(readAfterClose).resolves.toMatchObject({
+      ok: false,
+      problem: { code: "HISTORY_CLOSED" }
+    });
+    await pendingClose;
+
+    expect(readSpy).toHaveBeenCalledOnce();
+    expect(closeSpy).toHaveBeenCalledOnce();
+  });
+
   it("creates local delivery outcomes that stay DELIVERED while callbacking only on BECAME_EVIDENCE", async () => {
     const successOnly = createLocalDeliveryHelper("exec-success", {
       requestId: "request-success",
