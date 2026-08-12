@@ -1188,7 +1188,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       expect(result.value.evidence.map((entry) => entry.eventId)).toEqual(
         Array.from({ length: count }, (_, index) => `cooperative-${index}`)
       );
-      expect(timerSpy.mock.calls.filter(([, delay]) => delay === 0)).toHaveLength(Math.ceil(count / 16) - 1);
+      expect(timerSpy.mock.calls.filter(([, delay]) => delay === 0)).toHaveLength(Math.ceil(count / 8) - 1);
     } finally {
       timerSpy.mockRestore();
       await history.close();

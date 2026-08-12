@@ -725,7 +725,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         try {
           evidence = batch.map((entry, index) => {
             const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
-            registerJournalOwnedCandidate(candidate);
+            registerJournalOwnedCandidate(candidate, entry.serialized.payload);
             return toCommittedEvidence(candidate, interval, nextSequence + index);
           });
           candidates = evidence.map((entry) => entry.candidate);
@@ -1333,13 +1333,13 @@ function validateEvidenceRecord(record: EvidenceRecord, intervalId: string, expe
     || JSON.stringify(exactFacets(candidate)) !== JSON.stringify(record.facets)) {
     throw new Error("An evidence record does not match its replay payload or facets.");
   }
-  registerJournalOwnedCandidate(candidate);
+  registerJournalOwnedCandidate(candidate, record.replayPayload);
   return candidate;
 }
 
 type JournalRead = Readonly<{ evidence: CommittedEvidence[]; total: number }>;
 
-const JOURNAL_READ_CHUNK_SIZE = 16;
+const JOURNAL_READ_CHUNK_SIZE = 8;
 
 function yieldJournalRead(): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
@@ -1882,7 +1882,7 @@ function toCommittedEvidence(candidate: EvidenceCandidate, interval: HistoryInte
 
 function toCommittedEvidenceFromRecord(record: EvidenceRecord): CommittedEvidence {
   const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(record.replayPayload));
-  registerJournalOwnedCandidate(candidate);
+  registerJournalOwnedCandidate(candidate, record.replayPayload);
   return deepFreeze({ intervalId: record.intervalId, sequence: record.sequence, eventId: record.eventId, candidate });
 }
 

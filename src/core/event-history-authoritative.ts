@@ -736,7 +736,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
         try {
           candidates = batch.map((entry) => {
             const candidate = freezeCandidate(deserializeJournalEvidenceCandidate(entry.serialized.payload));
-            registerJournalOwnedCandidate(candidate);
+            registerJournalOwnedCandidate(candidate, entry.serialized.payload);
             return candidate;
           });
           await journal.commitBatch(candidates);

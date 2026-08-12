@@ -57,23 +57,26 @@ export function deserializeJournalEvidenceCandidate(payload: string): EvidenceCa
 
 // Search materialization belongs to journal-owned replay candidates, never to
 // caller-owned intake objects. Weak keys keep the cache bounded by the owning
-// history/IndexedDB read and avoid adding observable fields to Evidence.
-const ownedCandidateSearchText = new WeakMap<object, string>();
-const journalOwnedCandidates = new WeakSet<object>();
+// history/IndexedDB read and avoid adding observable fields to Evidence. Keep
+// the canonical replay payload rather than a second lower-case copy: the
+// payload already exists at admission (or in the IndexedDB record), and the
+// first query can lower-case it transiently without retaining another full
+// string for every Evidence candidate.
+const ownedCandidateReplayPayload = new WeakMap<object, string>();
 
 /** @internal Marks a deeply frozen candidate reconstructed from canonical journal replay as cacheable. */
-export function registerJournalOwnedCandidate(candidate: EvidenceCandidate): void {
+export function registerJournalOwnedCandidate(candidate: EvidenceCandidate, replayPayload?: string): void {
   if (!Object.isFrozen(candidate)) throw new Error("Journal-owned search candidates must be frozen.");
-  journalOwnedCandidates.add(candidate);
+  if (replayPayload !== undefined) {
+    ownedCandidateReplayPayload.set(candidate, replayPayload);
+  }
 }
 
-/** @internal Returns canonical lowercase replay text, caching only trusted journal-owned candidates. */
+/** @internal Returns canonical lowercase replay text for trusted journal-owned candidates. */
 export function journalCandidateSearchText(candidate: EvidenceCandidate): string {
-  const cached = ownedCandidateSearchText.get(candidate);
-  if (cached !== undefined) return cached;
-  const text = serializeJournalEvidenceCandidate(candidate).payload.toLowerCase();
-  if (journalOwnedCandidates.has(candidate)) ownedCandidateSearchText.set(candidate, text);
-  return text;
+  const replayPayload = ownedCandidateReplayPayload.get(candidate);
+  if (replayPayload !== undefined) return replayPayload.toLowerCase();
+  return serializeJournalEvidenceCandidate(candidate).payload.toLowerCase();
 }
 
 const REPLAY_TAG = "__lsewReplayTag";

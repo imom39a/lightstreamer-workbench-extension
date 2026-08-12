@@ -5,7 +5,7 @@ import { createMemoryEventHistoryForTests } from "../src/core/event-history-auth
 import { journalCandidateSearchText } from "../src/core/event-history-serialization";
 
 describe("owned Event History search text", () => {
-  it("materializes search text once per owned candidate only after the first find", async () => {
+  it("uses the admitted canonical replay payload without serializing on the first find", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "search-cache-large" });
     const candidates = Array.from({ length: 10_000 }, (_, sequence) =>
       createEventHistoryWorkloadEvent("small-lifecycle", sequence, "search-cache-large")
@@ -32,7 +32,7 @@ describe("owned Event History search text", () => {
     expect(first.ok && first.value.total).toBe(10_000);
     expect(second.ok && second.value.total).toBe(10_000);
     expect(third.ok && third.value.total).toBe(10_000);
-    expect(firstFindSerializations).toBe(10_000);
+    expect(firstFindSerializations).toBe(0);
     expect(repeatedFindSerializations).toBe(0);
     await history.close();
   }, 60_000);
