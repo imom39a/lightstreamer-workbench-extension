@@ -1364,23 +1364,15 @@ async function runCell(
     );
     const readStartedAt = performance.now();
     enterPhase("query");
-    const queryMeasurements = await withStageDeadline((async () => ({
-      recentPageP95Ms: await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard),
-      structuredIndexedP95Ms: await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard),
-      findP95Ms: await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard),
-      fullP95Ms: await measureQuery(history, () => history.read({ order: "asc" }), "full", () => progress("query", "query", "full"), runGuard)
-    }))(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
-    const { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms } = queryMeasurements;
+    const queryMeasurements = await withStageDeadline((async () => {
+      const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard);
+      const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard);
+      const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard);
+      const full = await measureAuthoritativeFullQuery(history, () => progress("query", "query", "full"), runGuard);
+      return { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms: full.p95Ms, read: full.read };
+    })(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
+    const { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms, read } = queryMeasurements;
     const queryElapsedMs = performance.now() - readStartedAt;
-    updateProgress("read", "query", "final-read");
-    const read = await withStageDeadline(
-      history.read({ order: "asc" }),
-      `cell-${cellIndex}-read`,
-      STAGE_DEADLINES_MS.read,
-      () => progress("read", "query", "final-read"),
-      undefined,
-      runGuard
-    );
     const expectedIds = events.map((event) => event.id);
     const retainedIds = read.ok ? read.value.evidence.map((entry) => entry.eventId) : [];
     const boundary = read.ok ? read.value.committedEvidenceBoundary : null;
@@ -2370,15 +2362,41 @@ export async function measureQuery(
   progress: () => HarnessProgressInput,
   guard: HarnessStageGuard | undefined = undefined
 ): Promise<number> {
+  return (await measureQueryWithLastResult(history, query, queryName, progress, guard)).p95Ms;
+}
+
+async function measureQueryWithLastResult<T>(
+  _history: EventHistory,
+  query: () => Promise<T>,
+  queryName: string,
+  progress: () => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<Readonly<{ p95Ms: number; result: T }>> {
   const samples: number[] = [];
+  let result!: T;
   for (let index = 0; index < 3; index += 1) {
     publishStageProgress(progress(), guard);
     const startedAt = performance.now();
-    await withStageDeadline(query(), `query-${queryName}-${index + 1}`, STAGE_DEADLINES_MS.query, progress, undefined, guard);
+    result = await withStageDeadline(query(), `query-${queryName}-${index + 1}`, STAGE_DEADLINES_MS.query, progress, undefined, guard);
     if (guard && !guard.isActive()) throw new Error(`Query stage ${queryName} was invalidated.`);
     samples.push(performance.now() - startedAt);
   }
-  return percentile(samples, 0.95);
+  return { p95Ms: percentile(samples, 0.95), result };
+}
+
+export async function measureAuthoritativeFullQuery(
+  history: EventHistory,
+  progress: () => HarnessProgressInput,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<Readonly<{ p95Ms: number; read: Awaited<ReturnType<EventHistory["read"]>> }>> {
+  const measurement = await measureQueryWithLastResult(
+    history,
+    () => history.read({ order: "asc" }),
+    "full",
+    progress,
+    guard
+  );
+  return { p95Ms: measurement.p95Ms, read: measurement.result };
 }
 
 function emptyStorageTelemetry(): StorageTelemetry {

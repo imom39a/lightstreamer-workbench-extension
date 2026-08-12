@@ -17,6 +17,7 @@ import {
   createHarnessStageGuard,
   HarnessStageTimeout,
   measureCheckpointLiveCapture,
+  measureAuthoritativeFullQuery,
   measureQuery,
   offerSustained,
   settleOffers,
@@ -544,6 +545,33 @@ describe("Event History performance checkpoint workload", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reuses the third bounded ascending full query as authoritative correctness evidence", async () => {
+    const reads = [
+      { ok: true as const, value: { total: 1, evidence: [{ eventId: "first" }] } },
+      { ok: true as const, value: { total: 1, evidence: [{ eventId: "second" }] } },
+      { ok: true as const, value: { total: 1, evidence: [{ eventId: "authoritative-third" }] } }
+    ];
+    const read = vi.fn(async () => reads.shift()!);
+    const history = { read } as unknown as EventHistory;
+
+    const measurement = await measureAuthoritativeFullQuery(
+      history,
+      () => progress("query"),
+      createHarnessStageGuard()
+    );
+
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(read.mock.calls).toEqual([
+      [{ order: "asc" }],
+      [{ order: "asc" }],
+      [{ order: "asc" }]
+    ]);
+    expect(measurement.read).toMatchObject({
+      ok: true,
+      value: { evidence: [{ eventId: "authoritative-third" }] }
+    });
   });
 
   it.each([
