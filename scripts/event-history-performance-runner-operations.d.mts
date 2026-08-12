@@ -49,6 +49,18 @@ export type PerformanceRuntimeDiagnostics = Readonly<{
   documentVisibilityState: "hidden" | "visible" | "prerender" | "unavailable";
   visibleFrameHeartbeat: number;
   lastVisibleFrameAtMs: number | null;
+  panel: Readonly<{
+    rootMounted: boolean;
+    subscriptionActive: boolean;
+    lastLayoutEffectSnapshotVersion: number | null;
+    lastLayoutEffectBoundary: PerformanceEvidenceRef | null;
+    animationFramePending: boolean;
+    animationFrameRequestCount: number;
+    lastAnimationFrameRequestedAtMs: number | null;
+    animationFrameCallbackCount: number;
+    lastAnimationFrameCallbackAtMs: number | null;
+    animationFrameCancelCount: number;
+  }>;
 }>;
 
 export type HeapAdapter = "indexeddb" | "memory";

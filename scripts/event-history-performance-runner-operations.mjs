@@ -819,7 +819,7 @@ function serializeOperationProgress(value, expectedOperationId = null) {
       "expectedFinalId", "disposed", "visible", "committedEvidenceBoundary", "renderedEvidenceBoundary",
       "pendingVisibleCount", "pendingVisibleHead", "pendingVisibleTail", "evidenceQueryPending",
       "passiveRefreshPending", "queryGeneration", "liveEvidenceTotal", "liveEvidenceTail",
-      "lastEvidenceQueryError", "documentVisibilityState", "visibleFrameHeartbeat", "lastVisibleFrameAtMs"
+      "lastEvidenceQueryError", "documentVisibilityState", "visibleFrameHeartbeat", "lastVisibleFrameAtMs", "panel"
     ];
     if (!required.every((field) => has(diagnostics, field))) return null;
     const committedEvidenceBoundary = serializeBoundary(diagnostics.committedEvidenceBoundary);
@@ -834,6 +834,21 @@ function serializeOperationProgress(value, expectedOperationId = null) {
         ? { eventId: diagnostics.liveEvidenceTail.eventId }
         : undefined;
     const validCount = (count) => Number.isSafeInteger(count) && count >= 0;
+    const validOptionalTimestamp = (timestamp) => timestamp === null
+      || (Number.isFinite(timestamp) && timestamp >= 0);
+    const panel = diagnostics.panel;
+    const panelLayoutEffectBoundary = serializeBoundary(panel?.lastLayoutEffectBoundary);
+    const validPanel = panel && typeof panel === "object"
+      && typeof panel.rootMounted === "boolean"
+      && typeof panel.subscriptionActive === "boolean"
+      && (panel.lastLayoutEffectSnapshotVersion === null || validCount(panel.lastLayoutEffectSnapshotVersion))
+      && panelLayoutEffectBoundary !== undefined
+      && typeof panel.animationFramePending === "boolean"
+      && validCount(panel.animationFrameRequestCount)
+      && validOptionalTimestamp(panel.lastAnimationFrameRequestedAtMs)
+      && validCount(panel.animationFrameCallbackCount)
+      && validOptionalTimestamp(panel.lastAnimationFrameCallbackAtMs)
+      && validCount(panel.animationFrameCancelCount);
     if (typeof diagnostics.expectedFinalId !== "string" || diagnostics.expectedFinalId.length === 0
       || typeof diagnostics.disposed !== "boolean" || typeof diagnostics.visible !== "boolean"
       || !validBoundary(committedEvidenceBoundary) || !validBoundary(renderedEvidenceBoundary)
@@ -846,7 +861,8 @@ function serializeOperationProgress(value, expectedOperationId = null) {
       || !["hidden", "visible", "prerender", "unavailable"].includes(diagnostics.documentVisibilityState)
       || !validCount(diagnostics.visibleFrameHeartbeat)
       || (diagnostics.lastVisibleFrameAtMs !== null
-        && (!Number.isFinite(diagnostics.lastVisibleFrameAtMs) || diagnostics.lastVisibleFrameAtMs < 0))) return null;
+        && (!Number.isFinite(diagnostics.lastVisibleFrameAtMs) || diagnostics.lastVisibleFrameAtMs < 0))
+      || !validPanel) return null;
     return {
       expectedFinalId: diagnostics.expectedFinalId,
       disposed: diagnostics.disposed,
@@ -864,7 +880,19 @@ function serializeOperationProgress(value, expectedOperationId = null) {
       lastEvidenceQueryError: diagnostics.lastEvidenceQueryError,
       documentVisibilityState: diagnostics.documentVisibilityState,
       visibleFrameHeartbeat: diagnostics.visibleFrameHeartbeat,
-      lastVisibleFrameAtMs: diagnostics.lastVisibleFrameAtMs
+      lastVisibleFrameAtMs: diagnostics.lastVisibleFrameAtMs,
+      panel: {
+        rootMounted: panel.rootMounted,
+        subscriptionActive: panel.subscriptionActive,
+        lastLayoutEffectSnapshotVersion: panel.lastLayoutEffectSnapshotVersion,
+        lastLayoutEffectBoundary: panelLayoutEffectBoundary,
+        animationFramePending: panel.animationFramePending,
+        animationFrameRequestCount: panel.animationFrameRequestCount,
+        lastAnimationFrameRequestedAtMs: panel.lastAnimationFrameRequestedAtMs,
+        animationFrameCallbackCount: panel.animationFrameCallbackCount,
+        lastAnimationFrameCallbackAtMs: panel.lastAnimationFrameCallbackAtMs,
+        animationFrameCancelCount: panel.animationFrameCancelCount
+      }
     };
   };
   const operationId = value.operationId === undefined ? null : value.operationId;

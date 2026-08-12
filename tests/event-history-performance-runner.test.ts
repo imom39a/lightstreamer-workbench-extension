@@ -1263,7 +1263,19 @@ describe("Event History performance runner page operation", () => {
         lastEvidenceQueryError: null,
         documentVisibilityState: "visible",
         visibleFrameHeartbeat: 14,
-        lastVisibleFrameAtMs: 4_300
+        lastVisibleFrameAtMs: 4_300,
+        panel: {
+          rootMounted: true,
+          subscriptionActive: true,
+          lastLayoutEffectSnapshotVersion: 31,
+          lastLayoutEffectBoundary: { intervalId: "interval-7", sequence: 1_691, eventId: "cell-7-prior" },
+          animationFramePending: true,
+          animationFrameRequestCount: 15,
+          lastAnimationFrameRequestedAtMs: 4_310,
+          animationFrameCallbackCount: 14,
+          lastAnimationFrameCallbackAtMs: 4_300,
+          animationFrameCancelCount: 0
+        }
       },
       extraField: "must be dropped"
     };
@@ -1303,7 +1315,19 @@ describe("Event History performance runner page operation", () => {
         lastEvidenceQueryError: null,
         documentVisibilityState: "visible",
         visibleFrameHeartbeat: 14,
-        lastVisibleFrameAtMs: 4_300
+        lastVisibleFrameAtMs: 4_300,
+        panel: {
+          rootMounted: true,
+          subscriptionActive: true,
+          lastLayoutEffectSnapshotVersion: 31,
+          lastLayoutEffectBoundary: { intervalId: "interval-7", sequence: 1_691, eventId: "cell-7-prior" },
+          animationFramePending: true,
+          animationFrameRequestCount: 15,
+          lastAnimationFrameRequestedAtMs: 4_310,
+          animationFrameCallbackCount: 14,
+          lastAnimationFrameCallbackAtMs: 4_300,
+          animationFrameCancelCount: 0
+        }
       }
     };
     const normalStatuses: Array<Record<string, unknown>> = [];
