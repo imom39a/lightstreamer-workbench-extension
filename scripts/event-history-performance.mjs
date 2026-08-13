@@ -834,6 +834,7 @@ export function createForegroundKeeper(pid, options = {}) {
   let intervalHandle = null;
   let lastAttemptAt = null;
   let inFlight = null;
+  let inFlightContext = null;
   let failure = null;
   let attemptNumber = 0;
   const attempts = [];
@@ -856,44 +857,70 @@ export function createForegroundKeeper(pid, options = {}) {
     }))
   });
 
-  const attempt = async (reason, focusTarget) => {
-    const record = {
-      attempt: ++attemptNumber,
-      pid,
-      reason,
-      startedAt: now(),
-      finishedAt: null,
-      status: "PENDING",
+  const applyFocus = (context) => {
+    if (context.focusPromise !== null) return context.focusPromise;
+    if (typeof context.focusTarget !== "function" || context.record?.focus !== null || context.result === null) return Promise.resolve();
+    context.focusPromise = (async () => {
+      try {
+        context.record.focus = await context.focusTarget({ pid, activation: context.result, deadlineAt, timeoutMs: attemptTimeoutMs });
+      } catch (error) {
+        context.record.status = "FAIL";
+        context.record.error = foregroundKeeperError(error);
+        failure ??= error;
+        throw error;
+      }
+    })();
+    return context.focusPromise;
+  };
+
+  const attempt = (reason, focusTarget) => {
+    const context = {
+      focusTarget,
+      focusPromise: null,
+      record: null,
       result: null,
-      focus: null,
-      error: null
+      promise: null
     };
-    attempts.push(record);
-    lastAttemptAt = record.startedAt;
-    try {
-      if (deadlineAt - now() <= 0) throw createSharedDeadlineTimeout("foreground-keeper", deadlineAt, now);
-      const result = await activate(pid, {
-        helperPath,
-        deadlineAt,
-        timeoutMs: attemptTimeoutMs
-      });
-      if (platform === "darwin" && (result?.attempted !== true || result.activatedPID !== pid)) {
-        throw new Error(`Foreground keeper activation did not verify spawned PID ${pid}.`);
+    context.promise = (async () => {
+      const record = {
+        attempt: ++attemptNumber,
+        pid,
+        reason,
+        startedAt: now(),
+        finishedAt: null,
+        status: "PENDING",
+        result: null,
+        focus: null,
+        error: null
+      };
+      context.record = record;
+      attempts.push(record);
+      lastAttemptAt = record.startedAt;
+      try {
+        if (deadlineAt - now() <= 0) throw createSharedDeadlineTimeout("foreground-keeper", deadlineAt, now);
+        const result = await activate(pid, {
+          helperPath,
+          deadlineAt,
+          timeoutMs: attemptTimeoutMs
+        });
+        if (platform === "darwin" && (result?.attempted !== true || result.activatedPID !== pid)) {
+          throw new Error(`Foreground keeper activation did not verify spawned PID ${pid}.`);
+        }
+        context.result = result;
+        await applyFocus(context);
+        record.status = "PASS";
+        record.result = result;
+        return result;
+      } catch (error) {
+        record.status = "FAIL";
+        record.error = foregroundKeeperError(error);
+        failure ??= error;
+        throw error;
+      } finally {
+        record.finishedAt = now();
       }
-      if (typeof focusTarget === "function") {
-        record.focus = await focusTarget({ pid, activation: result, deadlineAt, timeoutMs: attemptTimeoutMs });
-      }
-      record.status = "PASS";
-      record.result = result;
-      return result;
-    } catch (error) {
-      record.status = "FAIL";
-      record.error = foregroundKeeperError(error);
-      failure ??= error;
-      throw error;
-    } finally {
-      record.finishedAt = now();
-    }
+    })();
+    return context;
   };
 
   const keepAlive = async ({ reason = "heartbeat", focusTarget } = {}) => {
@@ -901,18 +928,27 @@ export function createForegroundKeeper(pid, options = {}) {
     if (stoppedAt !== null) return snapshot();
     if (failure !== null) throw failure;
     if (inFlight !== null) {
+      const context = inFlightContext;
+      if (context && typeof focusTarget === "function" && context.focusTarget === undefined) {
+        context.focusTarget = focusTarget;
+      }
       await inFlight;
       if (failure !== null) throw failure;
+      if (context && typeof focusTarget === "function") await applyFocus(context);
       return snapshot();
     }
     if (platform !== "darwin" || (lastAttemptAt !== null && now() - lastAttemptAt < cadenceMs)) return snapshot();
-    const operation = attempt(reason, focusTarget);
-    inFlight = operation;
+    const context = attempt(reason, focusTarget);
+    inFlight = context.promise;
+    inFlightContext = context;
     try {
-      await operation;
+      await context.promise;
       return snapshot();
     } finally {
-      if (inFlight === operation) inFlight = null;
+      if (inFlight === context.promise) {
+        inFlight = null;
+        inFlightContext = null;
+      }
     }
   };
 

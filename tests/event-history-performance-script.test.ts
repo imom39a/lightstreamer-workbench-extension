@@ -645,6 +645,49 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("does not drop heartbeat target focus when cadence activation is in flight", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createForegroundKeeper } = await import(${JSON.stringify(scriptUrl)});
+      let now = 0;
+      let tick;
+      let resolveActivation;
+      let focusCalls = 0;
+      const activation = new Promise((resolve) => { resolveActivation = resolve; });
+      const keeper = createForegroundKeeper(49217, {
+        platform: "darwin",
+        helperPath: "/tmp/process-activation-helper",
+        deadlineAt: 10_000,
+        cadenceMs: 1_000,
+        now: () => now,
+        setInterval(callback) { tick = callback; return 17; },
+        clearInterval() {},
+        activate(pid) {
+          assert.equal(pid, 49217);
+          return activation;
+        }
+      });
+      keeper.start();
+      now = 1_000;
+      const cadence = tick();
+      const focusResult = { targetId: "target-1", windowId: 7, pageBroughtToFront: true };
+      const heartbeat = keeper.keepAlive({
+        reason: "target-heartbeat",
+        focusTarget: async ({ pid, activation: activationResult }) => {
+          focusCalls += 1;
+          assert.equal(pid, 49217);
+          assert.deepEqual(activationResult, { attempted: true, pid: 49217, activatedPID: 49217, frontmostPID: 49217, windows: [] });
+          return focusResult;
+        }
+      });
+      resolveActivation({ attempted: true, pid: 49217, activatedPID: 49217, frontmostPID: 49217, windows: [] });
+      await Promise.all([cadence, heartbeat]);
+      assert.equal(focusCalls, 1);
+      assert.deepEqual(keeper.snapshot().attempts[0].focus, focusResult);
+      await keeper.stop();
+    `);
+  });
+
   it("fails closed on keeper activation errors and expired proof deadlines", () => {
     runNode(`
       import assert from "node:assert/strict";
