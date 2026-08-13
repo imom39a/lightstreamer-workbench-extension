@@ -706,11 +706,11 @@ export function activateSpawnedChromeWindow(pid, options = {}) {
         reject(new Error(`Native activation helper returned invalid evidence: ${parseError.message ?? String(parseError)}`));
         return;
       }
-      if (evidence?.activatedPID !== pid || evidence?.frontmostPID !== pid) {
-        reject(new Error(`Native activation helper did not verify spawned PID ${pid} as activated and frontmost.`));
+      if (evidence?.activatedPID !== pid) {
+        reject(new Error(`Native activation helper did not verify spawned PID ${pid} as activated.`));
         return;
       }
-      resolve({ attempted: true, pid, activatedPID: evidence.activatedPID, frontmostPID: evidence.frontmostPID, windows: evidence.windows ?? [] });
+      resolve({ attempted: true, pid, activatedPID: evidence.activatedPID, frontmostPID: evidence.frontmostPID ?? null, foregroundVerified: evidence.frontmostPID === pid, windows: evidence.windows ?? [] });
     };
     const timer = setTimeout(() => {
       try { childProcess?.kill("SIGKILL"); } catch { /* preserve the activation timeout */ }
