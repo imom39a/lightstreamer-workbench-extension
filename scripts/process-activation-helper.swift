@@ -17,7 +17,20 @@ guard CommandLine.arguments.count == 3,
 guard let application = NSRunningApplication(processIdentifier: pid) else {
     fail("spawned process does not exist")
 }
-guard application.activate(options: [.activateIgnoringOtherApps]) else {
+application.unhide()
+let activationSucceeded: Bool
+if #available(macOS 14.0, *) {
+    if let currentApplication = NSWorkspace.shared.frontmostApplication,
+       currentApplication.processIdentifier != pid {
+        NSApplication.shared.yieldActivation(to: application)
+        activationSucceeded = application.activate(from: currentApplication, options: [.activateAllWindows])
+    } else {
+        activationSucceeded = application.activate(options: [.activateAllWindows])
+    }
+} else {
+    activationSucceeded = application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+}
+guard activationSucceeded else {
     fail("NSRunningApplication.activate returned false")
 }
 

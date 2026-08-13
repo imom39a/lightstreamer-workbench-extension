@@ -31,6 +31,10 @@ describe("Event History performance startup fail-closed seams", () => {
   it("keeps native activation able to take Chrome in front of the invoking app", () => {
     const helperSource = readFileSync(join(repositoryRoot, "scripts/process-activation-helper.swift"), "utf8");
     expect(helperSource).toContain(".activateIgnoringOtherApps");
+    expect(helperSource).toContain(".activateAllWindows");
+    expect(helperSource).toContain("application.unhide()");
+    expect(helperSource).toContain(".yieldActivation(to: application)");
+    expect(helperSource).toContain("application.activate(from: currentApplication");
   });
 
   it("preserves a primary timeout across every outer evidence and cleanup failure", () => {
