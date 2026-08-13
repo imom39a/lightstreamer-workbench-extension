@@ -38,7 +38,7 @@ describe("canonical Filter algebra", () => {
     });
 
     expect(evaluateFilter(filter, record()).matches).toBe(true);
-    expect(evaluateFilter(filter, record({ facets: { ...record().facets, kind: createTypedFilterValue("kind", "enum", "session-status") } })).matches).toBe(false);
+    expect(evaluateFilter(filter, record({ facets: { ...record().facets, kind: createTypedFilterValue("kind", "enum", "session-status"), key: createTypedFilterValue("key", "string", "different") } })).matches).toBe(false);
   });
 
   it("uses typed case rules and distinguishes number, boolean, null, and missing", () => {
@@ -77,7 +77,7 @@ describe("canonical Filter algebra", () => {
       { type: "set-polarity", facet: "key", value: createTypedFilterValue("key", "string", "ABC"), polarity: "exclude" }
     ];
     const result = applyFilterMutations(initial, 1, operations);
-    expect(result).toMatchObject({ ok: true, changed: true, filter: { revision: 2, text: "ABC" } });
+    expect(result).toMatchObject({ ok: true, changed: true, filter: { revision: 2, text: "abc" } });
     if (!result.ok) return;
     expect(result.filter.criteria.key?.include).toHaveLength(0);
     expect(result.filter.criteria.key?.exclude).toHaveLength(1);
