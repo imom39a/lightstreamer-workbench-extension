@@ -175,6 +175,8 @@ export type PerformanceShard = PerformanceMatrixShard | PerformanceScenarioShard
 export function createPerformanceShardPlan(): PerformanceShard[];
 export function aggregatePerformanceShardResults(results: readonly Record<string, any>[]): Readonly<{
   schemaVersion: 2;
+  proofMode?: string;
+  frameProof?: unknown;
   anchors: unknown;
   config: unknown;
   shapeFacts: unknown;

@@ -500,6 +500,13 @@ export type WorkbenchRuntimePerformanceHooks = Readonly<{
   onCommittedEvidenceBoundary?(boundary: EvidenceRef, timestampMs: number): void;
   onCheckpointStagingStart?(syncId: string, timestampMs: number): void;
   onCheckpointStagingEnd?(syncId: string, timestampMs: number): void;
+  /**
+   * Reports the first production React layout effect that publishes a
+   * committed Evidence boundary into the panel DOM. This is a separate
+   * publication seam; it is never a substitute for the headed compositor
+   * frame proof.
+   */
+  onLayoutCommit?(boundary: EvidenceRef, timestampMs: number, coveredBoundaries: readonly EvidenceRef[]): void;
   onVisibleFrame?(boundary: EvidenceRef, timestampMs: number, coveredBoundaries: readonly EvidenceRef[]): void;
 }>;
 
@@ -609,6 +616,7 @@ class Runtime implements WorkbenchRuntime {
   private committedEvidenceBoundary: EvidenceRef | null = null;
   private renderedEvidenceBoundary: EvidenceRef | null = null;
   private pendingVisibleBoundaries: EvidenceRef[] = [];
+  private pendingLayoutCommitBoundaries: EvidenceRef[] = [];
   private visibleFrameHeartbeat = 0;
   private lastVisibleFrameAtMs: number | null = null;
   private panelPerformanceDiagnostics: WorkbenchPanelPerformanceDiagnostics = {
@@ -725,6 +733,22 @@ class Runtime implements WorkbenchRuntime {
     this.performanceHooks.onVisibleFrame(boundary, performance.now(), coveredBoundaries);
   };
 
+  private reportLayoutCommit(boundary: EvidenceRef | null): void {
+    if (!boundary || !this.performanceHooks?.onLayoutCommit || this.pendingLayoutCommitBoundaries.length === 0) return;
+    const coveredBoundaries: EvidenceRef[] = [];
+    const pendingBoundaries: EvidenceRef[] = [];
+    for (const pending of this.pendingLayoutCommitBoundaries) {
+      if (pending.intervalId === boundary.intervalId && pending.sequence <= boundary.sequence) {
+        coveredBoundaries.push(pending);
+      } else {
+        pendingBoundaries.push(pending);
+      }
+    }
+    if (coveredBoundaries.length === 0) return;
+    this.pendingLayoutCommitBoundaries = pendingBoundaries;
+    this.performanceHooks.onLayoutCommit(boundary, performance.now(), coveredBoundaries);
+  }
+
   readonly reportPanelPerformanceEvent = (event: WorkbenchPanelPerformanceEvent): void => {
     const current = this.panelPerformanceDiagnostics;
     switch (event.type) {
@@ -742,6 +766,7 @@ class Runtime implements WorkbenchRuntime {
             ? Object.freeze({ intervalId: event.boundary.intervalId, sequence: event.boundary.sequence, eventId: event.boundary.eventId })
             : null
         };
+        this.reportLayoutCommit(event.boundary);
         return;
       case "animation-frame-requested":
         this.panelPerformanceDiagnostics = {
@@ -1438,6 +1463,13 @@ class Runtime implements WorkbenchRuntime {
         eventId: entry.eventId
       }));
     }
+    if (this.performanceHooks?.onLayoutCommit) {
+      this.pendingLayoutCommitBoundaries.push(Object.freeze({
+        intervalId: entry.intervalId,
+        sequence: entry.sequence,
+        eventId: entry.eventId
+      }));
+    }
     this.performanceHooks?.onCommittedEvidenceBoundary?.(entry, performance.now());
     if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
       const syncId = topologyCheckpointSyncId(entry.candidate);
@@ -1480,6 +1512,7 @@ class Runtime implements WorkbenchRuntime {
       // Interval. Boundaries accepted before the clear are no longer part of
       // the rendered Evidence snapshot and must not be coalesced into it.
       this.pendingVisibleBoundaries = [];
+      this.pendingLayoutCommitBoundaries = [];
       this.renderedEvidenceBoundary = null;
       shouldPublish = this.updateHistoryCondition(publication.status);
     } else if (publication.type === "terminal") {

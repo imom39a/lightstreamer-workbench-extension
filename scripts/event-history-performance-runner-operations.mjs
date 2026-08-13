@@ -27,6 +27,7 @@ export function aggregatePerformanceShardResults(results) {
   }
   const baseline = results[0];
   const stableFields = ["anchors", "config", "shapeFacts"];
+  if (baseline?.proofMode !== undefined) stableFields.push("proofMode", "frameProof");
   const pageTokens = new Set();
   const cells = [];
   const cellCleanupGc = [];
@@ -102,6 +103,8 @@ export function aggregatePerformanceShardResults(results) {
   }
   return {
     schemaVersion: 2,
+    proofMode: baseline.proofMode,
+    frameProof: baseline.frameProof,
     anchors: baseline.anchors,
     config: baseline.config,
     shapeFacts: baseline.shapeFacts,

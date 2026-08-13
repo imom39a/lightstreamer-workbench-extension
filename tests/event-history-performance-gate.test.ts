@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyEventHistoryPerformance,
+  EVENT_HISTORY_PERFORMANCE_PROOF_MODES,
   EVENT_HISTORY_PERFORMANCE_LIMITS,
   isExactQueryPage,
   validateEventHistoryPerformanceReference,
@@ -345,12 +346,49 @@ function referenceFrom(reportValue: EventHistoryPerformanceReport): EventHistory
     disposition: "ACCEPTED_INITIAL_CLEAN_REFERENCE",
     rationale: "Pinned from a clean visible Chrome for Testing 151 run after the gate implementation was committed.",
     environment: reportValue.environment,
+    proofMode: reportValue.proofMode,
     cells: reportValue.cells,
     queryCells: reportValue.queryCells
   };
 }
 
 describe("Event History real-Chrome performance gate classifier", () => {
+  it("keeps the non-interactive proof mode distinct from headed visible-frame proof", () => {
+    const headed = report();
+    const nonInteractive = {
+      ...headed,
+      environment: { ...headed.environment, headless: true },
+      proofMode: EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT,
+      frameProof: {
+        publicationBoundary: "react-layout-commit-dom-publication" as const,
+        compositorFrameMeasured: false,
+        coherent: true,
+        missingBoundaryCount: 0
+      }
+    };
+    expect(classifyEventHistoryPerformance(nonInteractive, undefined, "ordinary").verdict).toBe("FAIL");
+    expect(classifyEventHistoryPerformance(headed, referenceFrom(headed), "non-interactive").verdict).toBe("FAIL");
+    expect(classifyEventHistoryPerformance(nonInteractive, referenceFrom(nonInteractive), "non-interactive").verdict).toBe("PASS");
+  });
+
+  it("applies the unchanged absolute thresholds in non-interactive mode", () => {
+    const candidate = report({
+      environment: { chromeMajor: 151, platformClass: "darwin", architectureClass: "arm64", headless: true },
+      proofMode: EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT,
+      frameProof: {
+        publicationBoundary: "react-layout-commit-dom-publication",
+        compositorFrameMeasured: false,
+        coherent: true,
+        missingBoundaryCount: 0
+      },
+      cells: report().cells.map((entry, index) => index === 0
+        ? { ...entry, latency: { ...entry.latency, offerToVisibleFrameP95Ms: EVENT_HISTORY_PERFORMANCE_LIMITS.indexeddb.sustainedVisibleP95Ms + 1 } }
+        : entry)
+    });
+    expect(classifyEventHistoryPerformance(candidate, undefined, "non-interactive-capture-only").verdict).toBe("FAIL");
+    expect(classifyEventHistoryPerformance(candidate, undefined, "non-interactive-capture-only").failures.join(" ")).toMatch(/exceeds 100 ms/u);
+  });
+
   it("rejects an Around page with the wrong size, order, or identity", () => {
     const expected = [
       { sequence: 1_999, eventId: "event-1999" },

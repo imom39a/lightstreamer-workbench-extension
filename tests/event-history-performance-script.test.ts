@@ -10,11 +10,13 @@ mkdirSync(join(repositoryRoot, "test-results"), { recursive: true });
 const temporaryModuleRoot = mkdtempSync(join(repositoryRoot, "test-results", ".event-history-performance-script-test-"));
 const scriptCopy = join(temporaryModuleRoot, "event-history-performance.mjs");
 const runnerOperationsCopy = join(temporaryModuleRoot, "event-history-performance-runner-operations.mjs");
+const chromePolicyCopy = join(temporaryModuleRoot, "chrome-test-policy.mjs");
 const cleanupTemporaryModuleRoot = () => rmSync(temporaryModuleRoot, { recursive: true, force: true });
 process.once("exit", cleanupTemporaryModuleRoot);
 try {
   writeFileSync(scriptCopy, readFileSync(join(repositoryRoot, "scripts/event-history-performance.mjs"), "utf8").replace(/^#![^\n]*\n/u, ""));
   writeFileSync(runnerOperationsCopy, readFileSync(join(repositoryRoot, "scripts/event-history-performance-runner-operations.mjs"), "utf8"));
+  writeFileSync(chromePolicyCopy, readFileSync(join(repositoryRoot, "scripts/chrome-test-policy.mjs"), "utf8"));
 } catch (error) {
   cleanupTemporaryModuleRoot();
   throw error;
@@ -163,6 +165,14 @@ describe("Event History performance startup fail-closed seams", () => {
         assert.equal(args.at(-1), "about:blank");
         assert.equal(args.includes("http://127.0.0.1:4173/"), false);
       }
+      const nonInteractive = chromeLaunchArguments("/tmp/lsew-profile", "darwin", "non-interactive-layout-commit");
+      assert.equal(nonInteractive.includes("--headless=new"), true);
+      assert.equal(nonInteractive.includes("--activate-on-launch"), false);
+      assert.equal(nonInteractive.includes("--use-mock-keychain"), true);
+      assert.equal(nonInteractive.includes("--password-store=basic"), true);
+      assert.equal(nonInteractive.includes("--disable-sync"), true);
+      assert.equal(nonInteractive.includes("--no-first-run"), true);
+      assert.equal(nonInteractive.includes("--no-default-browser-check"), true);
     `);
   });
 

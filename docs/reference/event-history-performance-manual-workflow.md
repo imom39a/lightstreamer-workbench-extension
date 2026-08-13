@@ -2,8 +2,10 @@
 
 This is a deliberate developer-run gate, not ordinary CI. It measures the
 authoritative `EventHistory.offer` → `follow` → `read` boundary through the
-production React `WorkbenchPanel` path in visible Chrome for Testing major
-151.
+production React `WorkbenchPanel` path in real Chrome for Testing major 151.
+The runner has two explicit proof modes: `headed-visible-frame` (the manual
+foreground/compositor gate) and `non-interactive-layout-commit` (automation
+under a locked console).
 
 ## Run
 
@@ -16,8 +18,8 @@ LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
 npm run measure:event-history
 ```
 
-The runner refuses headless mode, system-Chrome fallback, fake IndexedDB, and
-missing reference data. It runs three independent samples for every adapter,
+The headed mode refuses headless mode, system-Chrome fallback, fake IndexedDB,
+and missing reference data. It runs three independent samples for every adapter,
 workload, and payload-shape matrix cell, plus three post-GC heap samples for
 each checkpoint tier. It writes the machine report and concise interpretation
 to `test-results/event-history-performance.json` and `.md`.
@@ -37,6 +39,32 @@ semantics are unchanged.
 The pinned reference is [event-history-performance-reference.json](event-history-performance-reference.json).
 A report never replaces it automatically. A reference update requires an
 explicit maintainer rationale and disposition in the same focused change.
+
+### Locked-console closure mode
+
+When the macOS console is locked, use the separate non-interactive proof. It
+uses a fresh temporary profile, real native IndexedDB, real DOM/React, and the
+same 36-cell, query, scenario, heap, and absolute-threshold workloads. It does
+not activate windows, request focus, probe rAF, use screencasts, or claim a
+headed compositor result. The compositor-dependent publication confirmation is
+replaced only by the independently instrumented production React
+layout-effect/DOM publication boundary; query, storage, correctness, heap, and
+performance thresholds are unchanged.
+
+Capture a candidate without self-adoption:
+
+```sh
+LSEW_EVENT_HISTORY_PERF_MODE=non-interactive-layout-commit \
+LSEW_EVENT_HISTORY_PERF_CAPTURE=true \
+LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
+npm run measure:event-history
+```
+
+The JSON and Markdown artifacts explicitly report
+`proofMode=non-interactive-layout-commit`, `headless=true`, and
+`compositorFrameMeasured=false`. Adoption is a separate deliberate local
+operation, followed by a clean comparison run; a candidate never becomes its
+own reference.
 
 ## Absolute decision
 

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import {
   access,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   rename,
@@ -15,6 +16,8 @@ import {
 import { constants } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const deterministicZipDate = new Date(Date.UTC(1980, 0, 1, 0, 0, 0));
@@ -362,7 +365,11 @@ async function packCrx({ artifactBaseName, chromePath, distDir, keyPath, release
     await rm(outputPem, { force: true });
   }
 
-  const chromeArgs = [`--pack-extension=${distDir}`];
+  const chromeProfile = await mkdtemp(join(tmpdir(), "lsew-package-chrome-"));
+  const chromeArgs = [
+    ...chromeTestArguments({ profile: chromeProfile, headless: true }),
+    `--pack-extension=${distDir}`
+  ];
   if (keyPath) {
     const resolvedKeyPath = resolve(projectRoot, keyPath);
     if (!existsSync(resolvedKeyPath)) {
@@ -371,10 +378,15 @@ async function packCrx({ artifactBaseName, chromePath, distDir, keyPath, release
     chromeArgs.push(`--pack-extension-key=${resolvedKeyPath}`);
   }
 
-  const result = spawnSync(chrome, chromeArgs, {
-    cwd: projectRoot,
-    stdio: "inherit"
-  });
+  let result;
+  try {
+    result = spawnSync(chrome, chromeArgs, {
+      cwd: projectRoot,
+      stdio: "inherit"
+    });
+  } finally {
+    await rm(chromeProfile, { recursive: true, force: true });
+  }
 
   if (result.error) {
     fail(`Chrome failed to pack CRX: ${result.error.message}`);

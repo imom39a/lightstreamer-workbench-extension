@@ -35,18 +35,21 @@ import {
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   classifyEventHistoryPerformance,
+  EVENT_HISTORY_PERFORMANCE_PROOF_MODES,
   CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS,
   CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND,
   CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS,
   TERMINAL_PENDING_BYTE_EVENT_COUNT,
   isExactQueryPage,
   type EventHistoryPerformanceCell,
+  type EventHistoryPerformanceFrameProof,
   type EventHistoryPerformanceQueryCell,
   type EventHistoryPerformanceCheckpointScenario,
   type EventHistoryPerformanceHeapSample,
   type EventHistoryPerformanceStorageEstimate,
   type EventHistoryPerformanceReference,
   type EventHistoryPerformanceReport,
+  type EventHistoryPerformanceProofMode,
   type EventHistoryPerformanceShape,
   type EventHistoryPerformanceTerminalScenario,
   type EventHistoryPerformanceWorkload
@@ -607,6 +610,8 @@ export function createPendingTelemetryTracker(now: () => number = () => performa
 
 type HarnessResult = Readonly<{
   schemaVersion: 2;
+  proofMode: EventHistoryPerformanceProofMode;
+  frameProof: EventHistoryPerformanceFrameProof;
   anchors: { issue16TotalEvents: number };
   config: EventHistoryPerformanceConfig;
   shapeFacts: ReturnType<typeof representativeEventHistoryShapeFacts>;
@@ -926,7 +931,7 @@ export async function closeHeapSessionWithEvidence(input: Readonly<{
 declare global {
   interface Window {
     __LSEW_EVENT_HISTORY_PERFORMANCE__?: {
-      run(overrides?: Partial<EventHistoryPerformanceConfig>, selection?: HarnessSelection): Promise<HarnessResult & { selection: HarnessSelection | null }>;
+      run(overrides?: Partial<EventHistoryPerformanceConfig>, selection?: HarnessSelection, proofMode?: EventHistoryPerformanceProofMode): Promise<HarnessResult & { selection: HarnessSelection | null }>;
       classify(report: EventHistoryPerformanceReport, reference: EventHistoryPerformanceReference): ReturnType<typeof classifyEventHistoryPerformance>;
       prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number, phase: "warmup" | "sample", sample: number | null): Promise<{ adapter: string; count: number; retained: number; sessionId: string; databaseName: string | null; phase: "warmup" | "sample"; sample: number | null }>;
       releaseRetainedHeapSample(): Promise<unknown>;
@@ -969,6 +974,19 @@ export function validateHarnessSelection(selection: HarnessSelection | undefined
     throw new Error("Performance matrix cell offset is invalid.");
   }
   return selection;
+}
+
+function validatePerformanceProofMode(
+  proofMode: EventHistoryPerformanceProofMode | undefined
+): EventHistoryPerformanceProofMode {
+  const resolved = proofMode ?? EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME;
+  if (
+    resolved !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+    && resolved !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT
+  ) {
+    throw new Error(`Unsupported Event History performance proof mode: ${String(resolved)}.`);
+  }
+  return resolved;
 }
 
 async function runFilterQueryCell(
@@ -1092,10 +1110,11 @@ async function runFilterQueryCell(
 }
 
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
-  async run(overrides = {}, requestedSelection) {
+  async run(overrides = {}, requestedSelection, requestedProofMode) {
     const operationId = currentHarnessOperationId();
     const runGuard = createHarnessStageGuard(operationId);
     const selection = validateHarnessSelection(requestedSelection);
+    const proofMode = validatePerformanceProofMode(requestedProofMode);
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
     const cells: EventHistoryPerformanceCell[] = [];
@@ -1140,11 +1159,11 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
                 ? selection.collectAfterFinal
                 : shardCellCount < 9 || selection.collectAfterFinal;
             if (!collectAfterCell) {
-              cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard));
+              cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard, proofMode));
               continue;
             }
             const completed = await runCellThenCollectGarbage(
-              () => runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard),
+              () => runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard, proofMode),
               cellIndex,
               runGuard,
               async (afterCellIndex, guard) => {
@@ -1235,6 +1254,20 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     }
     return {
       schemaVersion: 2,
+      proofMode,
+      frameProof: proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT
+        ? {
+            publicationBoundary: "react-layout-commit-dom-publication",
+            compositorFrameMeasured: false,
+            coherent: true,
+            missingBoundaryCount: 0
+          }
+        : {
+            publicationBoundary: "visible-compositor-frame",
+            compositorFrameMeasured: true,
+            coherent: true,
+            missingBoundaryCount: 0
+          },
       selection,
       anchors: { issue16TotalEvents: ISSUE_16_TOTAL_EVENTS },
       config,
@@ -1450,7 +1483,8 @@ async function runCell(
   config: EventHistoryPerformanceConfig,
   cellIndex: number,
   operationId: string | null,
-  runGuard: HarnessStageGuard
+  runGuard: HarnessStageGuard,
+  proofMode: EventHistoryPerformanceProofMode = EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
 ): Promise<EventHistoryPerformanceCell> {
   const runId = `${adapter}-${workload}-${shape}-sample-${sample}`;
   const cancellationProgress = (): HarnessProgressInput => ({
@@ -1491,8 +1525,11 @@ async function runCell(
   const pending = createPendingTelemetryTracker();
   const publicationLatencies: number[] = [];
   const visibleLatencies: number[] = [];
+  const layoutCommitLatencies: number[] = [];
   const committedBoundaryAt = new Map<string, number>();
   const committedBoundaryVisibleLatencies: number[] = [];
+  const committedBoundaryLayoutCommitLatencies: number[] = [];
+  const layoutCommittedEventIds = new Set<string>();
   const publishedIds: string[] = [];
   const phaseIntervals: PhaseInterval[] = [];
   const longTaskEntries: PerformanceEntry[] = [];
@@ -1503,6 +1540,7 @@ async function runCell(
   const expectedCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
   const expectedFinalId = `${runId}-${shape}-${expectedCount - 1}`;
   let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+  let layoutCommitCoherent = true;
   const runtimeDiagnostics = (): HarnessRuntimeDiagnostics | undefined => {
     const diagnostics = panel?.runtime.getPerformanceDiagnostics?.();
     return diagnostics ? { expectedFinalId, ...diagnostics } : undefined;
@@ -1525,7 +1563,7 @@ async function runCell(
     settled: settledCount,
     query,
     ...(() => {
-      if (stage !== "visible-frame" && query !== "final-read") return {};
+      if (stage !== "visible-frame" && stage !== "layout-commit" && query !== "final-read") return {};
       const diagnostics = runtimeDiagnostics();
       return diagnostics ? { runtimeDiagnostics: diagnostics } : {};
     })()
@@ -1554,9 +1592,9 @@ async function runCell(
     phaseStartedAt = now;
   };
 
-  let resolveFinalVisible!: () => void;
-  let finalVisibleAt: number | null = null;
-  const finalVisible = new Promise<void>((resolve) => { resolveFinalVisible = resolve; });
+  let resolveFinalPublication!: () => void;
+  let finalPublicationAt: number | null = null;
+  const finalPublication = new Promise<void>((resolve) => { resolveFinalPublication = resolve; });
   const cleanupSetupFailure = async (error: unknown): Promise<never> => {
     const failure = error instanceof Error ? error : new Error(String(error));
     Object.assign(failure, {
@@ -1578,25 +1616,46 @@ async function runCell(
     throw failure;
   };
   try {
-    panel = await mountProductionPanel(history, {
+    const performanceHooks: WorkbenchRuntimePerformanceHooks = {
       onCommittedEvidenceBoundary(boundary, timestampMs) {
         if (!runGuard.isActive()) return;
         committedBoundaryAt.set(boundary.eventId, timestampMs);
       },
-      onVisibleFrame(_boundary, timestampMs, coveredBoundaries) {
-        if (!runGuard.isActive()) return;
-        for (const coveredBoundary of coveredBoundaries) {
-          const offeredAt = offerTimes.get(coveredBoundary.eventId);
-          if (offeredAt !== undefined) visibleLatencies.push(Math.max(0, timestampMs - offeredAt));
-          const committedAt = committedBoundaryAt.get(coveredBoundary.eventId);
-          if (committedAt !== undefined) committedBoundaryVisibleLatencies.push(Math.max(0, timestampMs - committedAt));
-          if (coveredBoundary.eventId === expectedFinalId) {
-            finalVisibleAt = timestampMs;
-            resolveFinalVisible();
+      ...(proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+        ? {
+            onVisibleFrame(_boundary: any, timestampMs: number, coveredBoundaries: readonly any[]) {
+              if (!runGuard.isActive()) return;
+              for (const coveredBoundary of coveredBoundaries) {
+                const offeredAt = offerTimes.get(coveredBoundary.eventId);
+                if (offeredAt !== undefined) visibleLatencies.push(Math.max(0, timestampMs - offeredAt));
+                const committedAt = committedBoundaryAt.get(coveredBoundary.eventId);
+                if (committedAt !== undefined) committedBoundaryVisibleLatencies.push(Math.max(0, timestampMs - committedAt));
+                if (coveredBoundary.eventId === expectedFinalId) {
+                  finalPublicationAt = timestampMs;
+                  resolveFinalPublication();
+                }
+              }
+            }
           }
-        }
-      }
-    }, root);
+        : {
+            onLayoutCommit(_boundary: any, timestampMs: number, coveredBoundaries: readonly any[]) {
+              if (!runGuard.isActive()) return;
+              if (!root.isConnected || !root.querySelector(".workbench-react")) layoutCommitCoherent = false;
+              for (const coveredBoundary of coveredBoundaries) {
+                layoutCommittedEventIds.add(coveredBoundary.eventId);
+                const offeredAt = offerTimes.get(coveredBoundary.eventId);
+                if (offeredAt !== undefined) layoutCommitLatencies.push(Math.max(0, timestampMs - offeredAt));
+                const committedAt = committedBoundaryAt.get(coveredBoundary.eventId);
+                if (committedAt !== undefined) committedBoundaryLayoutCommitLatencies.push(Math.max(0, timestampMs - committedAt));
+                if (coveredBoundary.eventId === expectedFinalId) {
+                  finalPublicationAt = timestampMs;
+                  resolveFinalPublication();
+                }
+              }
+            }
+          })
+    };
+    panel = await mountProductionPanel(history, performanceHooks, root);
   } catch (error) {
     await cleanupSetupFailure(error);
   }
@@ -1680,15 +1739,26 @@ async function runCell(
     );
     const commitSettledAt = performance.now();
     enterPhase("paint");
-    updateProgress("visible-frame", "paint");
+    const publicationStage = proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+      ? "visible-frame"
+      : "layout-commit";
+    updateProgress(publicationStage, "paint");
     await withStageDeadline(
-      finalVisible,
-      `cell-${cellIndex}-visible-frame`,
+      finalPublication,
+      `cell-${cellIndex}-${publicationStage}`,
       STAGE_DEADLINES_MS.visibleFrame,
-      () => progress("visible-frame", "paint"),
+      () => progress(publicationStage, "paint"),
       undefined,
       runGuard
     );
+    if (proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT) {
+      if (!layoutCommitCoherent || layoutCommitLatencies.length === 0 || layoutCommittedEventIds.size !== expectedCount) {
+        throw new Error(
+          `Cell ${cellIndex} did not produce coherent production React DOM publication for every committed boundary `
+          + `(coherent=${layoutCommitCoherent}, boundaries=${layoutCommittedEventIds.size}/${expectedCount}).`
+        );
+      }
+    }
     // The journal owns immutable deserialized Evidence after settlement. Drop
     // the caller-owned large workload payloads before repeated queries so the
     // final memory cell measures the journal rather than two complete copies.
@@ -1755,11 +1825,21 @@ async function runCell(
       querySampleGc,
       latency: {
         offerToPublicationP95Ms: percentile(publicationLatencies, 0.95),
-        offerToVisibleFrameP95Ms: percentile(visibleLatencies, 0.95),
-        committedBoundaryToVisibleFrameP95Ms: percentile(committedBoundaryVisibleLatencies, 0.95),
-        finalBoundaryVisibleMs: finalVisibleAt === null
+        offerToVisibleFrameP95Ms: percentile(
+          proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+            ? visibleLatencies
+            : layoutCommitLatencies,
+          0.95
+        ),
+        committedBoundaryToVisibleFrameP95Ms: percentile(
+          proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+            ? committedBoundaryVisibleLatencies
+            : committedBoundaryLayoutCommitLatencies,
+          0.95
+        ),
+        finalBoundaryVisibleMs: finalPublicationAt === null
           ? null
-          : Math.max(0, finalVisibleAt - (offerTimes.get(expectedFinalId) ?? startedAt)),
+          : Math.max(0, finalPublicationAt - (offerTimes.get(expectedFinalId) ?? startedAt)),
         behindBacklogMs: Math.max(0, commitSettledAt - (startedAt + enqueueElapsedMs)),
         recentPageP95Ms,
         structuredIndexedP95Ms,

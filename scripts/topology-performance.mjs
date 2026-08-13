@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
 import WebSocket from "ws";
+import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(scriptDir, "..");
@@ -51,21 +52,13 @@ async function runTopologyPerformanceGate() {
     chrome = spawn(
       chromeExecutable,
       [
-        "--headless=new",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-        "--disable-features=CalculateNativeWinOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup",
-        "--use-mock-keychain",
-        "--password-store=basic",
-        "--disable-sync",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--remote-debugging-port=0",
-        `--user-data-dir=${profileDir}`,
-        "--window-size=1440,1000",
+        ...chromeTestArguments({
+          profile: profileDir,
+          headless: true,
+          noProxyServer: true,
+          disableNativeOcclusion: true,
+          additional: ["--remote-debugging-port=0", "--window-size=1440,1000"]
+        }),
         harnessUrl
       ],
       {

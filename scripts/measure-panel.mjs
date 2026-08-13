@@ -24,6 +24,7 @@ import { gzipSync } from "node:zlib";
 import { chromium } from "@playwright/test";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
+import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const diagnosticDirectory = resolve(
@@ -111,16 +112,7 @@ try {
   browser = await chromium.launch({
     executablePath: chromeExecutable,
     headless: false,
-    args: [
-      "--js-flags=--expose-gc",
-      "--disable-background-timer-throttling",
-      "--use-mock-keychain",
-      "--password-store=basic",
-      "--disable-sync",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-features=PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"
-    ]
+    args: chromeTestArguments({ headless: false, disableNativeOcclusion: true, exposeGc: true })
   });
   const measuredBrowserVersion = await browser.version();
   if (!/\b151\./u.test(measuredBrowserVersion)) {

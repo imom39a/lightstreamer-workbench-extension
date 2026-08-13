@@ -241,3 +241,25 @@ from the authoritative suite, corrupt/missing selected data, concurrent-latch
 boundary exclusion, compound facet algebra, and zero replay-payload hydration
 for ordinary queries. Real-Chromium 10,000-record / 3,842-key evidence and
 package-size closure remain outstanding.
+
+## Locked-console non-interactive closure mode
+
+The closure runner now has an explicit `non-interactive-layout-commit` proof
+mode. It launches the cached real Chrome for Testing 151 with the centralized
+unattended Chrome policy and a fresh temporary profile, skips all activation,
+focus, occlusion, screencast, and headed-rAF experiments, and still executes
+the production Workbench runtime with native IndexedDB, React, and the exact
+36-cell/query/scenario/heap workloads. The existing absolute thresholds and
+query/storage/correctness gates are unchanged.
+
+In this mode the only replaced observation is compositor-dependent visible
+paint: the production panel's existing React layout-effect telemetry reports a
+bounded DOM publication boundary, and the harness verifies the Workbench React
+root is connected and that every committed Evidence identity is covered. The
+gate requires `headless=true`, the explicit proof mode, a coherent publication
+boundary, `compositorFrameMeasured=false`, and zero missing boundaries. A
+non-interactive report cannot be classified as headed proof; missing or
+incoherent layout boundaries fail closed.
+
+The supplied headed artifact remains truthful environmental evidence: it is a
+`TIMED_OUT` run at the real-rAF compositor boundary with no PASS or p95 claim.

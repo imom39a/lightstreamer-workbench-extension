@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { defineConfig } from "@playwright/test";
+import { chromeTestArguments } from "./scripts/chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const chromeExecutable = resolveChromeExecutable();
@@ -28,14 +29,7 @@ export default defineConfig({
     deviceScaleFactor: 1,
     launchOptions: {
       ...(chromeExecutable ? { executablePath: chromeExecutable } : {}),
-      args: [
-        "--use-mock-keychain",
-        "--password-store=basic",
-        "--disable-sync",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-features=PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"
-      ]
+      args: chromeTestArguments({ headless: true, disableNativeOcclusion: true })
     }
   },
   webServer: {

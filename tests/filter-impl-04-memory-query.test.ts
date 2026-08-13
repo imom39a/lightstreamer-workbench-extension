@@ -54,7 +54,13 @@ describe("in-memory Evidence Snapshot reads", () => {
     expect(result.value.page.evidence).toHaveLength(1);
     expect(result.value.page.evidence[0]?.identity.sequence).toBe(2);
     expect(result.value.totals).toEqual({ matching: 2, inScope: 2 });
-    expect(result.value.page.nextCursor).toBe("1");
+    expect(result.value.page.nextCursor).toEqual(expect.any(String));
+    const continuation = await history.query!({
+      at: result.value.readPoint,
+      page: { order: "NEWEST_FIRST", size: 1, cursor: result.value.page.nextCursor! },
+      filter: { ...emptyFilter(), text: "item-1" }
+    });
+    expect(continuation.ok && continuation.value.page.evidence[0]?.identity.sequence).toBe(1);
     expect(Object.isFrozen(result.value)).toBe(true);
   });
 

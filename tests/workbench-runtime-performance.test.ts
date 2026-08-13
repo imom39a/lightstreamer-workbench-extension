@@ -166,6 +166,36 @@ describe("production React runtime performance boundary seam", () => {
     await history.close();
   });
 
+  it("reports a separate production layout-commit publication boundary without a compositor claim", async () => {
+    const layoutCommits: Array<{ sequence: number; covered: number[] }> = [];
+    const history = createInMemoryEventHistory({ panelSessionId: "performance-layout-commit" });
+    const scheduler = createFrameScheduler();
+    const runtime = createWorkbenchRuntime({
+      history,
+      scheduler,
+      captureStatus: "capturing",
+      performanceHooks: {
+        onLayoutCommit(boundary, _timestampMs, coveredBoundaries) {
+          layoutCommits.push({ sequence: boundary.sequence, covered: coveredBoundaries.map((entry) => entry.sequence) });
+        }
+      }
+    });
+
+    const event = createEventHistoryWorkloadEvent("ordinary-item-update", 1, "layout-commit");
+    await expect(history.offer(event).settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { sequence: 1 } });
+    scheduler.flushFrame();
+    await flushPromises();
+    const boundary = runtime.getSnapshot().renderedEvidenceBoundary;
+    expect(boundary).toMatchObject({ sequence: 1, eventId: event.id });
+    runtime.reportPanelPerformanceEvent?.({ type: "layout-effect", snapshotVersion: runtime.getSnapshot().version, boundary });
+
+    expect(layoutCommits).toEqual([{ sequence: 1, covered: [1] }]);
+    expect(runtime.getPerformanceDiagnostics?.()?.visibleFrameHeartbeat).toBe(0);
+
+    runtime.dispose();
+    await history.close();
+  });
+
   it("times only an accepted topology staging exchange, not duplicate or mismatched frames", async () => {
     const starts: string[] = [];
     const ends: string[] = [];

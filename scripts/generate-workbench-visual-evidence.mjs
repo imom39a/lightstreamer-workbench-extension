@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { Browser, Cache } from "@puppeteer/browsers";
 import axe from "axe-core";
+import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactRoot = resolve(projectRoot, "test-results/workbench-visual-qa");
@@ -71,14 +72,7 @@ try {
   browser = await chromium.launch({
     executablePath: await resolveChromeExecutable(),
     headless: browserHeadless,
-    args: [
-      "--use-mock-keychain",
-      "--password-store=basic",
-      "--disable-sync",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-features=PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"
-    ]
+    args: chromeTestArguments({ headless: browserHeadless, disableNativeOcclusion: true })
   });
   const results = [];
   for (const scenario of scenarios) {

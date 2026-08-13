@@ -30,6 +30,21 @@ export const CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS = 1_000;
 export const CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS = 250;
 export const TERMINAL_PENDING_BYTE_ACCEPTED_COUNT = 16;
 
+export const EVENT_HISTORY_PERFORMANCE_PROOF_MODES = Object.freeze({
+  HEADED_VISIBLE_FRAME: "headed-visible-frame",
+  NON_INTERACTIVE_LAYOUT_COMMIT: "non-interactive-layout-commit"
+} as const);
+
+export type EventHistoryPerformanceProofMode =
+  typeof EVENT_HISTORY_PERFORMANCE_PROOF_MODES[keyof typeof EVENT_HISTORY_PERFORMANCE_PROOF_MODES];
+
+export type EventHistoryPerformanceFrameProof = Readonly<{
+  publicationBoundary: "visible-compositor-frame" | "react-layout-commit-dom-publication";
+  compositorFrameMeasured: boolean;
+  coherent: boolean;
+  missingBoundaryCount: number;
+}>;
+
 export type EventHistoryPerformanceAdapter = "indexeddb" | "memory";
 export type EventHistoryPerformanceWorkload = "sustained" | "burst";
 export type EventHistoryPerformanceShape =
@@ -270,13 +285,15 @@ export type EventHistoryPerformanceEnvironment = Readonly<{
   chromeMajor: number;
   platformClass: string;
   architectureClass: string;
-  headless: false;
+  headless: boolean;
 }>;
 
 export type EventHistoryPerformanceReport = Readonly<{
   schemaVersion: typeof PERFORMANCE_GATE_SCHEMA_VERSION;
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
+  proofMode?: EventHistoryPerformanceProofMode;
+  frameProof?: EventHistoryPerformanceFrameProof;
   cells: readonly EventHistoryPerformanceCell[];
   queryCells: readonly EventHistoryPerformanceQueryCell[];
   capabilities?: Readonly<{
@@ -306,12 +323,17 @@ export type EventHistoryPerformanceReference = Readonly<{
   referenceVersion: string;
   disposition: "ACCEPTED_INITIAL_CLEAN_REFERENCE";
   rationale: string;
-  environment: Pick<EventHistoryPerformanceEnvironment, "chromeMajor" | "platformClass" | "architectureClass">;
+  environment: Pick<EventHistoryPerformanceEnvironment, "chromeMajor" | "platformClass" | "architectureClass"> & Readonly<{ headless?: boolean }>;
+  proofMode?: EventHistoryPerformanceProofMode;
   cells: readonly EventHistoryPerformanceCell[];
   queryCells: readonly EventHistoryPerformanceQueryCell[];
 }>;
 
-export type PerformanceGateMode = "ordinary" | "capture-only";
+export type PerformanceGateMode =
+  | "ordinary"
+  | "capture-only"
+  | "non-interactive"
+  | "non-interactive-capture-only";
 export type PerformanceGateVerdict = "PASS" | "REVIEW" | "FAIL" | "NOT_CLASSIFIED";
 
 export type PerformanceGateDecision = Readonly<{
@@ -348,8 +370,27 @@ export function classifyEventHistoryPerformance(
   if (failures.length > 0) return decision(failures, reviewReasons, 0, 0);
   const validReport = report as unknown as EventHistoryPerformanceReport;
   if (validReport.source.dirty !== false) failures.push("The performance report was not generated from a clean source revision.");
-  if (validReport.environment.headless !== false) {
+  const nonInteractive = mode === "non-interactive" || mode === "non-interactive-capture-only";
+  if (nonInteractive) {
+    if (validReport.environment.headless !== true) {
+      failures.push("The non-interactive performance proof must explicitly report headless Chrome.");
+    }
+    if (validReport.proofMode !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT) {
+      failures.push("The non-interactive performance proof must report the layout-commit proof mode.");
+    }
+    const frameProof = validReport.frameProof;
+    if (
+      frameProof?.publicationBoundary !== "react-layout-commit-dom-publication"
+      || frameProof.compositorFrameMeasured !== false
+      || frameProof.coherent !== true
+      || frameProof.missingBoundaryCount !== 0
+    ) {
+      failures.push("The non-interactive performance proof must have coherent production React DOM publication boundaries and no compositor-frame claim.");
+    }
+  } else if (validReport.environment.headless !== false) {
     failures.push("The performance proof must run in visible Chrome.");
+  } else if (validReport.proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT) {
+    failures.push("A non-interactive layout-commit report cannot be classified as headed visible-frame proof.");
   }
   if (validReport.environment.chromeMajor !== 151) {
     failures.push(`The performance proof must use Chrome for Testing 151, got ${validReport.environment.chromeMajor}.`);
@@ -464,7 +505,7 @@ export function classifyEventHistoryPerformance(
     failures.push("Panel Session lifecycle samples show strict monotonic retained-heap growth.");
   }
 
-  if (mode === "capture-only") {
+  if (mode === "capture-only" || mode === "non-interactive-capture-only") {
     if (failures.length === 0) {
       reviewReasons.push("Candidate capture is not classified until a maintainer adopts a separately pinned reference.");
     }
@@ -475,6 +516,11 @@ export function classifyEventHistoryPerformance(
     failures.push("No separately pinned reference was supplied; a report cannot self-adopt as its reference.");
   } else if (!isPerformanceReference(reference)) {
     failures.push("Missing, malformed, empty, or pending pinned reference telemetry.");
+  } else if (nonInteractive && (
+    reference.proofMode !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT
+    || reference.environment.headless !== true
+  )) {
+    failures.push("The non-interactive proof requires a separately adopted non-interactive layout-commit reference.");
   } else if (failures.length === 0) {
     compareReference(validReport, reference, reviewReasons);
   }
@@ -525,7 +571,9 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
   const valid = value.schemaVersion === PERFORMANCE_GATE_SCHEMA_VERSION
     && isRecord(source) && typeof source.revision === "string" && source.revision.length > 0 && isBoolean(source.dirty)
     && isRecord(environment) && environment.chromeMajor === 151 && typeof environment.platformClass === "string"
-    && typeof environment.architectureClass === "string" && environment.headless === false
+    && typeof environment.architectureClass === "string" && isBoolean(environment.headless)
+    && (value.proofMode === undefined || isPerformanceProofMode(value.proofMode))
+    && (value.frameProof === undefined || isPerformanceFrameProof(value.frameProof))
     && Array.isArray(value.cells) && value.cells.every(isPerformanceCell)
     && Array.isArray(value.queryCells) && value.queryCells.length === 6 && value.queryCells.every(isQueryCell)
     && (value.capabilities === undefined || (
@@ -871,8 +919,24 @@ function isPerformanceReference(value: unknown): value is EventHistoryPerformanc
     && typeof value.rationale === "string" && value.rationale.trim().length > 0
     && isRecord(environment) && environment.chromeMajor === 151
     && typeof environment.platformClass === "string" && typeof environment.architectureClass === "string"
+    && (environment.headless === undefined || isBoolean(environment.headless))
+    && (value.proofMode === undefined || isPerformanceProofMode(value.proofMode))
     && Array.isArray(value.cells) && hasIndependentMatrixSamples(value.cells)
     && queryFailures.length === 0;
+}
+
+function isPerformanceProofMode(value: unknown): value is EventHistoryPerformanceProofMode {
+  return value === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+    || value === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT;
+}
+
+function isPerformanceFrameProof(value: unknown): value is EventHistoryPerformanceFrameProof {
+  return isRecord(value)
+    && (value.publicationBoundary === "visible-compositor-frame" || value.publicationBoundary === "react-layout-commit-dom-publication")
+    && isBoolean(value.compositorFrameMeasured)
+    && isBoolean(value.coherent)
+    && Number.isSafeInteger(value.missingBoundaryCount)
+    && (value.missingBoundaryCount as number) >= 0;
 }
 
 function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell {

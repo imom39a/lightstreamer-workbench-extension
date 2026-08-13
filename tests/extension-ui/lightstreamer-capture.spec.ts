@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
+import { chromeTestArguments } from "../../scripts/chrome-test-policy.mjs";
 
 import {
   CdpClient,
@@ -54,25 +55,20 @@ async function runOfficialClientPanelJourney(
     await access(extensionDir, constants.R_OK);
     const extensionManifest = await readExtensionManifest(extensionDir);
     const chromeArguments = [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--use-mock-keychain",
-      "--password-store=basic",
-      "--disable-sync",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-features=PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup",
-      "--auto-open-devtools-for-tabs",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profileDir}`,
-      `--disable-extensions-except=${extensionDir}`,
-      `--load-extension=${extensionDir}`,
-      `--window-size=${windowSize}`,
+      ...chromeTestArguments({
+        profile: profileDir,
+        headless: process.env.LSEW_BROWSER_HEADLESS !== "false",
+        disableNativeOcclusion: true,
+        additional: [
+          "--auto-open-devtools-for-tabs",
+          "--remote-debugging-port=0",
+          `--disable-extensions-except=${extensionDir}`,
+          `--load-extension=${extensionDir}`,
+          `--window-size=${windowSize}`
+        ]
+      }),
       "about:blank"
     ];
-    if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
-      chromeArguments.unshift("--headless=new");
-    }
     chrome = spawn(chromeExecutable, chromeArguments, {
       cwd: rootDir,
       env: process.env,

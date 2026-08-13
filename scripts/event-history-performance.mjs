@@ -26,6 +26,7 @@ import {
   runPageOperation,
   requestControlCdpWithDeadline
 } from "./event-history-performance-runner-operations.mjs";
+import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_OUTPUT ?? "test-results/event-history-performance.json");
@@ -40,10 +41,17 @@ const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
   "LSEW_EVENT_HISTORY_PERF_DEADLINE_MS",
   3_600_000
 );
+const HEADED_VISIBLE_FRAME_PROOF_MODE = "headed-visible-frame";
+const NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE = "non-interactive-layout-commit";
 
 async function main() {
-  requireVisibleEnvironment();
+  const proofMode = requestedProofMode();
+  const nonInteractive = proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE;
+  requireVisibleEnvironment(proofMode);
   const captureMode = process.env.LSEW_EVENT_HISTORY_PERF_CAPTURE === "true";
+  const classificationMode = nonInteractive
+    ? (captureMode ? "non-interactive-capture-only" : "non-interactive")
+    : (captureMode ? "capture-only" : "ordinary");
   const reference = captureMode ? undefined : JSON.parse(await readFile(referencePath, "utf8"));
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-event-history-performance-"));
   const site = join(temporaryRoot, "site");
@@ -81,45 +89,54 @@ async function main() {
     await writeFile(indexPath, createHarnessDocument());
     const url = pathToFileURL(indexPath).href;
     const executable = await chromeExecutable();
-    chrome = spawn(executable, chromeLaunchArguments(profile), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
+    chrome = spawn(executable, chromeLaunchArguments(profile, process.platform, proofMode), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
     chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
     const proofDeadlineAt = Date.now() + EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS;
     const processActivationHelper = join(temporaryRoot, "process-activation-helper");
-    await compileProcessActivationHelper(processActivationHelper, proofDeadlineAt);
-    let lastActivationEvidence = null;
-    const activateWindow = async () => {
-      lastActivationEvidence = await activateSpawnedChromeWindow(chrome.pid, { helperPath: processActivationHelper, deadlineAt: proofDeadlineAt });
-      return lastActivationEvidence;
-    };
-    await activateWindow();
-    foregroundKeeper = createForegroundKeeper(chrome.pid, {
-      helperPath: processActivationHelper,
-      deadlineAt: proofDeadlineAt
-    });
-    foregroundKeeper.start();
-    const runPageOperationWithForegroundKeeper = (pageCdp, expression, options = {}) => {
-      const { onHeartbeat, targetId, ...operationOptions } = options;
-      const focusTarget = typeof targetId === "string"
-        ? ({ deadlineAt, timeoutMs }) => focusHarnessTarget(browserCdp, pageCdp, targetId, {
-          deadlineAt,
-          requestCeilingMs: Math.max(1, Math.floor(timeoutMs / 6))
-        })
-        : undefined;
-      const focusTargetForStatus = createForegroundFocusTargetSelector(
-        focusTarget,
-        foregroundKeeper.snapshot().cadenceMs
-      );
-      return runPageOperation(pageCdp, expression, {
-        ...operationOptions,
-        propagateHeartbeatErrors: true,
-        onHeartbeat: async (status) => {
-          await foregroundKeeper.keepAlive({ reason: "operation-heartbeat", focusTarget: focusTargetForStatus(status) });
-          await onHeartbeat?.(status);
-        }
+    let activateWindow;
+    let runPageOperationForProof;
+    if (nonInteractive) {
+      runPageOperationForProof = (pageCdp, expression, options = {}) => runPageOperation(pageCdp, expression, {
+        ...options,
+        propagateHeartbeatErrors: true
       });
-    };
+    } else {
+      await compileProcessActivationHelper(processActivationHelper, proofDeadlineAt);
+      let lastActivationEvidence = null;
+      activateWindow = async () => {
+        lastActivationEvidence = await activateSpawnedChromeWindow(chrome.pid, { helperPath: processActivationHelper, deadlineAt: proofDeadlineAt });
+        return lastActivationEvidence;
+      };
+      await activateWindow();
+      foregroundKeeper = createForegroundKeeper(chrome.pid, {
+        helperPath: processActivationHelper,
+        deadlineAt: proofDeadlineAt
+      });
+      foregroundKeeper.start();
+      runPageOperationForProof = (pageCdp, expression, options = {}) => {
+        const { onHeartbeat, targetId, ...operationOptions } = options;
+        const focusTarget = typeof targetId === "string"
+          ? ({ deadlineAt, timeoutMs }) => focusHarnessTarget(browserCdp, pageCdp, targetId, {
+            deadlineAt,
+            requestCeilingMs: Math.max(1, Math.floor(timeoutMs / 6))
+          })
+          : undefined;
+        const focusTargetForStatus = createForegroundFocusTargetSelector(
+          focusTarget,
+          foregroundKeeper.snapshot().cadenceMs
+        );
+        return runPageOperation(pageCdp, expression, {
+          ...operationOptions,
+          propagateHeartbeatErrors: true,
+          onHeartbeat: async (status) => {
+            await foregroundKeeper.keepAlive({ reason: "operation-heartbeat", focusTarget: focusTargetForStatus(status) });
+            await onHeartbeat?.(status);
+          }
+        });
+      };
+    }
     const browserSocketUrl = await browserTarget(debugPort, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-websocket") });
     browserCdp = await connect(browserSocketUrl, {
       deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-connect"),
@@ -137,6 +154,12 @@ async function main() {
       }
     });
     const environment = await requestControlCdpWithDeadline(browserCdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
+    if (nonInteractive && (
+      process.env.LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS === "true"
+      || process.env.LSEW_EVENT_HISTORY_PERF_FRAME_PROBE_ONLY === "true"
+    )) {
+      throw new Error("The non-interactive proof mode cannot run headed compositor diagnostics or the headed rAF discriminator.");
+    }
     if (process.env.LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS === "true") {
       frameDiagnostics = createFrameDiagnostics();
       await requestControlCdpWithDeadline(browserCdp, "Target.setDiscoverTargets", { discover: true }, { deadlineAt: proofDeadlineAt, phase: "Target.setDiscoverTargets" });
@@ -145,13 +168,21 @@ async function main() {
         transferMode: "ReportEvents"
       }, { deadlineAt: proofDeadlineAt, phase: "Tracing.start" });
     }
-    initialTarget = await openHarnessTarget(browserCdp, debugPort, url, { deadlineAt: proofDeadlineAt, activateWindow });
+    initialTarget = await openHarnessTarget(browserCdp, debugPort, url, {
+      deadlineAt: proofDeadlineAt,
+      activateWindow,
+      interactive: !nonInteractive
+    });
     const initialIdentity = { targetId: initialTarget.targetId, pageToken: initialTarget.pageToken, url: initialTarget.url, ...initialTarget.windowEvidence };
     targetIdentity.push(initialIdentity);
     frameDiagnostics?.nativeWindows.push(initialIdentity);
     cdp = initialTarget.cdp;
-    await prepareInitialPageForAuthoritativeRun(cdp, url, { deadlineAt: proofDeadlineAt });
-    await probeForegroundRaf(cdp, { deadlineAt: proofDeadlineAt, record: (evidence) => frameDiagnostics?.targetIdentity.push({ targetId: initialTarget.targetId, pageToken: initialTarget.pageToken, url: initialTarget.url, ...evidence }) });
+    if (nonInteractive) {
+      await prepareInitialPageForNonInteractiveRun(cdp, url, { deadlineAt: proofDeadlineAt });
+    } else {
+      await prepareInitialPageForAuthoritativeRun(cdp, url, { deadlineAt: proofDeadlineAt });
+      await probeForegroundRaf(cdp, { deadlineAt: proofDeadlineAt, record: (evidence) => frameDiagnostics?.targetIdentity.push({ targetId: initialTarget.targetId, pageToken: initialTarget.pageToken, url: initialTarget.url, ...evidence }) });
+    }
     if (process.env.LSEW_EVENT_HISTORY_PERF_FRAME_PROBE_ONLY === "true") {
       const mutation = await evaluateWithDeadline(cdp, `new Promise((resolve) => {
         let settled = false;
@@ -189,17 +220,18 @@ async function main() {
     if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
     chromeMetadata = {
       kind: "real-chrome",
-      headless: false,
+      headless: nonInteractive,
       fakeIndexedDbUsed: false,
       product: environment.product,
       userAgent: environment.userAgent,
-      jsVersion: environment.jsVersion
+      jsVersion: environment.jsVersion,
+      proofMode
     };
     environmentMetadata = {
       chromeMajor,
       platformClass: process.platform === "darwin" ? "darwin" : process.platform,
       architectureClass: process.arch,
-      headless: false
+      headless: nonInteractive
     };
     const shardResults = [];
     let lastOperationStatus = null;
@@ -208,6 +240,7 @@ async function main() {
         deadlineAt: proofDeadlineAt,
         operation: lastOperationStatus,
         activateWindow,
+        interactive: !nonInteractive,
         recordForegroundRaf: (evidence) => frameDiagnostics?.targetIdentity.push(evidence),
         onEvent(event) {
           if (event.method === "Page.screencastFrame" && frameDiagnostics) {
@@ -228,9 +261,9 @@ async function main() {
       }
       let primaryError = null;
       try {
-        return await runPageOperationWithForegroundKeeper(
+        return await runPageOperationForProof(
           page.cdp,
-          `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)})`,
+          `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)}, ${JSON.stringify(proofMode)})`,
           {
             deadlineAt: proofDeadlineAt,
             targetId: page.targetId,
@@ -298,14 +331,14 @@ async function main() {
     }
     const result = aggregatePerformanceShardResults(shardResults);
 
-    const heapPage = await openFreshHarnessPage(browserCdp, debugPort, url, `heap-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow });
+    const heapPage = await openFreshHarnessPage(browserCdp, debugPort, url, `heap-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow, interactive: !nonInteractive });
     let heapPlan;
     let primaryHeapError = null;
     try {
       heapPlan = await runHeapMeasurementPlan({
       eventCounts: { indexeddb: 10_000, memory: 5_000 },
       deadlineAt: proofDeadlineAt,
-      prepare: ({ adapter, eventCount, phase, sample }) => runPageOperationWithForegroundKeeper(
+      prepare: ({ adapter, eventCount, phase, sample }) => runPageOperationForProof(
         heapPage.cdp,
         `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${eventCount}, ${JSON.stringify(phase)}, ${sample === null ? "null" : sample})`,
         { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }
@@ -322,9 +355,9 @@ async function main() {
         retainedUsedSizeBytes: retained.usedSize,
         postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
       }),
-      close: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }),
-      removeRoot: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }),
-      yieldFrame: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId })
+      close: () => runPageOperationForProof(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }),
+      removeRoot: () => runPageOperationForProof(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }),
+      yieldFrame: () => runPageOperationForProof(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId })
       });
     } catch (error) {
       primaryHeapError = error;
@@ -334,17 +367,17 @@ async function main() {
     }
     const heapSamples = heapPlan.heapSamples;
 
-    const lifecyclePage = await openFreshHarnessPage(browserCdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow });
+    const lifecyclePage = await openFreshHarnessPage(browserCdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow, interactive: !nonInteractive });
     const lifecycleRetainedHeapBytes = [];
     let primaryLifecycleError = null;
     try {
       for (let sample = 0; sample < 3; sample += 1) {
         const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt });
-        await runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId });
+        await runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId });
         const released = await releaseHeapSessionWithCleanup({
-          release: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
-          removeRoot: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
-          yieldFrame: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+          release: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+          removeRoot: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+          yieldFrame: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
           forceGc: () => collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt }),
           deadlineAt: proofDeadlineAt
         });
@@ -357,11 +390,12 @@ async function main() {
       await closeFreshHarnessPageWithErrorPreservation(browserCdp, lifecyclePage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryLifecycleError);
     }
 
-    await foregroundKeeper.assertHealthy({ reason: "before-report" });
+    if (!nonInteractive) await foregroundKeeper.assertHealthy({ reason: "before-report" });
     const report = {
       schemaVersion: 2,
       generatedAt: new Date().toISOString(),
       runner: chromeMetadata,
+      proofMode,
       source: {
         revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
         dirty: execFileSync("git", ["status", "--porcelain"], { cwd: rootDir, encoding: "utf8" }).trim().length > 0
@@ -369,7 +403,20 @@ async function main() {
       environment: {
         ...environmentMetadata
       },
-      foregroundKeeper: foregroundKeeper.snapshot(),
+      frameProof: nonInteractive
+        ? {
+            publicationBoundary: "react-layout-commit-dom-publication",
+            compositorFrameMeasured: false,
+            coherent: result.frameProof?.coherent === true,
+            missingBoundaryCount: result.frameProof?.missingBoundaryCount ?? 0
+          }
+        : {
+            publicationBoundary: "visible-compositor-frame",
+            compositorFrameMeasured: true,
+            coherent: true,
+            missingBoundaryCount: 0
+          },
+      foregroundKeeper: foregroundKeeper?.snapshot() ?? null,
       anchors: result.anchors,
       capabilities: {
         interCellGc: "EXPOSED_THREE_PASS_V1",
@@ -393,9 +440,15 @@ async function main() {
       telemetry: { storageEstimate: "Per-cell navigator.storage.estimate() telemetry is non-authoritative; unavailable/error states are retained and excluded from verdict gates." }
     };
     const decision = captureMode
-      ? classifyEventHistoryPerformance(report, undefined, "capture-only")
-      : classifyEventHistoryPerformance(report, reference);
-    const complete = { ...report, decision, reference: { path: referencePath, separatelyPinned: !captureMode, adopted: false } };
+      ? classificationMode === "capture-only"
+        ? classifyEventHistoryPerformance(report, undefined, "capture-only")
+        : classifyEventHistoryPerformance(report, undefined, "non-interactive-capture-only")
+      : classifyEventHistoryPerformance(report, reference, classificationMode);
+    const complete = {
+      ...report,
+      decision,
+      reference: { path: referencePath, separatelyPinned: !captureMode, adopted: !captureMode }
+    };
     await mkdir(dirname(outputPath), { recursive: true });
     await writeFile(outputPath, `${JSON.stringify(complete, null, 2)}\n`);
     await writeFile(markdownPath, markdown(complete));
@@ -435,8 +488,20 @@ async function main() {
           markdownPath,
           timeout: primaryError,
           source: safeSourceState(),
-          runner: chromeMetadata,
-          environment: environmentMetadata,
+          runner: chromeMetadata ?? {
+            kind: "real-chrome",
+            headless: nonInteractive,
+            fakeIndexedDbUsed: false,
+            proofMode,
+            observation: "launch-or-startup-failed-before-Chrome-metadata"
+          },
+          environment: environmentMetadata ?? {
+            chromeMajor: null,
+            platformClass: process.platform === "darwin" ? "darwin" : process.platform,
+            architectureClass: process.arch,
+            headless: nonInteractive,
+            proofMode
+          },
           referencePath,
           deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
           identity: targetIdentity,
@@ -467,6 +532,13 @@ export async function prepareInitialPageForAuthoritativeRun(cdp, expectedUrl, ti
   await ensureFreshHarnessDocument(cdp, expectedUrl, Math.min(15_000, remainingDeadlineMs(options.deadlineAt, 15_000, "initial-document")), options);
   await waitForHarness(cdp, options);
   await preparePageForAuthoritativeRun(cdp, options);
+}
+
+export async function prepareInitialPageForNonInteractiveRun(cdp, expectedUrl, timeoutOrOptions = 30_000) {
+  const options = startupDeadlineOptions(timeoutOrOptions);
+  await ensureFreshHarnessDocument(cdp, expectedUrl, Math.min(15_000, remainingDeadlineMs(options.deadlineAt, 15_000, "initial-document")), options);
+  await waitForHarness(cdp, options);
+  await preparePageForNonInteractiveRun(cdp, expectedUrl, options);
 }
 
 export function createHarnessDocument() {
@@ -505,6 +577,29 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
   }
 }
 
+/**
+ * Non-interactive proof preparation deliberately avoids Page.bringToFront and
+ * every compositor/rAF probe. It only proves that the real Chrome document
+ * and harness module are loaded before production operations begin.
+ */
+export async function preparePageForNonInteractiveRun(cdp, expectedUrl, timeoutMs = 30_000) {
+  const options = startupDeadlineOptions(timeoutMs);
+  const state = await evaluateWithDeadline(cdp, `({
+    readyState: document.readyState,
+    visibilityState: document.visibilityState,
+    url: location.href,
+    harnessReady: Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)
+  })`, options.deadlineAt, "non-interactive-document-ready", options);
+  if (
+    state?.readyState !== "complete"
+    || state?.visibilityState !== "visible"
+    || state?.url !== expectedUrl
+    || state?.harnessReady !== true
+  ) {
+    throw new Error("Non-interactive real-Chrome proof requires a loaded visible document and ready production harness.");
+  }
+}
+
 export async function probeForegroundRaf(cdp, options = {}) {
   const deadlineAt = Number.isFinite(options.deadlineAt) ? options.deadlineAt : Date.now() + 1_000;
   const timeoutMs = Math.max(1, Math.min(1_000, remainingDeadlineMs(deadlineAt, 1_000, "foreground-raf")));
@@ -527,13 +622,27 @@ export async function probeForegroundRaf(cdp, options = {}) {
 }
 
 export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options = {}) {
-  const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", nativeWindowTargetParams(pageUrl), { ...options, phase: "Target.createTarget" });
+  const interactive = options.interactive !== false;
+  const created = await requestControlCdpWithDeadline(
+    controlCdp,
+    "Target.createTarget",
+    interactive ? nativeWindowTargetParams(pageUrl) : { url: pageUrl },
+    { ...options, phase: "Target.createTarget" }
+  );
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the initial harness page.");
   let windowEvidence;
   let pageCdp;
   try {
-    const activationEvidence = await options.activateWindow?.();
-    windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, { ...options, activationEvidence });
+    if (interactive) {
+      const activationEvidence = await options.activateWindow?.();
+      windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, { ...options, activationEvidence });
+    } else {
+      windowEvidence = {
+        mode: "non-interactive",
+        headless: true,
+        compositorVisibleFrameVerified: false
+      };
+    }
     pageCdp = await connect(await pageTarget(debugPort, pageUrl, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket, onEvent: options.onEvent });
     await ensureFreshHarnessDocument(pageCdp, pageUrl, 15_000, options);
     return { cdp: pageCdp, targetId: created.targetId, pageToken: "initial", url: pageUrl, windowEvidence };
@@ -550,18 +659,36 @@ export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options 
 export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageToken, options = {}) {
   if (typeof pageToken !== "string" || pageToken.length === 0) throw new Error("Fresh harness page requires a non-empty page token.");
   const pageUrl = new URL(harnessPageUrl(baseUrl, pageToken));
-  const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", nativeWindowTargetParams(pageUrl.href), { ...options, phase: "Target.createTarget" });
+  const interactive = options.interactive !== false;
+  const created = await requestControlCdpWithDeadline(
+    controlCdp,
+    "Target.createTarget",
+    interactive ? nativeWindowTargetParams(pageUrl.href) : { url: pageUrl.href },
+    { ...options, phase: "Target.createTarget" }
+  );
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
   let windowEvidence;
   let pageCdp;
   try {
-    const activationEvidence = await options.activateWindow?.();
-    windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, { ...options, activationEvidence });
+    if (interactive) {
+      const activationEvidence = await options.activateWindow?.();
+      windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, { ...options, activationEvidence });
+    } else {
+      windowEvidence = {
+        mode: "non-interactive",
+        headless: true,
+        compositorVisibleFrameVerified: false
+      };
+    }
     pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket, onEvent: options.onEvent });
     await ensureFreshHarnessDocument(pageCdp, pageUrl.href, 15_000, options);
     await waitForHarness(pageCdp, options);
-    await preparePageForAuthoritativeRun(pageCdp, options);
-    await probeForegroundRaf(pageCdp, { ...options, record: (evidence) => options.recordForegroundRaf?.({ targetId: created.targetId, pageToken, url: pageUrl.href, ...evidence }) });
+    if (interactive) {
+      await preparePageForAuthoritativeRun(pageCdp, options);
+      await probeForegroundRaf(pageCdp, { ...options, record: (evidence) => options.recordForegroundRaf?.({ targetId: created.targetId, pageToken, url: pageUrl.href, ...evidence }) });
+    } else {
+      await preparePageForNonInteractiveRun(pageCdp, pageUrl.href, options);
+    }
     const observedToken = options.deadlineAt !== undefined
       ? await evaluateWithDeadline(pageCdp, "new URL(location.href).searchParams.get('pageToken')", options.deadlineAt, "page-token")
       : await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", BROWSER_TIMEOUT_MS);
@@ -724,27 +851,28 @@ function attachCleanupEvidence(primaryError, cleanupError) {
   }
 }
 
-export function chromeLaunchArguments(profile, platform = process.platform) {
-  const args = [
-    "--no-sandbox",
-    "--no-proxy-server",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "--disable-features=CalculateNativeWinOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup",
-    "--allow-file-access-from-files",
-    "--js-flags=--expose-gc",
-    "--use-mock-keychain",
-    "--password-store=basic",
-    "--disable-sync",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--remote-debugging-port=0",
-    `--user-data-dir=${profile}`,
+export function chromeLaunchArguments(
+  profile,
+  platform = process.platform,
+  proofMode = HEADED_VISIBLE_FRAME_PROOF_MODE
+) {
+  if (proofMode !== HEADED_VISIBLE_FRAME_PROOF_MODE && proofMode !== NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) {
+    throw new Error(`Unsupported Event History Chrome proof mode: ${String(proofMode)}.`);
+  }
+  return [
+    ...chromeTestArguments({
+      profile,
+      platform,
+      headless: proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE,
+      noProxyServer: true,
+      disableNativeOcclusion: true,
+      allowFileAccess: true,
+      exposeGc: true,
+      activateOnLaunch: proofMode === HEADED_VISIBLE_FRAME_PROOF_MODE && platform === "darwin",
+      additional: ["--remote-debugging-port=0"]
+    }),
+    "about:blank"
   ];
-  if (platform === "darwin") args.push("--activate-on-launch");
-  args.push("about:blank");
-  return args;
 }
 
 export function createFrameDiagnostics() {
@@ -1061,7 +1189,16 @@ function foregroundKeeperError(error) {
   };
 }
 
-function requireVisibleEnvironment() {
+function requestedProofMode() {
+  const mode = process.env.LSEW_EVENT_HISTORY_PERF_MODE ?? HEADED_VISIBLE_FRAME_PROOF_MODE;
+  if (mode !== HEADED_VISIBLE_FRAME_PROOF_MODE && mode !== NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) {
+    throw new Error(`LSEW_EVENT_HISTORY_PERF_MODE must be ${HEADED_VISIBLE_FRAME_PROOF_MODE} or ${NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE}.`);
+  }
+  return mode;
+}
+
+function requireVisibleEnvironment(proofMode) {
+  if (proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) return;
   if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
     throw new Error("Event History proof requires LSEW_BROWSER_HEADLESS=false; refusing to switch to headless Chrome.");
   }
@@ -1239,7 +1376,7 @@ function isStrictlyMonotonic(values) {
   return values.length > 1 && values.every((value, index) => index === 0 || value > values[index - 1]);
 }
 
-function markdown(report) {
+function legacyMarkdown(report) {
   const queryRows = (report.queryCells ?? []).map((cell) => `| ${cell.adapter} | ${cell.sample} | ${cell.fixture.eventCount} | ${cell.fixture.distinctCommandKeyCount} | ${cell.latency.recentSimplePage50P95Ms.toFixed(2)} | ${cell.latency.recentSimplePage100P95Ms.toFixed(2)} | ${cell.latency.structuredPage50P95Ms.toFixed(2)} | ${cell.latency.structuredPage100P95Ms.toFixed(2)} | ${cell.latency.findP95Ms.toFixed(2)} | ${cell.latency.lookupP95Ms.toFixed(2)} | ${cell.latency.aroundP95Ms.toFixed(2)} |`).join("\n");
   const querySection = `## Public EventHistory.query() family\n\n| Adapter | Sample | Events | Distinct COMMAND keys | Recent 50 | Recent 100 | Structured 50 | Structured 100 | Find | Lookup | Around |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${queryRows}\n\n`;
   const rows = querySection + report.cells.map((cell) => `| ${cell.adapter} | ${cell.workload} | ${cell.shape} | ${cell.sample} | ${cell.latency.offerToPublicationP95Ms.toFixed(2)} | ${cell.latency.offerToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.committedBoundaryToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.behindBacklogMs.toFixed(2)} | ${cell.latency.finalBoundaryVisibleMs === null ? "—" : cell.latency.finalBoundaryVisibleMs.toFixed(2)} | ${cell.latency.recentPageP95Ms.toFixed(2)} | ${cell.latency.structuredIndexedP95Ms.toFixed(2)} | ${cell.latency.findFullP95Ms.toFixed(2)} |`).join("\n");
@@ -1263,6 +1400,51 @@ function markdown(report) {
   const heapRunRows = report.heapRuns.map((run) => `| ${run.adapter} | ${run.phase} | ${run.sample ?? "warmup"} | ${JSON.stringify(run)} |`).join("\n");
   const checkpointRows = report.checkpointScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.name} | ${scenario.accepted ? "PASS" : "FAIL"} | ${scenario.retained} | ${scenario.canonicalBytes} | ${scenario.interleavedWhileStaging} | ${scenario.committedBoundaryCorrect} | ${scenario.batchAcceptedAsOneOversizedUnit} | ${JSON.stringify(scenario)} |`).join("\n");
   return `# Event History performance gate\n\nVerdict: **${report.decision.verdict}**\n\nVisible Chrome: ${report.runner.product}; user agent: ${report.runner.userAgent}; JS: ${report.runner.jsVersion}; matrix samples: ${report.cells.length}; reference: ${report.reference.path}.\n\nSource revision: ${report.source.revision}; dirty at run: ${report.source.dirty}; config: ${JSON.stringify(report.config)}; environment: ${JSON.stringify(report.environment)}.\n\nAbsolute gates are fail-closed and are evaluated per independent sample. No failure is averaged away.\n\n## Matrix\n\n| Adapter | Workload | Shape | Sample | Offer→publication p95 (ms) | Offer→visible p95 (ms) | Boundary→visible p95 (ms) | Behind-backlog (ms) | Burst final boundary (ms) | Recent p95 (ms) | Structured/indexed p95 (ms) | Find/full p95 (ms) |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${rows}\n\n## Correctness, workload, storage, pressure, and exact cell identity evidence\n\n| Cell | Counts and correctness | Workload | Transaction/facet/index amplification | Pressure | Terminal | Exact identity arrays |\n| --- | --- | --- | --- | --- | --- | --- |\n${evidenceRows}\n\n## Long Task phase attribution\n\n| Cell | Exact phase durations, unattributed count, and reasons |\n| --- | --- |\n${longTaskRows}\n\n## Terminal partial-acceptance evidence\n\n| Adapter | Trigger | Reason | Accepted | Refused | Offered IDs | Accepted IDs | Retained IDs | Published IDs | Refused IDs | First missing | Boundary | Terminal publications | Pressure transitions |\n| --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | --- |\n${terminalRows}\n\n## Checkpoint evidence\n\n| Adapter | Name | Accepted | Retained | canonicalBytes | interleavedWhileStaging | committedBoundaryCorrect | batchAcceptedAsOneOversizedUnit | Full scenario evidence |\n| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |\n${checkpointRows}\n\n## Heap cleanup-run evidence\n\n| Adapter | Phase | Sample | Full cleanup evidence |\n| --- | --- | --- | --- |\n${heapRunRows}\n\n## Non-authoritative page storage estimates\n\n| Cell | navigator.storage.estimate() |\n| --- | --- |\n${storageEstimateRows}\n\n## Decision\n\nFailures:\n${report.decision.failures.length ? report.decision.failures.map((failure) => `- ${failure}`).join("\n") : "- None"}\n\nReview reasons:\n${report.decision.reviewReasons.length ? report.decision.reviewReasons.map((reason) => `- ${reason}`).join("\n") : "- None"}\n\nHeap samples: ${JSON.stringify(report.heapSamples)}\n\nLifecycle retained heap deltas: ${JSON.stringify(report.lifecycle.retainedHeapBytes)}; strict monotonic growth: ${report.lifecycle.strictMonotonicGrowth}.\n\nStorage telemetry outside the authoritative verdict: ${JSON.stringify(report.telemetry)}\n`;
+}
+
+function markdown(report) {
+  const proofMode = report.proofMode ?? report.runner?.proofMode ?? HEADED_VISIBLE_FRAME_PROOF_MODE;
+  const nonInteractive = proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE;
+  const publicationLabel = nonInteractive ? "React layout-commit/DOM publication" : "visible compositor frame";
+  const boundaryLabel = nonInteractive ? "layout-commit boundary" : "visible-frame boundary";
+  const cells = report.cells.map((cell) => `| ${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample} | ${cell.latency.offerToPublicationP95Ms.toFixed(2)} | ${cell.latency.offerToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.committedBoundaryToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.finalBoundaryVisibleMs === null ? "—" : cell.latency.finalBoundaryVisibleMs.toFixed(2)} | ${Object.values(cell.correctness).every(Boolean) ? "PASS" : "FAIL"} |`).join("\n");
+  const queries = report.queryCells.map((cell) => `| ${cell.adapter}/sample-${cell.sample} | ${cell.latency.recentSimplePage50P95Ms.toFixed(2)} | ${cell.latency.recentSimplePage100P95Ms.toFixed(2)} | ${cell.latency.structuredPage50P95Ms.toFixed(2)} | ${cell.latency.structuredPage100P95Ms.toFixed(2)} | ${cell.latency.findP95Ms.toFixed(2)} | ${cell.latency.lookupP95Ms.toFixed(2)} | ${cell.latency.aroundP95Ms.toFixed(2)} |`).join("\n");
+  return `# Event History performance gate
+
+Verdict: **${report.decision.verdict}**
+
+Proof mode: **${proofMode}**; Chrome headless: **${String(report.runner?.headless)}**; compositor frame measured: **${String(report.frameProof?.compositorFrameMeasured ?? !nonInteractive)}**. This run uses **${publicationLabel}** and does not claim a headed compositor PASS.
+
+Real Chrome: ${report.runner?.product}; user agent: ${report.runner?.userAgent}; JS: ${report.runner?.jsVersion}; source: ${report.source.revision}; dirty: ${String(report.source.dirty)}; reference: ${report.reference.path}.
+
+## Exact matrix results
+
+The absolute thresholds are unchanged. The first publication column is the existing offer-to-publication metric; the next two retain the gate's structured fields but are measured at the declared ${boundaryLabel} in this mode.
+
+| Cell | Offer→publication p95 (ms) | Offer→${publicationLabel} p95 (ms) | Committed→${boundaryLabel} p95 (ms) | Final ${boundaryLabel} (ms) | Correctness |
+| --- | ---: | ---: | ---: | ---: | --- |
+${cells}
+
+## Query results
+
+| Cell | Recent 50 | Recent 100 | Structured 50 | Structured 100 | Find | Lookup | Around |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+${queries}
+
+## Gate evidence
+
+Cells: ${report.cells.length}; query cells: ${report.queryCells.length}; heap samples: ${report.heapSamples.length}; terminal scenarios: ${report.terminalScenarios.length}; checkpoint scenarios: ${report.checkpointScenarios.length}.
+
+Frame proof: ${JSON.stringify(report.frameProof)}
+
+Failures:
+${report.decision.failures.length ? report.decision.failures.map((failure) => `- ${failure}`).join("\n") : "- None"}
+
+Review reasons:
+${report.decision.reviewReasons.length ? report.decision.reviewReasons.map((reason) => `- ${reason}`).join("\n") : "- None"}
+
+The JSON artifact is authoritative for the complete identity, storage, Long Task, heap, lifecycle, terminal, checkpoint, and workload evidence.
+`;
 }
 
 function timeoutMarkdown(diagnostic) {
