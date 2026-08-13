@@ -100,12 +100,18 @@ async function main() {
     });
     foregroundKeeper.start();
     const runPageOperationWithForegroundKeeper = (pageCdp, expression, options = {}) => {
-      const { onHeartbeat, ...operationOptions } = options;
+      const { onHeartbeat, targetId, ...operationOptions } = options;
+      const focusTarget = typeof targetId === "string"
+        ? ({ deadlineAt, timeoutMs }) => focusHarnessTarget(browserCdp, pageCdp, targetId, {
+          deadlineAt,
+          requestCeilingMs: Math.max(1, Math.floor(timeoutMs / 6))
+        })
+        : undefined;
       return runPageOperation(pageCdp, expression, {
         ...operationOptions,
         propagateHeartbeatErrors: true,
         onHeartbeat: async (status) => {
-          await foregroundKeeper.keepAlive({ reason: "operation-heartbeat" });
+          await foregroundKeeper.keepAlive({ reason: "operation-heartbeat", focusTarget });
           await onHeartbeat?.(status);
         }
       });
@@ -224,6 +230,7 @@ async function main() {
           `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)})`,
           {
             deadlineAt: proofDeadlineAt,
+            targetId: page.targetId,
             onHeartbeat(status) {
               lastOperationStatus = status;
               process.stderr.write(
@@ -272,7 +279,7 @@ async function main() {
       prepare: ({ adapter, eventCount, phase, sample }) => runPageOperationWithForegroundKeeper(
         heapPage.cdp,
         `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${eventCount}, ${JSON.stringify(phase)}, ${sample === null ? "null" : sample})`,
-        { deadlineAt: proofDeadlineAt }
+        { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }
       ),
       forceGc: ({ deadlineAt = proofDeadlineAt } = {}) => collectHeapAfterRepeatedGc(heapPage.cdp, 3, { deadlineAt }),
       record: ({ adapter, eventCount, sample, session, baseline, retained }) => ({
@@ -286,9 +293,9 @@ async function main() {
         retainedUsedSizeBytes: retained.usedSize,
         postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
       }),
-      close: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt }),
-      removeRoot: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt }),
-      yieldFrame: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt })
+      close: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }),
+      removeRoot: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }),
+      yieldFrame: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId })
       });
     } catch (error) {
       primaryHeapError = error;
@@ -304,11 +311,11 @@ async function main() {
     try {
       for (let sample = 0; sample < 3; sample += 1) {
         const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt });
-        await runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineAt: proofDeadlineAt });
+        await runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId });
         const released = await releaseHeapSessionWithCleanup({
-          release: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt }),
-          removeRoot: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt }),
-          yieldFrame: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt }),
+          release: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+          removeRoot: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+          yieldFrame: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
           forceGc: () => collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt }),
           deadlineAt: proofDeadlineAt
         });
@@ -586,6 +593,53 @@ export async function activateAndVerifyHarnessTarget(controlCdp, targetId, optio
   });
 }
 
+/**
+ * Re-focus the exact native window/target used by the current proof operation.
+ * Process activation alone can bring the right Chrome process forward while a
+ * different top-level window in that process remains the key page. Every CDP
+ * request is bounded by the shared proof deadline and a short per-request
+ * ceiling; a mismatch is a hard failure rather than frame evidence.
+ */
+export async function focusHarnessTarget(controlCdp, pageCdp, targetId, options = {}) {
+  if (!Number.isFinite(options.deadlineAt)) throw new Error("Target focus requires a finite deadlineAt.");
+  if (typeof targetId !== "string" || targetId.length === 0) throw new Error("Target focus requires an exact target id.");
+  const requestCeilingMs = positiveFiniteStartupOption(
+    options.requestCeilingMs ?? 500,
+    "target focus requestCeilingMs"
+  );
+  const request = (method, params, phase) => requestControlCdpWithDeadline(controlCdp, method, params, {
+    ...options,
+    requestCeilingMs,
+    phase
+  });
+  const targetBefore = await request("Target.getTargetInfo", { targetId }, "target-focus-target-before");
+  if (targetBefore?.targetInfo?.targetId !== targetId) throw new Error(`Chrome returned the wrong target for ${targetId}.`);
+  const windowBefore = await request("Browser.getWindowForTarget", { targetId }, "target-focus-window-before");
+  if (!Number.isInteger(windowBefore?.windowId)) throw new Error(`Chrome did not return a native window for target ${targetId}.`);
+  await request("Browser.setWindowBounds", {
+    windowId: windowBefore.windowId,
+    bounds: { focused: true }
+  }, "target-focus-window-activate");
+  await requestSetupCdp(pageCdp, "Page.bringToFront", {}, options.deadlineAt, "target-focus-page", { requestCeilingMs });
+  const windowAfter = await request("Browser.getWindowForTarget", { targetId }, "target-focus-window-after");
+  const targetAfter = await request("Target.getTargetInfo", { targetId }, "target-focus-target-after");
+  if (
+    targetAfter?.targetInfo?.targetId !== targetId ||
+    windowAfter?.windowId !== windowBefore.windowId ||
+    windowAfter?.bounds?.windowState !== "normal"
+  ) {
+    throw new Error(`Chrome did not confirm exact target ${targetId} remained focused.`);
+  }
+  return Object.freeze({
+    targetId,
+    windowId: windowAfter.windowId,
+    targetUrl: targetAfter.targetInfo.url,
+    windowState: windowAfter.bounds.windowState,
+    bounds: windowAfter.bounds,
+    pageBroughtToFront: true
+  });
+}
+
 export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 15_000, options = {}) {
   const localDeadlineAt = Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs");
   const effectiveOptions = Number.isFinite(options.deadlineAt)
@@ -802,7 +856,7 @@ export function createForegroundKeeper(pid, options = {}) {
     }))
   });
 
-  const attempt = async (reason) => {
+  const attempt = async (reason, focusTarget) => {
     const record = {
       attempt: ++attemptNumber,
       pid,
@@ -811,6 +865,7 @@ export function createForegroundKeeper(pid, options = {}) {
       finishedAt: null,
       status: "PENDING",
       result: null,
+      focus: null,
       error: null
     };
     attempts.push(record);
@@ -825,6 +880,9 @@ export function createForegroundKeeper(pid, options = {}) {
       if (platform === "darwin" && (result?.attempted !== true || result.activatedPID !== pid)) {
         throw new Error(`Foreground keeper activation did not verify spawned PID ${pid}.`);
       }
+      if (typeof focusTarget === "function") {
+        record.focus = await focusTarget({ pid, activation: result, deadlineAt, timeoutMs: attemptTimeoutMs });
+      }
       record.status = "PASS";
       record.result = result;
       return result;
@@ -838,7 +896,7 @@ export function createForegroundKeeper(pid, options = {}) {
     }
   };
 
-  const keepAlive = async ({ reason = "heartbeat" } = {}) => {
+  const keepAlive = async ({ reason = "heartbeat", focusTarget } = {}) => {
     if (startedAt === null) throw new Error("Foreground keeper has not started.");
     if (stoppedAt !== null) return snapshot();
     if (failure !== null) throw failure;
@@ -848,7 +906,7 @@ export function createForegroundKeeper(pid, options = {}) {
       return snapshot();
     }
     if (platform !== "darwin" || (lastAttemptAt !== null && now() - lastAttemptAt < cadenceMs)) return snapshot();
-    const operation = attempt(reason);
+    const operation = attempt(reason, focusTarget);
     inFlight = operation;
     try {
       await operation;

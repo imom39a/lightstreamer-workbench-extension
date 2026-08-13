@@ -522,6 +522,51 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("re-focuses only the exact target window with bounded CDP requests", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { focusHarnessTarget } = await import(${JSON.stringify(scriptUrl)});
+      const calls = [];
+      const controlCdp = {
+        request(method, params) {
+          calls.push(["browser", method, params]);
+          if (method === "Target.getTargetInfo") return Promise.resolve({ targetInfo: { targetId: params.targetId, url: "file:///tmp/harness.html" } });
+          if (method === "Browser.getWindowForTarget") return Promise.resolve({ windowId: 7, bounds: { windowState: "normal" } });
+          if (method === "Browser.setWindowBounds") {
+            assert.deepEqual(params, { windowId: 7, bounds: { focused: true } });
+            return Promise.resolve({});
+          }
+          throw new Error("unexpected browser method " + method);
+        }
+      };
+      const pageCdp = {
+        request(method, params) {
+          calls.push(["page", method, params]);
+          assert.equal(method, "Page.bringToFront");
+          assert.deepEqual(params, {});
+          return Promise.resolve({});
+        }
+      };
+      const result = await focusHarnessTarget(controlCdp, pageCdp, "target-1", { deadlineAt: Date.now() + 500, requestCeilingMs: 25 });
+      assert.deepEqual(result, {
+        targetId: "target-1",
+        windowId: 7,
+        targetUrl: "file:///tmp/harness.html",
+        windowState: "normal",
+        bounds: { windowState: "normal" },
+        pageBroughtToFront: true
+      });
+      assert.deepEqual(calls.map(([owner, method]) => [owner, method]), [
+        ["browser", "Target.getTargetInfo"],
+        ["browser", "Browser.getWindowForTarget"],
+        ["browser", "Browser.setWindowBounds"],
+        ["page", "Page.bringToFront"],
+        ["browser", "Browser.getWindowForTarget"],
+        ["browser", "Target.getTargetInfo"]
+      ]);
+    `);
+  });
+
   it("keeps the exact spawned PID foreground at a bounded cadence and cleans up", () => {
     runNode(`
       import assert from "node:assert/strict";
@@ -559,6 +604,44 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.equal(cleared, 17);
       assert.equal(keeper.snapshot().stopped, true);
       assert.equal(keeper.failure(), null);
+    `);
+  });
+
+  it("awaits exact target-window focus as part of a foreground keeper attempt", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createForegroundKeeper } = await import(${JSON.stringify(scriptUrl)});
+      let now = 0;
+      let tick;
+      let focusCalls = 0;
+      const keeper = createForegroundKeeper(49217, {
+        platform: "darwin",
+        helperPath: "/tmp/process-activation-helper",
+        deadlineAt: 10_000,
+        cadenceMs: 1_000,
+        now: () => now,
+        setInterval(callback) { tick = callback; return 17; },
+        clearInterval() {},
+        activate(pid) {
+          return Promise.resolve({ attempted: true, pid, activatedPID: pid, frontmostPID: pid, windows: [] });
+        }
+      });
+      keeper.start();
+      now = 1_000;
+      const focusResult = { targetId: "target-1", windowId: 7, pageBroughtToFront: true };
+      const focused = await keeper.keepAlive({
+        reason: "target-heartbeat",
+        focusTarget: async ({ pid, deadlineAt, timeoutMs }) => {
+          focusCalls += 1;
+          assert.equal(pid, 49217);
+          assert.equal(deadlineAt, 10_000);
+          assert.equal(timeoutMs, 2_000);
+          return focusResult;
+        }
+      });
+      assert.equal(focusCalls, 1);
+      assert.deepEqual(focused.attempts.at(-1).focus, focusResult);
+      await keeper.stop();
     `);
   });
 
