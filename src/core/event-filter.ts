@@ -1,6 +1,7 @@
 import { type CaptureKind } from "../bridge/messages";
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { canonicalFilterFromLegacyScalars, type Filter, type LegacyScalarFilter } from "./filter-algebra";
+import { canonicalEvidenceSearchText } from "./evidence-facets";
 
 export type EventFilterState = {
   query?: string;
@@ -28,51 +29,7 @@ export function toCanonicalFilter(filters: EventFilterState = {}, revision = 1):
 }
 
 export function createEventSearchText(event: LightstreamerEventEnvelope): string {
-  return [
-    event.id,
-    event.kind,
-    event.source,
-    event.synthetic ? "synthetic" : "server",
-    event.direction,
-    event.client?.id,
-    event.client?.status,
-    event.client?.serverAddress,
-    event.client?.adapterSet,
-    event.client?.libraryVersion,
-    event.client?.instrumentationSource,
-    event.client?.coverageStatus,
-    event.client?.sessionId,
-    event.client?.serverInstanceAddress,
-    event.client?.serverSocketName,
-    event.client?.clientIp,
-    event.client?.transport,
-    event.client?.requestedMaxBandwidth,
-    event.client?.realMaxBandwidth,
-    event.subscription?.id,
-    event.subscription?.mode,
-    event.subscription?.itemGroup,
-    event.subscription?.items?.join(" "),
-    event.subscription?.fieldSchema,
-    event.subscription?.fields?.join(" "),
-    event.subscription?.dataAdapter,
-    event.subscription?.selector,
-    event.subscription?.requestedBufferSize,
-    event.subscription?.requestedMaxFrequency,
-    event.subscription?.realMaxFrequency,
-    event.listener?.id,
-    event.item?.name,
-    event.item?.position,
-    event.update?.isSnapshot ? "snapshot" : "live",
-    event.update?.command,
-    event.update?.key,
-    fieldsText(event.update?.fields),
-    fieldsText(event.update?.changedFields),
-    fieldsText(event.update?.jsonPatches),
-    JSON.stringify(event)
-  ]
-    .filter((entry) => entry !== undefined && entry !== null && entry !== "")
-    .join(" ")
-    .toLowerCase();
+  return canonicalEvidenceSearchText(event);
 }
 
 export function matchesEventFilters(
@@ -152,14 +109,4 @@ export function filterEvents(
 
 export function hasActiveFilters(filters: EventFilterState): boolean {
   return Object.values(filters).some((value) => value !== undefined && value !== "");
-}
-
-function fieldsText(value: unknown): string {
-  if (!value || typeof value !== "object") {
-    return "";
-  }
-
-  return Object.entries(value)
-    .flatMap(([key, entry]) => [key, String(entry)])
-    .join(" ");
 }

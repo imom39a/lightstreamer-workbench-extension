@@ -24,6 +24,7 @@ function event(overrides: Partial<LightstreamerEventEnvelope> = {}): Lightstream
     update: { isSnapshot: true, key: "ABC", command: "ADD", fields: { price: 42 } },
     ...overrides
   };
+}
 
 describe("canonical Evidence facets", () => {
   it("exports exactly twelve frozen descriptors in canonical order", () => {
@@ -106,4 +107,3 @@ describe("canonical Evidence facets", () => {
     expect(a).toContain("  ".trim());
   });
 });
-}

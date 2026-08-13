@@ -1236,7 +1236,7 @@ class Runtime implements WorkbenchRuntime {
         }
         const events = Object.freeze(lightstreamerEvents(result.value.evidence));
         const matchIndexes = Object.freeze(events.flatMap((event, index) =>
-          createEvidenceFindText(event).includes(query) ? [index] : []
+          createEventSearchText(event).includes(query) ? [index] : []
         ));
         this.findResultEvents = events;
         this.findMatchIndexes = matchIndexes;
@@ -3036,10 +3036,6 @@ function humanizeKind(kind: string): string {
     .split("-")
     .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
     .join(" ");
-}
-
-function createEvidenceFindText(event: LightstreamerEventEnvelope): string {
-  return `${createEventSearchText(event)} ${humanizeKind(event.kind)}`.toLowerCase();
 }
 
 function isCompatibleLocalInjectionSource(event: LightstreamerEventEnvelope): boolean {
