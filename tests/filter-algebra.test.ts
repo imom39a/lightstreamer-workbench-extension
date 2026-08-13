@@ -217,7 +217,7 @@ describe("canonical Filter algebra", () => {
     ] as unknown as readonly FilterMutation[];
 
     for (const operation of malformed) {
-      expect(applyFilterMutations(initial, initial.revision, [operation])).toMatchObject({
+      expect(applyFilterMutations(initial, initial.revision, [operation]), operation.type).toMatchObject({
         ok: false,
         filter: initial,
         problem: { code: "INVALID_FILTER_MUTATION" }

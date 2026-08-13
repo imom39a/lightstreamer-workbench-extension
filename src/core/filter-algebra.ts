@@ -165,7 +165,7 @@ export function canonicalizeFilter(input: FilterInput): Filter {
   return freezeFilter({
     version: FILTER_VERSION,
     revision: input.revision,
-    text: normalizeText(input.text ?? ""),
+    text: input.text === undefined ? "" : normalizeText(input.text),
     criteria,
     around: input.around === undefined || input.around === null ? null : canonicalAround(input.around),
     unsupported
@@ -173,7 +173,14 @@ export function canonicalizeFilter(input: FilterInput): Filter {
 }
 
 export function serializeFilter(filter: FilterInput): string {
-  return JSON.stringify(canonicalizeFilter(filter));
+  const canonical = canonicalizeFilter(filter);
+  return JSON.stringify({
+    ...canonical,
+    criteria: Object.fromEntries(Object.entries(canonical.criteria).map(([facet, criterion]) => [facet, {
+      include: criterion.include.map(serializeValue),
+      exclude: criterion.exclude.map(serializeValue)
+    }]))
+  });
 }
 
 export function filterEquals(left: FilterInput, right: FilterInput): boolean {
@@ -227,7 +234,7 @@ export function applyFilterMutations(currentInput: FilterInput, expectedRevision
 function applyMutation(current: Filter, operation: FilterMutation): Filter {
   switch (operation.type) {
     case "set-text": return canonicalizeFilter({ ...current, text: operation.text });
-    case "set-around": return canonicalizeFilter({ ...current, around: operation.around });
+    case "set-around": return canonicalizeFilter({ ...current, around: canonicalAround(operation.around) });
     case "clear-around": return canonicalizeFilter({ ...current, around: null });
     case "reset":
     case "clear": return createFilter(current.revision);
@@ -237,7 +244,7 @@ function applyMutation(current: Filter, operation: FilterMutation): Filter {
       delete criteria[operation.facet];
       return canonicalizeFilter({ ...current, criteria });
     }
-    case "add-criterion": return setCriterion(current, operation.facet, operation.value, operation.polarity ?? "include");
+    case "add-criterion": return setCriterion(current, operation.facet, operation.value, operation.polarity === undefined ? "include" : operation.polarity);
     case "set-polarity": return setCriterion(current, operation.facet, operation.value, operation.polarity);
     case "remove-criterion": {
       const value = canonicalValue(operation.facet, operation.value);
@@ -247,7 +254,10 @@ function applyMutation(current: Filter, operation: FilterMutation): Filter {
       return canonicalizeFilter({ ...current, criteria });
     }
     case "add-unsupported": return canonicalizeFilter({ ...current, unsupported: [...current.unsupported, operation.criterion] });
-    case "clear-unsupported": return canonicalizeFilter({ ...current, unsupported: operation.id === undefined ? [] : current.unsupported.filter((criterion) => criterion.id !== operation.id) });
+    case "clear-unsupported": {
+      if (operation.id !== undefined) assertNonEmptyString(operation.id, "unsupported criterion id");
+      return canonicalizeFilter({ ...current, unsupported: operation.id === undefined ? [] : current.unsupported.filter((criterion) => criterion.id !== operation.id) });
+    }
     default: return assertNever(operation);
   }
 }
@@ -276,18 +286,29 @@ function canonicalValues(facet: string, values: readonly TypedFilterValue[]): re
 
 function canonicalValue(facet: string, value: TypedFilterValue): TypedFilterValue {
   if (!value || value.facet !== facet) throw new Error("Criterion value has the wrong facet.");
-  return createTypedFilterValue(facet, value.type, value.value, value.label);
+  return createTypedFilterValue(facet, value.type, value.value, value.label === undefined ? String(value.value) : value.label);
 }
 
 function canonicalUnsupported(value: UnsupportedFilterCriterion): UnsupportedFilterCriterion {
   assertNonEmptyString(value.id, "unsupported criterion id");
   assertNonEmptyString(value.reason, "unsupported criterion reason");
+  if (value.facet !== undefined) assertNonEmptyString(value.facet, "unsupported criterion facet");
+  if (value.detail !== undefined) assertNonEmptyString(value.detail, "unsupported criterion detail");
   return Object.freeze({
     id: value.id,
     reason: value.reason,
     ...(value.facet === undefined ? {} : { facet: value.facet }),
     ...(value.detail === undefined ? {} : { detail: value.detail })
   });
+}
+
+function serializeValue(value: TypedFilterValue): Omit<TypedFilterValue, "label"> {
+  return {
+    facet: value.facet,
+    type: value.type,
+    value: value.value,
+    identity: value.identity
+  };
 }
 
 function compareUnsupported(left: UnsupportedFilterCriterion, right: UnsupportedFilterCriterion): number {
