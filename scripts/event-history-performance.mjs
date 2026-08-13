@@ -413,6 +413,7 @@ export function chromeLaunchArguments(profile, platformName = process.platform) 
   return [
     ...(platformName === "darwin" ? ["--activate-on-launch"] : []),
     "--no-sandbox",
+    "--no-proxy-server",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",

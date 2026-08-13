@@ -136,6 +136,7 @@ describe("Event History performance startup fail-closed seams", () => {
       const args = chromeLaunchArguments("/tmp/lsew-profile", "darwin");
       assert.equal(args.includes("--activate-on-launch"), true);
       assert.equal(args.includes("--headless"), false);
+      assert.equal(args.includes("--no-proxy-server"), true);
       assert.equal(args.includes("--js-flags=--expose-gc"), true);
       assert.equal(args.at(-1), "about:blank");
       assert.equal(args.includes("http://127.0.0.1:4173/"), false);
@@ -149,6 +150,7 @@ describe("Event History performance startup fail-closed seams", () => {
       const args = chromeLaunchArguments("/tmp/lsew-profile", "linux");
       assert.equal(args.includes("--activate-on-launch"), false);
       assert.equal(args.includes("--headless"), false);
+      assert.equal(args.includes("--no-proxy-server"), true);
       assert.equal(args.at(-1), "about:blank");
       assert.equal(args.includes("http://127.0.0.1:4173/"), false);
     `);
