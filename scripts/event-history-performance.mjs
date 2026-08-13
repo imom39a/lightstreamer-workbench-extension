@@ -102,7 +102,7 @@ async function main() {
     });
     const environment = await requestControlCdpWithDeadline(browserCdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
     if (process.env.LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS === "true") {
-      frameDiagnostics = { lifecycle: [], traceChunks: [], tracingComplete: null };
+      frameDiagnostics = { lifecycle: [], nativeWindows: [], traceChunks: [], tracingComplete: null, screencastFrames: 0, frameRoutingProbe: null };
       await requestControlCdpWithDeadline(browserCdp, "Target.setDiscoverTargets", { discover: true }, { deadlineAt: proofDeadlineAt, phase: "Target.setDiscoverTargets" });
       await requestControlCdpWithDeadline(browserCdp, "Tracing.start", {
         categories: "toplevel,blink,cc,devtools.timeline",
@@ -110,6 +110,7 @@ async function main() {
       }, { deadlineAt: proofDeadlineAt, phase: "Tracing.start" });
     }
     initialTarget = await openHarnessTarget(browserCdp, debugPort, url, { deadlineAt: proofDeadlineAt, activateWindow });
+    frameDiagnostics?.nativeWindows.push(initialTarget.windowEvidence);
     cdp = initialTarget.cdp;
     await prepareInitialPageForAuthoritativeRun(cdp, url, { deadlineAt: proofDeadlineAt });
     const chromeMajor = chromeMajorFromProduct(environment.product);
@@ -132,7 +133,25 @@ async function main() {
     let lastOperationStatus = null;
     for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
       const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
-      const page = await openFreshHarnessPage(browserCdp, debugPort, url, selection.pageToken, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow });
+      const page = await openFreshHarnessPage(browserCdp, debugPort, url, selection.pageToken, {
+        deadlineAt: proofDeadlineAt,
+        operation: lastOperationStatus,
+        activateWindow,
+        onEvent(event) {
+          if (event.method === "Page.screencastFrame" && frameDiagnostics) {
+            frameDiagnostics.screencastFrames += 1;
+            frameDiagnostics.lastScreencastFrame = event.params?.metadata ?? null;
+          }
+        }
+      });
+      frameDiagnostics?.nativeWindows.push(page.windowEvidence);
+      if (frameDiagnostics) {
+        try {
+          await page.cdp.request("Page.startScreencast", { format: "jpeg", quality: 10, maxWidth: 320, maxHeight: 240 });
+        } catch (error) {
+          frameDiagnostics.screencastStartError = { name: error?.name, message: error?.message ?? String(error) };
+        }
+      }
       let primaryError = null;
             try {
         shardResults.push(await runPageOperation(
@@ -150,8 +169,29 @@ async function main() {
         ));
       } catch (error) {
         primaryError = error;
+        if (frameDiagnostics) {
+          try {
+            frameDiagnostics.frameRoutingProbe = await evaluateWithDeadline(page.cdp, `new Promise((resolve) => {
+              let settled = false;
+              const startedAt = performance.now();
+              const finish = (callback) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve({ callback, visibilityState: document.visibilityState, hasFocus: document.hasFocus(), elapsedMs: performance.now() - startedAt, timelineCurrentTime: document.timeline?.currentTime ?? null });
+              };
+              const timer = setTimeout(() => finish(false), 500);
+              requestAnimationFrame(() => finish(true));
+            })`, Date.now() + 1_000, "frame-routing-probe", { requestCeilingMs: 600 });
+          } catch (probeError) {
+            frameDiagnostics.frameRoutingProbe = { error: { name: probeError?.name, message: probeError?.message ?? String(probeError) } };
+          }
+        }
         throw error;
       } finally {
+        if (frameDiagnostics) {
+          try { await page.cdp.request("Page.stopScreencast", {}); } catch { /* preserve the cell error */ }
+        }
         await closeFreshHarnessPageWithErrorPreservation(browserCdp, page, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryError);
       }
     }
@@ -271,7 +311,7 @@ async function main() {
       }
       try {
         const diagnosticsPath = outputPath.replace(/\.json$/u, ".frame-diagnostics.json");
-        await writeFile(diagnosticsPath, `${JSON.stringify({ schemaVersion: 1, diagnosticOnly: true, lifecycle: frameDiagnostics.lifecycle, tracingComplete: frameDiagnostics.tracingComplete, traceEvents: frameDiagnostics.traceChunks }, null, 2)}\n`);
+        await writeFile(diagnosticsPath, `${JSON.stringify({ schemaVersion: 1, diagnosticOnly: true, ...frameDiagnostics }, null, 2)}\n`);
       } catch (error) {
         frameDiagnostics.writeError = { name: error?.name, message: error?.message ?? String(error) };
       }
@@ -353,7 +393,7 @@ export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options 
   let pageCdp;
   try {
     windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, options);
-    pageCdp = await connect(await pageTarget(debugPort, pageUrl, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket });
+    pageCdp = await connect(await pageTarget(debugPort, pageUrl, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket, onEvent: options.onEvent });
     await ensureFreshHarnessDocument(pageCdp, pageUrl, 15_000, options);
     return { cdp: pageCdp, targetId: created.targetId, pageToken: "initial", url: pageUrl, windowEvidence };
   } catch (error) {
@@ -376,7 +416,7 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
   let pageCdp;
   try {
     windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, options);
-    pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket });
+    pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket, onEvent: options.onEvent });
     await ensureFreshHarnessDocument(pageCdp, pageUrl.href, 15_000, options);
     await waitForHarness(pageCdp, options);
     await preparePageForAuthoritativeRun(pageCdp, options);
