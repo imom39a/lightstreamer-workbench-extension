@@ -16,9 +16,11 @@ capacity tiers, coverage, or retention semantics.
   78 files total.
 - Seeded current-schema journals include canonical postings, so replay and
   ownership tests exercise the v3 shape rather than silently falling back.
-- The v2-to-v3 upgrade preserves the authoritative `historyControl` and
-  `evidence` stores and rebuilds canonical postings from each replay payload;
-  migration coverage includes delimiter/collision-safe token identities.
+- The deployed v2-named application database is a stable logical identity;
+  opening it upgrades the physical schema in place, preserves the
+  authoritative `historyControl` and `evidence` stores, and rebuilds canonical
+  postings from each replay payload. Migration coverage includes the literal
+  deployed name and delimiter/collision-safe token identities.
 - Schema, posting, and failure-cleanup tests use unique database names and
   `try/finally` cleanup, including database deletion in the schema test.
 
@@ -43,7 +45,7 @@ The exact automated proof is therefore retained here:
   frozen facet descriptors; the posting implementation bounds one Evidence
   record to that catalog.
 - Focused schema/postings/failure/capacity/serialization run: **5 files,
-  86 tests passed**.
+  87 tests passed**.
 
 ## Verification
 
