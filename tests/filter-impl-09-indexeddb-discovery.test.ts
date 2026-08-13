@@ -15,6 +15,7 @@ function event(id: string, key: string, mode = "COMMAND"): LightstreamerEventEnv
     id, timestamp: Number(id.replace(/\D/g, "")) || 1, direction: "inbound", source: "server", captureSource: "listener", synthetic: false,
     kind: "item-update", client: { id: `client-${id}`, sessionId: `session-${id}` },
     subscription: { id: `subscription-${id}`, mode }, item: { name: "items" },
+    listener: { id: `listener-${id}` },
     update: { isSnapshot: false, key, command: "ADD", fields: { key } }
   };
 }
@@ -127,6 +128,59 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     await durable.close();
   });
 
+  it("fails discovery closed for same-interval out-of-range postings while preserving base totals", async () => {
+    const name = `filter-impl-09-range-${Date.now()}`;
+    const { durable } = await setup(name, [event("event-1", "one"), event("event-2", "two")]);
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(authoritativeEventDatabaseName(name));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const transaction = db.transaction("facetPostings", "readwrite");
+        const store = transaction.objectStore("facetPostings");
+        const read = store.getAll();
+        read.onerror = () => reject(read.error);
+        read.onsuccess = () => {
+          const legitimate = read.result.find((candidate) => (candidate as Record<string, unknown>).facetIdentity === typedFacetValue("key", "string", "one").identity) as Record<string, unknown> | undefined;
+          if (!legitimate) { reject(new Error("No key posting found")); return; }
+          store.put({ ...legitimate, sequence: 99 });
+        };
+        transaction.oncomplete = () => { db.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    });
+    const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
+    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2, inScope: 2 }, page: { evidence: [{ identity: { sequence: 1 } }, { identity: { sequence: 2 } }] } } });
+    if (result.ok) expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    await durable.close();
+  });
+
+  it("ignores valid postings belonging to a genuinely different interval", async () => {
+    const name = `filter-impl-09-other-interval-${Date.now()}`;
+    const { durable } = await setup(name, [event("event-1", "one")]);
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(authoritativeEventDatabaseName(name));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const transaction = db.transaction("facetPostings", "readwrite");
+        const store = transaction.objectStore("facetPostings");
+        const read = store.getAll();
+        read.onerror = () => reject(read.error);
+        read.onsuccess = () => {
+          const legitimate = read.result.find((candidate) => (candidate as Record<string, unknown>).facetIdentity === typedFacetValue("key", "string", "one").identity) as Record<string, unknown> | undefined;
+          if (!legitimate) { reject(new Error("No key posting found")); return; }
+          store.put({ ...legitimate, intervalId: `${name}:interval-0`, sequence: 2, eventId: "prior-interval" });
+        };
+        transaction.oncomplete = () => { db.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    });
+    const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
+    expect(result.ok && result.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 1 });
+    await durable.close();
+  });
+
   it.each(["missing", "malformed"])("fails no-counterfactual discovery closed for %s discovered-facet postings", async (corruption) => {
     const name = `filter-impl-09-no-counterfactual-${corruption}-${Date.now()}`;
     const { durable } = await setup(name, [event("event-1", "one")]);
@@ -177,6 +231,8 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
         expect(actual.ok && expected.ok && actual.value.discoveries.get(facet)).toEqual(expected.ok && expected.value.discoveries.get(facet));
       }
     }
+    const listener = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "listener", size: 10 }] });
+    expect(listener.ok && listener.value.discoveries.get("listener")).toMatchObject({ state: "AVAILABLE", distinctTotal: 2 });
     await Promise.all([memory.close(), durable.close()]);
   });
 });

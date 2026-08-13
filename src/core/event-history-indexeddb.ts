@@ -1598,13 +1598,17 @@ function readPostingToken(store: IDBObjectStore, token: string, intervalId: stri
       if (!cursor) { resolve(result); return; }
       const posting = cursor.value as FacetPostingRecord;
       assertExactKeys(posting, ["eventId", "facetIdentity", "intervalId", "sequence", "token"]);
+      if (posting.intervalId !== intervalId) {
+        cursor.continue();
+        return;
+      }
       if (typeof posting.eventId !== "string" || posting.eventId.length === 0
         || typeof posting.facetIdentity !== "string"
         || posting.token !== facetPostingToken(posting.facetIdentity)
-        || posting.intervalId !== intervalId
         || !Number.isSafeInteger(posting.sequence) || posting.sequence < 1
         || (expectedEventId === undefined && (posting.sequence < first || posting.sequence > last))
-        || (expectedEventId !== undefined && posting.sequence === first && posting.eventId !== expectedEventId)) {
+        || (expectedEventId !== undefined && ((posting.sequence === first && posting.eventId !== expectedEventId)
+          || (posting.sequence !== first && (posting.sequence < first || posting.sequence > last) && posting.eventId === expectedEventId)))) {
         reject(new Error("A facet posting is corrupt or outside the requested Evidence range."));
         return;
       }

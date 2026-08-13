@@ -13,8 +13,10 @@ totals, read point, cursor behavior, and transaction remain coherent.
   no-counterfactual path where posting candidates are `null`.
 - Posting validation requires exact shape, token/facet identity, interval,
   sequence validity, and `posting.eventId === projection.eventId` for the
-  authoritative projection at that sequence. A token containing a sequence is
-  not sufficient.
+  authoritative projection at that sequence. Same-interval postings outside
+  the exact projection range fail closed when they claim that event identity;
+  valid postings from other intervals are ignored by the active-interval read.
+  A token containing a sequence is not sufficient.
 - Contextual facet postings use the same page/owner-qualified identity context
   as query projections; the schema rebuild path uses the same context.
 - Discovery still delegates typed ordering, exact counts, active pins,
@@ -26,24 +28,28 @@ totals, read point, cursor behavior, and transaction remain coherent.
 `tests/filter-impl-09-indexeddb-discovery.test.ts` now covers:
 
 - mismatched posting event identity with an otherwise valid token and sequence;
+- same-interval, valid-shape out-of-range posting with the legitimate posting
+  retained, while preserving coherent base totals;
+- valid posting from a genuinely different interval;
 - missing and malformed discovered-facet postings when no counterfactual
   filter exists;
-- durable/memory parity for every `EVIDENCE_FACET_KEYS` catalog facet, with
-  concrete typed identities and absent active zero-count pins;
+- durable/memory parity for every `EVIDENCE_FACET_KEYS` catalog facet, including
+  a concrete listener identity and absent active zero-count pins;
 - existing pagination, self-facet counterfactual, zero-base,
   no-concrete-values, and isolated failure behavior.
 
-The new corruption tests were run against the clean starting revision before
-the repair: all three corruptions incorrectly produced `AVAILABLE` discovery.
-After the repair, they produce `UNAVAILABLE` with `DISCOVERY_FAILED`, while
-the base totals remain successful.
+The new range test was run against the clean starting revision before the
+repair and incorrectly produced `AVAILABLE` discovery; the cross-interval test
+also incorrectly failed closed. After the repair, the range corruption
+produces `UNAVAILABLE` with `DISCOVERY_FAILED`, the cross-interval posting is
+ignored, and base totals remain successful.
 
 ## Verification
 
 The focused 04/05/08/09 suites, typecheck, release tests, build, documentation
 check, package-all gate, and `git diff --check` are run for this repair. Final
 counts, package sizes, and the committed revision are recorded in
-`/tmp/filter-impl-09-integrity-repair-result.txt`.
+`/tmp/filter-impl-09-range-repair-result.txt`.
 
 ## Residual performance boundary
 
