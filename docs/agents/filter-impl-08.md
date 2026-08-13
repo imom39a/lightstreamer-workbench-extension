@@ -5,7 +5,10 @@ The IndexedDB adapter now executes one bounded readonly transaction. It latches
 candidates, uses bounded Evidence cursors/direction for recent pages, scans
 only stored lightweight projections for residual text/Around/Find, and
 hydrates only the requested lookup payload. No query path calls `getAll()` or
-deserializes the journal to derive ordinary totals.
+deserializes the journal to derive ordinary totals. Lightweight projections are
+derived into a session cache at journal-open/commit time; authoritative v3
+Evidence record shape and accounting remain unchanged, including deployed
+v2→v3 records that never stored a projection.
 
 Successful snapshots include telemetry for posting reads/candidates, Evidence
 cursor reads, selected payload hydrations, candidate/page bounds, residual
@@ -21,8 +24,8 @@ empty map to imply success.
 
 The public adapter retains the memory fallback's fixed lower-capacity parity,
 terminal final snapshot, and controlled Close semantics. Query failures publish
-a `QUERY_FAILED` status while retaining the last coherent successful
-publication; partial exact data is never published. v3 posting writes,
+a `QUERY_FAILED` status while retaining the last coherent successful query on
+the diagnostic status publication; partial exact data is never published. v3 posting writes,
 migration, admission, cleanup, and ownership behavior are preserved.
 
 Focused proof:
