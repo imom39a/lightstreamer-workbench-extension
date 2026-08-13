@@ -966,13 +966,17 @@ export function validateHarnessSelection(selection: HarnessSelection | undefined
     ["matrix-memory-sustained", "memory", "sustained", 19, true],
     ["matrix-memory-burst", "memory", "burst", 28, false]
   ] as const;
-  if (!expected.some(([id, adapter, workload, firstCellIndex, collectAfterFinal]) =>
-    selection.id === id && selection.adapter === adapter && selection.workload === workload
-      && selection.firstCellIndex === firstCellIndex && selection.collectAfterFinal === collectAfterFinal
-  )) throw new Error("Performance matrix shard identity is invalid.");
   if (selection.cellOffset !== undefined && (!Number.isSafeInteger(selection.cellOffset) || selection.cellOffset < 1 || selection.cellOffset > 9)) {
     throw new Error("Performance matrix cell offset is invalid.");
   }
+  if (!expected.some(([id, adapter, workload, firstCellIndex, collectAfterFinal]) => {
+    const selectedCellNeedsCleanup = selection.cellOffset !== undefined
+      && selection.cellOffset < 9
+      && collectAfterFinal === false;
+    return selection.id === id && selection.adapter === adapter && selection.workload === workload
+      && selection.firstCellIndex === firstCellIndex
+      && selection.collectAfterFinal === (selectedCellNeedsCleanup ? true : collectAfterFinal);
+  })) throw new Error("Performance matrix shard identity is invalid.");
   return selection;
 }
 

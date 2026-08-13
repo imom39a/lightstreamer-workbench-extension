@@ -61,6 +61,22 @@ describe("Event History performance checkpoint workload", () => {
     expect(() => validateHarnessSelection({ ...selection, cellOffset: 10 })).toThrow(/cell offset is invalid/u);
   });
 
+  it("accepts per-cell cleanup for the memory-burst shard without changing shard identity", () => {
+    const shard = {
+      id: "matrix-memory-burst",
+      kind: "matrix" as const,
+      adapter: "memory" as const,
+      workload: "burst" as const,
+      firstCellIndex: 28,
+      collectAfterFinal: false,
+      pageToken: "memory-burst-page"
+    };
+
+    expect(validateHarnessSelection({ ...shard, cellOffset: 1, collectAfterFinal: true })).toMatchObject({ cellOffset: 1 });
+    expect(validateHarnessSelection({ ...shard, cellOffset: 9, collectAfterFinal: false })).toMatchObject({ cellOffset: 9 });
+    expect(() => validateHarnessSelection({ ...shard, cellOffset: 9, collectAfterFinal: true })).toThrow(/shard identity is invalid/u);
+  });
+
   it("releases caller-owned heap workload candidates before yielding the retained frame", async () => {
     const candidates = [
       createEventHistoryWorkloadEvent("large-json-rich", 0, "heap-release"),
