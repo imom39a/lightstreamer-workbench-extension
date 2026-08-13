@@ -5,7 +5,7 @@ import { createMemoryEventHistoryForTests } from "../src/core/event-history-auth
 import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
 import { authoritativeEventDatabaseName } from "../src/core/indexeddb/authoritative-event-db";
 import { typedFacetValue, type EvidenceFilter } from "../src/core/evidence-filter-contract";
-import { EVIDENCE_FACET_KEYS } from "../src/core/evidence-facets";
+import { EVIDENCE_FACET_KEYS, FACET_DESCRIPTORS } from "../src/core/evidence-facets";
 import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
 const emptyFilter = (): EvidenceFilter => ({ revision: 1, text: "", criteria: {}, around: null, unsupported: [] });
@@ -38,21 +38,24 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     const request = { at: "LATEST_COMMITTED" as const, page: { order: "OLDEST_FIRST" as const, size: 17 }, filter: { ...emptyFilter(), criteria: { key: { include: [typedFacetValue("key", "string", "key-999")], exclude: [] } } }, discover: [{ facet: "key", size: 17 }] };
     const expected = await memory.query!(request);
     const actual = await durable.query!(request);
+    expect(expected.ok).toBe(true);
     expect(actual).toMatchObject({ ok: true });
-    if (!expected.ok || !actual.ok) return;
+    if (!expected.ok || !actual.ok) throw new Error("Expected memory and IndexedDB queries to succeed");
     expect(actual.value.discoveries.get("key")).toEqual(expected.value.discoveries.get("key"));
     const first = actual.value.discoveries.get("key");
     expect(first).toMatchObject({ state: "AVAILABLE", distinctTotal: 130, baseEvidenceCount: 130 });
-    if (!first || first.state !== "AVAILABLE" || !first.nextCursor) return;
+    expect(first?.state).toBe("AVAILABLE");
+    expect(first?.nextCursor).not.toBeNull();
+    if (!first || first.state !== "AVAILABLE" || !first.nextCursor) throw new Error("Expected the first discovery page to have a cursor");
     const seen = new Set(first.values.map((entry) => entry.value.identity));
     let cursor: string | null = first.nextCursor;
     while (cursor) {
       const page = await durable.query!({ ...request, discover: [{ facet: "key", size: 17, cursor }] });
       expect(page.ok).toBe(true);
-      if (!page.ok) break;
+      if (!page.ok) throw new Error("Expected every discovery page query to succeed");
       const discovery = page.value.discoveries.get("key");
       expect(discovery?.state).toBe("AVAILABLE");
-      if (!discovery || discovery.state !== "AVAILABLE") break;
+      if (!discovery || discovery.state !== "AVAILABLE") throw new Error("Expected every discovery page to be available");
       discovery.values.forEach((entry) => seen.add(entry.value.identity));
       cursor = discovery.nextCursor;
     }
@@ -66,9 +69,13 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     const { durable } = await setup(name, [event("event-1", "one", "MERGE")]);
     const zero = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...emptyFilter(), criteria: { client: { include: [typedFacetValue("client", "client", "missing")], exclude: [] } } }, discover: [{ facet: "key", size: 10 }] });
     expect(zero).toMatchObject({ ok: true, value: { totals: { matching: 0 } } });
-    if (zero.ok) expect(zero.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "ZERO_BASE", baseEvidenceCount: 0 });
+    expect(zero.ok).toBe(true);
+    if (!zero.ok) throw new Error("Expected zero-base query to succeed");
+    expect(zero.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "ZERO_BASE", baseEvidenceCount: 0 });
     const noConcrete = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "operation", size: 10 }] });
-    expect(noConcrete.ok && noConcrete.value.discoveries.get("operation")).toMatchObject({ state: "UNAVAILABLE", reason: "NO_CONCRETE_VALUES", baseEvidenceCount: 1 });
+    expect(noConcrete.ok).toBe(true);
+    if (!noConcrete.ok) throw new Error("Expected no-concrete-values query to succeed");
+    expect(noConcrete.value.discoveries.get("operation")).toMatchObject({ state: "UNAVAILABLE", reason: "NO_CONCRETE_VALUES", baseEvidenceCount: 1 });
 
     await durable.close();
   });
@@ -96,7 +103,9 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     });
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...emptyFilter(), criteria: { mode: { include: [typedFacetValue("mode", "enum", "COMMAND")], exclude: [] } } }, discover: [{ facet: "key", size: 10 }] });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2 } } });
-    if (result.ok) expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected corrupt-posting query to succeed");
+    expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
     await durable.close();
   });
 
@@ -124,7 +133,9 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     });
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...emptyFilter(), criteria: { mode: { include: [typedFacetValue("mode", "enum", "COMMAND")], exclude: [] } } }, discover: [{ facet: "key", size: 10 }] });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2 } } });
-    if (result.ok) expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected wrong-event-id query to succeed");
+    expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
     await durable.close();
   });
 
@@ -151,7 +162,9 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     });
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2, inScope: 2 }, page: { evidence: [{ identity: { sequence: 1 } }, { identity: { sequence: 2 } }] } } });
-    if (result.ok) expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected same-interval range query to succeed");
+    expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
     await durable.close();
   });
 
@@ -177,7 +190,9 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
       };
     });
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
-    expect(result.ok && result.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected cross-interval query to succeed");
+    expect(result.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 1 });
     await durable.close();
   });
 
@@ -208,7 +223,9 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     });
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 1 } } });
-    if (result.ok) expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected no-counterfactual query to succeed");
+    expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
     await durable.close();
   });
 
@@ -220,19 +237,28 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
       const base = { at: "LATEST_COMMITTED" as const, page: { order: "OLDEST_FIRST" as const, size: 10 }, filter: emptyFilter(), discover: [{ facet, size: 10 }] };
       const expectedBase = await memory.query!(base);
       const actualBase = await durable.query!(base);
-      expect(actualBase.ok && expectedBase.ok && actualBase.value.discoveries.get(facet)).toEqual(expectedBase.ok && expectedBase.value.discoveries.get(facet));
-      if (!expectedBase.ok) continue;
+      expect(expectedBase.ok).toBe(true);
+      expect(actualBase.ok).toBe(true);
+      if (!expectedBase.ok || !actualBase.ok) throw new Error(`Expected catalog ${facet} queries to succeed`);
+      expect(actualBase.value.discoveries.get(facet)).toEqual(expectedBase.value.discoveries.get(facet));
       const concrete = expectedBase.value.discoveries.get(facet)?.state === "AVAILABLE" ? expectedBase.value.discoveries.get(facet)?.values[0]?.value : undefined;
-      for (const value of [concrete, typedFacetValue(facet, "string", "absent")]) {
-        if (!value) continue;
+      const valueType = FACET_DESCRIPTORS.find((descriptor) => descriptor.key === facet)?.valueType;
+      if (!valueType) throw new Error(`Expected a descriptor for catalog facet ${facet}`);
+      const values = concrete ? [concrete, typedFacetValue(facet, valueType, "absent")] : [typedFacetValue(facet, valueType, "absent")];
+      for (const value of values) {
         const request = { ...base, filter: { ...emptyFilter(), criteria: { [facet]: { include: [value], exclude: [] } } } };
         const expected = await memory.query!(request);
         const actual = await durable.query!(request);
-        expect(actual.ok && expected.ok && actual.value.discoveries.get(facet)).toEqual(expected.ok && expected.value.discoveries.get(facet));
+        expect(expected.ok, `catalog ${facet} filtered query for ${value.identity}`).toBe(true);
+        expect(actual.ok).toBe(true);
+        if (!expected.ok || !actual.ok) throw new Error(`Expected catalog ${facet} filtered query for ${value.identity} to succeed: ${expected.ok ? "memory-ok" : expected.problem.code}/${actual.ok ? "indexeddb-ok" : actual.problem.code}`);
+        expect(actual.value.discoveries.get(facet)).toEqual(expected.value.discoveries.get(facet));
       }
     }
     const listener = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "listener", size: 10 }] });
-    expect(listener.ok && listener.value.discoveries.get("listener")).toMatchObject({ state: "AVAILABLE", distinctTotal: 2 });
+    expect(listener.ok).toBe(true);
+    if (!listener.ok) throw new Error("Expected listener query to succeed");
+    expect(listener.value.discoveries.get("listener")).toMatchObject({ state: "AVAILABLE", distinctTotal: 2 });
     await Promise.all([memory.close(), durable.close()]);
   });
 });

@@ -22,6 +22,9 @@ totals, read point, cursor behavior, and transaction remain coherent.
 - Discovery still delegates typed ordering, exact counts, active pins,
   continuation, and unavailable states to the storage-neutral memory oracle.
   It never hydrates replay payloads.
+- The shared filter algebra preserves the built-in scalar types while also
+  accepting opaque string-valued catalog facet types such as `client`,
+  `session`, and `listener`, so full-catalog parity filters are valid.
 
 ## Tests and red/green proof
 
@@ -46,10 +49,10 @@ ignored, and base totals remain successful.
 
 ## Verification
 
-The focused 04/05/08/09 suites, typecheck, release tests, build, documentation
-check, package-all gate, and `git diff --check` are run for this repair. Final
-counts, package sizes, and the committed revision are recorded in
-`/tmp/filter-impl-09-range-repair-result.txt`.
+The focused 04/05/08/09 suites (39 tests), typecheck, release tests, build,
+documentation check, package-all gate, and `git diff --check` are run for this
+hardening. Final counts, package sizes, and the committed revision are recorded
+in `/tmp/filter-impl-09-test-hardening-result.txt`.
 
 ## Residual performance boundary
 
