@@ -23,6 +23,7 @@ import {
   type FilterPolarity,
   type TypedFilterValue
 } from "../../../core/filter-algebra";
+import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filter-actions";
 import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
@@ -62,6 +63,38 @@ function SelectedUpdateDetails({
         </dd>
       ])}</dl> : <p>No captured fields.</p>}
     </section>
+  </section>;
+}
+
+function SelectedFilterActions({
+  actions,
+  expectedRevision,
+  onAction
+}: Readonly<{
+  actions: readonly EvidenceFilterActionDescriptor[];
+  expectedRevision: number;
+  onAction(action: EvidenceFilterActionDescriptor): void;
+}>): JSX.Element | null {
+  if (actions.length === 0) return null;
+  return <section className="workbench-react__filter-actions" aria-label="Filter selected Evidence">
+    <h3>Filter selected Evidence</h3>
+    <p>Typed actions apply immediately to Filter revision {expectedRevision} and preserve unrelated Criteria.</p>
+    <div className="workbench-react__filter-action-list" role="list" aria-label="Selected Evidence Filter actions">
+      {actions.map((action) => {
+        const valueLabel = action.kind === "around"
+          ? "Retained Evidence interval"
+          : `${action.facetDescriptor?.label ?? action.facet ?? "Evidence value"}: ${action.value?.label ?? "Unavailable"}`;
+        const controlLabel = action.kind === "around"
+          ? action.label
+          : action.kind === "include"
+            ? `Include ${valueLabel}; typed identity ${action.value?.identity ?? "unavailable"}`
+            : `Exclude ${valueLabel}; typed identity ${action.value?.identity ?? "unavailable"}`;
+        return <div className="workbench-react__filter-action-row" role="listitem" key={action.id} data-filter-action-kind={action.kind} data-filter-facet={action.facet}>
+          <span>{valueLabel}</span>
+          <button type="button" aria-label={controlLabel} onClick={() => onAction(action)}>{action.kind === "around" ? "Around" : action.kind === "include" ? "Include" : "Exclude"}</button>
+        </div>;
+      })}
+    </div>
   </section>;
 }
 
@@ -628,6 +661,13 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const appliedFilter = evidence.investigation.filter;
   const appliedFilterSummary = filterSummary(appliedFilter);
   const hasActiveFilter = appliedFilterSummary !== "none";
+  const applySelectedFilterAction = (action: EvidenceFilterActionDescriptor) => {
+    dispatch(runtime, {
+      type: "apply-contextual-filter-action",
+      expectedRevision: appliedFilter.revision,
+      action
+    });
+  };
   const activeFacetDescriptor = filterFacet
     ? FACET_DESCRIPTORS.find((descriptor) => descriptor.key === filterFacet) ?? null
     : null;
@@ -1258,6 +1298,22 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [focusedEventId, snapshot.contextId, snapshot.version, scopePickerOpen]);
 
   useLayoutEffect(() => {
+    if (!hiddenSelection || !focusedEventId || focusedEventId === hiddenSelection.eventId) return;
+    if (isCompactGeometry() && snapshot.contextId) {
+      pendingEvidenceFocus.current = focusedEventId;
+      return;
+    }
+    const row = evidenceRows.current.get(focusedEventId);
+    if (row?.isConnected && row.getClientRects().length > 0) row.focus({ preventScroll: true });
+  }, [focusedEventId, hiddenSelection?.eventId, snapshot.contextId, snapshot.version]);
+
+  useLayoutEffect(() => {
+    if (evidence.filterMutation.state !== "revealed" || snapshot.contextId || !focusedEventId) return;
+    const row = evidenceRows.current.get(focusedEventId);
+    if (row?.isConnected && row.getClientRects().length > 0) row.focus({ preventScroll: true });
+  }, [evidence.filterMutation.state, focusedEventId, snapshot.contextId, snapshot.version]);
+
+  useLayoutEffect(() => {
     const boundary = pendingRetainedBoundaryFocus.current;
     if (!boundary || !events.length) return;
     if ((boundary === "oldest" && evidence.visibleStart !== 1) || (boundary === "newest" && evidence.visibleEnd !== total)) return;
@@ -1631,7 +1687,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               <footer><button type="submit">Apply</button><button type="button" onClick={closeFilter}>Cancel</button></footer>
             </section>}
           </form> : null}
-          {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : null}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div></div> : null}
+          {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : <button type="button" disabled aria-label="Reveal selected Evidence unavailable">Reveal selected Evidence · Unavailable</button>}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div>{hiddenSelection.revealUnavailableReason ? <small>{hiddenSelection.revealUnavailableReason}</small> : null}</div> : null}
           <div className="workbench-react__evidence-window" aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}
           {evidence.loading ? <div className="workbench-react__empty" role="status" aria-live="polite"><strong>Loading Evidence…</strong><span>Resolving the current Scope and Filter.</span></div> : events.length ? <div className="workbench-react__ledger" role="grid" aria-label="Ordered Lightstreamer Evidence" tabIndex={0} ref={evidenceLedger} onKeyDown={handleEvidenceKey}>
@@ -1672,6 +1728,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             </section> : <>
               <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
+              {selected ? <SelectedFilterActions
+                actions={snapshot.context.filterActions ?? []}
+                expectedRevision={appliedFilter.revision}
+                onAction={applySelectedFilterAction}
+              /> : null}
               {!selected ? <CommandProjectionContextSummary
                 projections={snapshot.commandProjections}
                 hasSupportingLocalEvidence={Boolean(supportingProjectionEvidenceId)}

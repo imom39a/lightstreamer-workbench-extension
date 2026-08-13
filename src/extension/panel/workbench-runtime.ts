@@ -98,6 +98,11 @@ import {
   type StructuralEvidenceScope
 } from "./evidence-investigation-query";
 import {
+  createEvidenceFilterActionDescriptors,
+  filterMutationsForAction,
+  type EvidenceFilterActionDescriptor
+} from "../../core/evidence-filter-actions";
+import {
   historyConditionFor,
   type WorkbenchHistoryCondition
 } from "./history-condition";
@@ -238,6 +243,8 @@ export type WorkbenchContextSnapshot = Readonly<{
   fields: readonly (readonly [string, string])[];
   /** Full retained Item Update evidence, independent of the evidence window. */
   selectedUpdate: SelectedUpdateSnapshot | null;
+  /** Typed Include, Exclude, and Around actions for selected Evidence. */
+  filterActions?: readonly EvidenceFilterActionDescriptor[];
 }>;
 
 export type WorkbenchCommandProjection = Readonly<{
@@ -284,7 +291,8 @@ export type WorkbenchEvidenceSnapshot = Readonly<{
   hiddenSelection: Readonly<{
     eventId: string;
     message: "Selected event outside current results";
-    canReveal: true;
+    canReveal: boolean;
+    revealUnavailableReason?: string;
     canClear: true;
   }> | null;
   investigation: WorkbenchEvidenceInvestigationSnapshot;
@@ -507,6 +515,8 @@ export type WorkbenchCommand =
   | { type: "mutate-filter"; expectedRevision: number; operations: readonly FilterMutation[] }
   | { type: "reset-filter"; expectedRevision: number }
   | { type: "apply-filter-builder"; expectedRevision: number; operations: readonly FilterMutation[] }
+  | { type: "apply-filter-action"; expectedRevision: number; action: EvidenceFilterActionDescriptor }
+  | { type: "apply-contextual-filter-action"; expectedRevision: number; action: EvidenceFilterActionDescriptor }
   | { type: "request-filter-discovery"; request: FacetDiscoveryRequest | null }
   | { type: "reveal-selected-evidence" }
   | { type: "clear-evidence-selection" }
@@ -982,6 +992,26 @@ class Runtime implements WorkbenchRuntime {
     this.refreshEvidence("filter");
   }
 
+  private applyContextualFilterAction(
+    expectedRevision: number,
+    requestedAction: EvidenceFilterActionDescriptor
+  ): void {
+    const available = this.selectedContextFilterActions();
+    const action = available.find((candidate) => candidate.id === requestedAction.id);
+    if (!action) {
+      this.filterMutation = Object.freeze({
+        state: "invalid",
+        revision: this.canonicalFilter.revision,
+        changed: false,
+        message: "This contextual Filter action is no longer available for the selected Evidence.",
+        removedCriteria: 0
+      });
+      this.publish();
+      return;
+    }
+    this.applyFilterCommand(expectedRevision, filterMutationsForAction(action));
+  }
+
   private revealSelectedEvidence(): void {
     const lookup = this.displayedInvestigation()?.lookup ?? this.liveInvestigation?.lookup;
     if (!lookup || lookup.state !== "RETAINED" || lookup.evidence.identity.eventId !== this.selectionEventId) return;
@@ -1265,6 +1295,11 @@ class Runtime implements WorkbenchRuntime {
       case "apply-filter-builder":
         this.invalidateEvidenceCopy();
         this.applyFilterCommand(command.expectedRevision, command.operations);
+        return;
+      case "apply-filter-action":
+      case "apply-contextual-filter-action":
+        this.invalidateEvidenceCopy();
+        this.applyContextualFilterAction(command.expectedRevision, command.action);
         return;
       case "request-filter-discovery":
         this.filterDiscovery = command.request === null
@@ -3473,6 +3508,7 @@ class Runtime implements WorkbenchRuntime {
     const findIndex = this.findMatchIndexes.findIndex(
       (index) => this.findResultEvents[index]?.id === this.findCurrentEventId
     );
+    const revealAvailability = this.revealSelectionAvailability();
     return Object.freeze({
       version: this.version,
       renderedEvidenceBoundary: this.renderedEvidenceBoundary
@@ -3537,13 +3573,31 @@ class Runtime implements WorkbenchRuntime {
             ? Object.freeze({
                 eventId: this.selectionEventId,
                 message: "Selected event outside current results" as const,
-                canReveal: true as const,
+                canReveal: revealAvailability.canReveal,
+                ...(revealAvailability.reason === undefined ? {} : { revealUnavailableReason: revealAvailability.reason }),
                 canClear: true as const
               })
             : null,
         investigation: this.investigationSnapshot()
       })
     });
+  }
+
+  private revealSelectionAvailability(): Readonly<{ canReveal: boolean; reason?: string }> {
+    if (!this.selectionEventId) return { canReveal: false, reason: "Reveal is unavailable without a retained selection." };
+    const investigation = this.displayedInvestigation() ?? this.liveInvestigation;
+    const lookup = investigation?.lookup;
+    if (!lookup || lookup.state !== "RETAINED" || lookup.evidence.identity.eventId !== this.selectionEventId) {
+      return { canReveal: false, reason: "Reveal is unavailable because the selected Evidence is no longer retained." };
+    }
+    if (!lookup.inScope) return { canReveal: false, reason: "Reveal is unavailable because the selection is outside the current Scope." };
+    if (this.scopeSnapshot().selection?.retired) {
+      return { canReveal: false, reason: "Reveal is unavailable because the selected runtime identity is retired." };
+    }
+    if (lookup.blockingCriteria.length === 0) {
+      return { canReveal: false, reason: "Reveal is unavailable because the current Filter reports no removable blocker." };
+    }
+    return { canReveal: true };
   }
 
   private presentEvidence(event: LightstreamerEventEnvelope): WorkbenchEvidence {
@@ -3844,7 +3898,31 @@ class Runtime implements WorkbenchRuntime {
         ["COMMAND key", selected.update?.key ?? "—"],
         ["Observation path", evidenceObservationPath(selected)],
         ["Evidence limitations", evidenceLimitations(selected)]
-      ] as const)
+      ] as const),
+      filterActions: this.selectedContextFilterActions(selected)
+    });
+  }
+
+  private selectedContextFilterActions(
+    selected: LightstreamerEventEnvelope | null = this.selectedEventEnvelope
+  ): readonly EvidenceFilterActionDescriptor[] {
+    if (!selected || !this.selectionEventId || selected.id !== this.selectionEventId) return Object.freeze([]);
+    const investigation = this.displayedInvestigation() ?? this.liveInvestigation;
+    const lookup = investigation?.lookup;
+    if (lookup && lookup.state !== "RETAINED" && lookup.identity.eventId === this.selectionEventId) return Object.freeze([]);
+    const pageIdentity = investigation?.page.evidence.find((record) => record.identity.eventId === this.selectionEventId)?.identity;
+    const identity = lookup?.state === "RETAINED"
+      ? lookup.evidence.identity
+      : this.selectedEvidenceIdentity ?? pageIdentity;
+    const timestamp = lookup?.state === "RETAINED" ? lookup.evidence.timestamp : selected.timestamp;
+    const retainedIntervalId = investigation?.readPoint.interval.id;
+    const retained = identity !== null &&
+      (retainedIntervalId === undefined || identity?.intervalId === retainedIntervalId);
+    return createEvidenceFilterActionDescriptors(selected, {
+      ...(identity === null || identity === undefined ? {} : { identity }),
+      timestamp,
+      retained,
+      ...(retainedIntervalId === undefined ? {} : { retainedIntervalId })
     });
   }
 
@@ -4095,7 +4173,8 @@ function runtimeObjectDossier(
     kind: "runtime",
     title,
     fields: Object.freeze(fields),
-    selectedUpdate: null
+    selectedUpdate: null,
+    filterActions: Object.freeze([])
   });
 }
 

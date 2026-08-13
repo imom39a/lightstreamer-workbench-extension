@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "ticket": "filter-impl-14",
+  "classification": "Material UI",
+  "runner": "node scripts/generate-filter-impl-14-visual-packet.mjs",
+  "baselinePolicy": "No committed baseline update; references are pre-action captures and require maintainer approval.",
+  "states": [
+    {
+      "name": "normal selected-action Context",
+      "viewport": "900x700",
+      "theme": "light",
+      "sourceScenario": "filter-find",
+      "artifacts": "test-results/filter-impl-14-visual-qa/{reference,current,diff}/normal-selected-action-context-light.png"
+    },
+    {
+      "name": "hidden-selection Reveal",
+      "viewport": "900x700",
+      "theme": "dark",
+      "sourceScenario": "filter-hidden-selection",
+      "artifacts": "test-results/filter-impl-14-visual-qa/{reference,current,diff}/hidden-selection-reveal-dark.png"
+    }
+  ],
+  "coverageNote": "Compact return, shallow recovery, wide restoration, and high-volume/adverse states remain in the maintained matrix or are blocked pending the full filter-14 browser packet."
+}
