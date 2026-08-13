@@ -47,7 +47,7 @@ describe("release packaging verification gate", () => {
     });
     expect(result.status, result.stderr).toBe(0);
     const plan = JSON.parse(result.stdout) as { ordinary: string[]; isolated: string[] };
-    expect(plan.ordinary).toHaveLength(75);
+    expect(plan.ordinary).toHaveLength(76);
     expect(plan.isolated).toEqual([
       "tests/authoritative-event-history-contract.test.ts",
       "tests/authoritative-event-history-indexeddb.test.ts",
@@ -59,7 +59,7 @@ describe("release packaging verification gate", () => {
       "tests/filter-impl-07-postings.test.ts",
       "tests/filter-impl-07-schema.test.ts"
     ]);
-    expect(new Set([...plan.ordinary, ...plan.isolated]).size).toBe(84);
+    expect(new Set([...plan.ordinary, ...plan.isolated]).size).toBe(85);
   });
 
   it("writes deterministic raw-DEFLATE entries with valid headers and contents", () => {

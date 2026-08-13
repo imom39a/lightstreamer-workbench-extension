@@ -58,6 +58,7 @@ import {
 } from "./event-history-authoritative";
 import { extractEvidenceFacets } from "./evidence-facets";
 import { canonicalEvidenceSearchText, normalizeEvidenceSearchText } from "./evidence-facets";
+import { discoverFacet } from "./evidence-filter-discovery";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import {
@@ -1410,6 +1411,26 @@ async function queryIndexedDb(
     const selectedPayload = request.lookup === undefined
       ? null
       : await readSelectedEvidence(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), request.lookup, interval, firstSequence, lastSequence, telemetry);
+    const discoveries = new Map<string, FacetDiscoveryResult>();
+    const postingStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
+    const projectionStore = transaction.objectStore(options.projectionStore);
+    for (const discovery of request.discover ?? []) {
+      try {
+        const discoveryFilter: EvidenceQueryRequest["filter"] = {
+          ...request.filter,
+          criteria: Object.fromEntries(Object.entries(request.filter.criteria).filter(([facet]) => facet !== discovery.facet))
+        };
+        const candidates = await indexedDbPostingCandidates(postingStore, discoveryFilter, interval.id, firstSequence, lastSequence, telemetry);
+        const projections = await readQueryProjections(projectionStore, interval.id, firstSequence, lastSequence, candidates, telemetry);
+        if (candidates !== null) await validateDiscoveryFacetPostings(postingStore, discovery.facet, interval.id, projections, telemetry);
+        const records = projections.map((projection) => querySelectionRecord(projection, interval));
+        discoveries.set(discovery.facet, discoverFacet(records, request.filter, readPoint, discovery));
+      } catch {
+        // Discovery is optional. A malformed or incomplete posting index must
+        // not erase an otherwise coherent base Evidence Snapshot.
+        discoveries.set(discovery.facet, { state: "UNAVAILABLE", facet: discovery.facet, reason: "DISCOVERY_FAILED", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null });
+      }
+    }
     await transactionDone(transaction, "querying Evidence");
     const selectionRecords = projections.map((record) => querySelectionRecord(record, interval));
     const retainedRecords = retainedProjections?.map((record) => querySelectionRecord(record, interval)) ?? selectionRecords;
@@ -1419,8 +1440,9 @@ async function queryIndexedDb(
       return queryFailure("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.");
     }
     telemetry.aroundAnchorValidated = filter.around?.anchor !== undefined;
-    const discoveries = new Map<string, FacetDiscoveryResult>();
-    for (const discovery of request.discover ?? []) discoveries.set(discovery.facet, { state: "UNAVAILABLE", facet: discovery.facet, reason: "UNSUPPORTED_AT_READ_POINT", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null });
+    if (filter.unsupported.length > 0) {
+      for (const discovery of request.discover ?? []) discoveries.set(discovery.facet, { state: "UNAVAILABLE", facet: discovery.facet, reason: "UNSUPPORTED_AT_READ_POINT", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null });
+    }
     const lookupRecord = selectedPayload ? queryProjectionFromPayload(selectedPayload, interval) : null;
     const lookupRecordsWithPayload = lookupRecord
       ? [...selectionRecords.filter((record) => !sameQueryIdentity(record.identity, lookupRecord.identity)), Object.freeze({ ...lookupRecord, payload: copyQueryCandidate(deserializeJournalEvidenceCandidate(selectedPayload!.replayPayload)) })]
@@ -1575,6 +1597,15 @@ function readPostingToken(store: IDBObjectStore, token: string, intervalId: stri
       const cursor = request.result;
       if (!cursor) { resolve(result); return; }
       const posting = cursor.value as FacetPostingRecord;
+      assertExactKeys(posting, ["eventId", "facetIdentity", "intervalId", "sequence", "token"]);
+      if (typeof posting.eventId !== "string" || posting.eventId.length === 0
+        || typeof posting.facetIdentity !== "string"
+        || posting.token !== facetPostingToken(posting.facetIdentity)
+        || posting.intervalId !== intervalId
+        || !Number.isSafeInteger(posting.sequence) || posting.sequence < first || posting.sequence > last) {
+        reject(new Error("A facet posting is corrupt or outside the requested Evidence range."));
+        return;
+      }
       if (posting.intervalId === intervalId && posting.sequence >= first && posting.sequence <= last) {
         result.add(posting.sequence);
         telemetry.postingCandidates += 1;
@@ -1582,6 +1613,15 @@ function readPostingToken(store: IDBObjectStore, token: string, intervalId: stri
       cursor.continue();
     };
   });
+}
+
+async function validateDiscoveryFacetPostings(store: IDBObjectStore, facet: string, intervalId: string, projections: readonly QueryProjection[], telemetry: QueryTelemetryMutable): Promise<void> {
+  for (const projection of projections) {
+    const value = projection.facets[facet] as { identity?: unknown } | undefined;
+    if (!value || typeof value.identity !== "string") continue;
+    const sequences = await readPostingToken(store, facetPostingToken(value.identity), intervalId, projection.sequence, projection.sequence, telemetry);
+    if (!sequences.has(projection.sequence)) throw new Error("Facet discovery postings are incomplete or corrupt.");
+  }
 }
 
 function readProjectionPage(store: IDBObjectStore, intervalId: string, first: number, last: number, page: EvidenceQueryRequest["page"], offset: number, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
