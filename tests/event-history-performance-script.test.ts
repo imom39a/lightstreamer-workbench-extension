@@ -181,7 +181,6 @@ describe("Event History performance startup fail-closed seams", () => {
       const cdp = {
         request(method, params) {
           calls.push({ method, params });
-          if (method === "Page.navigate") return Promise.resolve({});
           if (method === "Runtime.evaluate" && params.expression === "location.href") {
             return Promise.resolve({ result: { value: expected } });
           }
@@ -190,6 +189,7 @@ describe("Event History performance startup fail-closed seams", () => {
         }
       };
       await prepareInitialPageForAuthoritativeRun(cdp, expected, 100);
+      assert.equal(calls.some(({ method }) => method === "Page.navigate"), false);
       assert.deepEqual(calls.map(({ method }) => method), [
         "Page.enable",
         "Runtime.enable",
@@ -203,23 +203,41 @@ describe("Event History performance startup fail-closed seams", () => {
   `);
   });
 
-  it("navigates exactly once when the initial URL is stale", () => {
+  it("polls an about:blank or stale document until the exact URL commits", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
       const expected = "http://127.0.0.1:4173/?pageToken=fresh";
       const calls = [];
-      let href = "http://127.0.0.1:4173/?pageToken=stale";
+      const hrefs = ["about:blank", "http://127.0.0.1:4173/?pageToken=stale", expected];
       const cdp = { request(method, params) {
         calls.push({ method, params });
-        if (method === "Page.navigate") { href = expected; return Promise.resolve({}); }
-        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: href } });
+        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: hrefs.shift() ?? expected } });
+        return Promise.resolve({});
+      }};
+      await ensureFreshHarnessDocument(cdp, expected, 500);
+      assert.equal(calls.some(({ method }) => method === "Page.navigate"), false);
+      assert.equal(calls.filter(({ method }) => method === "Page.navigate").length, 0);
+      assert.equal(calls[2].params.expression, "location.href");
+      assert.equal(calls.filter(({ method }) => method === "Runtime.evaluate").length, 3);
+    `);
+  });
+
+  it("polls through a different page token until the exact token commits", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
+      const expected = "http://127.0.0.1:4173/?pageToken=fresh";
+      const calls = [];
+      const hrefs = ["http://127.0.0.1:4173/?pageToken=wrong", expected];
+      const cdp = { request(method, params) {
+        calls.push({ method, params });
+        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: hrefs.shift() ?? expected } });
         return Promise.resolve({});
       }};
       await ensureFreshHarnessDocument(cdp, expected, 100);
-      assert.equal(calls.filter(({ method }) => method === "Page.navigate").length, 1);
-      assert.equal(calls[2].params.expression, "location.href");
-      assert.equal(calls[3].method, "Page.navigate");
+      assert.equal(calls.some(({ method }) => method === "Page.navigate"), false);
+      assert.equal(calls.filter(({ method }) => method === "Runtime.evaluate").length, 2);
     `);
   });
 
@@ -228,7 +246,9 @@ describe("Event History performance startup fail-closed seams", () => {
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
       let cancelled = 0;
+      const calls = [];
       const cdp = { request(method, params) {
+        calls.push({ method, params });
         if (method === "Runtime.evaluate" && params.expression === "location.href") {
           const pending = new Promise(() => undefined);
           pending.cancel = () => { cancelled += 1; };
@@ -243,6 +263,7 @@ describe("Event History performance startup fail-closed seams", () => {
           && error.status.error.message.includes("page-document-evaluate")
       );
       assert.equal(cancelled, 1);
+      assert.equal(calls.some(({ method }) => method === "Page.navigate"), false);
     `);
   });
 
@@ -278,25 +299,6 @@ describe("Event History performance startup fail-closed seams", () => {
       }};
       await assert.rejects(preparePageForAuthoritativeRun(cdp, 20), /timed out|deadline expired/u);
       assert.equal(cancelled, 1);
-    `);
-  });
-
-  it("fails closed when initial Page.navigate never settles", () => {
-    runNode(`
-      import assert from "node:assert/strict";
-      const { prepareInitialPageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
-      const calls = [];
-      const cdp = { request(method) {
-        calls.push(method);
-        return method === "Page.navigate" ? new Promise(() => undefined) : Promise.resolve({});
-      }};
-      await assert.rejects(
-        prepareInitialPageForAuthoritativeRun(cdp, "http://127.0.0.1:4173/", { deadlineAt: Date.now() + 25, requestCeilingMs: 10 }),
-        (error) => error?.name === "PerformanceOperationTimeout"
-          && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
-          && error.status.error.name === "CdpRequestTimeout"
-      );
-      assert.deepEqual(calls, ["Page.enable", "Runtime.enable", "Runtime.evaluate", "Page.navigate"]);
     `);
   });
 
@@ -453,21 +455,21 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
-  it("navigates a fresh target whose metadata URL precedes renderer commit", () => {
+  it("waits for a fresh target whose metadata URL precedes renderer commit", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
       const expected = "http://127.0.0.1:4173/?pageToken=fresh";
       const calls = [];
-      let href = "about:blank";
+      const hrefs = ["about:blank", expected];
       const cdp = { request(method, params) {
         calls.push({ method, params });
-        if (method === "Page.navigate") { href = expected; return Promise.resolve({}); }
-        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: href } });
+        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: hrefs.shift() ?? expected } });
         return Promise.resolve({});
       }};
       await ensureFreshHarnessDocument(cdp, expected, 100);
-      assert.deepEqual(calls.slice(0, 4).map(({ method }) => method), ["Page.enable", "Runtime.enable", "Runtime.evaluate", "Page.navigate"]);
+      assert.deepEqual(calls.slice(0, 4).map(({ method }) => method), ["Page.enable", "Runtime.enable", "Runtime.evaluate", "Runtime.evaluate"]);
+      assert.equal(calls.some(({ method }) => method === "Page.navigate"), false);
       assert.equal(calls.some(({ method, params }) => method === "Runtime.evaluate" && params.expression === "location.href"), true);
     `);
   });
@@ -477,7 +479,9 @@ describe("Event History performance startup fail-closed seams", () => {
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
       const expected = "http://127.0.0.1:4173/?pageToken=never";
+      const calls = [];
       const cdp = { request(method, params) {
+        calls.push({ method, params });
         if (method === "Runtime.evaluate" && params.expression === "location.href") {
           return Promise.resolve({ result: { value: "about:blank" } });
         }
@@ -490,6 +494,7 @@ describe("Event History performance startup fail-closed seams", () => {
           && error.status.error.name === "CdpRequestTimeout"
           && error.status.error.message.includes("page-document-polling")
       );
+      assert.equal(calls.some(({ method }) => method === "Page.navigate"), false);
     `);
   });
 

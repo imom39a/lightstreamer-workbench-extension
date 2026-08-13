@@ -1,21 +1,19 @@
 # `filter-impl-08` repair proof
 
-## Conditional initial navigation repair (2026-08-13)
+## Fresh-document polling repair (2026-08-13)
 
-The failed capture stopped before benchmark execution at the first raw
-`Page.navigate` request: CDP and the renderer were live, but the redundant
-same-URL navigation remained pending until the page-navigation deadline. This
-repair boundary is intentionally limited to startup document selection. After
-`Page.enable` and `Runtime.enable`, the runner performs one bounded
-`Runtime.evaluate("location.href")`; exact string equality with the expected
-URL (including pageToken and query identity) skips navigation and continues
-normal readiness/document validation. `about:blank`, stale metadata, a
-different pageToken, or any other URL performs exactly one existing bounded
-`Page.navigate`, then polls. A pending initial evaluation is cancelled and
-reported as structured `page-document-evaluate` failure; a pending mismatch
-navigation remains structured and is never retried. Capture remains
-observational, and no Chrome was launched during this implementation or its
-tests.
+The failed capture stopped before benchmark execution at a redundant raw
+`Page.navigate` request: CDP and the renderer were live, but navigation could
+remain pending on CfT 151/macOS even though `Target.createTarget` had already
+requested the exact URL. `ensureFreshHarnessDocument` now never navigates.
+After `Page.enable` and `Runtime.enable`, it boundedly polls cancellable
+`Runtime.evaluate("location.href")` until the URL is an exact string match,
+including the complete pageToken/query identity. `about:blank`, stale metadata,
+different tokens, and other mismatches are not accepted or navigated. A
+never-committing document fails with structured `page-document-polling`
+evidence, while a pending evaluation is cancelled and reported at
+`page-document-evaluate`. Capture remains observational, and no Chrome was
+launched during this implementation or its tests.
 
 The same failed run exposed a separate cleanup-composition defect: the outer
 finalizer's one-second bound could expire before `terminateChild` completed its
@@ -97,7 +95,7 @@ performance capture was run; no Chrome candidate claim is made.
 
 The final startup audit found that `main()` called
 `prepareInitialPageForAuthoritativeRun()` before creating `proofDeadlineAt`.
-That left initial `Page.enable`, `Runtime.enable`, `Page.navigate`, harness
+That left initial `Page.enable`, `Runtime.enable`, harness
 readiness, foreground visibility, and URL/token evaluations outside the one
 absolute proof budget. A hung initial CDP request could therefore keep the
 headed runner alive indefinitely even though later matrix, heap, and lifecycle
@@ -111,8 +109,8 @@ diagnostic. The same deadline remains authoritative for fresh harness pages,
 matrix, heap, lifecycle, and bounded cleanup. Workload sizes, gates, and
 capture/reference semantics are unchanged.
 
-Deterministic startup regressions hang initial `Page.enable` and
-`Page.navigate`, assert structured fail-closed rejection, and verify that time
+Deterministic startup regressions hang initial `Page.enable`, assert structured
+fail-closed rejection, and verify that time
 spent in initial setup is charged against later fresh-page work. No Chrome
 performance candidate was launched and no Chrome success is claimed.
 

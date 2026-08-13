@@ -343,11 +343,6 @@ export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 1
     returnByValue: true
   }, effectiveOptions.deadlineAt, "page-document-evaluate", effectiveOptions);
   if (initialResponse?.result?.value === expectedUrl) return;
-
-  // Target.createTarget can publish stale metadata before the renderer has
-  // committed it. Navigate only when the attached document is not the exact
-  // expected URL; pageToken and query identity are deliberately preserved.
-  await requestSetupCdp(cdp, "Page.navigate", { url: expectedUrl }, effectiveOptions.deadlineAt, "page-navigate", effectiveOptions);
   while (Date.now() < deadline) {
     const response = await evaluateResponseWithDeadline(cdp, {
       expression: "location.href",
