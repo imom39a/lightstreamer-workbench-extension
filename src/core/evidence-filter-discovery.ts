@@ -5,8 +5,16 @@ import { type DeterministicEvidenceRecord, type EvidenceFilter, type EvidenceRea
 type Cursor = Readonly<{ version: 1; facet: string; search: string; size: number; filter: string; readPoint: string; position: number }>;
 
 const text = (value: string | undefined): string => (value ?? "").trim().toLocaleLowerCase();
-const encoded = (value: string): string => Buffer.from(value, "utf8").toString("base64url");
-const decoded = (value: string): string => Buffer.from(value, "base64url").toString("utf8");
+function encoded(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  const binary = String.fromCharCode(...bytes);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+function decoded(value: string): string {
+  const padded = value.replaceAll("-", "+").replaceAll("_", "/") + "===".slice((value.length + 3) % 4);
+  const binary = atob(padded);
+  return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
+}
 
 function readPointKey(readPoint: EvidenceReadPoint): string {
   return JSON.stringify(readPoint);
@@ -56,7 +64,7 @@ export function discoverFacet(
   request: FacetDiscoveryRequest
 ): FacetDiscoveryResult {
   const descriptor = FACET_DESCRIPTORS.find((candidate) => candidate.key === request.facet);
-  if (!descriptor || !Number.isSafeInteger(request.size) || request.size < 1) {
+  if (!descriptor || !Number.isSafeInteger(request.size) || request.size < 1 || request.size > 100) {
     return unavailable(request.facet, "UNSUPPORTED_AT_READ_POINT", null);
   }
   const search = text(request.search);
@@ -82,10 +90,6 @@ export function discoverFacet(
     ...(filter.criteria[request.facet]?.include ?? []),
     ...(filter.criteria[request.facet]?.exclude ?? [])
   ];
-  for (const value of active) {
-    if (search && !`${descriptor.label} ${value.label} ${value.value}`.toLocaleLowerCase().includes(search)) continue;
-    if (!counts.has(value.identity)) counts.set(value.identity, { value, count: 0 });
-  }
   const ordered = [...counts.values()].sort((left, right) => compareValues(left.value, right.value));
   if (ordered.length === 0) return unavailable(request.facet, "NO_CONCRETE_VALUES", base.length);
 
@@ -95,9 +99,14 @@ export function discoverFacet(
     ? cursorFor({ version: 1, facet: request.facet, search, size: request.size, filter: filterKey, readPoint: pointKey, position: position + page.length })
     : null;
   const values: FacetCount[] = page.map(({ value, count }) => Object.freeze({ value, count, pinned: active.some((candidate) => candidate.identity === value.identity) }));
+  const pageIdentities = new Set(page.map(({ value }) => value.identity));
+  for (const value of active) {
+    if (search && !`${descriptor.label} ${value.label} ${value.value}`.toLocaleLowerCase().includes(search)) continue;
+    if (!counts.has(value.identity) && !pageIdentities.has(value.identity)) values.push(Object.freeze({ value, count: 0, pinned: true }));
+  }
   return Object.freeze({ state: "AVAILABLE", facet: request.facet, values: Object.freeze(values), distinctTotal: ordered.length, nextCursor, baseEvidenceCount: base.length });
 }
 
 function unavailable(facet: string, reason: "ZERO_BASE" | "NO_CONCRETE_VALUES" | "DISCOVERY_FAILED" | "UNSUPPORTED_AT_READ_POINT", baseEvidenceCount: number | null): FacetDiscoveryResult {
-  return Object.freeze({ state: "UNAVAILABLE", facet, reason, values: Object.freeze([]), distinctTotal: null, nextCursor: null, baseEvidenceCount });
+  return Object.freeze({ state: "UNAVAILABLE", facet, reason, values: Object.freeze([]) as readonly [], distinctTotal: null, nextCursor: null, baseEvidenceCount });
 }
