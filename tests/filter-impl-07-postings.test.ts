@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { extractEvidenceFacets } from "../src/core/evidence-facets";
 import {
   AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
+  AUTHORITATIVE_EVENT_DB_NAME_PREFIX,
   AUTHORITATIVE_EVENT_STORE_NAMES,
   authoritativeEventDatabaseName,
   deleteAuthoritativeEventDatabase
@@ -99,12 +100,15 @@ describe("filter-impl-07 bounded facet postings", () => {
 
   it("preserves populated v2 Evidence while rebuilding collision-safe v3 postings", async () => {
     const session = `filter-impl-07-migration-${Date.now()}-${Math.random()}`;
-    const name = authoritativeEventDatabaseName(session);
+    const name = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v2-${session.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    const currentName = authoritativeEventDatabaseName(session);
+    const storedSession = name.slice(`${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v2-`.length);
     let database: IDBDatabase | undefined;
+    let history: Awaited<ReturnType<typeof createIndexedDbEventHistory>> | undefined;
     try {
       const candidate = event({ id: "v2-survivor", update: { key: "a,b", command: "ADD", isSnapshot: false } });
       const serialized = serializeJournalEvidenceCandidate(candidate);
-      const interval = { id: `${session}:interval-1`, ordinal: 1 };
+      const interval = { id: `${storedSession}:interval-1`, ordinal: 1 };
       const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION - 1);
       request.onupgradeneeded = () => {
         const created = request.result;
@@ -114,11 +118,17 @@ describe("filter-impl-07 bounded facet postings", () => {
         created.createObjectStore("historyControl", { keyPath: "key" });
         const transaction = request.transaction!;
         evidence.put({ intervalId: interval.id, sequence: 1, eventId: candidate.id, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: journalAccountedBytes(serialized.bytes), facets: legacyFacets(candidate) });
-        transaction.objectStore("historyControl").put({ key: "control", schemaVersion: 2, recordVersion: 3, panelSessionId: session, interval, phase: "RUNNING", terminal: null, nextSequence: 2, committedEvidenceBoundary: { intervalId: interval.id, sequence: 1, eventId: candidate.id }, retainedRange: { first: { intervalId: interval.id, sequence: 1, eventId: candidate.id }, last: { intervalId: interval.id, sequence: 1, eventId: candidate.id } }, retainedCount: 1, replayPayloadBytes: serialized.bytes, accountedBytes: journalAccountedBytes(serialized.bytes) });
+        transaction.objectStore("historyControl").put({ key: "control", schemaVersion: 2, recordVersion: 3, panelSessionId: storedSession, interval, phase: "RUNNING", terminal: null, nextSequence: 2, committedEvidenceBoundary: { intervalId: interval.id, sequence: 1, eventId: candidate.id }, retainedRange: { first: { intervalId: interval.id, sequence: 1, eventId: candidate.id }, last: { intervalId: interval.id, sequence: 1, eventId: candidate.id } }, retainedCount: 1, replayPayloadBytes: serialized.bytes, accountedBytes: journalAccountedBytes(serialized.bytes) });
       };
       database = await requestValue(request);
       database.close();
       database = undefined;
+
+      history = await createIndexedDbEventHistory({ panelSessionId: session });
+      await expect(history.read({})).resolves.toMatchObject({
+        ok: true,
+        value: { evidence: [{ eventId: candidate.id, sequence: 1 }] }
+      });
 
       const upgraded = await (await import("../src/core/indexeddb/authoritative-event-db")).openAuthoritativeEventDatabase(name);
       database = upgraded.db;
@@ -129,8 +139,10 @@ describe("filter-impl-07 bounded facet postings", () => {
       expect(evidence).toMatchObject({ eventId: candidate.id, replayPayload: serialized.payload });
       expect(postings.map(({ token, facetIdentity }) => ({ token, facetIdentity })).sort((a, b) => a.token.localeCompare(b.token))).toEqual(expected.sort((a, b) => a.token.localeCompare(b.token)));
     } finally {
+      await history?.close();
       database?.close();
       await deleteAuthoritativeEventDatabase(name);
+      if (currentName !== name) await deleteAuthoritativeEventDatabase(currentName);
     }
   });
 });
