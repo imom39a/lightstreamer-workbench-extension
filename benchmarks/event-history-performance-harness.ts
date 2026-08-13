@@ -1006,6 +1006,27 @@ async function runFilterQueryCell(
 ): Promise<EventHistoryPerformanceQueryCell> {
   const count = adapter === "indexeddb" ? 10_000 : 5_000;
   const runId = `filter-query-${adapter}-${sample}`;
+  const publishQueryProgress = (stage: string, substage: string, offered: number | null, settled: number | null, query: string | null = null): void => {
+    publishHarnessProgress({
+      operationId,
+      phase: "cells",
+      stage,
+      substage,
+      sample,
+      trigger: null,
+      scenario: null,
+      cellIndex: null,
+      cellTotal: 36,
+      adapter,
+      workload: null,
+      shape: null,
+      workloadPhase: "query",
+      offered,
+      settled,
+      query
+    });
+  };
+  publishQueryProgress("filter-query-fixture", "history-create", 0, 0);
   const history = adapter === "indexeddb"
     ? await createIndexedDbEventHistory({ panelSessionId: runId, capacityTier: "NORMAL" })
     : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
@@ -1025,8 +1046,15 @@ async function runFilterQueryCell(
     } as LightstreamerEventEnvelope;
   });
   try {
+    publishQueryProgress("filter-query-fixture", "offer", events.length, 0);
     const receipts = events.map((event) => history.offer(event));
-    await Promise.all(receipts.map((receipt) => receipt.settled));
+    const heartbeat = setInterval(() => publishQueryProgress("filter-query-fixture", "receipt-settlement", events.length, null), 1_000);
+    try {
+      await Promise.all(receipts.map((receipt) => receipt.settled));
+    } finally {
+      clearInterval(heartbeat);
+    }
+    publishQueryProgress("filter-query-fixture", "receipts-settled", events.length, events.length);
     if (!guard.isActive()) throw new Error("Filter query benchmark was cancelled.");
     const firstRequest = (pageSize: number): EvidenceQueryRequest => ({
       at: "LATEST_COMMITTED",
@@ -1047,6 +1075,7 @@ async function runFilterQueryCell(
       const longTasks: number[] = [];
       let result: any;
       for (let index = 0; index < 3; index += 1) {
+        publishQueryProgress(`filter-query-${name}`, `${name}-sample-${index + 1}`, events.length, events.length, name);
         const entries: PerformanceEntry[] = [];
         const supported = PerformanceObserver.supportedEntryTypes.includes("longtask");
         longTaskObserverSupported = longTaskObserverSupported && supported;
@@ -1054,6 +1083,7 @@ async function runFilterQueryCell(
         observer?.observe({ entryTypes: ["longtask"] });
         const started = performance.now();
         result = await history.query!(request);
+        publishQueryProgress(`filter-query-${name}`, `${name}-sample-${index + 1}-complete`, events.length, events.length, name);
         samples.push(performance.now() - started);
         await delay(0);
         entries.push(...(observer?.takeRecords() ?? []));
