@@ -143,8 +143,8 @@ async function yieldBurstOfferMacrotask(): Promise<void> {
   await delay(0);
 }
 
-  type HarnessSelection = Readonly<
-  | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string }
+  export type HarnessSelection = Readonly<
+  | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string; cellOffset?: number }
   | { id: "scenarios"; kind: "scenarios"; pageToken: string }
 >;
 
@@ -946,7 +946,7 @@ const DEFAULT_CONFIG: EventHistoryPerformanceConfig = {
 let retainedHeapSession: RetainedHeapSession | null = null;
 let retainedHeapSequence = 0;
 
-function validateHarnessSelection(selection: HarnessSelection | undefined): HarnessSelection | null {
+export function validateHarnessSelection(selection: HarnessSelection | undefined): HarnessSelection | null {
   if (selection === undefined) return null;
   if (typeof selection.pageToken !== "string" || selection.pageToken.length === 0) {
     throw new Error("Performance shard requires a non-empty page token.");
@@ -965,6 +965,9 @@ function validateHarnessSelection(selection: HarnessSelection | undefined): Harn
     selection.id === id && selection.adapter === adapter && selection.workload === workload
       && selection.firstCellIndex === firstCellIndex && selection.collectAfterFinal === collectAfterFinal
   )) throw new Error("Performance matrix shard identity is invalid.");
+  if (selection.cellOffset !== undefined && (!Number.isSafeInteger(selection.cellOffset) || selection.cellOffset < 1 || selection.cellOffset > 9)) {
+    throw new Error("Performance matrix cell offset is invalid.");
+  }
   return selection;
 }
 
@@ -1097,6 +1100,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     validateConfig(config);
     const cells: EventHistoryPerformanceCell[] = [];
     const cellCleanupGc: InterCellGcEvidence[] = [];
+    const selectedCellOffset = selection?.kind === "matrix" ? selection.cellOffset ?? null : null;
     let cellIndex = selection?.kind === "matrix" ? selection.firstCellIndex - 1 : 0;
     let shardCellCount = 0;
     const adapters = selection?.kind === "matrix" ? [selection.adapter] as const : ["indexeddb", "memory"] as const;
@@ -1107,8 +1111,11 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           for (const sample of [1, 2, 3] as const) {
             if (selection?.kind === "scenarios") continue;
             if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
-            cellIndex += 1;
             shardCellCount += 1;
+            if (selectedCellOffset !== null && shardCellCount !== selectedCellOffset) continue;
+            cellIndex = selection?.kind === "matrix"
+              ? selection.firstCellIndex + shardCellCount - 1
+              : cellIndex + 1;
             publishHarnessProgress({
               operationId,
               phase: "cells",
@@ -1127,9 +1134,11 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
               settled: 0,
               query: null
             });
-            const collectAfterCell = selection?.kind === "matrix"
-              ? shardCellCount < 9 || selection.collectAfterFinal
-              : cellIndex < 36;
+            const collectAfterCell = selection?.kind !== "matrix"
+              ? cellIndex < 36
+              : selectedCellOffset !== null
+                ? selection.collectAfterFinal
+                : shardCellCount < 9 || selection.collectAfterFinal;
             if (!collectAfterCell) {
               cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard));
               continue;

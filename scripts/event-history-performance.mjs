@@ -210,8 +210,7 @@ async function main() {
     };
     const shardResults = [];
     let lastOperationStatus = null;
-    for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
-      const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
+    const runFreshHarnessSelection = async (selection) => {
       const page = await openFreshHarnessPage(browserCdp, debugPort, url, selection.pageToken, {
         deadlineAt: proofDeadlineAt,
         operation: lastOperationStatus,
@@ -236,7 +235,7 @@ async function main() {
       }
       let primaryError = null;
       try {
-        shardResults.push(await runPageOperationWithForegroundKeeper(
+        return await runPageOperationWithForegroundKeeper(
           page.cdp,
           `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)})`,
           {
@@ -249,7 +248,7 @@ async function main() {
               );
             }
           }
-        ));
+        );
       } catch (error) {
         primaryError = error;
         if (frameDiagnostics) {
@@ -277,6 +276,32 @@ async function main() {
         }
         await closeFreshHarnessPageWithErrorPreservation(browserCdp, page, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryError);
       }
+    };
+    for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
+      const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
+      if (plannedShard.kind !== "matrix") {
+        shardResults.push(await runFreshHarnessSelection(selection));
+        continue;
+      }
+      const cellResults = [];
+      for (let cellOffset = 1; cellOffset <= 9; cellOffset += 1) {
+        cellResults.push(await runFreshHarnessSelection({
+          ...selection,
+          cellOffset,
+          collectAfterFinal: cellOffset < 9 || plannedShard.collectAfterFinal,
+          pageToken: `${selection.pageToken}-cell-${cellOffset}`
+        }));
+      }
+      const firstCellResult = cellResults[0];
+      if (!firstCellResult || cellResults.some((result) => result?.cells?.length !== 1)) {
+        throw new Error(`Performance shard ${selection.id} did not produce exactly one cell per fresh native page.`);
+      }
+      shardResults.push({
+        ...firstCellResult,
+        selection,
+        cells: cellResults.flatMap((result) => result.cells),
+        cellCleanupGc: cellResults.flatMap((result) => result.cellCleanupGc)
+      });
     }
     const result = aggregatePerformanceShardResults(shardResults);
 

@@ -31,9 +31,11 @@ import {
   runCheckpointScenario,
   runCellThenCollectGarbage,
   runTerminalScenario,
+  validateHarnessSelection,
   waitForBoundedFrame,
   withStageDeadline,
-  type HarnessProgressInput
+  type HarnessProgressInput,
+  type HarnessSelection
 } from "../benchmarks/event-history-performance-harness";
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import * as eventHistoryAuthoritative from "../src/core/event-history-authoritative";
@@ -41,6 +43,23 @@ import type { EventHistory } from "../src/core/event-history-authoritative";
 import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 
 describe("Event History performance checkpoint workload", () => {
+  it("bounds fresh matrix-page cell selection to one deterministic cell", () => {
+    const selection: HarnessSelection = {
+      id: "matrix-indexeddb-sustained",
+      kind: "matrix",
+      adapter: "indexeddb",
+      workload: "sustained",
+      firstCellIndex: 1,
+      collectAfterFinal: true,
+      pageToken: "cell-page",
+      cellOffset: 3
+    };
+
+    expect(validateHarnessSelection(selection)).toEqual(selection);
+    expect(() => validateHarnessSelection({ ...selection, cellOffset: 0 })).toThrow(/cell offset is invalid/u);
+    expect(() => validateHarnessSelection({ ...selection, cellOffset: 10 })).toThrow(/cell offset is invalid/u);
+  });
+
   it("releases caller-owned heap workload candidates before yielding the retained frame", async () => {
     const candidates = [
       createEventHistoryWorkloadEvent("large-json-rich", 0, "heap-release"),
