@@ -143,17 +143,20 @@ export function discoverFacet(
   }
   const active = [...(filter.criteria[request.facet]?.include ?? []), ...(filter.criteria[request.facet]?.exclude ?? [])];
   const activeIdentities = new Set(active.map((value) => value.identity));
-  const searched = [...accounting.values()].filter((value) => matchesSearch(descriptor.label, value, search));
-  const distinctTotal = searched.length;
+  let distinctTotal = 0;
+  for (const value of accounting.values()) if (matchesSearch(descriptor.label, value, search)) distinctTotal += 1;
   if (distinctTotal === 0 && active.length === 0) return unavailable(request.facet, "NO_CONCRETE_VALUES", base.length);
 
-  const orderedPage = selectPage(searched, parsed?.anchor ?? null, request.size);
+  const searched = function* (): Iterable<CompactValue> {
+    for (const value of accounting.values()) if (matchesSearch(descriptor.label, value, search)) yield value;
+  };
+  const orderedPage = selectPage(searched(), parsed?.anchor ?? null, request.size);
   const position = parsed?.position ?? 0;
   if (parsed) {
     if (position >= distinctTotal || parsed.anchor === null) return unavailable(request.facet, "DISCOVERY_FAILED", null);
     let anchorRank = 0;
     let anchorFound = false;
-    for (const candidate of searched) {
+    for (const candidate of searched()) {
       const relation = compareSortKey(candidate, parsed.anchor);
       if (relation < 0) anchorRank += 1;
       if (candidate.sortKey === parsed.anchor) anchorFound = true;
