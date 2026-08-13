@@ -31,6 +31,7 @@ describe("history-impl-09 final audit gaps", () => {
 
     const assertDiscarded = async (mutation: () => void): Promise<void> => {
       runtime.dispatch({ type: "export-scope" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect(pendingReads.length).toBeGreaterThan(0);
       mutation();
       pendingReads.splice(0).forEach((release) => release());
@@ -154,22 +155,36 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 }
 
 async function settle(): Promise<void> {
+  await import("../src/extension/panel/evidence-history-operation");
   await Promise.resolve();
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function immediateScheduler(): WorkbenchRuntimeScheduler {
+  let nextId = 0;
+  const cancelled = new Set<number>();
+  const enqueue = (callback: () => void): number => {
+    const id = ++nextId;
+    queueMicrotask(() => {
+      if (cancelled.has(id)) return;
+      cancelled.delete(id);
+      callback();
+    });
+    return id;
+  };
   return {
     requestFrame(callback) {
-      queueMicrotask(callback);
-      return 1;
+      return enqueue(callback);
     },
-    cancelFrame() {},
+    cancelFrame(id) {
+      cancelled.add(id as number);
+    },
     setTimeout(callback) {
-      queueMicrotask(callback);
-      return 1;
+      return enqueue(callback);
     },
-    clearTimeout() {}
+    clearTimeout(id) {
+      cancelled.add(id as number);
+    },
   };
 }

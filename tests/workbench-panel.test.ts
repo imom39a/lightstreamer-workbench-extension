@@ -838,6 +838,48 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps streaming progress, cancellation, and status reachable at the copy/export boundary", async () => {
+    const base = snapshot();
+    const progress = {
+      phase: "READING" as const,
+      completed: 1,
+      total: 4,
+      outputBytes: 128,
+      outputByteLimit: 1024,
+      interval: { id: "panel-test:interval-1", ordinal: 1 },
+      committedEvidenceBoundary: null,
+      excludedAfterLatch: 1
+    };
+    const runtime = createTestRuntime({
+      ...base,
+      contextId: "context:actions",
+      evidenceCopy: { state: "preparing", eventCount: 1, text: null, progress },
+      export: {
+        ...base.export,
+        operation: {
+          state: "preparing",
+          progress
+        }
+      }
+    });
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    expect(document.body.textContent).toContain("Reading Complete History: 1 of 4 Evidence");
+    expect(document.body.textContent).toContain("1 accepted after the latched boundary excluded");
+    expect(document.querySelector('[role="status"][aria-busy="true"]')).not.toBeNull();
+    const cancelCopy = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Cancel copy");
+    await act(async () => cancelCopy?.click());
+    expect(runtime.commands).toContainEqual({ type: "cancel-evidence-operation" });
+
+    await act(async () => runtime.setSnapshot({ ...runtime.getSnapshot(), contextId: "context:export" }));
+    expect(document.body.textContent).toContain("Preparing Complete History export: 1 of 4 Evidence");
+    const cancelExport = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Cancel export");
+    await act(async () => cancelExport?.click());
+    expect(runtime.commands.filter(({ type }) => type === "cancel-evidence-operation")).toHaveLength(2);
+    await act(async () => root.unmount());
+  });
+
   it("keeps Home and End local while routing modified bounds keys to retained Evidence", async () => {
     const animationFrames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {

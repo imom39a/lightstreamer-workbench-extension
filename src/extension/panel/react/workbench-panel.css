@@ -229,6 +229,7 @@
 .workbench-react__evidence-window span { margin: 0 auto; font-size: 11px; }
 .workbench-react__evidence-window button[aria-disabled="true"] { cursor: default; opacity: .55; }
 .workbench-react__copy-status { flex: 0 0 auto; margin: 0; border-bottom: 1px solid var(--wb-border); color: var(--wb-muted); padding: 5px 9px; }
+.workbench-react__operation-progress { border-left: 3px solid var(--wb-info); background: var(--wb-info-soft); color: var(--wb-text) !important; padding: 6px 8px; }
 .workbench-react__ledger { min-height: 0; flex: 1 1 auto; overflow: auto; }
 .workbench-react__ledger-header, .workbench-react__evidence-row { display: grid; min-width: 850px; grid-template-columns: 112px 70px 88px 66px minmax(190px, 1fr) 120px; align-items: center; }
 .workbench-react__ledger-header { position: sticky; z-index: 1; top: 0; min-height: 28px; border-bottom: 1px solid var(--wb-border-strong); background: var(--wb-raised); color: var(--wb-muted); font-size: 10px; text-transform: uppercase; }

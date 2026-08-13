@@ -10,7 +10,6 @@ import {
   topologySnapshotFilename,
   type TopologySensitiveCategory
 } from "../topology-export";
-import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
 
@@ -359,6 +358,10 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const pendingRetainedBoundaryFocus = useRef<"oldest" | "newest" | null>(null);
   const [copyStatus, setCopyStatus] = useState("");
   const [scopedCopyStatus, setScopedCopyStatus] = useState("");
+  const [exportDownloadStatus, setExportDownloadStatus] = useState("");
+  const operationFocusOrigin = useRef<"copy" | "export" | null>(null);
+  const scopedCopyTrigger = useRef<HTMLButtonElement | null>(null);
+  const exportTrigger = useRef<HTMLButtonElement | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
   const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
@@ -563,8 +566,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const contextSize = clamp(contextPreference, contextMinimum, Math.min(CONTEXT_MAX_SIZE, contextMaximum));
 
   useLayoutEffect(() => {
-    if (snapshot.evidenceCopy.state === "error") {
-      setScopedCopyStatus(snapshot.evidenceCopy.error ?? "Could not prepare complete scoped Evidence.");
+    if (["error", "refused", "cancelled"].includes(snapshot.evidenceCopy.state)) {
+      setScopedCopyStatus(snapshot.evidenceCopy.error ?? "Complete scoped Evidence was not copied.");
       dispatch(runtime, { type: "clear-scoped-evidence-copy" });
       return;
     }
@@ -579,6 +582,19 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       () => setScopedCopyStatus("Could not copy complete scoped Evidence.")
     ).finally(() => dispatch(runtime, { type: "clear-scoped-evidence-copy" }));
   }, [snapshot.evidenceCopy]);
+
+  useLayoutEffect(() => {
+    const copyFinished = snapshot.evidenceCopy.state !== "preparing" && operationFocusOrigin.current === "copy";
+    const exportFinished = snapshot.export.operation?.state !== "preparing" && operationFocusOrigin.current === "export";
+    if (!copyFinished && !exportFinished) return;
+    const origin = operationFocusOrigin.current;
+    operationFocusOrigin.current = null;
+    window.requestAnimationFrame(() => {
+      const target = origin === "copy" ? scopedCopyTrigger.current : exportTrigger.current ?? contextLens.current;
+      if (target?.isConnected) target.focus();
+      else if (contextLens.current?.isConnected) contextLens.current.focus();
+    });
+  }, [snapshot.evidenceCopy.state, snapshot.export.operation?.state]);
 
   useLayoutEffect(() => () => resizeCleanup.current?.(), []);
 
@@ -908,18 +924,21 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     dispatch(runtime, { type: "export-scope" });
   };
 
-  const downloadExport = (format: "json" | "html") => {
+  const downloadExport = async (format: "json" | "html") => {
     const prepared = snapshot.export;
     if (!prepared.document || !prepared.json || !prepared.filename) return;
-    if (format === "json") {
-      downloadText(prepared.filename, prepared.json, "application/json");
-      return;
+    try {
+      if (format === "json") {
+        downloadText(prepared.filename, prepared.json, "application/json");
+        setExportDownloadStatus("Downloaded versioned JSON export.");
+        return;
+      }
+      const { renderTopologyHtmlReport } = await import("../topology-html-report");
+      downloadText(topologySnapshotFilename(prepared.document, "html"), renderTopologyHtmlReport(prepared.document), "text/html");
+      setExportDownloadStatus("Downloaded offline HTML export.");
+    } catch {
+      setExportDownloadStatus("The export could not be downloaded. Try again or save the prepared JSON manually.");
     }
-    downloadText(
-      topologySnapshotFilename(prepared.document, "html"),
-      renderTopologyHtmlReport(prepared.document),
-      "text/html"
-    );
   };
 
   const copyRawEvidence = async () => {
@@ -1365,15 +1384,18 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             {contextMode === "actions" ? <section className="workbench-react__operations" aria-label="Session operations">
               <p>The current Panel Session owns one temporary Event History using <strong>{snapshot.storage.mode === "indexeddb" ? "IndexedDB" : "in-memory fallback"}</strong>. Closing attempts controlled erasure; abnormal termination relies on guarded cleanup, and residual data may remain until the extension next runs.</p>
               {geometry === "compact" ? <section><h3>Panel appearance</h3><label htmlFor="workbench-actions-theme">Panel theme</label><select id="workbench-actions-theme" value={snapshot.theme} onChange={(event) => dispatch(runtime, { type: "set-theme", theme: event.currentTarget.value as "auto" | "dark" | "light" })}><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select></section> : null}
-              <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}).</p><button type="button" disabled={snapshot.evidenceCopy.state === "preparing"} onClick={() => dispatch(runtime, { type: "prepare-scoped-evidence-copy" })}>{snapshot.evidenceCopy.state === "preparing" ? "Preparing complete Evidence…" : "Copy complete scoped Evidence"}</button></section>
+              <section><h3>Retained Evidence copy</h3><p>{historyStatus.captured.toLocaleString()} captured · {historyStatus.retained.toLocaleString()} retained · {shown.toLocaleString()} currently shown for the active Scope and Filter. Capacity {historyStatus.capacity.state.replaceAll("_", " ")} ({historyStatus.capacity.tier}).</p>{snapshot.evidenceCopy.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Reading Complete History: {(snapshot.evidenceCopy.progress?.completed ?? 0).toLocaleString()} of {(snapshot.evidenceCopy.progress?.total ?? 0).toLocaleString()} Evidence · {snapshot.evidenceCopy.progress?.excludedAfterLatch ?? 0} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel copy</button></> : <button ref={scopedCopyTrigger} type="button" onClick={() => { operationFocusOrigin.current = "copy"; dispatch(runtime, { type: "prepare-scoped-evidence-copy" }); }}>Copy complete scoped Evidence</button>}</section>
               <section className="workbench-react__operations-danger"><h3>Clear retained Evidence</h3><p>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session. Scope and Filter do not limit this destructive action.</p>{snapshot.retention.clearState === "confirming" ? <div className="workbench-react__confirmation"><strong>Clear all {historyStatus.retained.toLocaleString()} retained Evidence events for this Panel Session?</strong><span>This removes retained Evidence from this Panel Session and cannot be undone.</span><div><button className="workbench-react__confirmation-primary" type="button" onClick={() => dispatch(runtime, { type: "confirm-clear-history" })}>Clear retained events</button><button type="button" onClick={() => dispatch(runtime, { type: "cancel-clear-history" })}>Keep Evidence</button></div></div> : <button type="button" onClick={() => dispatch(runtime, { type: "request-clear-history" })}>Clear retained Evidence…</button>}</section>
               <section><h3>Help &amp; resources</h3><p>Open first-party guides and reporting routes for this Workbench release.</p><nav className="workbench-react__resource-links" aria-label="Help and resources">{WORKBENCH_PUBLIC_RESOURCES.map((resource) => <a className="workbench-react__resource-link" href={resource.href} target="_blank" rel="noopener noreferrer" key={resource.href}>{resource.label}</a>)}</nav></section>
-              <section><h3>Scoped export</h3><p>Prepare a versioned download for the current Scope. Credentials are always excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "export-scope" })}>Export Scope…</button></section>
+              <section><h3>Scoped export</h3><p>Prepare a versioned download for the current Scope. Credentials are always excluded.</p>{snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing Complete History export: {(snapshot.export.operation.progress.completed ?? 0).toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence · {snapshot.export.operation.progress.excludedAfterLatch} accepted after the latched boundary excluded.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : <button ref={exportTrigger} type="button" onClick={() => { operationFocusOrigin.current = "export"; dispatch(runtime, { type: "export-scope" }); }}>Export Scope…</button>}</section>
             </section> : contextMode === "export" ? <section className="workbench-react__export" aria-label="Scoped export options">
               <p>Download the current Scope as versioned JSON or offline HTML. Credentials are always excluded.</p>
+              {snapshot.export.operation?.state === "preparing" ? <><p className="workbench-react__operation-progress" role="status" aria-live="polite" aria-busy="true">Preparing Complete History export: {snapshot.export.operation.progress.completed.toLocaleString()} of {(snapshot.export.operation.progress.total ?? 0).toLocaleString()} Evidence.</p><button type="button" onClick={() => dispatch(runtime, { type: "cancel-evidence-operation" })}>Cancel export</button></> : null}
+              {snapshot.export.operation && snapshot.export.operation.state !== "preparing" && snapshot.export.operation.error ? <p className="workbench-react__copy-status" role="status">{snapshot.export.operation.error} {snapshot.export.operation.recovery ?? ""}</p> : null}
               <fieldset><legend>Redact sensitive categories</legend>{TOPOLOGY_SENSITIVE_CATEGORIES.map((category) => <label key={category}><input type="checkbox" checked={snapshot.export.redactions.includes(category)} onChange={(event) => toggleExportRedaction(category, event.currentTarget.checked)} />{sensitiveCategoryLabel(category)} ({snapshot.export.sensitiveCounts[category].toLocaleString()})</label>)}</fieldset>
               <label><input type="checkbox" checked={snapshot.export.completeEvidence} onChange={(event) => setCompleteEvidence(event.currentTarget.checked)} />Include complete establishment and COMMAND generation evidence</label>
               <div className="workbench-react__context-actions"><button type="button" disabled={!snapshot.export.json} onClick={() => downloadExport("json")}>Download JSON</button><button type="button" disabled={!snapshot.export.document} onClick={() => downloadExport("html")}>Download HTML</button></div>
+              {exportDownloadStatus ? <p className="workbench-react__copy-status" role="status" aria-live="polite">{exportDownloadStatus}</p> : null}
             </section> : <>
               <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />

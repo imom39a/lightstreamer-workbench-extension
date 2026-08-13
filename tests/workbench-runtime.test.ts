@@ -69,9 +69,16 @@ function event(id: string, item = id): LightstreamerEventEnvelope {
   };
 }
 
+let evidenceOperationModuleSettled = false;
+
 async function flushStoreNotifications(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  // Complete History operations cross the panel's dynamically loaded,
+  // bounded operation boundary before publishing their artifact.
+  if (!evidenceOperationModuleSettled) {
+    await import("../src/extension/panel/evidence-history-operation");
+    evidenceOperationModuleSettled = true;
+  }
+  for (let index = 0; index < 20; index += 1) await Promise.resolve();
 }
 
 function topologyEvent(
@@ -1993,6 +2000,9 @@ describe("WorkbenchRuntime", () => {
     deferCompleteCopy = true;
     runtime.dispatch({ type: "prepare-scoped-evidence-copy" });
     expect(runtime.getSnapshot().evidenceCopy.state).toBe("preparing");
+    // The bounded operation is loaded at the existing copy decision boundary;
+    // let its first page request reach the controllable history read.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     runtime.dispatch({ type: "set-filters", filters: { item: "copy-item-a" } });
     expect(runtime.getSnapshot().evidenceCopy.state).toBe("idle");
     resolveDeferred();

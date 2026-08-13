@@ -85,6 +85,7 @@ import {
   type TopologyState,
   type TopologySubscription
 } from "../../core/topology-state";
+import { type TopologyProjectionStatus } from "./topology-projection";
 import {
   bindCommittedEvidencePipeline,
   type CommittedEvidencePipeline,
@@ -102,6 +103,26 @@ import {
 } from "./history-condition";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
+export const DEFAULT_EVIDENCE_OUTPUT_BYTE_LIMIT = 32 * 1024 * 1024;
+
+export type WorkbenchEvidenceOperationOutcome =
+  | "CANCELLED"
+  | "OUTPUT_REFUSED"
+  | "HISTORY_UNAVAILABLE"
+  | "HISTORY_TERMINAL"
+  | "QUERY_FAILED"
+  | "SERIALIZATION_FAILED";
+
+export type WorkbenchEvidenceOperationProgress = Readonly<{
+  phase: "LATCHING" | "READING" | "SERIALIZING" | "COMPLETE" | "CANCELLED" | "REFUSED" | "FAILED";
+  completed: number;
+  total: number | null;
+  outputBytes: number;
+  outputByteLimit: number;
+  interval: EvidenceReadPoint["interval"] | null;
+  committedEvidenceBoundary: EvidenceIdentity | null;
+  excludedAfterLatch: number;
+}>;
 
 export type WorkbenchCaptureSnapshot = Readonly<{
   operation: "RUNNING" | "IDLE" | "STOPPED";
@@ -195,6 +216,14 @@ export type WorkbenchExportSnapshot = Readonly<{
   document: Readonly<TopologyStructuredSnapshot> | null;
   json: string | null;
   filename: string | null;
+  html?: string | null;
+  operation?: Readonly<{
+    state: "preparing" | "ready" | "cancelled" | "refused" | "error";
+    error?: string;
+    outcome?: WorkbenchEvidenceOperationOutcome;
+    recovery?: string;
+    progress: WorkbenchEvidenceOperationProgress;
+  }>;
 }>;
 
 export type WorkbenchContextSnapshot = Readonly<{
@@ -299,10 +328,13 @@ export type WorkbenchEvidenceInvestigationSnapshot = Readonly<{
 }>;
 
 export type WorkbenchEvidenceCopySnapshot = Readonly<{
-  state: "idle" | "preparing" | "ready" | "error";
+  state: "idle" | "preparing" | "ready" | "cancelled" | "refused" | "error";
   eventCount: number;
   text: string | null;
   error?: string;
+  outcome?: WorkbenchEvidenceOperationOutcome;
+  recovery?: string;
+  progress?: WorkbenchEvidenceOperationProgress;
 }>;
 
 export type LocalInjectionExecutionResult = Readonly<{
@@ -481,6 +513,7 @@ export type WorkbenchCommand =
   | { type: "show-newest-evidence" }
   | { type: "prepare-scoped-evidence-copy" }
   | { type: "clear-scoped-evidence-copy" }
+  | { type: "cancel-evidence-operation" }
   | { type: "begin-local-injection-from-selection" }
   | { type: "begin-local-injection-from-scope" }
   | { type: "set-local-injection-json"; text: string }
@@ -609,6 +642,8 @@ export type WorkbenchRuntimeOptions = {
   performanceHooks?: WorkbenchRuntimePerformanceHooks;
   evidenceQuery?: EvidenceInvestigationQuery;
   investigationDiscoveries?: readonly FacetDiscoveryRequest[];
+  /** Safety ceiling for any complete Evidence copy or export artifact. */
+  outputByteLimit?: number;
 };
 
 type EvidenceData = {
@@ -693,6 +728,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly evidencePipeline: CommittedEvidencePipeline;
   private readonly scheduler: WorkbenchRuntimeScheduler;
   private readonly windowSize: number;
+  private readonly outputByteLimit: number;
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
   private readonly normalizer: EventNormalizer;
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
@@ -816,6 +852,7 @@ class Runtime implements WorkbenchRuntime {
     text: null
   });
   private evidenceCopyGeneration = 0;
+  private evidenceCopyAbortController: AbortController | null = null;
   private localInjectionDraft: LocalInjectionDraftState | null = null;
   private pendingLocalInjectionEntry: {
     intent: LocalInjectionEntryIntent;
@@ -845,15 +882,19 @@ class Runtime implements WorkbenchRuntime {
   private preparedExport: {
     document: TopologyStructuredSnapshot;
     json: string;
+    html?: string | null;
     filename: string;
   } | null = null;
   private exportPreparationGeneration = 0;
+  private exportAbortController: AbortController | null = null;
+  private exportOperation: WorkbenchExportSnapshot["operation"] = undefined;
 
   constructor(options: WorkbenchRuntimeOptions) {
     this.history = options.history ?? createInMemoryEventHistory();
     this.historyStatus = this.history.status();
     this.scheduler = options.scheduler ?? browserScheduler();
     this.windowSize = normalizeWindowSize(options.windowSize);
+    this.outputByteLimit = normalizeOutputByteLimit(options.outputByteLimit);
     this.visible = options.visible ?? true;
     this.theme = options.theme ?? "auto";
     this.captureStatus = options.captureStatus ?? "idle";
@@ -1265,6 +1306,9 @@ class Runtime implements WorkbenchRuntime {
         this.invalidateEvidenceCopy();
         this.publish();
         return;
+      case "cancel-evidence-operation":
+        this.cancelEvidenceOperation();
+        return;
       case "begin-local-injection-from-selection":
         this.beginLocalInjectionFromSelection();
         return;
@@ -1478,6 +1522,12 @@ class Runtime implements WorkbenchRuntime {
     this.cancelPassivePublication();
     this.evidenceQueryAbortController?.abort();
     this.evidenceQueryAbortController = null;
+    this.evidenceCopyGeneration += 1;
+    this.evidenceCopyAbortController?.abort();
+    this.evidenceCopyAbortController = null;
+    this.exportPreparationGeneration += 1;
+    this.exportAbortController?.abort();
+    this.exportAbortController = null;
     this.listeners.clear();
     this.disposePromise = this.evidencePipeline.close().then(
       (result) => {
@@ -1512,7 +1562,7 @@ class Runtime implements WorkbenchRuntime {
     const projectionRecovery = this.projectionRecovery;
     const topologyProjection = projectionRecovery?.topology ?? this.topologyProjection;
     const result = topologyProjection.applySyncFrame(frame);
-    this.invalidatePreparedExport();
+    this.invalidatePreparedExport(false);
     const coverage = frame.coverage.status === "partial" ? "LIMITED" : "USEFUL";
     if (projectionRecovery) projectionRecovery.topologyCoverage = coverage;
     else this.topologyCoverage = coverage;
@@ -1764,34 +1814,124 @@ class Runtime implements WorkbenchRuntime {
 
   private prepareExport(): void {
     const generation = ++this.exportPreparationGeneration;
-    void this.queryAllEvidence({
-      scope: Object.freeze({ kind: "PAGE" }),
-      filter: createFilter(this.canonicalFilter.revision),
-      order: "OLDEST_FIRST"
-    }).then((result) => {
-      if (this.disposed || generation !== this.exportPreparationGeneration || !result.ok) return;
-      const scopedTopology = topologyStateForScope(this.topologyProjection.snapshot(), this.scopeId);
-      const document = createTopologyStructuredSnapshot(
-        scopedTopology,
-        this.topologyProjection.status(),
-        {
-          retainedEventCount: result.records.length,
-          completeEvidence: this.exportCompleteEvidence,
-          redact: this.exportRedactions
+    this.exportAbortController?.abort();
+    const controller = new AbortController();
+    this.exportAbortController = controller;
+    this.preparedExport = null;
+    this.exportOperation = {
+      state: "preparing",
+      progress: operationProgress(
+        "LATCHING",
+        0,
+        null,
+        1,
+        null,
+        this.outputByteLimit,
+        this.excludedAfterLatch(null)
+      )
+    };
+    this.publish();
+
+    let topologyAtLatch: TopologyState | null = null;
+    let topologyStatusAtLatch: TopologyProjectionStatus | null = null;
+    void import("./evidence-history-operation")
+      .then(({ streamEvidencePages }) => streamEvidencePages({
+        query: this.evidenceQuery,
+        scope: Object.freeze({ kind: "PAGE" }),
+        filter: createFilter(this.canonicalFilter.revision),
+        order: "OLDEST_FIRST",
+        signal: controller.signal,
+        onLatch: (readPoint, total) => {
+          topologyAtLatch = this.topologyProjection.snapshot();
+          topologyStatusAtLatch = this.topologyProjection.status();
+          this.updateExportProgress(generation, "READING", 0, total, 1, readPoint);
+        },
+        onPage: (page, readPoint) => {
+          if (controller.signal.aborted) return;
+          this.updateExportProgress(
+            generation,
+            "SERIALIZING",
+            (this.exportOperation?.progress.completed ?? 0) + page.length,
+            this.exportOperation?.progress.total ?? null,
+            1,
+            readPoint
+          );
+          // The page is deliberately released after this callback. Export keeps
+          // only its latched count; it never retains the complete Evidence set.
         }
-      );
-      this.preparedExport = {
-        document,
-        json: serializeTopologySnapshot(document),
-        filename: topologySnapshotFilename(document, "json")
-      };
-      this.publish();
+      }))
+      .then(
+      async (result) => {
+        if (this.disposed || generation !== this.exportPreparationGeneration) return;
+        if (!result.ok) {
+          this.finishExportProblem(generation, result.problem, controller.signal);
+          return;
+        }
+        if (controller.signal.aborted) {
+          this.finishExportProblem(generation, { code: "QUERY_CANCELLED", message: "The Complete History operation was cancelled before its artifact was published." }, controller.signal);
+          return;
+        }
+        try {
+          if (!topologyAtLatch || !topologyStatusAtLatch) {
+            throw new Error("The Complete History export could not latch its topology state.");
+          }
+          const scopedTopology = topologyStateForScope(topologyAtLatch, this.scopeId);
+          const document = createTopologyStructuredSnapshot(
+            scopedTopology,
+            topologyStatusAtLatch,
+            {
+              retainedEventCount: result.count,
+              completeEvidence: this.exportCompleteEvidence,
+              redact: this.exportRedactions
+            }
+          );
+          let json: string;
+          try {
+            json = serializeTopologySnapshot(document);
+          } catch (error) {
+            throw serializationFailure(error);
+          }
+          const outputBytes = utf8ByteLength(json);
+          ensureOutputByteLimit(outputBytes, this.outputByteLimit);
+          this.preparedExport = {
+            document,
+            json,
+            html: null,
+            filename: topologySnapshotFilename(document, "json")
+          };
+          this.exportOperation = {
+            state: "ready",
+            progress: operationProgress(
+              "COMPLETE",
+              result.count,
+              result.count,
+              outputBytes,
+              result.readPoint,
+              this.outputByteLimit,
+              this.excludedAfterLatch(result.readPoint)
+            )
+          };
+          this.publish();
+        } catch (error) {
+          this.finishExportProblem(generation, error, controller.signal);
+        }
+      },
+      (error) => {
+        if (this.disposed || generation !== this.exportPreparationGeneration) return;
+        this.finishExportProblem(generation, error, controller.signal);
+      }
+    ).finally(() => {
+      if (this.exportAbortController === controller) this.exportAbortController = null;
     });
   }
 
-  private invalidatePreparedExport(): void {
+  private invalidatePreparedExport(cancelPreparing = true): void {
+    if (!cancelPreparing && this.exportOperation?.state === "preparing") return;
     this.exportPreparationGeneration += 1;
+    this.exportAbortController?.abort();
+    this.exportAbortController = null;
     this.preparedExport = null;
+    this.exportOperation = undefined;
   }
 
   private setVisible(visible: boolean): void {
@@ -1843,7 +1983,7 @@ class Runtime implements WorkbenchRuntime {
         if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
         else this.topologyCoverage = "LIMITED";
       }
-      this.invalidatePreparedExport();
+      this.invalidatePreparedExport(false);
       if (this.visible) this.schedulePassivePublication();
       else this.hiddenDirty = true;
       return;
@@ -1866,7 +2006,7 @@ class Runtime implements WorkbenchRuntime {
     }
     commandStateProjections.apply(event);
     if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
-    this.invalidatePreparedExport();
+    this.invalidatePreparedExport(false);
     if (!this.visible) {
       this.hiddenDirty = true;
       return;
@@ -2059,131 +2199,246 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private invalidateEvidenceCopy(): void {
+    this.evidenceCopyAbortController?.abort();
+    this.evidenceCopyAbortController = null;
     this.evidenceCopyGeneration += 1;
     this.evidenceCopy = Object.freeze({ state: "idle", eventCount: 0, text: null });
   }
 
   private prepareScopedEvidenceCopy(): void {
     const generation = ++this.evidenceCopyGeneration;
+    this.evidenceCopyAbortController?.abort();
+    const controller = new AbortController();
+    this.evidenceCopyAbortController = controller;
     const topology = this.topologyProjection.snapshot();
     const target = findTopologySelection(topology, this.scopeId ?? "page");
     const scope = this.scopeSnapshot();
     const scopeId = this.scopeId ?? "page";
     const filterSnapshot = Object.freeze({ ...this.filters });
-    this.evidenceCopy = Object.freeze({ state: "preparing", eventCount: 0, text: null });
+    let copyStats: { bytes: number; count: number } = { bytes: 1, count: 0 };
+    this.evidenceCopy = Object.freeze({
+      state: "preparing",
+      eventCount: 0,
+      text: null,
+      progress: operationProgress(
+        "LATCHING",
+        0,
+        null,
+        copyStats.bytes,
+        null,
+        this.outputByteLimit,
+        this.excludedAfterLatch(null)
+      )
+    });
     this.publish();
-    void this.queryAllEvidence({
-      scope: structuralEvidenceScope(target),
-      filter: this.canonicalFilter,
-      order: "OLDEST_FIRST"
-    }).then(
-      (result) => {
+    void import("./evidence-history-operation")
+      .then(({ createScopedEvidenceCopy }) => createScopedEvidenceCopy({
+        query: this.evidenceQuery,
+        scope: structuralEvidenceScope(target),
+        filter: this.canonicalFilter,
+        order: "OLDEST_FIRST",
+        signal: controller.signal,
+        maxBytes: this.outputByteLimit,
+        scopeId,
+        scopeLabel: scope.label,
+        filters: filterSnapshot,
+        serializeRecord: (record) => toPersistableEventEnvelope(eventFromDeterministicRecord(record)),
+        onLatch: (readPoint, total) => {
+          this.updateEvidenceCopyProgress(generation, "READING", 0, total, copyStats.bytes, readPoint);
+        },
+        onProgress: ({ completed, outputBytes, readPoint }) => {
+          copyStats = { bytes: outputBytes, count: completed };
+          this.updateEvidenceCopyProgress(
+            generation,
+            "SERIALIZING",
+            completed,
+            this.evidenceCopy.progress?.total ?? null,
+            outputBytes,
+            readPoint
+          );
+        }
+      }))
+      .then(
+        (result) => {
         if (this.disposed || generation !== this.evidenceCopyGeneration) return;
         if (!result.ok) {
-          this.evidenceCopy = Object.freeze({
-            state: "error",
-            eventCount: 0,
-            text: null,
-            error: result.problem.message
-          });
+          this.finishEvidenceCopyProblem(generation, result.problem, controller.signal, copyStats);
           this.publish();
           return;
         }
-        const document = {
-          format: "lightstreamer-workbench/scoped-evidence-copy/v1",
-          scope: { id: scopeId, label: scope.label },
-          filters: filterSnapshot,
-          count: result.records.length,
-          events: result.records
-            .map(eventFromDeterministicRecord)
-            .map(toPersistableEventEnvelope)
-        };
+        copyStats = { bytes: result.outputBytes, count: result.count };
         this.evidenceCopy = Object.freeze({
           state: "ready",
-          eventCount: result.records.length,
-          text: JSON.stringify(document, null, 2)
+          eventCount: result.count,
+          text: result.text,
+          progress: operationProgress(
+            "COMPLETE",
+            result.count,
+            result.count,
+            result.outputBytes,
+            result.readPoint,
+            this.outputByteLimit,
+            this.excludedAfterLatch(result.readPoint)
+          )
         });
         this.publish();
       },
       (error) => {
         if (this.disposed || generation !== this.evidenceCopyGeneration) return;
-        this.evidenceCopy = Object.freeze({
-          state: "error",
-          eventCount: 0,
-          text: null,
-          error: errorMessage(error)
-        });
+        this.finishEvidenceCopyProblem(generation, error, controller.signal, copyStats);
         this.publish();
       }
-    );
+    ).finally(() => {
+      if (this.evidenceCopyAbortController === controller) this.evidenceCopyAbortController = null;
+    });
   }
 
-  private async queryAllEvidence(request: Readonly<{
-    scope: StructuralEvidenceScope;
-    filter: Filter;
-    order: "NEWEST_FIRST" | "OLDEST_FIRST";
-  }>): Promise<
-    | Readonly<{ ok: true; records: readonly DeterministicEvidenceRecord[]; readPoint: EvidenceSnapshot["readPoint"] }>
-    | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>
-  > {
-    const pageSize = 100;
-    const records: DeterministicEvidenceRecord[] = [];
-    let at: EvidenceInvestigationQueryRequest["at"] = "LATEST_COMMITTED";
-    let cursor: string | undefined;
-    let readPoint: EvidenceSnapshot["readPoint"] | null = null;
-    let pageCount = 0;
-    let expectedPageCount = Number.POSITIVE_INFINITY;
-    while (true) {
-      const result = await this.evidenceQuery.query({
-        at,
-        scope: request.scope,
-        filter: request.filter,
-        page: Object.freeze({
-          order: request.order,
-          size: pageSize,
-          ...(cursor === undefined ? {} : { cursor })
-        }),
-        discover: [],
-        includePayload: true
+  private updateEvidenceCopyProgress(
+    generation: number,
+    phase: WorkbenchEvidenceOperationProgress["phase"],
+    completed: number,
+    total: number | null,
+    outputBytes: number,
+    readPoint: EvidenceSnapshot["readPoint"] | null
+  ): void {
+    if (this.disposed || generation !== this.evidenceCopyGeneration || this.evidenceCopy.state !== "preparing") return;
+    this.evidenceCopy = Object.freeze({
+      ...this.evidenceCopy,
+      eventCount: completed,
+      progress: operationProgress(
+        phase,
+        completed,
+        total,
+        outputBytes,
+        readPoint,
+        this.outputByteLimit,
+        this.excludedAfterLatch(readPoint)
+      )
+    });
+    this.publish();
+  }
+
+  private excludedAfterLatch(readPoint: EvidenceSnapshot["readPoint"] | null): number {
+    if (!readPoint?.committedEvidenceBoundary) return 0;
+    const current = this.history.status().committedEvidenceBoundary;
+    if (!current) return 0;
+    return Math.max(0, current.sequence - readPoint.committedEvidenceBoundary.sequence);
+  }
+
+  private updateExportProgress(
+    generation: number,
+    phase: WorkbenchEvidenceOperationProgress["phase"],
+    completed: number,
+    total: number | null,
+    outputBytes: number,
+    readPoint: EvidenceSnapshot["readPoint"] | null
+  ): void {
+    if (this.disposed || generation !== this.exportPreparationGeneration || this.exportOperation?.state !== "preparing") return;
+    this.exportOperation = {
+      ...this.exportOperation,
+      progress: operationProgress(
+        phase,
+        completed,
+        total,
+        outputBytes,
+        readPoint,
+        this.outputByteLimit,
+        this.excludedAfterLatch(readPoint)
+      )
+    };
+    this.publish();
+  }
+
+  private cancelEvidenceOperation(): void {
+    if (this.evidenceCopy.state === "preparing") {
+      const progress = this.evidenceCopy.progress ?? operationProgress("CANCELLED", 0, null, 0, null, this.outputByteLimit, 0);
+      this.evidenceCopyGeneration += 1;
+      this.evidenceCopyAbortController?.abort();
+      this.evidenceCopyAbortController = null;
+      this.evidenceCopy = Object.freeze({
+        state: "cancelled",
+        eventCount: progress.completed,
+        text: null,
+        error: "The Complete History copy was cancelled before its artifact was published.",
+        outcome: "CANCELLED",
+        recovery: "Run Copy complete scoped Evidence again when you are ready.",
+        progress: operationProgress("CANCELLED", progress.completed, progress.total, progress.outputBytes, readPointFromProgress(progress), this.outputByteLimit, progress.excludedAfterLatch)
       });
-      if (!result.ok) return result;
-      if (readPoint === null) {
-        readPoint = result.value.readPoint;
-        expectedPageCount = Math.max(1, Math.ceil(result.value.totals.inScope / pageSize) + 1);
-      } else if (!sameEvidenceReadPoint(result.value.readPoint, readPoint)) {
-        return {
-          ok: false,
-          problem: {
-            code: "QUERY_FAILED",
-            message: "The complete Evidence read crossed a committed boundary."
-          }
-        };
-      }
-      if (result.value.page.evidence.some((record) => record.payload === undefined)) {
-        return {
-          ok: false,
-          problem: {
-            code: "QUERY_FAILED",
-            message: "The complete Evidence read did not return full payloads."
-          }
-        };
-      }
-      records.push(...result.value.page.evidence);
-      pageCount += 1;
-      if (result.value.page.nextCursor === null) break;
-      if (pageCount >= expectedPageCount || result.value.page.nextCursor === cursor) {
-        return {
-          ok: false,
-          problem: {
-            code: "QUERY_FAILED",
-            message: "The complete Evidence read exceeded its bounded page contract."
-          }
-        };
-      }
-      cursor = result.value.page.nextCursor;
-      at = readPoint;
+      this.publish();
+      return;
     }
-    return { ok: true, records: Object.freeze(records), readPoint: readPoint! };
+    if (this.exportOperation?.state === "preparing") {
+      const progress = this.exportOperation.progress;
+      this.exportPreparationGeneration += 1;
+      this.exportAbortController?.abort();
+      this.exportAbortController = null;
+      this.preparedExport = null;
+      this.exportOperation = {
+        state: "cancelled",
+        error: "The Complete History export was cancelled before its artifact was published.",
+        outcome: "CANCELLED",
+        recovery: "Run Export Scope again when you are ready.",
+        progress: { ...progress, phase: "CANCELLED" }
+      };
+      this.publish();
+    }
+  }
+
+  private finishEvidenceCopyProblem(
+    generation: number,
+    failure: unknown,
+    signal: AbortSignal,
+    writer: { readonly bytes: number; readonly count: number }
+  ): void {
+    if (this.disposed || generation !== this.evidenceCopyGeneration) return;
+    const detail = operationFailure(failure, signal);
+    if (detail.outcome === "CANCELLED") {
+      this.evidenceCopy = Object.freeze({
+        state: "cancelled",
+        eventCount: writer.count,
+        text: null,
+        error: detail.message,
+        outcome: detail.outcome,
+        recovery: detail.recovery,
+        progress: operationProgress("CANCELLED", writer.count, this.evidenceCopy.progress?.total ?? null, writer.bytes, readPointFromProgress(this.evidenceCopy.progress), this.outputByteLimit, this.evidenceCopy.progress?.excludedAfterLatch ?? 0)
+      });
+      return;
+    }
+    this.evidenceCopy = Object.freeze({
+      state: detail.outcome === "OUTPUT_REFUSED" ? "refused" : "error",
+      eventCount: 0,
+      text: null,
+      error: detail.message,
+      outcome: detail.outcome,
+      recovery: detail.recovery,
+      progress: operationProgress(
+        detail.outcome === "OUTPUT_REFUSED" ? "REFUSED" : "FAILED",
+        writer.count,
+        this.evidenceCopy.progress?.total ?? null,
+        writer.bytes,
+        readPointFromProgress(this.evidenceCopy.progress),
+        this.outputByteLimit,
+        this.evidenceCopy.progress?.excludedAfterLatch ?? 0
+      )
+    });
+  }
+
+  private finishExportProblem(generation: number, failure: unknown, signal: AbortSignal): void {
+    if (this.disposed || generation !== this.exportPreparationGeneration) return;
+    const detail = operationFailure(failure, signal);
+    const progress = this.exportOperation?.progress ?? operationProgress("FAILED", 0, null, 0, null, this.outputByteLimit, 0);
+    this.preparedExport = null;
+    this.exportOperation = {
+      state: detail.outcome === "OUTPUT_REFUSED" ? "refused" : detail.outcome === "CANCELLED" ? "cancelled" : "error",
+      error: detail.message,
+      outcome: detail.outcome,
+      recovery: detail.recovery,
+      progress: {
+        ...progress,
+        phase: detail.outcome === "OUTPUT_REFUSED" ? "REFUSED" : detail.outcome === "CANCELLED" ? "CANCELLED" : "FAILED"
+      }
+    };
+    this.publish();
   }
 
   private beginLocalInjectionFromSelection(): void {
@@ -3484,7 +3739,9 @@ class Runtime implements WorkbenchRuntime {
       completeEvidence: this.exportCompleteEvidence,
       document: this.preparedExport?.document ?? null,
       json: this.preparedExport?.json ?? null,
-      filename: this.preparedExport?.filename ?? null
+      filename: this.preparedExport?.filename ?? null,
+      ...(this.preparedExport ? { html: this.preparedExport.html } : {}),
+      ...(this.exportOperation ? { operation: this.exportOperation } : {})
     });
   }
 
@@ -5041,6 +5298,130 @@ function commandItemMatchesTopologyItem(
 
 function normalizeWindowSize(value: number | undefined): number {
   return Math.max(1, Math.floor(value ?? DEFAULT_EVIDENCE_WINDOW_SIZE));
+}
+
+function normalizeOutputByteLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_EVIDENCE_OUTPUT_BYTE_LIMIT;
+  if (!Number.isSafeInteger(value) || value < 2) {
+    throw new RangeError("The Evidence output-byte limit must be at least two bytes.");
+  }
+  return value;
+}
+
+function operationProgress(
+  phase: WorkbenchEvidenceOperationProgress["phase"],
+  completed: number,
+  total: number | null,
+  outputBytes: number,
+  readPoint: EvidenceSnapshot["readPoint"] | null,
+  outputByteLimit: number,
+  excludedAfterLatch: number
+): WorkbenchEvidenceOperationProgress {
+  return Object.freeze({
+    phase,
+    completed: Math.max(0, completed),
+    total: total === null ? null : Math.max(0, total),
+    outputBytes: Math.max(0, outputBytes),
+    outputByteLimit,
+    interval: readPoint?.interval ? Object.freeze({ ...readPoint.interval }) : null,
+    committedEvidenceBoundary: readPoint?.committedEvidenceBoundary
+      ? Object.freeze({ ...readPoint.committedEvidenceBoundary })
+      : null,
+    excludedAfterLatch: Math.max(0, excludedAfterLatch)
+  });
+}
+
+function readPointFromProgress(
+  progress: WorkbenchEvidenceOperationProgress | undefined
+): EvidenceSnapshot["readPoint"] | null {
+  if (!progress?.interval) return null;
+  return {
+    interval: progress.interval,
+    committedEvidenceBoundary: progress.committedEvidenceBoundary,
+    retainedRange: null
+  };
+}
+
+function ensureOutputByteLimit(bytes: number, maxBytes: number): void {
+  if (bytes <= maxBytes) return;
+  throw codedOperationError(
+    "OUTPUT_LIMIT",
+    `The serialized Evidence output would exceed the ${maxBytes.toLocaleString()}-byte safety limit.`
+  );
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function serializationFailure(failure: unknown): Error & { code: "SERIALIZATION_FAILED" } {
+  return Object.assign(
+    new Error(failure instanceof Error ? failure.message : "Evidence serialization failed."),
+    { code: "SERIALIZATION_FAILED" as const }
+  );
+}
+
+function codedOperationError(
+  code: "OUTPUT_LIMIT",
+  message: string
+): Error & { code: "OUTPUT_LIMIT" } {
+  return Object.assign(new Error(message), { code: "OUTPUT_LIMIT" as const });
+}
+
+function operationFailure(
+  failure: unknown,
+  signal: AbortSignal
+): Readonly<{
+  outcome: WorkbenchEvidenceOperationOutcome;
+  message: string;
+  recovery: string;
+}> {
+  const code = failure && typeof failure === "object" && "code" in failure
+    ? String(failure.code)
+    : "";
+  const message = failure && typeof failure === "object" && "message" in failure
+    ? String(failure.message)
+    : errorMessage(failure);
+  if (signal.aborted || code === "QUERY_CANCELLED") {
+    return {
+      outcome: "CANCELLED",
+      message: "The Complete History operation was cancelled before its artifact was published.",
+      recovery: "Run the operation again when you are ready."
+    };
+  }
+  if (code === "OUTPUT_LIMIT") {
+    return {
+      outcome: "OUTPUT_REFUSED",
+      message,
+      recovery: "Use a smaller Scope or Filter, or copy/export in smaller bounded selections."
+    };
+  }
+  if (code === "SERIALIZATION_FAILED") {
+    return {
+      outcome: "SERIALIZATION_FAILED",
+      message: message || "Evidence serialization failed.",
+      recovery: "No partial artifact was published. Try again after narrowing the Scope or Filter."
+    };
+  }
+  if (code === "HISTORY_INTERVAL_UNAVAILABLE" || code === "READ_POINT_UNAVAILABLE") {
+    return {
+      outcome: "HISTORY_UNAVAILABLE",
+      message,
+      recovery: "Clear retained Evidence or reload the inspected page with DevTools open, then try again."
+    };
+  }
+  if (code === "HISTORY_TERMINAL") {
+    return {
+      outcome: "HISTORY_TERMINAL",
+      message,
+      recovery: "Capture is stopped at its committed Evidence boundary. Reload the inspected page with DevTools open to start a new Panel Session."
+    };
+  }
+  return {
+    outcome: "QUERY_FAILED",
+    message,
+    recovery: "No partial artifact was published. Try the operation again after checking the retained Evidence status."
+  };
 }
 
 function sameEvidenceReadPoint(
