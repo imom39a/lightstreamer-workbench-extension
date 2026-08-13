@@ -96,4 +96,105 @@ describe("canonical Filter algebra", () => {
     expect(filter.criteria.phase?.include[0]?.value).toBe("LIVE");
     expect(filter.criteria["legacy:item-position"]?.include[0]?.value).toBe(2);
   });
+
+  it("preserves the revision for empty, idempotent, and duplicate no-op batches", () => {
+    const value = createTypedFilterValue("key", "string", "ABC");
+    const initial = canonicalizeFilter({
+      ...createFilter(),
+      text: "abc",
+      criteria: { key: { include: [value], exclude: [] } }
+    });
+
+    for (const operations of [
+      [],
+      [{ type: "set-text", text: " ABC " }],
+      [{ type: "add-criterion", facet: "key", value }],
+      [{ type: "add-criterion", facet: "key", value }, { type: "add-criterion", facet: "key", value }]
+    ] satisfies readonly FilterMutation[][]) {
+      const result = applyFilterMutations(initial, initial.revision, operations);
+      expect(result).toMatchObject({ ok: true, changed: false, filter: { revision: initial.revision } });
+    }
+  });
+
+  it("uses typed identity rather than labels and chooses the smallest duplicate label", () => {
+    const alpha = createTypedFilterValue("key", "string", "ABC", "Zulu");
+    const beta = createTypedFilterValue("key", "string", "ABC", "Alpha");
+    const left = canonicalizeFilter({ ...createFilter(), criteria: { key: { include: [alpha, beta], exclude: [] } } });
+    const right = canonicalizeFilter({ ...createFilter(), criteria: { key: { include: [beta, alpha], exclude: [] } } });
+    expect(left.criteria.key?.include).toEqual([expect.objectContaining({ identity: alpha.identity, label: "Alpha" })]);
+    expect(filterEquals(left, right)).toBe(true);
+    expect(serializeFilter(left)).toBe(serializeFilter(right));
+  });
+
+  it("orders unsupported criteria deterministically through detail and optional fields", () => {
+    const left = canonicalizeFilter({ ...createFilter(), unsupported: [
+      { id: "x", reason: "same", detail: "z" },
+      { id: "x", reason: "same", detail: "a" },
+      { id: "x", reason: "same", facet: "facet-b" },
+      { id: "x", reason: "same", facet: "facet-a" }
+    ] });
+    const right = canonicalizeFilter({ ...createFilter(), unsupported: [...left.unsupported].reverse() });
+    expect(serializeFilter(left)).toBe(serializeFilter(right));
+    expect(left.unsupported.map((criterion) => criterion.detail ?? criterion.facet)).toEqual(["a", "z", "facet-a", "facet-b"]);
+  });
+
+  it("rejects malformed criterion mutations and invalid facet clearing atomically", () => {
+    const value = createTypedFilterValue("key", "string", "ABC");
+    const initial = canonicalizeFilter({ ...createFilter(), criteria: { key: { include: [value], exclude: [] } } });
+    const forged = { ...value, facet: "other" } as typeof value;
+    expect(applyFilterMutations(initial, 1, [{ type: "remove-criterion", facet: "key", value: forged }])).toMatchObject({
+      ok: false, filter: initial, problem: { code: "INVALID_FILTER_MUTATION" }
+    });
+    expect(applyFilterMutations(initial, 1, [{ type: "clear-facet", facet: "" }])).toMatchObject({
+      ok: false, filter: initial, problem: { code: "INVALID_FILTER_MUTATION" }
+    });
+  });
+
+  it("preserves explicit legacy null criteria while distinguishing missing from null", () => {
+    const legacy = toCanonicalFilter({ clientId: null, sessionId: null });
+    expect(legacy.criteria.client?.include[0]?.type).toBe("null");
+    expect(legacy.criteria.session?.include[0]?.value).toBeNull();
+    const filter = canonicalizeFilter({ ...createFilter(), criteria: { value: {
+      include: [createTypedFilterValue("value", "null", null)], exclude: [createTypedFilterValue("value", "null", null)]
+    } } });
+    expect(evaluateFilter(filter, record()).matches).toBe(false);
+    expect(evaluateFilter(filter, record({ facets: { ...record().facets, value: createTypedFilterValue("value", "null", null) } })).matches).toBe(false);
+    const include = canonicalizeFilter({ ...createFilter(), criteria: { value: { include: [createTypedFilterValue("value", "null", null)], exclude: [] } } });
+    expect(evaluateFilter(include, record()).matches).toBe(false);
+    expect(evaluateFilter(include, record({ facets: { ...record().facets, value: createTypedFilterValue("value", "null", null) } })).matches).toBe(true);
+  });
+
+  it("supports every mutation and preserves stale or invalid atomic state", () => {
+    const value = createTypedFilterValue("key", "string", "ABC");
+    const initial = createFilter();
+    const add = applyFilterMutations(initial, 1, [{ type: "add-criterion", facet: "key", value }]);
+    expect(add).toMatchObject({ ok: true, changed: true, filter: { revision: 2 } });
+    if (!add.ok) return;
+    const remove = applyFilterMutations(add.filter, 2, [{ type: "remove-criterion", facet: "key", value }]);
+    expect(remove).toMatchObject({ ok: true, changed: true });
+    const around = applyFilterMutations(remove.ok ? remove.filter : add.filter, 3, [{ type: "set-around", around: { intervalId: "i", start: 1, end: 4 } }]);
+    expect(around).toMatchObject({ ok: true, changed: true });
+    const cleared = applyFilterMutations(around.ok ? around.filter : add.filter, 4, [{ type: "clear-around" }, { type: "set-text", text: " hello " }]);
+    expect(cleared).toMatchObject({ ok: true, changed: true, filter: { text: "hello" } });
+    const reset = applyFilterMutations(cleared.ok ? cleared.filter : add.filter, 5, [{ type: "reset" }]);
+    expect(reset).toMatchObject({ ok: true, changed: true, filter: { text: "", around: null } });
+    const stale = applyFilterMutations(add.filter, 1, [{ type: "set-text", text: "bad" }]);
+    expect(stale).toMatchObject({ ok: false, filter: add.filter, problem: { code: "STALE_FILTER_REVISION" } });
+  });
+
+  it("keeps algebra composition, Scope, immutability, and round trips stable", () => {
+    const a = createTypedFilterValue("kind", "enum", "a");
+    const b = createTypedFilterValue("kind", "enum", "b");
+    const left = canonicalizeFilter({ ...createFilter(), criteria: { kind: { include: [a, b], exclude: [b] } } });
+    const right = canonicalizeFilter({ ...createFilter(), criteria: { kind: { exclude: [b], include: [b, a] } } });
+    expect(filterEquals(left, right)).toBe(true);
+    expect(evaluateFilter(left, record({ facets: { ...record().facets, kind: a } }), () => true).matches).toBe(true);
+    expect(evaluateFilter(left, record({ facets: { ...record().facets, kind: b } }), () => true).matches).toBe(false);
+    expect(evaluateFilter(left, record({ facets: { ...record().facets, kind: a } }), () => false)).toMatchObject({ inScope: false, matches: false });
+    const source = { ...left, criteria: { ...left.criteria, kind: { ...left.criteria.kind!, include: [...left.criteria.kind!.include] } } };
+    const stable = canonicalizeFilter(source);
+    (source.criteria.kind!.include as typeof source.criteria.kind!.include & { push: (v: typeof a) => void }).push(a);
+    expect(stable.criteria.kind?.include).toHaveLength(2);
+    expect(serializeFilter(canonicalizeFilter(JSON.parse(serializeFilter(left))))).toBe(serializeFilter(left));
+  });
 });
