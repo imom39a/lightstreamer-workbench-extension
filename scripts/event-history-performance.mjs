@@ -465,10 +465,10 @@ export async function probeForegroundRaf(cdp, options = {}) {
 export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options = {}) {
   const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", nativeWindowTargetParams(pageUrl), { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the initial harness page.");
-  const activationEvidence = await options.activateWindow?.();
   let windowEvidence;
   let pageCdp;
   try {
+    const activationEvidence = await options.activateWindow?.();
     windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, { ...options, activationEvidence });
     pageCdp = await connect(await pageTarget(debugPort, pageUrl, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket, onEvent: options.onEvent });
     await ensureFreshHarnessDocument(pageCdp, pageUrl, 15_000, options);
@@ -488,10 +488,10 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
   const pageUrl = new URL(harnessPageUrl(baseUrl, pageToken));
   const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", nativeWindowTargetParams(pageUrl.href), { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
-  const activationEvidence = await options.activateWindow?.();
   let windowEvidence;
   let pageCdp;
   try {
+    const activationEvidence = await options.activateWindow?.();
     windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, { ...options, activationEvidence });
     pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket, onEvent: options.onEvent });
     await ensureFreshHarnessDocument(pageCdp, pageUrl.href, 15_000, options);
