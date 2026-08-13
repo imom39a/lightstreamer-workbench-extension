@@ -23,10 +23,13 @@ each checkpoint tier. It writes the machine report and concise interpretation
 to `test-results/event-history-performance.json` and `.md`.
 
 The headed file harness launches Chrome with
-`--disable-features=CalculateNativeWinOcclusion` in addition to its visible
-foreground gate. This prevents window-occlusion scheduling from suppressing
-the gate's `requestAnimationFrame` callbacks in an otherwise visible harness;
-the workload, long-task, and boundary semantics are unchanged.
+`--disable-features=CalculateNativeWinOcclusion` and, on macOS,
+`--activate-on-launch`, in addition to its visible foreground gate
+(`Page.bringToFront` plus the bounded double-frame probe). Both launch
+controls are needed for reliable `requestAnimationFrame` scheduling when the
+headed runner is launched from background cmux: the first prevents native
+window-occlusion suppression and the second activates the macOS window. The
+workload, long-task, and boundary semantics are unchanged.
 
 The pinned reference is [event-history-performance-reference.json](event-history-performance-reference.json).
 A report never replaces it automatically. A reference update requires an

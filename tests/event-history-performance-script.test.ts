@@ -128,22 +128,24 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
-  it("keeps headed Chrome startup arguments platform-neutral", () => {
+  it("uses the macOS activation flag while keeping other platforms neutral", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
-      const args = chromeLaunchArguments("/tmp/lsew-profile");
-      assert.equal(args.some((arg) => arg === "--activate-on-launch"), false);
-      assert.equal(args.includes("--headless"), false);
-      assert.equal(args.includes("--no-proxy-server"), true);
-      assert.equal(args.includes("--allow-file-access-from-files"), true);
-      assert.equal(args.includes("--disable-background-timer-throttling"), true);
-      assert.equal(args.includes("--disable-backgrounding-occluded-windows"), true);
-      assert.equal(args.includes("--disable-renderer-backgrounding"), true);
-      assert.equal(args.includes("--disable-features=CalculateNativeWinOcclusion"), true);
-      assert.equal(args.includes("--js-flags=--expose-gc"), true);
-      assert.equal(args.at(-1), "about:blank");
-      assert.equal(args.includes("http://127.0.0.1:4173/"), false);
+      for (const [platform, activates] of [["darwin", true], ["linux", false], ["win32", false]]) {
+        const args = chromeLaunchArguments("/tmp/lsew-profile", platform);
+        assert.equal(args.some((arg) => arg === "--activate-on-launch"), activates);
+        assert.equal(args.includes("--headless"), false);
+        assert.equal(args.includes("--no-proxy-server"), true);
+        assert.equal(args.includes("--allow-file-access-from-files"), true);
+        assert.equal(args.includes("--disable-background-timer-throttling"), true);
+        assert.equal(args.includes("--disable-backgrounding-occluded-windows"), true);
+        assert.equal(args.includes("--disable-renderer-backgrounding"), true);
+        assert.equal(args.includes("--disable-features=CalculateNativeWinOcclusion"), true);
+        assert.equal(args.includes("--js-flags=--expose-gc"), true);
+        assert.equal(args.at(-1), "about:blank");
+        assert.equal(args.includes("http://127.0.0.1:4173/"), false);
+      }
     `);
   });
 

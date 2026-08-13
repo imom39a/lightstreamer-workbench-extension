@@ -414,8 +414,8 @@ function attachCleanupEvidence(primaryError, cleanupError) {
   }
 }
 
-export function chromeLaunchArguments(profile) {
-  return [
+export function chromeLaunchArguments(profile, platform = process.platform) {
+  const args = [
     "--no-sandbox",
     "--no-proxy-server",
     "--disable-background-timer-throttling",
@@ -427,8 +427,10 @@ export function chromeLaunchArguments(profile) {
     "--no-first-run",
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
-    "about:blank"
   ];
+  if (platform === "darwin") args.push("--activate-on-launch");
+  args.push("about:blank");
+  return args;
 }
 
 function requireVisibleEnvironment() {
