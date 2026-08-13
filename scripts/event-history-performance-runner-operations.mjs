@@ -32,6 +32,7 @@ export function aggregatePerformanceShardResults(results) {
   const cellCleanupGc = [];
   let terminalScenarios = null;
   let checkpointScenarios = null;
+  let queryCells = null;
   const shards = [];
   for (let index = 0; index < plan.length; index += 1) {
     const expected = plan[index];
@@ -82,6 +83,10 @@ export function aggregatePerformanceShardResults(results) {
       }
       terminalScenarios = result.terminalScenarios;
       checkpointScenarios = result.checkpointScenarios;
+      if (!Array.isArray(result.queryCells) || result.queryCells.length !== 6) {
+        throw new Error("Performance scenario shard must execute exactly six filter query samples.");
+      }
+      queryCells = result.queryCells;
     }
     shards.push({ ...selection, cellCount: result.cells.length, cleanupCount: result.cellCleanupGc.length });
   }
@@ -100,6 +105,7 @@ export function aggregatePerformanceShardResults(results) {
     cellCleanupGc,
     terminalScenarios,
     checkpointScenarios,
+    queryCells,
     shards
   };
 }

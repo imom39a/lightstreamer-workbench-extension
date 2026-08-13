@@ -11,7 +11,6 @@ export default defineConfig({
   envDir: projectRoot,
   publicDir: resolve(projectRoot, "public"),
   build: {
-    target: "chrome151",
     emptyOutDir: true,
     outDir: resolve(projectRoot, extensionOutDir),
     rollupOptions: {

@@ -40,6 +40,7 @@ const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
 async function main() {
   requireVisibleEnvironment();
   const reference = JSON.parse(await readFile(referencePath, "utf8"));
+  const captureMode = process.env.LSEW_EVENT_HISTORY_PERF_CAPTURE === "true";
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-event-history-performance-"));
   const site = join(temporaryRoot, "site");
   const profile = join(temporaryRoot, "profile");
@@ -54,7 +55,7 @@ async function main() {
     await mkdir(site, { recursive: true });
     await build({ entryPoints: [join(rootDir, "benchmarks/event-history-performance-gate.ts")], outfile: gateModulePath, bundle: true, format: "esm", platform: "node", target: "node20", logLevel: "silent" });
     const { classifyEventHistoryPerformance, validateEventHistoryPerformanceReference } = await import(pathToFileURL(gateModulePath).href);
-    if (!validateEventHistoryPerformanceReference(reference)) {
+    if (!captureMode && !validateEventHistoryPerformanceReference(reference)) {
       throw new Error(`Pinned reference preflight failed: ${referencePath}`);
     }
     await build({
@@ -191,6 +192,7 @@ async function main() {
       shapeFacts: result.shapeFacts,
       shards: result.shards,
       cells: result.cells,
+      queryCells: result.queryCells,
       cellCleanupGc: result.cellCleanupGc,
       terminalScenarios: result.terminalScenarios,
       checkpointScenarios: result.checkpointScenarios,
@@ -202,7 +204,19 @@ async function main() {
       },
       telemetry: { storageEstimate: "Per-cell navigator.storage.estimate() telemetry is non-authoritative; unavailable/error states are retained and excluded from verdict gates." }
     };
-    const decision = classifyEventHistoryPerformance(report, reference);
+    const candidateReference = {
+      schemaVersion: 2,
+      referenceVersion: "capture-only",
+      disposition: "ACCEPTED_INITIAL_CLEAN_REFERENCE",
+      rationale: "Internal self-comparison used only to validate absolute candidate gates; not a pinned reference.",
+      environment: report.environment,
+      cells: report.cells,
+      queryCells: report.queryCells
+    };
+    const absoluteDecision = classifyEventHistoryPerformance(report, captureMode ? candidateReference : reference);
+    const decision = captureMode
+      ? { ...absoluteDecision, verdict: absoluteDecision.verdict === "PASS" ? "NOT_CLASSIFIED" : absoluteDecision.verdict, failures: absoluteDecision.failures, reviewReasons: [...absoluteDecision.reviewReasons, "Candidate capture is not classified until a maintainer adopts a pinned reference."] }
+      : absoluteDecision;
     const complete = { ...report, decision, reference: { path: referencePath, separatelyPinned: true } };
     await mkdir(dirname(outputPath), { recursive: true });
     await writeFile(outputPath, `${JSON.stringify(complete, null, 2)}\n`);
@@ -409,6 +423,7 @@ function isStrictlyMonotonic(values) {
 
 function markdown(report) {
   const rows = report.cells.map((cell) => `| ${cell.adapter} | ${cell.workload} | ${cell.shape} | ${cell.sample} | ${cell.latency.offerToPublicationP95Ms.toFixed(2)} | ${cell.latency.offerToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.committedBoundaryToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.behindBacklogMs.toFixed(2)} | ${cell.latency.finalBoundaryVisibleMs === null ? "—" : cell.latency.finalBoundaryVisibleMs.toFixed(2)} | ${cell.latency.recentPageP95Ms.toFixed(2)} | ${cell.latency.structuredIndexedP95Ms.toFixed(2)} | ${cell.latency.findFullP95Ms.toFixed(2)} |`).join("\n");
+  const queryRows = (report.queryCells ?? []).map((cell) => `| ${cell.adapter} | ${cell.sample} | ${cell.fixture.eventCount} | ${cell.fixture.distinctCommandKeyCount} | ${cell.latency.recentSimplePage50P95Ms.toFixed(2)} | ${cell.latency.recentSimplePage100P95Ms.toFixed(2)} | ${cell.latency.structuredPage50P95Ms.toFixed(2)} | ${cell.latency.structuredPage100P95Ms.toFixed(2)} | ${cell.latency.findP95Ms.toFixed(2)} | ${cell.latency.lookupP95Ms.toFixed(2)} | ${cell.latency.aroundP95Ms.toFixed(2)} |`).join("\n");
   const evidenceRows = report.cells.map((cell) => {
     const key = `${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample}`;
     const correctness = Object.entries(cell.correctness).every(([, value]) => value) ? "PASS" : "FAIL";
@@ -428,6 +443,7 @@ function markdown(report) {
   const terminalRows = report.terminalScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.trigger} | ${scenario.terminalReason} | ${scenario.acceptedCount} | ${scenario.refusedCount} | ${JSON.stringify(scenario.offeredEventIds)} | ${JSON.stringify(scenario.acceptedEventIds)} | ${JSON.stringify(scenario.retainedEventIds)} | ${JSON.stringify(scenario.publishedEventIds)} | ${JSON.stringify(scenario.refusedEventIds)} | ${scenario.firstMissingEventId} | ${scenario.committedBoundary.sequence}/${scenario.committedBoundary.eventId} | ${scenario.terminalPublicationCount} | ${scenario.pressureTransitions.join(",") || "none"} |`).join("\n");
   const heapRunRows = report.heapRuns.map((run) => `| ${run.adapter} | ${run.phase} | ${run.sample ?? "warmup"} | ${JSON.stringify(run)} |`).join("\n");
   const checkpointRows = report.checkpointScenarios.map((scenario) => `| ${scenario.adapter} | ${scenario.name} | ${scenario.accepted ? "PASS" : "FAIL"} | ${scenario.retained} | ${scenario.canonicalBytes} | ${scenario.interleavedWhileStaging} | ${scenario.committedBoundaryCorrect} | ${scenario.batchAcceptedAsOneOversizedUnit} | ${JSON.stringify(scenario)} |`).join("\n");
+  const querySection = `## Public EventHistory.query() family\n\n| Adapter | Sample | Events | Distinct COMMAND keys | Recent 50 | Recent 100 | Structured 50 | Structured 100 | Find | Lookup | Around |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${queryRows}\n\n`;
   return `# Event History performance gate\n\nVerdict: **${report.decision.verdict}**\n\nVisible Chrome: ${report.runner.product}; user agent: ${report.runner.userAgent}; JS: ${report.runner.jsVersion}; matrix samples: ${report.cells.length}; reference: ${report.reference.path}.\n\nSource revision: ${report.source.revision}; dirty at run: ${report.source.dirty}; config: ${JSON.stringify(report.config)}; environment: ${JSON.stringify(report.environment)}.\n\nAbsolute gates are fail-closed and are evaluated per independent sample. No failure is averaged away.\n\n## Matrix\n\n| Adapter | Workload | Shape | Sample | Offer→publication p95 (ms) | Offer→visible p95 (ms) | Boundary→visible p95 (ms) | Behind-backlog (ms) | Burst final boundary (ms) | Recent p95 (ms) | Structured/indexed p95 (ms) | Find/full p95 (ms) |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${rows}\n\n## Correctness, workload, storage, pressure, and exact cell identity evidence\n\n| Cell | Counts and correctness | Workload | Transaction/facet/index amplification | Pressure | Terminal | Exact identity arrays |\n| --- | --- | --- | --- | --- | --- | --- |\n${evidenceRows}\n\n## Long Task phase attribution\n\n| Cell | Exact phase durations, unattributed count, and reasons |\n| --- | --- |\n${longTaskRows}\n\n## Terminal partial-acceptance evidence\n\n| Adapter | Trigger | Reason | Accepted | Refused | Offered IDs | Accepted IDs | Retained IDs | Published IDs | Refused IDs | First missing | Boundary | Terminal publications | Pressure transitions |\n| --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | --- |\n${terminalRows}\n\n## Checkpoint evidence\n\n| Adapter | Name | Accepted | Retained | canonicalBytes | interleavedWhileStaging | committedBoundaryCorrect | batchAcceptedAsOneOversizedUnit | Full scenario evidence |\n| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |\n${checkpointRows}\n\n## Heap cleanup-run evidence\n\n| Adapter | Phase | Sample | Full cleanup evidence |\n| --- | --- | --- | --- |\n${heapRunRows}\n\n## Non-authoritative page storage estimates\n\n| Cell | navigator.storage.estimate() |\n| --- | --- |\n${storageEstimateRows}\n\n## Decision\n\nFailures:\n${report.decision.failures.length ? report.decision.failures.map((failure) => `- ${failure}`).join("\n") : "- None"}\n\nReview reasons:\n${report.decision.reviewReasons.length ? report.decision.reviewReasons.map((reason) => `- ${reason}`).join("\n") : "- None"}\n\nHeap samples: ${JSON.stringify(report.heapSamples)}\n\nLifecycle retained heap deltas: ${JSON.stringify(report.lifecycle.retainedHeapBytes)}; strict monotonic growth: ${report.lifecycle.strictMonotonicGrowth}.\n\nStorage telemetry outside the authoritative verdict: ${JSON.stringify(report.telemetry)}\n`;
 }
 

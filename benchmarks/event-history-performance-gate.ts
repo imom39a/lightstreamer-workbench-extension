@@ -136,6 +136,39 @@ export type EventHistoryPerformanceQuerySampleGc = Readonly<{
   phase: "BETWEEN_QUERY_SAMPLES";
 }>;
 
+export type EventHistoryPerformanceQueryCell = Readonly<{
+  adapter: EventHistoryPerformanceAdapter;
+  sample: number;
+  fixture: Readonly<{ eventCount: number; distinctCommandKeyCount: number }>;
+  latency: Readonly<{
+    recentSimplePage50P95Ms: number;
+    recentSimplePage100P95Ms: number;
+    structuredPage50P95Ms: number;
+    structuredPage100P95Ms: number;
+    findP95Ms: number;
+    lookupP95Ms: number;
+    aroundP95Ms: number;
+  }>;
+  correctness: Readonly<{
+    totalsExact: boolean;
+    orderExact: boolean;
+    collisionExact: boolean;
+    findIndependent: boolean;
+    lookupExact: boolean;
+    aroundExact: boolean;
+  }>;
+  telemetry: Readonly<{
+    candidateBounded: boolean;
+    projectionTraversalBounded: boolean;
+    payloadHydrations: number;
+    selectedLookupPayloadHydrations: number;
+    noReplayPayloadFullScan: boolean;
+    noFullMatchingPayloadHydration: boolean;
+  }>;
+  longTasks: readonly number[];
+  querySampleGc?: readonly EventHistoryPerformanceQuerySampleGc[];
+}>;
+
 export type EventHistoryPerformanceHeapSample = Readonly<{
   adapter: EventHistoryPerformanceAdapter;
   sample: number;
@@ -234,6 +267,7 @@ export type EventHistoryPerformanceReport = Readonly<{
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
   cells: readonly EventHistoryPerformanceCell[];
+  queryCells?: readonly EventHistoryPerformanceQueryCell[];
   capabilities?: Readonly<{
     interCellGc?: "EXPOSED_THREE_PASS_V1";
     interQuerySampleGc?: "EXPOSED_THREE_PASS_V1";
@@ -263,6 +297,7 @@ export type EventHistoryPerformanceReference = Readonly<{
   rationale: string;
   environment: Pick<EventHistoryPerformanceEnvironment, "chromeMajor" | "platformClass" | "architectureClass">;
   cells: readonly EventHistoryPerformanceCell[];
+  queryCells?: readonly EventHistoryPerformanceQueryCell[];
 }>;
 
 export type PerformanceGateVerdict = "PASS" | "REVIEW" | "FAIL";
@@ -311,6 +346,7 @@ export function classifyEventHistoryPerformance(
       `Expected ${expectedKeys.size * SAMPLE_COUNT} matrix samples, received ${validReport.cells.length}.`
     );
   }
+  if (validReport.queryCells !== undefined) validateQueryCells(validReport.queryCells, failures);
   const requiresInterCellGc = validReport.capabilities?.interCellGc === "EXPOSED_THREE_PASS_V1"
     || validReport.cellCleanupGc !== undefined;
   if (requiresInterCellGc) validateInterCellGc(validReport.cellCleanupGc ?? [], failures);
@@ -470,6 +506,7 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && isRecord(environment) && environment.chromeMajor === 151 && typeof environment.platformClass === "string"
     && typeof environment.architectureClass === "string" && environment.headless === false
     && Array.isArray(value.cells) && value.cells.every(isPerformanceCell)
+    && (value.queryCells === undefined || (Array.isArray(value.queryCells) && value.queryCells.every(isQueryCell)))
     && (value.capabilities === undefined || (
       isRecord(value.capabilities)
       && (value.capabilities.interCellGc === undefined || value.capabilities.interCellGc === "EXPOSED_THREE_PASS_V1")
@@ -485,6 +522,45 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && lifecycle.retainedHeapBytes.length === SAMPLE_COUNT && lifecycle.retainedHeapBytes.every(isFiniteNumber)
     && isBoolean(lifecycle.strictMonotonicGrowth);
   return valid;
+}
+
+function isQueryCell(value: unknown): value is EventHistoryPerformanceQueryCell {
+  if (!isRecord(value) || !ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
+    || !Number.isSafeInteger(value.sample) || !isRecord(value.fixture) || !Number.isSafeInteger(value.fixture.eventCount)
+    || !Number.isSafeInteger(value.fixture.distinctCommandKeyCount) || !isRecord(value.latency)
+    || !isRecord(value.correctness) || !isRecord(value.telemetry) || !Array.isArray(value.longTasks)) return false;
+  return Object.values(value.latency).every(isFiniteNumber)
+    && Object.values(value.correctness).every(isBoolean)
+    && Object.values(value.telemetry).every((entry) => typeof entry === "boolean" || Number.isSafeInteger(entry))
+    && value.longTasks.every(isFiniteNumber)
+    && (value.querySampleGc === undefined || Array.isArray(value.querySampleGc));
+}
+
+function validateQueryCells(cells: readonly EventHistoryPerformanceQueryCell[], failures: string[]): void {
+  const expected = new Set(["indexeddb", "memory"].flatMap((adapter) => [1, 2, 3].map((sample) => `${adapter}/${sample}`)));
+  if (cells.length !== expected.size) failures.push(`Expected ${expected.size} filter query samples, received ${cells.length}.`);
+  const seen = new Set<string>();
+  for (const cell of cells) {
+    const label = `filter-query/${cell.adapter}/sample-${cell.sample}`;
+    const key = `${cell.adapter}/${cell.sample}`;
+    if (seen.has(key) || !expected.has(key)) failures.push(`${label} has an unexpected or duplicate identity.`);
+    seen.add(key);
+    const expectedCount = cell.adapter === "indexeddb" ? 10_000 : 5_000;
+    if (cell.fixture.eventCount !== expectedCount) failures.push(`${label} fixture count must be ${expectedCount}.`);
+    if (cell.fixture.distinctCommandKeyCount < 3_842) failures.push(`${label} must contain at least 3,842 distinct COMMAND keys.`);
+    for (const [name, value] of Object.entries(cell.latency)) {
+      const limit = name.startsWith("recentSimple") ? 50 : name.startsWith("structured") ? 100 : name === "findP95Ms" ? 500 : 100;
+      if (value > limit) failures.push(`${label} ${name} exceeds ${limit} ms.`);
+    }
+    for (const [name, value] of Object.entries(cell.correctness)) if (!value) failures.push(`${label} correctness field ${name} is false.`);
+    if (!cell.telemetry.candidateBounded || !cell.telemetry.projectionTraversalBounded || !cell.telemetry.noReplayPayloadFullScan || !cell.telemetry.noFullMatchingPayloadHydration) {
+      failures.push(`${label} does not prove bounded candidate/projection traversal and zero full payload scan.`);
+    }
+    if (cell.telemetry.selectedLookupPayloadHydrations !== 1) failures.push(`${label} selected lookup must hydrate exactly one payload.`);
+    if (cell.telemetry.payloadHydrations < 1) failures.push(`${label} must report query payload hydration telemetry.`);
+    if (cell.longTasks.some((duration) => duration > 125)) failures.push(`${label} has a query Long Task over 125 ms.`);
+  }
+  for (const key of expected) if (!seen.has(key)) failures.push(`Missing filter query sample ${key}.`);
 }
 
 function validateQuerySampleGc(cells: readonly EventHistoryPerformanceCell[], failures: string[]): void {
@@ -756,7 +832,8 @@ function isPerformanceReference(value: unknown): value is EventHistoryPerformanc
     && typeof value.rationale === "string" && value.rationale.trim().length > 0
     && isRecord(environment) && environment.chromeMajor === 151
     && typeof environment.platformClass === "string" && typeof environment.architectureClass === "string"
-    && Array.isArray(value.cells) && hasIndependentMatrixSamples(value.cells);
+    && Array.isArray(value.cells) && hasIndependentMatrixSamples(value.cells)
+    && (value.queryCells === undefined || (Array.isArray(value.queryCells) && value.queryCells.every(isQueryCell)));
 }
 
 function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell {
