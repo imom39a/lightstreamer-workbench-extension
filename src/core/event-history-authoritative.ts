@@ -1,6 +1,18 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { type EventFilterState, matchesEventFilters } from "./event-filter";
 import {
+  type DeterministicEvidenceRecord,
+  type EvidenceFilterQueryAdapter,
+  type EvidenceFilterReadProblem,
+  type EvidenceIdentity,
+  type EvidenceQueryRequest,
+  type EvidenceReadPoint,
+  type EvidenceSnapshot,
+  type FacetDiscoveryResult
+} from "./evidence-filter-contract";
+import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
+import { canonicalEvidenceSearchText, extractEvidenceFacets } from "./evidence-facets";
+import {
   deserializeJournalEvidenceCandidate,
   journalCandidateSearchText,
   registerJournalOwnedCandidate,
@@ -193,6 +205,8 @@ export interface EventHistory {
   status(): HistoryStatus;
   offer(candidate: EvidenceCandidate): CaptureReceipt;
   read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>>;
+  /** Available on the in-memory semantic query implementation; durable adapters adopt it later. */
+  query?: EvidenceFilterQueryAdapter["query"];
   clear(): Promise<Outcome<ClearResult>>;
   follow(
     options: { from: "CURRENT_INTERVAL_START" | "NOW" },
@@ -200,6 +214,8 @@ export interface EventHistory {
   ): () => void;
   close(): Promise<Outcome<CloseResult>>;
 }
+
+export type MemoryEventHistory = EventHistory & EvidenceFilterQueryAdapter;
 
 export type OpenEventHistoryOptions = Readonly<{
   panelSessionId?: string;
@@ -302,7 +318,7 @@ export function createInMemoryEventHistory(
   return createMemoryHistory(options);
 }
 
-function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
+function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHistory {
   const sessionId = options.panelSessionId ?? `session-${nextId()}`;
   const journal: HistoryJournal = {
     async commitBatch(batch) {
@@ -831,6 +847,60 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     });
   }
 
+  function query(request: EvidenceQueryRequest): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
+    if (phase === "CLOSED") {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("HISTORY_TERMINAL", "Event History is closed.") });
+    }
+    if (clearInProgress || closing) {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", "A History Interval transition is currently pending.") });
+    }
+    if (!Number.isSafeInteger(request.page.size) || request.page.size < 1) {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", "Page size must be a positive integer.") });
+    }
+
+    // This is the sole read point. Everything below reads this immutable slice,
+    // so a later commit cannot enter this result or change its totals.
+    const intervalAtRead = interval;
+    const entriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
+    const readPoint = evidenceReadPoint(intervalAtRead, entriesAtRead);
+    if (request.at !== "LATEST_COMMITTED" && !matchesEvidenceReadPoint(request.at, readPoint)) {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
+    }
+
+    const records = entriesAtRead.map((entry) => toDeterministicEvidenceRecord(entry, intervalAtRead));
+    const unsupported = request.filter.unsupported.length > 0;
+    const discoveries = new Map<string, FacetDiscoveryResult>();
+    if (unsupported) {
+      return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", "COMPLETE", "MEMORY_FALLBACK") });
+    }
+
+    try {
+      const matching: DeterministicEvidenceRecord[] = [];
+      const inScope: DeterministicEvidenceRecord[] = [];
+      for (const record of records) {
+        const evaluation = evaluateFilter({ ...request.filter, around: null } as unknown as Filter, {
+          timestamp: record.timestamp,
+          intervalId: record.identity.intervalId,
+          searchText: record.searchText,
+          facets: record.facets as unknown as FilterRecord["facets"]
+        });
+        if (!evaluation.matches) continue;
+        matching.push(record);
+        if (inEvidenceScope(record, request.filter.around)) inScope.push(record);
+      }
+      const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
+      const offset = readCursor(request.page.cursor);
+      const page = ordered.slice(offset, offset + request.page.size);
+      const nextCursor = offset + page.length < ordered.length ? String(offset + page.length) : null;
+      return Promise.resolve({
+        ok: true,
+        value: makeEvidenceSnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", "COMPLETE", "MEMORY_FALLBACK", nextCursor)
+      });
+    } catch (error) {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", error instanceof Error ? error.message : "Evidence query failed.") });
+    }
+  }
+
   function clear(): Promise<Outcome<ClearResult>> {
     if (clearPromise) {
       return clearPromise;
@@ -1072,7 +1142,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): EventHistory {
     }
   }
 
-  return { storage, status, offer, read, clear, follow, close };
+  return { storage, status, offer, read, query, clear, follow, close };
 }
 
 function createInterval(sessionId: string, ordinal: number): HistoryInterval {
@@ -1131,6 +1201,101 @@ function toRef(evidence: CommittedEvidence): EvidenceRef {
     intervalId: evidence.intervalId,
     sequence: evidence.sequence,
     eventId: evidence.eventId
+  });
+}
+
+function evidenceReadProblem(code: EvidenceFilterReadProblem["code"], message: string): EvidenceFilterReadProblem {
+  return Object.freeze({ code, message });
+}
+
+function evidenceIdentity(ref: EvidenceRef, interval: HistoryInterval): EvidenceIdentity {
+  return Object.freeze({
+    intervalId: ref.intervalId,
+    pageId: interval.id,
+    ownerId: "memory-event-history",
+    sequence: ref.sequence,
+    eventId: ref.eventId
+  });
+}
+
+function evidenceReadPoint(interval: HistoryInterval, entries: readonly CommittedEvidence[]): EvidenceReadPoint {
+  const first = entries[0] ? evidenceIdentity(toRef(entries[0]), interval) : null;
+  const last = entries.at(-1) ? evidenceIdentity(toRef(entries.at(-1)!), interval) : null;
+  return Object.freeze({
+    interval: Object.freeze({ id: interval.id, ordinal: interval.ordinal }),
+    committedEvidenceBoundary: last,
+    retainedRange: first && last ? Object.freeze({ first, last }) : null
+  });
+}
+
+function matchesEvidenceReadPoint(requested: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
+  if (requested.interval.id !== current.interval.id || requested.interval.ordinal !== current.interval.ordinal) return false;
+  return sameEvidenceIdentity(requested.committedEvidenceBoundary, current.committedEvidenceBoundary)
+    && sameEvidenceRange(requested.retainedRange, current.retainedRange);
+}
+
+function sameEvidenceIdentity(left: EvidenceIdentity | null, right: EvidenceIdentity | null): boolean {
+  if (left === null || right === null) return left === right;
+  return left.intervalId === right.intervalId && left.pageId === right.pageId && left.ownerId === right.ownerId && left.sequence === right.sequence && left.eventId === right.eventId;
+}
+
+function sameEvidenceRange(left: EvidenceReadPoint["retainedRange"], right: EvidenceReadPoint["retainedRange"]): boolean {
+  if (left === null || right === null) return left === right;
+  return sameEvidenceIdentity(left.first, right.first) && sameEvidenceIdentity(left.last, right.last);
+}
+
+function readCursor(cursor: string | undefined): number {
+  if (cursor === undefined) return 0;
+  const value = Number(cursor);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("Page cursor must be a non-negative integer.");
+  return value;
+}
+
+function inEvidenceScope(record: DeterministicEvidenceRecord, around: EvidenceQueryRequest["filter"]["around"]): boolean {
+  return around === null || (
+    record.identity.intervalId === around.intervalId
+    && record.timestamp >= around.start
+    && record.timestamp < around.end
+  );
+}
+
+function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: HistoryInterval): DeterministicEvidenceRecord {
+  const identity = evidenceIdentity(toRef(entry), interval);
+  if (entry.candidate.kind === "topology-checkpoint") {
+    const searchText = journalCandidateSearchText(entry.candidate);
+    return Object.freeze({ identity, timestamp: 0, summary: "Topology checkpoint", searchText, facets: Object.freeze({}) });
+  }
+  const facets = extractEvidenceFacets(entry.candidate, { identity, pageId: identity.pageId, listenerOwner: identity.ownerId }).facets;
+  return Object.freeze({
+    identity,
+    timestamp: entry.candidate.timestamp,
+    summary: entry.candidate.kind,
+    searchText: canonicalEvidenceSearchText(entry.candidate, { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind }),
+    facets: Object.freeze(facets)
+  });
+}
+
+function makeEvidenceSnapshot(
+  readPoint: EvidenceReadPoint,
+  page: readonly DeterministicEvidenceRecord[],
+  matching: number,
+  inScope: number,
+  discoveries: ReadonlyMap<string, FacetDiscoveryResult>,
+  evaluation: EvidenceSnapshot["evaluation"],
+  coverage: EvidenceSnapshot["coverage"],
+  storageName: EvidenceSnapshot["storage"],
+  nextCursor: string | null = null
+): EvidenceSnapshot {
+  return Object.freeze({
+    readPoint,
+    page: Object.freeze({ evidence: Object.freeze([...page]), nextCursor }),
+    totals: Object.freeze({ matching, inScope }),
+    discoveries,
+    lookup: null,
+    find: null,
+    evaluation,
+    coverage,
+    storage: storageName
   });
 }
 
