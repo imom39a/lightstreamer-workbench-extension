@@ -868,14 +868,21 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     // This is the sole read point. Everything below reads this immutable slice,
     // so a later commit cannot enter this result or change its totals.
     const intervalAtRead = interval;
-    const entriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
-    const readPoint = evidenceReadPoint(intervalAtRead, entriesAtRead);
-    if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, readPoint)) {
+    const currentEntriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
+    const currentReadPoint = evidenceReadPoint(intervalAtRead, currentEntriesAtRead);
+    const readPoint = request.at === "LATEST_COMMITTED" ? currentReadPoint : request.at;
+    if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, currentReadPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.") });
     }
-    if (request.at !== "LATEST_COMMITTED" && !readPointFitsCurrentInterval(request.at, readPoint)) {
+    if (request.at !== "LATEST_COMMITTED" && !readPointFitsCurrentInterval(request.at, currentReadPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
+
+    const retained = readPoint.retainedRange;
+    const firstSequence = retained?.first.sequence ?? 1;
+    const boundary = readPoint.committedEvidenceBoundary?.intervalId === intervalAtRead.id ? readPoint.committedEvidenceBoundary.sequence : 0;
+    const lastSequence = Math.min(retained?.last.sequence ?? 0, boundary);
+    const entriesAtRead = currentEntriesAtRead.filter((entry) => entry.sequence >= firstSequence && entry.sequence <= lastSequence);
 
     const records: SelectionRecord[] = entriesAtRead.map((entry) => {
       const cached = deterministicRecordCache.get(entry);
