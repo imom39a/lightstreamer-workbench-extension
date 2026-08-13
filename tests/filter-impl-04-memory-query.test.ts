@@ -25,6 +25,20 @@ function emptyFilter(): EvidenceFilter {
 }
 
 describe("in-memory Evidence Snapshot reads", () => {
+  it("rejects a page size above the documented maximum", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-04-page-bound" });
+    const result = await history.query!({
+      at: "LATEST_COMMITTED",
+      page: { order: "OLDEST_FIRST", size: 101 },
+      filter: emptyFilter()
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      problem: { code: "QUERY_FAILED", message: "Page size must not exceed 100." }
+    });
+  });
+
   it("returns one bounded atomic page with exact totals and a frozen read point", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-04" });
     await history.offer(event("event-1", 1)).settled;
@@ -71,7 +85,53 @@ describe("in-memory Evidence Snapshot reads", () => {
     if (!before.ok) return;
     await history.clear();
     const stale = await history.query!({ at: before.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
-    expect(stale).toMatchObject({ ok: false, problem: { code: "READ_POINT_UNAVAILABLE" } });
+    expect(stale).toMatchObject({ ok: false, problem: { code: "HISTORY_INTERVAL_UNAVAILABLE" } });
 
+  });
+
+  it("exposes caller-immutable discovery collections", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-04-discoveries" });
+    const result = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(() => (result.value.discoveries as unknown as { set: (...args: unknown[]) => void }).set("key", {
+      state: "UNAVAILABLE",
+      facet: "key",
+      reason: "DISCOVERY_FAILED",
+      values: [],
+      distinctTotal: null,
+      nextCursor: null,
+      baseEvidenceCount: null
+    })).toThrow();
+  });
+
+  it("qualifies lower-capacity fallback coverage while retaining accepted evidence semantics", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "filter-impl-04-lower-tier",
+      capacityTier: "LOWER",
+      fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+    });
+    await history.offer(event("event-1", 1)).settled;
+    const result = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+
+    expect(result.ok && result.value.coverage).toBe("LIMITED");
+    expect(result.ok && result.value.totals).toEqual({ matching: 1, inScope: 1 });
+    expect(result.ok && result.value.page.evidence[0]?.identity.eventId).toBe("event-1");
+  });
+
+  it("returns one final exact terminal snapshot and refuses later capture", async () => {
+    const history = await createMemoryEventHistoryForTests({
+      panelSessionId: "filter-impl-04-terminal-snapshot",
+      capacityTier: "LOWER",
+      capacity: { maxRetainedCount: 1, retainedWarningCount: 1 }
+    });
+    await history.offer(event("event-1", 1)).settled;
+    const refused = history.offer(event("event-2", 2));
+    await expect(refused.settled).resolves.toMatchObject({ outcome: "NOT_EVIDENCE" });
+
+    const final = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(final).toMatchObject({ ok: true, value: { totals: { matching: 1, inScope: 1 }, coverage: "LIMITED" } });
+    expect(history.status().phase).toBe("STOPPED");
   });
 });
