@@ -170,6 +170,32 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("uses a modest default foreground keeper cadence", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createForegroundKeeper } = await import(${JSON.stringify(scriptUrl)});
+      let intervalMilliseconds;
+      let cleared = null;
+      const keeper = createForegroundKeeper(49217, {
+        platform: "darwin",
+        deadlineAt: 10_000,
+        setInterval(callback, milliseconds) {
+          intervalMilliseconds = milliseconds;
+          return 17;
+        },
+        clearInterval(handle) { cleared = handle; },
+        activate() {
+          return Promise.resolve({ attempted: true, pid: 49217, activatedPID: 49217, frontmostPID: 49217, windows: [] });
+        }
+      });
+      keeper.start();
+      assert.equal(intervalMilliseconds, 5_000);
+      assert.equal(keeper.snapshot().cadenceMs, 5_000);
+      await keeper.stop();
+      assert.equal(cleared, 17);
+    `);
+  });
+
   it("builds a self-contained file harness with relative assets and no HTTP server dependency", () => {
     runNode(`
       import assert from "node:assert/strict";

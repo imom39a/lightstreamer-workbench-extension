@@ -810,7 +810,7 @@ export function activateSpawnedChromeWindow(pid, options = {}) {
   });
 }
 
-const FOREGROUND_KEEPER_CADENCE_MS = 1_000;
+const FOREGROUND_KEEPER_CADENCE_MS = 5_000;
 const FOREGROUND_KEEPER_TIMEOUT_MS = 2_000;
 
 export function createForegroundKeeper(pid, options = {}) {
