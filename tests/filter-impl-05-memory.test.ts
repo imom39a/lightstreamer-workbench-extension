@@ -186,7 +186,9 @@ describe("filter-impl-05 memory facet discovery", () => {
       const first = await observed.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 100 }, filter: filter(), discover: [{ facet: "key", size: 100 }] });
       for (let sample = 0; sample < 5; sample += 1) { const started = performance.now(); await observed.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 100 }, filter: filter(), discover: [{ facet: "key", size: 100 }] }); samples.push(performance.now() - started); }
       samples.sort((left, right) => left - right);
-      expect(samples[Math.min(samples.length - 1, Math.ceil(samples.length * 0.95) - 1)]).toBeLessThan(500);
+      const p95 = samples[Math.min(samples.length - 1, Math.ceil(samples.length * 0.95) - 1)] ?? 0;
+      console.log(`[filter-impl-05] tier=${historyIndex === 0 ? "NORMAL" : "LOWER"} records=${count} distinct=3842 p95Ms=${p95.toFixed(2)} materializedMax=${maxCandidates}`);
+      expect(p95).toBeLessThan(500);
       expect(first.ok && first.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 3_842 });
       if (!first.ok) continue;
       const reachable = new Set<string>();
