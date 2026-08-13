@@ -383,7 +383,8 @@ function upgradeAuthoritativeDatabase(
   if (!postings.indexNames.contains("token")) {
     postings.createIndex("token", "token", { unique: false });
   }
-  if (oldVersion === 2 || oldVersion === 3) {
+  if (oldVersion >= 2 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+    postings.clear();
     rebuildFacetPostingsFromEvidence(transaction!, postings);
   }
   if (!database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections)) {

@@ -157,7 +157,9 @@ async function createModernJournal(panelSessionId: string, count: number): Promi
     evidence.createIndex("facets", "facets", { multiEntry: true });
     const postings = database.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
     postings.createIndex("token", "token", { unique: false });
-    database.createObjectStore("queryProjections", { keyPath: "sequence" });
+    const projections = database.createObjectStore("queryProjections", { keyPath: "sequence" });
+    projections.createIndex("timestamp", "timestamp", { unique: false });
+    projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
   };
   const database = await requestValue(request);
   const transaction = database.transaction(["historyControl", "evidence", "facetPostings", "queryProjections"], "readwrite");

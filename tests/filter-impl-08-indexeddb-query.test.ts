@@ -184,7 +184,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
       find: { text }
     });
     const shortFind = await find("lph");
-    expect(shortFind).toMatchObject({ ok: true, value: { find: { total: 3 }, telemetry: { shortFindFallback: false, fullRetainedScan: true } } });
+    expect(shortFind).toMatchObject({ ok: true, value: { find: { total: 3 }, telemetry: { shortFindFallback: false, fullRetainedScan: false, findCursorBound: 3, findCursorReads: 3 } } });
     await expect(find("ALPHA")).resolves.toMatchObject({ ok: true, value: { find: { total: 3 } } });
     const shortNormalizedFind = await find("it");
     expect(shortNormalizedFind).toMatchObject({ ok: true, value: { find: { total: 4 }, telemetry: { shortFindFallback: true, fullRetainedScan: true, retainedCount: 4, cursorWorkBound: 4 } } });
@@ -237,7 +237,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
   });
 
-  it("fails closed when projection count matches but the retained primary-key range does not", async () => {
+  it("fails closed when a same-count, same-range projection value is corrupt", async () => {
     const panelSessionId = `filter-impl-08-range-coverage-${Date.now()}`;
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const durable = await createIndexedDbEventHistory({ panelSessionId });
@@ -253,8 +253,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     const projections = transaction.objectStore("queryProjections");
     const second = projections.get(2);
     second.onsuccess = () => {
-      projections.delete(2);
-      projections.put({ ...(second.result as Record<string, unknown>), sequence: 99 });
+      projections.put({ ...(second.result as Record<string, unknown>), eventId: "corrupt-event-id" });
     };
     await new Promise<void>((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error); });
     database.close();
