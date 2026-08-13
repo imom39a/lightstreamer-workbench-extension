@@ -787,7 +787,8 @@ export function createTimeoutDiagnostic({
   environment,
   referencePath,
   deadlineMs,
-  operation
+  operation,
+  identity = null
 }) {
   return {
     schemaVersion: 2,
@@ -796,6 +797,7 @@ export function createTimeoutDiagnostic({
     source,
     runner,
     environment,
+    identity,
     operation: {
       deadlineMs,
       phase: operation.phase ?? operation.lastRequestTimeout?.phase ?? null,

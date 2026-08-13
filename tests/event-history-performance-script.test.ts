@@ -753,23 +753,40 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
-  it("activates only the spawned Chrome process through a bounded macOS command", () => {
+  it("activates and verifies only the spawned Chrome process through a bounded native helper", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { activateSpawnedChromeWindow } = await import(${JSON.stringify(scriptUrl)});
       let invocation;
       await activateSpawnedChromeWindow(49217, {
         platform: "darwin",
-        applicationPath: "/tmp/Google Chrome for Testing.app",
         timeoutMs: 50,
         execute(file, args, callback) {
           invocation = { file, args };
-          callback(null, "", "");
+          callback(null, JSON.stringify({ activatedPID: 49217, frontmostPID: 49217, windows: [] }), "");
           return { kill() { throw new Error("should not kill a completed activation"); } };
         }
       });
-      assert.equal(invocation.file, "/usr/bin/open");
-      assert.deepEqual(invocation.args, ["-a", "/tmp/Google Chrome for Testing.app"]);
+      assert.match(invocation.file, /process-activation-helper/u);
+      assert.deepEqual(invocation.args, ["activate", "49217"]);
+    `);
+  });
+
+  it("marks frame diagnostics incomplete without inventing trace or target evidence", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createFrameDiagnostics, validateFrameDiagnostics } = await import(${JSON.stringify(scriptUrl)});
+      const diagnostics = createFrameDiagnostics();
+      assert.equal(diagnostics.status, "INCOMPLETE");
+      assert.deepEqual(diagnostics.nativeWindows, []);
+      assert.deepEqual(diagnostics.traceChunks, []);
+      assert.deepEqual(diagnostics.traceEvents, []);
+      assert.equal(diagnostics.tracingComplete, null);
+      assert.equal(validateFrameDiagnostics(diagnostics).complete, false);
+      assert.ok(validateFrameDiagnostics(diagnostics).missing.length === 0);
+      diagnostics.status = "COMPLETE";
+      diagnostics.tracingComplete = { dataLossOccurred: false };
+      assert.equal(validateFrameDiagnostics(diagnostics).complete, true);
     `);
   });
 });

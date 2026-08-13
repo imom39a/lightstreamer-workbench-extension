@@ -57,6 +57,7 @@ async function main() {
   let chromeMetadata = null;
   let environmentMetadata = null;
   let frameDiagnostics = null;
+  const targetIdentity = [];
   let primaryError = null;
   try {
     await mkdir(site, { recursive: true });
@@ -83,11 +84,15 @@ async function main() {
     chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
-    const activateWindow = () => activateSpawnedChromeWindow(chrome.pid, {
-      applicationPath: executable.replace(/\/Contents\/MacOS\/[^/]+$/u, "")
-    });
-    await activateWindow();
     const proofDeadlineAt = Date.now() + EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS;
+    const processActivationHelper = join(temporaryRoot, "process-activation-helper");
+    await compileProcessActivationHelper(processActivationHelper, proofDeadlineAt);
+    let lastActivationEvidence = null;
+    const activateWindow = async () => {
+      lastActivationEvidence = await activateSpawnedChromeWindow(chrome.pid, { helperPath: processActivationHelper, deadlineAt: proofDeadlineAt });
+      return lastActivationEvidence;
+    };
+    await activateWindow();
     const browserSocketUrl = await browserTarget(debugPort, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-websocket") });
     browserCdp = await connect(browserSocketUrl, {
       deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-connect"),
@@ -96,13 +101,17 @@ async function main() {
         if (event.method === "Target.targetCreated" || event.method === "Target.targetInfoChanged" || event.method === "Target.targetDestroyed") {
           frameDiagnostics.lifecycle.push({ method: event.method, params: event.params });
         }
-        if (event.method === "Tracing.dataCollected") frameDiagnostics.traceChunks.push(...(event.params?.value ?? []));
+        if (event.method === "Tracing.dataCollected") {
+          const events = event.params?.value ?? [];
+          frameDiagnostics.traceChunks.push(events);
+          frameDiagnostics.traceEvents.push(...events);
+        }
         if (event.method === "Tracing.tracingComplete") frameDiagnostics.tracingComplete = event.params ?? null;
       }
     });
     const environment = await requestControlCdpWithDeadline(browserCdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
     if (process.env.LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS === "true") {
-      frameDiagnostics = { lifecycle: [], nativeWindows: [], traceChunks: [], tracingComplete: null, screencastFrames: 0, frameRoutingProbe: null };
+      frameDiagnostics = createFrameDiagnostics();
       await requestControlCdpWithDeadline(browserCdp, "Target.setDiscoverTargets", { discover: true }, { deadlineAt: proofDeadlineAt, phase: "Target.setDiscoverTargets" });
       await requestControlCdpWithDeadline(browserCdp, "Tracing.start", {
         categories: "toplevel,blink,cc,devtools.timeline",
@@ -110,9 +119,45 @@ async function main() {
       }, { deadlineAt: proofDeadlineAt, phase: "Tracing.start" });
     }
     initialTarget = await openHarnessTarget(browserCdp, debugPort, url, { deadlineAt: proofDeadlineAt, activateWindow });
-    frameDiagnostics?.nativeWindows.push(initialTarget.windowEvidence);
+    const initialIdentity = { targetId: initialTarget.targetId, pageToken: initialTarget.pageToken, url: initialTarget.url, ...initialTarget.windowEvidence };
+    targetIdentity.push(initialIdentity);
+    frameDiagnostics?.nativeWindows.push(initialIdentity);
     cdp = initialTarget.cdp;
     await prepareInitialPageForAuthoritativeRun(cdp, url, { deadlineAt: proofDeadlineAt });
+    await probeForegroundRaf(cdp, { deadlineAt: proofDeadlineAt, record: (evidence) => frameDiagnostics?.targetIdentity.push({ targetId: initialTarget.targetId, pageToken: initialTarget.pageToken, url: initialTarget.url, ...evidence }) });
+    if (process.env.LSEW_EVENT_HISTORY_PERF_FRAME_PROBE_ONLY === "true") {
+      const mutation = await evaluateWithDeadline(cdp, `new Promise((resolve) => {
+        let settled = false;
+        let timer;
+        const finish = (callback) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve({ callback, visibilityState: document.visibilityState, hasFocus: document.hasFocus() });
+        };
+        timer = setTimeout(() => finish(false), 1_000);
+        document.body.dataset.lsewForegroundProbe = "mutated";
+        requestAnimationFrame(() => finish(true));
+      })`, proofDeadlineAt, "foreground-raf-after-dom-mutation", { deadlineAt: proofDeadlineAt });
+      const discriminator = {
+        schemaVersion: 1,
+        status: mutation?.callback === true ? "PASS" : "FAIL",
+        diagnosticOnly: true,
+        clean: true,
+        tracing: false,
+        screencast: false,
+        source: safeSourceState(),
+        runner: { kind: "real-chrome", headless: false, fakeIndexedDbUsed: false, product: environment.product, userAgent: environment.userAgent, jsVersion: environment.jsVersion },
+        target: { ...initialTarget.windowEvidence, targetId: initialTarget.targetId, pageToken: initialTarget.pageToken, url: initialTarget.url },
+        callbacks: { independentForegroundRaf: true, afterDomMutationRaf: mutation?.callback === true },
+        evidence: { mutation }
+      };
+      await mkdir(dirname(outputPath), { recursive: true });
+      await writeFile(outputPath, `${JSON.stringify(discriminator, null, 2)}\n`);
+      await writeFile(markdownPath, `# Foreground rAF discriminator\n\nStatus: **${discriminator.status}**\n\nCallbacks: ${JSON.stringify(discriminator.callbacks)}\n\nIdentity: ${JSON.stringify(discriminator.target)}\n`);
+      if (discriminator.status !== "PASS") throw new Error("Foreground rAF discriminator did not receive the post-mutation callback.");
+      return;
+    }
     const chromeMajor = chromeMajorFromProduct(environment.product);
     if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
     chromeMetadata = {
@@ -137,6 +182,7 @@ async function main() {
         deadlineAt: proofDeadlineAt,
         operation: lastOperationStatus,
         activateWindow,
+        recordForegroundRaf: (evidence) => frameDiagnostics?.targetIdentity.push(evidence),
         onEvent(event) {
           if (event.method === "Page.screencastFrame" && frameDiagnostics) {
             frameDiagnostics.screencastFrames += 1;
@@ -144,7 +190,9 @@ async function main() {
           }
         }
       });
-      frameDiagnostics?.nativeWindows.push(page.windowEvidence);
+      const pageIdentity = { targetId: page.targetId, pageToken: page.pageToken, url: page.url, ...page.windowEvidence };
+      targetIdentity.push(pageIdentity);
+      frameDiagnostics?.nativeWindows.push(pageIdentity);
       if (frameDiagnostics) {
         try {
           await page.cdp.request("Page.startScreencast", { format: "jpeg", quality: 10, maxWidth: 320, maxHeight: 240 });
@@ -310,8 +358,15 @@ async function main() {
         frameDiagnostics.stopError = { name: error?.name, message: error?.message ?? String(error) };
       }
       try {
+        if (frameDiagnostics.tracingComplete !== null) {
+          frameDiagnostics.status = "COMPLETE";
+          frameDiagnostics.incompleteReasons = [];
+        } else if (!frameDiagnostics.incompleteReasons.includes("tracingComplete has not been observed")) {
+          frameDiagnostics.incompleteReasons.push("tracingComplete has not been observed");
+        }
+        frameDiagnostics.validation = validateFrameDiagnostics(frameDiagnostics);
         const diagnosticsPath = outputPath.replace(/\.json$/u, ".frame-diagnostics.json");
-        await writeFile(diagnosticsPath, `${JSON.stringify({ schemaVersion: 1, diagnosticOnly: true, ...frameDiagnostics }, null, 2)}\n`);
+        await writeFile(diagnosticsPath, `${JSON.stringify(frameDiagnostics, null, 2)}\n`);
       } catch (error) {
         frameDiagnostics.writeError = { name: error?.name, message: error?.message ?? String(error) };
       }
@@ -328,7 +383,8 @@ async function main() {
           runner: chromeMetadata,
           environment: environmentMetadata,
           referencePath,
-          deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS
+          deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
+          identity: targetIdentity
         })
         : null,
       closeCdp: cdp ? () => cdp.close() : null,
@@ -385,14 +441,35 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
   }
 }
 
+export async function probeForegroundRaf(cdp, options = {}) {
+  const deadlineAt = Number.isFinite(options.deadlineAt) ? options.deadlineAt : Date.now() + 1_000;
+  const timeoutMs = Math.max(1, Math.min(1_000, remainingDeadlineMs(deadlineAt, 1_000, "foreground-raf")));
+  const result = await evaluateWithDeadline(cdp, `new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ callback, visibilityState: document.visibilityState, hasFocus: document.hasFocus() });
+    };
+    timer = setTimeout(() => finish(false), ${timeoutMs});
+    requestAnimationFrame(() => finish(true));
+  })`, deadlineAt, "foreground-raf", options);
+  const evidence = { callback: result?.callback === true, visibilityState: result?.visibilityState ?? null, hasFocus: result?.hasFocus ?? null };
+  options.record?.(evidence);
+  if (!evidence.callback) throw new Error("Event History performance run requires an independent foreground requestAnimationFrame callback.");
+  return evidence;
+}
+
 export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options = {}) {
   const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", nativeWindowTargetParams(pageUrl), { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the initial harness page.");
-  await options.activateWindow?.();
+  const activationEvidence = await options.activateWindow?.();
   let windowEvidence;
   let pageCdp;
   try {
-    windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, options);
+    windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, { ...options, activationEvidence });
     pageCdp = await connect(await pageTarget(debugPort, pageUrl, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket, onEvent: options.onEvent });
     await ensureFreshHarnessDocument(pageCdp, pageUrl, 15_000, options);
     return { cdp: pageCdp, targetId: created.targetId, pageToken: "initial", url: pageUrl, windowEvidence };
@@ -411,15 +488,16 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
   const pageUrl = new URL(harnessPageUrl(baseUrl, pageToken));
   const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", nativeWindowTargetParams(pageUrl.href), { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
-  await options.activateWindow?.();
+  const activationEvidence = await options.activateWindow?.();
   let windowEvidence;
   let pageCdp;
   try {
-    windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, options);
+    windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, { ...options, activationEvidence });
     pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket, onEvent: options.onEvent });
     await ensureFreshHarnessDocument(pageCdp, pageUrl.href, 15_000, options);
     await waitForHarness(pageCdp, options);
     await preparePageForAuthoritativeRun(pageCdp, options);
+    await probeForegroundRaf(pageCdp, { ...options, record: (evidence) => options.recordForegroundRaf?.({ targetId: created.targetId, pageToken, url: pageUrl.href, ...evidence }) });
     const observedToken = options.deadlineAt !== undefined
       ? await evaluateWithDeadline(pageCdp, "new URL(location.href).searchParams.get('pageToken')", options.deadlineAt, "page-token")
       : await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", BROWSER_TIMEOUT_MS);
@@ -475,7 +553,8 @@ export async function activateAndVerifyHarnessTarget(controlCdp, targetId, optio
     targetType: targetAfter.targetInfo.type,
     targetUrl: targetAfter.targetInfo.url,
     windowState: windowAfter.bounds.windowState,
-    bounds: windowAfter.bounds
+    bounds: windowAfter.bounds,
+    nativeActivation: options.activationEvidence ?? null
   });
 }
 
@@ -553,6 +632,45 @@ export function chromeLaunchArguments(profile, platform = process.platform) {
   return args;
 }
 
+export function createFrameDiagnostics() {
+  return {
+    schemaVersion: 2,
+    diagnosticOnly: true,
+    status: "INCOMPLETE",
+    incompleteReasons: ["tracingComplete has not been observed"],
+    lifecycle: [],
+    nativeWindows: [],
+    traceChunks: [],
+    traceEvents: [],
+    tracingComplete: null,
+    targetIdentity: [],
+    screencastFrames: 0,
+    frameRoutingProbe: null
+  };
+}
+
+export function validateFrameDiagnostics(diagnostics) {
+  const missing = [];
+  for (const field of ["nativeWindows", "traceChunks", "traceEvents", "targetIdentity"]) {
+    if (!Array.isArray(diagnostics?.[field])) missing.push(field);
+  }
+  if (!(diagnostics?.tracingComplete === null || typeof diagnostics?.tracingComplete === "object")) missing.push("tracingComplete");
+  if (diagnostics?.status !== "COMPLETE" && diagnostics?.status !== "INCOMPLETE") missing.push("status");
+  return { complete: missing.length === 0 && diagnostics.status === "COMPLETE", missing };
+}
+
+export async function compileProcessActivationHelper(outputPath, deadlineAt = Date.now() + 5_000, platform = process.platform) {
+  if (platform !== "darwin") return { attempted: false, path: null };
+  const timeoutMs = remainingDeadlineMs(deadlineAt, 5_000, "process-activation-helper-compile");
+  await new Promise((resolvePromise, reject) => {
+    execFile("swiftc", [join(rootDir, "scripts", "process-activation-helper.swift"), "-framework", "AppKit", "-framework", "CoreGraphics", "-o", outputPath], { timeout: timeoutMs, killSignal: "SIGKILL" }, (error, _stdout, stderr) => {
+      if (error) reject(new Error(`Could not compile process activation helper: ${error.message}${stderr ? `: ${stderr}` : ""}`));
+      else resolvePromise();
+    });
+  });
+  return { attempted: true, path: outputPath };
+}
+
 /**
  * Bring only the CfT application bundle owned by this run to the macOS
  * foreground. Launch Services avoids Apple Events/Accessibility prompts.
@@ -567,27 +685,39 @@ export function activateSpawnedChromeWindow(pid, options = {}) {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
     return Promise.reject(new Error("Cannot activate Chrome without its spawned process id."));
   }
-  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 2_000;
-  if (typeof options.applicationPath !== "string" || options.applicationPath.length === 0) {
-    return Promise.reject(new Error("Cannot activate Chrome without its application bundle path."));
-  }
-  const execute = options.execute ?? ((file, args, callback) => execFile(file, args, { stdio: ["ignore", "ignore", "pipe"] }, callback));
+  const requestedTimeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 2_000;
+  const timeoutMs = Number.isFinite(options.deadlineAt) ? Math.min(requestedTimeoutMs, remainingDeadlineMs(options.deadlineAt, requestedTimeoutMs, "process-activation")) : requestedTimeoutMs;
+  if (timeoutMs <= 0) return Promise.reject(createSharedDeadlineTimeout("process-activation", options.deadlineAt, Date.now));
+  const helperPath = options.helperPath ?? join(rootDir, "scripts", "process-activation-helper");
+  const execute = options.execute ?? ((file, args, callback) => execFile(file, args, { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, callback));
   return new Promise((resolve, reject) => {
     let settled = false;
     let childProcess;
-    const finish = (error) => {
+    const finish = (error, stdout = "", stderr = "") => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error) reject(new Error(`Could not activate spawned Chrome window: ${error.message ?? String(error)}`));
-      else resolve({ attempted: true, pid, applicationPath: options.applicationPath });
+      if (error) {
+        reject(new Error(`Could not activate spawned Chrome window: ${error.message ?? String(error)}${stderr ? `: ${stderr.trim()}` : ""}`));
+        return;
+      }
+      let evidence;
+      try { evidence = JSON.parse(String(stdout)); } catch (parseError) {
+        reject(new Error(`Native activation helper returned invalid evidence: ${parseError.message ?? String(parseError)}`));
+        return;
+      }
+      if (evidence?.activatedPID !== pid || evidence?.frontmostPID !== pid) {
+        reject(new Error(`Native activation helper did not verify spawned PID ${pid} as activated and frontmost.`));
+        return;
+      }
+      resolve({ attempted: true, pid, activatedPID: evidence.activatedPID, frontmostPID: evidence.frontmostPID, windows: evidence.windows ?? [] });
     };
     const timer = setTimeout(() => {
       try { childProcess?.kill("SIGKILL"); } catch { /* preserve the activation timeout */ }
-      finish(new Error(`open timed out after ${timeoutMs} ms`));
+      finish(new Error(`native activation helper timed out after ${timeoutMs} ms`));
     }, timeoutMs);
     try {
-      childProcess = execute("/usr/bin/open", ["-a", options.applicationPath], (error) => finish(error));
+      childProcess = execute(helperPath, ["activate", String(pid)], (error, stdout, stderr) => finish(error, stdout, stderr));
     } catch (error) {
       finish(error);
     }
@@ -701,9 +831,15 @@ async function runBoundedOuterOperation(phase, operation, timeoutMs) {
   const bound = positiveFiniteStartupOption(timeoutMs, "outer finalization timeoutMs");
   const deadlineAt = Date.now() + bound;
   let timer;
+  let operationPromise;
+  try {
+    operationPromise = Promise.resolve(operation({ deadlineAt }));
+  } catch (error) {
+    operationPromise = Promise.reject(error);
+  }
   try {
     const result = await Promise.race([
-      Promise.resolve().then(() => operation({ deadlineAt })),
+      operationPromise,
       new Promise((resolvePromise) => {
         timer = setTimeout(() => resolvePromise({ outcome: "timed-out", phase, code: "OUTER_FINALIZATION_TIMEOUT", message: `Outer ${phase} did not settle within ${bound} ms.` }), bound);
       })
@@ -735,7 +871,8 @@ export async function writeTimeoutEvidenceForTimeout({
   runner = null,
   environment = null,
   referencePath,
-  deadlineMs
+  deadlineMs,
+  identity = null
 }) {
   const diagnostic = createTimeoutDiagnostic({
     generatedAt: new Date().toISOString(),
@@ -744,7 +881,8 @@ export async function writeTimeoutEvidenceForTimeout({
     environment: environment ?? { chromeMajor: null, platformClass: null, architectureClass: null, headless: null },
     referencePath,
     deadlineMs,
-    operation: { ...timeout.status, phase: timeoutPhase(timeout) }
+    operation: { ...timeout.status, phase: timeoutPhase(timeout) },
+    identity
   });
   await writeTimeoutEvidence({ outputPath: targetOutputPath, markdownPath: targetMarkdownPath, diagnostic });
 }
