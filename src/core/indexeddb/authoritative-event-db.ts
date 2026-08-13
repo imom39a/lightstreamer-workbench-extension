@@ -1,7 +1,7 @@
 import { extractEvidenceFacets } from "../evidence-facets";
 import { deserializeJournalEvidenceCandidate } from "../event-history-serialization";
 
-export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 3;
+export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 4;
 // The application identity predates the posting-store schema. Keep this
 // logical name stable so schema upgrades happen in the deployed database.
 export const AUTHORITATIVE_EVENT_DB_IDENTITY_VERSION = 2;
@@ -17,7 +17,8 @@ const INDEXEDDB_REQUEST_TIMEOUT_MS = 2_000;
 export const AUTHORITATIVE_EVENT_STORE_NAMES = {
   historyControl: "historyControl",
   evidence: "evidence",
-  facetPostings: "facetPostings"
+  facetPostings: "facetPostings",
+  queryProjections: "queryProjections"
 } as const;
 
 const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = "facet-v2";
@@ -303,11 +304,11 @@ function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> 
 
 function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   const stores = [...database.objectStoreNames].sort();
-  const expectedStores = [AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl].sort();
+  const expectedStores = Object.values(AUTHORITATIVE_EVENT_STORE_NAMES).sort();
   if (stores.length !== expectedStores.length || stores.some((name, index) => name !== expectedStores[index])) {
     throw new Error("Authoritative Event History requires exactly the historyControl and evidence stores.");
   }
-  const transaction = database.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl], "readonly");
+  const transaction = database.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readonly");
   const control = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl);
   if (control.keyPath !== "key") throw new Error("The historyControl store must be keyed by key.");
   const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
@@ -332,6 +333,8 @@ function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   if (token.keyPath !== "token" || token.unique) {
     throw new Error("The facet posting token index does not match the authoritative schema.");
   }
+  const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
+  if (projections.keyPath !== "sequence") throw new Error("The query projection store must be keyed by sequence.");
 }
 
 function upgradeAuthoritativeDatabase(
@@ -368,8 +371,11 @@ function upgradeAuthoritativeDatabase(
   if (!postings.indexNames.contains("token")) {
     postings.createIndex("token", "token", { unique: false });
   }
-  if (oldVersion === 2) {
+  if (oldVersion === 2 || oldVersion === 3) {
     rebuildFacetPostingsFromEvidence(transaction!, postings);
+  }
+  if (!database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections)) {
+    database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections, { keyPath: "sequence" });
   }
 }
 

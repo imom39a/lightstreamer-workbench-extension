@@ -106,11 +106,12 @@ type EvidenceRecord = {
   serializedBytes: number;
   accountedBytes: number;
   facets: string[];
-  /** v3 lightweight query projection. Replay payload remains the authoritative source. */
-  projection?: QueryProjection;
 };
 
 type QueryProjection = {
+  sequence: number;
+  intervalId: string;
+  eventId: string;
   timestamp: number;
   summary: string;
   searchText: string;
@@ -397,7 +398,6 @@ type LoadedJournal = {
   retainedCount: number;
   retainedRange: { first: EvidenceRef; last: EvidenceRef } | null;
   committedEvidenceBoundary: EvidenceRef | null;
-  legacyProjections: ReadonlyMap<number, QueryProjection>;
 };
 
 type ReadLatch = Readonly<{
@@ -462,7 +462,6 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let terminalIntentGeneration = 0;
   let lastNearLimit = false;
   let lastCoherentQuery: EvidenceSnapshot | null = null;
-  const queryProjections = new Map(loaded.legacyProjections);
   let awaitingCount = 0;
   let awaitingBytes = 0;
   const capacityTier = options.capacityTier ?? "NORMAL";
@@ -856,7 +855,6 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             controlPhase,
             controlTerminal
           );
-          for (const entry of evidence) queryProjections.set(entry.sequence, queryProjection(entry.candidate, entry.intervalId, entry.sequence));
         } catch (error) {
           const reason: HistoryTerminalReason = isQuotaError(error) ? "QUOTA_EXCEEDED" : "JOURNAL_COMMIT_FAILED";
           terminalFailureDetail = describeJournalError(error);
@@ -1200,7 +1198,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       tier: options.capacityTier ?? "NORMAL",
       fallback: null,
       terminal: Boolean(terminal),
-      legacyProjections: queryProjections
+      projectionStore: AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections
     }).then((result) => {
       if (result.ok) {
         lastCoherentQuery = result.value;
@@ -1214,12 +1212,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 }
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
-  // v2->v3 deployed journals may contain the authoritative replay payload and
-  // postings but no lightweight projection. Derive those projections into a
-  // session cache; authoritative v3 records remain byte/schema compatible.
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readonly");
+  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readonly");
   try {
-    const legacyProjections = await collectQueryProjections(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence));
     const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
     await validateJournalRecords(
       panelSessionId,
@@ -1228,10 +1222,11 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings)
     );
     await transactionDone(transaction, "loading Event History");
+    await ensureQueryProjections(database, control, panelSessionId);
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
       await writeControl(database, createControl(panelSessionId, interval, "RUNNING", null, 1, null, null, 0, 0, 0));
-      return { panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, durableAccountedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null, legacyProjections };
+      return { panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, durableAccountedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null };
     }
     if (control.phase === "DRAINING_TO_STOP") {
       if (!control.terminal) throw new Error("A draining history control must contain a terminal intent.");
@@ -1260,7 +1255,6 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
         retainedCount: control.retainedCount,
         retainedRange: control.retainedRange,
         committedEvidenceBoundary: control.committedEvidenceBoundary,
-        legacyProjections
       };
     }
     return {
@@ -1275,7 +1269,6 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       retainedCount: control.retainedCount,
       retainedRange: control.retainedRange,
       committedEvidenceBoundary: control.committedEvidenceBoundary,
-      legacyProjections
     };
   } catch (error) {
     try { transaction.abort(); } catch { /* the transaction may already be complete */ }
@@ -1283,27 +1276,42 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
   }
 }
 
-function collectQueryProjections(store: IDBObjectStore): Promise<ReadonlyMap<number, QueryProjection>> {
-  const projections = new Map<number, QueryProjection>();
-  return new Promise((resolve, reject) => {
-    const request = store.openCursor();
+async function ensureQueryProjections(database: AuthoritativeEventDatabase, control: ControlRecord | undefined, panelSessionId: string): Promise<void> {
+  if (!control || control.retainedCount === 0) return;
+  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections], "readwrite");
+  const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+  const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
+  const count = await requestToPromise<number>(projections.count(), "checking query projection migration state");
+  if (count !== 0) {
+    transaction.abort();
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const request = evidence.openCursor();
     request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
     request.onsuccess = () => {
       const cursor = request.result;
-      if (!cursor) { resolve(projections); return; }
+      if (!cursor) { resolve(); return; }
       const record = cursor.value as EvidenceRecord;
-      const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
-      projections.set(record.sequence, record.projection ?? queryProjection(candidate, record.intervalId, record.sequence));
-      cursor.continue();
+      const get = projections.get(record.sequence);
+      get.onerror = () => reject(get.error ?? new Error("Query projection migration failed."));
+      get.onsuccess = () => {
+        if (get.result === undefined) {
+          const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
+          projections.put(queryProjection(candidate, record.intervalId, record.sequence));
+        }
+        cursor.continue();
+      };
     };
   });
+  await transactionDone(transaction, `migrating query projections for ${panelSessionId}`);
 }
 
 type IndexedDbQueryOptions = Readonly<{
   tier: HistoryCapacityTier;
   fallback: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
   terminal: boolean;
-  legacyProjections: ReadonlyMap<number, QueryProjection>;
+  projectionStore: string;
 }>;
 
 /**
@@ -1326,7 +1334,8 @@ async function queryIndexedDb(
   const transaction = database.db.transaction([
     AUTHORITATIVE_EVENT_STORE_NAMES.historyControl,
     AUTHORITATIVE_EVENT_STORE_NAMES.evidence,
-    AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings
+    AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings,
+    AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections
   ], "readonly");
   try {
     const control = await requestToPromise<ControlRecord | undefined>(
@@ -1335,51 +1344,59 @@ async function queryIndexedDb(
     );
     if (!control || control.panelSessionId !== panelSessionId) return queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "The History Interval is unavailable.");
     const interval = control.interval;
-    const readPoint = queryReadPoint(control);
+    const currentReadPoint = queryReadPoint(control);
+    const readPoint = request.at === "LATEST_COMMITTED" ? currentReadPoint : request.at;
     if (request.at !== "LATEST_COMMITTED") {
-      if (request.at.interval.id !== interval.id || request.at.interval.ordinal !== interval.ordinal) {
+      if (readPoint.interval.id !== interval.id || readPoint.interval.ordinal !== interval.ordinal) {
         return queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.");
       }
-      if (!sameQueryReadPoint(request.at, readPoint)) {
+      if (!readPointFitsCurrentInterval(readPoint, currentReadPoint)) {
         return queryFailure("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.");
       }
     }
-    const retained = control.retainedRange;
-    const boundary = control.committedEvidenceBoundary?.intervalId === interval.id ? control.committedEvidenceBoundary.sequence : Number.POSITIVE_INFINITY;
+    const retained = readPoint.retainedRange;
+    const boundary = readPoint.committedEvidenceBoundary?.intervalId === interval.id ? readPoint.committedEvidenceBoundary.sequence : 0;
     const firstSequence = retained?.first.sequence ?? 1;
     const lastSequence = Math.min(retained?.last.sequence ?? 0, boundary);
+    const projectionCount = await requestToPromise<number>(transaction.objectStore(options.projectionStore).count(), "validating query projection coverage");
+    const expectedProjectionCount = lastSequence >= firstSequence ? lastSequence - firstSequence + 1 : 0;
+    if (projectionCount < expectedProjectionCount) throw new Error("The query projection store is missing retained records.");
     const postingCandidates = await indexedDbPostingCandidates(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings), request.filter, interval.id, firstSequence, lastSequence, telemetry);
     const candidateSequences = postingCandidates;
     const simpleRecentPage = postingCandidates === null && request.filter.text.trim() === "" && request.filter.around === null && request.lookup === undefined && request.find === undefined;
-    let projections: EvidenceRecord[];
+    let projections: QueryProjection[];
     if (simpleRecentPage) {
       const offset = decodeQueryCursor(request.page.cursor, readPoint, request, 0);
-      projections = await readEvidencePage(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), firstSequence, lastSequence, request.page, offset, telemetry);
-      telemetry.candidateBound = control.retainedCount;
+      projections = await readProjectionPage(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.page, offset, telemetry);
+      telemetry.candidateBound = expectedProjectionCount;
     } else {
       telemetry.residualScan = request.filter.text.trim() !== "" || request.filter.around !== null || request.find !== undefined;
-      projections = await readEvidenceProjections(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), interval.id, firstSequence, lastSequence, candidateSequences, telemetry);
+      projections = await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, candidateSequences, telemetry);
       telemetry.candidateBound = projections.length;
     }
+    const retainedProjections = (request.find !== undefined || request.filter.around?.anchor !== undefined)
+      ? await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry)
+      : null;
     const selectedPayload = request.lookup === undefined
       ? null
       : await readSelectedEvidence(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), request.lookup, interval, firstSequence, lastSequence, telemetry);
     await transactionDone(transaction, "querying Evidence");
-    const selectionRecords = projections.map((record) => querySelectionRecord(record, interval, options.legacyProjections));
+    const selectionRecords = projections.map((record) => querySelectionRecord(record, interval));
+    const retainedRecords = retainedProjections?.map((record) => querySelectionRecord(record, interval)) ?? selectionRecords;
     const around = normalizeAround(request.filter.around, readPoint.retainedRange);
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
-    if (filter.around?.anchor && !selectionRecords.some((record) => sameQueryIdentity(record.identity, filter.around!.anchor!) && (filter.around!.anchorSequence === undefined || filter.around!.anchorSequence === record.identity.sequence))) {
+    if (filter.around?.anchor && !retainedRecords.some((record) => sameQueryIdentity(record.identity, filter.around!.anchor!) && (filter.around!.anchorSequence === undefined || filter.around!.anchorSequence === record.identity.sequence))) {
       return queryFailure("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.");
     }
     const discoveries = new Map<string, FacetDiscoveryResult>();
     for (const discovery of request.discover ?? []) discoveries.set(discovery.facet, { state: "UNAVAILABLE", facet: discovery.facet, reason: "UNSUPPORTED_AT_READ_POINT", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null });
-    const lookupRecord = selectedPayload ? querySelectionRecord(selectedPayload, interval, options.legacyProjections) : null;
+    const lookupRecord = selectedPayload ? queryProjectionFromPayload(selectedPayload, interval) : null;
     const lookupRecordsWithPayload = lookupRecord
       ? [...selectionRecords.filter((record) => !sameQueryIdentity(record.identity, lookupRecord.identity)), Object.freeze({ ...lookupRecord, payload: copyQueryCandidate(deserializeJournalEvidenceCandidate(selectedPayload!.replayPayload)) })]
       : selectionRecords;
     if (filter.unsupported.length > 0) {
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecordsWithPayload, readPoint, request.lookup, filter, around);
-      const find = request.find === undefined ? null : findEvidence(selectionRecords, request.find);
+      const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
       telemetry.elapsedMs = Date.now() - started;
       return { ok: true, value: querySnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", queryCoverage(options), queryStorage(options), null, lookup, find, telemetry) };
     }
@@ -1399,14 +1416,14 @@ async function queryIndexedDb(
     const ordered = simpleRecentPage ? selectionRecords : (request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope);
     const offset = decodeQueryCursor(request.page.cursor, readPoint, request, 0);
     const page = simpleRecentPage ? selectionRecords : ordered.slice(offset, offset + request.page.size);
-    if (offset > (simpleRecentPage ? control.retainedCount : ordered.length)) throw new Error("The page cursor is beyond the committed result set.");
+    if (offset > (simpleRecentPage ? expectedProjectionCount : ordered.length)) throw new Error("The page cursor is beyond the committed result set.");
     const lookupRecords = lookupRecordsWithPayload;
     const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
-    const find = request.find === undefined ? null : findEvidence(selectionRecords, request.find);
+    const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
     telemetry.elapsedMs = Date.now() - started;
-    const matchingTotal = simpleRecentPage ? control.retainedCount : matching.length;
-    const inScopeTotal = simpleRecentPage ? control.retainedCount : inScope.length;
-    return { ok: true, value: querySnapshot(readPoint, page, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < control.retainedCount ? encodeQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
+    const matchingTotal = simpleRecentPage ? expectedProjectionCount : matching.length;
+    const inScopeTotal = simpleRecentPage ? expectedProjectionCount : inScope.length;
+    return { ok: true, value: querySnapshot(readPoint, page, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < expectedProjectionCount ? encodeQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
   } catch (error) {
     try { transaction.abort(); } catch { /* already completed */ }
     return queryFailure("QUERY_FAILED", error instanceof Error ? error.message : "IndexedDB Evidence query failed.");
@@ -1415,13 +1432,19 @@ async function queryIndexedDb(
 
 type QueryTelemetryMutable = { postingReads: number; postingCandidates: number; evidenceCursorReads: number; payloadHydrations: number; candidateBound: number; pageBound: number; residualScan: boolean; elapsedMs: number };
 
-function querySelectionRecord(record: EvidenceRecord, interval: HistoryInterval, legacyProjections: ReadonlyMap<number, QueryProjection> = new Map()): SelectionRecord {
-  const projection = record.projection ?? legacyProjections.get(record.sequence);
-  if (!projection) {
-    throw new Error("Evidence record has no query projection; refusing an unbounded payload reconstruction.");
+function querySelectionRecord(projection: QueryProjection, interval: HistoryInterval): SelectionRecord {
+  validateQueryProjection(projection, interval.id);
+  return Object.freeze({ identity: Object.freeze({ intervalId: projection.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId }), timestamp: projection.timestamp, summary: projection.summary, searchText: projection.searchText, facets: Object.freeze(projection.facets) as SelectionRecord["facets"] });
+}
+
+function validateQueryProjection(projection: QueryProjection, intervalId: string): void {
+  assertExactKeys(projection, ["eventId", "facets", "intervalId", "searchText", "sequence", "summary", "timestamp"]);
+  if (projection.intervalId !== intervalId || typeof projection.eventId !== "string" || projection.eventId.length === 0
+    || !Number.isSafeInteger(projection.sequence) || projection.sequence < 1 || !Number.isFinite(projection.timestamp)
+    || typeof projection.summary !== "string" || typeof projection.searchText !== "string"
+    || projection.facets === null || typeof projection.facets !== "object") {
+    throw new Error("The query projection is missing or corrupt.");
   }
-  const identity: EvidenceIdentity = Object.freeze({ intervalId: record.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: record.sequence, eventId: record.eventId });
-  return Object.freeze({ identity, timestamp: projection.timestamp, summary: projection.summary, searchText: projection.searchText, facets: Object.freeze(projection.facets) as SelectionRecord["facets"] });
 }
 
 async function indexedDbPostingCandidates(store: IDBObjectStore, filter: EvidenceQueryRequest["filter"], intervalId: string, first: number, last: number, telemetry: QueryTelemetryMutable): Promise<Set<number> | null> {
@@ -1471,8 +1494,8 @@ function readPostingToken(store: IDBObjectStore, token: string, intervalId: stri
   });
 }
 
-function readEvidencePage(store: IDBObjectStore, first: number, last: number, page: EvidenceQueryRequest["page"], offset: number, telemetry: QueryTelemetryMutable): Promise<EvidenceRecord[]> {
-  const result: EvidenceRecord[] = [];
+function readProjectionPage(store: IDBObjectStore, intervalId: string, first: number, last: number, page: EvidenceQueryRequest["page"], offset: number, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  const result: QueryProjection[] = [];
   if (last < first) return Promise.resolve(result);
   return new Promise((resolve, reject) => {
     const direction = page.order === "NEWEST_FIRST" ? "prev" : "next";
@@ -1486,14 +1509,15 @@ function readEvidencePage(store: IDBObjectStore, first: number, last: number, pa
       const sequence = Number(cursor.key);
       if (sequence < first || sequence > last) { cursor.continue(); return; }
       if (skipped++ < offset) { cursor.continue(); return; }
-      result.push(cursor.value as EvidenceRecord);
+      const projection = cursor.value as QueryProjection;
+      if (projection.intervalId === intervalId) result.push(projection);
       cursor.continue();
     };
   });
 }
 
-function readEvidenceProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, candidates: Set<number> | null, telemetry: QueryTelemetryMutable): Promise<EvidenceRecord[]> {
-  const result: EvidenceRecord[] = [];
+function readQueryProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, candidates: Set<number> | null, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  const result: QueryProjection[] = [];
   if (last < first) return Promise.resolve(result);
   return new Promise((resolve, reject) => {
     const request = store.openCursor(queryBoundRange(first, last));
@@ -1502,8 +1526,8 @@ function readEvidenceProjections(store: IDBObjectStore, intervalId: string, firs
       const cursor = request.result;
       if (!cursor) { resolve(result); return; }
       telemetry.evidenceCursorReads += 1;
-      const record = cursor.value as EvidenceRecord;
-      if (record.sequence >= first && record.sequence <= last && record.intervalId === intervalId && (candidates === null || candidates.has(record.sequence))) result.push(record);
+      const projection = cursor.value as QueryProjection;
+      if (projection.sequence >= first && projection.sequence <= last && projection.intervalId === intervalId && (candidates === null || candidates.has(projection.sequence))) result.push(projection);
       cursor.continue();
     };
   });
@@ -1573,18 +1597,24 @@ function deterministicQueryRecord(entry: CommittedEvidence, interval: HistoryInt
   return Object.freeze({ identity, timestamp: entry.candidate.timestamp, summary: entry.candidate.kind, searchText: canonicalEvidenceSearchText(entry.candidate, context), facets: Object.freeze(extractEvidenceFacets(entry.candidate, context).facets) });
 }
 
-function queryProjection(candidate: EvidenceCandidate, intervalId: string, sequence: number): NonNullable<EvidenceRecord["projection"]> {
+function queryProjection(candidate: EvidenceCandidate, intervalId: string, sequence: number): QueryProjection {
   const identity: EvidenceIdentity = { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence, eventId: candidate.id };
   if (candidate.kind === "topology-checkpoint") {
-    return { timestamp: 0, summary: "Topology checkpoint", searchText: journalCandidateSearchText(candidate), facets: {} };
+    return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText: journalCandidateSearchText(candidate), facets: {} };
   }
   const context = { identity, pageId: intervalId, listenerOwner: identity.ownerId, summary: candidate.kind };
   return {
+    sequence, intervalId, eventId: candidate.id,
     timestamp: candidate.timestamp,
     summary: candidate.kind,
     searchText: canonicalEvidenceSearchText(candidate, context),
     facets: extractEvidenceFacets(candidate, context).facets
   };
+}
+
+function queryProjectionFromPayload(record: EvidenceRecord, interval: HistoryInterval): SelectionRecord {
+  const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
+  return querySelectionRecord(queryProjection(candidate, record.intervalId, record.sequence), interval);
 }
 
 function querySnapshot(readPoint: EvidenceReadPoint, page: readonly SelectionRecord[], matching: number, inScope: number, discoveries: ReadonlyMap<string, FacetDiscoveryResult>, evaluation: EvidenceSnapshot["evaluation"], coverage: EvidenceSnapshot["coverage"], storage: EvidenceSnapshot["storage"], nextCursor: string | null, lookup: EvidenceSnapshot["lookup"], find: EvidenceSnapshot["find"], telemetry?: EvidenceSnapshot["telemetry"]): EvidenceSnapshot {
@@ -1598,14 +1628,25 @@ function queryCursor(cursor: string | undefined): number { const value = cursor 
 function isInQueryRange(sequence: number, range: ControlRecord["retainedRange"]): boolean { return range === null || (sequence >= range.first.sequence && sequence <= range.last.sequence); }
 function sameQueryIdentity(left: EvidenceIdentity, right: EvidenceIdentity): boolean { return left.intervalId === right.intervalId && left.pageId === right.pageId && left.ownerId === right.ownerId && left.sequence === right.sequence && left.eventId === right.eventId; }
 function sameQueryReadPoint(left: EvidenceReadPoint, right: EvidenceReadPoint): boolean { return left.interval.id === right.interval.id && left.interval.ordinal === right.interval.ordinal && sameNullableQueryIdentity(left.committedEvidenceBoundary, right.committedEvidenceBoundary) && sameNullableQueryRange(left.retainedRange, right.retainedRange); }
+function readPointFitsCurrentInterval(point: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
+  if (point.interval.id !== current.interval.id || point.interval.ordinal !== current.interval.ordinal) return false;
+  const pointBoundary = point.committedEvidenceBoundary?.sequence ?? 0;
+  const currentBoundary = current.committedEvidenceBoundary?.sequence ?? 0;
+  if (pointBoundary > currentBoundary) return false;
+  if (point.retainedRange === null) return true;
+  if (current.retainedRange === null) return false;
+  return point.retainedRange.first.sequence >= current.retainedRange.first.sequence
+    && point.retainedRange.last.sequence <= current.retainedRange.last.sequence;
+}
 function sameNullableQueryIdentity(left: EvidenceIdentity | null, right: EvidenceIdentity | null): boolean { return left === null || right === null ? left === right : sameQueryIdentity(left, right); }
 function sameNullableQueryRange(left: EvidenceReadPoint["retainedRange"], right: EvidenceReadPoint["retainedRange"]): boolean { return left === null || right === null ? left === right : sameQueryIdentity(left.first, right.first) && sameQueryIdentity(left.last, right.last); }
 function copyQueryCandidate(candidate: EvidenceCandidate): unknown { return JSON.parse(JSON.stringify(candidate)); }
 
 async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, evidence: readonly CommittedEvidence[], serializedBatch: readonly ReturnType<typeof serializeJournalEvidenceCandidate>[], replayPayloadBytes: number, accountedBytes: number, phase: "RUNNING" | "DRAINING_TO_STOP", terminal: HistoryTerminalDiagnostic | null): Promise<void> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
+  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
   const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
   const postingStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
+  const projectionStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
   let serializedBatchBytes = 0;
   let accountedBatchBytes = 0;
   for (const [index, entry] of evidence.entries()) {
@@ -1615,6 +1656,7 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
     serializedBatchBytes += serialized.bytes;
     accountedBatchBytes += recordAccountedBytes;
     store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: recordAccountedBytes, facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
+    projectionStore.add(queryProjection(entry.candidate, entry.intervalId, entry.sequence));
     for (const posting of facetPostings(entry.candidate, entry.intervalId, entry.sequence)) {
       postingStore.add(posting);
     }
@@ -1675,9 +1717,10 @@ async function finalizeTerminal(
 }
 
 async function clearJournalRecords(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
+  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings).clear();
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, null, 0, 0, 0));
   await transactionDone(transaction, "clearing Event History");
 }
@@ -1845,7 +1888,7 @@ function validateFacetPostingRecord(record: FacetPostingRecord, panelSessionId: 
 }
 
 function validateEvidenceRecord(record: EvidenceRecord, intervalId: string, expectedSequence?: number): EvidenceCandidate {
-  assertExactKeys(record, ["accountedBytes", "eventId", "facets", "intervalId", "replayPayload", "sequence", "serializedBytes", ...(record.projection === undefined ? [] : ["projection"])]);
+  assertExactKeys(record, ["accountedBytes", "eventId", "facets", "intervalId", "replayPayload", "sequence", "serializedBytes"]);
   if (record.intervalId !== intervalId || (expectedSequence !== undefined && record.sequence !== expectedSequence)
     || typeof record.eventId !== "string" || record.eventId.length === 0 || !Number.isSafeInteger(record.sequence) || record.sequence < 1
     || typeof record.replayPayload !== "string" || !Number.isSafeInteger(record.serializedBytes) || record.serializedBytes < 0
