@@ -1,5 +1,6 @@
 import { type CaptureKind } from "../bridge/messages";
 import { type LightstreamerEventEnvelope } from "./event-envelope";
+import { canonicalFilterFromLegacyScalars, type Filter, type LegacyScalarFilter } from "./filter-algebra";
 
 export type EventFilterState = {
   query?: string;
@@ -16,6 +17,15 @@ export type EventFilterState = {
   kind?: CaptureKind;
   listenerId?: string;
 };
+
+/**
+ * Temporary scalar delegation for compatibility authors. New Evidence
+ * criteria must not be silently translated into this Build 1 shape; the
+ * canonical facet catalog owns that boundary in filter-impl-03.
+ */
+export function toCanonicalFilter(filters: EventFilterState = {}, revision = 1): Filter {
+  return canonicalFilterFromLegacyScalars(filters satisfies LegacyScalarFilter, revision);
+}
 
 export function createEventSearchText(event: LightstreamerEventEnvelope): string {
   return [

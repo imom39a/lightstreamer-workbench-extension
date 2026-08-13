@@ -80,6 +80,49 @@ export type FilterMutationResult =
   | Readonly<{ ok: true; filter: Filter; changed: boolean }>
   | Readonly<{ ok: false; filter: Filter; problem: Readonly<{ code: "STALE_FILTER_REVISION" | "INVALID_FILTER_MUTATION"; message: string }> }>;
 
+/** The deliberately small compatibility shape used by the Build 1 matcher. */
+export type LegacyScalarFilter = Readonly<{
+  query?: string;
+  clientId?: string | null;
+  sessionId?: string | null;
+  subscriptionId?: string;
+  mode?: string;
+  item?: string;
+  itemPosition?: number;
+  key?: string;
+  command?: string;
+  snapshot?: boolean;
+  synthetic?: boolean;
+  kind?: string;
+  listenerId?: string;
+}>;
+
+/**
+ * Temporary Build 1 delegation. It is an authoring adapter only; the legacy
+ * EventFilterState matcher remains the production compatibility path until
+ * the Evidence facet catalog owns these identities (ticket filter-impl-03).
+ */
+export function canonicalFilterFromLegacyScalars(legacy: LegacyScalarFilter, revision = 1): Filter {
+  const criteria: Record<string, { include: TypedFilterValue[]; exclude: TypedFilterValue[] }> = {};
+  const add = (facet: string, type: FilterValueType, value: FilterScalar): void => {
+    const typed = createTypedFilterValue(facet, type, value);
+    criteria[facet] = { include: [typed], exclude: [] };
+  };
+  if (legacy.clientId !== undefined && legacy.clientId !== null) add("client", "string", legacy.clientId);
+  if (legacy.sessionId !== undefined && legacy.sessionId !== null) add("session", "string", legacy.sessionId);
+  if (legacy.subscriptionId !== undefined) add("subscription", "string", legacy.subscriptionId);
+  if (legacy.mode !== undefined) add("mode", "enum", legacy.mode);
+  if (legacy.item !== undefined) add("item", "string", legacy.item);
+  if (legacy.itemPosition !== undefined) add("legacy:item-position", "number", legacy.itemPosition);
+  if (legacy.key !== undefined) add("key", "string", legacy.key);
+  if (legacy.command !== undefined) add("operation", "enum", legacy.command);
+  if (legacy.snapshot !== undefined) add("phase", "enum", legacy.snapshot ? "SNAPSHOT" : "LIVE");
+  if (legacy.synthetic !== undefined) add("provenance", "enum", legacy.synthetic ? "LOCAL" : "SERVER");
+  if (legacy.kind !== undefined) add("kind", "string", legacy.kind);
+  if (legacy.listenerId !== undefined) add("listener", "string", legacy.listenerId);
+  return canonicalizeFilter({ version: FILTER_VERSION, revision, text: legacy.query ?? "", criteria });
+}
+
 export function createTypedFilterValue(
   facet: string,
   type: FilterValueType,

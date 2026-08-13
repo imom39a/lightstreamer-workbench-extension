@@ -10,6 +10,7 @@ import {
   serializeFilter,
   type FilterMutation
 } from "../src/core/filter-algebra";
+import { toCanonicalFilter } from "../src/core/event-filter";
 
 const record = (overrides: Partial<Parameters<typeof evaluateFilter>[1]> = {}) => ({
   timestamp: 10,
@@ -83,5 +84,13 @@ describe("canonical Filter algebra", () => {
     expect(result.filter.criteria.key?.exclude).toHaveLength(1);
     expect(initial).toEqual(createFilter());
     expect(applyFilterMutations(result.filter, 1, [])).toMatchObject({ ok: false, problem: { code: "STALE_FILTER_REVISION" } });
+  });
+
+  it("keeps the temporary scalar compatibility adapter separate from the new algebra", () => {
+    const filter = toCanonicalFilter({ query: "  Alpha ", mode: "command", snapshot: false, itemPosition: 2 });
+    expect(filter.text).toBe("alpha");
+    expect(filter.criteria.mode?.include[0]?.value).toBe("COMMAND");
+    expect(filter.criteria.phase?.include[0]?.value).toBe("LIVE");
+    expect(filter.criteria["legacy:item-position"]?.include[0]?.value).toBe(2);
   });
 });
