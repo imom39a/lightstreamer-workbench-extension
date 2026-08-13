@@ -13,7 +13,13 @@ The contract adds only `ZERO_BASE` to `FacetDiscoveryResult.reason`, because the
 - `60da457` — `test(filter): specify memory facet discovery` (red tests for same-facet counterfactuals, exact counts, and continuation)
 - `db8db1b` — `feat(filter): discover contextual memory facets` (green planner and one-snapshot memory wiring)
 - A final refactor commit records the expanded empty-state, search/pinning, latch, and browser-safe cursor tests plus implementation cleanup.
+- `98cbe3a` — `test(filter): cover discovery states and read latches`
+- `590cc67` — `refactor(filter): bound and document discovery cursors`
+- `b0c9012` — `test(filter): include discovery suite in release plan`
+- `56ae40a` — `test(filter): isolate unavailable discovery states`
 
 ## Verification evidence
 
 Focused tests cover same-facet Include/Exclude omission, other criteria and Around retention, typed exact counts, deterministic continuation, stale cursor isolation, label search, zero-base/no-concrete states, retired active pinning, and read-point stability. The workload/performance commands below are the release evidence; no UI, lookup/Around/Find implementation, IndexedDB code, or mutation controls are part of this ticket.
+
+Observed verification: focused discovery `6 passed`; adjacent memory/reference/lifecycle/performance suites `30 passed`; regression suite `155 passed`; `typecheck`, `build`, and `docs:check` passed. The normal/lower 10,000/5,000-record workload probe passed with 3,842 distinct keys and a sub-500 ms discovery read. `npm test` reached its IndexedDB phase but failed three existing IndexedDB timing/parse assertions (`pages exact facets...`, `uses one reusable MessageChannel...`, and `pages a bounded Lightstreamer read...`); no failure was reported by the new memory suite. `npm run test:release` reproduced those same three failures among 78 files (958 passed, 3 failed).

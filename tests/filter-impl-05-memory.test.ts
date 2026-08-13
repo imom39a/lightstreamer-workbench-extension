@@ -93,4 +93,24 @@ describe("filter-impl-05 memory facet discovery", () => {
     expect(result.ok && result.value.totals).toEqual({ matching: 0, inScope: 0 });
     expect(result.ok && result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "UNSUPPORTED_AT_READ_POINT" });
   });
+
+  it("reaches bounded pages across the normal and lower high-cardinality memory tiers", async () => {
+    const histories = await Promise.all([
+      createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-05-normal-workload" }),
+      createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-05-lower-workload", capacityTier: "LOWER", capacity: { maxRetainedCount: 5_000 } })
+    ]);
+    for (const history of histories) {
+      const count = 5_000;
+      for (let sequence = 0; sequence < count; sequence += 1) await history.offer(event(`workload-${sequence}`, sequence + 1, `key-${sequence % 3_842}`)).settled;
+      const started = performance.now();
+      const first = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: filter(), discover: [{ facet: "key", size: 1 }] });
+      const elapsed = performance.now() - started;
+      expect(elapsed).toBeLessThan(500);
+      expect(first.ok && first.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 3_842 });
+      if (!first.ok) continue;
+      const discovery = first.value.discoveries.get("key");
+      const middle = await history.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: filter(), discover: [{ facet: "key", size: 1, cursor: discovery?.nextCursor ?? undefined }] });
+      expect(middle.ok && middle.value.discoveries.get("key")?.values).toHaveLength(1);
+    }
+  }, 30_000);
 });
