@@ -2,7 +2,31 @@ import { FACET_DESCRIPTORS } from "./evidence-facets";
 import { evaluateFilter, type FilterRecord } from "./filter-algebra";
 import { type DeterministicEvidenceRecord, type EvidenceFilter, type EvidenceReadPoint, type FacetCount, type FacetDiscoveryRequest, type FacetDiscoveryResult, type TypedFacetValue } from "./evidence-filter-contract";
 
-type Cursor = Readonly<{ version: 1; facet: string; search: string; size: number; filter: string; readPoint: string; position: number }>;
+/**
+ * Discovery keeps exact accounting compact, but bounds typed candidate
+ * materialization to the requested page plus active pins. The bound is part
+ * of the memory-only contract and is intentionally independent of history
+ * cardinality.
+ */
+export const DISCOVERY_CANDIDATE_BOUND_DESCRIPTION = "page size + active pins";
+
+export type DiscoveryInstrumentation = Readonly<{
+  onResult?: (stats: Readonly<{ compactIdentityCount: number; materializedCandidates: number; materializationBound: number }>) => void;
+  fail?: () => void;
+}>;
+
+type Cursor = Readonly<{
+  version: 1;
+  facet: string;
+  search: string;
+  size: number;
+  filter: string;
+  readPoint: string;
+  position: number;
+  anchor: string | null;
+}>;
+
+type CompactValue = { facet: string; type: string; value: string; label: string; identity: string; sortKey: string; count: number };
 
 const text = (value: string | undefined): string => (value ?? "").trim().toLocaleLowerCase();
 function encoded(value: string): string {
@@ -15,24 +39,20 @@ function decoded(value: string): string {
   const binary = atob(padded);
   return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
 }
-
-function readPointKey(readPoint: EvidenceReadPoint): string {
-  return JSON.stringify(readPoint);
-}
-
-function cursorFor(cursor: Cursor): string {
-  return encoded(JSON.stringify(cursor));
-}
+function readPointKey(readPoint: EvidenceReadPoint): string { return JSON.stringify(readPoint); }
+function cursorFor(cursor: Cursor): string { return encoded(JSON.stringify(cursor)); }
 
 function parseCursor(value: string | undefined): Cursor | null {
   if (!value) return null;
   try {
-    const cursor = JSON.parse(decoded(value)) as Cursor;
-    if (cursor.version !== 1 || !Number.isSafeInteger(cursor.position) || cursor.position < 0) return null;
-    return cursor;
-  } catch {
-    return null;
-  }
+    const cursor = JSON.parse(decoded(value)) as Partial<Cursor>;
+    const size = cursor.size;
+    const position = cursor.position;
+    if (cursor.version !== 1 || typeof cursor.facet !== "string" || typeof cursor.search !== "string" || typeof size !== "number" || !Number.isSafeInteger(size) || size < 1 ||
+      typeof cursor.filter !== "string" || typeof cursor.readPoint !== "string" || typeof position !== "number" || !Number.isSafeInteger(position) || position < 1 ||
+      (cursor.anchor !== null && typeof cursor.anchor !== "string")) return null;
+    return cursor as Cursor;
+  } catch { return null; }
 }
 
 function withoutFacet(filter: EvidenceFilter, facet: string): EvidenceFilter {
@@ -53,60 +73,107 @@ function matchesBase(record: DeterministicEvidenceRecord, filter: EvidenceFilter
   ));
 }
 
-function compareValues(left: TypedFacetValue, right: TypedFacetValue): number {
+function compareValues(left: Pick<CompactValue, "type" | "value" | "identity">, right: Pick<CompactValue, "type" | "value" | "identity">): number {
   return left.type.localeCompare(right.type) || left.value.localeCompare(right.value) || left.identity.localeCompare(right.identity);
+}
+
+function compact(value: TypedFacetValue): CompactValue {
+  return { facet: value.facet, type: value.type, value: value.value, label: value.label, identity: value.identity, sortKey: JSON.stringify([value.type, value.value, value.identity]), count: 1 };
+}
+
+function compareSortKey(value: CompactValue, anchor: string): number {
+  try {
+    const [type, rawValue, identity] = JSON.parse(anchor) as [string, string, string];
+    return compareValues(value, { type, value: rawValue, identity });
+  } catch {
+    return 1;
+  }
+}
+
+function matchesSearch(descriptorLabel: string, value: CompactValue, search: string): boolean {
+  return !search || `${descriptorLabel} ${value.label} ${value.value}`.toLocaleLowerCase().includes(search);
+}
+
+/** Selects the first page after an anchor without retaining the preceding set. */
+function selectPage(values: Iterable<CompactValue>, anchor: string | null, size: number): CompactValue[] {
+  const selected: CompactValue[] = [];
+  for (const candidate of values) {
+    if (anchor !== null && compareSortKey(candidate, anchor) <= 0) continue;
+    let index = selected.findIndex((entry) => compareValues(candidate, entry) < 0);
+    if (index < 0) index = selected.length;
+    selected.splice(index, 0, candidate);
+    if (selected.length > size) selected.pop();
+  }
+  return selected;
+}
+
+function unavailable(facet: string, reason: "ZERO_BASE" | "NO_CONCRETE_VALUES" | "DISCOVERY_FAILED" | "UNSUPPORTED_AT_READ_POINT", baseEvidenceCount: number | null): FacetDiscoveryResult {
+  return Object.freeze({ state: "UNAVAILABLE", facet, reason, values: Object.freeze([]) as readonly [], distinctTotal: null, nextCursor: null, baseEvidenceCount });
 }
 
 export function discoverFacet(
   records: readonly DeterministicEvidenceRecord[],
   filter: EvidenceFilter,
   readPoint: EvidenceReadPoint,
-  request: FacetDiscoveryRequest
+  request: FacetDiscoveryRequest,
+  instrumentation: DiscoveryInstrumentation = {}
 ): FacetDiscoveryResult {
+  instrumentation.fail?.();
   const descriptor = FACET_DESCRIPTORS.find((candidate) => candidate.key === request.facet);
-  if (!descriptor || !Number.isSafeInteger(request.size) || request.size < 1 || request.size > 100) {
-    return unavailable(request.facet, "UNSUPPORTED_AT_READ_POINT", null);
-  }
+  if (!descriptor || !Number.isSafeInteger(request.size) || request.size < 1 || request.size > 100) return unavailable(request.facet, "UNSUPPORTED_AT_READ_POINT", null);
   const search = text(request.search);
   const filterKey = JSON.stringify(filter);
   const pointKey = readPointKey(readPoint);
   const parsed = parseCursor(request.cursor);
-  if (request.cursor && (!parsed || parsed.facet !== request.facet || parsed.search !== search || parsed.size !== request.size || parsed.filter !== filterKey || parsed.readPoint !== pointKey)) {
-    return unavailable(request.facet, "DISCOVERY_FAILED", null);
-  }
+  if (request.cursor && (!parsed || parsed.facet !== request.facet || parsed.search !== search || parsed.size !== request.size || parsed.filter !== filterKey || parsed.readPoint !== pointKey)) return unavailable(request.facet, "DISCOVERY_FAILED", null);
+
   const base = records.filter((record) => matchesBase(record, withoutFacet(filter, request.facet)));
   if (base.length === 0) return unavailable(request.facet, "ZERO_BASE", 0);
-  const counts = new Map<string, { value: TypedFacetValue; count: number }>();
+
+  // This is compact identity accounting: it retains no TypedFacetValue
+  // objects and no complete sorted order. It is the exact source for counts
+  // and distinctTotal; ordered selection below is bounded by page size.
+  const accounting = new Map<string, CompactValue>();
   for (const record of base) {
     const value = record.facets[request.facet];
-    if (value && (!search || `${descriptor.label} ${value.label} ${value.value}`.toLocaleLowerCase().includes(search))) {
-      const existing = counts.get(value.identity);
-      if (existing) existing.count += 1;
-      else counts.set(value.identity, { value, count: 1 });
+    if (!value) continue;
+    const existing = accounting.get(value.identity);
+    if (existing) existing.count += 1;
+    else accounting.set(value.identity, compact(value));
+  }
+  const active = [...(filter.criteria[request.facet]?.include ?? []), ...(filter.criteria[request.facet]?.exclude ?? [])];
+  const activeIdentities = new Set(active.map((value) => value.identity));
+  const searched = [...accounting.values()].filter((value) => matchesSearch(descriptor.label, value, search));
+  const distinctTotal = searched.length;
+  if (distinctTotal === 0 && active.length === 0) return unavailable(request.facet, "NO_CONCRETE_VALUES", base.length);
+
+  const orderedPage = selectPage(searched, parsed?.anchor ?? null, request.size);
+  const position = parsed?.position ?? 0;
+  if (parsed) {
+    if (position >= distinctTotal || parsed.anchor === null) return unavailable(request.facet, "DISCOVERY_FAILED", null);
+    let anchorRank = 0;
+    let anchorFound = false;
+    for (const candidate of searched) {
+      const relation = compareSortKey(candidate, parsed.anchor);
+      if (relation < 0) anchorRank += 1;
+      if (candidate.sortKey === parsed.anchor) anchorFound = true;
     }
+    if (!anchorFound || anchorRank !== position - 1) return unavailable(request.facet, "DISCOVERY_FAILED", null);
   }
-
-  const active = [
-    ...(filter.criteria[request.facet]?.include ?? []),
-    ...(filter.criteria[request.facet]?.exclude ?? [])
-  ];
-  const ordered = [...counts.values()].sort((left, right) => compareValues(left.value, right.value));
-  if (ordered.length === 0) return unavailable(request.facet, "NO_CONCRETE_VALUES", base.length);
-
-  const position = parsed ? parsed.position : 0;
-  const page = ordered.slice(position, position + request.size);
-  const nextCursor = position + page.length < ordered.length
-    ? cursorFor({ version: 1, facet: request.facet, search, size: request.size, filter: filterKey, readPoint: pointKey, position: position + page.length })
-    : null;
-  const values: FacetCount[] = page.map(({ value, count }) => Object.freeze({ value, count, pinned: active.some((candidate) => candidate.identity === value.identity) }));
-  const pageIdentities = new Set(page.map(({ value }) => value.identity));
+  const nextPosition = position + orderedPage.length;
+  const values: FacetCount[] = orderedPage.map((entry) => Object.freeze({ value: Object.freeze({ facet: entry.facet, type: entry.type, value: entry.value, label: entry.label, identity: entry.identity }), count: entry.count, pinned: activeIdentities.has(entry.identity) }));
+  const returned = new Set(values.map((entry) => entry.value.identity));
+  // Pins intentionally bypass label search and page ordering. An observed
+  // active value keeps its exact base count; an unobserved value is zero.
   for (const value of active) {
-    if (search && !`${descriptor.label} ${value.label} ${value.value}`.toLocaleLowerCase().includes(search)) continue;
-    if (!counts.has(value.identity) && !pageIdentities.has(value.identity)) values.push(Object.freeze({ value, count: 0, pinned: true }));
+    if (returned.has(value.identity)) continue;
+    const observed = accounting.get(value.identity);
+    values.push(Object.freeze({ value, count: observed?.count ?? 0, pinned: true }));
   }
-  return Object.freeze({ state: "AVAILABLE", facet: request.facet, values: Object.freeze(values), distinctTotal: ordered.length, nextCursor, baseEvidenceCount: base.length });
-}
-
-function unavailable(facet: string, reason: "ZERO_BASE" | "NO_CONCRETE_VALUES" | "DISCOVERY_FAILED" | "UNSUPPORTED_AT_READ_POINT", baseEvidenceCount: number | null): FacetDiscoveryResult {
-  return Object.freeze({ state: "UNAVAILABLE", facet, reason, values: Object.freeze([]) as readonly [], distinctTotal: null, nextCursor: null, baseEvidenceCount });
+  const materializationBound = request.size + active.length;
+  instrumentation.onResult?.({ compactIdentityCount: accounting.size, materializedCandidates: values.length, materializationBound });
+  const nextCursor = nextPosition < distinctTotal && orderedPage.length > 0
+    ? cursorFor({ version: 1, facet: request.facet, search, size: request.size, filter: filterKey, readPoint: pointKey, position: nextPosition, anchor: orderedPage.at(-1)!.sortKey })
+    : null;
+  return Object.freeze({ state: "AVAILABLE", facet: request.facet, values: Object.freeze(values), distinctTotal, nextCursor, baseEvidenceCount: base.length });
 }

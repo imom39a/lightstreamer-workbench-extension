@@ -13,7 +13,7 @@ import {
 } from "./evidence-filter-contract";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
-import { discoverFacet } from "./evidence-filter-discovery";
+import { discoverFacet, type DiscoveryInstrumentation } from "./evidence-filter-discovery";
 import { canonicalEvidenceSearchText, extractEvidenceFacets } from "./evidence-facets";
 import {
   deserializeJournalEvidenceCandidate,
@@ -270,6 +270,8 @@ type MemoryEventHistoryOptions = Readonly<{
   capacityTier?: HistoryCapacityTier;
   fallback?: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
   failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
+  /** Internal memory-query seam used to prove discovery failure isolation and bounds. */
+  discovery?: DiscoveryInstrumentation;
 }> & HistoryCapacityOptions;
 
 /**
@@ -301,7 +303,7 @@ export async function openEventHistory(
       commitBatch: options.commitBatch === undefined
         ? undefined
         : async (batch) => { await options.commitBatch!(batch); },
-      failure: options.failure,
+          failure: options.failure,
       finalizeTerminal: options.finalizeTerminal
     });
   }
@@ -927,7 +929,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       }
       for (const discoveryRequest of request.discover ?? []) {
         try {
-          discoveries.set(discoveryRequest.facet, discoverFacet(records, request.filter, readPoint, discoveryRequest));
+          discoveries.set(discoveryRequest.facet, discoverFacet(records, request.filter, readPoint, discoveryRequest, options.discovery));
         } catch {
           discoveries.set(discoveryRequest.facet, {
             state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "DISCOVERY_FAILED", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
