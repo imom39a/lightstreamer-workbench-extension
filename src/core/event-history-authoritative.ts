@@ -85,7 +85,8 @@ export type HistoryProblemCode =
   | "JOURNAL_COMMIT_FAILED"
   | HistoryTerminalReason
   | "CLEAR_FAILED"
-  | "CLOSE_FAILED";
+  | "CLOSE_FAILED"
+  | "QUERY_FAILED";
 
 export type HistoryProblem = Readonly<{
   code: HistoryProblemCode;
