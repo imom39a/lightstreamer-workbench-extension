@@ -99,7 +99,7 @@ async function main() {
       deadlineAt: proofDeadlineAt
     });
     foregroundKeeper.start();
-    const runPageOperationWithForegroundKeeper = (pageCdp, expression, options = {}) => {
+    const runPageOperationWithForegroundKeeper = async (pageCdp, expression, options = {}) => {
       const { onHeartbeat, targetId, ...operationOptions } = options;
       const focusTarget = typeof targetId === "string"
         ? ({ deadlineAt, timeoutMs }) => focusHarnessTarget(browserCdp, pageCdp, targetId, {
@@ -107,14 +107,19 @@ async function main() {
           requestCeilingMs: Math.max(1, Math.floor(timeoutMs / 6))
         })
         : undefined;
-      return runPageOperation(pageCdp, expression, {
-        ...operationOptions,
-        propagateHeartbeatErrors: true,
-        onHeartbeat: async (status) => {
-          await foregroundKeeper.keepAlive({ reason: "operation-heartbeat", focusTarget });
-          await onHeartbeat?.(status);
-        }
-      });
+      if (focusTarget) foregroundKeeper.setFocusTarget(focusTarget);
+      try {
+        return await runPageOperation(pageCdp, expression, {
+          ...operationOptions,
+          propagateHeartbeatErrors: true,
+          onHeartbeat: async (status) => {
+            await foregroundKeeper.keepAlive({ reason: "operation-heartbeat", focusTarget });
+            await onHeartbeat?.(status);
+          }
+        });
+      } finally {
+        if (focusTarget) foregroundKeeper.clearFocusTarget(focusTarget);
+      }
     };
     const browserSocketUrl = await browserTarget(debugPort, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-websocket") });
     browserCdp = await connect(browserSocketUrl, {
@@ -836,6 +841,7 @@ export function createForegroundKeeper(pid, options = {}) {
   let inFlight = null;
   let failure = null;
   let attemptNumber = 0;
+  let activeFocusTarget = null;
   const attempts = [];
 
   const snapshot = () => ({
@@ -900,13 +906,19 @@ export function createForegroundKeeper(pid, options = {}) {
     if (startedAt === null) throw new Error("Foreground keeper has not started.");
     if (stoppedAt !== null) return snapshot();
     if (failure !== null) throw failure;
+    if (focusTarget !== undefined) {
+      if (focusTarget !== null && typeof focusTarget !== "function") {
+        throw new Error("Foreground keeper focusTarget must be a function or null.");
+      }
+      activeFocusTarget = focusTarget;
+    }
     if (inFlight !== null) {
       await inFlight;
       if (failure !== null) throw failure;
       return snapshot();
     }
     if (platform !== "darwin" || (lastAttemptAt !== null && now() - lastAttemptAt < cadenceMs)) return snapshot();
-    const operation = attempt(reason, focusTarget);
+    const operation = attempt(reason, focusTarget ?? activeFocusTarget);
     inFlight = operation;
     try {
       await operation;
@@ -914,6 +926,15 @@ export function createForegroundKeeper(pid, options = {}) {
     } finally {
       if (inFlight === operation) inFlight = null;
     }
+  };
+
+  const setFocusTarget = (focusTarget) => {
+    if (typeof focusTarget !== "function") throw new Error("Foreground keeper focus target must be a function.");
+    activeFocusTarget = focusTarget;
+  };
+
+  const clearFocusTarget = (focusTarget = null) => {
+    if (focusTarget === null || activeFocusTarget === focusTarget) activeFocusTarget = null;
   };
 
   const start = () => {
@@ -951,6 +972,8 @@ export function createForegroundKeeper(pid, options = {}) {
 
   return Object.freeze({
     start,
+    setFocusTarget,
+    clearFocusTarget,
     keepAlive,
     assertHealthy: keepAlive,
     stop,

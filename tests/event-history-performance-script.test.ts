@@ -645,6 +645,45 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("uses the registered exact target focus callback for cadence attempts", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createForegroundKeeper } = await import(${JSON.stringify(scriptUrl)});
+      let now = 0;
+      let tick;
+      let focusCalls = 0;
+      const keeper = createForegroundKeeper(49217, {
+        platform: "darwin",
+        helperPath: "/tmp/process-activation-helper",
+        deadlineAt: 10_000,
+        cadenceMs: 1_000,
+        now: () => now,
+        setInterval(callback) { tick = callback; return 17; },
+        clearInterval() {},
+        activate(pid) {
+          return Promise.resolve({ attempted: true, pid, activatedPID: pid, frontmostPID: pid, windows: [] });
+        }
+      });
+      const focusTarget = async ({ pid }) => {
+        focusCalls += 1;
+        assert.equal(pid, 49217);
+        return { targetId: "target-1", windowId: 7, pageBroughtToFront: true };
+      };
+      keeper.start();
+      keeper.setFocusTarget(focusTarget);
+      now = 1_000;
+      const focused = await tick();
+      assert.equal(focusCalls, 1);
+      assert.deepEqual(focused.attempts.at(-1).focus, { targetId: "target-1", windowId: 7, pageBroughtToFront: true });
+      keeper.clearFocusTarget(focusTarget);
+      now = 2_000;
+      await tick();
+      assert.equal(focusCalls, 1);
+      assert.equal(keeper.snapshot().attempts.at(-1).focus, null);
+      await keeper.stop();
+    `);
+  });
+
   it("fails closed on keeper activation errors and expired proof deadlines", () => {
     runNode(`
       import assert from "node:assert/strict";
