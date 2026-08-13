@@ -12,6 +12,12 @@ import {
   type HistoryPublication,
   type Outcome
 } from "../../core/event-history-authoritative";
+import {
+  type EvidenceFilterQueryAdapter,
+  type EvidenceFilterReadProblem,
+  type EvidenceQueryRequest,
+  type EvidenceSnapshot
+} from "../../core/evidence-filter-contract";
 
 export type CommittedEvidencePipelineOfferReceipt = CaptureReceipt & Readonly<{
   /**
@@ -44,6 +50,15 @@ export type CommittedEvidencePipeline = Readonly<{
    * Delegates to authoritative `read`.
    */
   read(query: EvidenceQuery): Promise<Outcome<EvidenceRead>>;
+
+  /**
+   * Delegates one storage-neutral, read-point-latched Evidence investigation
+   * query. The pipeline never falls back to legacy `read` for this seam.
+   */
+  query(request: EvidenceQueryRequest): Promise<
+    | Readonly<{ ok: true; value: EvidenceSnapshot }>
+    | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>
+  >;
 
   /**
    * Delegates to authoritative `clear`.
@@ -362,6 +377,28 @@ export function bindCommittedEvidencePipeline(
         };
       }
       return trackRead(history.read(query));
+    },
+    query(request: EvidenceQueryRequest) {
+      if (closed) {
+        return Promise.resolve({
+          ok: false as const,
+          problem: {
+            code: "HISTORY_TERMINAL" as const,
+            message: "The committed-evidence pipeline is closed and cannot query Evidence."
+          }
+        });
+      }
+      const queryAdapter = history.query as EvidenceFilterQueryAdapter["query"] | undefined;
+      if (!queryAdapter) {
+        return Promise.resolve({
+          ok: false as const,
+          problem: {
+            code: "QUERY_FAILED" as const,
+            message: "The committed Event History does not expose the canonical Evidence query capability."
+          }
+        });
+      }
+      return trackRead(queryAdapter.call(history, request));
     },
     async clear(): Promise<Outcome<ClearResult>> {
       return history.clear();

@@ -11,6 +11,7 @@ import {
   type TypedFacetValue
 } from "./evidence-filter-contract";
 import { normalizeEvidenceSearchText } from "./evidence-facets";
+import { filterValueMatches } from "./filter-algebra";
 
 export type SelectionRecord = DeterministicEvidenceRecord & Readonly<{ payload?: unknown }>;
 
@@ -52,12 +53,12 @@ export function lookupEvidence(
   }
   for (const [facet, bucket] of Object.entries(filter.criteria)) {
     if (!bucket) continue;
-    const value = record.facets[facet];
-    if (bucket.include.length > 0 && (!value || !bucket.include.some((candidate) => candidate.identity === value.identity))) {
+    const value = facet === "legacy:item-position" ? record.facets.item : record.facets[facet];
+    if (bucket.include.length > 0 && (!value || !bucket.include.some((candidate) => filterValueMatches(value, candidate)))) {
       for (const criterion of bucket.include) blockingCriteria.push(criterionBlocker(facet, "include", criterion));
     }
-    if (value && bucket.exclude.some((candidate) => candidate.identity === value.identity)) {
-      for (const criterion of bucket.exclude.filter((candidate) => candidate.identity === value.identity)) blockingCriteria.push(criterionBlocker(facet, "exclude", criterion));
+    if (value && bucket.exclude.some((candidate) => filterValueMatches(value, candidate))) {
+      for (const criterion of bucket.exclude.filter((candidate) => filterValueMatches(value, candidate))) blockingCriteria.push(criterionBlocker(facet, "exclude", criterion));
     }
   }
   for (const unsupported of filter.unsupported) blockingCriteria.push(Object.freeze({ id: unsupported.id, criterion: unsupported }));
@@ -67,19 +68,41 @@ export function lookupEvidence(
 
 export function findEvidence(records: readonly SelectionRecord[], request: EvidenceFindRequest): EvidenceFindResult {
   const text = normalizeEvidenceSearchText(request.text);
-  const matches = records.filter((record) => normalizeEvidenceSearchText(record.searchText).includes(text)).sort((left, right) => left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
+  const orderedRecords = [...records].sort((left, right) => left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
+  const matches = orderedRecords.filter((record) => normalizeEvidenceSearchText(record.searchText).includes(text));
   const currentIndex = request.current ? matches.findIndex((record) => sameIdentity(record.identity, request.current!)) : -1;
   const fallbackIndex = currentIndex >= 0 ? currentIndex : nearestIndex(matches, request.current);
   const current = currentIndex >= 0 || request.current !== undefined
     ? (fallbackIndex >= 0 ? matches[fallbackIndex]!.identity : null)
     : null;
-  return Object.freeze({
+  const windowRecord = fallbackIndex >= 0 ? matches[fallbackIndex] : matches[0];
+  const windowStart = windowRecord
+    ? Math.max(0, orderedRecords.findIndex((record) => sameIdentity(record.identity, windowRecord.identity)) - 50)
+    : 0;
+  const window = orderedRecords.slice(windowStart, windowStart + 100);
+  const nextRecord = fallbackIndex >= 0 && fallbackIndex + 1 < matches.length ? matches[fallbackIndex + 1] : undefined;
+  const nextWindowStart = nextRecord
+    ? Math.max(0, orderedRecords.findIndex((record) => sameIdentity(record.identity, nextRecord.identity)) - 50)
+    : -1;
+  const result: EvidenceFindResult = {
     text: request.text,
     total: matches.length,
     current,
     previous: fallbackIndex >= 0 && fallbackIndex > 0 ? matches[fallbackIndex - 1]!.identity : null,
-    next: fallbackIndex >= 0 && fallbackIndex + 1 < matches.length ? matches[fallbackIndex + 1]!.identity : null
-  });
+    next: fallbackIndex >= 0 && fallbackIndex + 1 < matches.length ? matches[fallbackIndex + 1]!.identity : null,
+  };
+  if (request.scopeToFilter) {
+    return Object.freeze({
+      ...result,
+      first: matches[0]?.identity ?? null,
+      window: Object.freeze(window),
+      matches: Object.freeze(matches.slice(0, 1_000).map((record) => record.identity)),
+      ...(nextWindowStart >= 0
+        ? { nextWindow: Object.freeze(orderedRecords.slice(nextWindowStart, nextWindowStart + 100)) }
+        : {})
+    });
+  }
+  return Object.freeze(result);
 }
 
 /** Apply only the blockers returned for one retained selection. */

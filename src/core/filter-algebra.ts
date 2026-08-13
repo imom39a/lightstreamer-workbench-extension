@@ -201,11 +201,15 @@ export function evaluateFilter(
     return { evaluation: "COMPLETE", inScope: true, matches: false };
   }
   for (const [facet, criterion] of Object.entries(filter.criteria)) {
-    const value = record.facets[facet];
-    if (criterion.include.length > 0 && (!value || !criterion.include.some((candidate) => candidate.identity === value.identity))) {
+    // The legacy scalar adapter exposes item position as a separate control,
+    // while the canonical Evidence catalog stores name and position together
+    // in the qualified item facet. Evaluate that compatibility facet against
+    // the same canonical item value.
+    const value = facet === "legacy:item-position" ? record.facets.item : record.facets[facet];
+    if (criterion.include.length > 0 && (!value || !criterion.include.some((candidate) => filterValueMatches(value, candidate)))) {
       return { evaluation: "COMPLETE", inScope: true, matches: false };
     }
-    if (value && criterion.exclude.some((candidate) => candidate.identity === value.identity)) {
+    if (value && criterion.exclude.some((candidate) => filterValueMatches(value, candidate))) {
       return { evaluation: "COMPLETE", inScope: true, matches: false };
     }
   }
@@ -214,6 +218,67 @@ export function evaluateFilter(
 
 export function matchesFilter(filter: FilterInput, record: FilterRecord): boolean {
   return evaluateFilter(filter, record).matches;
+}
+
+/** Compares a retained facet with an ordinary user or structural criterion. */
+export function filterValueMatches(
+  candidate: TypedFilterValue | undefined,
+  criterion: TypedFilterValue
+): boolean {
+  if (!candidate || criterion.type === "structural-none") return false;
+  if (criterion.facet === "legacy:item-position" && criterion.type === "number") {
+    return parseObservedItem(candidate.value)?.[1] === criterion.value;
+  }
+  if (!criterion.type.startsWith("structural-")) {
+    if (candidate.identity === criterion.identity) return true;
+    // The compatibility adapter converts the pre-canonical scalar controls
+    // (clientId/sessionId/item/listenerId) into typed values without a
+    // read-point-qualified identity. Keep those controls label-semantic while
+    // fully-qualified facet values remain identity-semantic.
+    return criterion.type === "string" &&
+      ["client", "session", "subscription", "item", "listener", "kind"].includes(criterion.facet) &&
+      candidate.label === criterion.label;
+  }
+  if (criterion.type === "structural-item") {
+    const wanted = parseStructuralItem(String(criterion.value));
+    const observed = parseObservedItem(candidate.value);
+    if (!wanted || !observed) return false;
+    return (wanted[0] === null || observed[0] === wanted[0]) &&
+      (wanted[1] === null || observed[1] === wanted[1]);
+  }
+  return candidate.label === criterion.label;
+}
+
+function parseStructuralItem(value: string): readonly [string | null, number | null] | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+    const name = parsed[0] === null ? null : typeof parsed[0] === "string" ? parsed[0] : null;
+    const position = parsed[1] === null ? null : typeof parsed[1] === "number" ? parsed[1] : null;
+    return (name !== null || parsed[0] === null) && (position !== null || parsed[1] === null)
+      ? [name, position]
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseObservedItem(value: FilterScalar): readonly [string | null, number | null] | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed[0] !== "owner-v1" || parsed[1] !== "subscription") return null;
+    const parts = parsed[4];
+    if (!Array.isArray(parts)) return null;
+    const nameEntry = parts.find((part) => Array.isArray(part) && part[0] === "name");
+    const positionEntry = parts.find((part) => Array.isArray(part) && part[0] === "position");
+    return [
+      Array.isArray(nameEntry) && typeof nameEntry[1] === "string" ? nameEntry[1] : null,
+      Array.isArray(positionEntry) && typeof positionEntry[1] === "number" ? positionEntry[1] : null
+    ];
+  } catch {
+    return null;
+  }
 }
 
 export function applyFilterMutations(currentInput: FilterInput, expectedRevision: number, operations: readonly FilterMutation[]): FilterMutationResult {

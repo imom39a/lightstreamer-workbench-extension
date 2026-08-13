@@ -71,11 +71,11 @@ describe("release packaging verification gate", () => {
       "tests/filter-impl-09-indexeddb-discovery.test.ts",
       "tests/filter-impl-09-indexeddb-parity.test.ts",
       "tests/filter-impl-09-indexeddb-workload.test.ts"
-    ]));
+     ]));
     const discovered = discoverUnitTestFiles(join(projectRoot, "tests"));
     expect(plan.ordinary).toHaveLength(discovered.length - plan.isolated.length);
     expect(new Set([...plan.ordinary, ...plan.isolated])).toEqual(new Set(discovered));
-    expect(new Set(plan.isolated).size).toBe(plan.isolated.length);
+     expect(new Set(plan.isolated).size).toBe(plan.isolated.length);
   });
 
   it("writes deterministic raw-DEFLATE entries with valid headers and contents", () => {

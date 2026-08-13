@@ -1531,7 +1531,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
-  it("requires explicit retention confirmation and clears history without silently dropping selection", async () => {
+  it("requires explicit retention confirmation and clears coherent Evidence and selection", async () => {
     const history = createAuthoritativeHistory();
     history.offer(event("selected-before-clear"));
     const runtime = createWorkbenchRuntime({ history });
@@ -1546,9 +1546,15 @@ describe("WorkbenchRuntime", () => {
     await flushStoreNotifications();
 
     await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { total: 0 } });
-    expect(runtime.getSnapshot().selectionEventId).toBe("selected-before-clear");
+    expect(runtime.getSnapshot().selectionEventId).toBeNull();
+    expect(runtime.getSnapshot().selectedEvidence).toBeNull();
+    expect(runtime.getSnapshot().evidence.investigation.readPoint).toMatchObject({
+      interval: { ordinal: 2 },
+      committedEvidenceBoundary: null,
+      retainedRange: null
+    });
     expect(runtime.getSnapshot().retention.clearState).toBe("idle");
-    expect(runtime.getSnapshot().diagnostics).toContainEqual(
+    expect(runtime.getSnapshot().diagnostics).not.toContainEqual(
       expect.objectContaining({ title: "Selected Evidence cleared" })
     );
     runtime.dispose();
@@ -1803,7 +1809,8 @@ describe("WorkbenchRuntime", () => {
     await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events.at(-1)?.id).toBe("event-125");
     expect(runtime.getSnapshot().evidence).toMatchObject({
-      offset: 1,
+      total: 125,
+      offset: 0,
       newerCount: 1,
       visibleStart: 66,
       visibleEnd: 125,
@@ -2061,7 +2068,9 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(membership);
 
     runtime.dispatch({ type: "reveal-selected-evidence" });
+    await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.filters).toEqual({});
+    expect(runtime.getSnapshot().evidence.investigation.filter.criteria).toEqual({});
     expect(runtime.getSnapshot().evidence.hiddenSelection).toBeNull();
     expect(runtime.getSnapshot().selectionEventId).toBe("beta-1");
     expect(runtime.getSnapshot().evidence.focusedEventId).toBe("beta-1");
@@ -2071,7 +2080,7 @@ describe("WorkbenchRuntime", () => {
     runtime.dispatch({ type: "clear-evidence-selection" });
     expect(runtime.getSnapshot().selectionEventId).toBeNull();
     expect(runtime.getSnapshot().evidence.hiddenSelection).toBeNull();
-    expect(runtime.getSnapshot().evidence.focusedEventId).toBe("alpha-2");
+    expect(runtime.getSnapshot().evidence.focusedEventId).toBeNull();
     expect(runtime.getSnapshot().context.kind).toBe("runtime");
     runtime.dispose();
   });

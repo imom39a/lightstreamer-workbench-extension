@@ -49,8 +49,21 @@ export type FacetDiscoveryResult = Readonly<{ state: "AVAILABLE"; facet: Evidenc
 export type RevealBlocker = Readonly<{ id: string; criterion: FilterCriterion | UnsupportedCriterion | "free-text" | "around-evidence" }>;
 export type DeterministicEvidenceRecord = Readonly<{ identity: EvidenceIdentity; timestamp: number; summary: string; searchText: string; facets: Readonly<Partial<Record<EvidenceFilterFacet, TypedFacetValue>>>; payload?: unknown }>;
 export type EvidenceLookupResult = Readonly<{ state: "RETAINED"; evidence: DeterministicEvidenceRecord; inScope: boolean; matchesFilter: boolean; blockingCriteria: readonly RevealBlocker[] }> | Readonly<{ state: "NOT_RETAINED" | "OTHER_INTERVAL"; identity: EvidenceIdentity }>;
-export type EvidenceFindRequest = Readonly<{ text: string; current?: EvidenceIdentity }>;
-export type EvidenceFindResult = Readonly<{ text: string; total: number; current: EvidenceIdentity | null; previous: EvidenceIdentity | null; next: EvidenceIdentity | null }>;
+export type EvidenceFindRequest = Readonly<{ text: string; current?: EvidenceIdentity; scopeToFilter?: boolean }>;
+export type EvidenceFindResult = Readonly<{
+  text: string;
+  total: number;
+  current: EvidenceIdentity | null;
+  previous: EvidenceIdentity | null;
+  next: EvidenceIdentity | null;
+  /** Optional bounded compatibility window from the same read point. */
+  first?: EvidenceIdentity | null;
+  window?: readonly DeterministicEvidenceRecord[];
+  /** Bounded match identities used for local next/previous navigation. */
+  matches?: readonly EvidenceIdentity[];
+  /** Bounded window for the next match, when it is not in `window`. */
+  nextWindow?: readonly DeterministicEvidenceRecord[];
+}>;
 export type EvidenceQueryTelemetry = Readonly<{
   postingReads: number;
   postingCandidates: number;
@@ -90,7 +103,7 @@ export type EvidenceQueryTelemetry = Readonly<{
   discoveryMaterializationBound?: number;
 }>;
 export type EvidenceSnapshot = Readonly<{ readPoint: EvidenceReadPoint; page: Readonly<{ evidence: readonly DeterministicEvidenceRecord[]; nextCursor: string | null }>; totals: Readonly<{ matching: number; inScope: number }>; discoveries: ReadonlyMap<EvidenceFilterFacet, FacetDiscoveryResult>; lookup: EvidenceLookupResult | null; find: EvidenceFindResult | null; evaluation: "COMPLETE" | "UNSUPPORTED_FILTER"; coverage: "COMPLETE" | "LIMITED"; storage: "INDEXED_DB" | "MEMORY_FALLBACK"; telemetry?: EvidenceQueryTelemetry }>;
-export type EvidenceQueryRequest = Readonly<{ at: "LATEST_COMMITTED" | EvidenceReadPoint; page: EvidencePageRequest; filter: EvidenceFilter; discover?: readonly FacetDiscoveryRequest[]; lookup?: EvidenceIdentity; find?: EvidenceFindRequest }>;
+export type EvidenceQueryRequest = Readonly<{ at: "LATEST_COMMITTED" | EvidenceReadPoint; page: EvidencePageRequest; filter: EvidenceFilter; discover?: readonly FacetDiscoveryRequest[]; lookup?: EvidenceIdentity; find?: EvidenceFindRequest; includePayload?: boolean }>;
 export interface EvidenceFilterQueryAdapter { query(request: EvidenceQueryRequest): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>>; }
 export type EvidenceFilterReadProblem = Readonly<{ code: "HISTORY_INTERVAL_UNAVAILABLE" | "READ_POINT_UNAVAILABLE" | "QUERY_FAILED" | "HISTORY_TERMINAL" | "AROUND_ANCHOR_UNAVAILABLE"; message: string }>;
 export type EvidenceFilterLifecycleState = Readonly<{ phase: "ACTIVE" | "CLEARED" | "TERMINAL"; interval: Readonly<{ id: string; ordinal: number }>; committedEvidenceBoundary: EvidenceIdentity | null; retainedRange: Readonly<{ first: EvidenceIdentity; last: EvidenceIdentity }> | null; coverage: "COMPLETE" | "LIMITED"; storage: "INDEXED_DB" | "MEMORY_FALLBACK" }>;

@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
+import { type EvidenceFilterReadProblem, type EvidenceQueryRequest, type EvidenceSnapshot } from "../src/core/evidence-filter-contract";
 import { WorkbenchPanel } from "../src/extension/panel/react/workbench-panel";
 import {
   createWorkbenchRuntime,
@@ -266,17 +267,20 @@ describe("production React runtime performance boundary seam", () => {
     const covered: number[][] = [];
     const history = createInMemoryEventHistory({ panelSessionId: "performance-rendered-boundary" });
     const scheduler = createFrameScheduler();
-    type ReadResult = Awaited<ReturnType<typeof history.read>>;
-    const deferredReads: Array<{ result: ReadResult; resolve(result: ReadResult): void }> = [];
-    let deferReads = false;
+    type QueryResult = Readonly<
+      | { ok: true; value: EvidenceSnapshot }
+      | { ok: false; problem: EvidenceFilterReadProblem }
+    >;
+    const deferredQueries: Array<{ result: QueryResult; resolve(result: QueryResult): void }> = [];
+    let deferQueries = false;
     const runtime = createWorkbenchRuntime({
       history: {
         ...history,
-        read(query) {
-          const snapshot = history.read(query);
-          if (!deferReads) return snapshot;
+        query(request: EvidenceQueryRequest) {
+          const snapshot = history.query!(request);
+          if (!deferQueries) return snapshot;
           return snapshot.then(
-            (result) => new Promise<ReadResult>((resolve) => deferredReads.push({ result, resolve }))
+            (result) => new Promise<QueryResult>((resolve) => deferredQueries.push({ result, resolve }))
           );
         }
       },
@@ -290,11 +294,11 @@ describe("production React runtime performance boundary seam", () => {
     });
     await flushPromises();
 
-    deferReads = true;
+    deferQueries = true;
     await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "rendered-boundary")).settled;
     scheduler.flushFrame();
     await flushPromises();
-    expect(deferredReads).toHaveLength(1);
+    expect(deferredQueries).toHaveLength(1);
 
     const laterReceipts = Array.from({ length: 999 }, (_, index) =>
       history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", index + 2, "rendered-boundary")).settled
@@ -303,16 +307,16 @@ describe("production React runtime performance boundary seam", () => {
     scheduler.flushFrame();
     await flushPromises();
 
-    deferredReads[0]?.resolve(deferredReads[0].result);
+    deferredQueries[0]?.resolve(deferredQueries[0].result);
     await flushPromises();
     scheduler.flushFrame();
     await flushPromises();
-    expect(deferredReads).toHaveLength(2);
+    expect(deferredQueries).toHaveLength(2);
     runtime.reportVisibleFrame?.();
     expect(covered.flat()).toEqual([1]);
     expect(covered.flat()).not.toContain(1000);
 
-    deferredReads[1]?.resolve(deferredReads[1].result);
+    deferredQueries[1]?.resolve(deferredQueries[1].result);
     await flushPromises();
     runtime.reportVisibleFrame?.();
     expect(covered.flat()).toHaveLength(1000);
@@ -325,42 +329,44 @@ describe("production React runtime performance boundary seam", () => {
   it("drains a passive refresh queued behind an unsuccessful Evidence read", async () => {
     const history = createInMemoryEventHistory({ panelSessionId: "performance-read-recovery" });
     const scheduler = createFrameScheduler();
-    type ReadResult = Awaited<ReturnType<typeof history.read>>;
-    let resolveInitialRead: ((result: ReadResult) => void) | undefined;
-    let readCalls = 0;
+    type QueryResult = Readonly<
+      | { ok: true; value: EvidenceSnapshot }
+      | { ok: false; problem: EvidenceFilterReadProblem }
+    >;
+    let resolveInitialQuery: ((result: QueryResult) => void) | undefined;
+    let queryCalls = 0;
     const runtime = createWorkbenchRuntime({
       history: {
         ...history,
-        read(query) {
-          readCalls += 1;
-          if (readCalls === 1) {
-            return new Promise<ReadResult>((resolve) => {
-              resolveInitialRead = resolve;
+        query(_request: EvidenceQueryRequest) {
+          queryCalls += 1;
+          if (queryCalls === 1) {
+            return new Promise<QueryResult>((resolve) => {
+              resolveInitialQuery = resolve;
             });
           }
-          return history.read(query);
+          return history.query!(_request);
         }
       },
       scheduler
     });
     await flushPromises();
-    // The runtime also performs an independent projection-hydration read.
-    expect(readCalls).toBe(2);
+    expect(queryCalls).toBe(1);
 
     await history.offer(createEventHistoryWorkloadEvent("ordinary-item-update", 1, "read-recovery")).settled;
     scheduler.flushFrame();
     await flushPromises();
-    expect(readCalls).toBe(2);
+    expect(queryCalls).toBe(1);
 
-    resolveInitialRead?.({
+    resolveInitialQuery?.({
       ok: false,
-      problem: { code: "HISTORY_CLOSED", message: "Synthetic unsuccessful read." }
+      problem: { code: "QUERY_FAILED", message: "Synthetic unsuccessful query." }
     });
     // A completed read must only coalesce the queued passive refresh behind
     // the already-requested frame. Starting it from this microtask would let
     // an IndexedDB read/commit stream keep the panel on the JS turn forever.
     await flushPromises();
-    expect(readCalls).toBe(2);
+    expect(queryCalls).toBe(1);
     expect(runtime.getPerformanceDiagnostics?.()).toMatchObject({
       evidenceQueryPending: false,
       passiveRefreshPending: false,
@@ -369,8 +375,7 @@ describe("production React runtime performance boundary seam", () => {
 
     scheduler.flushFrame();
     await flushPromises();
-    expect(readCalls).toBe(3);
-    expect(runtime.getPerformanceDiagnostics?.().queryGeneration).toBe(2);
+    expect(queryCalls).toBe(2);
     runtime.dispose();
     await history.close();
   });

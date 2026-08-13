@@ -16,7 +16,23 @@ import {
 import {
   type CommittedEvidence
 } from "../../core/event-history-authoritative";
-import { createEventSearchText, matchesEventFilters, type EventFilterState } from "../../core/event-filter";
+import { createEventSearchText, type EventFilterState } from "../../core/event-filter";
+import {
+  canonicalFilterFromLegacyScalars,
+  createFilter,
+  type Filter
+} from "../../core/filter-algebra";
+import {
+  MAX_EVIDENCE_PAGE_SIZE,
+  type DeterministicEvidenceRecord,
+  type EvidenceFilterReadProblem,
+  type EvidenceFindResult,
+  type EvidenceIdentity,
+  type EvidenceLookupResult,
+  type EvidenceSnapshot,
+  type FacetDiscoveryRequest,
+  type FacetDiscoveryResult
+} from "../../core/evidence-filter-contract";
 import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
 import {
   analyzeLocalInjectionDocument,
@@ -65,6 +81,12 @@ import {
   type TopologySubscription
 } from "../../core/topology-state";
 import { bindCommittedEvidencePipeline, type CommittedEvidencePipeline } from "./committed-evidence-pipeline";
+import {
+  createEvidenceInvestigationQuery,
+  type EvidenceInvestigationQuery,
+  type EvidenceInvestigationQueryRequest,
+  type StructuralEvidenceScope
+} from "./evidence-investigation-query";
 import {
   historyConditionFor,
   type WorkbenchHistoryCondition
@@ -218,6 +240,35 @@ export type WorkbenchEvidenceSnapshot = Readonly<{
     canReveal: true;
     canClear: true;
   }> | null;
+  investigation: WorkbenchEvidenceInvestigationSnapshot;
+}>;
+
+export type WorkbenchEvidenceInvestigationSnapshot = Readonly<{
+  /** The exact structural axis and canonical user Filter used for this query. */
+  scope: StructuralEvidenceScope;
+  filter: Filter;
+  /** The single read point represented by every published Evidence fact. */
+  readPoint: EvidenceSnapshot["readPoint"] | null;
+  historyInterval: EvidenceSnapshot["readPoint"]["interval"] | null;
+  representedEvidenceBoundary: EvidenceIdentity | null;
+  retainedRange: EvidenceSnapshot["readPoint"]["retainedRange"];
+  page: Readonly<{
+    evidence: readonly DeterministicEvidenceRecord[];
+    nextCursor: string | null;
+  }>;
+  counts: Readonly<{
+    shown: number;
+    matching: number;
+    inScope: number;
+  }>;
+  discoveries: ReadonlyMap<string, FacetDiscoveryResult>;
+  lookup: EvidenceLookupResult | null;
+  find: EvidenceFindResult | null;
+  evaluation: EvidenceSnapshot["evaluation"] | null;
+  coverage: EvidenceSnapshot["coverage"] | null;
+  storage: EvidenceSnapshot["storage"] | null;
+  queryState: "idle" | "loading" | "ready" | "error";
+  problem: EvidenceFilterReadProblem | null;
 }>;
 
 export type WorkbenchEvidenceCopySnapshot = Readonly<{
@@ -522,12 +573,15 @@ export type WorkbenchRuntimeOptions = {
   scheduler?: WorkbenchRuntimeScheduler;
   localInjectionExecutor?: LocalInjectionExecutor;
   performanceHooks?: WorkbenchRuntimePerformanceHooks;
+  evidenceQuery?: EvidenceInvestigationQuery;
+  investigationDiscoveries?: readonly FacetDiscoveryRequest[];
 };
 
 type EvidenceData = {
   events: readonly LightstreamerEventEnvelope[];
   total: number;
   offset: number;
+  records: readonly DeterministicEvidenceRecord[];
 };
 
 type LocalInjectionEntryIntent =
@@ -555,7 +609,32 @@ type LocalInjectionDraftState = {
   outcome: WorkbenchLocalInjectionOutcome | null;
 };
 
-const emptyEvidence: EvidenceData = Object.freeze({ events: Object.freeze([]), total: 0, offset: 0 });
+const emptyEvidence: EvidenceData = Object.freeze({
+  events: Object.freeze([]),
+  total: 0,
+  offset: 0,
+  records: Object.freeze([])
+});
+const MAX_EVIDENCE_EVENT_CACHE = 256;
+
+const emptyInvestigation: WorkbenchEvidenceInvestigationSnapshot = Object.freeze({
+  scope: Object.freeze({ kind: "PAGE" as const }),
+  filter: createFilter(1),
+  readPoint: null,
+  historyInterval: null,
+  representedEvidenceBoundary: null,
+  retainedRange: null,
+  page: Object.freeze({ evidence: Object.freeze([]), nextCursor: null }),
+  counts: Object.freeze({ shown: 0, matching: 0, inScope: 0 }),
+  discoveries: new Map(),
+  lookup: null,
+  find: null,
+  evaluation: null,
+  coverage: null,
+  storage: null,
+  queryState: "idle",
+  problem: null
+});
 
 export function createWorkbenchRuntime(options: WorkbenchRuntimeOptions = {}): WorkbenchRuntime {
   return new Runtime(options);
@@ -570,6 +649,8 @@ class Runtime implements WorkbenchRuntime {
   private readonly normalizer: EventNormalizer;
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
+  private readonly evidenceQuery: EvidenceInvestigationQuery;
+  private readonly investigationDiscoveries: readonly FacetDiscoveryRequest[];
   private readonly activeTopologyStagingSyncIds = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private readonly commandStateProjections = createCommandStateProjections();
@@ -577,6 +658,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
   private readonly topologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
+  private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
   private visible: boolean;
   private theme: "auto" | "dark" | "light";
   private captureStatus: CaptureStatus;
@@ -590,25 +672,49 @@ class Runtime implements WorkbenchRuntime {
   private commandProjectionReturnContextId: string | null = null;
   private actionsReturnContextId: string | null = null;
   private filters: EventFilterState = {};
+  private canonicalFilter: Filter = createFilter(1);
   private find = "";
   private findCurrentEventId: string | null = null;
   private findResultEvents: readonly LightstreamerEventEnvelope[] = Object.freeze([]);
   private findMatchIndexes: readonly number[] = Object.freeze([]);
+  private findMatchIdentities: readonly EvidenceIdentity[] = Object.freeze([]);
+  private readonly findWindowByEventId = new Map<string, readonly DeterministicEvidenceRecord[]>();
   private findEvidence: EvidenceData | null = null;
-  private findQueryGeneration = 0;
   private mode: "live" | "frozen" = "live";
   private liveEvidence: EvidenceData = emptyEvidence;
   private frozenEvidence: EvidenceData | null = null;
+  private liveInvestigation: EvidenceSnapshot | null = null;
+  private frozenInvestigation: EvidenceSnapshot | null = null;
+  private liveInvestigationContract: Readonly<{
+    scope: StructuralEvidenceScope;
+    filter: Filter;
+  }> | null = null;
+  private frozenInvestigationContract: Readonly<{
+    scope: StructuralEvidenceScope;
+    filter: Filter;
+  }> | null = null;
+  private lastCoherentEvidence: EvidenceData = emptyEvidence;
+  private lastCoherentInvestigation: EvidenceSnapshot | null = null;
+  private lastCoherentInvestigationContract: Readonly<{
+    scope: StructuralEvidenceScope;
+    filter: Filter;
+  }> | null = null;
+  private investigationState: WorkbenchEvidenceInvestigationSnapshot["queryState"] = "idle";
+  private investigationProblem: EvidenceFilterReadProblem | null = null;
+  private selectedEvidenceIdentity: EvidenceIdentity | null = null;
+  private selectedPayloadLoadedForEventId: string | null = null;
   private evidenceLoading = false;
   private snapshot: WorkbenchSnapshot;
   private version = 0;
   private disposed = false;
   private disposePromise: Promise<void> = Promise.resolve();
   private queryGeneration = 0;
+  /** Opaque cursors are bound to the query and its read point. */
+  private readonly evidencePageCursors = new Map<number, string>();
   private evidenceQueryPending = false;
+  private initialEvidenceSettled = false;
   private passiveRefreshPending = false;
   private lastEvidenceQueryError: string | null = null;
-  private selectionLookupGeneration = 0;
   private frameHandle: unknown | null = null;
   private fallbackHandle: unknown | null = null;
   private hiddenDirty = false;
@@ -648,6 +754,12 @@ class Runtime implements WorkbenchRuntime {
   });
   private evidenceCopyGeneration = 0;
   private localInjectionDraft: LocalInjectionDraftState | null = null;
+  private pendingLocalInjectionEntry: {
+    intent: LocalInjectionEntryIntent;
+    rawText: string | null;
+    review: boolean;
+    execute: boolean;
+  } | null = null;
   private localInjectionBlockedEntry: LocalInjectionEntryIntent | null = null;
   private localInjectionDiscardConfirmation = false;
   private localInjectionEntryError: string | null = null;
@@ -686,12 +798,18 @@ class Runtime implements WorkbenchRuntime {
     this.normalizer = options.normalizer ?? createEventNormalizer();
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
     this.performanceHooks = options.performanceHooks ?? null;
+    this.investigationDiscoveries = Object.freeze([...(options.investigationDiscoveries ?? [])]);
     this.storage = options.storage ?? { mode: "indexeddb" };
     this.evidencePipeline = bindCommittedEvidencePipeline({
       history: this.history,
       onCommittedEvidence: (entry) => this.handleCommittedEvidence(entry),
       onHistoryPublication: (publication) => this.handleHistoryPublication(publication)
     });
+    this.evidenceQuery = options.evidenceQuery ?? createEvidenceInvestigationQuery({
+      query: (request) => this.evidencePipeline.query(request)
+    });
+    this.evidenceLoading = true;
+    this.investigationState = "loading";
     this.snapshot = this.createSnapshot();
 
     this.evidencePipeline.start();
@@ -891,26 +1009,38 @@ class Runtime implements WorkbenchRuntime {
       case "set-filters":
         this.invalidateEvidenceCopy();
         this.filters = { ...command.filters };
+        this.canonicalFilter = canonicalFilterFromLegacyScalars(
+          this.filters,
+          this.canonicalFilter.revision
+        );
         this.refreshEvidence("filter");
         return;
       case "clear-filters":
         this.invalidateEvidenceCopy();
         this.filters = {};
+        this.canonicalFilter = createFilter(this.canonicalFilter.revision);
         this.refreshEvidence("filter");
         return;
       case "reveal-selected-evidence":
         if (!this.selectionEventId || !this.selectionHiddenByFilter) return;
+        this.invalidateEvidenceCopy();
         this.filters = {};
+        this.canonicalFilter = createFilter(this.canonicalFilter.revision);
+        this.clearedSelectionEventId = null;
         this.selectionHiddenByFilter = false;
         this.focusedEventId = this.selectionEventId;
         this.refreshEvidence("reveal-selection");
         return;
       case "clear-evidence-selection": {
         const selectedEventId = this.selectionEventId;
-        this.selectionLookupGeneration += 1;
         this.selectionEventId = null;
+        this.selectedEvidenceIdentity = null;
         this.selectedEventEnvelope = null;
+        this.focusedEventId = null;
         this.selectionHiddenByFilter = false;
+        this.selectedPayloadLoadedForEventId = null;
+        this.clearedSelectionEventId = null;
+        this.pendingLocalInjectionEntry = null;
         if (
           selectedEventId &&
           (this.contextId === `context:${selectedEventId}` || this.contextId === `raw:${selectedEventId}`)
@@ -922,7 +1052,7 @@ class Runtime implements WorkbenchRuntime {
       }
       case "set-find":
         this.find = command.value;
-        this.refreshFindResults(false);
+        this.refreshEvidence("command");
         return;
       case "find-next":
         this.navigateFind(1);
@@ -1008,21 +1138,39 @@ class Runtime implements WorkbenchRuntime {
         this.selectionEventId = command.eventId;
         this.focusedEventId = command.eventId;
         this.selectionHiddenByFilter = false;
+        this.selectedPayloadLoadedForEventId = null;
         this.resolveSelectedEvent(command.eventId);
         if (command.eventId !== this.clearedSelectionEventId) {
           this.clearedSelectionEventId = null;
         }
         this.publish();
+        if (
+          !this.selectedEventEnvelope ||
+          this.selectedEventEnvelope.id !== command.eventId ||
+          this.selectedPayloadLoadedForEventId !== command.eventId
+        ) {
+          if (this.evidenceQueryPending) return;
+          this.refreshEvidence("command");
+        }
         return;
       case "focus-evidence":
         this.focusedEventId = command.eventId;
         this.selectionEventId = command.eventId;
         this.selectionHiddenByFilter = false;
+        this.selectedPayloadLoadedForEventId = null;
         this.resolveSelectedEvent(command.eventId);
         if (command.eventId !== this.clearedSelectionEventId) {
           this.clearedSelectionEventId = null;
         }
         this.publish();
+        if (
+          !this.selectedEventEnvelope ||
+          this.selectedEventEnvelope.id !== command.eventId ||
+          this.selectedPayloadLoadedForEventId !== command.eventId
+        ) {
+          if (this.evidenceQueryPending) return;
+          this.refreshEvidence("command");
+        }
         return;
       case "set-context":
         this.contextId = command.contextId;
@@ -1074,11 +1222,15 @@ class Runtime implements WorkbenchRuntime {
       case "freeze-evidence":
         this.mode = "frozen";
         this.frozenEvidence = this.liveEvidence;
+        this.frozenInvestigation = this.liveInvestigation;
+        this.frozenInvestigationContract = this.liveInvestigationContract;
         this.refreshEvidence("command");
         return;
       case "follow-live":
         this.mode = "live";
         this.frozenEvidence = null;
+        this.frozenInvestigation = null;
+        this.frozenInvestigationContract = null;
         this.refreshEvidence("command");
         return;
       case "refresh-evidence":
@@ -1091,58 +1243,35 @@ class Runtime implements WorkbenchRuntime {
     eventId: string | null,
     reconcileFilterVisibility = false
   ): void {
-    const generation = ++this.selectionLookupGeneration;
     if (!eventId) {
       this.selectedEventEnvelope = null;
+      this.selectedEvidenceIdentity = null;
+      this.selectedPayloadLoadedForEventId = null;
       return;
     }
-    const visible = this.displayedEvidence().events.find(({ id }) => id === eventId);
+    const visibleIndex = this.displayedEvidence().events.findIndex(({ id }) => id === eventId);
+    const visible = visibleIndex >= 0 ? this.displayedEvidence().events[visibleIndex] : undefined;
+    const visibleRecord = this.displayedEvidence().records[visibleIndex];
     if (visible) {
       this.selectedEventEnvelope = visible;
-      if (reconcileFilterVisibility) this.reconcileSelectedEnvelopeFilterVisibility();
+      this.selectedEvidenceIdentity = visibleRecord?.identity ?? this.selectedEvidenceIdentity;
+      if (visibleRecord?.payload !== undefined) this.selectedPayloadLoadedForEventId = eventId;
+      return;
+    }
+    const retainedIndex = this.lastCoherentEvidence.events.findIndex(({ id }) => id === eventId);
+    const retainedEvent = retainedIndex >= 0 ? this.lastCoherentEvidence.events[retainedIndex] : undefined;
+    const retainedRecord = retainedIndex >= 0 ? this.lastCoherentEvidence.records[retainedIndex] : undefined;
+    if (retainedEvent) {
+      this.selectedEventEnvelope = retainedEvent;
+      this.selectedEvidenceIdentity = retainedRecord?.identity ?? this.selectedEvidenceIdentity;
+      if (retainedRecord?.payload !== undefined) this.selectedPayloadLoadedForEventId = eventId;
       return;
     }
     if (this.selectedEventEnvelope?.id === eventId) {
-      if (reconcileFilterVisibility) this.reconcileSelectedEnvelopeFilterVisibility();
       return;
     }
     this.selectedEventEnvelope = null;
     if (reconcileFilterVisibility) this.selectionHiddenByFilter = false;
-    let receiving = true;
-    void this.evidencePipeline.read({ candidateKind: "lightstreamer", eventId }).then(
-      (result) => {
-        if (
-          this.disposed ||
-          generation !== this.selectionLookupGeneration ||
-          this.selectionEventId !== eventId
-        ) return;
-        if (!result.ok) return;
-        const candidate = result.value.evidence[0]?.candidate;
-        if (!isLightstreamerEvidenceCandidate(candidate)) return;
-        this.selectedEventEnvelope = candidate;
-        if (reconcileFilterVisibility) this.reconcileSelectedEnvelopeFilterVisibility();
-        if (!receiving) this.publish();
-      },
-      () => undefined
-    );
-    receiving = false;
-  }
-
-  private reconcileSelectedEnvelopeFilterVisibility(): void {
-    const selectedEvent = this.selectedEventEnvelope;
-    if (!selectedEvent || selectedEvent.id !== this.selectionEventId) {
-      this.selectionHiddenByFilter = false;
-      return;
-    }
-    const scopeTarget = findTopologySelection(
-      this.topologyProjection.snapshot(),
-      this.scopeId ?? "page"
-    );
-    this.selectionHiddenByFilter = Boolean(
-      scopeTarget &&
-      eventMatchesScope(selectedEvent, scopeTarget) &&
-      !matchesEventFilters(selectedEvent, this.filters)
-    );
   }
 
   dispose(): void {
@@ -1223,66 +1352,70 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private displayedEvidence(): EvidenceData {
-    if (this.evidenceLoading) return emptyEvidence;
     return this.findEvidence ?? (this.mode === "frozen" ? this.frozenEvidence ?? emptyEvidence : this.liveEvidence);
   }
 
+  private displayedInvestigation(): EvidenceSnapshot | null {
+    return this.mode === "frozen"
+      ? this.frozenInvestigation ?? this.liveInvestigation
+      : this.liveInvestigation;
+  }
+
+  private displayedInvestigationContract(): Readonly<{
+    scope: StructuralEvidenceScope;
+    filter: Filter;
+  }> | null {
+    return this.mode === "frozen"
+      ? this.frozenInvestigationContract ?? this.liveInvestigationContract
+      : this.liveInvestigationContract;
+  }
+
+  private investigationSnapshot(): WorkbenchEvidenceInvestigationSnapshot {
+    const investigation = this.displayedInvestigation();
+    const topology = this.topologyProjection.snapshot();
+    const target = findTopologySelection(topology, this.scopeId ?? "page");
+    const currentScope = structuralEvidenceScope(target);
+    const committedContract = this.displayedInvestigationContract();
+    if (!investigation) {
+      return Object.freeze({
+        ...emptyInvestigation,
+        scope: committedContract?.scope ?? currentScope,
+        filter: committedContract?.filter ?? this.canonicalFilter,
+        queryState: this.investigationState,
+        problem: this.investigationProblem
+      });
+    }
+    return Object.freeze({
+      scope: committedContract?.scope ?? currentScope,
+      filter: committedContract?.filter ?? this.canonicalFilter,
+      readPoint: investigation.readPoint,
+      historyInterval: investigation.readPoint.interval,
+      representedEvidenceBoundary: investigation.readPoint.committedEvidenceBoundary,
+      retainedRange: investigation.readPoint.retainedRange,
+      page: investigation.page,
+      counts: Object.freeze({
+        shown: investigation.page.evidence.length,
+        matching: investigation.totals.matching,
+        inScope: investigation.totals.inScope
+      }),
+      discoveries: investigation.discoveries,
+      lookup: investigation.lookup,
+      find: investigation.find,
+      evaluation: investigation.evaluation,
+      coverage: this.historyStatus.phase === "STOPPED" ? "LIMITED" : investigation.coverage,
+      storage: investigation.storage,
+      queryState: this.investigationState,
+      problem: this.investigationProblem
+    });
+  }
+
   private clearFindResults(): void {
-    this.findQueryGeneration += 1;
     this.findCurrentEventId = null;
     this.findResultEvents = Object.freeze([]);
     this.findMatchIndexes = Object.freeze([]);
+    this.findMatchIdentities = Object.freeze([]);
+    this.findWindowByEventId.clear();
     this.findEvidence = null;
-  }
-
-  private refreshFindResults(preserveCurrent: boolean): void {
-    const query = this.find.trim().toLowerCase();
-    if (!query) {
-      this.clearFindResults();
-      this.publish();
-      return;
-    }
-
-    const generation = ++this.findQueryGeneration;
-    const previousEventId = preserveCurrent ? this.findCurrentEventId : null;
-    const topology = this.topologyProjection.snapshot();
-    const target = findTopologySelection(topology, this.scopeId ?? "page");
-    const filters = combineScopeAndUserFilters(eventFiltersForScope(target), this.filters);
-    void this.evidencePipeline.read({ candidateKind: "lightstreamer", filters, order: "asc" }).then(
-      (result) => {
-        if (this.disposed || generation !== this.findQueryGeneration) return;
-        if (!result.ok) {
-          this.findResultEvents = Object.freeze([]);
-          this.findMatchIndexes = Object.freeze([]);
-          this.findCurrentEventId = null;
-          this.findEvidence = null;
-          this.publish();
-          return;
-        }
-        const events = Object.freeze(lightstreamerEvents(result.value.evidence));
-        const matchIndexes = Object.freeze(events.flatMap((event, index) =>
-          createEventSearchText(event).includes(query) ? [index] : []
-        ));
-        this.findResultEvents = events;
-        this.findMatchIndexes = matchIndexes;
-        const preservedMatch = previousEventId
-          ? matchIndexes.findIndex((index) => events[index]?.id === previousEventId)
-          : -1;
-        const currentMatch = preservedMatch >= 0 ? preservedMatch : 0;
-        const currentIndex = matchIndexes[currentMatch];
-        this.findCurrentEventId = currentIndex === undefined ? null : events[currentIndex]?.id ?? null;
-        this.findEvidence = currentIndex === undefined ? null : this.findWindow(currentIndex);
-        this.publish();
-      },
-      () => {
-        if (this.disposed || generation !== this.findQueryGeneration) return;
-        this.findResultEvents = Object.freeze([]);
-        this.findMatchIndexes = Object.freeze([]);
-        this.findCurrentEventId = null;
-        this.findEvidence = null;
-        this.publish();
-      }
-    );
   }
 
   private findWindow(currentIndex: number): EvidenceData {
@@ -1297,67 +1430,39 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private navigateFind(direction: 1 | -1): void {
-    if (this.findMatchIndexes.length === 0) {
+    if (this.findMatchIdentities.length === 0 && this.findMatchIndexes.length === 0) {
       this.findCurrentEventId = null;
       this.findEvidence = null;
       this.publish();
       return;
     }
-    const current = this.findMatchIndexes.findIndex(
-      (index) => this.findResultEvents[index]?.id === this.findCurrentEventId
-    );
-    const base = current < 0 ? (direction > 0 ? -1 : 0) : current;
-    const next = (base + direction + this.findMatchIndexes.length) % this.findMatchIndexes.length;
-    const currentIndex = this.findMatchIndexes[next];
-    this.findCurrentEventId = currentIndex === undefined ? null : this.findResultEvents[currentIndex]?.id ?? null;
-    this.findEvidence = currentIndex === undefined ? null : this.findWindow(currentIndex);
-    this.publish();
-  }
-
-  private reconcileSelection(
-    result: EvidenceData,
-    source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility"
-  ): void {
-    if (!this.selectionEventId) {
-      this.selectionHiddenByFilter = false;
-      return;
-    }
-    const scopeTarget = findTopologySelection(
-      this.topologyProjection.snapshot(),
-      this.scopeId ?? "page"
-    );
-    const selectedEvent = this.selectedEventEnvelope;
-    const selectedMatchesScope = Boolean(
-      selectedEvent &&
-      scopeTarget &&
-      eventMatchesScope(selectedEvent, scopeTarget)
-    );
-    const hiddenByFilter = Boolean(
-      selectedMatchesScope &&
-      selectedEvent &&
-      !matchesEventFilters(selectedEvent, this.filters)
-    );
-    if (hiddenByFilter) {
-      this.selectionHiddenByFilter = true;
-      if (source === "filter" && selectedEvent) {
-        this.focusedEventId = nearestVisibleEventId(
-          result.events,
-          selectedEvent
-        );
+    const identities = this.findMatchIdentities;
+    if (identities.length > 0) {
+      const current = identities.findIndex((identity) => identity.eventId === this.findCurrentEventId);
+      const base = current < 0 ? (direction > 0 ? -1 : 0) : current;
+      const next = (base + direction + identities.length) % identities.length;
+      const target = identities[next];
+      this.findCurrentEventId = target?.eventId ?? null;
+      const targetWindow = target ? this.findWindowByEventId.get(target.eventId) : undefined;
+      if (targetWindow) {
+        const events = Object.freeze(targetWindow.map((record) => this.eventForRecord(record)));
+        this.findResultEvents = events;
+        this.findMatchIndexes = Object.freeze(events.flatMap((event, index) =>
+          createEventSearchText(event).includes(this.find.trim().toLowerCase()) ? [index] : []
+        ));
+        this.findEvidence = freezeEvidence(events, this.liveEvidence.total, 0, targetWindow);
       }
-      return;
+    } else {
+      const current = this.findMatchIndexes.findIndex(
+        (index) => this.findResultEvents[index]?.id === this.findCurrentEventId
+      );
+      const base = current < 0 ? (direction > 0 ? -1 : 0) : current;
+      const next = (base + direction + this.findMatchIndexes.length) % this.findMatchIndexes.length;
+      const currentIndex = this.findMatchIndexes[next];
+      this.findCurrentEventId = currentIndex === undefined ? null : this.findResultEvents[currentIndex]?.id ?? null;
+      this.findEvidence = currentIndex === undefined ? null : this.findWindow(currentIndex);
     }
-    this.selectionHiddenByFilter = false;
-    const selectedStillMatches = selectedEvent
-      ? selectedMatchesScope
-      : result.total > this.windowSize || result.events.some(({ id }) => id === this.selectionEventId);
-    if (selectedStillMatches) return;
-    this.selectionEventId = null;
-    this.focusedEventId = null;
-    this.selectedEventEnvelope = null;
-    if (this.contextId?.startsWith("context:") || this.contextId?.startsWith("raw:")) {
-      this.contextId = null;
-    }
+    this.publish();
   }
 
   private clearHistory(): void {
@@ -1378,9 +1483,7 @@ class Runtime implements WorkbenchRuntime {
           this.publish();
           return;
         }
-        this.commandStateProjections.clear();
-        this.retainedLocalEvidenceIds.clear();
-        this.topologyProjection.clear();
+        this.resetCoherentStateAfterClear();
         this.historyStatus = this.history.status();
         this.clearState = "idle";
         this.refreshEvidence("command");
@@ -1394,40 +1497,71 @@ class Runtime implements WorkbenchRuntime {
     );
   }
 
+  private resetCoherentStateAfterClear(): void {
+    this.queryGeneration += 1;
+    this.evidenceQueryPending = false;
+    this.evidenceLoading = false;
+    this.investigationState = "loading";
+    this.investigationProblem = null;
+    this.lastEvidenceQueryError = null;
+    this.cancelPassivePublication();
+    this.passiveRefreshPending = false;
+    this.commandStateProjections.clear();
+    this.retainedLocalEvidenceIds.clear();
+    this.topologyProjection.clear();
+    this.invalidateEvidenceCopy();
+    this.pendingVisibleBoundaries = [];
+    this.pendingLayoutCommitBoundaries = [];
+    this.renderedEvidenceBoundary = null;
+    this.mode = "live";
+    this.frozenEvidence = null;
+    this.frozenInvestigation = null;
+    this.frozenInvestigationContract = null;
+    this.liveEvidence = emptyEvidence;
+    this.liveInvestigation = null;
+    this.liveInvestigationContract = null;
+    this.lastCoherentEvidence = emptyEvidence;
+    this.lastCoherentInvestigation = null;
+    this.lastCoherentInvestigationContract = null;
+    this.selectionEventId = null;
+    this.selectedEvidenceIdentity = null;
+    this.selectedEventEnvelope = null;
+    this.selectedPayloadLoadedForEventId = null;
+    this.selectionHiddenByFilter = false;
+    this.focusedEventId = null;
+    this.clearedSelectionEventId = null;
+    this.contextId = "context:scope";
+    this.commandProjectionReturnContextId = null;
+    this.actionsReturnContextId = null;
+    this.clearFindResults();
+    this.evidencePageCursors.clear();
+  }
+
   private prepareExport(): void {
     const generation = ++this.exportPreparationGeneration;
-    void this.evidencePipeline.read({ order: "asc" }).then(
-      (result) => {
-        if (this.disposed || generation !== this.exportPreparationGeneration || !result.ok) return;
-        const boundary = result.value.committedEvidenceBoundary;
-        const boundaryEvidence = boundary
-          ? result.value.evidence.filter(
-              (entry) =>
-                entry.intervalId === boundary.intervalId &&
-                entry.sequence <= boundary.sequence
-            )
-          : [];
-        const projection = createTopologyProjection();
-        projection.ingestCommittedEvidence(boundaryEvidence);
-        const scopedTopology = topologyStateForScope(projection.snapshot(), this.scopeId);
-        const document = createTopologyStructuredSnapshot(
-          scopedTopology,
-          projection.status(),
-          {
-            retainedEventCount: result.value.total,
-            completeEvidence: this.exportCompleteEvidence,
-            redact: this.exportRedactions
-          }
-        );
-        this.preparedExport = {
-          document,
-          json: serializeTopologySnapshot(document),
-          filename: topologySnapshotFilename(document, "json")
-        };
-        this.publish();
-      },
-      () => undefined
-    );
+    void this.queryAllEvidence({
+      scope: Object.freeze({ kind: "PAGE" }),
+      filter: createFilter(this.canonicalFilter.revision),
+      order: "OLDEST_FIRST"
+    }).then((result) => {
+      if (this.disposed || generation !== this.exportPreparationGeneration || !result.ok) return;
+      const scopedTopology = topologyStateForScope(this.topologyProjection.snapshot(), this.scopeId);
+      const document = createTopologyStructuredSnapshot(
+        scopedTopology,
+        this.topologyProjection.status(),
+        {
+          retainedEventCount: result.records.length,
+          completeEvidence: this.exportCompleteEvidence,
+          redact: this.exportRedactions
+        }
+      );
+      this.preparedExport = {
+        document,
+        json: serializeTopologySnapshot(document),
+        filename: topologySnapshotFilename(document, "json")
+      };
+      this.publish();
+    });
   }
 
   private invalidatePreparedExport(): void {
@@ -1484,6 +1618,12 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     const event = entry.candidate;
+    // The canonical page projection is intentionally payload-light. Retain
+    // the already-observed immutable envelope as a presentation cache so
+    // fields that are legitimately unavailable to the facet catalog (for
+    // example an item before Session attribution) still honor the existing
+    // renderer contract without issuing a second Evidence read.
+    this.cacheEvidenceEvent(event);
     this.currentPageEpoch = event.topology?.pageEpoch ?? this.currentPageEpoch;
     if (this.captureStatus !== "bridge disconnected") {
       this.captureStatus = "capturing";
@@ -1511,10 +1651,9 @@ class Runtime implements WorkbenchRuntime {
       // A frame after Clear can only prove visibility for the new History
       // Interval. Boundaries accepted before the clear are no longer part of
       // the rendered Evidence snapshot and must not be coalesced into it.
-      this.pendingVisibleBoundaries = [];
-      this.pendingLayoutCommitBoundaries = [];
-      this.renderedEvidenceBoundary = null;
-      shouldPublish = this.updateHistoryCondition(publication.status);
+      this.resetCoherentStateAfterClear();
+      this.updateHistoryCondition(publication.status);
+      shouldPublish = true;
     } else if (publication.type === "terminal") {
       this.historyStatus = publication.status;
       shouldPublish = this.updateHistoryCondition(publication.status);
@@ -1551,6 +1690,7 @@ class Runtime implements WorkbenchRuntime {
         shouldPublish = true;
       }
       if (shouldPublish) this.publish();
+      if (publication.type === "terminal") this.refreshEvidence("command");
       return;
     }
     this.captureBoundary = Object.freeze({
@@ -1562,6 +1702,7 @@ class Runtime implements WorkbenchRuntime {
       recovery: "Reload the inspected page with DevTools open"
     });
     if (shouldPublish || reason) this.publish();
+    if (publication.type === "terminal") this.refreshEvidence("command");
   }
 
   private updateHistoryCondition(
@@ -1578,6 +1719,10 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private schedulePassivePublication(): void {
+    if (!this.initialEvidenceSettled) {
+      this.passiveRefreshPending = true;
+      return;
+    }
     if (this.frameHandle !== null || this.fallbackHandle !== null) {
       return;
     }
@@ -1625,7 +1770,7 @@ class Runtime implements WorkbenchRuntime {
           ? Math.max(0, currentOffset - this.windowSize)
           : direction === "oldest"
             ? oldestOffset
-            : 0;
+          : 0;
     if (offset === currentOffset && this.mode === "frozen") return;
     this.mode = "frozen";
     this.refreshEvidence("navigation", offset);
@@ -1640,13 +1785,16 @@ class Runtime implements WorkbenchRuntime {
     const generation = ++this.evidenceCopyGeneration;
     const topology = this.topologyProjection.snapshot();
     const target = findTopologySelection(topology, this.scopeId ?? "page");
-    const filters = combineScopeAndUserFilters(eventFiltersForScope(target), this.filters);
     const scope = this.scopeSnapshot();
     const scopeId = this.scopeId ?? "page";
     const filterSnapshot = Object.freeze({ ...this.filters });
     this.evidenceCopy = Object.freeze({ state: "preparing", eventCount: 0, text: null });
     this.publish();
-    void this.evidencePipeline.read({ candidateKind: "lightstreamer", filters, order: "asc" }).then(
+    void this.queryAllEvidence({
+      scope: structuralEvidenceScope(target),
+      filter: this.canonicalFilter,
+      order: "OLDEST_FIRST"
+    }).then(
       (result) => {
         if (this.disposed || generation !== this.evidenceCopyGeneration) return;
         if (!result.ok) {
@@ -1663,12 +1811,14 @@ class Runtime implements WorkbenchRuntime {
           format: "lightstreamer-workbench/scoped-evidence-copy/v1",
           scope: { id: scopeId, label: scope.label },
           filters: filterSnapshot,
-          count: result.value.total,
-          events: lightstreamerEvents(result.value.evidence).map(toPersistableEventEnvelope)
+          count: result.records.length,
+          events: result.records
+            .map(eventFromDeterministicRecord)
+            .map(toPersistableEventEnvelope)
         };
         this.evidenceCopy = Object.freeze({
           state: "ready",
-          eventCount: result.value.total,
+          eventCount: result.records.length,
           text: JSON.stringify(document, null, 2)
         });
         this.publish();
@@ -1686,10 +1836,89 @@ class Runtime implements WorkbenchRuntime {
     );
   }
 
+  private async queryAllEvidence(request: Readonly<{
+    scope: StructuralEvidenceScope;
+    filter: Filter;
+    order: "NEWEST_FIRST" | "OLDEST_FIRST";
+  }>): Promise<
+    | Readonly<{ ok: true; records: readonly DeterministicEvidenceRecord[]; readPoint: EvidenceSnapshot["readPoint"] }>
+    | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>
+  > {
+    const pageSize = 100;
+    const records: DeterministicEvidenceRecord[] = [];
+    let at: EvidenceInvestigationQueryRequest["at"] = "LATEST_COMMITTED";
+    let cursor: string | undefined;
+    let readPoint: EvidenceSnapshot["readPoint"] | null = null;
+    let pageCount = 0;
+    let expectedPageCount = Number.POSITIVE_INFINITY;
+    while (true) {
+      const result = await this.evidenceQuery.query({
+        at,
+        scope: request.scope,
+        filter: request.filter,
+        page: Object.freeze({
+          order: request.order,
+          size: pageSize,
+          ...(cursor === undefined ? {} : { cursor })
+        }),
+        discover: [],
+        includePayload: true
+      });
+      if (!result.ok) return result;
+      if (readPoint === null) {
+        readPoint = result.value.readPoint;
+        expectedPageCount = Math.max(1, Math.ceil(result.value.totals.inScope / pageSize) + 1);
+      } else if (!sameEvidenceReadPoint(result.value.readPoint, readPoint)) {
+        return {
+          ok: false,
+          problem: {
+            code: "QUERY_FAILED",
+            message: "The complete Evidence read crossed a committed boundary."
+          }
+        };
+      }
+      if (result.value.page.evidence.some((record) => record.payload === undefined)) {
+        return {
+          ok: false,
+          problem: {
+            code: "QUERY_FAILED",
+            message: "The complete Evidence read did not return full payloads."
+          }
+        };
+      }
+      records.push(...result.value.page.evidence);
+      pageCount += 1;
+      if (result.value.page.nextCursor === null) break;
+      if (pageCount >= expectedPageCount || result.value.page.nextCursor === cursor) {
+        return {
+          ok: false,
+          problem: {
+            code: "QUERY_FAILED",
+            message: "The complete Evidence read exceeded its bounded page contract."
+          }
+        };
+      }
+      cursor = result.value.page.nextCursor;
+      at = readPoint;
+    }
+    return { ok: true, records: Object.freeze(records), readPoint: readPoint! };
+  }
+
   private beginLocalInjectionFromSelection(): void {
     const eventId = this.selectionEventId;
     if (!eventId) {
       this.localInjectionEntryError = "Select one captured Item Update before creating a Local Injection draft.";
+      this.publish();
+      return;
+    }
+    if (this.selectedPayloadLoadedForEventId !== eventId && this.evidenceQueryPending) {
+      this.pendingLocalInjectionEntry = {
+        intent: { kind: "selected-event", eventId },
+        rawText: null,
+        review: false,
+        execute: false
+      };
+      this.localInjectionEntryError = null;
       this.publish();
       return;
     }
@@ -1698,6 +1927,24 @@ class Runtime implements WorkbenchRuntime {
 
   private beginLocalInjectionFromScope(): void {
     this.enterLocalInjection({ kind: "scope-author", scopeId: this.scopeId ?? "page" });
+  }
+
+  private resumePendingLocalInjection(): void {
+    const pending = this.pendingLocalInjectionEntry;
+    if (!pending || this.localInjectionDraft) return;
+    if (pending.intent.kind === "selected-event" && this.selectedPayloadLoadedForEventId !== pending.intent.eventId) return;
+    this.pendingLocalInjectionEntry = null;
+    this.enterLocalInjection(pending.intent);
+    const draft = this.localInjectionDraft as LocalInjectionDraftState | null;
+    if (!draft) return;
+    if (pending.rawText !== null) {
+      draft.rawText = pending.rawText;
+      draft.preflightFingerprint = null;
+      draft.outcome = null;
+      this.refreshLocalInjectionValidation(draft);
+    }
+    if (pending.review) this.reviewLocalInjection();
+    if (pending.execute) this.executeLocalInjection();
   }
 
   private enterLocalInjection(intent: LocalInjectionEntryIntent): void {
@@ -1802,7 +2049,11 @@ class Runtime implements WorkbenchRuntime {
 
   private setLocalInjectionJson(text: string): void {
     const draft = this.localInjectionDraft;
-    if (!draft || draft.phase !== "edit") return;
+    if (!draft) {
+      if (this.pendingLocalInjectionEntry) this.pendingLocalInjectionEntry.rawText = text;
+      return;
+    }
+    if (draft.phase !== "edit") return;
     draft.rawText = text;
     draft.preflightFingerprint = null;
     draft.outcome = null;
@@ -1812,7 +2063,11 @@ class Runtime implements WorkbenchRuntime {
 
   private reviewLocalInjection(): void {
     const draft = this.localInjectionDraft;
-    if (!draft || draft.phase !== "edit") return;
+    if (!draft) {
+      if (this.pendingLocalInjectionEntry) this.pendingLocalInjectionEntry.review = true;
+      return;
+    }
+    if (draft.phase !== "edit") return;
     this.refreshLocalInjectionValidation(draft);
     if (localInjectionReady(draft)) {
       draft.phase = "review";
@@ -1831,7 +2086,11 @@ class Runtime implements WorkbenchRuntime {
 
   private executeLocalInjection(): void {
     const draft = this.localInjectionDraft;
-    if (!draft || draft.phase !== "review" || !draft.document || !draft.preflightFingerprint) return;
+    if (!draft) {
+      if (this.pendingLocalInjectionEntry) this.pendingLocalInjectionEntry.execute = true;
+      return;
+    }
+    if (draft.phase !== "review" || !draft.document || !draft.preflightFingerprint) return;
     this.refreshLocalInjectionValidation(draft);
     const currentFingerprint = this.localInjectionFingerprint(draft);
     if (!localInjectionReady(draft)) {
@@ -2134,107 +2393,391 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.reconcileScopeIdentity();
+    const effectiveOffset = source === "passive" && this.mode === "frozen"
+      ? this.displayedEvidence().offset
+      : offset;
+    if (source !== "navigation") {
+      this.evidencePageCursors.clear();
+    }
     const generation = ++this.queryGeneration;
-    const topology = this.topologyProjection.snapshot();
-    const target = findTopologySelection(topology, this.scopeId ?? "page");
-    const filters = combineScopeAndUserFilters(eventFiltersForScope(target), this.filters);
-    const changesEvidenceIdentity =
-      source === "scope" ||
-      source === "filter" ||
-      source === "reveal-selection";
-    if (changesEvidenceIdentity && this.find.trim()) {
+    const request = this.investigationRequest(effectiveOffset, source);
+    this.evidenceQueryPending = true;
+    this.evidenceLoading = true;
+    this.investigationState = "loading";
+    this.investigationProblem = null;
+    this.lastEvidenceQueryError = null;
+    if (source === "scope" || source === "filter" || source === "reveal-selection" || source === "navigation") {
+      this.lastCoherentEvidence = this.liveEvidence;
+      this.lastCoherentInvestigation = this.liveInvestigation;
+      this.lastCoherentInvestigationContract = this.liveInvestigationContract;
+      this.liveEvidence = emptyEvidence;
+      this.liveInvestigation = null;
+      this.liveInvestigationContract = null;
       this.clearFindResults();
     }
-    let completedSynchronously = false;
-    this.evidenceQueryPending = true;
-    void this.evidencePipeline
-      .read({
-        candidateKind: "lightstreamer",
-        filters,
-        limit: this.windowSize,
-        offsetFromNewest: offset,
-        order: "asc"
-      })
-      .then(
-        (result) => {
-          completedSynchronously = true;
-          if (this.disposed || generation !== this.queryGeneration) {
-            return;
-          }
-          if (!result.ok) {
-            this.lastEvidenceQueryError = result.problem.code;
-            this.evidenceQueryPending = false;
-            this.evidenceLoading = false;
-            this.liveEvidence = emptyEvidence;
-            if (this.visible) this.publish();
-            else this.hiddenDirty = true;
-            this.drainPassiveRefresh();
-            return;
-          }
-          this.lastEvidenceQueryError = null;
-          this.evidenceQueryPending = false;
-          this.evidenceLoading = false;
-          this.historyStatus = this.history.status();
-          this.liveEvidence = freezeEvidence(
-            lightstreamerEvents(result.value.evidence),
-            result.value.total,
-            offset
-          );
-          if (
-            this.mode === "frozen" &&
-            source !== "passive" &&
-            source !== "visibility"
-          ) {
-            this.frozenEvidence = this.liveEvidence;
-          }
-          const displayed = this.displayedEvidence();
-          if (this.clearedSelectionEventId !== this.selectionEventId) {
-            this.reconcileSelection(displayed, source);
-          }
-          if (this.find.trim()) {
-            this.refreshFindResults(source === "passive" || source === "visibility");
-          }
-          if (source === "initial") {
-            this.renderedEvidenceBoundary = result.value.committedEvidenceBoundary;
-            this.snapshot = this.createSnapshot();
-            this.drainPassiveRefresh();
-            return;
-          }
-          if (!this.visible) {
-            this.hiddenDirty = true;
-            this.drainPassiveRefresh();
-            return;
-          }
-          if (displayed === this.liveEvidence || displayed === this.frozenEvidence) {
-            this.renderedEvidenceBoundary = result.value.committedEvidenceBoundary;
-          }
-          this.publish();
-          this.drainPassiveRefresh();
-        },
-        (error) => {
-          completedSynchronously = true;
-          if (this.disposed || generation !== this.queryGeneration) return;
-          this.lastEvidenceQueryError = error instanceof Error && error.name ? error.name : "UNKNOWN_REJECTION";
-          this.evidenceQueryPending = false;
-          if (changesEvidenceIdentity || this.evidenceLoading) {
-            this.evidenceLoading = false;
-            this.liveEvidence = emptyEvidence;
-            if (this.mode === "frozen") this.frozenEvidence = emptyEvidence;
-            if (this.visible) this.publish();
-            else this.hiddenDirty = true;
-          }
-          this.drainPassiveRefresh();
-        }
-      );
-    if (
-      !completedSynchronously &&
-      source !== "initial" &&
-      source !== "passive" &&
-      source !== "visibility"
-    ) {
-      if (changesEvidenceIdentity) this.evidenceLoading = true;
+    if (source !== "initial" && source !== "passive" && source !== "visibility") {
       this.publish();
     }
+
+    void Promise.resolve(this.queryInvestigation(request, effectiveOffset)).then(
+      (result) => {
+        if (this.disposed || generation !== this.queryGeneration) return;
+        this.evidenceQueryPending = false;
+        this.evidenceLoading = false;
+        if (!result.ok) {
+          this.investigationState = "error";
+          this.investigationProblem = result.problem;
+          this.lastEvidenceQueryError = result.problem.code;
+          if (source === "initial") this.initialEvidenceSettled = true;
+          if (!this.liveInvestigation && this.lastCoherentInvestigation) {
+            this.liveEvidence = this.lastCoherentEvidence;
+            this.liveInvestigation = this.lastCoherentInvestigation;
+            this.liveInvestigationContract = this.lastCoherentInvestigationContract;
+            this.applyFindResult(this.lastCoherentInvestigation.find, this.lastCoherentEvidence.records);
+          }
+          if (!this.liveInvestigation) this.liveEvidence = emptyEvidence;
+          if (this.visible) this.publish();
+          else this.hiddenDirty = true;
+          this.drainPassiveRefresh();
+          return;
+        }
+
+        this.investigationState = "ready";
+        this.investigationProblem = null;
+        this.lastEvidenceQueryError = null;
+        this.historyStatus = this.history.status();
+        const committedContract = Object.freeze({
+          scope: request.scope,
+          filter: request.filter
+        });
+        this.liveInvestigationContract = committedContract;
+        if (this.mode === "frozen" && source !== "passive" && source !== "visibility") {
+          this.frozenInvestigationContract = committedContract;
+        }
+        const selectionNeedsLookup = this.selectionEventId !== null &&
+          this.selectedPayloadLoadedForEventId !== this.selectionEventId &&
+          request.lookup?.eventId !== this.selectionEventId;
+        if (result.value.page.nextCursor !== null) {
+          this.evidencePageCursors.set(
+            effectiveOffset + result.value.page.evidence.length,
+            result.value.page.nextCursor
+          );
+        } else {
+          this.evidencePageCursors.delete(effectiveOffset + result.value.page.evidence.length);
+        }
+        this.applyInvestigationSnapshot(result.value, source, effectiveOffset);
+        if (selectionNeedsLookup) {
+          // Selection may arrive while the initial/passive request is in
+          // flight. Reissue the same coherent investigation with the selected
+          // identity attached instead of hydrating payload through a second
+          // legacy read path.
+          this.initialEvidenceSettled = true;
+          this.refreshEvidence("command");
+          return;
+        }
+        this.resumePendingLocalInjection();
+        this.lastCoherentEvidence = this.liveEvidence;
+        this.lastCoherentInvestigation = this.liveInvestigation;
+        this.lastCoherentInvestigationContract = this.liveInvestigationContract;
+        const displayed = this.displayedEvidence();
+        if (displayed === this.liveEvidence || displayed === this.frozenEvidence) {
+          this.renderedEvidenceBoundary = evidenceRefFromIdentity(result.value.readPoint.committedEvidenceBoundary);
+        }
+        if (source === "initial") {
+          this.initialEvidenceSettled = true;
+          this.snapshot = this.createSnapshot();
+          if (this.passiveRefreshPending) {
+            this.passiveRefreshPending = false;
+            this.schedulePassivePublication();
+          }
+          return;
+        }
+        if (!this.visible) {
+          this.hiddenDirty = true;
+          this.drainPassiveRefresh();
+          return;
+        }
+        this.publish();
+        this.drainPassiveRefresh();
+      },
+      (error: unknown) => {
+        if (this.disposed || generation !== this.queryGeneration) return;
+        this.evidenceQueryPending = false;
+        this.evidenceLoading = false;
+        const problem: EvidenceFilterReadProblem = {
+          code: "QUERY_FAILED",
+          message: errorMessage(error)
+        };
+        this.investigationState = "error";
+        this.investigationProblem = problem;
+        this.lastEvidenceQueryError = problem.code;
+        if (source === "initial") this.initialEvidenceSettled = true;
+        if (!this.liveInvestigation && this.lastCoherentInvestigation) {
+          this.liveEvidence = this.lastCoherentEvidence;
+          this.liveInvestigation = this.lastCoherentInvestigation;
+          this.liveInvestigationContract = this.lastCoherentInvestigationContract;
+          this.applyFindResult(this.lastCoherentInvestigation.find, this.lastCoherentEvidence.records);
+        }
+        if (!this.liveInvestigation) this.liveEvidence = emptyEvidence;
+        if (this.visible) this.publish();
+        else this.hiddenDirty = true;
+        this.drainPassiveRefresh();
+      }
+    );
+  }
+
+  private investigationRequest(
+    offset: number,
+    source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility"
+  ): EvidenceInvestigationQueryRequest {
+    const topology = this.topologyProjection.snapshot();
+    const target = findTopologySelection(topology, this.scopeId ?? "page");
+    const frozenReadPoint = this.mode === "frozen" && source !== "passive" && source !== "visibility"
+      ? this.frozenInvestigation?.readPoint
+      : null;
+    const pageSize = Math.min(100, this.windowSize);
+    const currentFind = this.findIdentity(this.findCurrentEventId);
+    const selectedLookup = this.selectedEvidenceIdentity ?? this.identityForEventId(this.selectionEventId);
+    return Object.freeze({
+      at: frozenReadPoint ?? "LATEST_COMMITTED",
+      scope: structuralEvidenceScope(target),
+      filter: this.canonicalFilter,
+      page: Object.freeze({
+        order: "NEWEST_FIRST",
+        size: pageSize,
+        ...(offset > 0 && this.evidencePageCursors.has(offset)
+          ? { cursor: this.evidencePageCursors.get(offset) }
+          : {})
+      }),
+      discover: this.investigationDiscoveries,
+      ...(selectedLookup === null ? {} : { lookup: selectedLookup }),
+      ...(this.find.trim() === "" ? {} : { find: { text: this.find, scopeToFilter: true, ...(currentFind ? { current: currentFind } : {}) } })
+    });
+  }
+
+  private queryInvestigation(
+    request: EvidenceInvestigationQueryRequest,
+    targetOffset: number
+  ): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
+    if (targetOffset === 0 || request.page.cursor !== undefined) {
+      return this.evidenceQuery.query(request);
+    }
+    return this.queryPagedInvestigation(request, targetOffset);
+  }
+
+  private async queryPagedInvestigation(
+    request: EvidenceInvestigationQueryRequest,
+    targetOffset: number
+  ): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
+
+    const pageSize = request.page.size;
+    // IndexedDB cursors are bound to the complete page request, including
+    // size. Traversal uses one stable storage page size and slices only the
+    // requested renderer window after the bounded fetches complete.
+    const storagePageSize = MAX_EVIDENCE_PAGE_SIZE;
+    let startOffset = 0;
+    let cursor: string | undefined;
+    let at = request.at;
+    let currentOffset = startOffset;
+    let first: EvidenceSnapshot | null = null;
+    let last: EvidenceSnapshot | null = null;
+    const collected: DeterministicEvidenceRecord[] = [];
+    while (true) {
+      const result = await this.evidenceQuery.query({
+        ...request,
+        at,
+        page: Object.freeze({
+          ...request.page,
+          size: storagePageSize,
+          ...(cursor === undefined ? {} : { cursor })
+        })
+      });
+      if (!result.ok) return result;
+      first ??= result.value;
+      last = result.value;
+      if (first && !sameEvidenceReadPoint(result.value.readPoint, first.readPoint)) {
+        return {
+          ok: false,
+          problem: {
+            code: "QUERY_FAILED",
+            message: "The paged Evidence read crossed a committed boundary."
+          }
+        };
+      }
+      collected.push(...result.value.page.evidence);
+      if (result.value.page.nextCursor !== null) {
+        this.evidencePageCursors.set(currentOffset + result.value.page.evidence.length, result.value.page.nextCursor);
+      }
+      const collectedEnd = startOffset + collected.length;
+      if (collectedEnd >= targetOffset + pageSize || result.value.page.nextCursor === null) break;
+      currentOffset += result.value.page.evidence.length;
+      cursor = result.value.page.nextCursor;
+      at = first.readPoint;
+      if (result.value.page.evidence.length === 0) break;
+    }
+    const start = Math.max(0, targetOffset - startOffset);
+    const page = collected.slice(start, start + pageSize);
+    const absoluteEnd = targetOffset + page.length;
+    const lastPageEnd = currentOffset + (last?.page.evidence.length ?? 0);
+    const nextCursor = absoluteEnd === lastPageEnd ? last?.page.nextCursor ?? null : null;
+    return {
+      ok: true,
+      value: Object.freeze({
+        ...first!,
+        page: Object.freeze({ evidence: Object.freeze(page), nextCursor })
+      })
+    };
+  }
+
+  private applyInvestigationSnapshot(
+    value: EvidenceSnapshot,
+    source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility",
+    offset: number
+  ): void {
+    const records = Object.freeze([...value.page.evidence].reverse());
+    const events = Object.freeze(records.flatMap((record) => [this.eventForRecord(record)]));
+    const nextEvidence = freezeEvidence(events, value.totals.inScope, offset, records);
+    this.liveEvidence = nextEvidence;
+    this.liveInvestigation = value;
+    const preserveFrozenFind = this.mode === "frozen" && (source === "passive" || source === "visibility");
+    if (!preserveFrozenFind) {
+      this.findEvidence = null;
+      this.applyFindResult(value.find, records);
+    }
+
+    const selectedRecord = this.liveEvidence.records.find(
+      (record) => record.identity.eventId === this.selectionEventId
+    );
+    if (selectedRecord) {
+      this.selectedEvidenceIdentity = selectedRecord.identity;
+      this.selectedEventEnvelope = this.eventForRecord(selectedRecord);
+      this.selectionHiddenByFilter = false;
+    }
+
+    if (value.lookup?.state === "RETAINED") {
+      this.selectedEvidenceIdentity = value.lookup.evidence.identity;
+      const candidate = candidateFromDeterministicRecord(value.lookup.evidence);
+      if (isLightstreamerEvidenceCandidate(candidate)) {
+        this.selectedEventEnvelope = candidate;
+        if (candidate.id === this.selectionEventId) this.selectedPayloadLoadedForEventId = candidate.id;
+      }
+    }
+
+    if (this.mode === "frozen" && source !== "passive" && source !== "visibility") {
+      this.frozenEvidence = nextEvidence;
+      this.frozenInvestigation = value;
+    }
+    if (this.clearedSelectionEventId !== this.selectionEventId && value.lookup) {
+      this.reconcileSelectionFromLookup(value.lookup, nextEvidence, source);
+    }
+  }
+
+  private applyFindResult(
+    find: EvidenceFindResult | null,
+    records: readonly DeterministicEvidenceRecord[]
+  ): void {
+    if (!find || find.text.trim() === "") {
+      this.findCurrentEventId = null;
+      this.findResultEvents = Object.freeze([]);
+      this.findMatchIndexes = Object.freeze([]);
+      this.findMatchIdentities = Object.freeze([]);
+      this.findWindowByEventId.clear();
+      this.findEvidence = null;
+      return;
+    }
+    const findRecords = Object.freeze([...(find.window ?? records)].slice(0, this.windowSize));
+    this.findCurrentEventId = find.current?.eventId ?? find.first?.eventId ?? null;
+    this.findMatchIdentities = Object.freeze(find.matches ?? [
+      ...(find.first ? [find.first] : []),
+      ...(find.current && find.current.eventId !== find.first?.eventId ? [find.current] : []),
+      ...(find.previous ? [find.previous] : []),
+      ...(find.next ? [find.next] : [])
+    ].filter((identity, index, all) => all.findIndex((candidate) => candidate.eventId === identity.eventId) === index));
+    this.findWindowByEventId.clear();
+    if (find.current) this.findWindowByEventId.set(find.current.eventId, findRecords);
+    if (find.first) this.findWindowByEventId.set(find.first.eventId, findRecords);
+    if (find.next && find.nextWindow) this.findWindowByEventId.set(find.next.eventId, Object.freeze(find.nextWindow));
+    this.findResultEvents = Object.freeze(findRecords.map((record) => this.eventForRecord(record)));
+    this.findMatchIndexes = Object.freeze(this.findResultEvents.flatMap((event, index) =>
+      createEventSearchText(event).includes(find.text.trim().toLowerCase()) ? [index] : []
+    ));
+    this.findEvidence = freezeEvidence(
+      this.findResultEvents,
+      this.liveEvidence.total,
+      0,
+      findRecords
+    );
+  }
+
+  private reconcileSelectionFromLookup(
+    lookup: EvidenceLookupResult,
+    result: EvidenceData,
+    source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility"
+  ): void {
+    if (!this.selectionEventId) {
+      this.selectionHiddenByFilter = false;
+      return;
+    }
+    if (lookup.state !== "RETAINED") {
+      this.selectionHiddenByFilter = true;
+      return;
+    }
+    if (lookup.evidence.identity.eventId !== this.selectionEventId) return;
+    this.selectionHiddenByFilter = !lookup.matchesFilter || !lookup.inScope;
+    if (this.selectionHiddenByFilter && (source === "filter" || source === "scope")) {
+      this.focusedEventId = nearestVisibleRecordId(result.records, lookup.evidence.identity);
+    }
+    if (!this.selectionHiddenByFilter && this.focusedEventId === null) {
+      this.focusedEventId = this.selectionEventId;
+    }
+  }
+
+  private eventForRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
+    const cached = this.evidenceEventCache.get(record.identity.eventId);
+    if (cached) {
+      this.cacheEvidenceEvent(cached);
+      return cached;
+    }
+    const event = eventFromDeterministicRecord(record);
+    this.cacheEvidenceEvent(event);
+    return event;
+  }
+
+  private cacheEvidenceEvent(event: LightstreamerEventEnvelope): void {
+    this.evidenceEventCache.delete(event.id);
+    this.evidenceEventCache.set(event.id, event);
+    while (this.evidenceEventCache.size > MAX_EVIDENCE_EVENT_CACHE) {
+      const oldest = this.evidenceEventCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.evidenceEventCache.delete(oldest);
+    }
+  }
+
+  private identityForEventId(eventId: string | null): EvidenceIdentity | null {
+    if (!eventId) return null;
+    const investigation = this.liveInvestigation ?? this.frozenInvestigation;
+    return investigation?.page.evidence.find((record) => record.identity.eventId === eventId)?.identity ??
+      (investigation?.lookup?.state === "RETAINED" && investigation.lookup.evidence.identity.eventId === eventId
+        ? investigation.lookup.evidence.identity
+        : null);
+  }
+
+  private findIdentity(eventId: string | null): EvidenceIdentity | null {
+    if (!eventId) return null;
+    const investigations = [this.liveInvestigation, this.frozenInvestigation];
+    for (const investigation of investigations) {
+      const match = investigation?.find?.current?.eventId === eventId
+        ? investigation.find.current
+        : investigation?.find?.first?.eventId === eventId
+          ? investigation.find.first
+        : investigation?.find?.previous?.eventId === eventId
+          ? investigation.find.previous
+          : investigation?.find?.next?.eventId === eventId
+            ? investigation.find.next
+            : null;
+      if (match) return match;
+    }
+    return this.identityForEventId(eventId);
   }
 
   private drainPassiveRefresh(): void {
@@ -2248,23 +2791,10 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private hydrateProjections(): void {
-    void this.evidencePipeline.read({ candidateKind: "lightstreamer", order: "asc" }).then(
-      (result) => {
-        if (this.disposed) {
-          return;
-        }
-        if (!result.ok) return;
-        this.historyStatus = this.history.status();
-        if (this.version === 0) {
-          this.snapshot = this.createSnapshot();
-        } else if (this.visible) {
-          this.publish();
-        } else {
-          this.hiddenDirty = true;
-        }
-      },
-      () => undefined
-    );
+    // Evidence is hydrated by the single investigation query. Keeping this
+    // hook makes the startup sequence explicit without issuing a second
+    // legacy read that could produce a different boundary.
+    this.historyStatus = this.history.status();
   }
 
   private reconcileScopeIdentity(): void {
@@ -2310,6 +2840,9 @@ class Runtime implements WorkbenchRuntime {
 
   private createSnapshot(): WorkbenchSnapshot {
     const evidence = this.displayedEvidence();
+    const baseEvidence = this.mode === "frozen"
+      ? this.frozenEvidence ?? emptyEvidence
+      : this.liveEvidence;
     const scope = this.scopeSnapshot();
     const visibleEnd = evidence.events.length > 0
       ? Math.max(0, evidence.total - evidence.offset)
@@ -2317,8 +2850,11 @@ class Runtime implements WorkbenchRuntime {
     const visibleStart = evidence.events.length > 0
       ? Math.max(1, visibleEnd - evidence.events.length + 1)
       : 0;
+    const baseVisibleEnd = baseEvidence.events.length > 0
+      ? Math.max(0, baseEvidence.total - baseEvidence.offset)
+      : 0;
     const newerCount = !this.evidenceLoading && this.mode === "frozen"
-      ? Math.max(0, this.liveEvidence.total - visibleEnd)
+      ? Math.max(0, this.liveEvidence.total - baseVisibleEnd)
       : 0;
     const findIndex = this.findMatchIndexes.findIndex(
       (index) => this.findResultEvents[index]?.id === this.findCurrentEventId
@@ -2353,11 +2889,11 @@ class Runtime implements WorkbenchRuntime {
       evidence: Object.freeze({
         events: Object.freeze(evidence.events.map((event) => this.presentEvidence(event))),
         loading: this.evidenceLoading,
-        total: this.evidenceLoading ? evidence.total : this.liveEvidence.total,
+        total: this.mode === "frozen" || this.evidenceLoading ? evidence.total : this.liveEvidence.total,
         windowSize: this.windowSize,
         mode: this.mode,
         newerCount,
-        offset: newerCount,
+        offset: this.mode === "frozen" ? evidence.offset : newerCount,
         visibleStart,
         visibleEnd,
         hasOlder: visibleStart > 1,
@@ -2366,7 +2902,9 @@ class Runtime implements WorkbenchRuntime {
         find: this.find,
         findState: Object.freeze({
           query: this.find,
-          matchCount: this.findMatchIndexes.length,
+          matchCount: this.find.trim() === ""
+            ? 0
+            : this.displayedInvestigation()?.find?.total ?? this.findMatchIndexes.length,
           currentIndex: findIndex,
           currentEventId: findIndex >= 0 ? this.findCurrentEventId : null
         }),
@@ -2380,7 +2918,8 @@ class Runtime implements WorkbenchRuntime {
                 canReveal: true as const,
                 canClear: true as const
               })
-            : null
+            : null,
+        investigation: this.investigationSnapshot()
       })
     });
   }
@@ -2985,9 +3524,15 @@ function yesNo(value: boolean): "Yes" | "No" {
 function freezeEvidence(
   events: readonly LightstreamerEventEnvelope[],
   total: number,
-  offset: number
+  offset: number,
+  records: readonly DeterministicEvidenceRecord[] = []
 ): EvidenceData {
-  return Object.freeze({ events: Object.freeze([...events]), total, offset });
+  return Object.freeze({
+    events: Object.freeze([...events]),
+    total,
+    offset,
+    records: Object.freeze([...records])
+  });
 }
 
 function isLightstreamerEvidenceCandidate(
@@ -3002,14 +3547,6 @@ function topologyCheckpointSyncId(
   if (candidate.kind !== "topology-checkpoint") return null;
   const syncId = candidate.checkpoint.syncId;
   return typeof syncId === "string" && syncId.length > 0 ? syncId : null;
-}
-
-function lightstreamerEvents(
-  evidence: readonly CommittedEvidence[]
-): readonly LightstreamerEventEnvelope[] {
-  return evidence.flatMap(({ candidate }) =>
-    isLightstreamerEvidenceCandidate(candidate) ? [candidate] : []
-  );
 }
 
 function toWorkbenchEvidence(event: LightstreamerEventEnvelope): WorkbenchEvidence {
@@ -3780,153 +4317,6 @@ function sameScopeNodePresentation(
   );
 }
 
-function eventFiltersForScope(target: TopologySelectionTarget | null): EventFilterState {
-  if (!target || target.kind === "generation" || target.kind === "inferred-child") {
-    return { clientId: "\u0000workbench:no-structural-scope" };
-  }
-  switch (target.kind) {
-    case "page":
-      return {};
-    case "client":
-      return { clientId: target.client.id };
-    case "session":
-      return { clientId: target.client.id, sessionId: target.session.id };
-    case "subscription":
-      return {
-        ...(target.client ? { clientId: target.client.id } : { clientId: null }),
-        ...(target.session ? { sessionId: target.session.id } : {}),
-        subscriptionId: target.subscription.id
-      };
-    case "item":
-      return {
-        ...(target.client ? { clientId: target.client.id } : { clientId: null }),
-        ...(target.session ? { sessionId: target.session.id } : {}),
-        subscriptionId: target.subscription.id,
-        item: target.item.name ?? undefined,
-        itemPosition: target.item.position ?? undefined
-      };
-    case "listener":
-      return {
-        ...(target.client ? { clientId: target.client.id } : { clientId: null }),
-        ...(target.session ? { sessionId: target.session.id } : {}),
-        subscriptionId: target.subscription.id,
-        ...(target.item
-          ? {
-              item: target.item.name ?? undefined,
-              itemPosition: target.item.position ?? undefined
-            }
-          : {}),
-        listenerId: target.listener.id
-      };
-  }
-}
-
-function combineScopeAndUserFilters(
-  scope: EventFilterState,
-  user: EventFilterState
-): EventFilterState {
-  for (const key of [
-    "clientId",
-    "sessionId",
-    "subscriptionId",
-    "item",
-    "itemPosition",
-    "listenerId"
-  ] as const) {
-    if (
-      scope[key] !== undefined &&
-      user[key] !== undefined &&
-      scope[key] !== user[key]
-    ) {
-      return { ...user, clientId: "\u0000workbench:no-filter-intersection" };
-    }
-  }
-  return { ...user, ...scope };
-}
-
-function eventMatchesScope(
-  event: LightstreamerEventEnvelope,
-  target: TopologySelectionTarget
-): boolean {
-  switch (target.kind) {
-    case "page":
-      return true;
-    case "client":
-      return event.client?.id === target.client.id;
-    case "session":
-      return (
-        event.client?.id === target.client.id &&
-        (target.session.id
-          ? event.client?.sessionId === target.session.id
-          : !event.client?.sessionId)
-      );
-    case "subscription":
-      return eventMatchesSubscription(event, target);
-    case "item":
-      return (
-        eventMatchesSubscription(event, target) &&
-        event.item?.name === target.item.name &&
-        event.item?.position === target.item.position
-      );
-    case "listener":
-      return (
-        eventMatchesSubscription(event, target) &&
-        event.listener?.id === target.listener.id &&
-        (!target.item ||
-          (event.item?.name === target.item.name &&
-            event.item?.position === target.item.position))
-      );
-    case "generation":
-      return eventMatchesGeneration(event, target);
-    case "inferred-child":
-      return (
-        eventMatchesGeneration(event, target) &&
-        (!target.child.callback || event.raw?.callback === target.child.callback)
-      );
-  }
-}
-
-function eventMatchesSubscription(
-  event: LightstreamerEventEnvelope,
-  target: Extract<
-    TopologySelectionTarget,
-    { kind: "subscription" | "item" | "listener" | "generation" | "inferred-child" }
-  >
-): boolean {
-  if (event.subscription?.id !== target.subscription.id) return false;
-  if (target.client && event.client?.id !== target.client.id) return false;
-  if (target.session?.id && event.client?.sessionId !== target.session.id) return false;
-  return true;
-}
-
-function eventMatchesGeneration(
-  event: LightstreamerEventEnvelope,
-  target: Extract<TopologySelectionTarget, { kind: "generation" | "inferred-child" }>
-): boolean {
-  if (!eventMatchesSubscription(event, target)) return false;
-  if (target.generation.key && event.update?.key !== target.generation.key) return false;
-  const eventSequence = event.topology?.captureSequence;
-  if (eventSequence !== undefined) {
-    const nextGeneration = target.subscription.commandGenerations
-      .filter(
-        (generation) =>
-          generation.itemId === target.generation.itemId &&
-          generation.key === target.generation.key &&
-          generation.captureSequence > target.generation.captureSequence
-      )
-      .sort((left, right) => left.captureSequence - right.captureSequence)[0];
-    if (
-      eventSequence < target.generation.captureSequence ||
-      (nextGeneration && eventSequence >= nextGeneration.captureSequence)
-    ) {
-      return false;
-    }
-  }
-  const item = target.subscription.items.find(({ id }) => id === target.generation.itemId);
-  return !item ||
-    (event.item?.name === item.name && event.item?.position === item.position);
-}
-
 function topologyStateForScope(
   state: TopologyState,
   scopeId: string | null
@@ -4035,6 +4425,140 @@ function topologyStateFromBranches(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function evidenceRefFromIdentity(identity: EvidenceIdentity | null): EvidenceRef | null {
+  return identity === null
+    ? null
+    : Object.freeze({
+        intervalId: identity.intervalId,
+        sequence: identity.sequence,
+        eventId: identity.eventId
+      });
+}
+
+function structuralEvidenceScope(target: TopologySelectionTarget | null): StructuralEvidenceScope {
+  if (!target || target.kind === "page") return Object.freeze({ kind: "PAGE" });
+  switch (target.kind) {
+    case "client":
+      return Object.freeze({ kind: "CLIENT", clientId: target.client.id });
+    case "session":
+      return Object.freeze({
+        kind: "SESSION",
+        clientId: target.client.id,
+        sessionId: target.session.id
+      });
+    case "subscription":
+      return Object.freeze({
+        kind: "SUBSCRIPTION",
+        clientId: target.client?.id ?? null,
+        sessionId: target.session?.id ?? null,
+        subscriptionId: target.subscription.id
+      });
+    case "item":
+      return Object.freeze({
+        kind: "ITEM",
+        clientId: target.client?.id ?? null,
+        sessionId: target.session?.id ?? null,
+        subscriptionId: target.subscription.id,
+        ...(target.item.name === null ? {} : { item: target.item.name }),
+        itemPosition: target.item.position ?? undefined
+      });
+    case "listener":
+      return Object.freeze({
+        kind: "LISTENER",
+        clientId: target.client?.id ?? null,
+        sessionId: target.session?.id ?? null,
+        subscriptionId: target.subscription.id,
+        ...(target.item?.name == null ? {} : { item: target.item.name }),
+        itemPosition: target.item?.position ?? undefined,
+        listenerId: target.listener.id
+      });
+    case "generation":
+    case "inferred-child":
+      // Generation rows remain a Subscription structural scope in the
+      // storage-neutral contract. Their generation-specific semantics stay in
+      // the existing topology projection until a later domain seam owns them.
+      return Object.freeze({
+        kind: "SUBSCRIPTION",
+        clientId: target.client?.id ?? null,
+        sessionId: target.session?.id ?? null,
+        subscriptionId: target.subscription.id
+      });
+  }
+}
+
+function eventFromDeterministicRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
+  const payload = lightstreamerPayload(record.payload);
+  if (payload) return payload;
+
+  const facet = (name: string): Readonly<{ value: string; label: string }> | undefined => {
+    const value = record.facets[name];
+    if (!value || typeof value !== "object") return undefined;
+    const candidate = value as { value?: unknown; label?: unknown };
+    return typeof candidate.value === "string" && typeof candidate.label === "string"
+      ? { value: candidate.value, label: candidate.label }
+      : undefined;
+  };
+  const client = facet("client");
+  const session = facet("session");
+  const subscription = facet("subscription");
+  const item = facet("item");
+  const listener = facet("listener");
+  const mode = facet("mode");
+  const key = facet("key");
+  const operation = facet("operation");
+  const provenance = facet("provenance");
+  const observationPath = facet("observationPath");
+  const kind = record.summary === "Topology checkpoint" ? "client-status" : record.summary;
+  return Object.freeze({
+    id: record.identity.eventId,
+    timestamp: record.timestamp,
+    direction: "inbound",
+    source: provenance?.value === "LOCAL" ? "synthetic" : "server",
+    ...(observationPath?.value === "LISTENER" || observationPath?.value === "WIRE"
+      ? { captureSource: observationPath.value.toLowerCase() as "listener" | "wire" }
+      : {}),
+    synthetic: provenance?.value === "LOCAL",
+    kind: kind as LightstreamerEventEnvelope["kind"],
+    ...(client ? { client: { id: client.label, ...(session ? { sessionId: session.label } : {}) } } : {}),
+    ...(subscription
+      ? { subscription: { id: subscription.label, ...(mode ? { mode: mode.label } : {}) } }
+      : {}),
+    ...(item ? { item: { name: item.label } } : {}),
+    ...(listener ? { listener: { id: listener.label } } : {}),
+    ...(key || operation
+      ? { update: { ...(key ? { key: key.label } : {}), ...(operation ? { command: operation.label } : {}) } }
+      : {}),
+    raw: { summary: record.summary, searchText: record.searchText }
+  });
+}
+
+function candidateFromDeterministicRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
+  return eventFromDeterministicRecord(record);
+}
+
+function lightstreamerPayload(value: unknown): LightstreamerEventEnvelope | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<LightstreamerEventEnvelope>;
+  return typeof candidate.id === "string" &&
+      typeof candidate.timestamp === "number" &&
+      (candidate.direction === "inbound" || candidate.direction === "outbound") &&
+      (candidate.source === "server" || candidate.source === "synthetic") &&
+      typeof candidate.synthetic === "boolean" &&
+      typeof candidate.kind === "string"
+    ? candidate as LightstreamerEventEnvelope
+    : null;
+}
+
+function nearestVisibleRecordId(
+  records: readonly DeterministicEvidenceRecord[],
+  selected: EvidenceIdentity
+): string | null {
+  if (records.length === 0) return null;
+  return records.find((record) => record.identity.sequence >= selected.sequence)?.identity.eventId ??
+    records.at(-1)?.identity.eventId ??
+    null;
 }
 
 function commandProjection(
@@ -4194,16 +4718,21 @@ function normalizeWindowSize(value: number | undefined): number {
   return Math.max(1, Math.floor(value ?? DEFAULT_EVIDENCE_WINDOW_SIZE));
 }
 
-function nearestVisibleEventId(
-  events: readonly LightstreamerEventEnvelope[],
-  selected: LightstreamerEventEnvelope
-): string | null {
-  if (events.length === 0) return null;
-  return (
-    events.find((event) => event.timestamp >= selected.timestamp)?.id ??
-    events.at(-1)?.id ??
-    null
-  );
+function sameEvidenceReadPoint(
+  left: EvidenceSnapshot["readPoint"],
+  right: EvidenceSnapshot["readPoint"]
+): boolean {
+  const sameIdentity = (first: EvidenceIdentity | null, second: EvidenceIdentity | null): boolean =>
+    first?.intervalId === second?.intervalId &&
+    first?.pageId === second?.pageId &&
+    first?.ownerId === second?.ownerId &&
+    first?.sequence === second?.sequence &&
+    first?.eventId === second?.eventId;
+  return left.interval.id === right.interval.id &&
+    left.interval.ordinal === right.interval.ordinal &&
+    sameIdentity(left.committedEvidenceBoundary, right.committedEvidenceBoundary) &&
+    sameIdentity(left.retainedRange?.first ?? null, right.retainedRange?.first ?? null) &&
+    sameIdentity(left.retainedRange?.last ?? null, right.retainedRange?.last ?? null);
 }
 
 function browserScheduler(): WorkbenchRuntimeScheduler {

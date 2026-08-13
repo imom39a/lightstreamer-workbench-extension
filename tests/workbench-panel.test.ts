@@ -5,6 +5,7 @@ import { act, createElement } from "react";
 
 import { WorkbenchPanel } from "../src/extension/panel/react/workbench-panel";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import { createFilter } from "../src/core/filter-algebra";
 import {
   type WorkbenchCommand,
   type WorkbenchRuntime,
@@ -99,6 +100,24 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       focusedEventId: "evt-2",
       selectedEventId: "evt-2",
       hiddenSelection: null,
+      investigation: {
+        scope: { kind: "PAGE" },
+        filter: createFilter(1),
+        readPoint: null,
+        historyInterval: null,
+        representedEvidenceBoundary: null,
+        retainedRange: null,
+        page: { evidence: [], nextCursor: null },
+        counts: { shown: 2, matching: 2, inScope: 2 },
+        discoveries: new Map(),
+        lookup: null,
+        find: null,
+        evaluation: null,
+        coverage: null,
+        storage: null,
+        queryState: "ready",
+        problem: null
+      },
       events: [
         {
           id: "evt-1",

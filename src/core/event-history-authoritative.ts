@@ -881,16 +881,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
 
-    const retained = readPoint.retainedRange;
-    const firstSequence = retained?.first.sequence ?? 1;
-    const boundary = readPoint.committedEvidenceBoundary?.intervalId === intervalAtRead.id ? readPoint.committedEvidenceBoundary.sequence : 0;
-    const lastSequence = Math.min(retained?.last.sequence ?? 0, boundary);
-    const entriesAtRead = currentEntriesAtRead.filter((entry) => entry.sequence >= firstSequence && entry.sequence <= lastSequence);
-
-    const records: SelectionRecord[] = entriesAtRead.map((entry) => {
+    const entriesAtRead = entriesAtReadPoint(currentEntriesAtRead, readPoint);
+    const evidenceEntriesAtRead = entriesAtRead.filter((entry) => entry.candidate.kind !== "topology-checkpoint");
+    const records: SelectionRecord[] = evidenceEntriesAtRead.map((entry) => {
       const cached = deterministicRecordCache.get(entry);
-      if (cached) return cached;
-      const record = toDeterministicEvidenceRecord(entry, intervalAtRead);
+      if (cached && (!request.includePayload || cached.payload !== undefined)) return cached;
+      const record = toDeterministicEvidenceRecord(entry, intervalAtRead, request.includePayload === true);
       deterministicRecordCache.set(entry, record);
       return record;
     });
@@ -898,7 +894,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
     if (filter.around?.anchor) {
       const anchor = filter.around.anchor;
-      const anchorIndex = entriesAtRead.findIndex((entry) => sameEvidenceIdentity(evidenceIdentity(toRef(entry), intervalAtRead), anchor));
+      const anchorIndex = evidenceEntriesAtRead.findIndex((entry) => sameEvidenceIdentity(evidenceIdentity(toRef(entry), intervalAtRead), anchor));
       if (anchor.intervalId !== intervalAtRead.id || anchorIndex < 0 || (filter.around.anchorSequence !== undefined && filter.around.anchorSequence !== anchor.sequence)) {
         return Promise.resolve({ ok: false, problem: evidenceReadProblem("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.") });
       }
@@ -910,7 +906,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const selectedIndex = records.findIndex((record) => sameEvidenceIdentity(record.identity, request.lookup!));
       if (selectedIndex >= 0) {
         lookupRecords = records.slice();
-        lookupRecords[selectedIndex] = Object.freeze({ ...lookupRecords[selectedIndex]!, payload: copyCandidate(entriesAtRead[selectedIndex]!.candidate) });
+        lookupRecords[selectedIndex] = Object.freeze({ ...lookupRecords[selectedIndex]!, payload: copyCandidate(evidenceEntriesAtRead[selectedIndex]!.candidate) });
       }
     }
     if (unsupported) {
@@ -952,7 +948,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const page = ordered.slice(offset, offset + request.page.size);
       const nextCursor = offset + page.length < ordered.length ? encodeEvidenceQueryCursor(readPoint, request, offset + page.length) : null;
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
-        const find = request.find === undefined ? null : findEvidence(records, request.find);
+        const find = request.find === undefined ? null : findEvidence(request.find.scopeToFilter ? inScope : records, request.find);
       return Promise.resolve({
         ok: true,
         value: makeEvidenceSnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find)
@@ -1318,7 +1314,7 @@ function inEvidenceScope(record: DeterministicEvidenceRecord, around: EvidenceQu
   );
 }
 
-function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: HistoryInterval): DeterministicEvidenceRecord {
+function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: HistoryInterval, includePayload = false): DeterministicEvidenceRecord {
   const identity = evidenceIdentity(toRef(entry), interval);
   if (entry.candidate.kind === "topology-checkpoint") {
     const searchText = journalCandidateSearchText(entry.candidate);
@@ -1330,8 +1326,15 @@ function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: Histo
     timestamp: entry.candidate.timestamp,
     summary: entry.candidate.kind,
     searchText: canonicalEvidenceSearchText(entry.candidate, { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind }),
-    facets: Object.freeze(facets)
+    facets: Object.freeze(facets),
+    ...(includePayload ? { payload: copyCandidate(entry.candidate) } : {})
   });
+}
+
+function entriesAtReadPoint(entries: readonly CommittedEvidence[], readPoint: EvidenceReadPoint): CommittedEvidence[] {
+  const boundary = readPoint.committedEvidenceBoundary?.sequence ?? 0;
+  const range = readPoint.retainedRange;
+  return entries.filter((entry) => entry.sequence <= boundary && (range === null || (entry.sequence >= range.first.sequence && entry.sequence <= range.last.sequence)));
 }
 
 function makeEvidenceSnapshot(
