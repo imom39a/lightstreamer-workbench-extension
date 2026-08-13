@@ -78,6 +78,10 @@ export type { EventHistory };
 export const AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT = 256;
 export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 2_097_152;
 const EVIDENCE_FACET_COUNT = 12;
+// Large journal erasure is charged to the harness's existing 30-second close
+// stage; ordinary commits and explicit interval clears retain their 2-second
+// transaction ceiling.
+const CLOSE_TRANSACTION_TIMEOUT_MS = 30_000;
 
 const LIVE_PANEL_LEASE_PREFIX = "lsew-events-panel-live-v2-";
 const LIVE_PANEL_LEASE_TTL_MS = 30_000;
@@ -1042,7 +1046,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       try {
         const applied = await options.clearJournal?.();
         if (applied !== false) {
-          await clearJournalRecords(database, loaded.panelSessionId, interval, nextSequence, committedEvidenceBoundary);
+          await clearJournalRecords(database, loaded.panelSessionId, interval, nextSequence, committedEvidenceBoundary, CLOSE_TRANSACTION_TIMEOUT_MS);
           dataDisposition = "ERASED";
           database.db.close();
           await options.closeJournal?.();
@@ -1881,13 +1885,20 @@ async function finalizeTerminal(
   await transactionDone(transaction, "finalizing Event History terminal state");
 }
 
-async function clearJournalRecords(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
+async function clearJournalRecords(
+  database: AuthoritativeEventDatabase,
+  panelSessionId: string,
+  interval: HistoryInterval,
+  nextSequence: number,
+  boundary: EvidenceRef | null,
+  timeoutMs = 2_000
+): Promise<void> {
   const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, null, 0, 0, 0));
-  await transactionDone(transaction, "clearing Event History");
+  await transactionDone(transaction, "clearing Event History", timeoutMs);
 }
 
 function validateJournalRecords(panelSessionId: string, control: ControlRecord | undefined, store: IDBObjectStore, postingStore: IDBObjectStore): Promise<void> {
