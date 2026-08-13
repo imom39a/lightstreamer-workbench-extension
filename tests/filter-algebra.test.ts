@@ -50,6 +50,8 @@ describe("canonical Filter algebra", () => {
     expect(createTypedFilterValue("value", "number", 1).identity).not.toBe(createTypedFilterValue("value", "boolean", true).identity);
     expect(createTypedFilterValue("value", "null", null).identity).not.toBe(createTypedFilterValue("value", "string", "null").identity);
     expect(evaluateFilter({ ...createFilter(), criteria: { missing: { include: [createTypedFilterValue("missing", "string", "x")], exclude: [] } } }, record()).matches).toBe(false);
+    expect(() => createTypedFilterValue("value", "number", Number.NaN)).toThrow();
+    expect(() => createTypedFilterValue("value", "string", true as never)).toThrow();
   });
 
   it("canonicalizes, compares, and serializes independently of authoring order", () => {
@@ -68,6 +70,7 @@ describe("canonical Filter algebra", () => {
     const result = evaluateFilter(filter, record(), () => true);
     expect(result).toMatchObject({ matches: false, evaluation: "UNSUPPORTED_FILTER" });
     expect(evaluateFilter(createFilter(), record(), () => false)).toMatchObject({ matches: false, inScope: false });
+    expect(() => canonicalizeFilter({ ...createFilter(), around: { intervalId: "interval-1", start: 2, end: 2 } })).toThrow();
   });
 
   it("applies an atomic, immutable, revision-checked mutation batch", () => {

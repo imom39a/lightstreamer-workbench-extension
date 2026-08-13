@@ -290,15 +290,25 @@ function canonicalAround(value: FilterAround): FilterAround {
 }
 
 function normalizeValue(type: FilterValueType, value: FilterScalar): FilterScalar {
-  if (type === "enum") {
-    if (typeof value !== "string") throw new Error("Enum Filter values must be strings.");
-    return value.toUpperCase();
+  switch (type) {
+    case "enum":
+      if (typeof value !== "string") throw new Error("Enum Filter values must be strings.");
+      return value.toUpperCase();
+    case "string":
+      if (typeof value !== "string") throw new Error("String Filter values must be strings.");
+      return value;
+    case "number":
+      if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("Number Filter values must be finite numbers.");
+      return value;
+    case "boolean":
+      if (typeof value !== "boolean") throw new Error("Boolean Filter values must be booleans.");
+      return value;
+    case "null":
+      if (value !== null) throw new Error("Null Filter values must be null.");
+      return value;
+    default:
+      throw new Error(`Unsupported Filter value type ${String(type)}.`);
   }
-  if (type === "string" && typeof value !== "string") throw new Error("String Filter values must be strings.");
-  if (type === "number" && (typeof value !== "number" || !Number.isFinite(value))) throw new Error("Number Filter values must be finite numbers.");
-  if (type === "boolean" && typeof value !== "boolean") throw new Error("Boolean Filter values must be booleans.");
-  if (type === "null" && value !== null) throw new Error("Null Filter values must be null.");
-  return value;
 }
 
 function normalizeText(value: string): string {
