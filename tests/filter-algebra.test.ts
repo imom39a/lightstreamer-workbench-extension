@@ -198,4 +198,60 @@ describe("canonical Filter algebra", () => {
     expect(stable.criteria.kind?.include).toHaveLength(2);
     expect(serializeFilter(canonicalizeFilter(JSON.parse(serializeFilter(left))))).toBe(serializeFilter(left));
   });
+
+  it("rejects runtime-cast null mutation payloads without changing the original filter", () => {
+    const value = createTypedFilterValue("key", "string", "ABC");
+    const initial = canonicalizeFilter({
+      ...createFilter(),
+      text: "keep",
+      around: { intervalId: "interval-1", start: 1, end: 4 },
+      criteria: { key: { include: [value], exclude: [] } },
+      unsupported: [{ id: "future:facet", reason: "unsupported" }]
+    });
+    const malformed = [
+      { type: "set-text", text: null },
+      { type: "set-around", around: null },
+      { type: "add-criterion", facet: "key", value, polarity: null },
+      { type: "set-polarity", facet: "key", value, polarity: null },
+      { type: "clear-unsupported", id: null }
+    ] as unknown as readonly FilterMutation[];
+
+    for (const operation of malformed) {
+      expect(applyFilterMutations(initial, initial.revision, [operation])).toMatchObject({
+        ok: false,
+        filter: initial,
+        problem: { code: "INVALID_FILTER_MUTATION" }
+      });
+    }
+  });
+
+  it("rejects runtime-cast null unsupported fields and preserves the filter", () => {
+    const initial = createFilter();
+    for (const criterion of [
+      { id: "future:facet", reason: "unsupported", facet: null },
+      { id: "future:facet", reason: "unsupported", detail: null }
+    ]) {
+      expect(applyFilterMutations(initial, initial.revision, [{ type: "add-unsupported", criterion } as unknown as FilterMutation])).toMatchObject({
+        ok: false,
+        filter: initial,
+        problem: { code: "INVALID_FILTER_MUTATION" }
+      });
+      expect(() => canonicalizeFilter({ ...initial, unsupported: [criterion] as never })).toThrow();
+    }
+  });
+
+  it("excludes presentation labels from canonical bytes while retaining deterministic display labels", () => {
+    const leftValue = createTypedFilterValue("key", "string", "ABC", "Zulu");
+    const rightValue = createTypedFilterValue("key", "string", "ABC", "Alpha");
+    const left = canonicalizeFilter({ ...createFilter(), criteria: { key: { include: [leftValue], exclude: [] } } });
+    const right = canonicalizeFilter({ ...createFilter(), criteria: { key: { include: [rightValue], exclude: [] } } });
+
+    expect(filterEquals(left, right)).toBe(true);
+    expect(serializeFilter(left)).toBe(serializeFilter(right));
+    expect(left.criteria.key?.include[0]?.label).toBe("Zulu");
+    expect(right.criteria.key?.include[0]?.label).toBe("Alpha");
+    expect(serializeFilter(left)).not.toContain("Zulu");
+    expect(serializeFilter(left)).not.toContain("Alpha");
+    expect(serializeFilter(canonicalizeFilter(JSON.parse(serializeFilter(left))))).toBe(serializeFilter(left));
+  });
 });
