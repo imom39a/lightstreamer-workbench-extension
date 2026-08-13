@@ -884,7 +884,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
     if (filter.around?.anchor) {
       const anchor = filter.around.anchor;
-      const anchorIndex = entriesAtRead.findIndex((entry) => entry.intervalId === anchor.intervalId && entry.sequence === anchor.sequence && entry.eventId === anchor.eventId);
+      const anchorIndex = entriesAtRead.findIndex((entry) => sameEvidenceIdentity(evidenceIdentity(toRef(entry), intervalAtRead), anchor));
       if (anchor.intervalId !== intervalAtRead.id || anchorIndex < 0 || (filter.around.anchorSequence !== undefined && filter.around.anchorSequence !== anchor.sequence)) {
         return Promise.resolve({ ok: false, problem: evidenceReadProblem("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.") });
       }
