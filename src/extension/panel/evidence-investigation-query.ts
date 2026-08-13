@@ -153,7 +153,7 @@ function mergeStructuralScope(
       } else {
         // The structural value is the narrower side of the intersection. In
         // particular, an Item Scope carries both name and position; retaining
-        // only a matching legacy item-name criterion would silently widen it.
+        // only a matching item-name criterion would silently widen it.
         criteria[facet] = group;
       }
       continue;
@@ -171,9 +171,6 @@ function structuralValueMatches(
   if (scopeValue.type === "structural-item") {
     const scope = parseStructuralItem(scopeValue.value);
     if (!scope) return false;
-    if (criterion.facet === "legacy:item-position" && criterion.type === "number") {
-      return scope[1] === Number(criterion.value);
-    }
     if (criterion.facet !== "item") return false;
     if (criterion.type === "structural-item") {
       const wanted = parseStructuralItem(criterion.value);

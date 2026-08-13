@@ -10,7 +10,6 @@ import {
   serializeFilter,
   type FilterMutation
 } from "../src/core/filter-algebra";
-import { toCanonicalFilter } from "../src/core/event-filter";
 
 const record = (overrides: Partial<Parameters<typeof evaluateFilter>[1]> = {}) => ({
   timestamp: 10,
@@ -89,14 +88,6 @@ describe("canonical Filter algebra", () => {
     expect(applyFilterMutations(result.filter, 1, [])).toMatchObject({ ok: false, problem: { code: "STALE_FILTER_REVISION" } });
   });
 
-  it("keeps the temporary scalar compatibility adapter separate from the new algebra", () => {
-    const filter = toCanonicalFilter({ query: "  Alpha ", mode: "command", snapshot: false, itemPosition: 2 });
-    expect(filter.text).toBe("alpha");
-    expect(filter.criteria.mode?.include[0]?.value).toBe("COMMAND");
-    expect(filter.criteria.phase?.include[0]?.value).toBe("LIVE");
-    expect(filter.criteria["legacy:item-position"]?.include[0]?.value).toBe(2);
-  });
-
   it("preserves the revision for empty, idempotent, and duplicate no-op batches", () => {
     const value = createTypedFilterValue("key", "string", "ABC");
     const initial = canonicalizeFilter({
@@ -150,10 +141,7 @@ describe("canonical Filter algebra", () => {
     });
   });
 
-  it("preserves explicit legacy null criteria while distinguishing missing from null", () => {
-    const legacy = toCanonicalFilter({ clientId: null, sessionId: null });
-    expect(legacy.criteria.client?.include[0]?.type).toBe("null");
-    expect(legacy.criteria.session?.include[0]?.value).toBeNull();
+  it("preserves explicit null criteria while distinguishing missing from null", () => {
     const filter = canonicalizeFilter({ ...createFilter(), criteria: { value: {
       include: [createTypedFilterValue("value", "null", null)], exclude: [createTypedFilterValue("value", "null", null)]
     } } });

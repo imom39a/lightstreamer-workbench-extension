@@ -1,5 +1,4 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
-import { type EventFilterState, matchesEventFilters } from "./event-filter";
 import {
   type DeterministicEvidenceRecord,
   type EvidenceFilterQueryAdapter,
@@ -122,8 +121,6 @@ export type EvidenceQuery = Readonly<{
   limit?: number;
   offsetFromNewest?: number;
   order?: "asc" | "desc";
-  filters?: EventFilterState;
-  find?: string;
   eventId?: string;
 }>;
 
@@ -1534,11 +1531,6 @@ export function matchesEvidenceQuery(entry: CommittedEvidence, query: EvidenceQu
   if (query.candidateKind === "topology-checkpoint" && entry.candidate.kind !== "topology-checkpoint") return false;
   if (query.afterSequence !== undefined && entry.sequence <= query.afterSequence) return false;
   if (query.eventId !== undefined && entry.eventId !== query.eventId) return false;
-  if (query.filters && !matchesCandidateFilters(entry.candidate, query.filters)) return false;
-  if (query.find) {
-    const text = journalCandidateSearchText(entry.candidate);
-    if (!text.includes(query.find.trim().toLowerCase())) return false;
-  }
   return true;
 }
 
@@ -1551,15 +1543,6 @@ export function pageEvidence(evidence: readonly CommittedEvidence[], query: Evid
   }
   const ordered = query.order === "desc" ? [...evidence].reverse() : [...evidence];
   return query.limit === undefined ? ordered : ordered.slice(0, Math.max(0, query.limit));
-}
-
-function matchesCandidateFilters(candidate: EvidenceCandidate, filters: EventFilterState): boolean {
-  if (candidate.kind !== "topology-checkpoint") return matchesEventFilters(candidate, filters);
-
-  if (filters.query && !journalCandidateSearchText(candidate).includes(filters.query.trim().toLowerCase())) {
-    return false;
-  }
-  return !Object.entries(filters).some(([key, value]) => key !== "query" && value !== undefined && value !== "");
 }
 
 function toRef(evidence: CommittedEvidence): EvidenceRef {

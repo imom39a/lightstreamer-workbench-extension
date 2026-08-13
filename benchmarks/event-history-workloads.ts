@@ -1,5 +1,5 @@
 import { type LightstreamerEventEnvelope, toPersistableEventEnvelope } from "../src/core/event-envelope";
-import { createEventSearchText } from "../src/core/event-filter";
+import { canonicalEvidenceSearchText } from "../src/core/evidence-facets";
 import { authoritativeEventFacetCount } from "../src/core/event-history-indexeddb";
 
 /** Kept in step with fixtures/lightstreamer/pages/fixture-client.js ISSUE_16_GROUPS. */
@@ -177,7 +177,7 @@ function shapeProvenance(shape: EventHistoryShape): string {
 
 function eventSearchTokenCount(event: LightstreamerEventEnvelope): number {
   return new Set(
-    createEventSearchText(event)
+    canonicalEvidenceSearchText(event)
       .trim()
       .toLowerCase()
       .split(/[^a-z0-9_.:-]+/i)

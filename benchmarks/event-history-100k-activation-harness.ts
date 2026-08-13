@@ -7,6 +7,7 @@ import {
 } from "../src/core/event-history-capacity";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import { createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
+import { typedFacetValue } from "../src/core/evidence-filter-contract";
 
 export const HISTORY_100K_TARGET_COUNT = 100_000;
 export const HISTORY_100K_SAMPLE_COUNT = 3;
@@ -153,6 +154,33 @@ async function queryCount(history: EventHistory, request: Parameters<NonNullable
   };
 }
 
+async function canonicalQueryCount(
+  history: EventHistory,
+  options: Readonly<{ mode?: string; find?: string }>
+): Promise<{ count: number; total: number; payloadHydrations: number }> {
+  const filter = {
+    revision: 1,
+    text: "",
+    criteria: options.mode === undefined
+      ? {}
+      : { mode: { include: [typedFacetValue("mode", "enum", options.mode)], exclude: [] } },
+    around: null,
+    unsupported: []
+  };
+  const result = await history.query!({
+    at: "LATEST_COMMITTED",
+    page: { order: "OLDEST_FIRST", size: 100 },
+    filter,
+    ...(options.find === undefined ? {} : { find: { text: options.find, scopeToFilter: true } })
+  });
+  if (!result.ok) throw new Error(`100k activation canonical query failed: ${result.problem.message}`);
+  return {
+    count: result.value.page.evidence.length,
+    total: result.value.find?.total ?? result.value.totals.matching,
+    payloadHydrations: result.value.telemetry?.payloadHydrations ?? result.value.page.evidence.length
+  };
+}
+
 export async function runHistory100kActivationCell(
   workload: History100kWorkload,
   sample: number
@@ -237,13 +265,8 @@ export async function runHistory100kActivationCell(
     const afterStorage = await (navigator.storage?.estimate() ?? Promise.resolve({})).catch(() => ({}));
     const firstPage = await queryCount(history, { order: "asc", limit: 100 });
     const recentPage = await queryCount(history, { order: "desc", limit: 100 });
-    const structured = await queryCount(history, {
-      order: "asc",
-      limit: 100,
-      filters: { subscriptionId: "fixture-command" }
-    });
-    const find = await history.read!({ order: "asc", limit: 100, find: "order" });
-    if (!find.ok) throw new Error(`100k activation Find failed: ${find.problem.message}`);
+    const structured = await canonicalQueryCount(history, { mode: "COMMAND" });
+    const find = await canonicalQueryCount(history, { find: "order" });
     const retainedPage = await history.read!({ order: "asc", limit: 100 });
     if (!retainedPage.ok) throw new Error(`100k activation retained page failed: ${retainedPage.problem.message}`);
     for (const evidence of retainedPage.value.evidence) {
@@ -315,8 +338,8 @@ export async function runHistory100kActivationCell(
       queries: {
         recentPageCount: recentPage.count,
         structuredPageCount: structured.count,
-        findTotal: find.value.total,
-        payloadHydrations: firstPage.payloadHydrations + recentPage.payloadHydrations + structured.payloadHydrations + find.value.evidence.length,
+        findTotal: find.total,
+        payloadHydrations: firstPage.payloadHydrations + recentPage.payloadHydrations + structured.payloadHydrations + find.payloadHydrations,
         completePayloadCollection: false
       },
       elapsedMs: performance.now() - startedAt

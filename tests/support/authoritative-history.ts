@@ -271,7 +271,6 @@ export function createAuthoritativeHistory(
     if (closed) return Promise.resolve(queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "Event History is closed."));
     const compatibilityQuery: EvidenceQuery = {
       candidateKind: "lightstreamer",
-      filters: legacyFiltersFromEvidenceFilter(request.filter),
       ...(request.page.order === "OLDEST_FIRST" && request.page.cursor === undefined
         ? {}
         : { limit: request.page.size }),
@@ -451,55 +450,6 @@ export function createAuthoritativeHistory(
 
   historyObject = { storage: { mode: "memory" }, status, offer, read, query, clear, follow, close };
   return historyObject;
-}
-
-function legacyFiltersFromEvidenceFilter(filter: EvidenceFilter): Readonly<Record<string, unknown>> {
-  const result: Record<string, unknown> = {};
-  const first = (facet: string): { value: string; label: string; type: string } | undefined => {
-    const value = filter.criteria[facet]?.include[0];
-    return value ? { value: value.value, label: value.label, type: value.type } : undefined;
-  };
-  const client = first("client");
-  const session = first("session");
-  const subscription = first("subscription");
-  const item = first("item");
-  const itemPosition = first("legacy:item-position");
-  const listener = first("listener");
-  const mode = first("mode");
-  const key = first("key");
-  const operation = first("operation");
-  const phase = first("phase");
-  const provenance = first("provenance");
-  const kind = first("kind");
-  if (client) result.clientId = client.label;
-  if (session) result.sessionId = session.label;
-  if (subscription) result.subscriptionId = subscription.label;
-  if (item) {
-    if (item.type === "structural-item") {
-      try {
-        const parsed = JSON.parse(item.value) as [string | null, number | null];
-        if (parsed[0] !== null) result.item = parsed[0];
-        if (parsed[1] !== null) result.itemPosition = parsed[1];
-      } catch {
-        result.item = item.label;
-      }
-    } else {
-      result.item = item.label;
-    }
-  }
-  if (itemPosition && itemPosition.type === "number") {
-    const position = Number(itemPosition.value);
-    if (Number.isSafeInteger(position)) result.itemPosition = position;
-  }
-  if (listener) result.listenerId = listener.label;
-  if (mode) result.mode = mode.label;
-  if (key) result.key = key.label;
-  if (operation) result.command = operation.label;
-  if (phase) result.snapshot = phase.label === "SNAPSHOT";
-  if (provenance) result.synthetic = provenance.label === "LOCAL";
-  if (kind) result.kind = kind.label;
-  if (filter.text) result.query = filter.text;
-  return result;
 }
 
 function toRef(evidence: CommittedEvidence): EvidenceRef {

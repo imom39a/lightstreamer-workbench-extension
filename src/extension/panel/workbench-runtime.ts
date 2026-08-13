@@ -16,10 +16,8 @@ import {
 import {
   type CommittedEvidence
 } from "../../core/event-history-authoritative";
-import { createEventSearchText, type EventFilterState } from "../../core/event-filter";
 import {
   applyFilterMutations,
-  canonicalFilterFromLegacyScalars,
   createFilter,
   createTypedFilterValue,
   type FilterMutation,
@@ -275,7 +273,6 @@ export type WorkbenchEvidenceSnapshot = Readonly<{
   visibleEnd: number;
   hasOlder: boolean;
   hasNewer: boolean;
-  filters: Readonly<EventFilterState>;
   find: string;
   findState: Readonly<{
     query: string;
@@ -509,8 +506,6 @@ export type WorkbenchCommand =
   | { type: "confirm-clear-history" }
   | { type: "set-export-redactions"; redactions: readonly TopologySensitiveCategory[] }
   | { type: "set-export-complete-evidence"; complete: boolean }
-  | { type: "set-filters"; filters: EventFilterState }
-  | { type: "clear-filters" }
   | { type: "apply-filter-mutations"; expectedRevision: number; operations: readonly FilterMutation[] }
   | { type: "mutate-filter"; expectedRevision: number; operations: readonly FilterMutation[] }
   | { type: "reset-filter"; expectedRevision: number }
@@ -700,7 +695,6 @@ type LocalInjectionDraftState = {
 type InvestigationCheckpoint = Readonly<{
   scopeId: string | null;
   filter: Filter;
-  filters: Readonly<EventFilterState>;
   find: string;
   findCurrentEventId: string | null;
   selectionEventId: string | null;
@@ -776,7 +770,6 @@ class Runtime implements WorkbenchRuntime {
   private contextId: string | null = null;
   private commandProjectionReturnContextId: string | null = null;
   private actionsReturnContextId: string | null = null;
-  private filters: EventFilterState = {};
   private canonicalFilter: Filter = createFilter(1);
   private filterMutation: WorkbenchFilterMutationSnapshot = Object.freeze({
     state: "idle", revision: 1, changed: false, message: null, removedCriteria: 0
@@ -787,11 +780,6 @@ class Runtime implements WorkbenchRuntime {
   private restorationReadPoint: EvidenceReadPoint | null = null;
   private find = "";
   private findCurrentEventId: string | null = null;
-  private findResultEvents: readonly LightstreamerEventEnvelope[] = Object.freeze([]);
-  private findMatchIndexes: readonly number[] = Object.freeze([]);
-  private findMatchIdentities: readonly EvidenceIdentity[] = Object.freeze([]);
-  private readonly findWindowByEventId = new Map<string, readonly DeterministicEvidenceRecord[]>();
-  private findEvidence: EvidenceData | null = null;
   private mode: "live" | "frozen" = "live";
   private liveEvidence: EvidenceData = emptyEvidence;
   private frozenEvidence: EvidenceData | null = null;
@@ -957,8 +945,7 @@ class Runtime implements WorkbenchRuntime {
 
   private applyFilterCommand(
     expectedRevision: number,
-    operations: readonly FilterMutation[],
-    options: Readonly<{ legacyFilters?: EventFilterState }> = {}
+    operations: readonly FilterMutation[]
   ): void {
     const result = applyFilterMutations(this.canonicalFilter, expectedRevision, operations);
     if (!result.ok) {
@@ -980,13 +967,11 @@ class Runtime implements WorkbenchRuntime {
       removedCriteria: 0
     });
     if (!result.changed) {
-      if (options.legacyFilters) this.filters = { ...options.legacyFilters };
       this.publish();
       return;
     }
     this.canonicalFilter = result.filter;
     this.filterDiscovery = null;
-    if (options.legacyFilters) this.filters = { ...options.legacyFilters };
     this.recordInvestigationCheckpoint();
     this.clearedSelectionEventId = null;
     this.refreshEvidence("filter");
@@ -1025,7 +1010,6 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.canonicalFilter = result.filter;
-    this.filters = {};
     if (result.changed) this.recordInvestigationCheckpoint();
     this.filterMutation = Object.freeze({
       state: "revealed",
@@ -1045,7 +1029,6 @@ class Runtime implements WorkbenchRuntime {
     const checkpoint: InvestigationCheckpoint = Object.freeze({
       scopeId: this.scopeId,
       filter: this.canonicalFilter,
-      filters: Object.freeze({ ...this.filters }),
       find: this.find,
       findCurrentEventId: this.findCurrentEventId,
       selectionEventId: this.selectionEventId,
@@ -1068,7 +1051,6 @@ class Runtime implements WorkbenchRuntime {
     if (!checkpoint || index < this.restorationBarrier) return;
     this.restorationIndex = index;
     this.scopeId = checkpoint.scopeId;
-    this.filters = { ...checkpoint.filters };
     this.canonicalFilter = checkpoint.filter;
     this.find = checkpoint.find;
     this.findCurrentEventId = checkpoint.findCurrentEventId;
@@ -1275,20 +1257,6 @@ class Runtime implements WorkbenchRuntime {
         this.exportCompleteEvidence = command.complete;
         this.invalidatePreparedExport();
         this.publish();
-        return;
-      case "set-filters":
-        // Temporary renderer compatibility only: delegates to canonical
-        // revisioned mutation and is removed by filter-impl-15.
-        this.invalidateEvidenceCopy();
-        this.applyFilterCommand(
-          this.canonicalFilter.revision,
-          legacyFilterOperations(command.filters, this.canonicalFilter.revision),
-          { legacyFilters: command.filters }
-        );
-        return;
-      case "clear-filters":
-        this.invalidateEvidenceCopy();
-        this.applyFilterCommand(this.canonicalFilter.revision, [{ type: "reset" }], { legacyFilters: {} });
         return;
       case "apply-filter-mutations":
       case "mutate-filter":
@@ -1674,7 +1642,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private displayedEvidence(): EvidenceData {
-    return this.findEvidence ?? (this.mode === "frozen" ? this.frozenEvidence ?? emptyEvidence : this.liveEvidence);
+    return this.mode === "frozen" ? this.frozenEvidence ?? emptyEvidence : this.liveEvidence;
   }
 
   private displayedInvestigation(): EvidenceSnapshot | null {
@@ -1733,58 +1701,36 @@ class Runtime implements WorkbenchRuntime {
 
   private clearFindResults(): void {
     this.findCurrentEventId = null;
-    this.findResultEvents = Object.freeze([]);
-    this.findMatchIndexes = Object.freeze([]);
-    this.findMatchIdentities = Object.freeze([]);
-    this.findWindowByEventId.clear();
-    this.findEvidence = null;
-  }
-
-  private findWindow(currentIndex: number): EvidenceData {
-    const maximumStart = Math.max(0, this.findResultEvents.length - this.windowSize);
-    const start = Math.min(maximumStart, Math.max(0, currentIndex - Math.floor(this.windowSize / 2)));
-    const end = Math.min(this.findResultEvents.length, start + this.windowSize);
-    return freezeEvidence(
-      this.findResultEvents.slice(start, end),
-      this.findResultEvents.length,
-      this.findResultEvents.length - end
-    );
   }
 
   private navigateFind(direction: 1 | -1): void {
-    if (this.findMatchIdentities.length === 0 && this.findMatchIndexes.length === 0) {
-      this.findCurrentEventId = null;
-      this.findEvidence = null;
+    const find = this.displayedInvestigation()?.find;
+    if (!find || find.total === 0) {
+      this.clearFindResults();
       this.publish();
       return;
     }
-    const identities = this.findMatchIdentities;
-    if (identities.length > 0) {
-      const current = identities.findIndex((identity) => identity.eventId === this.findCurrentEventId);
-      const base = current < 0 ? (direction > 0 ? -1 : 0) : current;
-      const next = (base + direction + identities.length) % identities.length;
-      const target = identities[next];
-      this.findCurrentEventId = target?.eventId ?? null;
-      const targetWindow = target ? this.findWindowByEventId.get(target.eventId) : undefined;
-      if (targetWindow) {
-        const events = Object.freeze(targetWindow.map((record) => this.eventForRecord(record)));
-        this.findResultEvents = events;
-        this.findMatchIndexes = Object.freeze(events.flatMap((event, index) =>
-          createEventSearchText(event).includes(this.find.trim().toLowerCase()) ? [index] : []
-        ));
-        this.findEvidence = freezeEvidence(events, this.liveEvidence.total, 0, targetWindow);
+    const matches = find.matches ?? [];
+    const current = matches.findIndex((identity) => identity.eventId === this.findCurrentEventId);
+    const target = matches.length > 0
+      ? matches[(current < 0 ? (direction > 0 ? 0 : matches.length - 1) : (current + direction + matches.length) % matches.length)]
+      : direction > 0 ? find.next ?? find.first : find.previous ?? find.first;
+    this.findCurrentEventId = target?.eventId ?? null;
+    if (direction > 0 && target && find.nextWindow && find.nextWindow.length > 0) {
+      const investigation = this.displayedInvestigation();
+      if (investigation) {
+        this.applyInvestigationSnapshot(
+          Object.freeze({
+            ...investigation,
+            find: Object.freeze({ ...find, current: target, window: find.nextWindow })
+          }),
+          "command",
+          this.displayedEvidence().offset
+        );
+        this.publish();
       }
-    } else {
-      const current = this.findMatchIndexes.findIndex(
-        (index) => this.findResultEvents[index]?.id === this.findCurrentEventId
-      );
-      const base = current < 0 ? (direction > 0 ? -1 : 0) : current;
-      const next = (base + direction + this.findMatchIndexes.length) % this.findMatchIndexes.length;
-      const currentIndex = this.findMatchIndexes[next];
-      this.findCurrentEventId = currentIndex === undefined ? null : this.findResultEvents[currentIndex]?.id ?? null;
-      this.findEvidence = currentIndex === undefined ? null : this.findWindow(currentIndex);
     }
-    this.publish();
+    this.refreshEvidence("command");
   }
 
   private clearHistory(): void {
@@ -2310,7 +2256,6 @@ class Runtime implements WorkbenchRuntime {
     const target = findTopologySelection(topology, this.scopeId ?? "page");
     const scope = this.scopeSnapshot();
     const scopeId = this.scopeId ?? "page";
-    const filterSnapshot = Object.freeze({ ...this.filters });
     let copyStats: { bytes: number; count: number } = { bytes: 1, count: 0 };
     this.evidenceCopy = Object.freeze({
       state: "preparing",
@@ -2337,7 +2282,6 @@ class Runtime implements WorkbenchRuntime {
         maxBytes: this.outputByteLimit,
         scopeId,
         scopeLabel: scope.label,
-        filters: filterSnapshot,
         serializeRecord: (record) => toPersistableEventEnvelope(eventFromDeterministicRecord(record)),
         onLatch: (readPoint, total) => {
           this.updateEvidenceCopyProgress(generation, "READING", 0, total, copyStats.bytes, readPoint);
@@ -3070,7 +3014,7 @@ class Runtime implements WorkbenchRuntime {
             this.liveEvidence = this.lastCoherentEvidence;
             this.liveInvestigation = this.lastCoherentInvestigation;
             this.liveInvestigationContract = this.lastCoherentInvestigationContract;
-            this.applyFindResult(this.lastCoherentInvestigation.find, this.lastCoherentEvidence.records);
+            this.applyFindResult(this.lastCoherentInvestigation.find);
           }
           if (!this.liveInvestigation) this.liveEvidence = emptyEvidence;
           if (this.visible) this.publish();
@@ -3154,7 +3098,7 @@ class Runtime implements WorkbenchRuntime {
           this.liveEvidence = this.lastCoherentEvidence;
           this.liveInvestigation = this.lastCoherentInvestigation;
           this.liveInvestigationContract = this.lastCoherentInvestigationContract;
-          this.applyFindResult(this.lastCoherentInvestigation.find, this.lastCoherentEvidence.records);
+          this.applyFindResult(this.lastCoherentInvestigation.find);
         }
         if (!this.liveInvestigation) this.liveEvidence = emptyEvidence;
         if (this.visible) this.publish();
@@ -3180,7 +3124,12 @@ class Runtime implements WorkbenchRuntime {
     for (const discovery of this.investigationDiscoveries) discoveryByFacet.set(discovery.facet, discovery);
     if (this.filterDiscovery) discoveryByFacet.set(this.filterDiscovery.facet, this.filterDiscovery);
     return Object.freeze({
-      at: frozenReadPoint ?? "LATEST_COMMITTED",
+      // Find is a retained-history operation even while the visible page is
+      // Frozen. Read its canonical match window at the current boundary, then
+      // keep the Frozen page/read point when publishing that window.
+      at: this.mode === "frozen" && this.find.trim() !== ""
+        ? "LATEST_COMMITTED"
+        : frozenReadPoint ?? "LATEST_COMMITTED",
       scope: structuralEvidenceScope(target),
       filter: this.canonicalFilter,
       page: Object.freeze({
@@ -3279,16 +3228,38 @@ class Runtime implements WorkbenchRuntime {
     source: "initial" | "scope" | "command" | "passive" | "filter" | "reveal-selection" | "navigation" | "visibility",
     offset: number
   ): void {
-    const records = Object.freeze([...value.page.evidence].reverse());
+    const frozenFindBase = this.mode === "frozen" && this.find.trim() !== ""
+      ? this.frozenInvestigation
+      : null;
+    const projectedValue = frozenFindBase
+      ? Object.freeze({ ...value, readPoint: frozenFindBase.readPoint, totals: frozenFindBase.totals })
+      : value;
+    // Find is part of the same bounded canonical query. When it supplies its
+    // bounded target window, publish that window as the visible page so
+    // next/previous navigation can reveal a retained match without a
+    // renderer-owned scan or a second full-history read.
+    const findWindow = value.find?.window;
+    const findTargetId = value.find?.current?.eventId ?? value.find?.first?.eventId ?? null;
+    const targetIsOnCanonicalPage = findTargetId === null || value.page.evidence.some((record) => record.identity.eventId === findTargetId);
+    const boundedFindWindow = !targetIsOnCanonicalPage && findWindow && findWindow.length > 0
+      ? findWindow.slice(0, this.windowSize)
+      : null;
+    const displayedPage = boundedFindWindow && boundedFindWindow.length > 0
+      ? Object.freeze({ ...projectedValue.page, evidence: Object.freeze([...boundedFindWindow].reverse()) })
+      : projectedValue.page;
+    const displayedValue = displayedPage === projectedValue.page
+      ? projectedValue
+      : Object.freeze({ ...projectedValue, page: displayedPage });
+    const records = Object.freeze([...displayedPage.evidence].reverse());
     const events = Object.freeze(records.flatMap((record) => [this.eventForRecord(record)]));
-    const nextEvidence = freezeEvidence(events, value.totals.inScope, offset, records);
-    this.liveEvidence = nextEvidence;
-    this.liveInvestigation = value;
-    const preserveFrozenFind = this.mode === "frozen" && (source === "passive" || source === "visibility");
-    if (!preserveFrozenFind) {
-      this.findEvidence = null;
-      this.applyFindResult(value.find, records);
-    }
+    const nextEvidence = freezeEvidence(events, displayedValue.totals.inScope, offset, records);
+    const liveRecords = Object.freeze([...value.page.evidence].reverse());
+    const liveEvents = Object.freeze(liveRecords.flatMap((record) => [this.eventForRecord(record)]));
+    this.liveEvidence = frozenFindBase
+      ? freezeEvidence(liveEvents, value.totals.inScope, offset, liveRecords)
+      : nextEvidence;
+    this.liveInvestigation = frozenFindBase ? value : displayedValue;
+    this.applyFindResult(value.find);
 
     const selectedRecord = this.liveEvidence.records.find(
       (record) => record.identity.eventId === this.selectionEventId
@@ -3299,9 +3270,9 @@ class Runtime implements WorkbenchRuntime {
       this.selectionHiddenByFilter = false;
     }
 
-    if (value.lookup?.state === "RETAINED") {
-      this.selectedEvidenceIdentity = value.lookup.evidence.identity;
-      const candidate = candidateFromDeterministicRecord(value.lookup.evidence);
+    if (displayedValue.lookup?.state === "RETAINED") {
+      this.selectedEvidenceIdentity = displayedValue.lookup.evidence.identity;
+      const candidate = candidateFromDeterministicRecord(displayedValue.lookup.evidence);
       if (isLightstreamerEvidenceCandidate(candidate)) {
         this.selectedEventEnvelope = candidate;
         if (candidate.id === this.selectionEventId) this.selectedPayloadLoadedForEventId = candidate.id;
@@ -3310,48 +3281,19 @@ class Runtime implements WorkbenchRuntime {
 
     if (this.mode === "frozen" && source !== "passive" && source !== "visibility") {
       this.frozenEvidence = nextEvidence;
-      this.frozenInvestigation = value;
+      this.frozenInvestigation = displayedValue;
     }
-    if (this.clearedSelectionEventId !== this.selectionEventId && value.lookup) {
-      this.reconcileSelectionFromLookup(value.lookup, nextEvidence, source);
+    if (this.clearedSelectionEventId !== this.selectionEventId && displayedValue.lookup) {
+      this.reconcileSelectionFromLookup(displayedValue.lookup, nextEvidence, source);
     }
   }
 
-  private applyFindResult(
-    find: EvidenceFindResult | null,
-    records: readonly DeterministicEvidenceRecord[]
-  ): void {
+  private applyFindResult(find: EvidenceFindResult | null): void {
     if (!find || find.text.trim() === "") {
       this.findCurrentEventId = null;
-      this.findResultEvents = Object.freeze([]);
-      this.findMatchIndexes = Object.freeze([]);
-      this.findMatchIdentities = Object.freeze([]);
-      this.findWindowByEventId.clear();
-      this.findEvidence = null;
       return;
     }
-    const findRecords = Object.freeze([...(find.window ?? records)].slice(0, this.windowSize));
     this.findCurrentEventId = find.current?.eventId ?? find.first?.eventId ?? null;
-    this.findMatchIdentities = Object.freeze(find.matches ?? [
-      ...(find.first ? [find.first] : []),
-      ...(find.current && find.current.eventId !== find.first?.eventId ? [find.current] : []),
-      ...(find.previous ? [find.previous] : []),
-      ...(find.next ? [find.next] : [])
-    ].filter((identity, index, all) => all.findIndex((candidate) => candidate.eventId === identity.eventId) === index));
-    this.findWindowByEventId.clear();
-    if (find.current) this.findWindowByEventId.set(find.current.eventId, findRecords);
-    if (find.first) this.findWindowByEventId.set(find.first.eventId, findRecords);
-    if (find.next && find.nextWindow) this.findWindowByEventId.set(find.next.eventId, Object.freeze(find.nextWindow));
-    this.findResultEvents = Object.freeze(findRecords.map((record) => this.eventForRecord(record)));
-    this.findMatchIndexes = Object.freeze(this.findResultEvents.flatMap((event, index) =>
-      createEventSearchText(event).includes(find.text.trim().toLowerCase()) ? [index] : []
-    ));
-    this.findEvidence = freezeEvidence(
-      this.findResultEvents,
-      this.liveEvidence.total,
-      0,
-      findRecords
-    );
   }
 
   private reconcileSelectionFromLookup(
@@ -3505,9 +3447,12 @@ class Runtime implements WorkbenchRuntime {
     const newerCount = !this.evidenceLoading && this.mode === "frozen"
       ? Math.max(0, this.liveEvidence.total - baseVisibleEnd)
       : 0;
-    const findIndex = this.findMatchIndexes.findIndex(
-      (index) => this.findResultEvents[index]?.id === this.findCurrentEventId
-    );
+    const findResult = this.displayedInvestigation()?.find;
+    const findMatches = findResult?.matches ?? [];
+    const findIndex = findMatches.findIndex((identity) => identity.eventId === this.findCurrentEventId);
+    const currentFindEventId = this.find.trim() === ""
+      ? null
+      : this.findCurrentEventId ?? findResult?.current?.eventId ?? null;
     const revealAvailability = this.revealSelectionAvailability();
     return Object.freeze({
       version: this.version,
@@ -3548,15 +3493,14 @@ class Runtime implements WorkbenchRuntime {
         visibleEnd,
         hasOlder: visibleStart > 1,
         hasNewer: newerCount > 0,
-        filters: Object.freeze({ ...this.filters }),
         find: this.find,
         findState: Object.freeze({
           query: this.find,
           matchCount: this.find.trim() === ""
             ? 0
-            : this.displayedInvestigation()?.find?.total ?? this.findMatchIndexes.length,
+            : findResult?.total ?? 0,
           currentIndex: findIndex,
-          currentEventId: findIndex >= 0 ? this.findCurrentEventId : null
+          currentEventId: currentFindEventId
         }),
         filterMutation: this.filterMutation,
         restoration: Object.freeze({
@@ -5273,11 +5217,6 @@ function nearestVisibleRecordId(
   return records.find((record) => record.identity.sequence >= selected.sequence)?.identity.eventId ??
     records.at(-1)?.identity.eventId ??
     null;
-}
-
-function legacyFilterOperations(filters: EventFilterState, revision: number): readonly FilterMutation[] {
-  const desired = canonicalFilterFromLegacyScalars(filters, revision);
-  return Object.freeze([{ type: "replace-filter", filter: desired }]);
 }
 
 function blockersToMutations(blockers: readonly RevealBlocker[]): readonly FilterMutation[] {

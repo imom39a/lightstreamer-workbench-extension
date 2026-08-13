@@ -933,10 +933,10 @@ Coverage is organized by architectural boundary:
 | `tests/bridge-message-validation.test.ts` | Capture and reinjection message validators plus stable ID allocation. |
 | `tests/instrumentation-lifecycle.test.ts` | Constructor hooks, namespace hooks, lifecycle wrappers, stable logical update IDs, listener registration/delivery metadata, connection details, WebSocket fallback, and page-side reinjection result behavior. |
 | `tests/event-normalizer.test.ts` | Capture-to-envelope normalization, COMMAND key/command preservation, current vs changed fields, snapshot status, and wire source mapping. |
-| `tests/event-filter.test.ts` | Event search text and structured filters. |
+| `tests/evidence-facets.test.ts` and `tests/filter-algebra.test.ts` | Canonical typed facet extraction, search text, evaluation, and mutation algebra. |
 | `tests/authoritative-event-history.test.ts` | In-memory Event History acceptance, ordered Evidence, Clear/Close lifecycle, failure boundaries, and checkpoint candidates. |
-| `tests/authoritative-event-history-indexeddb.test.ts` | IndexedDB journal startup, ordered batching, committed reads, exact-facet paging, capacity accounting, failure boundaries, and guarded cleanup. |
-| `tests/authoritative-event-history-contract.test.ts` | Shared memory/IndexedDB Event History contract parity for ordered Evidence, Clear, failure, filtering, and lifecycle behavior. |
+| `tests/authoritative-event-history-indexeddb.test.ts` | IndexedDB journal startup, ordered batching, bounded canonical query projections, capacity accounting, failure boundaries, and guarded cleanup. |
+| `tests/authoritative-event-history-contract.test.ts` | Shared memory/IndexedDB Event History contract parity for ordered Evidence, Clear, failure, canonical query, and lifecycle behavior. |
 | `tests/command-state.test.ts` | Full and incremental COMMAND reduction, grouping, metadata carry-forward, item identity, lifecycle, provenance, diagnostics, and draft validation against state. |
 | `tests/topology-state.test.ts` | Session authority and recovery epochs, waiting ownership, logical/delivery/synthetic counters, snapshots, compact five-session history, duplicate/overlap diagnostics, reset semantics, and unassigned subscriptions. |
 | `tests/reinjection-draft.test.ts` | Internal Injection Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
@@ -980,14 +980,14 @@ Release packaging uses `scripts/package-extension.mjs`, which by default runs ty
 2. Emit it from instrumentation or fallback code.
 3. Update `LightstreamerEventEnvelope` only if the normalized model needs new top-level fields.
 4. Update `event-normalizer.ts` conversion logic.
-5. Update `event-filter.ts` or IndexedDB metadata if the kind needs search/filter support.
+5. Extend the canonical facet descriptors in `evidence-facets.ts` and the storage-neutral query projection only if the kind needs search/filter support; do not add renderer predicates or a second filter schema.
 6. Add tests for validator acceptance, normalization, storage/filtering, and panel rendering.
 
 ### Adding Normalized Event Fields
 
 1. Extend the relevant type in `src/core/event-envelope.ts`.
 2. Convert only validated JSON data in `src/core/event-normalizer.ts`.
-3. Include search text in `createEventSearchText()` if users should find it.
+3. Include the field in `canonicalEvidenceSearchText()` if users should find it.
 4. Add IndexedDB metadata/index support only when the field needs efficient structured filtering.
 5. Render it in panel detail or tables where useful.
 

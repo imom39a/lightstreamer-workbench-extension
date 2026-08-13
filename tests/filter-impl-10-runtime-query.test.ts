@@ -11,7 +11,7 @@ import {
 } from "../src/core/evidence-filter-contract";
 import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
 import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
-import { canonicalFilterFromLegacyScalars } from "../src/core/filter-algebra";
+import { createFilter, createTypedFilterValue } from "../src/core/filter-algebra";
 import { toEvidenceQueryRequest } from "../src/extension/panel/evidence-investigation-query";
 import { createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
 
@@ -190,7 +190,7 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
         item: "orders",
         itemPosition: 2
       },
-      filter: canonicalFilterFromLegacyScalars({ item: "orders" }),
+      filter: createFilter(),
       page: { order: "NEWEST_FIRST", size: 60 },
       discover: []
     });
@@ -369,8 +369,9 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
     expect(runtimeFacts(durableRuntime)).toEqual(runtimeFacts(memoryRuntime));
     expect(projection(durableRuntime).find?.total).toBe(2);
 
-    memoryRuntime.dispatch({ type: "set-filters", filters: { item: "orders" } });
-    durableRuntime.dispatch({ type: "set-filters", filters: { item: "orders" } });
+    const itemValue = createTypedFilterValue("item", "structural-item", JSON.stringify(["orders", null]), "orders");
+    memoryRuntime.dispatch({ type: "apply-filter-mutations", expectedRevision: Number(projection(memoryRuntime).filter.revision), operations: [{ type: "add-criterion", facet: "item", value: itemValue }] });
+    durableRuntime.dispatch({ type: "apply-filter-mutations", expectedRevision: Number(projection(durableRuntime).filter.revision), operations: [{ type: "add-criterion", facet: "item", value: itemValue }] });
     await flushStorage();
     await Promise.all([waitForReady(memoryRuntime), waitForReady(durableRuntime)]);
     expect(runtimeFacts(durableRuntime)).toEqual(runtimeFacts(memoryRuntime));

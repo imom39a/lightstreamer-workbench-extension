@@ -63,7 +63,6 @@ export type FilterEvaluation = Readonly<{
 }>;
 
 export type FilterMutation =
-  | Readonly<{ type: "replace-filter"; filter: FilterInput }>
   | Readonly<{ type: "add-criterion"; facet: string; value: TypedFilterValue; polarity?: FilterPolarity }>
   | Readonly<{ type: "remove-criterion"; facet: string; value: TypedFilterValue }>
   | Readonly<{ type: "set-polarity"; facet: string; value: TypedFilterValue; polarity: FilterPolarity }>
@@ -93,49 +92,6 @@ export type FilterBuilder = Readonly<{
   reset(): void;
   apply(expectedRevision: number): FilterMutationResult;
 }>;
-
-/** The deliberately small compatibility shape used by the Build 1 matcher. */
-export type LegacyScalarFilter = Readonly<{
-  query?: string;
-  clientId?: string | null;
-  sessionId?: string | null;
-  subscriptionId?: string;
-  mode?: string;
-  item?: string;
-  itemPosition?: number;
-  key?: string;
-  command?: string;
-  snapshot?: boolean;
-  synthetic?: boolean;
-  kind?: string;
-  listenerId?: string;
-}>;
-
-/**
- * Temporary Build 1 delegation. It is an authoring adapter only; the legacy
- * EventFilterState matcher remains the production compatibility path until
- * the Evidence facet catalog owns these identities (ticket filter-impl-03).
- */
-export function canonicalFilterFromLegacyScalars(legacy: LegacyScalarFilter, revision = 1): Filter {
-  const criteria: Record<string, { include: TypedFilterValue[]; exclude: TypedFilterValue[] }> = {};
-  const add = (facet: string, type: FilterValueType, value: FilterScalar): void => {
-    const typed = createTypedFilterValue(facet, type, value);
-    criteria[facet] = { include: [typed], exclude: [] };
-  };
-  if (legacy.clientId !== undefined) add("client", legacy.clientId === null ? "null" : "string", legacy.clientId);
-  if (legacy.sessionId !== undefined) add("session", legacy.sessionId === null ? "null" : "string", legacy.sessionId);
-  if (legacy.subscriptionId !== undefined) add("subscription", "string", legacy.subscriptionId);
-  if (legacy.mode !== undefined) add("mode", "enum", legacy.mode);
-  if (legacy.item !== undefined) add("item", "string", legacy.item);
-  if (legacy.itemPosition !== undefined) add("legacy:item-position", "number", legacy.itemPosition);
-  if (legacy.key !== undefined) add("key", "string", legacy.key);
-  if (legacy.command !== undefined) add("operation", "enum", legacy.command);
-  if (legacy.snapshot !== undefined) add("phase", "enum", legacy.snapshot ? "SNAPSHOT" : "LIVE");
-  if (legacy.synthetic !== undefined) add("provenance", "enum", legacy.synthetic ? "LOCAL" : "SERVER");
-  if (legacy.kind !== undefined) add("kind", "string", legacy.kind);
-  if (legacy.listenerId !== undefined) add("listener", "string", legacy.listenerId);
-  return canonicalizeFilter({ version: FILTER_VERSION, revision, text: legacy.query ?? "", criteria });
-}
 
 export function createTypedFilterValue(
   facet: string,
@@ -237,11 +193,7 @@ export function evaluateFilter(
     return { evaluation: "COMPLETE", inScope: true, matches: false };
   }
   for (const [facet, criterion] of Object.entries(filter.criteria)) {
-    // The legacy scalar adapter exposes item position as a separate control,
-    // while the canonical Evidence catalog stores name and position together
-    // in the qualified item facet. Evaluate that compatibility facet against
-    // the same canonical item value.
-    const value = facet === "legacy:item-position" ? record.facets.item : record.facets[facet];
+    const value = record.facets[facet];
     if (criterion.include.length > 0 && (!value || !criterion.include.some((candidate) => filterValueMatches(value, candidate)))) {
       return { evaluation: "COMPLETE", inScope: true, matches: false };
     }
@@ -262,18 +214,9 @@ export function filterValueMatches(
   criterion: TypedFilterValue
 ): boolean {
   if (!candidate || criterion.type === "structural-none") return false;
-  if (criterion.facet === "legacy:item-position" && criterion.type === "number") {
-    return parseObservedItem(candidate.value)?.[1] === criterion.value;
-  }
   if (!criterion.type.startsWith("structural-")) {
     if (candidate.identity === criterion.identity) return true;
-    // The compatibility adapter converts the pre-canonical scalar controls
-    // (clientId/sessionId/item/listenerId) into typed values without a
-    // read-point-qualified identity. Keep those controls label-semantic while
-    // fully-qualified facet values remain identity-semantic.
-    return criterion.type === "string" &&
-      ["client", "session", "subscription", "item", "listener", "kind"].includes(criterion.facet) &&
-      candidate.label === criterion.label;
+    return false;
   }
   if (criterion.type === "structural-item") {
     const wanted = parseStructuralItem(String(criterion.value));
@@ -334,7 +277,6 @@ export function applyFilterMutations(currentInput: FilterInput, expectedRevision
 
 function applyMutation(current: Filter, operation: FilterMutation): Filter {
   switch (operation.type) {
-    case "replace-filter": return canonicalizeFilter({ ...operation.filter, revision: current.revision });
     case "set-text": return canonicalizeFilter({ ...current, text: operation.text });
     case "set-around": return canonicalizeFilter({ ...current, around: canonicalAround(operation.around) });
     case "clear-around": return canonicalizeFilter({ ...current, around: null });

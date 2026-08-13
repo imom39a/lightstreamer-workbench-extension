@@ -38,7 +38,6 @@ export type ScopedEvidenceCopyOptions = Readonly<{
   maxBytes: number;
   scopeId: string;
   scopeLabel: string;
-  filters: unknown;
   serializeRecord(record: DeterministicEvidenceRecord): unknown;
   onLatch(readPoint: EvidenceSnapshot["readPoint"], total: number): void;
   onProgress(progress: Readonly<{ completed: number; outputBytes: number; readPoint: EvidenceSnapshot["readPoint"] }>): void;
@@ -139,7 +138,7 @@ export async function createScopedEvidenceCopy(
     const metadata = JSON.stringify({
       format: "lightstreamer-workbench/scoped-evidence-copy/v1",
       scope: { id: options.scopeId, label: options.scopeLabel },
-      filters: options.filters,
+      filter: options.filter,
       count: result.count
     });
     const events = writer.finish();

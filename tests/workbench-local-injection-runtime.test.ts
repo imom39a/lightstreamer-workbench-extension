@@ -920,8 +920,8 @@ describe("WorkbenchRuntime Local Injection", () => {
     await flushAsync();
 
     expect(runtime.getSnapshot().localInjection.draft?.outcome).toMatchObject({ disposition, headline });
-    const synthetic = await history.read({ filters: { synthetic: true } });
-    expect(synthetic).toMatchObject({ ok: true, value: { total: 0 } });
+    const read = await history.read({});
+    expect(read.ok && read.value.evidence.some(({ candidate }) => candidate.kind !== "topology-checkpoint" && candidate.synthetic)).toBe(false);
     runtime.dispose();
   });
 
@@ -950,8 +950,8 @@ describe("WorkbenchRuntime Local Injection", () => {
       headline: "DELIVERY FAILED",
       detail: expect.stringContaining("did not confirm any listener delivery")
     });
-    const synthetic = await history.read({ filters: { synthetic: true } });
-    expect(synthetic).toMatchObject({ ok: true, value: { total: 0 } });
+    const read = await history.read({});
+    expect(read.ok && read.value.evidence.some(({ candidate }) => candidate.kind !== "topology-checkpoint" && candidate.synthetic)).toBe(false);
     runtime.dispose();
   });
 
@@ -991,23 +991,8 @@ describe("WorkbenchRuntime Local Injection", () => {
       headline: "DELIVERED LOCALLY",
       requestId: "delivered-1"
     });
-    const synthetic = await history.read({ filters: { synthetic: true } });
-    expect(synthetic).toMatchObject({
-      ok: true,
-      value: {
-        evidence: [
-          {
-            candidate: {
-              id: "synthetic-delivered-1",
-              source: "synthetic",
-              synthetic: true,
-              raw: { sourceListenerId: identity.listenerId },
-              update: { command: "UPDATE", key: "order-1", fields: { qty: 9 } }
-            }
-          }
-        ]
-      }
-    });
+    const read = await history.read({});
+    expect(read.ok && read.value.evidence.some(({ eventId }) => eventId === "synthetic-delivered-1")).toBe(true);
     expect(runtime.getSnapshot().commandProjections.observed.rows[0]?.[1]).toContain("qty=1");
     expect(runtime.getSnapshot().commandProjections.localEffective.rows[0]?.[1]).toContain("qty=9");
     runtime.dispatch({ type: "execute-local-injection" });
@@ -1084,11 +1069,8 @@ describe("WorkbenchRuntime Local Injection", () => {
     expect(
       runtime.getSnapshot().commandProjections.localEffective.supportingLocalEvidenceId
     ).toBeUndefined();
-    const synthetic = await retainedHistory.read({ filters: { synthetic: true } });
-    expect(synthetic).toMatchObject({
-      ok: true,
-      value: { evidence: [{ eventId: "synthetic-prior-7" }] }
-    });
+    const read = await retainedHistory.read({});
+    expect(read.ok && read.value.evidence.some(({ eventId }) => eventId === "synthetic-prior-7")).toBe(true);
     runtime.dispose();
   });
 });

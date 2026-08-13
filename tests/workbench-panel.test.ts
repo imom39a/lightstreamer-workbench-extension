@@ -44,11 +44,11 @@ function createTestRuntime(snapshot: WorkbenchSnapshot): TestRuntime {
 }
 
 function withScopeContract(snapshot: WorkbenchSnapshot): WorkbenchSnapshot {
-  const possiblyLegacyScope = snapshot.scope as Partial<WorkbenchSnapshot["scope"]>;
+  const scopeCandidate = snapshot.scope as Partial<WorkbenchSnapshot["scope"]>;
   if (
-    possiblyLegacyScope.structure &&
-    typeof possiblyLegacyScope.resolveNode === "function" &&
-    possiblyLegacyScope.structure.length === snapshot.scope.nodes.length
+    scopeCandidate.structure &&
+    typeof scopeCandidate.resolveNode === "function" &&
+    scopeCandidate.structure.length === snapshot.scope.nodes.length
   ) {
     return snapshot;
   }
@@ -94,7 +94,6 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       visibleEnd: 2,
       hasOlder: false,
       hasNewer: false,
-      filters: {},
       find: "",
       findState: { query: "", matchCount: 0, currentIndex: -1, currentEventId: null },
       filterMutation: { state: "idle", revision: 1, changed: false, message: null, removedCriteria: 0 },
@@ -1011,7 +1010,6 @@ describe("React Workbench Diagnose panel", () => {
       ...base,
       evidence: {
         ...base.evidence,
-        filters: {},
         find: "status",
         findState: { query: "status", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" },
         investigation: {
@@ -1033,7 +1031,6 @@ describe("React Workbench Diagnose panel", () => {
     );
     await act(async () => reset?.click());
     expect(runtime.commands).toContainEqual({ type: "reset-filter", expectedRevision: 3 });
-    expect(runtime.commands).not.toContainEqual({ type: "clear-filters" });
 
     await act(async () => root.unmount());
   });

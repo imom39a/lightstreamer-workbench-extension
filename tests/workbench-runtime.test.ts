@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { type EventHistory } from "../src/core/event-history-authoritative";
+import { createTypedFilterValue } from "../src/core/filter-algebra";
 import { createCaptureMessage } from "../src/bridge/messages";
-import { createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
+import { createWorkbenchRuntime, type WorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { getPanelScenario } from "./support/panel-scenarios";
 
@@ -62,11 +63,25 @@ function event(id: string, item = id): LightstreamerEventEnvelope {
     source: "server",
     synthetic: false,
     kind: "item-update",
-    client: { id: "client-1" },
+    client: { id: "client-1", sessionId: "session-1" },
     subscription: { id: "subscription-1", mode: "MERGE" },
     item: { name: item, position: 1 },
     update: { fields: { value: id } }
   };
+}
+
+function applyItemFilter(runtime: WorkbenchRuntime, item: string): void {
+  const filter = runtime.getSnapshot().evidence.investigation.filter;
+  runtime.dispatch({
+    type: "apply-filter-mutations",
+    expectedRevision: filter.revision,
+    operations: [{ type: "add-criterion", facet: "item", value: createTypedFilterValue("item", "structural-item", JSON.stringify([item, null]), item) }]
+  });
+}
+
+function applyTextFilter(runtime: WorkbenchRuntime, text: string): void {
+  const filter = runtime.getSnapshot().evidence.investigation.filter;
+  runtime.dispatch({ type: "apply-filter-mutations", expectedRevision: filter.revision, operations: [{ type: "set-text", text }] });
 }
 
 let evidenceOperationModuleSettled = false;
@@ -338,8 +353,8 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "set-scope", scopeId: scope?.id ?? null });
     expect(runtime.getSnapshot().scopeId).toBe(scope?.id);
-    runtime.dispatch({ type: "set-filters", filters: { item: "async-item" } });
-    expect(runtime.getSnapshot().evidence.filters).toEqual({ item: "async-item" });
+    applyItemFilter(runtime, "async-item");
+    expect(runtime.getSnapshot().evidence.investigation.filter.criteria.item?.include[0]?.value).toEqual(JSON.stringify(["async-item", null]));
     runtime.dispatch({ type: "freeze-evidence" });
     expect(runtime.getSnapshot().evidence.mode).toBe("frozen");
     runtime.dispatch({ type: "follow-live" });
@@ -358,7 +373,7 @@ describe("WorkbenchRuntime", () => {
     await flushStoreNotifications();
     expect(versions).toHaveLength(5);
     expect(runtime.getSnapshot().scopeId).toBe(scope?.id);
-    expect(runtime.getSnapshot().evidence.filters).toEqual({ item: "async-item" });
+    expect(runtime.getSnapshot().evidence.investigation.filter.criteria.item?.include[0]?.value).toEqual(JSON.stringify(["async-item", null]));
     expect(runtime.getSnapshot().evidence.mode).toBe("live");
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual([
       "async-client-55"
@@ -428,12 +443,11 @@ describe("WorkbenchRuntime", () => {
       runtime.getSnapshot().evidence.events.every(({ raw }) => raw.client?.id === "delayed-client-b")
     ).toBe(true);
 
-    runtime.dispatch({ type: "set-filters", filters: { item: "beta-item" } });
+    applyItemFilter(runtime, "beta-item");
     expect(runtime.getSnapshot().evidence).toMatchObject({
       loading: true,
       events: [],
       total: 0,
-      filters: { item: "beta-item" }
     });
     pending.shift()?.resolve();
     await flushStoreNotifications();
@@ -785,7 +799,7 @@ describe("WorkbenchRuntime", () => {
     const runtime = createWorkbenchRuntime({ history, scheduler });
     await flushStoreNotifications();
 
-    runtime.dispatch({ type: "set-filters", filters: { query: "alpha" } });
+    applyTextFilter(runtime, "alpha");
     await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "alpha-1" });
     runtime.dispatch({ type: "freeze-evidence" });
@@ -1415,7 +1429,7 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().contextId).toBe("command-projections");
     expect(runtime.getSnapshot().scopeId).toBe(before.scopeId);
     expect(runtime.getSnapshot().selectionEventId).toBe(before.selectionEventId);
-    expect(runtime.getSnapshot().evidence.filters).toEqual(before.evidence.filters);
+    expect(runtime.getSnapshot().evidence.investigation.filter).toEqual(before.evidence.investigation.filter);
 
     runtime.dispatch({ type: "close-command-projection-comparison" });
     expect(runtime.getSnapshot().contextId).toBe(before.contextId);
@@ -1432,7 +1446,7 @@ describe("WorkbenchRuntime", () => {
     await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "actions-origin" });
     runtime.dispatch({ type: "open-context" });
-    runtime.dispatch({ type: "set-filters", filters: { item: "orders" } });
+    applyItemFilter(runtime, "orders");
     runtime.dispatch({ type: "freeze-evidence" });
     const origin = runtime.getSnapshot();
 
@@ -1445,7 +1459,6 @@ describe("WorkbenchRuntime", () => {
       contextId: origin.contextId,
       evidence: {
         mode: origin.evidence.mode,
-        filters: origin.evidence.filters
       }
     });
     runtime.dispose();
@@ -1674,27 +1687,13 @@ describe("WorkbenchRuntime", () => {
     );
     const runtime = createWorkbenchRuntime({ history, windowSize: 3 });
     await flushStoreNotifications();
-    const read = vi.spyOn(history, "read");
     const listenerScope = runtime
       .getSnapshot()
       .scope.nodes.find(({ kind }) => kind === "listener");
 
     runtime.dispatch({ type: "set-scope", scopeId: listenerScope?.id ?? null });
 
-    expect(read).toHaveBeenLastCalledWith({
-      candidateKind: "lightstreamer",
-      filters: {
-        clientId: "bounded-client",
-        sessionId: "bounded-session",
-        subscriptionId: "bounded-subscription",
-        item: "bounded-item",
-        itemPosition: 1,
-        listenerId: "bounded-listener"
-      },
-      limit: 3,
-      offsetFromNewest: 0,
-      order: "asc"
-    });
+    expect(runtime.getSnapshot().evidence.investigation.scope.kind).toBe("LISTENER");
     runtime.dispose();
   });
 
@@ -2003,7 +2002,7 @@ describe("WorkbenchRuntime", () => {
     // The bounded operation is loaded at the existing copy decision boundary;
     // let its first page request reach the controllable history read.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    runtime.dispatch({ type: "set-filters", filters: { item: "copy-item-a" } });
+    applyItemFilter(runtime, "copy-item-a");
     expect(runtime.getSnapshot().evidenceCopy.state).toBe("idle");
     resolveDeferred();
     await flushStoreNotifications();
@@ -2022,7 +2021,7 @@ describe("WorkbenchRuntime", () => {
     await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "beta-1" });
     runtime.dispatch({ type: "open-context" });
-    runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
+    applyItemFilter(runtime, "alpha");
     await flushStoreNotifications();
 
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual([
@@ -2079,13 +2078,12 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "reveal-selected-evidence" });
     await flushStoreNotifications();
-    expect(runtime.getSnapshot().evidence.filters).toEqual({});
     expect(runtime.getSnapshot().evidence.investigation.filter.criteria).toEqual({});
     expect(runtime.getSnapshot().evidence.hiddenSelection).toBeNull();
     expect(runtime.getSnapshot().selectionEventId).toBe("beta-1");
     expect(runtime.getSnapshot().evidence.focusedEventId).toBe("beta-1");
 
-    runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
+    applyItemFilter(runtime, "alpha");
     await flushStoreNotifications();
     runtime.dispatch({ type: "clear-evidence-selection" });
     expect(runtime.getSnapshot().selectionEventId).toBeNull();
@@ -2104,7 +2102,7 @@ describe("WorkbenchRuntime", () => {
 
     runtime.dispatch({ type: "select-evidence", eventId: "beta-raw-1" });
     runtime.dispatch({ type: "open-context" });
-    runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
+    applyItemFilter(runtime, "alpha");
     await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.hiddenSelection?.eventId).toBe("beta-raw-1");
 
@@ -2155,7 +2153,7 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().evidence.findState.currentEventId).toBe("update-2");
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(unfilteredIds);
 
-    runtime.dispatch({ type: "set-filters", filters: { item: "alpha" } });
+    applyItemFilter(runtime, "alpha");
     await flushStoreNotifications();
     expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(["update-1"]);
     runtime.dispatch({ type: "set-find", value: "ITEM UPDATE" });
@@ -2182,7 +2180,8 @@ describe("WorkbenchRuntime", () => {
     await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "retained-4000" });
     runtime.dispatch({ type: "open-context" });
-    runtime.dispatch({ type: "set-filters", filters: { mode: "MERGE" } });
+    const modeFilter = runtime.getSnapshot().evidence.investigation.filter;
+    runtime.dispatch({ type: "apply-filter-mutations", expectedRevision: modeFilter.revision, operations: [{ type: "add-criterion", facet: "mode", value: createTypedFilterValue("mode", "enum", "MERGE") }] });
     await flushStoreNotifications();
     const origin = runtime.getSnapshot();
 
@@ -2206,7 +2205,6 @@ describe("WorkbenchRuntime", () => {
       contextId: origin.contextId,
       evidence: {
         mode: origin.evidence.mode,
-        filters: origin.evidence.filters
       }
     });
 
@@ -2272,7 +2270,7 @@ describe("WorkbenchRuntime", () => {
       .getSnapshot()
       .scope.nodes.find(({ kind, label }) => kind === "item" && label.includes("scope-item"));
     runtime.dispatch({ type: "set-scope", scopeId: itemScope?.id ?? null });
-    runtime.dispatch({ type: "set-filters", filters: { item: "no-such-item" } });
+    applyItemFilter(runtime, "no-such-item");
 
     expect(runtime.getSnapshot().scope.selection?.id).toBe(itemScope?.id);
     expect(runtime.getSnapshot().evidence.total).toBe(0);

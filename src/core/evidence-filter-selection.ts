@@ -53,7 +53,7 @@ export function lookupEvidence(
   }
   for (const [facet, bucket] of Object.entries(filter.criteria)) {
     if (!bucket) continue;
-    const value = facet === "legacy:item-position" ? record.facets.item : record.facets[facet];
+    const value = record.facets[facet];
     if (bucket.include.length > 0 && (!value || !bucket.include.some((candidate) => filterValueMatches(value, candidate)))) {
       for (const criterion of bucket.include) blockingCriteria.push(criterionBlocker(facet, "include", criterion));
     }

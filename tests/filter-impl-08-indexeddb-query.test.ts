@@ -8,7 +8,7 @@ import { type EvidenceFilter, typedFacetValue } from "../src/core/evidence-filte
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { extractEvidenceFacets } from "../src/core/evidence-facets";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
-import { createTypedFilterValue, canonicalFilterFromLegacyScalars } from "../src/core/filter-algebra";
+import { createFilter, createTypedFilterValue } from "../src/core/filter-algebra";
 import { toEvidenceQueryRequest } from "../src/extension/panel/evidence-investigation-query";
 
 function event(id: string, timestamp: number, value: string, listenerId?: string): LightstreamerEventEnvelope {
@@ -89,20 +89,13 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
   });
 
-  it("keeps structural, legacy, and canonical Item criteria in memory/IndexedDB parity", async () => {
+  it("keeps structural and canonical Item criteria in memory/IndexedDB parity", async () => {
     const { memory, durable } = await histories(`filter-impl-08-identity-parity-${Date.now()}`);
-    const base = canonicalFilterFromLegacyScalars({});
+    const base = createFilter();
     const structural = toEvidenceQueryRequest({
       at: "LATEST_COMMITTED",
       scope: { kind: "ITEM", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1", item: "item-1", itemPosition: 1 },
       filter: base,
-      page: { order: "OLDEST_FIRST", size: 10 },
-      discover: []
-    });
-    const legacy = toEvidenceQueryRequest({
-      at: "LATEST_COMMITTED",
-      scope: { kind: "PAGE" },
-      filter: canonicalFilterFromLegacyScalars({ clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1", item: "item-1" }),
       page: { order: "OLDEST_FIRST", size: 10 },
       discover: []
     });
@@ -119,7 +112,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     const listenerEvent = event("listener-event", 30_000, "listener", "listener-1");
     await memory.offer(listenerEvent).settled;
     await durable.offer(listenerEvent).settled;
-    for (const request of [structural, legacy, canonicalItem]) {
+    for (const request of [structural, canonicalItem]) {
       const expected = await memory.query!(request);
       const actual = await durable.query!(request);
       expect(actual).toMatchObject({ ok: true, value: { page: expected.ok ? expected.value.page : undefined, totals: expected.ok ? expected.value.totals : undefined } });

@@ -1,12 +1,11 @@
 /** Storage- and renderer-neutral query contracts for Evidence filtering. */
 
-// Ticket filter-impl-02's canonical algebra is exported from this contract
-// boundary for storage/query consumers. EvidenceFilter below remains the
-// Build 2 query snapshot shape until the later history integration tickets.
+// The canonical algebra is exported from this contract boundary for
+// storage/query consumers. EvidenceFilter remains the storage adapter shape;
+// it carries the same typed criteria plus retained-read-point metadata.
 export {
   FILTER_VERSION,
   applyFilterMutations,
-  canonicalFilterFromLegacyScalars,
   canonicalizeFilter,
   createFilter,
   createFilterBuilder,
@@ -25,7 +24,6 @@ export {
   type FilterRecord,
   type FilterScalar,
   type FilterValueType,
-  type LegacyScalarFilter,
   type TypedFilterValue,
   type UnsupportedFilterCriterion
 } from "./filter-algebra";

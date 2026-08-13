@@ -7,6 +7,10 @@
 
 Workbench preserves these states independently. A filtered-out selected event remains recoverable through explicit Reveal or Clear selection actions.
 
+## Canonical faceted filtering
+
+Filter state is one typed, revisioned descriptor for the whole Panel Session. The shared algebra owns evaluation and mutation; `evidence-facets.ts` owns facet extraction and canonical search text; the bounded Evidence query owns planning, discovery, Find, paging, and restoration. IndexedDB and memory implement that same query contract, so a session cannot mix an older scalar filter, renderer predicate, or full-history filtering read with the shipped semantics. Future facets extend the descriptor catalog and query contract at that seam rather than adding a presentation-specific filter path.
+
 ## Live and Frozen investigation
 
 **Live** follows the newest matching Evidence. **Frozen** preserves the historical window, selection, and scroll anchor while Capture continues. Newer matching Evidence is counted rather than stealing focus.

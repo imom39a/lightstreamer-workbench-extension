@@ -705,7 +705,7 @@ Repository decisions and implementation:
 - [Production UI Migration Plan](WORKBENCH_UI_MIGRATION_PLAN.md)
 - [Architecture](ARCHITECTURE.md)
 - [Normalized Evidence envelope](../src/core/event-envelope.ts)
-- [Event filtering](../src/core/event-filter.ts)
+- [Canonical Evidence filtering](../src/core/filter-algebra.ts) and [facet discovery](../src/core/evidence-filter-discovery.ts)
 - [Topology state](../src/core/topology-state.ts)
 - [Raw-JSON Local Injection editor research](research/local-injection-json-editor-patterns.md)
 - [Event History workload facts](research/event-history-workload-facts.md)

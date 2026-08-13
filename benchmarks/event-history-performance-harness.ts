@@ -1816,8 +1816,37 @@ async function runCell(
     const querySampleGc: QuerySampleGcEvidence[] = [];
     const queryMeasurements = await withStageDeadline((async () => {
       const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
-      const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
-      const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      const emptyFilter = {
+        revision: 1,
+        text: "",
+        criteria: {},
+        around: null,
+        unsupported: []
+      };
+      const structuredFilter = {
+        ...emptyFilter,
+        criteria: { mode: { include: [typedFacetValue("mode", "enum", "COMMAND")], exclude: [] } }
+      };
+      const structuredIndexedP95Ms = await measureQuery(
+        history,
+        () => history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 100 }, filter: structuredFilter }),
+        "structured-indexed",
+        () => progress("query", "query", "structured-indexed"),
+        runGuard,
+        querySampleGc,
+        collectGarbageBetweenQuerySamples,
+        enterPhase
+      );
+      const findP95Ms = await measureQuery(
+        history,
+        () => history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 100 }, filter: emptyFilter, find: { text: shape === "small-lifecycle" ? "stream-sensing" : "order", scopeToFilter: true } }),
+        "find",
+        () => progress("query", "query", "find"),
+        runGuard,
+        querySampleGc,
+        collectGarbageBetweenQuerySamples,
+        enterPhase
+      );
       const full = await measureAuthoritativeFullQuery(history, () => progress("query", "query", "full"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
       return { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms: full.p95Ms, read: full.read };
     })(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
