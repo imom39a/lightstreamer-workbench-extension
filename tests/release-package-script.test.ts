@@ -56,6 +56,6 @@ describe("release packaging verification gate", () => {
       "tests/filter-impl-07-postings.test.ts",
       "tests/filter-impl-07-schema.test.ts"
     ]);
-    expect(new Set([...plan.ordinary, ...plan.isolated]).size).toBe(81);
+    expect(new Set([...plan.ordinary, ...plan.isolated]).size).toBe(82);
   });
 });
