@@ -18,6 +18,7 @@ function event(overrides: Partial<LightstreamerEventEnvelope> = {}): Lightstream
     timestamp: 100,
     direction: "inbound",
     source: "server",
+    captureSource: "listener",
     synthetic: false,
     kind: "item-update",
     client: { id: "client-main", sessionId: "session-main" },
@@ -60,8 +61,8 @@ describe("canonical Evidence facets", () => {
     expect(extracted.facets.operation?.value).toBe("ADD");
     expect(extracted.facets.phase?.value).toBe("SNAPSHOT");
     expect(extracted.facets.provenance?.value).toBe("SERVER");
-    expect(extracted.facets.observationPath).toBeUndefined();
-    expect(extracted.unavailable).toEqual(["observationPath"]);
+    expect(extracted.facets.observationPath?.value).toBe("LISTENER");
+    expect(extracted.unavailable).toEqual([]);
   });
 
   it("normalizes protocol enum values and their identities", () => {

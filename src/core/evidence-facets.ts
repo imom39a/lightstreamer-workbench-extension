@@ -1,10 +1,10 @@
 import { type EvidenceIdentity, typedFacetValue, type TypedFacetValue } from "./evidence-filter-contract";
 import { type EventSemanticValueState, type LightstreamerEventEnvelope } from "./event-envelope";
 
-export const EVIDENCE_FACET_KEYS = [
+export const EVIDENCE_FACET_KEYS = Object.freeze([
   "client", "session", "subscription", "mode", "kind", "item", "listener",
   "key", "operation", "phase", "provenance", "observationPath"
-] as const;
+ ] as const);
 export type EvidenceFacetKey = (typeof EVIDENCE_FACET_KEYS)[number];
 
 export type EvidenceFacetContext = Readonly<{
@@ -29,6 +29,10 @@ export type EvidenceFacetExtraction = Readonly<{
 
 const value = (facet: EvidenceFacetKey, type: string, raw: string, label = raw): TypedFacetValue =>
   typedFacetValue(facet, type, raw, label);
+
+function protocolEnum(raw: string): string {
+  return raw.trim().toUpperCase();
+}
 
 function qualified(parts: readonly unknown[]): string {
   return JSON.stringify(["owner-v1", ...parts]);
@@ -66,7 +70,7 @@ function extractSubscription(event: LightstreamerEventEnvelope, context: Evidenc
 
 function extractMode(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
   const mode = event.subscription?.mode;
-  return mode && concrete(semanticState(event, "subscription", "mode")) ? value("mode", "enum", mode) : undefined;
+  return mode && concrete(semanticState(event, "subscription", "mode")) ? value("mode", "enum", protocolEnum(mode)) : undefined;
 }
 
 function extractKind(event: LightstreamerEventEnvelope): TypedFacetValue {
@@ -94,8 +98,11 @@ function extractKey(event: LightstreamerEventEnvelope): TypedFacetValue | undefi
 }
 
 function extractOperation(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
+  const mode = event.subscription?.mode;
+  if (!mode || protocolEnum(mode) !== "COMMAND" || !concrete(semanticState(event, "subscription", "mode"))) return undefined;
   const command = event.update?.command;
-  return command === undefined || command === null ? undefined : value("operation", "enum", command);
+  if (command === undefined || command === null || !command.trim()) return undefined;
+  return value("operation", "enum", protocolEnum(command));
 }
 
 function extractPhase(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
@@ -113,8 +120,9 @@ function extractProvenance(event: LightstreamerEventEnvelope): TypedFacetValue |
 
 function extractObservationPath(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
   if (event.synthetic || event.source !== "server") return undefined;
-  if (event.captureSource === undefined) return undefined;
-  return value("observationPath", "enum", event.captureSource === "wire" ? "WIRE" : "LISTENER");
+  if (event.captureSource === "wire") return value("observationPath", "enum", "WIRE");
+  if (event.captureSource === "listener") return value("observationPath", "enum", "LISTENER");
+  return undefined;
 }
 
 const descriptors: EvidenceFacetDescriptor[] = [
