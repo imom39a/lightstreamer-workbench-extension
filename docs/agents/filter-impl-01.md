@@ -32,22 +32,26 @@ collision-incomplete fixtures, shallow immutability, missing lifecycle
 transitions, incomplete bounded-workload proof, and an unintegrated scenario
 manifest. The repair stays within this storage/renderer-neutral seam.
 
-`DeterministicEvidenceFilterAdapter` is an executable reference adapter for
-atomic reads. It evaluates typed include/exclude criteria, free text, half-open
-Around Evidence, unsupported fail-closed queries, exact totals, bounded page
-and facet-discovery continuation, retained/other-interval lookup with Reveal
-blockers, and Find navigation. The lifecycle harness exercises Clear
-invalidation, terminal final boundaries, memory fallback, Limited Observation
-Coverage, and a new committed boundary after Capture.
+The executable reference adapter, facet extraction, typed predicate evaluation,
+discovery, and lifecycle harness live in
+`tests/support/evidence-filter-reference.ts`; production exposes only the
+storage-neutral contract and immutable deterministic fixture data. The support
+seam evaluates typed include/exclude criteria, free text, half-open Around
+Evidence, unsupported fail-closed queries, exact totals, bounded page and
+facet-discovery continuation, retained/other-interval lookup with Reveal
+blockers, and Find navigation. It also enforces the concrete 5,000-record
+memory fallback bound and exercises Clear invalidation, terminal final
+boundaries, Limited Observation Coverage, and concurrent Capture.
 
 The fixture now carries page- and owner-qualified identities plus explicit
 client, session, listener, missing-value, literal-`"null"`, and case-sensitive
 `ABC`/`abc` collision cases. Facet catalogs, scenario manifests, scenario
 themes/actions, fixture records, identities, and nested collision values are
-frozen. Filter scenarios are adapted through the maintained panel-scenario
-registry, including Dark, Light, and forced-colors coverage, without adding
-runtime or visible UI behavior.
+frozen. All nine maintained filter scenarios now construct deterministic
+Capture state, have non-empty setup actions, and assert expected outcomes
+through `tests/support/panel-scenarios.ts`, including Dark, Light, and
+forced-colors coverage, without adding runtime or visible UI behavior.
 
-Red-first evidence is preserved in commit `ffc5ea9`; the executable repair is
-in `b232743` (with subsequent immutability/documentation verification commits
-listed in the handoff).
+Red-first evidence is preserved in commits `ffc5ea9` and `b3916cb`; the
+executable repair is in `b232743` and `916f7bd`. Final documentation and
+verification are recorded in the follow-up commit for this repair.

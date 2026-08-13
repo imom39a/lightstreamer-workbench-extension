@@ -44,7 +44,7 @@ describe("release packaging verification gate", () => {
     });
     expect(result.status, result.stderr).toBe(0);
     const plan = JSON.parse(result.stdout) as { ordinary: string[]; isolated: string[] };
-    expect(plan.ordinary).toHaveLength(66);
+    expect(plan.ordinary).toHaveLength(67);
     expect(plan.isolated).toEqual([
       "tests/authoritative-event-history-contract.test.ts",
       "tests/authoritative-event-history-indexeddb.test.ts",
