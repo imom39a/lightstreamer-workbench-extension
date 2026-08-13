@@ -493,6 +493,8 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().evidence.loading).toBe(false);
     const resolvedEventIds = runtime.getSnapshot().evidence.events.map(({ id }) => id);
     expect(resolvedEventIds).not.toHaveLength(0);
+    scheduler.flushFrame();
+    await flushStoreNotifications();
     expect(pending).toHaveLength(1);
     pending.shift()?.resolve();
     await flushStoreNotifications();

@@ -275,6 +275,8 @@ describe("production React runtime performance boundary seam", () => {
 
     deferredReads[0]?.resolve(deferredReads[0].result);
     await flushPromises();
+    scheduler.flushFrame();
+    await flushPromises();
     expect(deferredReads).toHaveLength(2);
     runtime.reportVisibleFrame?.();
     expect(covered.flat()).toEqual([1]);
@@ -324,9 +326,21 @@ describe("production React runtime performance boundary seam", () => {
       ok: false,
       problem: { code: "HISTORY_CLOSED", message: "Synthetic unsuccessful read." }
     });
+    // A completed read must only coalesce the queued passive refresh behind
+    // the already-requested frame. Starting it from this microtask would let
+    // an IndexedDB read/commit stream keep the panel on the JS turn forever.
     await flushPromises();
+    expect(readCalls).toBe(2);
+    expect(runtime.getPerformanceDiagnostics?.()).toMatchObject({
+      evidenceQueryPending: false,
+      passiveRefreshPending: false,
+      queryGeneration: 1
+    });
 
+    scheduler.flushFrame();
+    await flushPromises();
     expect(readCalls).toBe(3);
+    expect(runtime.getPerformanceDiagnostics?.().queryGeneration).toBe(2);
     runtime.dispose();
     await history.close();
   });

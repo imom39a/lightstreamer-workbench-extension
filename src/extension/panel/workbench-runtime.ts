@@ -2207,7 +2207,11 @@ class Runtime implements WorkbenchRuntime {
   private drainPassiveRefresh(): void {
     if (!this.passiveRefreshPending || this.disposed || !this.visible) return;
     this.passiveRefreshPending = false;
-    this.refreshEvidence("passive");
+    // Keep the passive query behind the frame already requested by the
+    // committed boundary. IndexedDB completions can otherwise resolve in a
+    // same-turn microtask chain and repeatedly start another query before
+    // the browser gets a chance to paint the committed snapshot.
+    this.schedulePassivePublication();
   }
 
   private hydrateProjections(): void {
