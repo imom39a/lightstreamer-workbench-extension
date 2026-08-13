@@ -47,6 +47,7 @@ import {
   type HistoryInterval,
   type HistoryProblem,
   type HistoryPublication,
+  type HistoryFollowOptions,
   type HistoryStatus,
   type Outcome,
   type CloseResult,
@@ -170,7 +171,20 @@ type Subscriber = {
   observer: (publication: HistoryPublication) => void;
   replaying: boolean;
   pending: Array<HistoryPublication | PendingReplayRange>;
+  signalCleanup?: () => void;
+  cooperativeReplay?: {
+    interval: HistoryInterval;
+    nextSequence: number;
+    lastSequence: number;
+    chunkSize: number;
+    after: EvidenceRef | null;
+    signal?: AbortSignal;
+    signalCleanup?: () => void;
+  };
 };
+
+const DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE = 256;
+const MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE = 2_048;
 
 export type IndexedDbEventHistoryOptions = Readonly<{
   panelSessionId?: string;
@@ -1105,12 +1119,23 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return closePromise;
   }
 
-  function follow(options: { from: "CURRENT_INTERVAL_START" | "NOW" }, observer: (publication: HistoryPublication) => void): () => void {
+  function follow(options: HistoryFollowOptions, observer: (publication: HistoryPublication) => void): () => void {
     const subscriber: Subscriber = { observer, replaying: options.from === "CURRENT_INTERVAL_START", pending: [] };
     subscribers.add(subscriber);
     invoke(subscriber, { type: "status", status: status() });
-    if (subscriber.replaying && subscribers.has(subscriber)) replayFromJournal(subscriber, latchForCurrentInterval());
-    return () => subscribers.delete(subscriber);
+    if (subscriber.replaying && subscribers.has(subscriber)) {
+      if (options.chunkSize !== undefined || options.after !== undefined || options.signal !== undefined) {
+        startCooperativeReplay(subscriber, options, latchForCurrentInterval());
+      } else {
+        replayFromJournal(subscriber, latchForCurrentInterval());
+      }
+    }
+    return () => {
+      subscriber.signalCleanup?.();
+      subscriber.signalCleanup = undefined;
+      subscribers.delete(subscriber);
+      subscriber.pending.length = 0;
+    };
   }
 
   function latchForCurrentInterval(): ReadLatch {
@@ -1124,7 +1149,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
         const first = immutablePublication.evidence[0];
         const last = immutablePublication.evidence.at(-1);
         if (first && last) {
-          subscriber.pending.push({
+          appendPendingReplayRange(subscriber, {
             type: "committed-range",
             interval: immutablePublication.interval,
             firstSequence: first.sequence,
@@ -1140,6 +1165,180 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   function invoke(subscriber: Subscriber, publication: HistoryPublication): void {
     if (!subscribers.has(subscriber)) return;
     try { subscriber.observer(publication); } catch { subscribers.delete(subscriber); subscriber.pending.length = 0; }
+  }
+
+  function replayChunkSize(options: HistoryFollowOptions): number {
+    if (options.chunkSize === undefined) return DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE;
+    if (!Number.isSafeInteger(options.chunkSize) || options.chunkSize < 1) return DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE;
+    return Math.min(MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE, options.chunkSize);
+  }
+
+  function replayFailure(message: string): HistoryProblem {
+    return problem("REPLAY_FAILED", message);
+  }
+
+  function startCooperativeReplay(subscriber: Subscriber, options: HistoryFollowOptions, latch: ReadLatch): void {
+    const after = options.after ?? null;
+    subscriber.cooperativeReplay = {
+      interval: latch.interval,
+      nextSequence: after === null ? latch.retainedRange?.first.sequence ?? 0 : after.sequence + 1,
+      lastSequence: latch.retainedRange?.last.sequence ?? 0,
+      chunkSize: replayChunkSize(options),
+      after,
+      signal: options.signal
+    };
+    if (after !== null && after.intervalId !== latch.interval.id) {
+      failCooperativeReplay(subscriber, replayFailure("Replay interval mismatch."));
+      return;
+    }
+    invoke(subscriber, deepFreeze({
+      type: "replay-started" as const,
+      interval: latch.interval,
+      after,
+      retainedRange: latch.retainedRange
+    }));
+    if (!subscribers.has(subscriber)) return;
+    const onAbort = (): void => cancelCooperativeReplay(subscriber);
+    if (options.signal) {
+      if (options.signal.aborted) {
+        cancelCooperativeReplay(subscriber);
+        return;
+      }
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      subscriber.signalCleanup = () => options.signal?.removeEventListener("abort", onAbort);
+    }
+    void validateCooperativeBoundary(subscriber, latch).then((valid) => {
+      if (!valid) {
+        failCooperativeReplay(subscriber, replayFailure("Replay unavailable."));
+        return;
+      }
+      queueMicrotask(() => runCooperativeReplayChunk(subscriber));
+    }).catch((error) => {
+      failCooperativeReplay(subscriber, replayFailure(error instanceof Error ? error.message : "Replay validation failed."));
+    });
+  }
+
+  function validateCooperativeBoundary(subscriber: Subscriber, latch: ReadLatch): Promise<boolean> {
+    const replay = subscriber.cooperativeReplay;
+    if (!replay || replay.after === null) return Promise.resolve(true);
+    if (latch.retainedRange === null || replay.after.sequence > latch.retainedRange.last.sequence) return Promise.resolve(false);
+    if (replay.after.sequence < latch.retainedRange.first.sequence) return Promise.resolve(false);
+    return new Promise<boolean>((resolve, reject) => {
+      const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
+      const request = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).get(replay.after!.sequence);
+      request.onerror = () => reject(request.error ?? new Error("Replay boundary read failed."));
+      request.onsuccess = () => {
+        const record = request.result as EvidenceRecord | undefined;
+        resolve(Boolean(record && record.intervalId === replay.interval.id && record.eventId === replay.after!.eventId));
+      };
+    });
+  }
+
+  async function runCooperativeReplayChunk(subscriber: Subscriber): Promise<void> {
+    if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+    const replay = subscriber.cooperativeReplay;
+    if (!replay) return;
+    if (replay.signal?.aborted) {
+      cancelCooperativeReplay(subscriber);
+      return;
+    }
+    if (replay.nextSequence > replay.lastSequence) {
+      finishCooperativeReplay(subscriber);
+      return;
+    }
+    try {
+      const entries = await readReplayChunk(database, replay.interval, replay.nextSequence, replay.lastSequence, replay.chunkSize);
+      if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+      if (entries.length === 0) {
+        failCooperativeReplay(subscriber, replayFailure("Evidence interval ended before boundary."));
+        return;
+      }
+      const expectedFirst = replay.nextSequence;
+      if (
+        entries[0]!.sequence !== expectedFirst ||
+        entries.some((entry, index) => entry.sequence !== expectedFirst + index)
+      ) {
+        failCooperativeReplay(subscriber, replayFailure("Interval sequence gap."));
+        return;
+      }
+      replay.nextSequence = entries.at(-1)!.sequence + 1;
+      invoke(subscriber, deepFreeze({
+        type: "committed-evidence" as const,
+        interval: replay.interval,
+        evidence: entries,
+        committedEvidenceBoundary: { intervalId: entries.at(-1)!.intervalId, sequence: entries.at(-1)!.sequence, eventId: entries.at(-1)!.eventId }
+      }));
+      if (!subscribers.has(subscriber)) return;
+      if (replay.nextSequence <= replay.lastSequence) {
+        globalThis.setTimeout(() => { void runCooperativeReplayChunk(subscriber); }, 0);
+      } else {
+        finishCooperativeReplay(subscriber);
+      }
+    } catch (error) {
+      failCooperativeReplay(subscriber, replayFailure(error instanceof Error ? error.message : "Evidence replay failed."));
+    }
+  }
+
+  function finishCooperativeReplay(subscriber: Subscriber): void {
+    if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+    const replay = subscriber.cooperativeReplay;
+    subscriber.replaying = false;
+    replay?.signalCleanup?.();
+    subscriber.signalCleanup = undefined;
+    invoke(subscriber, deepFreeze({
+      type: "replay-complete" as const,
+      interval: replay?.interval ?? interval,
+      committedEvidenceBoundary
+    }));
+    if (subscribers.has(subscriber)) void finishReplay(subscriber);
+  }
+
+  function cancelCooperativeReplay(subscriber: Subscriber): void {
+    if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+    const replay = subscriber.cooperativeReplay;
+    subscriber.replaying = false;
+    replay?.signalCleanup?.();
+    subscriber.signalCleanup = undefined;
+    invoke(subscriber, deepFreeze({
+      type: "replay-cancelled" as const,
+      interval: replay?.interval ?? interval,
+      committedEvidenceBoundary
+    }));
+    subscribers.delete(subscriber);
+    subscriber.pending.length = 0;
+  }
+
+  function failCooperativeReplay(subscriber: Subscriber, issue: HistoryProblem): void {
+    if (!subscribers.has(subscriber)) return;
+    const replay = subscriber.cooperativeReplay;
+    subscriber.replaying = false;
+    replay?.signalCleanup?.();
+    subscriber.signalCleanup = undefined;
+    invoke(subscriber, deepFreeze({
+      type: "replay-failed" as const,
+      interval: replay?.interval ?? interval,
+      committedEvidenceBoundary,
+      problem: issue
+    }));
+    subscribers.delete(subscriber);
+    subscriber.pending.length = 0;
+  }
+
+  function appendPendingReplayRange(subscriber: Subscriber, range: PendingReplayRange): void {
+    const previous = subscriber.pending.at(-1);
+    if (
+      previous?.type === "committed-range" &&
+      previous.interval.id === range.interval.id &&
+      previous.lastSequence + 1 === range.firstSequence
+    ) {
+      subscriber.pending[subscriber.pending.length - 1] = {
+        ...previous,
+        lastSequence: range.lastSequence,
+        committedEvidenceBoundary: range.committedEvidenceBoundary
+      };
+      return;
+    }
+    subscriber.pending.push(range);
   }
 
   function replayFromJournal(subscriber: Subscriber, latch: ReadLatch): void {
@@ -1174,8 +1373,13 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     while (subscriber.pending.length > 0 && subscribers.has(subscriber)) {
       const publication = subscriber.pending.shift()!;
       if (publication.type === "committed-range") {
+        if (publication.interval.id !== interval.id) continue;
         const evidence = await readCommittedRange(database, publication.interval, publication.firstSequence, publication.lastSequence);
         if (!subscribers.has(subscriber)) return;
+        if (evidence.length !== publication.lastSequence - publication.firstSequence + 1) {
+          failCooperativeReplay(subscriber, replayFailure("Live crossed range."));
+          return;
+        }
         invoke(subscriber, deepFreeze({
           type: "committed-evidence" as const,
           interval: publication.interval,
@@ -3654,6 +3858,58 @@ function readCommittedRange(database: AuthoritativeEventDatabase, interval: Hist
     },
     retainedCount: Math.max(0, lastSequence - firstSequence + 1)
   }, {}).then((result) => result.evidence);
+}
+
+function readReplayChunk(
+  database: AuthoritativeEventDatabase,
+  interval: HistoryInterval,
+  firstSequence: number,
+  lastSequence: number,
+  chunkSize: number
+): Promise<CommittedEvidence[]> {
+  return new Promise((resolve, reject) => {
+    const transaction = database.db.transaction(AUTHORITATIVE_EVENT_STORE_NAMES.evidence, "readonly");
+    const completed = transactionDone(transaction, "reading replay chunk");
+    const records: CommittedEvidence[] = [];
+    let settled = false;
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      reject(error instanceof Error ? error : new Error("IndexedDB Evidence replay chunk failed."));
+    };
+    const finish = (): void => {
+      void completed.then(
+        () => {
+          if (settled) return;
+          settled = true;
+          resolve(records);
+        },
+        fail
+      );
+    };
+    const request = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence)
+      .openCursor(queryBoundRange(firstSequence, lastSequence));
+    request.onerror = () => fail(request.error ?? new Error("IndexedDB Evidence replay cursor failed."));
+    request.onsuccess = () => {
+      if (settled) return;
+      const cursor = request.result;
+      if (!cursor || records.length >= chunkSize) {
+        finish();
+        return;
+      }
+      const record = cursor.value as EvidenceRecord;
+      if (record.intervalId === interval.id && record.sequence >= firstSequence && record.sequence <= lastSequence) {
+        try {
+          records.push(toCommittedEvidenceFromRecord(record));
+        } catch (error) {
+          fail(error);
+          return;
+        }
+      }
+      cursor.continue();
+    };
+    void completed.catch(fail);
+  });
 }
 
 function assertExactKeys(value: object, keys: readonly string[]): void {

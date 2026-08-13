@@ -84,6 +84,7 @@ export type HistoryProblemCode =
   | "HISTORY_STOPPED"
   | "HISTORY_CLOSED"
   | "CLEAR_IN_PROGRESS"
+  | "REPLAY_FAILED"
   | "JOURNAL_COMMIT_FAILED"
   | HistoryTerminalReason
   | "CLEAR_FAILED"
@@ -205,7 +206,39 @@ export type HistoryPublication =
       status: HistoryStatus;
     }>
   | Readonly<{ type: "closed"; result: CloseResult }>
-  | Readonly<{ type: "terminal"; terminal: HistoryTerminalDiagnostic; status: HistoryStatus }>;
+  | Readonly<{ type: "terminal"; terminal: HistoryTerminalDiagnostic; status: HistoryStatus }>
+  | Readonly<{
+      type: "replay-started";
+      interval: HistoryInterval;
+      after: EvidenceRef | null;
+      retainedRange: Readonly<{ first: EvidenceRef; last: EvidenceRef }> | null;
+    }>
+  | Readonly<{
+      type: "replay-complete";
+      interval: HistoryInterval;
+      committedEvidenceBoundary: EvidenceRef | null;
+    }>
+  | Readonly<{
+      type: "replay-cancelled";
+      interval: HistoryInterval;
+      committedEvidenceBoundary: EvidenceRef | null;
+    }>
+  | Readonly<{
+      type: "replay-failed";
+      interval: HistoryInterval;
+      committedEvidenceBoundary: EvidenceRef | null;
+      problem: HistoryProblem;
+    }>;
+
+export type HistoryFollowOptions = Readonly<{
+  from: "CURRENT_INTERVAL_START" | "NOW";
+  /** Resume strictly after this committed Evidence identity. */
+  after?: EvidenceRef;
+  /** Enables cooperative replay. The value bounds each publication. */
+  chunkSize?: number;
+  /** Cancels replay before a stale publication can reach the observer. */
+  signal?: AbortSignal;
+}>;
 
 export interface EventHistory {
   readonly storage: EventHistoryStorage;
@@ -216,7 +249,7 @@ export interface EventHistory {
   query?: EvidenceFilterQueryAdapter["query"];
   clear(): Promise<Outcome<ClearResult>>;
   follow(
-    options: { from: "CURRENT_INTERVAL_START" | "NOW" },
+    options: HistoryFollowOptions,
     observer: (publication: HistoryPublication) => void
   ): () => void;
   close(): Promise<Outcome<CloseResult>>;
@@ -256,13 +289,34 @@ type ReceiptResult =
       outcome: "NOT_EVIDENCE";
       problem: HistoryProblem;
       committedEvidenceBoundary: EvidenceRef | null;
-    }>;
+  }>;
+
+type PendingReplayRange = Readonly<{
+  type: "committed-range";
+  interval: HistoryInterval;
+  firstSequence: number;
+  lastSequence: number;
+  committedEvidenceBoundary: EvidenceRef;
+}>;
 
 type Subscriber = {
   observer: (publication: HistoryPublication) => void;
   replaying: boolean;
-  pending: HistoryPublication[];
+  pending: Array<HistoryPublication | PendingReplayRange>;
+  signalCleanup?: () => void;
+  cooperativeReplay?: {
+    nextIndex: number;
+    lastIndex: number;
+    interval: HistoryInterval;
+    after: EvidenceRef | null;
+    chunkSize: number;
+    signal?: AbortSignal;
+    signalCleanup?: () => void;
+  };
 };
+
+const DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE = 256;
+const MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE = 2_048;
 
 type MemoryEventHistoryOptions = Readonly<{
   panelSessionId?: string;
@@ -1189,51 +1243,253 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   }
 
   function follow(
-    followOptions: { from: "CURRENT_INTERVAL_START" | "NOW" },
+    followOptions: HistoryFollowOptions,
     observer: (publication: HistoryPublication) => void
   ): () => void {
+    const cooperative = followOptions.chunkSize !== undefined || followOptions.after !== undefined || followOptions.signal !== undefined;
     const subscriber: Subscriber = { observer, replaying: followOptions.from === "CURRENT_INTERVAL_START", pending: [] };
     subscribers.add(subscriber);
     invoke(subscriber, { type: "status", status: status() });
     if (subscriber.replaying && subscribers.has(subscriber)) {
-      const replay = committed
-        .filter((entry) => entry.intervalId === interval.id)
-        .reduce<HistoryPublication[]>((publications, entry) => {
-          const last = publications.at(-1);
-          if (last?.type === "committed-evidence") {
-            publications[publications.length - 1] = deepFreeze({
-              ...last,
-              evidence: [...last.evidence, entry],
-              committedEvidenceBoundary: toRef(entry)
-            });
-          } else {
-            publications.push(
-              deepFreeze({
-                type: "committed-evidence" as const,
-                interval,
-                evidence: [entry],
-                committedEvidenceBoundary: toRef(entry)
-              })
-            );
-          }
-          return publications;
-        }, []);
-      for (const publication of replay) {
-        invoke(subscriber, publication);
-      }
-      subscriber.replaying = false;
-      for (const publication of subscriber.pending.splice(0)) {
-        invoke(subscriber, publication);
+      if (cooperative) {
+        startCooperativeReplay(subscriber, followOptions);
+      } else {
+        const replay = committed.filter((entry) => entry.intervalId === interval.id);
+        if (replay.length > 0) {
+          invoke(subscriber, deepFreeze({
+            type: "committed-evidence" as const,
+            interval,
+            evidence: replay,
+            committedEvidenceBoundary: toRef(replay.at(-1)!)
+          }));
+        }
+        subscriber.replaying = false;
+        drainPending(subscriber);
       }
     }
-    return () => subscribers.delete(subscriber);
+    return () => {
+      subscriber.signalCleanup?.();
+      subscriber.signalCleanup = undefined;
+      subscribers.delete(subscriber);
+      subscriber.pending.length = 0;
+    };
+  }
+
+  function replayChunkSize(options: HistoryFollowOptions): number {
+    if (options.chunkSize === undefined) return DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE;
+    if (!Number.isSafeInteger(options.chunkSize) || options.chunkSize < 1) return DEFAULT_COOPERATIVE_FOLLOW_CHUNK_SIZE;
+    return Math.min(MAX_COOPERATIVE_FOLLOW_CHUNK_SIZE, options.chunkSize);
+  }
+
+  function replayBoundaryProblem(message: string): HistoryProblem {
+    return problem("REPLAY_FAILED", message);
+  }
+
+  function startCooperativeReplay(subscriber: Subscriber, options: HistoryFollowOptions): void {
+    // A memory History Interval is kept as one ordered contiguous array. Use
+    // sequence arithmetic so each chunk does not allocate a 100k-entry copy.
+    const currentEntries = committed;
+    const retainedRange = currentEntries.length > 0
+      ? { first: toRef(currentEntries[0]!), last: toRef(currentEntries.at(-1)!) }
+      : null;
+    const after = options.after ?? null;
+    if (options.from === "CURRENT_INTERVAL_START" && after !== null) {
+      if (after.intervalId !== interval.id) {
+        failCooperativeReplay(subscriber, replayBoundaryProblem("Replay interval mismatch."));
+        return;
+      }
+      const boundaryIndex = retainedRange === null ? -1 : after.sequence - retainedRange.first.sequence;
+      const boundaryEntry = boundaryIndex >= 0 ? currentEntries[boundaryIndex] : undefined;
+      if (!boundaryEntry || boundaryEntry.eventId !== after.eventId) {
+        const first = retainedRange?.first.sequence ?? after.sequence + 1;
+        const last = retainedRange?.last.sequence ?? after.sequence;
+        if (after.sequence < first - 1 || after.sequence > last) {
+          failCooperativeReplay(subscriber, replayBoundaryProblem("Replay unavailable."));
+          return;
+        }
+        if (after.sequence !== first - 1) {
+          failCooperativeReplay(subscriber, replayBoundaryProblem("Replay identity mismatch."));
+          return;
+        }
+      }
+    }
+
+    const firstSequence = currentEntries[0]?.sequence ?? 0;
+    const nextSequence = after === null ? firstSequence : after.sequence + 1;
+    const nextIndex = currentEntries.findIndex((entry) => entry.sequence >= nextSequence);
+    const lastIndex = currentEntries.length - 1;
+    subscriber.cooperativeReplay = {
+      nextIndex: nextIndex < 0 ? currentEntries.length : nextIndex,
+      lastIndex,
+      interval,
+      after,
+      chunkSize: replayChunkSize(options),
+      signal: options.signal
+    };
+    invoke(subscriber, deepFreeze({
+      type: "replay-started" as const,
+      interval,
+      after,
+      retainedRange
+    }));
+    if (!subscribers.has(subscriber)) return;
+    const onAbort = (): void => cancelCooperativeReplay(subscriber);
+    if (options.signal) {
+      if (options.signal.aborted) {
+        cancelCooperativeReplay(subscriber);
+        return;
+      }
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      subscriber.signalCleanup = () => options.signal?.removeEventListener("abort", onAbort);
+    }
+    queueMicrotask(() => runCooperativeReplayChunk(subscriber));
+  }
+
+  function runCooperativeReplayChunk(subscriber: Subscriber): void {
+    if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+    const replay = subscriber.cooperativeReplay;
+    if (!replay) return;
+    if (replay.signal?.aborted) {
+      cancelCooperativeReplay(subscriber);
+      return;
+    }
+    // A Clear can replace the in-memory interval while a replay chunk is
+    // yielding. The old range is deliberately not rebuilt after the cut;
+    // the queued interval-cleared publication resets downstream projections.
+    if (interval.id !== replay.interval.id) {
+      finishCooperativeReplay(subscriber);
+      return;
+    }
+    const currentEntries = committed;
+    const entries = currentEntries.slice(replay.nextIndex, replay.nextIndex + replay.chunkSize);
+    if (entries.length > 0) {
+      replay.nextIndex += entries.length;
+      invoke(subscriber, deepFreeze({
+        type: "committed-evidence" as const,
+        interval: replay.interval,
+        evidence: entries,
+        committedEvidenceBoundary: toRef(entries.at(-1)!)
+      }));
+      if (!subscribers.has(subscriber)) return;
+    }
+    if (replay.nextIndex <= replay.lastIndex) {
+      globalThis.setTimeout(() => runCooperativeReplayChunk(subscriber), 0);
+      return;
+    }
+    finishCooperativeReplay(subscriber);
+  }
+
+  function finishCooperativeReplay(subscriber: Subscriber): void {
+    if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+    const replay = subscriber.cooperativeReplay;
+    subscriber.replaying = false;
+    replay?.signalCleanup?.();
+    subscriber.signalCleanup = undefined;
+    invoke(subscriber, deepFreeze({
+      type: "replay-complete" as const,
+      interval: replay?.interval ?? interval,
+      committedEvidenceBoundary: committedEvidenceBoundary
+    }));
+    if (subscribers.has(subscriber)) drainPending(subscriber);
+  }
+
+  function cancelCooperativeReplay(subscriber: Subscriber): void {
+    if (!subscribers.has(subscriber) || !subscriber.replaying) return;
+    const replay = subscriber.cooperativeReplay;
+    subscriber.replaying = false;
+    replay?.signalCleanup?.();
+    subscriber.signalCleanup = undefined;
+    invoke(subscriber, deepFreeze({
+      type: "replay-cancelled" as const,
+      interval: replay?.interval ?? interval,
+      committedEvidenceBoundary
+    }));
+    subscribers.delete(subscriber);
+    subscriber.pending.length = 0;
+  }
+
+  function failCooperativeReplay(subscriber: Subscriber, issue: HistoryProblem): void {
+    if (!subscribers.has(subscriber)) return;
+    const replay = subscriber.cooperativeReplay;
+    subscriber.replaying = false;
+    replay?.signalCleanup?.();
+    subscriber.signalCleanup = undefined;
+    invoke(subscriber, deepFreeze({
+      type: "replay-failed" as const,
+      interval: replay?.interval ?? interval,
+      committedEvidenceBoundary,
+      problem: issue
+    }));
+    subscribers.delete(subscriber);
+    subscriber.pending.length = 0;
+  }
+
+  function appendPendingReplayRange(subscriber: Subscriber, publication: HistoryPublication): void {
+    if (publication.type !== "committed-evidence" || publication.evidence.length === 0) {
+      subscriber.pending.push(publication);
+      return;
+    }
+    const first = publication.evidence[0]!;
+    const last = publication.evidence.at(-1)!;
+    const previous = subscriber.pending.at(-1);
+    if (
+      previous?.type === "committed-range" &&
+      previous.interval.id === publication.interval.id &&
+      previous.lastSequence + 1 === first.sequence
+    ) {
+      subscriber.pending[subscriber.pending.length - 1] = {
+        ...previous,
+        lastSequence: last.sequence,
+        committedEvidenceBoundary: publication.committedEvidenceBoundary
+      };
+      return;
+    }
+    subscriber.pending.push({
+      type: "committed-range",
+      interval: publication.interval,
+      firstSequence: first.sequence,
+      lastSequence: last.sequence,
+      committedEvidenceBoundary: publication.committedEvidenceBoundary
+    });
+  }
+
+  function drainPending(subscriber: Subscriber): void {
+    while (subscriber.pending.length > 0 && subscribers.has(subscriber)) {
+      const publication = subscriber.pending.shift()!;
+      if (publication.type !== "committed-range") {
+        invoke(subscriber, publication);
+        continue;
+      }
+      if (publication.interval.id !== interval.id) continue;
+      const first = committed[0];
+      if (!first || first.intervalId !== interval.id) continue;
+      const start = publication.firstSequence - first.sequence;
+      const end = publication.lastSequence - first.sequence + 1;
+      const evidence = committed.slice(start, end);
+      if (
+        start < 0 ||
+        evidence.length !== publication.lastSequence - publication.firstSequence + 1 ||
+        evidence[0]?.sequence !== publication.firstSequence ||
+        evidence.at(-1)?.sequence !== publication.lastSequence
+      ) {
+        failCooperativeReplay(subscriber, replayBoundaryProblem("Live crossed range."));
+        return;
+      }
+      invoke(subscriber, deepFreeze({
+        type: "committed-evidence" as const,
+        interval: publication.interval,
+        evidence,
+        committedEvidenceBoundary: publication.committedEvidenceBoundary
+      }));
+    }
   }
 
   function publish(publication: HistoryPublication): void {
     const immutablePublication = deepFreeze(publication);
     for (const subscriber of [...subscribers]) {
       if (subscriber.replaying) {
-        subscriber.pending.push(immutablePublication);
+        if (subscriber.cooperativeReplay) appendPendingReplayRange(subscriber, immutablePublication);
+        else subscriber.pending.push(immutablePublication);
       } else {
         invoke(subscriber, immutablePublication);
       }

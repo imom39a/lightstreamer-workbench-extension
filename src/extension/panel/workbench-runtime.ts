@@ -1,5 +1,5 @@
 import { type CaptureMessage, type CaptureStatus, type TopologySyncFrame } from "../../bridge/messages";
-import { createCommandStateProjections, type CommandState } from "../../core/command-state";
+import { createCommandStateProjections, type CommandState, type CommandStateProjections } from "../../core/command-state";
 import {
   toPersistableEventEnvelope,
   type LightstreamerEventEnvelope
@@ -55,7 +55,7 @@ import {
   type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
-import { createTopologyProjection } from "./topology-projection";
+import { createTopologyProjection, type TopologyProjection } from "./topology-projection";
 import {
   selectedUpdateSnapshot,
   type SelectedUpdateSnapshot
@@ -85,7 +85,11 @@ import {
   type TopologyState,
   type TopologySubscription
 } from "../../core/topology-state";
-import { bindCommittedEvidencePipeline, type CommittedEvidencePipeline } from "./committed-evidence-pipeline";
+import {
+  bindCommittedEvidencePipeline,
+  type CommittedEvidencePipeline,
+  type CommittedEvidencePipelineFollowerState
+} from "./committed-evidence-pipeline";
 import {
   createEvidenceInvestigationQuery,
   type EvidenceInvestigationQuery,
@@ -697,10 +701,10 @@ class Runtime implements WorkbenchRuntime {
   private readonly investigationDiscoveries: readonly FacetDiscoveryRequest[];
   private readonly activeTopologyStagingSyncIds = new Set<string>();
   private readonly listeners = new Set<() => void>();
-  private readonly commandStateProjections = createCommandStateProjections();
+  private commandStateProjections: CommandStateProjections = createCommandStateProjections();
   private readonly retainedLocalEvidenceIds = new Set<string>();
   private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
-  private readonly topologyProjection = createTopologyProjection();
+  private topologyProjection: TopologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
   private visible: boolean;
@@ -791,6 +795,12 @@ class Runtime implements WorkbenchRuntime {
     animationFrameCancelCount: 0
   };
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
+  private projectionRecovery: {
+    intervalId: string | null;
+    topology: TopologyProjection;
+    command: CommandStateProjections;
+    topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null;
+  } | null = null;
   private historyCondition: WorkbenchHistoryCondition | null = null;
   private historyAnnouncement = "";
   private storage: WorkbenchStorageSnapshot;
@@ -855,8 +865,10 @@ class Runtime implements WorkbenchRuntime {
     this.storage = options.storage ?? { mode: "indexeddb" };
     this.evidencePipeline = bindCommittedEvidencePipeline({
       history: this.history,
+      replayChunkSize: 256,
       onCommittedEvidence: (entry) => this.handleCommittedEvidence(entry),
-      onHistoryPublication: (publication) => this.handleHistoryPublication(publication)
+      onHistoryPublication: (publication) => this.handleHistoryPublication(publication),
+      onFollowerState: (state) => this.handleFollowerState(state)
     });
     this.evidenceQuery = options.evidenceQuery ?? createEvidenceInvestigationQuery({
       query: (request) => this.evidencePipeline.query(request)
@@ -1497,11 +1509,16 @@ class Runtime implements WorkbenchRuntime {
 
   private applyTopologySyncFrame(frame: TopologySyncFrame): void {
     this.currentPageEpoch = frame.pageEpoch;
-    const result = this.topologyProjection.applySyncFrame(frame);
+    const projectionRecovery = this.projectionRecovery;
+    const topologyProjection = projectionRecovery?.topology ?? this.topologyProjection;
+    const result = topologyProjection.applySyncFrame(frame);
     this.invalidatePreparedExport();
-    this.topologyCoverage = frame.coverage.status === "partial" ? "LIMITED" : "USEFUL";
+    const coverage = frame.coverage.status === "partial" ? "LIMITED" : "USEFUL";
+    if (projectionRecovery) projectionRecovery.topologyCoverage = coverage;
+    else this.topologyCoverage = coverage;
     if (!result.accepted) {
-      this.topologyCoverage = "LIMITED";
+      if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
+      else this.topologyCoverage = "LIMITED";
     }
     const candidate = result.candidate;
     const syncId = candidate ? topologyCheckpointSyncId(candidate) : null;
@@ -1712,6 +1729,7 @@ class Runtime implements WorkbenchRuntime {
     this.lastEvidenceQueryError = null;
     this.cancelPassivePublication();
     this.passiveRefreshPending = false;
+    this.projectionRecovery = null;
     this.commandStateProjections.clear();
     this.retainedLocalEvidenceIds.clear();
     this.topologyProjection.clear();
@@ -1812,13 +1830,19 @@ class Runtime implements WorkbenchRuntime {
       }));
     }
     this.performanceHooks?.onCommittedEvidenceBoundary?.(entry, performance.now());
+    const projectionRecovery = this.projectionRecovery;
+    const topologyProjection = projectionRecovery?.topology ?? this.topologyProjection;
+    const commandStateProjections = projectionRecovery?.command ?? this.commandStateProjections;
     if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
       const syncId = topologyCheckpointSyncId(entry.candidate);
       if (syncId !== null) {
         this.offeredTopologyCheckpointSyncIds.add(syncId);
       }
-      const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
-      if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
+      const topologyResult = topologyProjection.ingestCommittedEvidence(entry);
+      if (!topologyResult.accepted) {
+        if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
+        else this.topologyCoverage = "LIMITED";
+      }
       this.invalidatePreparedExport();
       if (this.visible) this.schedulePassivePublication();
       else this.hiddenDirty = true;
@@ -1835,9 +1859,12 @@ class Runtime implements WorkbenchRuntime {
     if (this.captureStatus !== "bridge disconnected") {
       this.captureStatus = "capturing";
     }
-    const topologyResult = this.topologyProjection.ingestCommittedEvidence(entry);
-    if (!topologyResult.accepted) this.topologyCoverage = "LIMITED";
-    this.commandStateProjections.apply(event);
+    const topologyResult = topologyProjection.ingestCommittedEvidence(entry);
+    if (!topologyResult.accepted) {
+      if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
+      else this.topologyCoverage = "LIMITED";
+    }
+    commandStateProjections.apply(event);
     if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
     this.invalidatePreparedExport();
     if (!this.visible) {
@@ -1845,6 +1872,54 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.schedulePassivePublication();
+  }
+
+  private handleFollowerState(state: CommittedEvidencePipelineFollowerState): void {
+    if (this.disposed) return;
+    if (state.progress.phase === "RECOVERING") {
+      const intervalId = state.interval?.id ?? state.progress.intervalId;
+      if (
+        this.projectionRecovery === null ||
+        (this.projectionRecovery.intervalId !== null && intervalId !== null && this.projectionRecovery.intervalId !== intervalId)
+      ) {
+        this.projectionRecovery = {
+          intervalId,
+          topology: createTopologyProjection(),
+          command: createCommandStateProjections(),
+          topologyCoverage: null
+        };
+      } else if (this.projectionRecovery.intervalId === null && intervalId !== null) {
+        this.projectionRecovery.intervalId = intervalId;
+      }
+      return;
+    }
+    if (state.progress.phase === "LIVE") {
+      const recovery = this.projectionRecovery;
+      if (recovery !== null) {
+        this.topologyProjection = recovery.topology;
+        this.commandStateProjections = recovery.command;
+        this.topologyCoverage = recovery.topologyCoverage;
+        this.projectionRecovery = null;
+        this.invalidatePreparedExport();
+        if (this.initialEvidenceSettled && this.visible) this.schedulePassivePublication();
+      }
+      return;
+    }
+    if (state.progress.phase === "FAILED") {
+      this.projectionRecovery = null;
+      this.investigationState = "error";
+      this.investigationProblem = {
+        code: "QUERY_FAILED",
+        message: state.problem?.message ?? "Evidence recovery unavailable."
+      };
+      this.lastEvidenceQueryError = this.investigationProblem.code;
+      if (this.visible) this.publish();
+      else this.hiddenDirty = true;
+      return;
+    }
+    if (state.progress.phase === "CANCELLED") {
+      this.projectionRecovery = null;
+    }
   }
 
   private handleHistoryPublication(publication: HistoryPublication): void {
