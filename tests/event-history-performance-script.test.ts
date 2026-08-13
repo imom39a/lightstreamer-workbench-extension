@@ -688,6 +688,40 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("does not repeatedly refocus the same operation target", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createForegroundKeeper } = await import(${JSON.stringify(scriptUrl)});
+      let now = 0;
+      let tick;
+      let focusCalls = 0;
+      const keeper = createForegroundKeeper(49217, {
+        platform: "darwin",
+        helperPath: "/tmp/process-activation-helper",
+        deadlineAt: 10_000,
+        cadenceMs: 1_000,
+        now: () => now,
+        setInterval(callback) { tick = callback; return 17; },
+        clearInterval() {},
+        activate(pid) {
+          return Promise.resolve({ attempted: true, pid, activatedPID: pid, frontmostPID: pid, windows: [] });
+        }
+      });
+      const focusTarget = async () => {
+        focusCalls += 1;
+        return { targetId: "target-1", windowId: 7, pageBroughtToFront: true };
+      };
+      keeper.start();
+      now = 1_000;
+      await keeper.keepAlive({ focusTarget });
+      now = 2_000;
+      await keeper.keepAlive({ focusTarget });
+      assert.equal(focusCalls, 1);
+      assert.equal(keeper.snapshot().attempts.at(-1).focus, null);
+      await keeper.stop();
+    `);
+  });
+
   it("fails closed on keeper activation errors and expired proof deadlines", () => {
     runNode(`
       import assert from "node:assert/strict";

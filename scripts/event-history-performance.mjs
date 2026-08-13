@@ -837,6 +837,7 @@ export function createForegroundKeeper(pid, options = {}) {
   let inFlightContext = null;
   let failure = null;
   let attemptNumber = 0;
+  let lastFocusedTarget = null;
   const attempts = [];
 
   const snapshot = () => ({
@@ -863,6 +864,7 @@ export function createForegroundKeeper(pid, options = {}) {
     context.focusPromise = (async () => {
       try {
         context.record.focus = await context.focusTarget({ pid, activation: context.result, deadlineAt, timeoutMs: attemptTimeoutMs });
+        lastFocusedTarget = context.focusTarget;
       } catch (error) {
         context.record.status = "FAIL";
         context.record.error = foregroundKeeperError(error);
@@ -927,18 +929,21 @@ export function createForegroundKeeper(pid, options = {}) {
     if (startedAt === null) throw new Error("Foreground keeper has not started.");
     if (stoppedAt !== null) return snapshot();
     if (failure !== null) throw failure;
+    const requestedFocusTarget = typeof focusTarget === "function" && focusTarget !== lastFocusedTarget
+      ? focusTarget
+      : undefined;
     if (inFlight !== null) {
       const context = inFlightContext;
-      if (context && typeof focusTarget === "function" && context.focusTarget === undefined) {
-        context.focusTarget = focusTarget;
+      if (context && requestedFocusTarget !== undefined && context.focusTarget === undefined) {
+        context.focusTarget = requestedFocusTarget;
       }
       await inFlight;
       if (failure !== null) throw failure;
-      if (context && typeof focusTarget === "function") await applyFocus(context);
+      if (context && requestedFocusTarget !== undefined) await applyFocus(context);
       return snapshot();
     }
     if (platform !== "darwin" || (lastAttemptAt !== null && now() - lastAttemptAt < cadenceMs)) return snapshot();
-    const context = attempt(reason, focusTarget);
+    const context = attempt(reason, requestedFocusTarget);
     inFlight = context.promise;
     inFlightContext = context;
     try {
