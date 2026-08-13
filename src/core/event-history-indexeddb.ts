@@ -2121,9 +2121,9 @@ function facetPostings(candidate: EvidenceCandidate, intervalId: string, sequenc
   }));
 }
 
-/** The measured logical index fan-out for one persisted Evidence record. */
+/** The bounded logical index fan-out reserved for one persisted Evidence record. */
 export function authoritativeEventFacetCount(candidate: EvidenceCandidate): number {
-  return facetPostings(candidate, "facet-count", 1).length;
+  return candidate.kind === "topology-checkpoint" ? 1 : EVIDENCE_FACET_COUNT;
 }
 
 function facet(name: string, value: unknown): string {
