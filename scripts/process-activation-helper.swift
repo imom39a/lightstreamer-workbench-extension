@@ -17,7 +17,7 @@ guard CommandLine.arguments.count == 3,
 guard let application = NSRunningApplication(processIdentifier: pid) else {
     fail("spawned process does not exist")
 }
-guard application.activate(options: []) else {
+guard application.activate(options: [.activateIgnoringOtherApps]) else {
     fail("NSRunningApplication.activate returned false")
 }
 
