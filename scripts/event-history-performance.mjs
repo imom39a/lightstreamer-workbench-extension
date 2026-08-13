@@ -731,7 +731,7 @@ export function chromeLaunchArguments(profile, platform = process.platform) {
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
-    "--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup",
+    "--disable-features=CalculateNativeWinOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup",
     "--allow-file-access-from-files",
     "--js-flags=--expose-gc",
     "--use-mock-keychain",

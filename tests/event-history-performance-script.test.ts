@@ -152,7 +152,7 @@ describe("Event History performance startup fail-closed seams", () => {
         assert.equal(args.includes("--no-first-run"), true);
         assert.equal(args.includes("--no-default-browser-check"), true);
         assert.equal(
-          args.includes("--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"),
+          args.includes("--disable-features=CalculateNativeWinOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"),
           true
         );
         assert.equal(args.includes("--allow-file-access-from-files"), true);
