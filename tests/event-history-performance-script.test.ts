@@ -133,11 +133,68 @@ describe("Event History performance startup fail-closed seams", () => {
         "Runtime.enable",
         "Page.navigate",
         "Runtime.evaluate",
+        "Runtime.evaluate",
         "Page.bringToFront",
         "Runtime.evaluate"
       ]);
       assert.equal(calls[3].params.expression, "location.href");
-      assert.match(calls[5].params.expression, /requestAnimationFrame/);
+      assert.match(calls[6].params.expression, /requestAnimationFrame/);
+    `);
+  });
+
+  it("fails closed when initial Page.enable never settles", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { prepareInitialPageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const calls = [];
+      const cdp = { request(method) {
+        calls.push(method);
+        return method === "Page.enable" ? new Promise(() => undefined) : Promise.resolve({});
+      }};
+      await assert.rejects(
+        prepareInitialPageForAuthoritativeRun(cdp, "http://127.0.0.1:4173/", { deadlineAt: Date.now() + 25, requestCeilingMs: 10 }),
+        (error) => error?.name === "PerformanceOperationTimeout"
+          && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
+          && error.status.error.name === "CdpRequestTimeout"
+      );
+      assert.deepEqual(calls, ["Page.enable"]);
+    `);
+  });
+
+  it("fails closed when initial Page.navigate never settles", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { prepareInitialPageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const calls = [];
+      const cdp = { request(method) {
+        calls.push(method);
+        return method === "Page.navigate" ? new Promise(() => undefined) : Promise.resolve({});
+      }};
+      await assert.rejects(
+        prepareInitialPageForAuthoritativeRun(cdp, "http://127.0.0.1:4173/", { deadlineAt: Date.now() + 25, requestCeilingMs: 10 }),
+        (error) => error?.name === "PerformanceOperationTimeout"
+          && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
+          && error.status.error.name === "CdpRequestTimeout"
+      );
+      assert.deepEqual(calls, ["Page.enable", "Runtime.enable", "Page.navigate"]);
+    `);
+  });
+
+  it("uses the initial setup deadline for later fresh-page work", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { prepareInitialPageForAuthoritativeRun, openFreshHarnessPage } = await import(${JSON.stringify(scriptUrl)});
+      const deadlineAt = Date.now() + 100;
+      const cdp = { request(method, params) {
+        if (method === "Runtime.evaluate" && params.expression === "location.href") return Promise.resolve({ result: { value: "http://127.0.0.1:4173/" } });
+        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: true } });
+        return new Promise((resolve) => setTimeout(() => resolve({}), 15));
+      }};
+      await prepareInitialPageForAuthoritativeRun(cdp, "http://127.0.0.1:4173/", { deadlineAt, requestCeilingMs: 20 });
+      await assert.rejects(
+        openFreshHarnessPage(cdp, 9222, "http://127.0.0.1:4173/", "later", { deadlineAt, requestCeilingMs: 10 }),
+        (error) => error?.name === "PerformanceOperationTimeout" && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
+      );
     `);
   });
 

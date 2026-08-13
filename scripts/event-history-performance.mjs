@@ -79,9 +79,9 @@ async function main() {
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
     cdp = await connect(await pageTarget(debugPort, url, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
-    await prepareInitialPageForAuthoritativeRun(cdp, url);
     const proofDeadlineAt = Date.now() + EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS;
-    const environment = await cdp.request("Browser.getVersion");
+    await prepareInitialPageForAuthoritativeRun(cdp, url, { deadlineAt: proofDeadlineAt });
+    const environment = await requestControlCdpWithDeadline(cdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
     const chromeMajor = chromeMajorFromProduct(environment.product);
     if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
     chromeMetadata = {
@@ -253,9 +253,11 @@ async function main() {
   }
 }
 
-export async function prepareInitialPageForAuthoritativeRun(cdp, expectedUrl, timeoutMs = 30_000) {
-  await ensureFreshHarnessDocument(cdp, expectedUrl, Math.min(timeoutMs, 15_000));
-  await preparePageForAuthoritativeRun(cdp, timeoutMs);
+export async function prepareInitialPageForAuthoritativeRun(cdp, expectedUrl, timeoutOrOptions = 30_000) {
+  const options = startupDeadlineOptions(timeoutOrOptions);
+  await ensureFreshHarnessDocument(cdp, expectedUrl, Math.min(15_000, remainingDeadlineMs(options.deadlineAt, 15_000, "initial-document")), options);
+  await waitForHarness(cdp, options);
+  await preparePageForAuthoritativeRun(cdp, options);
 }
 
 export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
@@ -263,7 +265,7 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
   const deadlineAt = typeof arguments[1] === "object" ? arguments[1].deadlineAt : undefined;
   await requestSetupCdp(cdp, "Page.bringToFront", {}, deadlineAt, "page-bring-to-front");
   const probeTimeoutMs = Math.max(1, Math.min(1_000, timeoutMs - 1));
-  const visible = await evaluate(cdp, `new Promise((resolve) => {
+  const visible = await (deadlineAt === undefined ? evaluate(cdp, `new Promise((resolve) => {
     let settled = false;
     let timer;
     const finish = (value) => {
@@ -284,7 +286,28 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
       }
       requestAnimationFrame(() => finish(document.visibilityState === "visible"));
     });
-  })`, timeoutMs);
+  })`, timeoutMs) : evaluateWithDeadline(cdp, `new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => finish(false), ${probeTimeoutMs});
+    if (document.visibilityState !== "visible") {
+      finish(false);
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (document.visibilityState !== "visible") {
+        finish(false);
+        return;
+      }
+      requestAnimationFrame(() => finish(document.visibilityState === "visible"));
+    });
+  })`, deadlineAt, "page-visibility"));
   if (visible !== true) {
     throw new Error("Event History performance run requires a visible foreground page.");
   }
@@ -302,7 +325,9 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
     await ensureFreshHarnessDocument(pageCdp, pageUrl.href, 15_000, options);
     await waitForHarness(pageCdp, options);
     await preparePageForAuthoritativeRun(pageCdp, options);
-    const observedToken = await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-token"));
+    const observedToken = options.deadlineAt !== undefined
+      ? await evaluateWithDeadline(pageCdp, "new URL(location.href).searchParams.get('pageToken')", options.deadlineAt, "page-token")
+      : await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", BROWSER_TIMEOUT_MS);
     if (observedToken !== pageToken) throw new Error("Fresh harness page token mismatch.");
     return { cdp: pageCdp, targetId: created.targetId, pageToken, url: pageUrl.href };
   } catch (error) {
@@ -326,14 +351,18 @@ export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 1
   const deadline = Math.min(Date.now() + timeoutMs, options.deadlineAt ?? Number.POSITIVE_INFINITY);
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
-    const response = await Promise.race([
+    const response = await (options.deadlineAt === undefined ? Promise.race([
       cdp.request("Runtime.evaluate", {
         expression: "location.href",
         awaitPromise: true,
         returnByValue: true
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("CDP evaluation timed out.")), Math.min(1_000, remaining)))
-    ]);
+    ]) : evaluateResponseWithDeadline(cdp, {
+      expression: "location.href",
+      awaitPromise: true,
+      returnByValue: true
+    }, options.deadlineAt, "page-document-evaluate"));
     if (response?.result?.value === expectedUrl) return;
     await delay(Math.min(100, Math.max(1, deadline - Date.now())));
   }
@@ -662,7 +691,9 @@ async function fetchJsonWithStartupTimeout(url, timeoutMs, fetchImplementation) 
 async function waitForHarness(cdp, options = {}) {
   const deadline = Math.min(Date.now() + BROWSER_TIMEOUT_MS, options.deadlineAt ?? Number.POSITIVE_INFINITY);
   while (Date.now() < deadline) {
-    if (await evaluate(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", Math.max(1, deadline - Date.now()))) return;
+    if (options.deadlineAt !== undefined
+      ? await evaluateWithDeadline(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", options.deadlineAt, "harness-readiness")
+      : await evaluate(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", Math.max(1, deadline - Date.now()))) return;
     await delay(100);
   }
   throw new Error("Timed out waiting for the visible Event History harness.");
@@ -680,29 +711,34 @@ async function evaluate(cdp, expression, timeoutMs = 30_000) {
   } finally { clearTimeout(timer); }
 }
 
+async function evaluateResponseWithDeadline(cdp, params, deadlineAt, phase) {
+  return requestSetupCdp(cdp, "Runtime.evaluate", params, deadlineAt, phase);
+}
+
+async function evaluateWithDeadline(cdp, expression, deadlineAt, phase) {
+  const response = await evaluateResponseWithDeadline(cdp, { expression, awaitPromise: true, returnByValue: true }, deadlineAt, phase);
+  if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text);
+  return response.result.value;
+}
+
 function delay(milliseconds) { return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)); }
 
 async function requestSetupCdp(cdp, method, params, deadlineAt, phase) {
   if (deadlineAt === undefined) return cdp.request(method, params);
-  const timeoutMs = Math.max(1, Math.min(STARTUP_REQUEST_TIMEOUT_MS, remainingDeadlineMs(deadlineAt, STARTUP_REQUEST_TIMEOUT_MS, phase)));
-  let timer;
-  try {
-    return await Promise.race([
-      cdp.request(method, params),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new PerformanceOperationTimeout(`Event History performance setup timed out during ${phase}.`, {
-          operationId: null,
-          state: "rejected",
-          elapsedMs: timeoutMs,
-          heartbeat: 0,
-          progress: null,
-          error: { name: "CdpRequestTimeout", code: "SHARED_DEADLINE_EXCEEDED", message: `Event History performance setup timed out during ${phase}.`, stack: null }
-        })), timeoutMs);
-      })
-    ]);
-  } finally {
-    clearTimeout(timer);
+  return requestControlCdpWithDeadline(cdp, method, params, {
+    deadlineAt,
+    requestCeilingMs: STARTUP_REQUEST_TIMEOUT_MS,
+    phase
+  });
+}
+
+function startupDeadlineOptions(timeoutOrOptions) {
+  if (timeoutOrOptions !== null && typeof timeoutOrOptions === "object") {
+    if (!Number.isFinite(timeoutOrOptions.deadlineAt)) throw new Error("Initial performance setup requires a finite deadlineAt.");
+    return timeoutOrOptions;
   }
+  const timeoutMs = Number.isFinite(timeoutOrOptions) && timeoutOrOptions > 0 ? timeoutOrOptions : 30_000;
+  return { deadlineAt: Date.now() + timeoutMs };
 }
 
 function remainingDeadlineMs(deadlineAt, fallbackMs, phase) {

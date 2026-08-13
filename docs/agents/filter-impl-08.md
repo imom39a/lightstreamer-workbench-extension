@@ -1,6 +1,37 @@
 # `filter-impl-08` repair proof
 
-## Deadline repair (2026-08-13)
+## Initial-startup deadline repair (2026-08-13)
+
+The final startup audit found that `main()` called
+`prepareInitialPageForAuthoritativeRun()` before creating `proofDeadlineAt`.
+That left initial `Page.enable`, `Runtime.enable`, `Page.navigate`, harness
+readiness, foreground visibility, and URL/token evaluations outside the one
+absolute proof budget. A hung initial CDP request could therefore keep the
+headed runner alive indefinitely even though later matrix, heap, and lifecycle
+operations had deadline handling.
+
+The repair creates `proofDeadlineAt` immediately after the initial CDP
+connection and passes it through initial preparation and `Browser.getVersion`.
+All setup and evaluation requests use bounded local retirement with the
+existing structured `PerformanceOperationTimeout` / `SHARED_DEADLINE_EXCEEDED`
+diagnostic. The same deadline remains authoritative for fresh harness pages,
+matrix, heap, lifecycle, and bounded cleanup. Workload sizes, gates, and
+capture/reference semantics are unchanged.
+
+Deterministic startup regressions hang initial `Page.enable` and
+`Page.navigate`, assert structured fail-closed rejection, and verify that time
+spent in initial setup is charged against later fresh-page work. No Chrome
+performance candidate was launched and no Chrome success is claimed.
+
+### Initial-startup verification
+
+- Focused runner: 1 file, 78 tests passed.
+- Focused startup script: 1 file, 20 tests passed.
+- `npm run typecheck`, `npm test`, `npm run test:release`, `npm run build`, and `npm run docs:check` passed.
+- `npm run release:package:all` passed; package sizes are recorded in `/tmp/filter-impl-08-initial-startup-repair-result.txt`.
+- No real Chrome performance candidate was launched, and no Chrome success is claimed.
+
+### Prior deadline repair (2026-08-13)
 
 The live timeout audit found that the performance proof's shared deadline stopped
 at matrix shard operations: fresh harness `Target.createTarget` and
