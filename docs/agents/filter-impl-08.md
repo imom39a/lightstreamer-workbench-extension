@@ -1,5 +1,32 @@
 # `filter-impl-08` repair proof
 
+## Polling-timeout repair (2026-08-13)
+
+The bounded startup audit found that fresh-document URL polling and harness
+readiness polling could reach their absolute deadline after every
+`Runtime.evaluate` had settled, then throw an unstructured `Error`. Those
+failures bypassed the existing `PerformanceOperationTimeout` /
+`SHARED_DEADLINE_EXCEEDED` diagnostic path and therefore lost phase evidence.
+The repair reports structured timeout status for `page-document-polling` and
+`harness-readiness`, preserving JSON/Markdown timeout handling.
+
+`ensureFreshHarnessDocument` now derives a finite deadline when called without
+options and routes setup plus URL evaluations through the cancellable bounded
+control-CDP request path. No raw no-options evaluation can remain pending;
+the existing finite shared-deadline production path and all workload, proof
+gates, capture/reference semantics, and the single absolute proof deadline
+remain unchanged.
+
+Deterministic regressions cover both settled-request polling expiries and the
+no-options request-retirement contract. No Chrome was launched and no real
+performance capture was run; no Chrome candidate claim is made.
+
+### Polling-timeout verification
+
+- Focused script: 1 file, 23 tests passed.
+- Focused runner: 1 file, 78 tests passed.
+- `npm run typecheck` passed.
+
 ## Initial-startup deadline repair (2026-08-13)
 
 The final startup audit found that `main()` called

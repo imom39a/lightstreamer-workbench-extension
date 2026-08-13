@@ -350,6 +350,70 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.equal(calls.some(({ method, params }) => method === "Runtime.evaluate" && params.expression === "location.href"), true);
     `);
   });
+
+  it("reports structured timeout evidence when the fresh document never reaches the expected URL", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
+      const expected = "http://127.0.0.1:4173/?pageToken=never";
+      const cdp = { request(method, params) {
+        if (method === "Runtime.evaluate" && params.expression === "location.href") {
+          return Promise.resolve({ result: { value: "about:blank" } });
+        }
+        return Promise.resolve({});
+      }};
+      await assert.rejects(
+        ensureFreshHarnessDocument(cdp, expected, 20, { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }),
+        (error) => error?.name === "PerformanceOperationTimeout"
+          && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
+          && error.status.error.name === "CdpRequestTimeout"
+          && error.status.error.message.includes("page-document-polling")
+      );
+    `);
+  });
+
+  it("reports structured timeout evidence when harness readiness never becomes true", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { prepareInitialPageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      const expected = "http://127.0.0.1:4173/";
+      const cdp = { request(method, params) {
+        if (method === "Runtime.evaluate" && params.expression === "location.href") {
+          return Promise.resolve({ result: { value: expected } });
+        }
+        if (method === "Runtime.evaluate" && params.expression.includes("__LSEW_EVENT_HISTORY_PERFORMANCE__")) {
+          return Promise.resolve({ result: { value: false } });
+        }
+        return Promise.resolve({});
+      }};
+      await assert.rejects(
+        prepareInitialPageForAuthoritativeRun(cdp, expected, { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }),
+        (error) => error?.name === "PerformanceOperationTimeout"
+          && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
+          && error.status.error.name === "CdpRequestTimeout"
+          && error.status.error.message.includes("harness-readiness")
+      );
+    `);
+  });
+
+  it("retires the Runtime.evaluate request when ensureFreshHarnessDocument uses no options", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
+      const expected = "http://127.0.0.1:4173/?pageToken=retire";
+      let cancelled = 0;
+      const cdp = { request(method, params) {
+        if (method === "Runtime.evaluate" && params.expression === "location.href") {
+          const pending = new Promise(() => undefined);
+          pending.cancel = () => { cancelled += 1; };
+          return pending;
+        }
+        return Promise.resolve({});
+      }};
+      await assert.rejects(ensureFreshHarnessDocument(cdp, expected, 20));
+      assert.equal(cancelled, 1);
+    `);
+  });
 });
 
 describe("Event History performance timeout evidence", () => {

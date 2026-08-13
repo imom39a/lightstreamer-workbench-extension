@@ -21,6 +21,7 @@ import {
   createPerformanceShardPlan,
   aggregatePerformanceShardResults,
   PerformanceOperationTimeout,
+  createSharedDeadlineTimeout,
   releaseHeapSessionWithCleanup,
   runHeapMeasurementPlan,
   runPageOperation,
@@ -342,31 +343,26 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
 }
 
 export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 15_000, options = {}) {
-  await requestSetupCdp(cdp, "Page.enable", {}, options.deadlineAt, "page-enable");
-  await requestSetupCdp(cdp, "Runtime.enable", {}, options.deadlineAt, "runtime-enable");
+  const effectiveOptions = Number.isFinite(options.deadlineAt)
+    ? options
+    : { ...options, deadlineAt: Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs") };
+  await requestSetupCdp(cdp, "Page.enable", {}, effectiveOptions.deadlineAt, "page-enable");
+  await requestSetupCdp(cdp, "Runtime.enable", {}, effectiveOptions.deadlineAt, "runtime-enable");
   // Target.createTarget can publish the requested URL before the renderer has
   // committed it. Re-issue navigation after attaching so a fresh target cannot
   // leave the first Runtime.evaluate pointed at about:blank indefinitely.
-  await requestSetupCdp(cdp, "Page.navigate", { url: expectedUrl }, options.deadlineAt, "page-navigate");
-  const deadline = Math.min(Date.now() + timeoutMs, options.deadlineAt ?? Number.POSITIVE_INFINITY);
+  await requestSetupCdp(cdp, "Page.navigate", { url: expectedUrl }, effectiveOptions.deadlineAt, "page-navigate");
+  const deadline = Math.min(Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs"), effectiveOptions.deadlineAt);
   while (Date.now() < deadline) {
-    const remaining = deadline - Date.now();
-    const response = await (options.deadlineAt === undefined ? Promise.race([
-      cdp.request("Runtime.evaluate", {
-        expression: "location.href",
-        awaitPromise: true,
-        returnByValue: true
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("CDP evaluation timed out.")), Math.min(1_000, remaining)))
-    ]) : evaluateResponseWithDeadline(cdp, {
+    const response = await evaluateResponseWithDeadline(cdp, {
       expression: "location.href",
       awaitPromise: true,
       returnByValue: true
-    }, options.deadlineAt, "page-document-evaluate"));
+    }, effectiveOptions.deadlineAt, "page-document-evaluate");
     if (response?.result?.value === expectedUrl) return;
     await delay(Math.min(100, Math.max(1, deadline - Date.now())));
   }
-  throw new Error(`Timed out waiting for fresh performance document ${expectedUrl}.`);
+  throw createSharedDeadlineTimeout("page-document-polling", deadline, Date.now, effectiveOptions.operation ?? null);
 }
 
 export async function closeFreshHarnessPage(controlCdp, page, options = {}) {
@@ -689,14 +685,15 @@ async function fetchJsonWithStartupTimeout(url, timeoutMs, fetchImplementation) 
 }
 
 async function waitForHarness(cdp, options = {}) {
-  const deadline = Math.min(Date.now() + BROWSER_TIMEOUT_MS, options.deadlineAt ?? Number.POSITIVE_INFINITY);
+  const effectiveOptions = Number.isFinite(options.deadlineAt)
+    ? options
+    : { ...options, deadlineAt: Date.now() + BROWSER_TIMEOUT_MS };
+  const deadline = effectiveOptions.deadlineAt;
   while (Date.now() < deadline) {
-    if (options.deadlineAt !== undefined
-      ? await evaluateWithDeadline(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", options.deadlineAt, "harness-readiness")
-      : await evaluate(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", Math.max(1, deadline - Date.now()))) return;
+    if (await evaluateWithDeadline(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", deadline, "harness-readiness")) return;
     await delay(100);
   }
-  throw new Error("Timed out waiting for the visible Event History harness.");
+  throw createSharedDeadlineTimeout("harness-readiness", deadline, Date.now, effectiveOptions.operation ?? null);
 }
 
 async function evaluate(cdp, expression, timeoutMs = 30_000) {
