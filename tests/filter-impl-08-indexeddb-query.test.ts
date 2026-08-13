@@ -160,7 +160,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
       filter: { ...emptyFilter(), text: "beta", around: { intervalId: anchor.intervalId, start: 0, end: 30_000, anchor, anchorSequence: anchor.sequence } },
       find: { text: "alpha", current: anchor }
     });
-    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 1 }, find: { total: 2, current: anchor, next: { eventId: "three" } } } });
+    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 1 }, find: { total: 2, current: anchor, next: { eventId: "three" } }, telemetry: { aroundIndexReads: 1, aroundAnchorValidated: true, fullRetainedScan: true } } });
     await durable.close();
   });
 
@@ -183,9 +183,11 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
       filter: emptyFilter(),
       find: { text }
     });
-    await expect(find("lph")).resolves.toMatchObject({ ok: true, value: { find: { total: 3 } } });
+    const shortFind = await find("lph");
+    expect(shortFind).toMatchObject({ ok: true, value: { find: { total: 3 }, telemetry: { shortFindFallback: false, fullRetainedScan: true } } });
     await expect(find("ALPHA")).resolves.toMatchObject({ ok: true, value: { find: { total: 3 } } });
-    await expect(find("ITEM   UPDATE")).resolves.toMatchObject({ ok: true, value: { find: { total: 4 } } });
+    const shortNormalizedFind = await find("it");
+    expect(shortNormalizedFind).toMatchObject({ ok: true, value: { find: { total: 4 }, telemetry: { shortFindFallback: true, fullRetainedScan: true, retainedCount: 4, cursorWorkBound: 4 } } });
 
     const around = await durable.query!({
       at: base.value.readPoint,
@@ -194,7 +196,8 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     });
     expect(around).toMatchObject({ ok: true, value: {
       totals: { matching: 4, inScope: 2 },
-      page: { evidence: [{ identity: { eventId: "alpha-one" } }, { identity: { eventId: "alpha-two" } }] }
+      page: { evidence: [{ identity: { eventId: "alpha-one" } }, { identity: { eventId: "alpha-two" } }] },
+      telemetry: { aroundIndexReads: 1, aroundCandidates: 2, fullRetainedScan: true, pageBound: 10 }
     } });
     const isolated = await durable.query!({
       at: base.value.readPoint,
@@ -221,6 +224,59 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     database.close();
     const failed = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
     expect(failed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+    await durable.close();
+  });
+
+  it("fails closed when projection count matches but the retained primary-key range does not", async () => {
+    const panelSessionId = `filter-impl-08-range-coverage-${Date.now()}`;
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    for (const candidate of [event("one", 10_000, "alpha"), event("two", 20_000, "beta"), event("three", 30_000, "gamma")]) {
+      await durable.offer(candidate).settled;
+    }
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("queryProjections", "readwrite");
+    const projections = transaction.objectStore("queryProjections");
+    const second = projections.get(2);
+    second.onsuccess = () => {
+      projections.delete(2);
+      projections.put({ ...(second.result as Record<string, unknown>), sequence: 99 });
+    };
+    await new Promise<void>((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error); });
+    database.close();
+    await expect(durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() }))
+      .resolves.toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+    await durable.close();
+  });
+
+  it("binds cursors to discover, lookup, Find, Filter, page shape, and read point", async () => {
+    const { durable } = await histories(`filter-impl-08-cursor-bindings-${Date.now()}`);
+    const base = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(base.ok).toBe(true);
+    if (!base.ok) return;
+    const identity = base.value.page.evidence[0]!.identity;
+    const cases = [
+      { name: "discover", request: { discover: [{ facet: "mode", size: 10 }] }, altered: { discover: [{ facet: "mode", size: 11 }] } },
+      { name: "lookup", request: { lookup: identity }, altered: { lookup: base.value.page.evidence[1]!.identity } },
+      { name: "find", request: { find: { text: "alpha" } }, altered: { find: { text: "beta" } } },
+      { name: "filter", request: { filter: { ...emptyFilter(), text: "alpha" } }, altered: { filter: { ...emptyFilter(), text: "beta" } } }
+    ] as const;
+    for (const testCase of cases) {
+      const first = await durable.query!({ at: base.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), ...testCase.request });
+      expect(first.ok, testCase.name).toBe(true);
+      if (!first.ok || !first.value.page.nextCursor) continue;
+      const altered = await durable.query!({ at: base.value.readPoint, page: { order: "OLDEST_FIRST", size: 1, cursor: first.value.page.nextCursor }, filter: emptyFilter(), ...testCase.altered });
+      expect(altered, testCase.name).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+    }
+    const page = await durable.query!({ at: base.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), find: { text: "item" } });
+    expect(page.ok).toBe(true);
+    if (!page.ok || !page.value.page.nextCursor) return;
+    const changedPage = await durable.query!({ at: base.value.readPoint, page: { order: "NEWEST_FIRST", size: 1, cursor: page.value.page.nextCursor }, filter: emptyFilter(), find: { text: "item" } });
+    expect(changedPage).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
     await durable.close();
   });
 });

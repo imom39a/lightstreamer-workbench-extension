@@ -13,7 +13,7 @@ Object.assign(globalThis, { indexedDB: new IDBFactory() });
 
 describe("filter-impl-07 IndexedDB schema", () => {
   it("opens the versioned posting layout with an isolated token namespace", async () => {
-    expect(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION).toBe(4);
+    expect(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION).toBe(5);
     expect(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings).toBe("facetPostings");
 
     const panelSessionId = `filter-impl-07-schema-${Date.now()}-${Math.random()}`;
@@ -32,5 +32,33 @@ describe("filter-impl-07 IndexedDB schema", () => {
       database?.db.close();
       await deleteAuthoritativeEventDatabase(name);
     }
+  });
+
+  it.each([
+    { name: "timestamp key path", timestamp: ["wrongTimestamp"], searchTokens: "searchTokens", timestampUnique: false, timestampMultiEntry: false, searchUnique: false, searchMultiEntry: true },
+    { name: "timestamp uniqueness", timestamp: "timestamp", searchTokens: "searchTokens", timestampUnique: true, timestampMultiEntry: false, searchUnique: false, searchMultiEntry: true },
+    { name: "timestamp multiEntry", timestamp: "timestamp", searchTokens: "searchTokens", timestampUnique: false, timestampMultiEntry: true, searchUnique: false, searchMultiEntry: true },
+    { name: "searchTokens key path", timestamp: "timestamp", searchTokens: "wrongTokens", timestampUnique: false, timestampMultiEntry: false, searchUnique: false, searchMultiEntry: true },
+    { name: "searchTokens uniqueness", timestamp: "timestamp", searchTokens: "searchTokens", timestampUnique: false, timestampMultiEntry: false, searchUnique: true, searchMultiEntry: true },
+    { name: "searchTokens multiEntry", timestamp: "timestamp", searchTokens: "searchTokens", timestampUnique: false, timestampMultiEntry: false, searchUnique: false, searchMultiEntry: false }
+  ])("rejects malformed deployed projection index shape: $name", async ({ timestamp, searchTokens, timestampUnique, timestampMultiEntry, searchUnique, searchMultiEntry }) => {
+    const panelSessionId = `filter-impl-07-malformed-${Date.now()}-${Math.random()}`;
+    const name = authoritativeEventDatabaseName(panelSessionId);
+    const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      database.createObjectStore("historyControl", { keyPath: "key" });
+      const evidence = database.createObjectStore("evidence", { keyPath: "sequence" });
+      evidence.createIndex("eventIdentity", "eventId", { unique: true });
+      evidence.createIndex("facets", "facets", { multiEntry: true });
+      const postings = database.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
+      postings.createIndex("token", "token", { unique: false });
+      const projections = database.createObjectStore("queryProjections", { keyPath: "sequence" });
+      projections.createIndex("timestamp", timestamp, { unique: timestampUnique, multiEntry: timestampMultiEntry });
+      projections.createIndex("searchTokens", searchTokens, { unique: searchUnique, multiEntry: searchMultiEntry });
+    };
+    await new Promise<void>((resolve, reject) => { request.onsuccess = () => { request.result.close(); resolve(); }; request.onerror = () => reject(request.error); });
+    await expect(openAuthoritativeEventDatabase(name)).rejects.toMatchObject({ code: "OPEN_FAILED" });
+    await deleteAuthoritativeEventDatabase(name);
   });
 });

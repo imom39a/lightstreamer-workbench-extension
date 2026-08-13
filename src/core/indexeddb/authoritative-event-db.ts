@@ -335,8 +335,17 @@ function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   }
   const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
   if (projections.keyPath !== "sequence") throw new Error("The query projection store must be keyed by sequence.");
-  if (!projections.indexNames.contains("timestamp") || !projections.indexNames.contains("searchTokens")) {
+  const projectionIndexes = [...projections.indexNames].sort();
+  if (projectionIndexes.length !== 2 || projectionIndexes[0] !== "searchTokens" || projectionIndexes[1] !== "timestamp") {
     throw new Error("The query projection indexes are incomplete.");
+  }
+  const timestamp = projections.index("timestamp");
+  const searchTokens = projections.index("searchTokens");
+  if (timestamp.keyPath !== "timestamp" || timestamp.unique || timestamp.multiEntry) {
+    throw new Error("The timestamp projection index does not match the authoritative schema.");
+  }
+  if (searchTokens.keyPath !== "searchTokens" || searchTokens.unique || !searchTokens.multiEntry) {
+    throw new Error("The search-token projection index does not match the authoritative schema.");
   }
 }
 
