@@ -29,6 +29,23 @@ Count and retained-byte capacity are independent, and the first limit reached co
 
 `NEAR_LIMIT` begins when either retained dimension reaches 80% of its hard limit. It returns to `AVAILABLE` only when every retained and pending pressure dimension is below its warning threshold. A warning does not refuse an offer.
 
+### Advisory browser storage headroom
+
+The panel samples the extension origin's `navigator.storage.estimate()` once
+before it connects Capture. It may sample again only at the first authoritative
+`NEAR_LIMIT` and `EXHAUSTED` History Capacity transitions. The reading is rough
+telemetry compared with the dormant 100,000-Evidence/256 MiB candidate; a low
+estimate produces one explicitly advisory warning through the global diagnostic
+footer. It is not a reservation, acceptance guarantee, capacity/admission
+input, adapter selector, Observation Coverage input, or substitute for
+canonical accounted bytes. Missing, rejected, contradictory, or unstable
+readings are harmless. An actual `QuotaExceededError` remains the authoritative
+fail-closed journal result at the prior Committed Evidence Boundary.
+
+The observation lives only in the current Panel Session. It is not exported or
+persisted as application data, and this feature adds no `unlimitedStorage`
+permission.
+
 Pending backlog pressure uses the same canonical replay-complete journal payload and eight-byte logical framing bytes for Evidence candidates awaiting acceptance, plus a monotonic oldest-pending age:
 
 | Journal implementation tier | Pending-byte warning | Pending-byte stop | Age warning | Pending-age stop |

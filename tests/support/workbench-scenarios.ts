@@ -15,6 +15,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "frozen-high-volume",
   "live-high-scope",
   "limited-capture",
+  "storage-headroom-warning",
   "empty-scope",
   "disconnected",
   "memory-fallback",
@@ -68,6 +69,7 @@ export type WorkbenchScenario = Readonly<{
   }>;
   freezeBeforeLaterEvents?: boolean;
   storage?: Readonly<{ mode: "memory"; reason: string }>;
+  storageEstimate?: Readonly<{ usageBytes: number; quotaBytes: number }>;
   openRawEvidence?: boolean;
   filterQuery?: string;
   findQuery?: string;
@@ -150,6 +152,14 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
           detail: "Earlier Snapshot Evidence may be incomplete.",
           recovery: "Reload the inspected page with DevTools open"
         }
+      };
+    case "storage-headroom-warning":
+      return {
+        id,
+        initialEvents: canonical,
+        selectedEventId: "scenario-event-3",
+        captureStatus: "capturing",
+        storageEstimate: { usageBytes: 32 * 1_048_576, quotaBytes: 200 * 1_048_576 }
       };
     case "empty-scope":
       return { id, initialEvents: [], captureStatus: "idle" };

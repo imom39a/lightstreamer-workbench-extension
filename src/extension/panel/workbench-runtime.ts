@@ -101,6 +101,12 @@ import {
   historyConditionFor,
   type WorkbenchHistoryCondition
 } from "./history-condition";
+import {
+  storageHeadroomDiagnostic,
+  type StorageEstimateObservation,
+  type StorageHeadroomSampler,
+  type StorageEstimateThreshold
+} from "./storage-headroom";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 export const DEFAULT_EVIDENCE_OUTPUT_BYTE_LIMIT = 32 * 1024 * 1024;
@@ -247,7 +253,7 @@ export type WorkbenchDiagnostic = Readonly<{
   affected: string;
   detail: string;
   recovery?: string;
-  category?: "history" | "capture" | "session" | "retention";
+  category?: "history" | "capture" | "session" | "retention" | "storage";
 }>;
 
 export type WorkbenchEvidenceSnapshot = Readonly<{
@@ -635,6 +641,8 @@ export type WorkbenchRuntimeOptions = {
   captureStatus?: CaptureStatus;
   capture?: Partial<WorkbenchCaptureSnapshot>;
   storage?: WorkbenchStorageSnapshot;
+  storageEstimate?: StorageEstimateObservation | null;
+  storageHeadroomSampler?: StorageHeadroomSampler;
   normalizer?: EventNormalizer;
   windowSize?: number;
   scheduler?: WorkbenchRuntimeScheduler;
@@ -840,6 +848,9 @@ class Runtime implements WorkbenchRuntime {
   private historyCondition: WorkbenchHistoryCondition | null = null;
   private historyAnnouncement = "";
   private storage: WorkbenchStorageSnapshot;
+  private storageEstimate: StorageEstimateObservation | null;
+  private readonly storageHeadroomSampler: StorageHeadroomSampler | null;
+  private readonly storageEstimateThresholdsSampled = new Set<StorageEstimateThreshold>();
   private historyStatus: HistoryStatus;
   private clearState: WorkbenchRetentionSnapshot["clearState"] = "idle";
   private clearError: string | null = null;
@@ -904,6 +915,11 @@ class Runtime implements WorkbenchRuntime {
     this.performanceHooks = options.performanceHooks ?? null;
     this.investigationDiscoveries = Object.freeze([...(options.investigationDiscoveries ?? [])]);
     this.storage = options.storage ?? { mode: "indexeddb" };
+    this.storageEstimate = options.storageEstimate ?? null;
+    this.storageHeadroomSampler = options.storageHeadroomSampler ?? null;
+    if (options.storageEstimate !== undefined) {
+      this.storageEstimateThresholdsSampled.add("BEFORE_CAPTURE");
+    }
     this.evidencePipeline = bindCommittedEvidencePipeline({
       history: this.history,
       replayChunkSize: 256,
@@ -922,6 +938,9 @@ class Runtime implements WorkbenchRuntime {
     this.evidencePipeline.start();
     this.refreshEvidence("initial");
     this.hydrateProjections();
+    if (options.storageEstimate === undefined && this.storageHeadroomSampler) {
+      this.sampleStorageEstimate("BEFORE_CAPTURE");
+    }
   }
 
   private applyFilterCommand(
@@ -2068,6 +2087,7 @@ class Runtime implements WorkbenchRuntime {
     if (publication.type === "status") {
       this.historyStatus = publication.status;
       shouldPublish = this.updateHistoryCondition(publication.status, publication.problem);
+      this.maybeSampleStorageEstimate(publication.status);
     } else if (publication.type === "interval-cleared") {
       this.historyStatus = publication.status;
       // A frame after Clear can only prove visibility for the new History
@@ -2075,10 +2095,12 @@ class Runtime implements WorkbenchRuntime {
       // the rendered Evidence snapshot and must not be coalesced into it.
       this.resetCoherentStateAfterClear();
       this.updateHistoryCondition(publication.status);
+      this.maybeSampleStorageEstimate(publication.status);
       shouldPublish = true;
     } else if (publication.type === "terminal") {
       this.historyStatus = publication.status;
       shouldPublish = this.updateHistoryCondition(publication.status);
+      this.maybeSampleStorageEstimate(publication.status);
     }
     let reason: string | undefined;
     const terminal = publication.type === "terminal"
@@ -2138,6 +2160,29 @@ class Runtime implements WorkbenchRuntime {
       this.historyAnnouncement = next?.announcement ?? "";
     }
     return changed;
+  }
+
+  private maybeSampleStorageEstimate(status: HistoryStatus): void {
+    const threshold: StorageEstimateThreshold | null =
+      status.capacity.state === "EXHAUSTED"
+        ? "EXHAUSTED"
+        : status.capacity.state === "NEAR_LIMIT"
+          ? "NEAR_LIMIT"
+          : null;
+    if (!threshold || !this.storageHeadroomSampler || this.storageEstimateThresholdsSampled.has(threshold)) {
+      return;
+    }
+    this.storageEstimateThresholdsSampled.add(threshold);
+    this.sampleStorageEstimate(threshold);
+  }
+
+  private sampleStorageEstimate(threshold: StorageEstimateThreshold): void {
+    if (!this.storageHeadroomSampler) return;
+    void this.storageHeadroomSampler.sample(threshold).then((observation) => {
+      if (this.disposed) return;
+      this.storageEstimate = observation;
+      this.publish();
+    });
   }
 
   private schedulePassivePublication(): void {
@@ -3826,6 +3871,17 @@ class Runtime implements WorkbenchRuntime {
         affected: this.historyCondition.affected,
         detail: this.historyCondition.detail,
         recovery: this.historyCondition.recovery
+      });
+    }
+    const storageDiagnostic = storageHeadroomDiagnostic(this.storageEstimate);
+    if (storageDiagnostic) {
+      diagnostics.push({
+        category: "storage",
+        severity: storageDiagnostic.severity,
+        title: storageDiagnostic.title,
+        affected: storageDiagnostic.affected,
+        detail: storageDiagnostic.detail,
+        recovery: storageDiagnostic.recovery
       });
     }
     if (this.captureStatus === "bridge disconnected") {

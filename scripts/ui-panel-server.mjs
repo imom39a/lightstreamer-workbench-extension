@@ -103,6 +103,16 @@ const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
 const runtime = createWorkbenchRuntime({
   history,
   storage: history.storage,
+  ...(scenario.storageEstimate ? {
+    storageEstimate: {
+      source: "navigator.storage.estimate",
+      status: "AVAILABLE",
+      usageBytes: scenario.storageEstimate.usageBytes,
+      quotaBytes: scenario.storageEstimate.quotaBytes,
+      headroomBytes: scenario.storageEstimate.quotaBytes - scenario.storageEstimate.usageBytes,
+      failure: null
+    }
+  } : {}),
   captureStatus: scenario.captureStatus,
   capture: scenario.capture,
   theme,

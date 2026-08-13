@@ -464,7 +464,7 @@
 .workbench-react__status-diagnostics { display: grid; max-height: min(144px, 35vh); overflow: auto; }
 .workbench-react__status-diagnostics:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: -2px; }
 .workbench-react__status:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: -2px; }
-.workbench-react__status-diagnostic { display: grid; min-width: 0; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 9px; border-bottom: 1px solid var(--wb-border); background: var(--wb-warning-soft); color: var(--wb-warning); padding: 5px 9px; }
+.workbench-react__status-diagnostic { display: grid; min-width: 0; grid-template-columns: auto auto minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 9px; border-bottom: 1px solid var(--wb-border); background: var(--wb-warning-soft); color: var(--wb-warning); padding: 5px 9px; }
 .workbench-react__status-diagnostic[data-severity="error"] { background: var(--wb-error-soft); color: var(--wb-error); }
 .workbench-react__status-diagnostic[data-severity="information"] { background: var(--wb-info-soft); color: var(--wb-info); }
 .workbench-react__status-diagnostic > span { min-width: 0; color: var(--wb-text); overflow-wrap: anywhere; }

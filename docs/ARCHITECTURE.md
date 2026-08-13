@@ -522,6 +522,18 @@ boundary cannot be proven. Clear never restarts a stopped history.
 
 `EventHistory.status()` is the authoritative runtime status. It reports phase, capture operation, accepted and refused counts, retained range, and capacity pressure through `capacity.tier` and `capacity.state` (`AVAILABLE`, `NEAR_LIMIT`, or `EXHAUSTED`). The panel renders those fields directly and uses the same status publications to derive history diagnostics. There is no generic event-count warning threshold or parallel retained-count authority.
 
+The panel also makes one session-local `navigator.storage.estimate()` sample
+before it connects Capture, then permits at most one additional sample when the
+authoritative History Capacity state first reaches `NEAR_LIMIT` and one when it
+reaches `EXHAUSTED`. The estimate compares rough browser-reported free
+headroom with the dormant 100,000-Evidence/256 MiB candidate only to produce an
+advisory in the global diagnostic footer. It is not a reservation, admission
+guarantee, adapter selector, Coverage input, or retained-history authority;
+missing, rejected, contradictory, or unstable readings are ignored. Canonical
+count/byte admission and an actual `QuotaExceededError` remain authoritative.
+The estimate is neither exported nor persisted, and the extension requests no
+`unlimitedStorage` permission.
+
 Complete History is a qualified claim: it means every accepted candidate in the
 current History Interval through its Committed Evidence Boundary, not every event
 that the inspected page may have produced and not an unbounded panel-lifetime
@@ -804,7 +816,12 @@ The runtime owns:
 - raw Evidence, scoped export, responsive-layout restoration identities, and session operations;
 - exactly one Local Injection Source/Draft/target/review/execution/outcome lifecycle.
 
-Storage mode and retained-history capacity are independent of Observation Coverage. If IndexedDB initialization fails, the mount selects the in-memory Event History and the runtime emits one storage diagnostic; it does not override Capture coverage.
+Storage mode, retained-history capacity, and advisory browser headroom are
+independent of Observation Coverage. If IndexedDB initialization fails, the
+mount selects the in-memory Event History and the runtime emits one storage
+diagnostic; it does not override Capture coverage. Headroom telemetry appears
+only in the global footer and never in Ordered Evidence, Context, exports, or
+application persistence.
 
 ### Scoped Evidence Workspace
 

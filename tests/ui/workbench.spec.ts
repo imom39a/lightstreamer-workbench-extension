@@ -101,6 +101,8 @@ async function attachScenarioScreenshot(page: Page, testInfo: TestInfo): Promise
 }
 
 async function attachNamedScenarioScreenshot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  const path = testInfo.outputPath(`${name}.png`);
+  await page.screenshot({ path, fullPage: true });
   await testInfo.attach(`${name}.png`, {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png"
@@ -1158,6 +1160,43 @@ test("Workbench makes limited Capture actionable without hiding retained Evidenc
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench keeps low storage headroom advisory, global, and keyboard reachable", async ({
+  page
+}, testInfo) => {
+  const scenes = [
+    { width: 900, height: 700, theme: "dark" as const },
+    { width: 563, height: 700, theme: "light" as const },
+    { width: 900, height: 320, theme: "dark" as const },
+    { width: 1440, height: 900, theme: "light" as const }
+  ];
+
+  for (const scene of scenes) {
+    await openScenario(page, "storage-headroom-warning", scene, scene.theme);
+    const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+    await expect(diagnostics.getByText("Warning · Estimated storage headroom is low", { exact: true })).toHaveCount(1);
+    await expect(diagnostics.getByText("Affected: Extension origin", { exact: true })).toHaveCount(1);
+    await expect(diagnostics).toContainText("advisory only");
+    await expect(diagnostics).toContainText("QuotaExceededError");
+    await expect(diagnostics).toContainText("Free browser storage");
+    await expect(diagnostics.locator("[data-history-condition='true']")).toHaveCount(0);
+    await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
+    await diagnostics.focus();
+    await expect(diagnostics).toBeFocused();
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}`);
+  }
+
+  await page.emulateMedia({ forcedColors: "active" });
+  const forcedColorsDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(forcedColorsDiagnostics.getByText("Warning · Estimated storage headroom is low", { exact: true })).toHaveCount(1);
+  await expect(forcedColorsDiagnostics).toContainText("advisory only");
+  await expect(forcedColorsDiagnostics).toBeFocused();
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "storage-headroom-forced-colors");
 });
 
 test("Workbench retains ordered Evidence while a typed Session recovery is in progress", async ({
