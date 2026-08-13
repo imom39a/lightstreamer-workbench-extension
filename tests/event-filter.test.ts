@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import { filterEvents, matchesEventFilters } from "../src/core/event-filter";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import {
+  DEFAULT_EVIDENCE_FILTER_FIXTURE_SIZE,
+  EVIDENCE_FILTER_FACETS,
+  EVIDENCE_FILTER_LIFECYCLE_CASES,
+  EVIDENCE_FILTER_PANEL_SCENARIOS,
+  EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS,
+  EVIDENCE_FILTER_PANEL_GEOMETRIES,
+  MINIMUM_COMMAND_KEY_COUNT,
+  createEmptyEvidenceFilter,
+  createEvidenceFilterFixture,
+  typedFacetValue,
+  type EvidenceFilterQueryAdapter,
+  type EvidenceSnapshot
+} from "../src/core/evidence-filter-contract";
 
 function event(overrides: Partial<LightstreamerEventEnvelope>): LightstreamerEventEnvelope {
   return {
@@ -87,5 +101,77 @@ describe("event filters", () => {
         command: "ADD"
       })
     ).toEqual([matching]);
+  });
+
+  it("defines the collision-safe first-release facet catalog", () => {
+    expect(EVIDENCE_FILTER_FACETS).toEqual([
+      "client", "session", "subscription", "mode", "kind", "item", "listener", "key", "operation", "phase", "provenance", "observationPath"
+    ]);
+    const eu = typedFacetValue("item", "item", "sub-command-1:orders.eu", "orders.eu");
+    const retired = typedFacetValue("item", "item", "sub-retired-0:orders.eu", "orders.eu");
+    expect(eu.label).toBe(retired.label);
+    expect(eu.identity).not.toBe(retired.identity);
+  });
+
+  it("provides a normal-capacity fixture with all deterministic query cases", () => {
+    const fixture = createEvidenceFilterFixture();
+    expect(fixture.records).toHaveLength(DEFAULT_EVIDENCE_FILTER_FIXTURE_SIZE);
+    expect(fixture.distinctCommandKeyCount).toBe(MINIMUM_COMMAND_KEY_COUNT);
+    expect(fixture.committedEvidenceBoundary.sequence).toBe(DEFAULT_EVIDENCE_FILTER_FIXTURE_SIZE);
+    expect(fixture.retainedRange.first.sequence).toBe(1);
+    expect(fixture.cases.includeAndExclude.include.facet).toBe("provenance");
+    expect(fixture.cases.freeText).toBe("risk-reviewed");
+    expect(fixture.cases.around.end).toBeGreaterThan(fixture.cases.around.start);
+    expect(fixture.cases.unsupported.reason).toBe("UNSUPPORTED_FACET");
+  });
+
+  it("keeps the atomic query result sections on one explicit read point", () => {
+    const query: Parameters<EvidenceFilterQueryAdapter["query"]>[0] = {
+      at: "LATEST_COMMITTED",
+      page: { order: "NEWEST_FIRST", size: 60 },
+      filter: createEmptyEvidenceFilter(),
+      discover: [{ facet: "key", size: 100 }],
+      find: { text: "risk-reviewed" }
+    };
+    const snapshot: EvidenceSnapshot = {
+      readPoint: {
+        interval: { id: "interval-1", ordinal: 1 },
+        committedEvidenceBoundary: null,
+        retainedRange: null
+      },
+      page: { evidence: [], nextCursor: null },
+      totals: { matching: 0, inScope: 0 },
+      discoveries: new Map(),
+      lookup: null,
+      find: null,
+      evaluation: "COMPLETE"
+    };
+    expect(query.at).toBe("LATEST_COMMITTED");
+    expect(snapshot.readPoint.interval.id).toBe("interval-1");
+    expect(snapshot.page.nextCursor).toBeNull();
+    expect(snapshot.totals).toEqual({ matching: 0, inScope: 0 });
+  });
+
+  it("represents fail-closed unsupported filters, empty conflicts, and lifecycle read points", () => {
+    const fixture = createEvidenceFilterFixture(MINIMUM_COMMAND_KEY_COUNT);
+    const empty = createEmptyEvidenceFilter();
+    expect(empty.unsupported).toEqual([]);
+    expect(fixture.cases.validZeroResult.left.identity).not.toBe(fixture.cases.validZeroResult.right.identity);
+    expect(fixture.interval).toEqual({ id: "filter-contract-interval-1", ordinal: 1 });
+    expect(fixture.retainedRange.last.sequence).toBe(MINIMUM_COMMAND_KEY_COUNT);
+    expect(["HISTORY_INTERVAL_UNAVAILABLE", "READ_POINT_UNAVAILABLE", "QUERY_FAILED"]).toContain("HISTORY_INTERVAL_UNAVAILABLE");
+    expect(EVIDENCE_FILTER_LIFECYCLE_CASES).toEqual([
+      "clear-invalidates-stale-read-point",
+      "terminal-history-final-boundary",
+      "lower-capacity-memory-fallback",
+      "limited-observation-coverage",
+      "concurrent-committed-capture"
+    ]);
+    expect(EVIDENCE_FILTER_PANEL_SCENARIOS).toHaveLength(9);
+    expect(EVIDENCE_FILTER_PANEL_SCENARIOS).toContain("hidden-selection");
+    expect(EVIDENCE_FILTER_PANEL_SCENARIOS).toContain("high-volume-command-keys");
+    expect(EVIDENCE_FILTER_PANEL_GEOMETRIES.map(({ name }) => name)).toEqual(["compact", "normal", "shallow", "wide"]);
+    expect(EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS).toHaveLength(EVIDENCE_FILTER_PANEL_SCENARIOS.length);
+    expect(EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS.every((scenario) => scenario.themes.includes("Dark") && scenario.themes.includes("Light"))).toBe(true);
   });
 });
