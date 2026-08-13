@@ -16,6 +16,11 @@ capacity tiers, coverage, or retention semantics.
   78 files total.
 - Seeded current-schema journals include canonical postings, so replay and
   ownership tests exercise the v3 shape rather than silently falling back.
+- The v2-to-v3 upgrade preserves the authoritative `historyControl` and
+  `evidence` stores and rebuilds canonical postings from each replay payload;
+  migration coverage includes delimiter/collision-safe token identities.
+- Schema, posting, and failure-cleanup tests use unique database names and
+  `try/finally` cleanup, including database deletion in the schema test.
 
 ## Automated proof
 
@@ -32,6 +37,8 @@ The exact automated proof is therefore retained here:
   topology checkpoints do not receive postings.
 - `filter-impl-07-failure-cleanup.test.ts` proves duplicate Evidence rejection
   leaves postings unchanged and Clear removes postings in the same transaction.
+- `filter-impl-07-postings.test.ts` proves populated v2 Evidence survives the
+  v3 upgrade and its posting index is rebuilt from the authoritative payload.
 - `evidence-facets.test.ts` proves the first-release catalog has exactly twelve
   frozen facet descriptors; the posting implementation bounds one Evidence
   record to that catalog.
@@ -40,9 +47,9 @@ The exact automated proof is therefore retained here:
 
 ## Verification
 
-- `npm test`: ordinary **69 files / 765 tests**, serialized **9 files / 189
+- `npm test`: ordinary **69 files / 765 tests**, serialized **9 files / 190
   tests** passed.
-- `npm run test:release`: **78 files / 954 tests** passed.
+- `npm run test:release`: **78 files / 955 tests** passed.
 - `npm run typecheck`: passed.
 - `npm run build`: passed with MV3 release artifact verification.
 - `npm run docs:check`: passed for 4 documents and 10 maintained commands.
