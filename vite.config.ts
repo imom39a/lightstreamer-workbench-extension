@@ -22,7 +22,12 @@ export default defineConfig({
       output: {
         entryFileNames: "[name].js",
         chunkFileNames: "assets/[name].js",
-        assetFileNames: "assets/[name][extname]"
+        assetFileNames: "assets/[name][extname]",
+        // Keep the renderer-neutral Filter algebra shared and out of the
+        // initial panel chunk as the runtime mutation seam grows.
+        manualChunks(id) {
+          return id.includes("/src/core/filter-algebra.") ? "filter-algebra" : undefined;
+        }
       }
     }
   },

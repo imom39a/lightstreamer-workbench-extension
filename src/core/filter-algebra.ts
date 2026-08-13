@@ -63,9 +63,11 @@ export type FilterEvaluation = Readonly<{
 }>;
 
 export type FilterMutation =
+  | Readonly<{ type: "replace-filter"; filter: FilterInput }>
   | Readonly<{ type: "add-criterion"; facet: string; value: TypedFilterValue; polarity?: FilterPolarity }>
   | Readonly<{ type: "remove-criterion"; facet: string; value: TypedFilterValue }>
   | Readonly<{ type: "set-polarity"; facet: string; value: TypedFilterValue; polarity: FilterPolarity }>
+  | Readonly<{ type: "replace-facet"; facet: string; criterion: Readonly<Partial<FilterCriterionSet>> }>
   | Readonly<{ type: "clear-facet"; facet: string }>
   | Readonly<{ type: "set-text"; text: string }>
   | Readonly<{ type: "set-around"; around: FilterAround }>
@@ -79,6 +81,18 @@ export type FilterPolarity = "include" | "exclude";
 export type FilterMutationResult =
   | Readonly<{ ok: true; filter: Filter; changed: boolean }>
   | Readonly<{ ok: false; filter: Filter; problem: Readonly<{ code: "STALE_FILTER_REVISION" | "INVALID_FILTER_MUTATION"; message: string }> }>;
+
+export type FilterBuilder = Readonly<{
+  add(facet: string, value: TypedFilterValue, polarity?: FilterPolarity): void;
+  remove(facet: string, value: TypedFilterValue): void;
+  setPolarity(facet: string, value: TypedFilterValue, polarity: FilterPolarity): void;
+  setFacet(facet: string, criterion: Readonly<Partial<FilterCriterionSet>>): void;
+  setText(text: string): void;
+  setAround(around: FilterAround): void;
+  clearAround(): void;
+  reset(): void;
+  apply(expectedRevision: number): FilterMutationResult;
+}>;
 
 /** The deliberately small compatibility shape used by the Build 1 matcher. */
 export type LegacyScalarFilter = Readonly<{
@@ -161,6 +175,7 @@ export function canonicalizeFilter(input: FilterInput): Filter {
   }
   const unsupported = [...(input.unsupported ?? [])]
     .map((criterion) => canonicalUnsupported(criterion))
+    .filter((criterion, index, all) => all.findIndex((candidate) => serializeUnsupported(candidate) === serializeUnsupported(criterion)) === index)
     .sort(compareUnsupported);
   return freezeFilter({
     version: FILTER_VERSION,
@@ -185,6 +200,27 @@ export function serializeFilter(filter: FilterInput): string {
 
 export function filterEquals(left: FilterInput, right: FilterInput): boolean {
   return serializeFilter(left) === serializeFilter(right);
+}
+
+/**
+ * Creates a renderer-neutral draft. Draft operations are kept separate from
+ * the committed Filter and are applied as one expected-revision transaction.
+ */
+export function createFilterBuilder(current: FilterInput): FilterBuilder {
+  const base = canonicalizeFilter(current);
+  const operations: FilterMutation[] = [];
+  const builder: FilterBuilder = {
+    add(facet, value, polarity) { operations.push({ type: "add-criterion", facet, value, ...(polarity === undefined ? {} : { polarity }) }); },
+    remove(facet, value) { operations.push({ type: "remove-criterion", facet, value }); },
+    setPolarity(facet, value, polarity) { operations.push({ type: "set-polarity", facet, value, polarity }); },
+    setFacet(facet, criterion) { operations.push({ type: "replace-facet", facet, criterion }); },
+    setText(text) { operations.push({ type: "set-text", text }); },
+    setAround(around) { operations.push({ type: "set-around", around }); },
+    clearAround() { operations.push({ type: "clear-around" }); },
+    reset() { operations.push({ type: "reset" }); },
+    apply(expectedRevision) { return applyFilterMutations(base, expectedRevision, operations); }
+  };
+  return Object.freeze(builder);
 }
 
 export function evaluateFilter(
@@ -298,6 +334,7 @@ export function applyFilterMutations(currentInput: FilterInput, expectedRevision
 
 function applyMutation(current: Filter, operation: FilterMutation): Filter {
   switch (operation.type) {
+    case "replace-filter": return canonicalizeFilter({ ...operation.filter, revision: current.revision });
     case "set-text": return canonicalizeFilter({ ...current, text: operation.text });
     case "set-around": return canonicalizeFilter({ ...current, around: canonicalAround(operation.around) });
     case "clear-around": return canonicalizeFilter({ ...current, around: null });
@@ -311,6 +348,17 @@ function applyMutation(current: Filter, operation: FilterMutation): Filter {
     }
     case "add-criterion": return setCriterion(current, operation.facet, operation.value, operation.polarity === undefined ? "include" : operation.polarity);
     case "set-polarity": return setCriterion(current, operation.facet, operation.value, operation.polarity);
+    case "replace-facet": {
+      assertNonEmptyString(operation.facet, "facet");
+      const criteria = { ...current.criteria };
+      if (!operation.criterion || typeof operation.criterion !== "object") throw new Error("Facet replacement must be an object.");
+      const source = operation.criterion;
+      const include = canonicalValues(operation.facet, source.include ?? []);
+      const exclude = canonicalValues(operation.facet, source.exclude ?? []);
+      if (include.length || exclude.length) criteria[operation.facet] = { include, exclude };
+      else delete criteria[operation.facet];
+      return canonicalizeFilter({ ...current, criteria });
+    }
     case "remove-criterion": {
       const value = canonicalValue(operation.facet, operation.value);
       const criteria = { ...current.criteria };
@@ -365,6 +413,10 @@ function canonicalUnsupported(value: UnsupportedFilterCriterion): UnsupportedFil
     ...(value.facet === undefined ? {} : { facet: value.facet }),
     ...(value.detail === undefined ? {} : { detail: value.detail })
   });
+}
+
+function serializeUnsupported(value: UnsupportedFilterCriterion): string {
+  return JSON.stringify([value.id, value.reason, value.facet ?? null, value.detail ?? null]);
 }
 
 function serializeValue(value: TypedFilterValue): Omit<TypedFilterValue, "label"> {
