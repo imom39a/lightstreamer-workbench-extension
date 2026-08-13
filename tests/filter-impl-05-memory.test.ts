@@ -101,14 +101,20 @@ describe("filter-impl-05 memory facet discovery", () => {
   it("keeps discovery search independent from Find state and a later passive Capture", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-05-find-capture-independence" });
     await history.offer(event("first", 1, "alpha")).settled;
-    const read = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: filter(), find: { text: "first" }, discover: [{ facet: "key", search: "alp", size: 10 }] });
-    expect(read.ok && read.value.find).toBeNull();
+    const anchorRead = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: filter() });
+    expect(anchorRead.ok).toBe(true);
+    if (!anchorRead.ok) return;
+    const anchor = anchorRead.value.page.evidence[0]!.identity;
+    const read = await history.query!({ at: anchorRead.value.readPoint, page: { order: "OLDEST_FIRST", size: 10 }, filter: filter(), lookup: anchor, find: { text: "first" }, discover: [{ facet: "key", search: "alp", size: 10 }] });
+    expect(read.ok && read.value.totals).toEqual({ matching: 1, inScope: 1 });
+    expect(read.ok && read.value.lookup).toMatchObject({ state: "RETAINED", inScope: true, matchesFilter: true, evidence: { identity: anchor } });
+    expect(read.ok && read.value.find).toMatchObject({ text: "first", total: 1, current: null, previous: null, next: null });
     expect(read.ok && read.value.discoveries.get("key")?.values.map((entry) => entry.value.value)).toEqual(["alpha"]);
     await history.offer(event("second", 2, "beta")).settled;
     expect(read.ok && read.value.page.evidence).toHaveLength(1);
     expect(read.ok && read.value.discoveries.get("key")?.distinctTotal).toBe(1);
     const later = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: filter(), find: { text: "second" }, discover: [{ facet: "key", search: "bet", size: 10 }] });
-    expect(later.ok && later.value.find).toBeNull();
+    expect(later.ok && later.value.find).toMatchObject({ text: "second", total: 1, current: null, previous: null, next: null });
     expect(later.ok && later.value.discoveries.get("key")?.values.map((entry) => entry.value.value)).toEqual(["beta"]);
   });
 
