@@ -340,7 +340,7 @@ async function main() {
       deadlineAt: proofDeadlineAt,
       prepare: ({ adapter, eventCount, phase, sample }) => runPageOperationForProof(
         heapPage.cdp,
-        `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${eventCount}, ${JSON.stringify(phase)}, ${sample === null ? "null" : sample})`,
+        `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${eventCount}, ${JSON.stringify(phase)}, ${sample === null ? "null" : sample}, ${JSON.stringify(proofMode)})`,
         { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }
       ),
       forceGc: ({ deadlineAt = proofDeadlineAt } = {}) => collectHeapAfterRepeatedGc(heapPage.cdp, 3, { deadlineAt }),
@@ -357,7 +357,7 @@ async function main() {
       }),
       close: () => runPageOperationForProof(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }),
       removeRoot: () => runPageOperationForProof(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId }),
-      yieldFrame: () => runPageOperationForProof(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId })
+      yieldFrame: () => runPageOperationForProof(heapPage.cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame(${JSON.stringify(proofMode)})`, { deadlineAt: proofDeadlineAt, targetId: heapPage.targetId })
       });
     } catch (error) {
       primaryHeapError = error;
@@ -373,11 +373,11 @@ async function main() {
     try {
       for (let sample = 0; sample < 3; sample += 1) {
         const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt });
-        await runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId });
+        await runPageOperationForProof(lifecyclePage.cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1, ${JSON.stringify(proofMode)})`, { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId });
         const released = await releaseHeapSessionWithCleanup({
           release: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
           removeRoot: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
-          yieldFrame: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+          yieldFrame: () => runPageOperationForProof(lifecyclePage.cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame(${JSON.stringify(proofMode)})`, { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
           forceGc: () => collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt }),
           deadlineAt: proofDeadlineAt
         });

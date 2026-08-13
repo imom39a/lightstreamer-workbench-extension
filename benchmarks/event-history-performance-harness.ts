@@ -933,10 +933,10 @@ declare global {
     __LSEW_EVENT_HISTORY_PERFORMANCE__?: {
       run(overrides?: Partial<EventHistoryPerformanceConfig>, selection?: HarnessSelection, proofMode?: EventHistoryPerformanceProofMode): Promise<HarnessResult & { selection: HarnessSelection | null }>;
       classify(report: EventHistoryPerformanceReport, reference: EventHistoryPerformanceReference): ReturnType<typeof classifyEventHistoryPerformance>;
-      prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number, phase: "warmup" | "sample", sample: number | null): Promise<{ adapter: string; count: number; retained: number; sessionId: string; databaseName: string | null; phase: "warmup" | "sample"; sample: number | null }>;
+      prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number, phase: "warmup" | "sample", sample: number | null, proofMode?: EventHistoryPerformanceProofMode): Promise<{ adapter: string; count: number; retained: number; sessionId: string; databaseName: string | null; phase: "warmup" | "sample"; sample: number | null }>;
       releaseRetainedHeapSample(): Promise<unknown>;
       removeRetainedHeapRoot(): Promise<boolean>;
-      yieldRetainedHeapFrame(): Promise<boolean>;
+      yieldRetainedHeapFrame(proofMode?: EventHistoryPerformanceProofMode): Promise<boolean>;
     };
   }
 }
@@ -1292,7 +1292,8 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       };
     }
   },
-  async prepareRetainedHeapSample(adapter, count, phase, sample) {
+  async prepareRetainedHeapSample(adapter, count, phase, sample, requestedProofMode) {
+    const proofMode = validatePerformanceProofMode(requestedProofMode);
     if (retainedHeapSession) throw new Error("A retained heap session is already active; cleanup must complete before the next sample.");
     const runId = `heap-${adapter}-${phase}-${sample ?? "warmup"}-${retainedHeapSequence += 1}`;
     const operationId = currentHarnessOperationId();
@@ -1350,7 +1351,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       );
       const retained = await releaseHeapWorkloadCandidates(
         events,
-        () => waitForBoundedFrame(`${phase}-frame`, heapProgress, heapGuard)
+        () => waitForBoundedHygieneBoundary(`${phase}-frame`, heapProgress, proofMode, heapGuard)
       );
       if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
       retainedHeapSession = { operationId, adapter, count, retained, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
@@ -1368,7 +1369,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         disposePanel: () => panel?.disposePanel(),
         closeHistory: () => history ? history.close() : Promise.resolve(null),
         removeRoot: () => root.remove(),
-        yieldFrame: () => waitForBoundedFrame(`${phase}-cleanup-frame`, () => ({
+        yieldFrame: () => waitForBoundedHygieneBoundary(`${phase}-cleanup-frame`, () => ({
           operationId,
           phase: "heap",
           stage: `${phase}-cleanup-frame`,
@@ -1385,7 +1386,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           offered: count,
           settled: null,
           query: null
-        })),
+        }), proofMode),
         progress: () => ({
           operationId,
           phase: "heap",
@@ -1425,9 +1426,10 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     retainedHeapSession = null;
     return !session.root.isConnected;
   },
-  async yieldRetainedHeapFrame() {
+  async yieldRetainedHeapFrame(requestedProofMode) {
+    const proofMode = validatePerformanceProofMode(requestedProofMode);
     const operationId = currentHarnessOperationId();
-    await waitForBoundedFrame("heap-retained-frame", () => ({
+    await waitForBoundedHygieneBoundary("heap-retained-frame", () => ({
       operationId,
       phase: "heap",
       stage: "retained-frame",
@@ -1444,7 +1446,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       offered: null,
       settled: null,
       query: null
-    }));
+    }), proofMode);
     return true;
   }
 };
@@ -1763,9 +1765,10 @@ async function runCell(
     // the caller-owned large workload payloads before repeated queries so the
     // final memory cell measures the journal rather than two complete copies.
     events.length = 0;
-    await waitForBoundedFrame(
+    await waitForBoundedHygieneBoundary(
       `cell-${cellIndex}-frame`,
       () => progress("frame", "paint"),
+      proofMode,
       runGuard
     );
     const readStartedAt = performance.now();
@@ -3103,6 +3106,31 @@ export function waitForBoundedFrame(
   publishStageProgress(progress(), guard);
   return withStageDeadline(
     waitForFrame(),
+    stage,
+    STAGE_DEADLINES_MS.frame,
+    progress,
+    undefined,
+    guard
+  );
+}
+
+/**
+ * Yield for post-publication query/heap hygiene. This is not a publication
+ * proof: headed mode keeps the historical rAF yield, while the locked-console
+ * proof uses a bounded macrotask because headless Chrome may suppress rAF.
+ */
+export function waitForBoundedHygieneBoundary(
+  stage: string,
+  progress: () => HarnessProgressInput,
+  proofMode: EventHistoryPerformanceProofMode = EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<void> {
+  if (proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME) {
+    return waitForBoundedFrame(stage, progress, guard);
+  }
+  publishStageProgress(progress(), guard);
+  return withStageDeadline(
+    new Promise<void>((resolve) => window.setTimeout(resolve, 0)),
     stage,
     STAGE_DEADLINES_MS.frame,
     progress,

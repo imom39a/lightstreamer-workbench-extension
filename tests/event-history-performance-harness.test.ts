@@ -33,6 +33,7 @@ import {
   runTerminalScenario,
   validateHarnessSelection,
   waitForBoundedFrame,
+  waitForBoundedHygieneBoundary,
   withStageDeadline,
   type HarnessProgressInput,
   type HarnessSelection
@@ -612,6 +613,26 @@ describe("Event History performance checkpoint workload", () => {
       window.requestAnimationFrame = originalRequestAnimationFrame;
       if (previousOperation === undefined) delete globalRecord[key];
       else globalRecord[key] = previousOperation;
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses only a bounded macrotask for non-interactive hygiene, never as publication proof", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const requestAnimationFrame = vi.fn(() => 0);
+    window.requestAnimationFrame = requestAnimationFrame as typeof window.requestAnimationFrame;
+    try {
+      const pending = waitForBoundedHygieneBoundary(
+        "non-interactive-hygiene",
+        () => progress("hygiene"),
+        "non-interactive-layout-commit"
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(pending).resolves.toBeUndefined();
+      expect(requestAnimationFrame).not.toHaveBeenCalled();
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
       vi.useRealTimers();
     }
   });
