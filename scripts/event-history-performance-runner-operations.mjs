@@ -470,6 +470,7 @@ async function finishFailedPreparationCleanup(evidence, { adapter, eventCount, s
 export function createSharedDeadlineTimeout(phase, deadlineAt, now = Date.now, operation = null) {
   const elapsedMs = Math.max(0, now() - (deadlineAt ?? now()));
   const status = {
+    phase,
     ...(operation ?? { operationId: null, state: "pending", heartbeat: 0, progress: null }),
     state: "rejected",
     elapsedMs,
@@ -502,6 +503,7 @@ export function requestControlCdpWithDeadline(cdp, method, params, options = {})
     if (!(error instanceof CdpRequestTimeout)) throw error;
     const operation = options.operation ?? null;
     const status = {
+      phase: error.phase,
       ...(operation ?? { operationId: null, state: "pending", heartbeat: 0, progress: null }),
       state: "rejected",
       elapsedMs: Math.max(0, now() - startedAt),
@@ -796,6 +798,7 @@ export function createTimeoutDiagnostic({
     environment,
     operation: {
       deadlineMs,
+      phase: operation.phase ?? operation.lastRequestTimeout?.phase ?? null,
       lastStatus: operation,
       progress: operation.progress ?? null
     },

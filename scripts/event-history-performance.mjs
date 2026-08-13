@@ -34,6 +34,7 @@ const markdownPath = outputPath.replace(/\.json$/u, ".md");
 const referencePath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_REFERENCE ?? "docs/reference/event-history-performance-reference.json");
 const BROWSER_TIMEOUT_MS = 240_000;
 const STARTUP_REQUEST_TIMEOUT_MS = 5_000;
+const SERVER_CLEANUP_TIMEOUT_MS = 1_000;
 const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
   "LSEW_EVENT_HISTORY_PERF_DEADLINE_MS",
   3_600_000
@@ -231,25 +232,24 @@ async function main() {
     if (decision.verdict === "FAIL") throw new Error(`Event History performance gate failed. See ${outputPath}.`);
   } catch (error) {
     const timeout = normalizePerformanceTimeout(error);
-    if (timeout && chromeMetadata && environmentMetadata) {
-      const source = sourceState();
-      const diagnostic = createTimeoutDiagnostic({
-        generatedAt: new Date().toISOString(),
-        source,
+    if (timeout) {
+      await writeTimeoutEvidenceForTimeout({
+        outputPath,
+        markdownPath,
+        timeout,
+        source: safeSourceState(),
         runner: chromeMetadata,
         environment: environmentMetadata,
         referencePath,
-        deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
-        operation: timeout.status
+        deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS
       });
-      await writeTimeoutEvidence({ outputPath, markdownPath, diagnostic });
     }
     if (chromeOutput) process.stderr.write(`\nChrome output:\n${chromeOutput.slice(-8_000)}\n`);
     throw timeout ?? error;
   } finally {
     cdp?.close();
     if (chrome) await terminateChild(chrome);
-    if (server) await new Promise((done) => server.close(done));
+    if (server) await closeServerWithDeadline(server, SERVER_CLEANUP_TIMEOUT_MS);
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
@@ -262,11 +262,11 @@ export async function prepareInitialPageForAuthoritativeRun(cdp, expectedUrl, ti
 }
 
 export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
-  if (typeof timeoutMs === "object") timeoutMs = remainingDeadlineMs(timeoutMs.deadlineAt, 30_000, "page-visibility");
-  const deadlineAt = typeof arguments[1] === "object" ? arguments[1].deadlineAt : undefined;
-  await requestSetupCdp(cdp, "Page.bringToFront", {}, deadlineAt, "page-bring-to-front");
-  const probeTimeoutMs = Math.max(1, Math.min(1_000, timeoutMs - 1));
-  const visible = await (deadlineAt === undefined ? evaluate(cdp, `new Promise((resolve) => {
+  const options = startupDeadlineOptions(timeoutMs);
+  const deadlineAt = options.deadlineAt;
+  await requestSetupCdp(cdp, "Page.bringToFront", {}, deadlineAt, "page-bring-to-front", options);
+  const probeTimeoutMs = Math.max(1, Math.min(1_000, remainingDeadlineMs(deadlineAt, 1_000, "page-visibility") - 1));
+  const visible = await evaluateWithDeadline(cdp, `new Promise((resolve) => {
     let settled = false;
     let timer;
     const finish = (value) => {
@@ -287,28 +287,7 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
       }
       requestAnimationFrame(() => finish(document.visibilityState === "visible"));
     });
-  })`, timeoutMs) : evaluateWithDeadline(cdp, `new Promise((resolve) => {
-    let settled = false;
-    let timer;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    timer = setTimeout(() => finish(false), ${probeTimeoutMs});
-    if (document.visibilityState !== "visible") {
-      finish(false);
-      return;
-    }
-    requestAnimationFrame(() => {
-      if (document.visibilityState !== "visible") {
-        finish(false);
-        return;
-      }
-      requestAnimationFrame(() => finish(document.visibilityState === "visible"));
-    });
-  })`, deadlineAt, "page-visibility"));
+  })`, deadlineAt, "page-visibility", options);
   if (visible !== true) {
     throw new Error("Event History performance run requires a visible foreground page.");
   }
@@ -346,19 +325,19 @@ export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 1
   const effectiveOptions = Number.isFinite(options.deadlineAt)
     ? options
     : { ...options, deadlineAt: Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs") };
-  await requestSetupCdp(cdp, "Page.enable", {}, effectiveOptions.deadlineAt, "page-enable");
-  await requestSetupCdp(cdp, "Runtime.enable", {}, effectiveOptions.deadlineAt, "runtime-enable");
+  await requestSetupCdp(cdp, "Page.enable", {}, effectiveOptions.deadlineAt, "page-enable", effectiveOptions);
+  await requestSetupCdp(cdp, "Runtime.enable", {}, effectiveOptions.deadlineAt, "runtime-enable", effectiveOptions);
   // Target.createTarget can publish the requested URL before the renderer has
   // committed it. Re-issue navigation after attaching so a fresh target cannot
   // leave the first Runtime.evaluate pointed at about:blank indefinitely.
-  await requestSetupCdp(cdp, "Page.navigate", { url: expectedUrl }, effectiveOptions.deadlineAt, "page-navigate");
+  await requestSetupCdp(cdp, "Page.navigate", { url: expectedUrl }, effectiveOptions.deadlineAt, "page-navigate", effectiveOptions);
   const deadline = Math.min(Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs"), effectiveOptions.deadlineAt);
   while (Date.now() < deadline) {
     const response = await evaluateResponseWithDeadline(cdp, {
       expression: "location.href",
       awaitPromise: true,
       returnByValue: true
-    }, effectiveOptions.deadlineAt, "page-document-evaluate");
+    }, effectiveOptions.deadlineAt, "page-document-evaluate", effectiveOptions);
     if (response?.result?.value === expectedUrl) return;
     await delay(Math.min(100, Math.max(1, deadline - Date.now())));
   }
@@ -446,6 +425,10 @@ function sourceState() {
   };
 }
 
+function safeSourceState() {
+  try { return sourceState(); } catch { return { revision: "unknown", dirty: "unknown" }; }
+}
+
 export function normalizePerformanceTimeout(error) {
   if (error instanceof PerformanceOperationTimeout) return error;
   if (!error || typeof error !== "object" || error.name !== "HarnessStageTimeout") return null;
@@ -472,6 +455,35 @@ export async function writeTimeoutEvidence({ outputPath: targetOutputPath, markd
   await mkdir(dirname(targetOutputPath), { recursive: true });
   await writeFile(targetOutputPath, `${JSON.stringify(diagnostic, null, 2)}\n`);
   await writeFile(targetMarkdownPath, timeoutMarkdown(diagnostic));
+}
+
+export async function writeTimeoutEvidenceForTimeout({
+  outputPath: targetOutputPath,
+  markdownPath: targetMarkdownPath,
+  timeout,
+  source = safeSourceState(),
+  runner = null,
+  environment = null,
+  referencePath,
+  deadlineMs
+}) {
+  const diagnostic = createTimeoutDiagnostic({
+    generatedAt: new Date().toISOString(),
+    source,
+    runner: runner ?? { kind: "unknown", headless: null, fakeIndexedDbUsed: null, product: null, userAgent: null, jsVersion: null },
+    environment: environment ?? { chromeMajor: null, platformClass: null, architectureClass: null, headless: null },
+    referencePath,
+    deadlineMs,
+    operation: { ...timeout.status, phase: timeoutPhase(timeout) }
+  });
+  await writeTimeoutEvidence({ outputPath: targetOutputPath, markdownPath: targetMarkdownPath, diagnostic });
+}
+
+function timeoutPhase(timeout) {
+  return timeout?.status?.phase
+    ?? timeout?.status?.lastRequestTimeout?.phase
+    ?? timeout?.status?.error?.phase
+    ?? null;
 }
 
 function isStrictlyMonotonic(values) {
@@ -507,7 +519,7 @@ function markdown(report) {
 function timeoutMarkdown(diagnostic) {
   const operation = diagnostic.operation?.lastStatus ?? {};
   const progress = diagnostic.operation?.progress ?? operation.progress ?? null;
-  return `# Event History performance gate\n\nVerdict: **FAIL**\n\nStatus: **TIMED_OUT**\n\nSource revision: ${diagnostic.source?.revision ?? "unknown"}; dirty at run: ${diagnostic.source?.dirty ?? "unknown"}.\n\nEnvironment: ${JSON.stringify(diagnostic.environment)}.\n\nGlobal deadline: ${diagnostic.operation?.deadlineMs ?? "unknown"} ms.\n\nLast operation status: ${JSON.stringify(operation)}\n\n## Latest harness progress\n\n${progress ? `\`${JSON.stringify(progress)}\`` : "No structured harness progress was observed."}\n\nThe timeout is fail-closed and was not classified as a performance PASS or REVIEW.\n`;
+  return `# Event History performance gate\n\nVerdict: **FAIL**\n\nStatus: **TIMED_OUT**\n\nSource revision: ${diagnostic.source?.revision ?? "unknown"}; dirty at run: ${diagnostic.source?.dirty ?? "unknown"}.\n\nEnvironment: ${JSON.stringify(diagnostic.environment)}.\n\nGlobal deadline: ${diagnostic.operation?.deadlineMs ?? "unknown"} ms.\n\nOperation phase: **${diagnostic.operation?.phase ?? "unknown"}**\n\nLast operation status: ${JSON.stringify(operation)}\n\n## Latest harness progress\n\n${progress ? `\`${JSON.stringify(progress)}\`` : "No structured harness progress was observed."}\n\nThe timeout is fail-closed and was not classified as a performance PASS or REVIEW.\n`;
 }
 
 async function serve(directory) {
@@ -522,8 +534,45 @@ async function serve(directory) {
       response.writeHead(404).end();
     }
   });
+  const sockets = new Set();
+  server.__eventHistorySockets = sockets;
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
   await new Promise((resolvePromise, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolvePromise); });
   return server;
+}
+
+export async function closeServerWithDeadline(server, timeoutMs = SERVER_CLEANUP_TIMEOUT_MS) {
+  const timeout = positiveFiniteStartupOption(timeoutMs, "server cleanup timeoutMs");
+  let callbackCalled = false;
+  let timer;
+  const closePromise = new Promise((resolvePromise) => {
+    try {
+      server.close(() => {
+        callbackCalled = true;
+        resolvePromise({ timedOut: false });
+      });
+    } catch {
+      resolvePromise({ timedOut: false });
+    }
+  });
+  const timeoutPromise = new Promise((resolvePromise) => {
+    timer = setTimeout(() => resolvePromise({ timedOut: true }), timeout);
+  });
+  try {
+    const result = await Promise.race([closePromise, timeoutPromise]);
+    if (result.timedOut && !callbackCalled) {
+      for (const socket of server.__eventHistorySockets ?? []) {
+        try { socket.destroy(); } catch { /* Best effort socket retirement. */ }
+      }
+      try { server.closeAllConnections?.(); } catch { /* Best effort server retirement. */ }
+    }
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 class Cdp {
@@ -708,23 +757,23 @@ async function evaluate(cdp, expression, timeoutMs = 30_000) {
   } finally { clearTimeout(timer); }
 }
 
-async function evaluateResponseWithDeadline(cdp, params, deadlineAt, phase) {
-  return requestSetupCdp(cdp, "Runtime.evaluate", params, deadlineAt, phase);
+async function evaluateResponseWithDeadline(cdp, params, deadlineAt, phase, options = {}) {
+  return requestSetupCdp(cdp, "Runtime.evaluate", params, deadlineAt, phase, options);
 }
 
-async function evaluateWithDeadline(cdp, expression, deadlineAt, phase) {
-  const response = await evaluateResponseWithDeadline(cdp, { expression, awaitPromise: true, returnByValue: true }, deadlineAt, phase);
+async function evaluateWithDeadline(cdp, expression, deadlineAt, phase, options = {}) {
+  const response = await evaluateResponseWithDeadline(cdp, { expression, awaitPromise: true, returnByValue: true }, deadlineAt, phase, options);
   if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text);
   return response.result.value;
 }
 
 function delay(milliseconds) { return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)); }
 
-async function requestSetupCdp(cdp, method, params, deadlineAt, phase) {
-  if (deadlineAt === undefined) return cdp.request(method, params);
+async function requestSetupCdp(cdp, method, params, deadlineAt, phase, options = {}) {
+  if (!Number.isFinite(deadlineAt)) throw new Error(`${phase} requires a finite deadlineAt.`);
   return requestControlCdpWithDeadline(cdp, method, params, {
     deadlineAt,
-    requestCeilingMs: STARTUP_REQUEST_TIMEOUT_MS,
+    requestCeilingMs: options.requestCeilingMs ?? STARTUP_REQUEST_TIMEOUT_MS,
     phase
   });
 }

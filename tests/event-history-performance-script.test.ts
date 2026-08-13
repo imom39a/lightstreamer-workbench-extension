@@ -161,6 +161,22 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("retires a pending visibility request for the numeric setup API", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { preparePageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
+      let cancelled = 0;
+      const cdp = { request(method) {
+        if (method === "Page.bringToFront") return Promise.resolve({});
+        const pending = new Promise(() => undefined);
+        pending.cancel = () => { cancelled += 1; };
+        return pending;
+      }};
+      await assert.rejects(preparePageForAuthoritativeRun(cdp, 20), /timed out|deadline expired/u);
+      assert.equal(cancelled, 1);
+    `);
+  });
+
   it("fails closed when initial Page.navigate never settles", () => {
     runNode(`
       import assert from "node:assert/strict";
@@ -217,7 +233,8 @@ describe("Event History performance startup fail-closed seams", () => {
       };
       await assert.rejects(
         preparePageForAuthoritativeRun(cdp, 100),
-        (error) => /visible foreground page/u.test(error?.message ?? "")
+        (error) => /visible foreground/u.test(error?.message ?? "")
+          || (error?.name === "PerformanceOperationTimeout" && error.status.error.code === "SHARED_DEADLINE_EXCEEDED")
       );
       assert.equal(calls.length, 2);
     `);
@@ -272,7 +289,7 @@ describe("Event History performance startup fail-closed seams", () => {
           return new Promise(() => undefined);
         }
       };
-      await assert.rejects(preparePageForAuthoritativeRun(cdp, 10), /CDP evaluation timed out/u);
+      await assert.rejects(preparePageForAuthoritativeRun(cdp, 10), (error) => /timed out/u.test(error?.message ?? ""));
       assert.deepEqual(calls.map(({ method }) => method), ["Page.bringToFront", "Runtime.evaluate"]);
     `);
   });
@@ -393,6 +410,93 @@ describe("Event History performance startup fail-closed seams", () => {
           && error.status.error.name === "CdpRequestTimeout"
           && error.status.error.message.includes("harness-readiness")
       );
+    `);
+  });
+
+  it("writes both startup timeout evidence files with partial metadata", () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "lsew-startup-timeout-test-"));
+    const outputPath = join(temporaryRoot, "timeout.json");
+    const markdownPath = join(temporaryRoot, "timeout.md");
+    try {
+      runNode(`
+        import assert from "node:assert/strict";
+        import { readFile } from "node:fs/promises";
+        const { prepareInitialPageForAuthoritativeRun, writeTimeoutEvidenceForTimeout } = await import(${JSON.stringify(scriptUrl)});
+        const cdp = { request(method) {
+          return method === "Page.enable" ? new Promise(() => undefined) : Promise.resolve({});
+        }};
+        const timeout = await prepareInitialPageForAuthoritativeRun(cdp, "http://127.0.0.1:4173/", { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }).then(() => null, (error) => error);
+        assert.equal(timeout.name, "PerformanceOperationTimeout");
+        await writeTimeoutEvidenceForTimeout({
+          outputPath: ${JSON.stringify(outputPath)}, markdownPath: ${JSON.stringify(markdownPath)}, timeout,
+          referencePath: "reference.json", deadlineMs: 3600000,
+          source: { revision: "44b537e", dirty: false }
+        });
+        const json = JSON.parse(await readFile(${JSON.stringify(outputPath)}, "utf8"));
+        const markdown = await readFile(${JSON.stringify(markdownPath)}, "utf8");
+        assert.equal(json.status, "TIMED_OUT");
+        assert.equal(json.runner.product, null);
+        assert.equal(json.environment.chromeMajor, null);
+        assert.equal(json.operation.phase, "page-enable");
+        assert.equal(json.operation.lastStatus.state, "rejected");
+        assert.match(markdown, /Operation phase: \\*\\*page-enable\\*\\*/u);
+        assert.match(markdown, /Source revision: 44b537e/u);
+      `);
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("writes both evidence files when initial harness readiness times out", () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "lsew-readiness-timeout-test-"));
+    const outputPath = join(temporaryRoot, "timeout.json");
+    const markdownPath = join(temporaryRoot, "timeout.md");
+    try {
+      runNode(`
+        import assert from "node:assert/strict";
+        import { readFile } from "node:fs/promises";
+        const { prepareInitialPageForAuthoritativeRun, writeTimeoutEvidenceForTimeout } = await import(${JSON.stringify(scriptUrl)});
+        const expected = "http://127.0.0.1:4173/";
+        const cdp = { request(method, params) {
+          if (method === "Runtime.evaluate" && params.expression === "location.href") return Promise.resolve({ result: { value: expected } });
+          if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: false } });
+          return Promise.resolve({});
+        }};
+        const timeout = await prepareInitialPageForAuthoritativeRun(cdp, expected, { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }).then(() => null, (error) => error);
+        assert.equal(timeout.name, "PerformanceOperationTimeout");
+        await writeTimeoutEvidenceForTimeout({
+          outputPath: ${JSON.stringify(outputPath)}, markdownPath: ${JSON.stringify(markdownPath)}, timeout,
+          referencePath: "reference.json", deadlineMs: 3600000,
+          source: { revision: "44b537e", dirty: false }
+        });
+        const json = JSON.parse(await readFile(${JSON.stringify(outputPath)}, "utf8"));
+        const markdown = await readFile(${JSON.stringify(markdownPath)}, "utf8");
+        assert.equal(json.operation.phase, "harness-readiness");
+        assert.equal(json.operation.lastStatus.state, "rejected");
+        assert.match(markdown, /Operation phase: \\*\\*harness-readiness\\*\\*/u);
+      `);
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds final server cleanup when close never invokes its callback", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { closeServerWithDeadline } = await import(${JSON.stringify(scriptUrl)});
+      let destroyed = 0;
+      let closedAll = 0;
+      const server = {
+        close() {},
+        closeAllConnections() { closedAll += 1; },
+        __eventHistorySockets: new Set([{ destroy() { destroyed += 1; } }])
+      };
+      const started = Date.now();
+      const result = await closeServerWithDeadline(server, 20);
+      assert.equal(result.timedOut, true);
+      assert.ok(Date.now() - started < 500);
+      assert.equal(closedAll, 1);
+      assert.equal(destroyed, 1);
     `);
   });
 

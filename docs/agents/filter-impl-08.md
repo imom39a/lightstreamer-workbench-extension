@@ -1,5 +1,26 @@
 # `filter-impl-08` repair proof
 
+## Final lifecycle repair (2026-08-13)
+
+The final lifecycle review found three fail-closed gaps. Startup timeout handling
+now always writes JSON and Markdown evidence, even when failure occurs before
+`Browser.getVersion` and before Chrome/environment metadata exists. The evidence
+retains the source revision, single proof deadline, operation phase, rejected
+status, and explicit `null`/`unknown` partial metadata; it never fabricates a
+runner or environment value.
+
+`preparePageForAuthoritativeRun` now derives a finite deadline for numeric and
+default calls and routes both `Page.bringToFront` and `Runtime.evaluate` through
+the cancellable bounded control-CDP path. Final HTTP-server cleanup tracks active
+sockets, retires them with `closeAllConnections`, and returns after a bounded
+cleanup deadline even if the close callback never arrives. Temporary-directory
+cleanup remains in `finally` after this bounded cleanup.
+
+Deterministic regressions cover initial `Page.enable` timeout evidence creation,
+pending visibility-request cancellation, and never-callback server cleanup.
+Workload sizes, the one proof deadline, thresholds, and capture/reference
+semantics are unchanged. No Chrome was launched and no real capture was run.
+
 ## Polling-timeout repair (2026-08-13)
 
 The bounded startup audit found that fresh-document URL polling and harness
