@@ -1,3 +1,6 @@
+import { extractEvidenceFacets } from "../evidence-facets";
+import { deserializeJournalEvidenceCandidate } from "../event-history-serialization";
+
 export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 3;
 export const AUTHORITATIVE_EVENT_DB_NAME_PREFIX = "lsew-events-panel";
 export const AUTHORITATIVE_EVENT_DB_NAME = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-session`;
@@ -13,6 +16,9 @@ export const AUTHORITATIVE_EVENT_STORE_NAMES = {
   evidence: "evidence",
   facetPostings: "facetPostings"
 } as const;
+
+const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = "facet-v2";
+const AUTHORITATIVE_EVENT_FACET_COUNT = 12;
 
 type IndexedDatabaseDescriptor = Readonly<{ name?: string; version?: number }>;
 
@@ -330,7 +336,7 @@ function upgradeAuthoritativeDatabase(
   transaction: IDBTransaction | null,
   oldVersion: number
 ): void {
-  if (oldVersion > 0 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+  if (oldVersion > 0 && oldVersion < 2) {
     for (const name of [...database.objectStoreNames]) {
       database.deleteObjectStore(name);
     }
@@ -359,4 +365,42 @@ function upgradeAuthoritativeDatabase(
   if (!postings.indexNames.contains("token")) {
     postings.createIndex("token", "token", { unique: false });
   }
+  if (oldVersion === 2) {
+    rebuildFacetPostingsFromEvidence(transaction!, postings);
+  }
+}
+
+type MigrationEvidenceRecord = Readonly<{
+  intervalId: string;
+  sequence: number;
+  eventId: string;
+  replayPayload: string;
+}>;
+
+function rebuildFacetPostingsFromEvidence(transaction: IDBTransaction, postings: IDBObjectStore): void {
+  const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+  const request = evidence.openCursor();
+  request.onerror = () => transaction.abort();
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) return;
+    try {
+      const record = cursor.value as MigrationEvidenceRecord;
+      const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
+      if (candidate.kind !== "topology-checkpoint") {
+        for (const facet of extractEvidenceFacets(candidate).selectableValues.slice(0, AUTHORITATIVE_EVENT_FACET_COUNT).map((entry) => entry.identity)) {
+          postings.add({
+            token: JSON.stringify([AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE, facet]),
+            sequence: record.sequence,
+            intervalId: record.intervalId,
+            eventId: record.eventId,
+            facetIdentity: facet
+          });
+        }
+      }
+      cursor.continue();
+    } catch {
+      transaction.abort();
+    }
+  };
 }
