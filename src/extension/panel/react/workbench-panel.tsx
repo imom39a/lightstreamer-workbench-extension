@@ -10,6 +10,20 @@ import {
   topologySnapshotFilename,
   type TopologySensitiveCategory
 } from "../topology-export";
+import { FACET_DESCRIPTORS, type EvidenceFacetKey } from "../../../core/evidence-facets";
+import {
+  type FacetCount,
+  type FacetDiscoveryResult,
+  type TypedFacetValue
+} from "../../../core/evidence-filter-contract";
+import {
+  createTypedFilterValue,
+  type Filter,
+  type FilterMutation,
+  type FilterPolarity,
+  type TypedFilterValue
+} from "../../../core/filter-algebra";
+import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
 
@@ -225,6 +239,61 @@ function filterSummary(filter: WorkbenchSnapshot["evidence"]["investigation"]["f
   return entries.length ? entries.join(" · ") : "none";
 }
 
+type FilterComposerStep = "composer" | "facets" | "explorer";
+
+function cloneFilterCriteria(criteria: Filter["criteria"]): Filter["criteria"] {
+  return Object.fromEntries(Object.entries(criteria).map(([facet, criterion]) => [facet, {
+    include: [...criterion.include],
+    exclude: [...criterion.exclude]
+  }])) as Filter["criteria"];
+}
+
+function criterionSignature(criterion: Filter["criteria"][string] | undefined): string {
+  if (!criterion) return "";
+  return JSON.stringify({
+    include: criterion.include.map(({ identity }) => identity).sort(),
+    exclude: criterion.exclude.map(({ identity }) => identity).sort()
+  });
+}
+
+function draftFilterOperations(
+  applied: Filter,
+  text: string,
+  criteria: Filter["criteria"]
+): readonly FilterMutation[] {
+  const operations: FilterMutation[] = [];
+  if (applied.text !== text.trim().toLocaleLowerCase()) operations.push({ type: "set-text", text });
+  const facets = new Set([...Object.keys(applied.criteria), ...Object.keys(criteria)]);
+  for (const facet of facets) {
+    const current = applied.criteria[facet];
+    const next = criteria[facet];
+    if (criterionSignature(current) === criterionSignature(next)) continue;
+    operations.push({
+      type: "replace-facet",
+      facet,
+      criterion: next ?? { include: [], exclude: [] }
+    });
+  }
+  return operations;
+}
+
+function filterValueForDraft(value: TypedFacetValue): TypedFilterValue {
+  let scalar: string | number | boolean | null = value.value;
+  if (value.type === "number") scalar = Number(value.value);
+  else if (value.type === "boolean") scalar = value.value === "true";
+  else if (value.type === "null") scalar = null;
+  return createTypedFilterValue(value.facet, value.type, scalar, value.label);
+}
+
+function discoveryUnavailableMessage(result: Extract<FacetDiscoveryResult, { state: "UNAVAILABLE" }>): string {
+  switch (result.reason) {
+    case "ZERO_BASE": return "No Evidence is in the current Scope, so there are no values to discover.";
+    case "NO_CONCRETE_VALUES": return "No observed concrete values exist for this facet at the current read point.";
+    case "DISCOVERY_FAILED": return "Exact value discovery is unavailable for this read point. The Evidence query remains usable.";
+    case "UNSUPPORTED_AT_READ_POINT": return "This facet is unavailable at the current read point.";
+  }
+}
+
 function sensitiveCategoryLabel(category: TopologySensitiveCategory): string {
   switch (category) {
     case "server-addresses": return "Server addresses and URLs";
@@ -386,6 +455,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const [contextCollapsed, setContextCollapsed] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState("");
+  const [filterDraftCriteria, setFilterDraftCriteria] = useState<Filter["criteria"]>({});
+  const [filterStep, setFilterStep] = useState<FilterComposerStep>("composer");
+  const [filterFacet, setFilterFacet] = useState<EvidenceFacetKey | null>(null);
+  const [filterDiscoverySearch, setFilterDiscoverySearch] = useState("");
+  const [filterDiscoveryCursor, setFilterDiscoveryCursor] = useState<string | null>(null);
+  const [filterDiscoveryValues, setFilterDiscoveryValues] = useState<readonly FacetCount[]>([]);
   const [filterDraftRevision, setFilterDraftRevision] = useState<number | null>(null);
   const [filterSubmitVersion, setFilterSubmitVersion] = useState<number | null>(null);
   const [collapsedScopeIds, setCollapsedScopeIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -398,6 +473,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const findTrigger = useRef<HTMLButtonElement | null>(null);
   const filterInput = useRef<HTMLInputElement | null>(null);
   const filterTrigger = useRef<HTMLButtonElement | null>(null);
+  const structuredCriterionTrigger = useRef<HTMLButtonElement | null>(null);
+  const facetPickerFirst = useRef<HTMLButtonElement | null>(null);
+  const facetButtons = useRef(new Map<EvidenceFacetKey, HTMLButtonElement>());
+  const facetReturnKey = useRef<EvidenceFacetKey | null>(null);
+  const facetSearchInput = useRef<HTMLInputElement | null>(null);
   const moreActionsTrigger = useRef<HTMLButtonElement | null>(null);
   const scopeTrigger = useRef<HTMLButtonElement | null>(null);
   const contextLens = useRef<HTMLElement | null>(null);
@@ -544,6 +624,21 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const appliedFilter = evidence.investigation.filter;
   const appliedFilterSummary = filterSummary(appliedFilter);
   const hasActiveFilter = appliedFilterSummary !== "none";
+  const activeFacetDescriptor = filterFacet
+    ? FACET_DESCRIPTORS.find((descriptor) => descriptor.key === filterFacet) ?? null
+    : null;
+  const activeFacetDiscovery = filterFacet
+    ? evidence.investigation.discoveries.get(filterFacet)
+    : undefined;
+
+  useLayoutEffect(() => {
+    if (activeFacetDiscovery?.state !== "AVAILABLE" || evidence.investigation.queryState === "loading") return;
+    setFilterDiscoveryValues((previous) => {
+      if (!filterDiscoveryCursor) return activeFacetDiscovery.values;
+      const identities = new Set(previous.map((entry) => entry.value.identity));
+      return Object.freeze([...previous, ...activeFacetDiscovery.values.filter((entry) => !identities.has(entry.value.identity))]);
+    });
+  }, [activeFacetDiscovery, evidence.investigation.queryState, filterDiscoveryCursor]);
   const compactSurface = snapshot.contextId === "context:scope" ? "scope" : snapshot.contextId ? "context" : undefined;
   const rawEvidence = snapshot.contextId?.startsWith("raw:") ? selected : null;
   const commandProjectionComparison = snapshot.contextId === "command-projections";
@@ -988,17 +1083,99 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const openFilter = (origin: HTMLElement) => {
     filterOrigin.current = origin;
     setFilterDraft(appliedFilter.text);
+    setFilterDraftCriteria(cloneFilterCriteria(appliedFilter.criteria));
+    setFilterStep("composer");
+    setFilterFacet(null);
+    setFilterDiscoverySearch("");
+    setFilterDiscoveryCursor(null);
+    setFilterDiscoveryValues([]);
+    facetReturnKey.current = null;
     setFilterDraftRevision(appliedFilter.revision);
     setFilterOpen(true);
   };
 
   const closeFilter = () => {
     setFilterDraft(appliedFilter.text);
+    setFilterDraftCriteria(cloneFilterCriteria(appliedFilter.criteria));
+    setFilterStep("composer");
+    setFilterFacet(null);
+    setFilterDiscoverySearch("");
+    setFilterDiscoveryCursor(null);
+    setFilterDiscoveryValues([]);
+    facetReturnKey.current = null;
     setFilterDraftRevision(null);
     setFilterOpen(false);
     window.requestAnimationFrame(() => {
       (filterOrigin.current?.isConnected ? filterOrigin.current : filterTrigger.current)?.focus();
     });
+  };
+
+  const openStructuredCriteria = () => {
+    setFilterStep("facets");
+    window.requestAnimationFrame(() => facetPickerFirst.current?.focus());
+  };
+
+  const openFacetExplorer = (facet: EvidenceFacetKey) => {
+    facetReturnKey.current = facet;
+    setFilterFacet(facet);
+    setFilterStep("explorer");
+    setFilterDiscoverySearch("");
+    setFilterDiscoveryCursor(null);
+    setFilterDiscoveryValues([]);
+    runtime.dispatch({ type: "request-filter-discovery", request: { facet, size: 12 } });
+    window.requestAnimationFrame(() => facetSearchInput.current?.focus());
+  };
+
+  const requestFacetDiscovery = (search: string, cursor: string | null = null) => {
+    if (!filterFacet) return;
+    runtime.dispatch({
+      type: "request-filter-discovery",
+      request: {
+        facet: filterFacet,
+        size: 12,
+        ...(search ? { search } : {}),
+        ...(cursor ? { cursor } : {})
+      }
+    });
+  };
+
+  const chooseFacetValue = (value: TypedFacetValue, polarity: FilterPolarity) => {
+    const draftValue = filterValueForDraft(value);
+    setFilterDraftCriteria((previous) => {
+      const current = previous[value.facet] ?? { include: [], exclude: [] };
+      const inInclude = current.include.some((candidate) => candidate.identity === draftValue.identity);
+      const inExclude = current.exclude.some((candidate) => candidate.identity === draftValue.identity);
+      const selected = polarity === "include" ? inInclude : inExclude;
+      const include = current.include.filter((candidate) => candidate.identity !== draftValue.identity);
+      const exclude = current.exclude.filter((candidate) => candidate.identity !== draftValue.identity);
+      if (!selected) (polarity === "include" ? include : exclude).push(draftValue);
+      return {
+        ...previous,
+        [value.facet]: { include, exclude }
+      };
+    });
+  };
+
+  const handleFilterEscape = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (filterStep === "explorer") {
+      setFilterStep("facets");
+      setFilterFacet(null);
+      setFilterDiscoveryCursor(null);
+      window.requestAnimationFrame(() => {
+        const target = (facetReturnKey.current ? facetButtons.current.get(facetReturnKey.current) : null) ?? facetPickerFirst.current;
+        target?.focus();
+      });
+      return;
+    }
+    if (filterStep === "facets") {
+      setFilterStep("composer");
+      window.requestAnimationFrame(() => structuredCriterionTrigger.current?.focus());
+      return;
+    }
+    closeFilter();
   };
 
   useLayoutEffect(() => {
@@ -1176,8 +1353,10 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [findOpen]);
 
   useLayoutEffect(() => {
-    if (filterOpen) filterInput.current?.focus();
-  }, [filterOpen]);
+    if (!filterOpen) return;
+    if (filterStep === "composer") filterInput.current?.focus();
+    if (filterStep === "explorer") facetSearchInput.current?.focus();
+  }, [filterOpen, filterStep]);
 
   useLayoutEffect(() => {
     if (!pendingActionsRestoration.current || contextMode === "actions") return;
@@ -1190,8 +1369,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [contextMode, snapshot.contextId]);
 
   useLayoutEffect(() => {
-    if (!filterOpen) setFilterDraft(appliedFilter.text);
-  }, [appliedFilter.text, filterOpen]);
+    if (!filterOpen) {
+      setFilterDraft(appliedFilter.text);
+      setFilterDraftCriteria(cloneFilterCriteria(appliedFilter.criteria));
+    }
+  }, [appliedFilter.criteria, appliedFilter.text, filterOpen]);
 
   useLayoutEffect(() => {
     const pending = pendingPaneFocus.current;
@@ -1391,15 +1573,48 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>Matching {matching.toLocaleString()}</span><span>In Scope {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : null}</div></header>
-          {filterOpen ? <form className="workbench-react__filter" id="workbench-filter" aria-label="Filter ordered Evidence" onSubmit={(event) => {
+          {filterOpen ? <form className={`workbench-react__filter${filterStep === "explorer" ? " workbench-react__filter--explorer-open" : ""}`} id="workbench-filter" aria-label="Filter ordered Evidence" onKeyDown={handleFilterEscape} onSubmit={(event) => {
             event.preventDefault();
             setFilterSubmitVersion(snapshot.version);
             dispatch(runtime, {
               type: "apply-filter-mutations",
               expectedRevision: filterDraftRevision ?? appliedFilter.revision,
-              operations: [{ type: "set-text", text: filterDraft }]
+              operations: draftFilterOperations(appliedFilter, filterDraft, filterDraftCriteria)
             });
-          }}><div className="workbench-react__filter-controls"><label htmlFor="workbench-filter-query">Filter Evidence</label><input ref={filterInput} id="workbench-filter-query" value={filterDraft} onChange={(event) => setFilterDraft(event.currentTarget.value)} /><button type="submit">Apply</button><button type="button" onClick={closeFilter}>Cancel</button></div><button type="button" disabled aria-describedby="workbench-filter-structured-note">Add structured criterion</button><span id="workbench-filter-structured-note" className="workbench-react__filter-note">Structured criteria are not available in this slice; ticket13 will enable this route.</span>{evidence.filterMutation.state === "stale" || evidence.filterMutation.state === "invalid" ? <p className="workbench-react__filter-status" role="alert">{evidence.filterMutation.message ?? "The Filter could not be applied."} Draft remains editable; review it and Apply again.</p> : null}</form> : null}
+          }}>
+            {filterStep === "composer" ? <>
+              <div className="workbench-react__filter-controls"><label htmlFor="workbench-filter-query">Filter Evidence</label><input ref={filterInput} id="workbench-filter-query" value={filterDraft} onChange={(event) => setFilterDraft(event.currentTarget.value)} /><button type="submit">Apply</button><button type="button" onClick={closeFilter}>Cancel</button></div>
+              <div className="workbench-react__filter-draft-summary" aria-label="Structured criteria draft"><strong>Structured criteria draft</strong>{Object.entries(filterDraftCriteria).flatMap(([facet, criterion]) => [
+                ...criterion.include.map((value) => <span key={`${facet}-include-${value.identity}`}>Include {facet}: {value.label}</span>),
+                ...criterion.exclude.map((value) => <span key={`${facet}-exclude-${value.identity}`}>Exclude {facet}: {value.label}</span>)
+              ])}{Object.values(filterDraftCriteria).every((criterion) => criterion.include.length === 0 && criterion.exclude.length === 0) ? <span>No structured criteria added.</span> : null}</div>
+              <button ref={structuredCriterionTrigger} type="button" onClick={openStructuredCriteria}>Add structured criterion</button><span id="workbench-filter-structured-note" className="workbench-react__filter-note">Choose one of twelve Evidence facets to browse exact observed values.</span>
+              {evidence.filterMutation.state === "stale" || evidence.filterMutation.state === "invalid" ? <p className="workbench-react__filter-status" role="alert">{evidence.filterMutation.message ?? "The Filter could not be applied."} Draft remains editable; review it and Apply again.</p> : null}
+            </> : filterStep === "facets" ? <section className="workbench-react__filter-facet-step" role="dialog" aria-label="Choose structured facet">
+              <header><div><strong>Add structured criterion</strong><span>Select a Lightstreamer-native facet.</span></div><button type="button" onClick={() => { setFilterStep("composer"); window.requestAnimationFrame(() => structuredCriterionTrigger.current?.focus()); }}>Back to Filter</button></header>
+              <div className="workbench-react__filter-facet-grid" role="listbox" aria-label="Evidence facets">{FACET_DESCRIPTORS.map((descriptor, index) => <button ref={(element) => { if (index === 0) facetPickerFirst.current = element; if (element) facetButtons.current.set(descriptor.key, element); else facetButtons.current.delete(descriptor.key); }} type="button" role="option" key={descriptor.key} aria-label={`Add ${descriptor.label} criterion`} onClick={() => openFacetExplorer(descriptor.key)}><strong>{descriptor.label}</strong><span>{descriptor.valueType} · exact observed values</span></button>)}</div>
+              <footer><span>All twelve facets are available without query syntax.</span><button type="button" onClick={closeFilter}>Cancel</button></footer>
+            </section> : <section className="workbench-react__filter-explorer" role="dialog" aria-label={`${activeFacetDescriptor?.label ?? "Facet"} exact values`}>
+              <header className="workbench-react__filter-explorer-header"><div><strong>{activeFacetDescriptor?.label ?? "Facet"} exact values</strong><span>Bounded contextual explorer · typed identities remain stable at this read point.</span></div><button type="button" onClick={() => { setFilterStep("facets"); setFilterFacet(null); setFilterDiscoveryCursor(null); window.requestAnimationFrame(() => facetPickerFirst.current?.focus()); }}>Back to facets</button></header>
+              <div className="workbench-react__filter-explorer-search"><label htmlFor="workbench-filter-value-search">Search exact values</label><input ref={facetSearchInput} id="workbench-filter-value-search" value={filterDiscoverySearch} onChange={(event) => { const search = event.currentTarget.value; setFilterDiscoverySearch(search); setFilterDiscoveryCursor(null); requestFacetDiscovery(search); }} /><span aria-live="polite">{activeFacetDiscovery?.state === "AVAILABLE" ? `${activeFacetDiscovery.distinctTotal.toLocaleString()} exact values` : "Exact contextual counts"}</span></div>
+              {!activeFacetDiscovery || evidence.investigation.queryState === "loading" ? <div className="workbench-react__filter-explorer-empty" role="status"><strong>Loading exact values…</strong><span>Reading the current Scope and Filter at one coherent Evidence read point.</span></div> : activeFacetDiscovery.state === "UNAVAILABLE" ? <div className="workbench-react__filter-explorer-empty" role="status"><strong>Exact values unavailable</strong><span>{discoveryUnavailableMessage(activeFacetDiscovery)}</span></div> : <>
+                <p className="workbench-react__filter-explorer-counts" role="status">Exact contextual counts: {activeFacetDiscovery.baseEvidenceCount.toLocaleString()} Evidence · {activeFacetDiscovery.distinctTotal.toLocaleString()} distinct values{filterDiscoverySearch ? ` matching “${filterDiscoverySearch}”` : ""}.</p>
+                <div className="workbench-react__filter-value-list" role="list" aria-label={`${activeFacetDescriptor?.label ?? "Facet"} values`}>
+                  {filterDiscoveryValues.length ? filterDiscoveryValues.map((entry) => {
+                    const draftValue = filterValueForDraft(entry.value);
+                    const criterion = filterDraftCriteria[entry.value.facet];
+                    const included = criterion?.include.some((value) => value.identity === draftValue.identity) ?? false;
+                    const excluded = criterion?.exclude.some((value) => value.identity === draftValue.identity) ?? false;
+                    const completeIdentity = `${entry.value.facet} · ${entry.value.type} · ${entry.value.identity}`;
+                    return <div className="workbench-react__filter-value-row" role="listitem" data-filter-value-identity={entry.value.identity} key={entry.value.identity} title={completeIdentity}><span className="workbench-react__filter-value-label"><strong>{entry.value.label}</strong><small>{entry.value.type} · {entry.value.value}</small></span><span className="workbench-react__filter-value-count">{entry.count.toLocaleString()} in current Evidence{entry.pinned ? ` · pinned${entry.count === 0 ? " · zero" : ""}` : ""}</span><div className="workbench-react__filter-value-actions"><button type="button" aria-pressed={included} aria-label={`Include ${entry.value.label}; typed identity ${completeIdentity}`} onClick={() => chooseFacetValue(entry.value, "include")}>Include</button><button type="button" aria-pressed={excluded} aria-label={`Exclude ${entry.value.label}; typed identity ${completeIdentity}`} onClick={() => chooseFacetValue(entry.value, "exclude")}>Exclude</button></div></div>;
+                  }) : <div className="workbench-react__filter-explorer-empty" role="status"><strong>No values match this search.</strong><span>Clear the label search to inspect the exhaustive observed set.</span></div>}
+                </div>
+                {activeFacetDiscovery.nextCursor ? <button className="workbench-react__filter-next" type="button" onClick={() => { const cursor = activeFacetDiscovery.nextCursor; setFilterDiscoveryCursor(cursor); requestFacetDiscovery(filterDiscoverySearch, cursor); }}>Show more exact values</button> : <span className="workbench-react__filter-complete">All exact values for this search are shown.</span>}
+              </>}
+              {evidence.filterMutation.state === "stale" || evidence.filterMutation.state === "invalid" ? <p className="workbench-react__filter-status" role="alert">{evidence.filterMutation.message ?? "The Filter could not be applied."} Draft remains editable; review it and Apply again.</p> : null}
+              <footer><button type="submit">Apply</button><button type="button" onClick={closeFilter}>Cancel</button></footer>
+            </section>}
+          </form> : null}
           {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : null}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div></div> : null}
           <div className="workbench-react__evidence-window" aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}

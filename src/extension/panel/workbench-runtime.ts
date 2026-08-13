@@ -507,6 +507,7 @@ export type WorkbenchCommand =
   | { type: "mutate-filter"; expectedRevision: number; operations: readonly FilterMutation[] }
   | { type: "reset-filter"; expectedRevision: number }
   | { type: "apply-filter-builder"; expectedRevision: number; operations: readonly FilterMutation[] }
+  | { type: "request-filter-discovery"; request: FacetDiscoveryRequest | null }
   | { type: "reveal-selected-evidence" }
   | { type: "clear-evidence-selection" }
   | { type: "set-find"; value: string }
@@ -743,6 +744,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
   private readonly evidenceQuery: EvidenceInvestigationQuery;
   private readonly investigationDiscoveries: readonly FacetDiscoveryRequest[];
+  private filterDiscovery: FacetDiscoveryRequest | null = null;
   private readonly activeTopologyStagingSyncIds = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private commandStateProjections: CommandStateProjections = createCommandStateProjections();
@@ -973,6 +975,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.canonicalFilter = result.filter;
+    this.filterDiscovery = null;
     if (options.legacyFilters) this.filters = { ...options.legacyFilters };
     this.recordInvestigationCheckpoint();
     this.clearedSelectionEventId = null;
@@ -1200,6 +1203,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "set-scope":
         this.invalidateEvidenceCopy();
+        this.filterDiscovery = null;
         this.scopeId = command.scopeId ?? "page";
         this.scopeFocusedNodeId = command.scopeId ?? "page";
         this.clearedSelectionEventId = null;
@@ -1261,6 +1265,17 @@ class Runtime implements WorkbenchRuntime {
       case "apply-filter-builder":
         this.invalidateEvidenceCopy();
         this.applyFilterCommand(command.expectedRevision, command.operations);
+        return;
+      case "request-filter-discovery":
+        this.filterDiscovery = command.request === null
+          ? null
+          : Object.freeze({
+              facet: command.request.facet,
+              size: command.request.size,
+              ...(command.request.search === undefined ? {} : { search: command.request.search }),
+              ...(command.request.cursor === undefined ? {} : { cursor: command.request.cursor })
+            });
+        this.refreshEvidence("command");
         return;
       case "reset-filter":
         this.invalidateEvidenceCopy();
@@ -1829,6 +1844,7 @@ class Runtime implements WorkbenchRuntime {
     this.actionsReturnContextId = null;
     this.clearFindResults();
     this.evidencePageCursors.clear();
+    this.filterDiscovery = null;
   }
 
   private prepareExport(): void {
@@ -3125,6 +3141,9 @@ class Runtime implements WorkbenchRuntime {
     const pageSize = Math.min(100, this.windowSize);
     const currentFind = this.findIdentity(this.findCurrentEventId);
     const selectedLookup = this.selectedEvidenceIdentity ?? this.identityForEventId(this.selectionEventId);
+    const discoveryByFacet = new Map<string, FacetDiscoveryRequest>();
+    for (const discovery of this.investigationDiscoveries) discoveryByFacet.set(discovery.facet, discovery);
+    if (this.filterDiscovery) discoveryByFacet.set(this.filterDiscovery.facet, this.filterDiscovery);
     return Object.freeze({
       at: frozenReadPoint ?? "LATEST_COMMITTED",
       scope: structuralEvidenceScope(target),
@@ -3136,7 +3155,7 @@ class Runtime implements WorkbenchRuntime {
           ? { cursor: this.evidencePageCursors.get(offset) }
           : {})
       }),
-      discover: this.investigationDiscoveries,
+      discover: Object.freeze([...discoveryByFacet.values()]),
       ...(selectedLookup === null ? {} : { lookup: selectedLookup }),
       ...(this.find.trim() === "" ? {} : { find: { text: this.find, scopeToFilter: true, ...(currentFind ? { current: currentFind } : {}) } })
     });
