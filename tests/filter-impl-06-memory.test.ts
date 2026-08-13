@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
+import { revealFilter } from "../src/core/evidence-filter-selection";
 import { typedFacetValue, type EvidenceFilter, type EvidenceIdentity } from "../src/core/evidence-filter-contract";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
@@ -101,5 +102,18 @@ describe("filter-impl-06 memory selection planner", () => {
     await history.offer(event("one", 1, 1_000)).settled;
     const result = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: { ...emptyFilter(), around: { intervalId: "wrong", start: 0, end: 2_000, anchor: { intervalId: "wrong", pageId: "wrong", ownerId: "memory-event-history", sequence: 1, eventId: "gone" }, anchorSequence: 1, anchorTimestamp: 1_000 } } });
     expect(result).toMatchObject({ ok: false, problem: { code: "AROUND_ANCHOR_UNAVAILABLE" } });
+  });
+
+  it("reveals only actual blockers and leaves satisfied criteria intact", () => {
+    const satisfied = criterion("mode", "MERGE");
+    const blocked = criterion("kind", "not-item-update");
+    const filter = { ...emptyFilter(), text: "needle", criteria: {
+      mode: { include: [satisfied], exclude: [] },
+      kind: { include: [blocked], exclude: [] }
+    } };
+    const revealed = revealFilter(filter, [{ id: "free-text", criterion: "free-text" }, { id: `kind:include:${blocked.identity}`, criterion: { id: `kind:include:${blocked.identity}`, facet: "kind", polarity: "include", value: blocked } }]);
+    expect(revealed.text).toBe("");
+    expect(revealed.criteria.mode?.include[0]?.identity).toBe(satisfied.identity);
+    expect(revealed.criteria.kind?.include).toHaveLength(0);
   });
 });

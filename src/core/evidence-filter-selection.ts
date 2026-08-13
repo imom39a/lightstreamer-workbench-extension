@@ -81,6 +81,27 @@ export function findEvidence(records: readonly SelectionRecord[], request: Evide
   });
 }
 
+/** Apply only the blockers returned for one retained selection. */
+export function revealFilter(filter: EvidenceFilter, blockers: readonly RevealBlocker[]): EvidenceFilter {
+  let next: EvidenceFilter = filter;
+  for (const blocker of blockers) {
+    if (blocker.criterion === "free-text") next = { ...next, text: "" };
+    else if (blocker.criterion === "around-evidence") next = { ...next, around: null };
+    else if (typeof blocker.criterion === "object" && "facet" in blocker.criterion && "polarity" in blocker.criterion) {
+      const criterion = blocker.criterion;
+      const bucket = next.criteria[criterion.facet];
+      if (!bucket) continue;
+      next = { ...next, criteria: { ...next.criteria, [criterion.facet]: {
+        include: criterion.polarity === "include" ? bucket.include.filter((value) => value.identity !== criterion.value.identity) : bucket.include,
+        exclude: criterion.polarity === "exclude" ? bucket.exclude.filter((value) => value.identity !== criterion.value.identity) : bucket.exclude
+      } } };
+    } else if (typeof blocker.criterion === "object" && "id" in blocker.criterion) {
+      next = { ...next, unsupported: next.unsupported.filter((criterion) => criterion.id !== blocker.id) };
+    }
+  }
+  return Object.freeze(next);
+}
+
 function nearestIndex(records: readonly SelectionRecord[], current: EvidenceIdentity | undefined): number {
   if (!current || records.length === 0) return records.length ? 0 : -1;
   let best = 0;

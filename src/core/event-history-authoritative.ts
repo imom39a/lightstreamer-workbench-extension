@@ -891,8 +891,16 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     }
     const unsupported = filter.unsupported.length > 0;
     const discoveries = new Map<string, FacetDiscoveryResult>();
+    let lookupRecords = records;
+    if (request.lookup !== undefined) {
+      const selectedIndex = records.findIndex((record) => sameEvidenceIdentity(record.identity, request.lookup!));
+      if (selectedIndex >= 0) {
+        lookupRecords = records.slice();
+        lookupRecords[selectedIndex] = Object.freeze({ ...lookupRecords[selectedIndex]!, payload: copyCandidate(entriesAtRead[selectedIndex]!.candidate) });
+      }
+    }
     if (unsupported) {
-      const lookup = request.lookup === undefined ? null : lookupEvidence(records, readPoint, request.lookup, filter, around);
+      const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
       const find = request.find === undefined ? null : findEvidence(records, request.find);
       return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", null, lookup, find) });
     }
@@ -915,14 +923,6 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const offset = readCursor(request.page.cursor);
       const page = ordered.slice(offset, offset + request.page.size);
       const nextCursor = offset + page.length < ordered.length ? String(offset + page.length) : null;
-      let lookupRecords = records;
-      if (request.lookup !== undefined) {
-        const selectedIndex = records.findIndex((record) => sameEvidenceIdentity(record.identity, request.lookup!));
-        if (selectedIndex >= 0) {
-          lookupRecords = records.slice();
-          lookupRecords[selectedIndex] = Object.freeze({ ...lookupRecords[selectedIndex]!, payload: copyCandidate(entriesAtRead[selectedIndex]!.candidate) });
-        }
-      }
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
         const find = request.find === undefined ? null : findEvidence(records, request.find);
       return Promise.resolve({
