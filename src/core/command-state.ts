@@ -5,6 +5,13 @@ export type CommandFields = Record<string, CommandFieldValue>;
 
 export type CommandLifecycleCommand = "ADD" | "UPDATE" | "DELETE";
 
+/**
+ * The amount of lifecycle detail intentionally retained in a live projection.
+ * Older lifecycle Evidence remains available from the bounded Event History
+ * query seam at its History Interval and Committed Evidence Boundary.
+ */
+export const COMMAND_RECENT_LIFECYCLE_LIMIT = 32;
+
 export type CommandDiagnosticCode =
   | "missing-command"
   | "missing-key"
@@ -63,6 +70,8 @@ export type CommandRow = {
   origin: CommandProvenance;
   latest: CommandProvenance;
   lifecycle: CommandLifecycleEntry[];
+  lifecycleTotal: number;
+  lifecycleHasOlder: boolean;
 };
 
 export type DeletedCommandKey = {
@@ -74,6 +83,8 @@ export type DeletedCommandKey = {
   status: "deleted";
   deletedAt: CommandProvenance;
   lifecycle: CommandLifecycleEntry[];
+  lifecycleTotal: number;
+  lifecycleHasOlder: boolean;
 };
 
 export type CommandItemGroup = {
@@ -84,6 +95,8 @@ export type CommandItemGroup = {
   activeRows: CommandRow[];
   deletedKeys: DeletedCommandKey[];
   lifecycle: CommandLifecycleEntry[];
+  lifecycleTotal: number;
+  lifecycleHasOlder: boolean;
   diagnostics: CommandDiagnostic[];
 };
 
@@ -123,14 +136,23 @@ export type CommandDraftValidationResult = {
   diagnostics: CommandDiagnostic[];
 };
 
-type MutableCommandRow = Omit<CommandRow, "status" | "lifecycle"> & {
+type MutableCommandRow = Omit<CommandRow, "status" | "lifecycle" | "lifecycleTotal" | "lifecycleHasOlder"> & {
   status: "active";
   lifecycle: CommandLifecycleEntry[];
+  lifecycleTotal: number;
+  lifecycleHasOlder: boolean;
 };
 
-type MutableDeletedCommandKey = Omit<DeletedCommandKey, "status" | "lifecycle"> & {
+type MutableDeletedCommandKey = Omit<DeletedCommandKey, "status" | "lifecycle" | "lifecycleTotal" | "lifecycleHasOlder"> & {
   status: "deleted";
   lifecycle: CommandLifecycleEntry[];
+  lifecycleTotal: number;
+  lifecycleHasOlder: boolean;
+};
+
+type BoundedLifecycle = {
+  entries: CommandLifecycleEntry[];
+  total: number;
 };
 
 type ItemAccumulator = {
@@ -140,8 +162,8 @@ type ItemAccumulator = {
   itemPosition: number | null;
   activeRows: Map<string, MutableCommandRow>;
   deletedKeys: Map<string, MutableDeletedCommandKey>;
-  lifecycleByKey: Map<string, CommandLifecycleEntry[]>;
-  lifecycle: CommandLifecycleEntry[];
+  lifecycleByKey: Map<string, BoundedLifecycle>;
+  lifecycle: BoundedLifecycle;
   diagnostics: CommandDiagnostic[];
 };
 
@@ -193,37 +215,35 @@ export function createCommandStateIndex(): CommandStateIndex {
   return createCommandStateIndexController().index;
 }
 
-type CommandStateIndexController = Readonly<{
-  index: CommandStateIndex;
-  fork(): CommandStateIndexController;
-}>;
+type CommandStateIndexController = Readonly<{ index: CommandStateIndex }>;
 
 function createCommandStateIndexController(
   initial: CommandStateAccumulator = createCommandStateAccumulator()
 ): CommandStateIndexController {
   let accumulator = initial;
+  let cachedSnapshot: CommandState | null = null;
   const index: CommandStateIndex = {
     apply(event) {
       applyCommandEvent(accumulator, event);
+      cachedSnapshot = null;
     },
 
     clear() {
       accumulator = createCommandStateAccumulator();
+      cachedSnapshot = null;
     },
 
     snapshot() {
-      return commandStateFromAccumulator(accumulator);
+      cachedSnapshot ??= commandStateFromAccumulator(accumulator);
+      return cachedSnapshot;
     }
   };
-  return {
-    index,
-    fork: () => createCommandStateIndexController(cloneCommandStateAccumulator(accumulator))
-  };
+  return { index };
 }
 
 export function createCommandStateProjections(): CommandStateProjections {
   const observedServer = createCommandStateIndexController();
-  let localEffective: CommandStateIndexController | null = null;
+  const localEffective = createCommandStateIndexController();
   const appliedEventIds = new Set<string>();
 
   return {
@@ -236,24 +256,23 @@ export function createCommandStateProjections(): CommandStateProjections {
         appliedEventIds.delete(oldest);
       }
       if (isLocalInjectedEvent(event)) {
-        localEffective ??= observedServer.fork();
         localEffective.index.apply(event);
       } else {
         observedServer.index.apply(event);
-        localEffective?.index.apply(event);
+        localEffective.index.apply(event);
       }
     },
 
     clear() {
       observedServer.index.clear();
-      localEffective = null;
+      localEffective.index.clear();
       appliedEventIds.clear();
     },
 
     snapshot(projection) {
       return projection === "observed-server"
         ? observedServer.index.snapshot()
-        : (localEffective ?? observedServer).index.snapshot();
+        : localEffective.index.snapshot();
     }
   };
 }
@@ -267,53 +286,6 @@ function createCommandStateAccumulator(): CommandStateAccumulator {
     subscriptions: new Map(),
     knownSubscriptions: new Map(),
     diagnostics: []
-  };
-}
-
-function cloneCommandStateAccumulator(source: CommandStateAccumulator): CommandStateAccumulator {
-  return {
-    subscriptions: new Map(
-      [...source.subscriptions].map(([subscriptionId, subscription]) => [
-        subscriptionId,
-        {
-          ...subscription,
-          subscription: mergeSubscriptionMetadata(undefined, subscription.subscription),
-          items: new Map(
-            [...subscription.items].map(([itemId, item]) => [
-              itemId,
-              {
-                ...item,
-                activeRows: new Map(
-                  [...item.activeRows].map(([key, row]) => [
-                    key,
-                    { ...row, fields: cloneFields(row.fields), lifecycle: [...row.lifecycle] }
-                  ])
-                ),
-                deletedKeys: new Map(
-                  [...item.deletedKeys].map(([key, deleted]) => [
-                    key,
-                    { ...deleted, lifecycle: [...deleted.lifecycle] }
-                  ])
-                ),
-                lifecycleByKey: new Map(
-                  [...item.lifecycleByKey].map(([key, lifecycle]) => [key, [...lifecycle]])
-                ),
-                lifecycle: [...item.lifecycle],
-                diagnostics: [...item.diagnostics]
-              }
-            ])
-          ),
-          diagnostics: [...subscription.diagnostics]
-        }
-      ])
-    ),
-    knownSubscriptions: new Map(
-      [...source.knownSubscriptions].map(([subscriptionId, subscription]) => [
-        subscriptionId,
-        mergeSubscriptionMetadata(undefined, subscription)
-      ])
-    ),
-    diagnostics: [...source.diagnostics]
   };
 }
 
@@ -450,10 +422,13 @@ function applyCommandEvent(
       key,
       status: "deleted",
       deletedAt: provenance,
-      lifecycle: [...(item.lifecycleByKey.get(key) ?? [])]
+      lifecycle: lifecycleEntries(item.lifecycleByKey.get(key)),
+      lifecycleTotal: item.lifecycleByKey.get(key)?.total ?? 0,
+      lifecycleHasOlder: hasOlderLifecycle(item.lifecycleByKey.get(key))
     });
   } else {
     const origin = existing?.origin ?? provenance;
+    const keyLifecycle = item.lifecycleByKey.get(key);
     item.activeRows.set(key, {
       subscriptionId: subscriptionAccumulator.subscriptionId,
       itemId: item.itemId,
@@ -464,7 +439,9 @@ function applyCommandEvent(
       fields: cloneFields(commandEvent.update?.fields),
       origin,
       latest: provenance,
-      lifecycle: [...(item.lifecycleByKey.get(key) ?? [])]
+      lifecycle: lifecycleEntries(keyLifecycle),
+      lifecycleTotal: keyLifecycle?.total ?? 0,
+      lifecycleHasOlder: hasOlderLifecycle(keyLifecycle)
     });
     item.deletedKeys.delete(key);
   }
@@ -620,7 +597,7 @@ function getItemAccumulator(
     activeRows: new Map(),
     deletedKeys: new Map(),
     lifecycleByKey: new Map(),
-    lifecycle: [],
+    lifecycle: createBoundedLifecycle(),
     diagnostics: []
   };
   subscription.items.set(itemId, created);
@@ -672,16 +649,38 @@ function toItemGroup(item: ItemAccumulator): CommandItemGroup {
       ...deleted,
       lifecycle: deleted.lifecycle.map(cloneLifecycleEntry)
     })),
-    lifecycle: item.lifecycle.map(cloneLifecycleEntry),
+    lifecycle: item.lifecycle.entries.map(cloneLifecycleEntry),
+    lifecycleTotal: item.lifecycle.total,
+    lifecycleHasOlder: hasOlderLifecycle(item.lifecycle),
     diagnostics: [...item.diagnostics]
   };
 }
 
 function appendLifecycle(item: ItemAccumulator, key: string, entry: CommandLifecycleEntry): void {
-  const lifecycle = item.lifecycleByKey.get(key) ?? [];
-  lifecycle.push(entry);
+  const lifecycle = item.lifecycleByKey.get(key) ?? createBoundedLifecycle();
+  appendBoundedLifecycle(lifecycle, entry);
   item.lifecycleByKey.set(key, lifecycle);
-  item.lifecycle.push(entry);
+  appendBoundedLifecycle(item.lifecycle, entry);
+}
+
+function createBoundedLifecycle(): BoundedLifecycle {
+  return { entries: [], total: 0 };
+}
+
+function appendBoundedLifecycle(lifecycle: BoundedLifecycle, entry: CommandLifecycleEntry): void {
+  lifecycle.entries.push(entry);
+  lifecycle.total += 1;
+  if (lifecycle.entries.length > COMMAND_RECENT_LIFECYCLE_LIMIT) {
+    lifecycle.entries.splice(0, lifecycle.entries.length - COMMAND_RECENT_LIFECYCLE_LIMIT);
+  }
+}
+
+function lifecycleEntries(lifecycle: BoundedLifecycle | undefined): CommandLifecycleEntry[] {
+  return lifecycle ? [...lifecycle.entries] : [];
+}
+
+function hasOlderLifecycle(lifecycle: BoundedLifecycle | undefined): boolean {
+  return lifecycle !== undefined && lifecycle.total > lifecycle.entries.length;
 }
 
 function recordDiagnostics(

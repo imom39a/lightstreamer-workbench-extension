@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
+  COMMAND_RECENT_LIFECYCLE_LIMIT,
   createCommandStateIndex,
   createCommandStateProjections,
   reduceCommandState,
@@ -159,7 +160,7 @@ describe("COMMAND state reducer", () => {
     });
   });
 
-  it("stores a payload-rich server lifecycle once until a Local Injection forks the projection", () => {
+  it("retains only a bounded recent lifecycle window while preserving both current projections", () => {
     const projections = createCommandStateProjections();
     const payload = "x".repeat(13_125);
     for (let index = 0; index < 10_000; index += 1) {
@@ -173,10 +174,15 @@ describe("COMMAND state reducer", () => {
 
     const observedBeforeLocal = firstItem(projections.snapshot("observed-server")).activeRows[0];
     const localBeforeLocal = firstItem(projections.snapshot("local-effective")).activeRows[0];
-    expect(observedBeforeLocal.lifecycle).toHaveLength(10_000);
-    expect(localBeforeLocal.lifecycle).toHaveLength(10_000);
-    expect(localBeforeLocal.lifecycle[0]).toBe(observedBeforeLocal.lifecycle[0]);
-    expect(localBeforeLocal.lifecycle.at(-1)).toBe(observedBeforeLocal.lifecycle.at(-1));
+    expect(observedBeforeLocal.lifecycle).toHaveLength(COMMAND_RECENT_LIFECYCLE_LIMIT);
+    expect(observedBeforeLocal.lifecycleTotal).toBe(10_000);
+    expect(observedBeforeLocal.lifecycleHasOlder).toBe(true);
+    expect(localBeforeLocal.lifecycle).toHaveLength(COMMAND_RECENT_LIFECYCLE_LIMIT);
+    expect(localBeforeLocal.lifecycleTotal).toBe(10_000);
+    expect(localBeforeLocal.lifecycle[0]?.eventId).toBe(
+      `shared-server-${10_000 - COMMAND_RECENT_LIFECYCLE_LIMIT}`
+    );
+    expect(localBeforeLocal.lifecycle.at(-1)).toEqual(observedBeforeLocal.lifecycle.at(-1));
     expect(Object.isFrozen(observedBeforeLocal.lifecycle[0])).toBe(true);
 
     projections.apply(commandEvent("shared-local", {
@@ -190,12 +196,129 @@ describe("COMMAND state reducer", () => {
 
     const observedAfterLocal = firstItem(projections.snapshot("observed-server")).activeRows[0];
     const localAfterLocal = firstItem(projections.snapshot("local-effective")).activeRows[0];
-    expect(observedAfterLocal.lifecycle).toHaveLength(10_000);
+    expect(observedAfterLocal.lifecycle).toHaveLength(COMMAND_RECENT_LIFECYCLE_LIMIT);
     expect(observedAfterLocal.fields.payload).toBe(payload);
-    expect(localAfterLocal.lifecycle).toHaveLength(10_001);
+    expect(localAfterLocal.lifecycle).toHaveLength(COMMAND_RECENT_LIFECYCLE_LIMIT);
+    expect(localAfterLocal.lifecycleTotal).toBe(10_001);
     expect(localAfterLocal.fields.payload).toBe("local");
-    expect(localAfterLocal.lifecycle[0]).toBe(observedAfterLocal.lifecycle[0]);
+    expect(localAfterLocal.lifecycle[0]?.eventId).toBe(
+      `shared-server-${10_001 - COMMAND_RECENT_LIFECYCLE_LIMIT}`
+    );
     expect(localAfterLocal.lifecycle.at(-1)?.eventId).toBe("shared-local");
+  });
+
+  it("keeps 100,000 hot-key updates bounded without weakening current fields or provenance", () => {
+    const projections = createCommandStateProjections();
+    const updates = 100_000;
+    let rollingDigest = 0;
+
+    for (let index = 0; index < updates; index += 1) {
+      const command = index === 0 ? "ADD" : "UPDATE";
+      const eventId = `hot-${index}`;
+      const value = String(index);
+      rollingDigest = (rollingDigest * 31 + index) % 1_000_000_007;
+      projections.apply(commandEvent(eventId, {
+        command,
+        key: "hot-key",
+        fields: { command, key: "hot-key", value },
+        changedFields: { value }
+      }));
+    }
+
+    const maybeGc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+    maybeGc?.();
+    const postGcHeapBytes = typeof process !== "undefined" ? process.memoryUsage().heapUsed : null;
+    const snapshotStartedAt = performance.now();
+    const observed = firstItem(projections.snapshot("observed-server"));
+    const local = firstItem(projections.snapshot("local-effective"));
+    const snapshotPublicationMs = performance.now() - snapshotStartedAt;
+    console.info(JSON.stringify({
+      workload: "history-100k-05-hot-key",
+      updates,
+      recentLifecycleLimit: COMMAND_RECENT_LIFECYCLE_LIMIT,
+      observedLifecycleLength: observed.activeRows[0]?.lifecycle.length ?? 0,
+      observedLifecycleTotal: observed.activeRows[0]?.lifecycleTotal ?? 0,
+      postGcHeapBytes,
+      snapshotPublicationMs,
+      gcAvailable: maybeGc !== undefined
+    }));
+    expect(rollingDigest).toBe(282_060_600);
+    expect(snapshotPublicationMs).toBeLessThan(1_000);
+    expect(observed.activeRows[0]).toMatchObject({
+      key: "hot-key",
+      fields: { value: "99999" },
+      latest: { eventId: "hot-99999", source: "server", synthetic: false }
+    });
+    expect(local.activeRows[0]).toEqual(observed.activeRows[0]);
+    expect(observed.activeRows[0]?.lifecycle.length).toBe(COMMAND_RECENT_LIFECYCLE_LIMIT);
+    expect(observed.activeRows[0]?.lifecycleTotal).toBe(updates);
+    expect(observed.activeRows[0]?.lifecycleHasOlder).toBe(true);
+    expect(observed.lifecycle.length).toBe(COMMAND_RECENT_LIFECYCLE_LIMIT);
+    expect(observed.lifecycleTotal).toBe(updates);
+    expect(observed.lifecycleHasOlder).toBe(true);
+  });
+
+  it("keeps high key churn proportional to active identities and the bounded recent policy", () => {
+    const index = createCommandStateIndex();
+    const keyCount = 10_000;
+    for (let indexValue = 0; indexValue < keyCount; indexValue += 1) {
+      index.apply(commandEvent(`churn-add-${indexValue}`, {
+        command: "ADD",
+        key: `key-${indexValue}`,
+        fields: { command: "ADD", key: `key-${indexValue}`, value: indexValue }
+      }));
+    }
+    for (let indexValue = 0; indexValue < keyCount; indexValue += 2) {
+      index.apply(commandEvent(`churn-delete-${indexValue}`, {
+        command: "DELETE",
+        key: `key-${indexValue}`,
+        fields: { command: "DELETE", key: `key-${indexValue}` }
+      }));
+    }
+
+    const item = firstItem(index.snapshot());
+    expect(item.activeRows).toHaveLength(keyCount / 2);
+    expect(item.deletedKeys).toHaveLength(keyCount / 2);
+    expect(item.activeRows.every((row) => row.lifecycle.length <= COMMAND_RECENT_LIFECYCLE_LIMIT)).toBe(true);
+    expect(item.deletedKeys.every((row) => row.lifecycle.length <= COMMAND_RECENT_LIFECYCLE_LIMIT)).toBe(true);
+    expect(item.lifecycleTotal).toBe(keyCount + keyCount / 2);
+    expect(item.lifecycleHasOlder).toBe(true);
+  });
+
+  it("publishes cache-stable bounded snapshots and rebuilds both projections equivalently", () => {
+    const events = [
+      commandEvent("rebuild-add", { command: "ADD", key: "reused", fields: { command: "ADD", key: "reused", value: "one" } }),
+      commandEvent("rebuild-update", { command: "UPDATE", key: "reused", fields: { command: "UPDATE", key: "reused", value: "two" }, changedFields: { value: "two" } }),
+      commandEvent("rebuild-delete", { command: "DELETE", key: "reused", fields: { command: "DELETE", key: "reused" } }),
+      commandEvent("rebuild-lost-update", { command: "UPDATE", key: "lost", fields: { command: "UPDATE", key: "lost", value: "promoted" } }),
+      commandEvent("rebuild-readd", { command: "ADD", key: "reused", fields: { command: "ADD", key: "reused", value: "new-generation" } }),
+      commandEvent("rebuild-local", { command: "UPDATE", key: "reused", fields: { command: "UPDATE", key: "reused", value: "local" }, source: "synthetic", synthetic: true })
+    ];
+    const projections = createCommandStateProjections();
+    const index = createCommandStateIndex();
+    for (const event of events) {
+      projections.apply(event);
+      index.apply(event);
+    }
+
+    const observedBefore = projections.snapshot("observed-server");
+    expect(projections.snapshot("observed-server")).toBe(observedBefore);
+    expect(projections.snapshot("local-effective")).toBe(projections.snapshot("local-effective"));
+    expect(projections.snapshot("local-effective")).toEqual(index.snapshot());
+    expect(observedBefore).toEqual(reduceCommandState(events.filter((event) => !event.synthetic)));
+    expect(projections.snapshot("local-effective")).toEqual(reduceCommandState(events));
+    const observedReused = firstItem(observedBefore).activeRows.find((row) => row.key === "reused");
+    const localReused = firstItem(projections.snapshot("local-effective")).activeRows.find((row) => row.key === "reused");
+    expect(observedReused).toMatchObject({
+      key: "reused",
+      fields: { value: "new-generation" },
+      origin: { eventId: "rebuild-readd" }
+    });
+    expect(localReused?.fields.value).toBe("local");
+
+    projections.clear();
+    expect(projections.snapshot("observed-server").subscriptions).toEqual([]);
+    expect(projections.snapshot("local-effective").subscriptions).toEqual([]);
   });
 
   it("matches incremental COMMAND indexing with full reduction", () => {
