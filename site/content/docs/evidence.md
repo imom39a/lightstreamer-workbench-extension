@@ -15,7 +15,7 @@ Live/Frozen position does not start or stop Capture. Likewise, Capture state doe
 
 ## Retained history
 
-One Panel Session owns one temporary Event History. The normal IndexedDB tier supports 10,000 retained Evidence records or 64 MiB of canonical replay-complete journal bytes; the startup memory fallback supports 5,000 records or 32 MiB. The first independent limit reached controls admission, and the selected adapter does not switch during the session. The DOM stays bounded even when thousands of events are retained. Use Oldest, Older, Newer, and Newest to move through retained regions.
+One Panel Session owns one temporary Event History. The normal IndexedDB tier supports 100,000 retained Evidence records or 256 MiB of canonical replay-complete journal bytes; the startup memory fallback supports 5,000 records or 32 MiB. The first independent limit reached controls admission, and the selected adapter does not switch during the session. The DOM stays bounded even when 100,000 events are retained. Use Oldest, Older, Newer, and Newest to move through retained regions.
 
 Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary. A journal failure or History Capacity breach stops acceptance fail-closed at that boundary; refused or failed candidates do not become Evidence or advance projections. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen position remain independent.
 

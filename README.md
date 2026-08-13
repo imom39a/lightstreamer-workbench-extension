@@ -30,7 +30,7 @@ Version 2 focuses on local, current-session debugging for the inspected tab thro
 ### Event History contract
 
 Each Panel Session owns one temporary Event History. The normal IndexedDB journal
-supports up to 10,000 Evidence records or 64 MiB of retained serialized journal
+supports up to 100,000 Evidence records or 256 MiB of retained serialized journal
 bytes; when startup selects the in-memory fallback, the truthful lower-capacity
 limits are 5,000 records or 32 MiB. The adapter is selected before the first
 offer and never changes during the session. The fallback changes History Capacity

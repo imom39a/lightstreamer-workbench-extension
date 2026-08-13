@@ -8,11 +8,11 @@ import {
 } from "../benchmarks/event-history-100k-capacity";
 import { HISTORY_CAPACITY_LIMITS, MIB } from "../src/core/event-history-capacity";
 
-describe("history-100k-01 dormant capacity profile", () => {
-  it("names a normal-only 100,000-record/256 MiB candidate and preserves production tiers", () => {
+describe("history-100k-01 activated capacity profile", () => {
+  it("names the activated normal 100,000-record/256 MiB tier and preserves the lower fallback", () => {
     expect(DORMANT_100K_CAPACITY_PROFILE).toMatchObject({
       id: "normal-100k-canonical-256m",
-      status: "CANDIDATE_ONLY",
+      status: "ACTIVATED",
       tier: "NORMAL",
       fallback: null,
       limits: {
@@ -27,10 +27,10 @@ describe("history-100k-01 dormant capacity profile", () => {
       }
     });
     expect(HISTORY_CAPACITY_LIMITS.NORMAL).toMatchObject({
-      maxRetainedCount: 10_000,
-      maxRetainedBytes: 64 * MIB,
-      retainedWarningCount: 8_000,
-      retainedWarningBytes: Math.ceil(64 * MIB * 0.8)
+      maxRetainedCount: 100_000,
+      maxRetainedBytes: 256 * MIB,
+      retainedWarningCount: 80_000,
+      retainedWarningBytes: Math.ceil(256 * MIB * 0.8)
     });
     expect(HISTORY_CAPACITY_LIMITS.LOWER).toMatchObject({
       maxRetainedCount: 5_000,

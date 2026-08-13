@@ -24,7 +24,7 @@ Count and retained-byte capacity are independent, and the first limit reached co
 
 | Journal implementation tier | Maximum Evidence count | Maximum retained serialized bytes | Meaning |
 | --- | ---: | ---: | --- |
-| Primary IndexedDB (`NORMAL`) | 10,000 | 64 MiB | Normal supported History Capacity |
+| Primary IndexedDB (`NORMAL`) | 100,000 | 256 MiB | Normal supported History Capacity |
 | Startup memory fallback (`LOWER`) | 5,000 | 32 MiB | Truthful lower-capacity History Capacity |
 
 `NEAR_LIMIT` begins when either retained dimension reaches 80% of its hard limit. It returns to `AVAILABLE` only when every retained and pending pressure dimension is below its warning threshold. A warning does not refuse an offer.
@@ -34,7 +34,7 @@ Count and retained-byte capacity are independent, and the first limit reached co
 The panel samples the extension origin's `navigator.storage.estimate()` once
 before it connects Capture. It may sample again only at the first authoritative
 `NEAR_LIMIT` and `EXHAUSTED` History Capacity transitions. The reading is rough
-telemetry compared with the dormant 100,000-Evidence/256 MiB candidate; a low
+telemetry compared with the shipped 100,000-Evidence/256 MiB normal contract; a low
 estimate produces one explicitly advisory warning through the global diagnostic
 footer. It is not a reservation, acceptance guarantee, capacity/admission
 input, adapter selector, Observation Coverage input, or substitute for
@@ -68,7 +68,7 @@ History Capacity is bounded by this measured workload envelope, not by elapsed t
 
 The full replay-complete Topology Checkpoint Evidence payload counts toward retained and pending byte limits. The maximum 2 MiB checkpoint may form one oversized batch by itself.
 
-For every supported shape, duration is bounded by accepted count and canonical replay-complete serialized bytes, not by wall-clock session length. The immediate burst is supported whenever enough History Interval capacity remains. The normal journal implementation envelope is 10,000 Evidence records or 64 MiB; the startup memory journal implementation envelope is 5,000 Evidence records or 32 MiB, with the first independent limit reached controlling admission.
+For every supported shape, duration is bounded by accepted count and canonical replay-complete serialized bytes, not by wall-clock session length. The immediate burst is supported whenever enough History Interval capacity remains. The normal journal implementation envelope is 100,000 Evidence records or 256 MiB; the startup memory journal implementation envelope is 5,000 Evidence records or 32 MiB, with the first independent limit reached controlling admission.
 
 The visible-latency contract is defined as follows. `offer-to-visible` starts when `offer` receives the captured event and ends at the first animation frame whose rendered Committed Evidence Boundary includes it; rendering may coalesce committed batches. A hidden-panel run reports `offer-to-publication` instead and does not fabricate paint timing.
 
@@ -76,7 +76,7 @@ The visible-latency contract is defined as follows. `offer-to-visible` starts wh
 - The final boundary of an immediate 1,692-event burst is visible within 30 seconds for the primary IndexedDB journal implementation and 1 second for the startup memory journal implementation.
 - Settled query p95 is at most 50 ms for a recent page, 100 ms for a structured/indexed query, and 500 ms for Find or full-history retrieval. Time deliberately queued behind accepted writes is excluded from settled-query budgets, but behind-backlog latency is reported separately.
 - Capture, commit, and paint produce no Long Task over 50 ms. A query phase may produce at most one Long Task over 50 ms for one large JSON-rich workload, no Long Task may exceed 125 ms, and small and ordinary query workloads permit none over 50 ms.
-- Post-GC Event History JS-heap delta is at most 8 MiB for the primary IndexedDB journal implementation at the 10,000-event mixed checkpoint and 32 MiB for the startup memory journal implementation at the 5,000-event mixed checkpoint.
+- Post-GC Event History JS-heap delta is at most 8 MiB for the primary IndexedDB journal implementation at the 100,000-event mixed checkpoint and 32 MiB for the startup memory journal implementation at the 5,000-event mixed checkpoint.
 - Repeated Panel Session lifecycle samples show no strict monotonic retained-heap growth.
 
 Before the production cutover, a deliberate developer-run real-Chrome report exercises three independent samples for every journal implementation tier, workload kind, and payload shape through the actual Event History journal implementation and actual React panel path. An unpacked-extension DevTools-panel smoke verifies shipped integration but is not a timing baseline. The report records shape bytes, rates and burst pattern, count/order proofs, pressure transitions and limits, publication/visible and behind-backlog latency, query classes, Long Tasks by phase, post-GC heap, lifecycle samples, and every terminal boundary fact.
@@ -127,7 +127,7 @@ Abnormal termination cannot rely on an unload callback. A guarded cleanup sweep 
 
 The acceptance boundary described by this ADR is now the shipped Event History
 contract. One Panel Session owns one temporary journal. The normal IndexedDB
-tier supports 10,000 Evidence records or 64 MiB of retained serialized journal
+tier supports 100,000 Evidence records or 256 MiB of retained serialized journal
 bytes; startup memory fallback supports 5,000 records or 32 MiB. The selected
 adapter is fixed before the first offer, and fallback changes History Capacity
 only, not Observation Coverage.

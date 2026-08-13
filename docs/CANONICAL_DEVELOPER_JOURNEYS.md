@@ -95,7 +95,7 @@ Workbench may show uncertainty when coverage cannot support a stronger claim. Ab
 - The selected runtime object retired while evidence was being inspected; historical evidence remains read-only and clearly distinguished from a live target.
 
 One Panel Session owns one temporary Event History. Normal IndexedDB capacity is
-10,000 Evidence records or 64 MiB; startup memory fallback is 5,000 records or
+100,000 Evidence records or 256 MiB; startup memory fallback is 5,000 records or
 32 MiB, with the adapter fixed before the first offer. Controlled Close attempts
 erasure and reports its outcome; abnormal cleanup may leave residual data until
 an ownership-safe guarded sweep, and a new Panel Session never replays it.

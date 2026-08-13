@@ -6,7 +6,7 @@ import {
 } from "../benchmarks/event-history-100k-query";
 import { HISTORY_CAPACITY_LIMITS, MIB } from "../src/core/event-history-capacity";
 
-describe("history-100k-02 dormant query workload", () => {
+describe("history-100k-02 activated query workload", () => {
   it("proves deterministic 100k bounded query classes without a payload collection", () => {
     const proof = runDormant100kQueryProof();
     const repeated = runDormant100kQueryProof();
@@ -14,7 +14,7 @@ describe("history-100k-02 dormant query workload", () => {
     expect(proof).toEqual(repeated);
     expect(proof).toMatchObject({
       profileId: DORMANT_100K_QUERY_PROFILE.id,
-      status: "CANDIDATE_ONLY",
+      status: "ACTIVATED",
       retainedEvidence: 100_000,
       acceptedPage: { firstSequence: 1, lastSequence: 100, nextAnchorSequence: 100 },
       structuredQuery: {
@@ -42,10 +42,10 @@ describe("history-100k-02 dormant query workload", () => {
     expect(proof.operations.discovery.maxRetainedCompactIdentities).toBe(100);
     expect(proof.operations["residual-query"].firstUsefulResultWork).toBe(1);
 
-    expect(DORMANT_100K_QUERY_PROFILE.productionCapacityUnchanged).toBe(true);
+    expect(DORMANT_100K_QUERY_PROFILE.productionCapacityUnchanged).toBe(false);
     expect(DORMANT_100K_QUERY_PROFILE.productionNormalCapacity).toEqual({
       maxRetainedCount: HISTORY_CAPACITY_LIMITS.NORMAL.maxRetainedCount,
-      maxRetainedBytes: 64 * MIB
+      maxRetainedBytes: 256 * MIB
     });
     expect(DORMANT_100K_QUERY_PROFILE.productionStartupMemoryCapacity).toEqual({
       maxRetainedCount: HISTORY_CAPACITY_LIMITS.LOWER.maxRetainedCount,

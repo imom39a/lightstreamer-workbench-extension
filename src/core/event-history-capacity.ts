@@ -73,10 +73,10 @@ export type HistoryTrigger = Readonly<{
 
 const DEFAULTS: Record<HistoryCapacityTier, HistoryCapacityLimits> = {
   NORMAL: {
-    maxRetainedCount: 10_000,
-    maxRetainedBytes: 64 * MIB,
-    retainedWarningCount: 8_000,
-    retainedWarningBytes: Math.ceil(64 * MIB * 0.8),
+    maxRetainedCount: 100_000,
+    maxRetainedBytes: 256 * MIB,
+    retainedWarningCount: 80_000,
+    retainedWarningBytes: Math.ceil(256 * MIB * 0.8),
     pendingWarningBytes: 16 * MIB,
     pendingStopBytes: 32 * MIB,
     pendingAgeWarningMs: 10_000,

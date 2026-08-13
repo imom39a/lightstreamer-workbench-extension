@@ -33,7 +33,7 @@ obsolete Filter, discovery, and Find work before publication.
 ## Dormant 100k evidence
 
 `benchmarks/event-history-100k-query.ts` and
-`tests/history-100k-02-workload.test.ts` provide deterministic candidate-only
+`tests/history-100k-02-workload.test.ts` provide deterministic bounded-query
 evidence for accepted-page, structured-driver, residual, discovery, Find, and
 passive-capture work at 100,000 retained Evidence records. The proof records
 compact-key work, exact totals, page/selected payload hydration, posting-driver
@@ -41,13 +41,13 @@ set count, bounded Find identities/windows, and the absence of a complete
 payload collection. It is not a production capacity switch and does not claim
 real-Chrome latency.
 
-The shipped capacity remains unchanged:
+The shipped capacity is now the activated normal contract:
 
-- normal IndexedDB tier: 10,000 Evidence records or 64 MiB;
+- normal IndexedDB tier: 100,000 Evidence records or 256 MiB;
 - startup memory fallback: 5,000 Evidence records or 32 MiB.
 
-The dormant query profile is candidate-only and is not selected by either
-Event History factory.
+The query profile is selected by the normal Event History factory; it does not
+materialize a complete 100,000-element payload or identity collection.
 
 ## Focused proof
 
@@ -59,6 +59,7 @@ npx vitest run tests/history-100k-02-workload.test.ts tests/history-100k-02-inde
 npx vitest run tests/filter-impl-04-memory-query.test.ts tests/filter-impl-08-indexeddb-query.test.ts tests/filter-impl-09-indexeddb-parity.test.ts tests/filter-impl-09-indexeddb-discovery.test.ts tests/filter-impl-09-indexeddb-workload.test.ts tests/filter-impl-10-runtime-query.test.ts --no-file-parallelism --maxWorkers=1
 ```
 
-Fake IndexedDB proves storage semantics and adapter parity. Real-Chrome
-100,000 Evidence latency and post-GC measurements remain part of the later
-release gate that activates the dormant capacity profile.
+Fake IndexedDB proves storage semantics and adapter parity. The real-Chrome
+100,000 Evidence activation report is maintained separately by
+`measure:event-history:100k` and must remain clean-source evidence rather than
+synthetic or unit-only proof.

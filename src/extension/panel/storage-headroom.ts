@@ -1,9 +1,9 @@
 import { MIB } from "../../core/event-history-capacity";
 
 /**
- * The proposed normal History Capacity from the dormant 100k proof. This is
- * only a comparison target for advisory browser telemetry; it is not selected
- * by an adapter and it does not reserve browser storage.
+ * The shipped normal History Capacity used as a comparison target for advisory
+ * browser telemetry. It does not reserve browser storage or override the
+ * authoritative write-time admission boundary.
  */
 export const PROPOSED_NORMAL_HISTORY_HEADROOM = Object.freeze({
   recordCount: 100_000,

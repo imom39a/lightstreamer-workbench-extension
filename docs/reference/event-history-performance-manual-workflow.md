@@ -98,7 +98,7 @@ visible p95 ≤50 ms and burst final boundary ≤1 s; recent page ≤50 ms;
 structured/indexed ≤100 ms; Find/full ≤500 ms; no capture/commit/paint Long
 Task >50 ms; query phase allows at most one >50 ms Long Task only for one large
 JSON sample and no query Long Task >125 ms; post-GC heap ≤8 MiB for IndexedDB
-at 10,000 events and ≤32 MiB for memory at 5,000 events.
+at 100,000 events and ≤32 MiB for memory at 5,000 events.
 
 ## Artifact review
 

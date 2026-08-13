@@ -333,7 +333,7 @@ type MemoryEventHistoryOptions = Readonly<{
 }> & HistoryCapacityOptions;
 
 /**
- * Opens the dormant contract implementation. The primary IndexedDB journal is
+ * Opens the production contract implementation. The primary IndexedDB journal is
  * selected before the first offer; startup failure selects the lower-capacity
  * memory journal for the rest of this Panel Session.
  */

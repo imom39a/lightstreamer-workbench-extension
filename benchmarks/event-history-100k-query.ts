@@ -1,17 +1,12 @@
 import { HISTORY_CAPACITY_LIMITS, MIB } from "../src/core/event-history-capacity";
 
 /**
- * Candidate-only query workload evidence for the eventual 100k release gate.
- *
- * This is deliberately a deterministic compact-key model rather than a
- * production capacity switch or a wall-clock benchmark. It proves the shape
- * of the retained heap and hydration work that the real IndexedDB runner must
- * satisfy, while the shipped normal and startup-memory limits remain owned by
- * event-history-capacity.ts.
+ * Deterministic compact-key workload evidence for the 100k release gate.
+ * This model complements, but never replaces, the visible real-Chrome proof.
  */
 export const DORMANT_100K_QUERY_PROFILE = Object.freeze({
   id: "normal-100k-query-bounded-heap",
-  status: "CANDIDATE_ONLY" as const,
+  status: "ACTIVATED" as const,
   retainedEvidence: 100_000,
   pageSize: 100,
   findIdentityLimit: 1_000,
@@ -25,7 +20,7 @@ export const DORMANT_100K_QUERY_PROFILE = Object.freeze({
     maxRetainedCount: HISTORY_CAPACITY_LIMITS.LOWER.maxRetainedCount,
     maxRetainedBytes: HISTORY_CAPACITY_LIMITS.LOWER.maxRetainedBytes
   }),
-  productionCapacityUnchanged: true as const
+  productionCapacityUnchanged: false as const
 });
 
 export type Dormant100kQueryOperationKind =
@@ -56,7 +51,7 @@ export type Dormant100kQueryOperation = Readonly<{
 
 export type Dormant100kQueryProof = Readonly<{
   profileId: string;
-  status: "CANDIDATE_ONLY";
+  status: "ACTIVATED";
   retainedEvidence: number;
   deterministicIdentityDigest: string;
   operations: Readonly<Record<Dormant100kQueryOperationKind, Dormant100kQueryOperation>>;

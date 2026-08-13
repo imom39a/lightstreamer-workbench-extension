@@ -18,7 +18,7 @@ import {
 
 const normal = HISTORY_CAPACITY_LIMITS.NORMAL;
 
-const dormantLimits: HistoryCapacityLimits = Object.freeze({
+const activatedLimits: HistoryCapacityLimits = Object.freeze({
   ...normal,
   maxRetainedCount: 100_000,
   maxRetainedBytes: 256 * MIB,
@@ -27,18 +27,15 @@ const dormantLimits: HistoryCapacityLimits = Object.freeze({
 });
 
 /**
- * Candidate-only normal-tier limits for the 100k capacity proof.
- *
- * This object is intentionally kept under benchmarks/ and is never selected
- * by the production Event History factories. Pending pressure and the lower
- * startup-memory tier stay exactly on their shipped limits.
+ * Normal-tier limits used by the release proof. Pending pressure and the
+ * lower startup-memory tier stay exactly on their shipped limits.
  */
 export const DORMANT_100K_CAPACITY_PROFILE = Object.freeze({
   id: "normal-100k-canonical-256m",
-  status: "CANDIDATE_ONLY" as const,
+  status: "ACTIVATED" as const,
   tier: "NORMAL" as const,
   fallback: null,
-  limits: dormantLimits
+  limits: activatedLimits
 });
 
 export const DORMANT_100K_TARGET_COUNT = 100_000;
@@ -252,7 +249,7 @@ function emptyWorkloadCounts(): Record<EventHistoryShape, number> {
 }
 
 /**
- * Runs the dormant capacity proof's deterministic admission model. It uses
+ * Runs the activated capacity proof's deterministic admission model. It uses
  * the production serializer and admission decision, but it does not open
  * IndexedDB or claim that canonical bytes reserve physical storage/quota.
  * A physical usage sample can be supplied by a separate runner when one is

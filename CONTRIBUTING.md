@@ -107,6 +107,22 @@ This command builds the single Store extension and fixture adapter, starts a loc
 
 To run only the real-browser proof, use `npm run fixture:test:browser`. The acceptance browser path requires both `LSEW_BROWSER_HEADLESS=false` and `LSEW_UI_HEADLESS=false`; it uses only cached Chrome for Testing 151 and refuses a system-Chrome fallback.
 
+For the normal History Capacity release gate, first build the production
+extension, then run the four-workload, three-sample visible-CFT matrix:
+
+```bash
+LSEW_BROWSER_HEADLESS=false \
+LSEW_UI_HEADLESS=false \
+LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
+npm run measure:event-history:100k
+```
+
+Every matrix cell uses a fresh temporary profile and native IndexedDB. The
+normal tier is 100,000 Evidence records or 256 MiB of canonical accounted
+bytes; the startup memory fallback remains 5,000 records or 32 MiB. Browser
+quota estimates and physical origin usage are advisory measurements, not
+reservations, and the gate never requires `unlimitedStorage`.
+
 ## Shipped Extension Panel Smoke
 
 Run the independent DevTools-panel smoke proof with:

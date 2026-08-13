@@ -13,7 +13,7 @@ Limited Coverage means conclusions need qualification. It does not automatically
 
 ## History uses the in-memory fallback
 
-IndexedDB is unavailable in the panel context. Evidence remains usable for the current Panel Session, but the startup memory adapter has the lower 5,000-record/32 MiB History Capacity rather than the normal 10,000-record/64 MiB tier. The selected adapter is fixed for the session; Workbench does not migrate from memory to IndexedDB after Capture begins. This fallback changes History Capacity, not Observation Coverage by itself. Restore IndexedDB availability and open a new Panel Session when you need the normal tier; a new session starts empty and does not recover or replay a prior session.
+IndexedDB is unavailable in the panel context. Evidence remains usable for the current Panel Session, but the startup memory adapter has the lower 5,000-record/32 MiB History Capacity rather than the normal 100,000-record/256 MiB tier. The selected adapter is fixed for the session; Workbench does not migrate from memory to IndexedDB after Capture begins. This fallback changes History Capacity, not Observation Coverage by itself. Restore IndexedDB availability and open a new Panel Session when you need the normal tier; a new session starts empty and does not recover or replay a prior session.
 
 ## Capture stopped at a history boundary
 

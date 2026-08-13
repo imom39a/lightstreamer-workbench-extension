@@ -468,7 +468,7 @@ IndexedDB startup, ownership coordination, schema validation, or guarded cleanup
 cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the
 remainder of that Panel Session. This is a storage fallback within the same
 interface, not a second event model or a mid-session migration. The normal
-IndexedDB tier is bounded at 10,000 Evidence records or 64 MiB of retained
+IndexedDB tier is bounded at 100,000 Evidence records or 256 MiB of retained
 serialized journal bytes; the startup memory tier is bounded at 5,000 records or
 32 MiB. Count and retained bytes are independent limits, and the first limit
 reached controls admission.
@@ -526,7 +526,7 @@ The panel also makes one session-local `navigator.storage.estimate()` sample
 before it connects Capture, then permits at most one additional sample when the
 authoritative History Capacity state first reaches `NEAR_LIMIT` and one when it
 reaches `EXHAUSTED`. The estimate compares rough browser-reported free
-headroom with the dormant 100,000-Evidence/256 MiB candidate only to produce an
+headroom with the shipped 100,000-Evidence/256 MiB normal contract only to produce an
 advisory in the global diagnostic footer. It is not a reservation, admission
 guarantee, adapter selector, Coverage input, or retained-history authority;
 missing, rejected, contradictory, or unstable readings are ignored. Canonical

@@ -20,7 +20,7 @@ No. Version 2 contains no analytics or maintainer-operated upload path. Delibera
 
 ## How long is Evidence retained?
 
-Only for the current Panel Session. One Panel Session owns one temporary Event History: the normal IndexedDB tier supports up to 10,000 retained Evidence records or 64 MiB of canonical replay-complete journal bytes, while the startup memory fallback supports up to 5,000 records or 32 MiB. The first independent limit reached controls admission.
+Only for the current Panel Session. One Panel Session owns one temporary Event History: the normal IndexedDB tier supports up to 100,000 retained Evidence records or 256 MiB of canonical replay-complete journal bytes, while the startup memory fallback supports up to 5,000 records or 32 MiB. The first independent limit reached controls admission; 100,000 arbitrary-size payloads are not promised.
 
 Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary; the rendered Evidence window is only a bounded view. Clear makes an exact History Interval cut and does not restart Capture after a terminal stop. Controlled Close attempts erasure and reports what was confirmed. If Chrome, DevTools, or the renderer ends abnormally, a later ownership-safe cleanup sweep may be needed, so residual temporary data can remain until Chrome next runs the extension. A new Panel Session starts empty and never replays stale Evidence from an earlier session.
 
