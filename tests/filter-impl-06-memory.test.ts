@@ -69,7 +69,7 @@ describe("filter-impl-06 memory selection planner", () => {
     const result = await history.query!({
       at: base.value.readPoint,
       page: { order: "OLDEST_FIRST", size: 10 },
-      filter: { ...emptyFilter(), around: { intervalId: retained.intervalId, start: 5_000, end: 15_000, anchor, anchorSequence: retained.sequence, anchorTimestamp: retained.timestamp } }
+      filter: { ...emptyFilter(), around: { intervalId: retained.intervalId, start: 5_000, end: 15_000, anchor, anchorSequence: retained.sequence, anchorTimestamp: 10_000 } }
     });
     expect(result).toMatchObject({ ok: false, problem: { code: "AROUND_ANCHOR_UNAVAILABLE" } });
   });

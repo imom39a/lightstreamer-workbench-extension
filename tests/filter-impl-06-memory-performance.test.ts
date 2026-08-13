@@ -40,7 +40,7 @@ describe("filter-impl-06 residual query performance", () => {
     expect(base.ok).toBe(true);
     if (!base.ok) return;
     const retained = base.value.page.evidence[0]!.identity;
-    const around = { intervalId: retained.intervalId, start: 0, end: 10_000, anchor: retained, anchorSequence: retained.sequence, anchorTimestamp: retained.timestamp };
+    const around = { intervalId: retained.intervalId, start: 0, end: 10_000, anchor: retained, anchorSequence: retained.sequence, anchorTimestamp: 1 };
     const current = base.value.page.evidence[0]!.identity;
     const samples: Record<string, number[]> = { around: [], text: [], lookup: [], find: [] };
 
