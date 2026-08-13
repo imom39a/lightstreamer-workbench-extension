@@ -12,6 +12,14 @@ Optional `LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS=true` enables bounded
 diagnostic-only Chrome tracing and Target lifecycle capture; those artifacts
 must not be used as performance measurements.
 
+The clean native-window follow-up reached the prior failure boundary again.
+The independent CDP rAF probe also timed out while `document.hasFocus()` and
+`document.visibilityState === "visible"` remained true. Page screencast
+delivery produced only three initial frames and no trace chunks were reported.
+This rules out a React-only routing issue; the remaining failure is headed
+CfT151/macOS compositor frame suppression. No visible-frame or performance
+PASS is claimed.
+
 ## Per-target macOS activation follow-up (2026-08-13)
 
 The first activation attempt ran only once before the initial target. Native
