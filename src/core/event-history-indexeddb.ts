@@ -1444,6 +1444,9 @@ async function queryIndexedDb(
     const retainedProjections = request.find !== undefined
       ? await readSearchProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.find, telemetry)
       : null;
+    const findProjections = request.find?.scopeToFilter
+      ? await readFindProjectionContext(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, retainedProjections ?? [], request.find, telemetry)
+      : retainedProjections;
     const anchorProjection = request.filter.around?.anchor === undefined
       ? null
       : await readProjectionByIdentity(transaction.objectStore(options.projectionStore), request.filter.around.anchor, interval, firstSequence, lastSequence, request.filter.around.anchorSequence, telemetry);
@@ -1452,7 +1455,7 @@ async function queryIndexedDb(
       : await readSelectedEvidence(evidenceStore, request.lookup, interval, firstSequence, lastSequence, telemetry);
     await validateProjectionEventIdentities(evidenceStore, interval.id, [
       ...projections,
-      ...(retainedProjections ?? []),
+      ...(findProjections ?? []),
       ...(anchorProjection === null ? [] : [anchorProjection])
     ], telemetry);
     const discoveries = new Map<string, FacetDiscoveryResult>();
@@ -1508,7 +1511,7 @@ async function queryIndexedDb(
     }
     await transactionDone(transaction, "querying Evidence");
     const selectionRecords = projections.map((record) => querySelectionRecord(record, interval));
-    const retainedRecords = retainedProjections?.map((record) => querySelectionRecord(record, interval)) ?? selectionRecords;
+    const retainedRecords = findProjections?.map((record) => querySelectionRecord(record, interval)) ?? selectionRecords;
     const around = normalizeAround(request.filter.around, readPoint.retainedRange);
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
     if (filter.around?.anchor && anchorProjection === null) {
@@ -1524,7 +1527,9 @@ async function queryIndexedDb(
       : selectionRecords;
     if (filter.unsupported.length > 0) {
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecordsWithPayload, readPoint, request.lookup, filter, around);
-      const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
+      const find = request.find === undefined
+        ? null
+        : findEvidence(request.find.scopeToFilter ? [] : retainedRecords, request.find);
       telemetry.elapsedMs = Date.now() - started;
       return { ok: true, value: querySnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", queryCoverage(options), queryStorage(options), null, lookup, find, telemetry) };
     }
@@ -1548,7 +1553,10 @@ async function queryIndexedDb(
     if (offset > (simpleRecentPage ? expectedProjectionCount : ordered.length)) throw new Error("The page cursor is beyond the committed result set.");
     const lookupRecords = lookupRecordsWithPayload;
     const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
-    const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
+    const findRecords = request.find?.scopeToFilter
+      ? findRecordsWithinFilter(retainedRecords, filter, around)
+      : retainedRecords;
+    const find = request.find === undefined ? null : findEvidence(findRecords, request.find);
     telemetry.elapsedMs = Date.now() - started;
     const matchingTotal = simpleRecentPage || emptyFilterAround ? expectedProjectionCount : matching.length;
     const inScopeTotal = simpleRecentPage ? expectedProjectionCount : inScope.length;
@@ -1748,6 +1756,22 @@ function querySelectionRecord(projection: QueryProjection, interval: HistoryInte
   return Object.freeze({ identity: Object.freeze({ intervalId: projection.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId }), timestamp: projection.timestamp, summary: projection.summary, searchText: projection.searchText, facets: Object.freeze(projection.facets) as SelectionRecord["facets"] });
 }
 
+function findRecordsWithinFilter(
+  records: readonly SelectionRecord[],
+  filter: EvidenceQueryRequest["filter"],
+  around: EvidenceQueryRequest["filter"]["around"]
+): SelectionRecord[] {
+  return records.filter((record) => {
+    const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+      timestamp: record.timestamp,
+      intervalId: record.identity.intervalId,
+      searchText: record.searchText,
+      facets: record.facets as unknown as FilterRecord["facets"]
+    });
+    return evaluation.matches && isInAround(record, around);
+  });
+}
+
 function validateQueryProjection(projection: QueryProjection, intervalId: string, expectedSequence?: number): void {
   assertExactKeys(projection, ["eventId", "facets", "intervalId", "searchText", "searchTokens", "sequence", "summary", "timestamp"]);
   if (projection.intervalId !== intervalId || typeof projection.eventId !== "string" || projection.eventId.length === 0
@@ -1942,6 +1966,66 @@ function readSearchProjections(store: IDBObjectStore, intervalId: string, first:
       return readProjectionCursor(index, queryOnlyRange(trigram), intervalId, telemetry, rarestCount, "Find");
     })
     .then((values) => residual(values.filter((value) => value.sequence >= first && value.sequence <= last)));
+}
+
+/**
+ * A renderer-scoped Find needs bounded context around the active and next
+ * matches, not only the postings that matched the search text. Keep the
+ * candidate search indexed, then hydrate at most two 100-record windows so
+ * the public Find window remains useful without turning every Find into a
+ * full retained scan.
+ */
+async function readFindProjectionContext(
+  store: IDBObjectStore,
+  intervalId: string,
+  first: number,
+  last: number,
+  matches: readonly QueryProjection[],
+  find: NonNullable<EvidenceQueryRequest["find"]>,
+  telemetry: QueryTelemetryMutable
+): Promise<QueryProjection[]> {
+  if (matches.length === 0 || last < first) return [];
+  const ordered = [...matches].sort((left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId));
+  const currentIndex = find.current === undefined
+    ? -1
+    : ordered.findIndex((projection) => projection.sequence === find.current!.sequence && projection.eventId === find.current!.eventId && projection.intervalId === find.current!.intervalId);
+  let activeIndex = currentIndex;
+  if (activeIndex < 0 && find.current !== undefined) {
+    activeIndex = ordered.reduce((best, projection, index) => {
+      const bestDistance = Math.abs(ordered[best]!.sequence - find.current!.sequence);
+      const distance = Math.abs(projection.sequence - find.current!.sequence);
+      return distance < bestDistance || (distance === bestDistance && projection.sequence < ordered[best]!.sequence) ? index : best;
+    }, 0);
+  }
+  if (activeIndex < 0) activeIndex = 0;
+  const targetSequences = [ordered[activeIndex]!.sequence];
+  if (activeIndex + 1 < ordered.length) targetSequences.push(ordered[activeIndex + 1]!.sequence);
+  const windows = await Promise.all(targetSequences.map((sequence) => readFindProjectionWindow(store, intervalId, first, last, sequence, telemetry)));
+  const result = new Map<number, QueryProjection>();
+  for (const projection of [...matches, ...windows.flat()]) result.set(projection.sequence, projection);
+  return [...result.values()].sort((left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId));
+}
+
+function readFindProjectionWindow(store: IDBObjectStore, intervalId: string, first: number, last: number, sequence: number, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  const lower = Math.max(first, sequence - 50);
+  const upper = Math.min(last, lower + 99);
+  const range = queryBoundRange(lower, upper);
+  if (range === undefined) return Promise.resolve([]);
+  const result: QueryProjection[] = [];
+  const state = { reads: 0, bound: Math.max(0, upper - lower + 1) };
+  return new Promise((resolve, reject) => {
+    const request = store.openCursor(range);
+    request.onerror = () => reject(request.error ?? new Error("Find context projection cursor failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || result.length >= 100) { resolve(result); return; }
+      try { recordProjectionCursorRead(telemetry, state, "Find context"); } catch (error) { reject(error); return; }
+      const projection = cursor.value as QueryProjection;
+      try { validateQueryProjection(projection, intervalId, Number(cursor.key)); } catch (error) { reject(error); return; }
+      if (projection.intervalId === intervalId) result.push(projection);
+      cursor.continue();
+    };
+  });
 }
 
 function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | undefined, intervalId: string, telemetry: QueryTelemetryMutable, bound: number, operation: "Around" | "Find"): Promise<QueryProjection[]> {

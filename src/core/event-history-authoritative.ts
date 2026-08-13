@@ -879,7 +879,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
 
-    const records: SelectionRecord[] = entriesAtRead.map((entry) => {
+    const evidenceEntriesAtRead = entriesAtRead.filter((entry) => entry.candidate.kind !== "topology-checkpoint");
+    const records: SelectionRecord[] = evidenceEntriesAtRead.map((entry) => {
       const cached = deterministicRecordCache.get(entry);
       if (cached) return cached;
       const record = toDeterministicEvidenceRecord(entry, intervalAtRead);
@@ -902,7 +903,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const selectedIndex = records.findIndex((record) => sameEvidenceIdentity(record.identity, request.lookup!));
       if (selectedIndex >= 0) {
         lookupRecords = records.slice();
-        lookupRecords[selectedIndex] = Object.freeze({ ...lookupRecords[selectedIndex]!, payload: copyCandidate(entriesAtRead[selectedIndex]!.candidate) });
+        lookupRecords[selectedIndex] = Object.freeze({ ...lookupRecords[selectedIndex]!, payload: copyCandidate(evidenceEntriesAtRead[selectedIndex]!.candidate) });
       }
     }
     if (unsupported) {
@@ -944,7 +945,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const page = ordered.slice(offset, offset + request.page.size);
       const nextCursor = offset + page.length < ordered.length ? String(offset + page.length) : null;
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
-        const find = request.find === undefined ? null : findEvidence(records, request.find);
+        const find = request.find === undefined ? null : findEvidence(request.find.scopeToFilter ? inScope : records, request.find);
       return Promise.resolve({
         ok: true,
         value: makeEvidenceSnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find)

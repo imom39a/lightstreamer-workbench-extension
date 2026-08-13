@@ -181,7 +181,6 @@ export function discoverFacet(
 ): FacetDiscoveryResult {
   instrumentation.fail?.();
   const base = records.filter((record) => matchesBase(record, withoutFacet(filter, request.facet)));
-  if (base.length === 0) return unavailable(request.facet, "ZERO_BASE", 0);
 
   // This is compact identity accounting: it retains no TypedFacetValue
   // objects and no complete sorted order. It is the exact source for counts
