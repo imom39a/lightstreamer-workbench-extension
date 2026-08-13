@@ -38,7 +38,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await expect(page.getByRole("dialog", { name: "Evidence kind exact values" })).toBeVisible();
   await page.locator(".workbench-react").screenshot({ path: `${evidenceRoot}/current-forced-colors-light.png` });
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByText(/Filter:.*kind/)).toBeVisible();
+  await expect(page.locator(".workbench-react__active-filter")).toContainText("kind");
 
   await page.emulateMedia({ colorScheme: "light", forcedColors: "none" });
   await page.getByRole("button", { name: "Filter", exact: true }).click();
@@ -103,7 +103,7 @@ test("filter-impl-13 structured explorer has bounded recovery, state, and keyboa
   await openExplorer(page, "filter-find", { width: 900, height: 700 }, "light", "Evidence kind");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByText("Filter: scenario-event", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Filter:.*kind/)).toHaveCount(0);
+  await expect(page.locator(".workbench-react__active-filter")).not.toContainText("kind");
 
   await page.goto("/?scenario=filter-find&theme=light");
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
