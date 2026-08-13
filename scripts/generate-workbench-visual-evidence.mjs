@@ -109,12 +109,12 @@ try {
     contactSheets,
     review: {
       classification: "Material UI",
-      changedWorkflow: "The global footer now presents one typed History condition with explicit precedence, a transition-only polite announcement, and a responsive/theme-safe diagnostic surface.",
+      changedWorkflow: "The global diagnostics footer keeps mixed Warning, Error, and Information entries readable and discoverable without taking over the Evidence workspace.",
       acceptanceCriteria: [
-        "Exactly one typed History condition is selected by deterministic precedence; history conditions do not duplicate Coverage diagnostics.",
-        "A dedicated aria-live polite region announces condition transitions only and does not announce every retained Evidence update.",
-        "Normal, compact, shallow, and wide geometry remain reachable in Dark and Light themes, with forced-colors text and focus semantics preserved.",
-        "The changed workflow has no serious or critical axe violations, browser diagnostics, clipping, or horizontal shell overflow."
+        "Short and long severity, affected-object, consequence, and recovery content receive usable line width without character-by-character wrapping.",
+        "Multiple Warning, Error, and Information entries remain discoverable through an explicit count/scroll cue and keyboard Home/End navigation.",
+        "Normal, compact, shallow, and wide geometry preserve a usable Evidence workspace, the Freeze Evidence action, and a bounded diagnostic scroll owner in Dark and Light themes.",
+        "The changed workflow has no serious or critical axe violations, browser diagnostics, clipped selected diagnostic entry, or horizontal shell overflow."
       ],
       browserResult: {
         scenarioCaptures: `${results.length}/${results.length} passed`,
@@ -124,8 +124,8 @@ try {
         checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "The diagnostic list is keyboard-focusable with a visible focus ring; the footer retains focus while the typed condition remains active; geometry checks cover normal, compact, shallow, and wide layouts plus forced colors. Clear confirmation is not auto-focused and retains its existing physical-Tab proof.",
-      baselineIntent: "Update the final two tracked Darwin baselines — normal-help-resources-light-darwin and normal-limited-capture-light-darwin — for the intentional Panel Session lifecycle copy and typed lower-capacity footer condition; all other baselines remain unchanged."
+      keyboardAndFocus: "The mixed diagnostic list is keyboard-focusable with a visible focus ring; End reveals the last complete diagnostic and Home returns to the explicit diagnostic-count cue. Existing footer focus and forced-colors checks remain green.",
+      baselineIntent: "Update tracked baselines that render diagnostics and add Darwin/Linux baselines for the four mixed-severity stress geometries. Five Darwin-only native-scrollbar snapshots are normalized to the current release-prep rendering; their semantic content is unchanged."
     },
     durationMs: Date.now() - startedAt,
     scenarios: results
@@ -148,9 +148,10 @@ function publicMatrix() {
 
 async function createContactSheets(runningBrowser, results) {
   const affectedIds = [
-    "compact-clear-confirmation-light",
-    "normal-clear-confirmation-dark",
-    "compact-memory-fallback-dark"
+    "wide-diagnostics-stress-light",
+    "normal-diagnostics-stress-dark",
+    "shallow-diagnostics-stress-light",
+    "compact-diagnostics-stress-dark"
   ];
   const affected = affectedIds.map((id) => results.find((result) => result.id === id)).filter(Boolean);
   if (affected.length !== affectedIds.length) {
@@ -383,7 +384,7 @@ async function captureProduction(runningBrowser, scenario) {
     let helpResources = null;
     let focusEvidence = null;
     let memoryEvidence = null;
-    if (["more-actions-help", "clear-confirmation", "memory-operations"].includes(scenario.production.setup)) {
+    if (["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -461,6 +462,29 @@ async function captureProduction(runningBrowser, scenario) {
 
 async function prepareProductionState(page, setup) {
   if (setup === "none") return;
+  if (setup === "diagnostics") {
+    const diagnostics = page.getByLabel("Workbench diagnostic entries");
+    await diagnostics.waitFor();
+    const text = await diagnostics.innerText();
+    for (const marker of ["3 diagnostics · Scroll to review all", "Warning · History near capacity", "Error · Capture disconnected", "Information · Retired Scope"]) {
+      if (!text.includes(marker)) throw new Error(`Mixed diagnostic visual state is missing ${JSON.stringify(marker)}.`);
+    }
+    await diagnostics.focus();
+    const overflows = await diagnostics.evaluate((element) => element.scrollHeight > element.clientHeight);
+    if (overflows) {
+      await page.keyboard.press("End");
+      await page.waitForFunction(() => {
+        const owner = document.querySelector(".workbench-react__status-diagnostics");
+        return owner instanceof HTMLElement && owner.scrollTop > 0;
+      });
+      await page.keyboard.press("Home");
+      await page.waitForFunction(() => {
+        const owner = document.querySelector(".workbench-react__status-diagnostics");
+        return owner instanceof HTMLElement && owner.scrollTop === 0;
+      });
+    }
+    return;
+  }
   if (setup === "captured-draft") {
     await page.getByRole("button", { name: "Open selected Context" }).click();
     await page.getByRole("button", { name: "Create Local Injection Draft" }).click();

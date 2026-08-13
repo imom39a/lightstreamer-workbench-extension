@@ -7,6 +7,7 @@ import {
   type TopologySyncFrame
 } from "../../src/bridge/messages";
 import { getPanelScenario } from "./panel-scenarios";
+import type { HistoryCapacityOverrides } from "../../src/core/event-history-authoritative";
 
 export const WORKBENCH_SCENARIO_IDS = [
   "live-selected",
@@ -18,6 +19,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "empty-scope",
   "disconnected",
   "memory-fallback",
+  "diagnostics-stress",
   "raw-evidence",
   "filter-find",
   "filter-hidden-selection",
@@ -68,6 +70,7 @@ export type WorkbenchScenario = Readonly<{
   }>;
   freezeBeforeLaterEvents?: boolean;
   storage?: Readonly<{ mode: "memory"; reason: string }>;
+  historyCapacity?: HistoryCapacityOverrides;
   openRawEvidence?: boolean;
   filterQuery?: string;
   findQuery?: string;
@@ -167,6 +170,27 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         selectedEventId: "scenario-event-3",
         captureStatus: "capturing",
         storage: { mode: "memory", reason: "IndexedDB is unavailable" }
+      };
+    case "diagnostics-stress":
+      return {
+        id,
+        initialEvents: canonical,
+        topologySyncFrames: topology.topologySyncFrames,
+        captureMessages: [
+          ...(topology.captureMessages?.slice(1) ?? []),
+          semanticSessionStatus("CONNECTED:WS-STREAMING", "topology-next-session", 7)
+        ],
+        selectedEventId: "scenario-event-3",
+        selectedScope: {
+          kind: "session",
+          retired: true,
+          label: "Historical session topology-small-session"
+        },
+        captureStatus: "bridge disconnected",
+        historyCapacity: {
+          maxRetainedCount: 100,
+          retainedWarningCount: 1
+        }
       };
     case "raw-evidence":
       return { id, initialEvents: canonical, selectedEventId: "scenario-event-3", captureStatus: "capturing", openRawEvidence: true };

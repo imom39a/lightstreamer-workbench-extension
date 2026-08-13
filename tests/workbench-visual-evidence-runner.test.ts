@@ -23,10 +23,17 @@ describe("Workbench visual-evidence runner", () => {
     });
   });
 
-  it("records the final two tracked Darwin baseline updates in the generated packet metadata", () => {
+  it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
     expect(runnerSource).toContain(
-      'baselineIntent: "Update the final two tracked Darwin baselines — normal-help-resources-light-darwin and normal-limited-capture-light-darwin — for the intentional Panel Session lifecycle copy and typed lower-capacity footer condition; all other baselines remain unchanged."'
+      'baselineIntent: "Update tracked baselines that render diagnostics and add Darwin/Linux baselines for the four mixed-severity stress geometries. Five Darwin-only native-scrollbar snapshots are normalized to the current release-prep rendering; their semantic content is unchanged."'
     );
-    expect(runnerSource).not.toContain("seven affected Darwin baselines");
+    expect(matrix.filter((scenario: { production?: { scenario?: string } }) =>
+      scenario.production?.scenario === "diagnostics-stress"
+    ).map((scenario: { id: string }) => scenario.id)).toEqual([
+      "wide-diagnostics-stress-light",
+      "normal-diagnostics-stress-dark",
+      "shallow-diagnostics-stress-light",
+      "compact-diagnostics-stress-dark"
+    ]);
   });
 });

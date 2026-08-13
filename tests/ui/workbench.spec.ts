@@ -1234,6 +1234,94 @@ test("Workbench renders one typed history condition across geometry, theme, and 
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
+test("Workbench keeps mixed-size footer diagnostics readable and bounded across geometry", async ({
+  page
+}, testInfo) => {
+  const scenes = [
+    { width: 1440, height: 900, theme: "light" as const },
+    { width: 900, height: 700, theme: "dark" as const },
+    { width: 900, height: 320, theme: "light" as const },
+    { width: 563, height: 700, theme: "dark" as const }
+  ];
+
+  for (const scene of scenes) {
+    await openScenario(page, "diagnostics-stress", scene, scene.theme);
+    const footer = page.getByRole("region", { name: "Workbench diagnostics" });
+    const entries = footer.locator(".workbench-react__status-diagnostic");
+    await expect(entries).toHaveCount(3);
+    await expect(footer.getByText("Warning · History near capacity", { exact: true })).toBeVisible();
+    await expect(footer.getByText("Error · Capture disconnected", { exact: true })).toHaveCount(1);
+    await expect(footer.getByText("Information · Retired Scope", { exact: true })).toHaveCount(1);
+    await expect(footer.getByText("3 diagnostics · Scroll to review all", { exact: true })).toBeVisible();
+
+    const layout = await entries.evaluateAll((diagnostics) => diagnostics.map((diagnostic) => {
+      const affected = diagnostic.querySelector(".workbench-react__status-affected");
+      const detail = diagnostic.querySelector(".workbench-react__status-detail");
+      const recovery = diagnostic.querySelector(".workbench-react__status-recovery");
+      const diagnosticWidth = diagnostic.getBoundingClientRect().width;
+      return {
+        diagnosticWidth,
+        affectedWidth: affected?.getBoundingClientRect().width ?? 0,
+        detailWidth: detail?.getBoundingClientRect().width ?? 0,
+        recoveryWidth: recovery?.getBoundingClientRect().width ?? diagnosticWidth
+      };
+    }));
+    for (const entry of layout) {
+      expect(entry.affectedWidth).toBeGreaterThanOrEqual(Math.min(320, entry.diagnosticWidth * 0.35));
+      expect(entry.detailWidth).toBeGreaterThanOrEqual(entry.diagnosticWidth * 0.75);
+      expect(entry.recoveryWidth).toBeGreaterThanOrEqual(entry.diagnosticWidth * 0.75);
+    }
+
+    const workspace = page.locator(".workbench-react__workspace");
+    const footerSize = await footer.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      viewportHeight: window.innerHeight
+    }));
+    expect(footerSize.clientHeight).toBeLessThan(footerSize.viewportHeight * 0.5);
+    await expect(workspace).toBeVisible();
+    expect(await workspace.evaluate((element) => element.clientHeight)).toBeGreaterThanOrEqual(64);
+    await expect(footer.getByRole("button", { name: "Freeze Evidence" })).toBeVisible();
+
+    if (scene.height === 320) {
+      const evidenceViewport = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
+      const firstEvidenceRow = evidenceViewport.locator(".workbench-react__evidence-row").first();
+      const evidenceVisibility = await firstEvidenceRow.evaluate((row) => {
+        const viewport = row.parentElement;
+        if (!(viewport instanceof HTMLElement)) return null;
+        const rowRect = row.getBoundingClientRect();
+        const viewportRect = viewport.getBoundingClientRect();
+        return { rowTop: rowRect.top, rowBottom: rowRect.bottom, viewportTop: viewportRect.top, viewportBottom: viewportRect.bottom };
+      });
+      expect(evidenceVisibility).not.toBeNull();
+      expect(evidenceVisibility!.rowTop).toBeGreaterThanOrEqual(evidenceVisibility!.viewportTop - 1);
+      expect(evidenceVisibility!.rowBottom).toBeLessThanOrEqual(evidenceVisibility!.viewportBottom + 1);
+
+      const diagnosticList = footer.getByLabel("Workbench diagnostic entries");
+      await diagnosticList.focus();
+      await expect(diagnosticList).toBeFocused();
+      await page.keyboard.press("End");
+      await expect.poll(() => diagnosticList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      const lastEntry = entries.last();
+      const visibility = await lastEntry.evaluate((entry) => {
+        const owner = entry.parentElement;
+        if (!(owner instanceof HTMLElement)) return null;
+        const entryRect = entry.getBoundingClientRect();
+        const ownerRect = owner.getBoundingClientRect();
+        return { entryTop: entryRect.top, entryBottom: entryRect.bottom, ownerTop: ownerRect.top, ownerBottom: ownerRect.bottom };
+      });
+      expect(visibility).not.toBeNull();
+      expect(visibility!.entryTop).toBeGreaterThanOrEqual(visibility!.ownerTop - 1);
+      expect(visibility!.entryBottom).toBeLessThanOrEqual(visibility!.ownerBottom + 1);
+      await expect(lastEntry).toContainText("Select a current runtime Scope before starting Local Injection");
+      await page.keyboard.press("Home");
+      await expect.poll(() => diagnosticList.evaluate((element) => element.scrollTop)).toBe(0);
+    }
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `diagnostics-${scene.width}x${scene.height}-${scene.theme}`);
+  }
+});
+
 test("Workbench keeps a retired Session readable, scoped, and explicitly read-only", async ({
   page
 }, testInfo) => {

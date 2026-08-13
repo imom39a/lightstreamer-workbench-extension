@@ -8,7 +8,7 @@ type VisualCase = Readonly<{
   viewport: { width: number; height: number };
   theme: "dark" | "light";
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" };
+  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -55,6 +55,22 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     case "none":
       await expect(page.locator(".workbench-react__evidence-summary")).toHaveCSS("display", "flex");
       return;
+    case "diagnostics": {
+      const diagnostics = page.getByLabel("Workbench diagnostic entries");
+      await expect(diagnostics).toContainText("3 diagnostics · Scroll to review all");
+      await diagnostics.focus();
+      const overflows = await diagnostics.evaluate((element) => element.scrollHeight > element.clientHeight);
+      if (overflows) {
+        await page.keyboard.press("End");
+        await expect.poll(() => diagnostics.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      }
+      await expect(diagnostics).toContainText("Information · Retired Scope");
+      if (overflows) {
+        await page.keyboard.press("Home");
+        await expect.poll(() => diagnostics.evaluate((element) => element.scrollTop)).toBe(0);
+      }
+      return;
+    }
     case "captured-draft": {
       await page.getByRole("button", { name: "Open selected Context" }).click();
       const create = page.getByRole("button", { name: "Create Local Injection Draft" });

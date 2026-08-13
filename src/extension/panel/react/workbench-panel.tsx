@@ -1400,7 +1400,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
       </main>}
       <footer className="workbench-react__status" role="region" aria-label="Workbench diagnostics" tabIndex={snapshot.diagnostics.length ? 0 : -1}>
         <div className="workbench-react__history-live-region" aria-live="polite" aria-atomic="true">{snapshot.historyAnnouncement}</div>
-        {snapshot.diagnostics.length ? <div className="workbench-react__status-diagnostics" tabIndex={0} aria-label="Workbench diagnostic entries">
+        {snapshot.diagnostics.length ? <div className="workbench-react__status-diagnostics" tabIndex={0} aria-label="Workbench diagnostic entries" onKeyDown={(event) => {
+          if (event.key !== "Home" && event.key !== "End") return;
+          event.preventDefault();
+          event.currentTarget.scrollTop = event.key === "Home" ? 0 : event.currentTarget.scrollHeight;
+        }}>
+          {snapshot.diagnostics.length > 1 ? <span className="workbench-react__status-diagnostics-summary">{snapshot.diagnostics.length} diagnostics · Scroll to review all</span> : null}
           {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-category={diagnostic.category} data-history-condition={diagnostic.category === "history" ? "true" : undefined} data-severity={diagnostic.severity.toLowerCase()} key={`${diagnostic.title}-${index}`}>
             <strong>{diagnostic.severity} · {diagnostic.title}</strong>
             <span className="workbench-react__status-affected">Affected: {diagnostic.affected}</span>

@@ -117,5 +117,33 @@
     "theme": "dark",
     "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "clear-confirmation", "surface": "context" },
     "production": { "scenario": "live-selected", "setup": "clear-confirmation" }
+  },
+  {
+    "id": "wide-diagnostics-stress-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "C", "state": "coverage", "frame": "wide", "setup": "none" },
+    "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
+  },
+  {
+    "id": "normal-diagnostics-stress-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "C", "state": "coverage", "frame": "normal", "setup": "none" },
+    "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
+  },
+  {
+    "id": "shallow-diagnostics-stress-light",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "light",
+    "prototype": { "variant": "C", "state": "coverage", "frame": "shallow", "setup": "none" },
+    "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
+  },
+  {
+    "id": "compact-diagnostics-stress-dark",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "C", "state": "coverage", "frame": "compact", "setup": "none" },
+    "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
   }
 ]

@@ -67,6 +67,8 @@ if (!(root instanceof HTMLElement)) throw new Error("Workbench scenario requires
 const scenario = getWorkbenchScenario(scenarioId);
 let failSyntheticEvidenceRetention = false;
 const history = createInMemoryEventHistory({
+  ...(scenario.historyCapacity ? { panelSessionId: "scenario-" + scenario.id } : {}),
+  ...(scenario.historyCapacity ? { capacity: scenario.historyCapacity } : {}),
   ...(scenario.storage?.mode === "memory"
     ? {
         capacityTier: "LOWER",
