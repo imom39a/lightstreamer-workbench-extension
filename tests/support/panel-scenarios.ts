@@ -19,7 +19,7 @@ import {
   type EvidenceFilterPanelScenario
 } from "./evidence-filter-fixture";
 import { createReferenceFilterAdapter, createReferenceLifecycleHarness } from "./evidence-filter-reference";
-import { type EvidenceQueryRequest } from "../../src/core/evidence-filter-contract";
+import { type DeterministicEvidenceRecord, type EvidenceFilter, type EvidenceQueryRequest } from "../../src/core/evidence-filter-contract";
 
 export const FIXED_SCENARIO_TIMESTAMP = 1_780_872_000_000;
 
@@ -65,7 +65,17 @@ export type PanelScenario = {
   postRenderSetupActions?: readonly PanelScenarioSetupAction[];
   stream?: PanelScenarioStream;
   semanticSetup?: readonly string[];
+  filterContract?: FilterScenarioContract;
 };
+
+export type FilterScenarioContract = Readonly<{
+  records: readonly DeterministicEvidenceRecord[];
+  request: EvidenceQueryRequest;
+  storage: "INDEXED_DB" | "MEMORY_FALLBACK";
+  terminal: boolean;
+  fingerprint: string;
+  capturedEventIds: readonly string[];
+}>;
 
 const filterScenarioSetup: Readonly<Record<EvidenceFilterPanelScenario, readonly string[]>> = Object.freeze({
   "primary-include-exclude-reveal-reset": ["include-local", "exclude-server", "around-evidence", "reveal-selected", "reset-filter"],
@@ -188,51 +198,92 @@ export function getPanelScenario(id: PanelScenarioId): PanelScenario {
 export function getEvidenceFilterPanelScenario(id: EvidenceFilterPanelScenario): PanelScenario {
   const definition = EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS.find((candidate) => candidate.id === id);
   if (!definition) throw new Error(`Unknown filter panel scenario: ${id}`);
+  const filterContract = createFilterScenarioContract(id);
   return {
     id,
     status: "bridge connected",
     initialView: "Timeline",
-    capturedEvents: createFilterScenarioCapture(id),
-    setupActions: [], semanticSetup: definition.semanticSetup
+    capturedEvents: filterContract.records.map(toFilterCaptureEvent),
+    setupActions: [], semanticSetup: definition.semanticSetup, filterContract
   };
 }
 
-export type FilterScenarioResult = Readonly<{ actual: Readonly<Record<string, unknown>>; expected: Readonly<Record<string, unknown>> }>;
+export type FilterScenarioResult = Readonly<{ actual: Readonly<Record<string, unknown>>; sourceFingerprint: string }>;
 
-export async function runEvidenceFilterPanelScenario(id: EvidenceFilterPanelScenario): Promise<FilterScenarioResult> {
-  const fixture = createEvidenceFilterFixture();
-  const empty = createEmptyEvidenceFilter();
-  const adapter = id === "empty-history" || id === "discovery-unavailable" ? createReferenceFilterAdapter([]) : createReferenceFilterAdapter(fixture.records, { storage: id === "memory-fallback" ? "MEMORY_FALLBACK" : "INDEXED_DB" });
-  let expected: Record<string, unknown>;
-  let request: EvidenceQueryRequest = { at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 25 }, filter: empty };
-  if (id === "primary-include-exclude-reveal-reset") request = { ...request, page: { order: "OLDEST_FIRST", size: 25 }, filter: { ...empty, text: fixture.cases.freeText, criteria: { provenance: { include: [fixture.cases.includeAndExclude.include], exclude: [fixture.cases.includeAndExclude.exclude] } }, around: fixture.cases.around } };
-  if (id === "valid-zero-result-conflict") request = { ...request, filter: { ...empty, criteria: { kind: { include: [fixture.cases.validZeroResult.left], exclude: [fixture.cases.validZeroResult.left] } } } };
-  if (id === "unsupported-criterion") request = { ...request, filter: { ...empty, unsupported: [fixture.cases.unsupported] } };
-  if (id === "discovery-unavailable") request = { ...request, discover: [{ facet: "key", size: 10 }] };
-  if (id === "hidden-selection") request = { ...request, filter: { ...empty, text: "does-not-match", around: { intervalId: fixture.interval.id, start: 0, end: 1 } }, lookup: fixture.records[500]!.identity };
-  if (id === "high-volume-command-keys") request = { ...request, discover: [{ facet: "key", size: 10 }] };
-  if (id === "terminal-history") {
-    const harness = createReferenceLifecycleHarness(fixture.records);
+export async function runEvidenceFilterPanelScenario(scenario: PanelScenario): Promise<FilterScenarioResult> {
+  const contract = scenario.filterContract;
+  if (!contract) throw new Error(`Scenario ${scenario.id} does not own a filter contract.`);
+  const adapter = createReferenceFilterAdapter(contract.records, { storage: contract.storage });
+  if (contract.terminal) {
+    const harness = createReferenceLifecycleHarness(contract.records, { storage: contract.storage });
     harness.terminate();
-    const result = await harness.query(request);
+    const result = await harness.query(contract.request);
     if (!result.ok) throw new Error(result.problem.message);
-    expected = { totals: { matching: 10000, inScope: 10000 }, coverage: "COMPLETE", storage: "INDEXED_DB", phase: "TERMINAL", terminalBoundary: 10000 };
-    return { actual: { totals: result.value.totals, coverage: result.value.coverage, storage: result.value.storage, phase: harness.state().phase, terminalBoundary: result.value.readPoint.committedEvidenceBoundary?.sequence }, expected };
+    return { actual: { totals: result.value.totals, coverage: result.value.coverage, storage: result.value.storage, phase: harness.state().phase, terminalBoundary: result.value.readPoint.committedEvidenceBoundary?.sequence }, sourceFingerprint: contract.fingerprint };
   }
-  const result = await adapter.query(request);
+  const result = await adapter.query(contract.request);
   if (!result.ok) throw new Error(result.problem.message);
   const discovery = result.value.discoveries.get("key");
-  expected = id === "primary-include-exclude-reveal-reset" ? { totals: { matching: 420, inScope: 9 }, page: 9, evaluation: "COMPLETE", coverage: "COMPLETE", storage: "INDEXED_DB" } :
-    id === "empty-history" ? { totals: { matching: 0, inScope: 0 }, page: 0, retained: null, coverage: "COMPLETE", storage: "INDEXED_DB" } :
-    id === "valid-zero-result-conflict" ? { totals: { matching: 0, inScope: 0 }, page: 0, evaluation: "COMPLETE", coverage: "COMPLETE", storage: "INDEXED_DB" } :
-    id === "unsupported-criterion" ? { totals: { matching: 0, inScope: 0 }, page: 0, evaluation: "UNSUPPORTED_FILTER", coverage: "COMPLETE", storage: "INDEXED_DB" } :
-    id === "discovery-unavailable" ? { totals: { matching: 0, inScope: 0 }, discovery: "UNAVAILABLE", discoveryReason: "NO_CONCRETE_VALUES", coverage: "COMPLETE", storage: "INDEXED_DB" } :
-    id === "hidden-selection" ? { totals: { matching: 0, inScope: 0 }, blockers: ["free-text", "around-evidence"], coverage: "COMPLETE", storage: "INDEXED_DB" } :
-    id === "memory-fallback" ? { totals: { matching: 5000, inScope: 5000 }, page: 25, storage: "MEMORY_FALLBACK", coverage: "COMPLETE", first: 5001 } :
-    { totals: { matching: 10000, inScope: 10000 }, discovery: "AVAILABLE", distinctTotal: 3842, coverage: "COMPLETE", storage: "INDEXED_DB" };
-  const actualRaw: Record<string, unknown> = { totals: result.value.totals, page: result.value.page.evidence.length, evaluation: result.value.evaluation, retained: result.value.readPoint.retainedRange, discovery: discovery?.state, discoveryReason: discovery?.state === "UNAVAILABLE" ? discovery.reason : undefined, blockers: result.value.lookup?.state === "RETAINED" ? result.value.lookup.blockingCriteria.map(({ id: blockerId }) => blockerId) : undefined, storage: result.value.storage, coverage: result.value.coverage, first: result.value.readPoint.retainedRange?.first.sequence, distinctTotal: discovery?.state === "AVAILABLE" ? discovery.distinctTotal : undefined };
-  const actual = Object.fromEntries(Object.keys(expected).map((key) => [key, actualRaw[key]]));
-  return { actual, expected };
+  const raw: Record<string, unknown> = { totals: result.value.totals, page: result.value.page.evidence.length, evaluation: result.value.evaluation, retained: result.value.readPoint.retainedRange, discovery: discovery?.state, discoveryReason: discovery?.state === "UNAVAILABLE" ? discovery.reason : undefined, blockers: result.value.lookup?.state === "RETAINED" ? result.value.lookup.blockingCriteria.map(({ id: blockerId }) => blockerId) : undefined, storage: result.value.storage, coverage: result.value.coverage, first: result.value.readPoint.retainedRange?.first.sequence, distinctTotal: discovery?.state === "AVAILABLE" ? discovery.distinctTotal : undefined };
+  const actual = contract.records.length === 0
+    ? contract.request.discover ? { totals: raw.totals, discovery: raw.discovery, discoveryReason: raw.discoveryReason, coverage: raw.coverage, storage: raw.storage } : { totals: raw.totals, page: raw.page, retained: raw.retained, coverage: raw.coverage, storage: raw.storage }
+    : contract.storage === "MEMORY_FALLBACK"
+      ? { totals: raw.totals, page: raw.page, storage: raw.storage, coverage: raw.coverage, first: raw.first }
+    : contract.request.filter.unsupported.length > 0
+      ? { totals: raw.totals, page: raw.page, evaluation: raw.evaluation, coverage: raw.coverage, storage: raw.storage }
+      : contract.request.lookup
+        ? { totals: raw.totals, blockers: raw.blockers, coverage: raw.coverage, storage: raw.storage }
+        : contract.request.discover
+          ? { totals: raw.totals, discovery: raw.discovery, distinctTotal: raw.distinctTotal, coverage: raw.coverage, storage: raw.storage }
+          : contract.request.filter.text === "risk-reviewed"
+            ? { totals: raw.totals, page: raw.page, evaluation: raw.evaluation, coverage: raw.coverage, storage: raw.storage }
+            : { totals: raw.totals, page: raw.page, evaluation: raw.evaluation, coverage: raw.coverage, storage: raw.storage };
+  return { actual, sourceFingerprint: contract.fingerprint };
+}
+
+function createFilterScenarioContract(id: EvidenceFilterPanelScenario): FilterScenarioContract {
+  const empty = createEmptyEvidenceFilter();
+  if (id === "empty-history" || id === "discovery-unavailable") {
+    const request = id === "discovery-unavailable" ? { at: "LATEST_COMMITTED" as const, page: { order: "OLDEST_FIRST" as const, size: 25 }, filter: empty, discover: [{ facet: "key" as const, size: 10 }] } : { at: "LATEST_COMMITTED" as const, page: { order: "OLDEST_FIRST" as const, size: 25 }, filter: empty };
+    return makeFilterScenarioContract(id, [], request, "INDEXED_DB", false, `${id}-empty-source`);
+  }
+
+  const count = id === "valid-zero-result-conflict" || id === "unsupported-criterion" || id === "hidden-selection" ? 3_842 : 10_000;
+  const fixture = createEvidenceFilterFixture(count, { namespace: id });
+  let request: EvidenceQueryRequest = { at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 25 }, filter: empty };
+  if (id === "primary-include-exclude-reveal-reset") request = { ...request, filter: { ...empty, text: fixture.cases.freeText, criteria: { provenance: { include: [fixture.cases.includeAndExclude.include], exclude: [fixture.cases.includeAndExclude.exclude] } }, around: fixture.cases.around } };
+  if (id === "valid-zero-result-conflict") request = { ...request, filter: { ...empty, criteria: { kind: { include: [fixture.cases.validZeroResult.left], exclude: [fixture.cases.validZeroResult.left] } } } };
+  if (id === "unsupported-criterion") request = { ...request, filter: { ...empty, unsupported: [fixture.cases.unsupported] } };
+  if (id === "hidden-selection") request = { ...request, filter: { ...empty, text: "does-not-match", around: { intervalId: fixture.interval.id, start: 0, end: 1 } }, lookup: fixture.records[500]!.identity };
+  if (id === "high-volume-command-keys") request = { ...request, discover: [{ facet: "key", size: 10 }] };
+  return makeFilterScenarioContract(id, fixture.records, request, id === "memory-fallback" ? "MEMORY_FALLBACK" : "INDEXED_DB", id === "terminal-history", `${id}-source`);
+}
+
+function makeFilterScenarioContract(id: string, records: readonly DeterministicEvidenceRecord[], request: EvidenceQueryRequest, storage: FilterScenarioContract["storage"], terminal: boolean, sourceTag: string): FilterScenarioContract {
+  const capturedEventIds = records.map((record) => record.identity.eventId);
+  const fingerprint = JSON.stringify({ id, sourceTag, count: records.length, first: records[0]?.identity ?? null, last: records.at(-1)?.identity ?? null, request, storage, terminal });
+  return Object.freeze({ records, request, storage, terminal, fingerprint, capturedEventIds: Object.freeze(capturedEventIds) });
+}
+
+function toFilterCaptureEvent(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
+  const value = (facet: string): string | undefined => Object.values(record.facets).find((candidate) => candidate?.facet === facet)?.value;
+  const provenance = value("provenance");
+  const key = value("key");
+  const item = value("item");
+  return {
+    id: record.identity.eventId,
+    timestamp: record.timestamp,
+    direction: "inbound",
+    source: provenance === "LOCAL" ? "synthetic" : "server",
+    captureSource: "listener",
+    synthetic: provenance === "LOCAL",
+    kind: "item-update",
+    client: { id: value("client") ?? "unknown-client" },
+    subscription: { id: value("subscription") ?? "unknown-subscription", mode: value("mode") ?? "COMMAND" },
+    item: item ? { name: item, position: 1 } : undefined,
+    update: { isSnapshot: value("phase") === "SNAPSHOT", command: value("operation"), key, fields: Object.fromEntries(Object.entries(record.facets).flatMap(([facet, facetValue]) => facetValue ? [[facet, facetValue.value]] : [])), changedFields: {} },
+    raw: { scenarioRecordId: record.identity.eventId, sourceFingerprintPart: record.identity.intervalId }
+  };
 }
 
 export function createExportOpenScenario(): PanelScenario {
@@ -939,29 +990,6 @@ function createStoreListingCapture(): readonly LightstreamerEventEnvelope[] {
       }
     })
   ];
-}
-
-function createFilterScenarioCapture(id: EvidenceFilterPanelScenario): readonly LightstreamerEventEnvelope[] {
-  const capture = createStoreListingCapture();
-  switch (id) {
-    case "empty-history":
-    case "discovery-unavailable":
-      return [];
-    case "valid-zero-result-conflict":
-      return capture.slice(0, 2);
-    case "unsupported-criterion":
-      return capture.slice(0, 1);
-    case "hidden-selection":
-      return capture.slice(0, 3);
-    case "terminal-history":
-      return capture.slice(0, 4);
-    case "memory-fallback":
-      return capture;
-    case "high-volume-command-keys":
-      return capture.map((event, index) => ({ ...event, id: `high-volume-${index + 1}` }));
-    default:
-      return capture;
-  }
 }
 
 type StoreListingEventOptions = {

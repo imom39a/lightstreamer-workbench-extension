@@ -31,11 +31,13 @@ export function createEmptyEvidenceFilter(revision = 1): EvidenceFilter {
   return Object.freeze({ revision, text: "", criteria: Object.freeze({}), around: null, unsupported: Object.freeze([]) });
 }
 
-export function createEvidenceFilterFixture(count = DEFAULT_EVIDENCE_FILTER_FIXTURE_SIZE): EvidenceFilterFixture {
+export function createEvidenceFilterFixture(count = DEFAULT_EVIDENCE_FILTER_FIXTURE_SIZE, options: Readonly<{ namespace?: string }> = {}): EvidenceFilterFixture {
   if (!Number.isSafeInteger(count) || count < MINIMUM_COMMAND_KEY_COUNT) throw new Error(`The deterministic filter fixture requires at least ${MINIMUM_COMMAND_KEY_COUNT} records.`);
+  const namespace = options.namespace ?? "filter-contract";
+  const interval = Object.freeze({ id: `${namespace}-interval-1`, ordinal: 1 });
   let commandOrdinal = 0;
   const records = Array.from({ length: count }, (_, index) => {
-    const record = createRecord(index + 1, commandOrdinal);
+    const record = createRecord(index + 1, commandOrdinal, namespace, interval.id);
     if (record.facets.key) commandOrdinal += 1;
     return record;
   });
@@ -49,9 +51,9 @@ export function createEvidenceFilterFixture(count = DEFAULT_EVIDENCE_FILTER_FIXT
     listeners: Object.freeze([typedFacetValue("listener", "listener", "owner-a/listener-main", "Listener listener-main"), typedFacetValue("listener", "listener", "owner-b/listener-main", "Listener listener-main")]) as unknown as readonly [TypedFacetValue, TypedFacetValue],
     missingItem: typedFacetValue("item", "item", "missing:item", "null"), literalNullItem: typedFacetValue("item", "item", "null", "null")
   });
-  const around: AroundEvidence = { intervalId: DEFAULT_FILTER_INTERVAL.id, start: records[199]!.timestamp, end: records[399]!.timestamp + 1 };
+  const around: AroundEvidence = { intervalId: interval.id, start: records[199]!.timestamp, end: records[399]!.timestamp + 1 };
   return Object.freeze({
-    interval: DEFAULT_FILTER_INTERVAL, records: Object.freeze(records), committedEvidenceBoundary: last,
+    interval, records: Object.freeze(records), committedEvidenceBoundary: last,
     retainedRange: Object.freeze({ first, last }), distinctCommandKeyCount: new Set(records.map((record) => record.facets.key?.value).filter(Boolean)).size,
     cases: Object.freeze({
       includeAndExclude: Object.freeze({ include, exclude }), freeText: "risk-reviewed", around: Object.freeze(around),
@@ -61,7 +63,7 @@ export function createEvidenceFilterFixture(count = DEFAULT_EVIDENCE_FILTER_FIXT
   });
 }
 
-function createRecord(sequence: number, commandOrdinal: number): DeterministicEvidenceRecord {
+function createRecord(sequence: number, commandOrdinal: number, namespace: string, intervalId: string): DeterministicEvidenceRecord {
   const lifecycle = sequence % 97 === 0;
   const delivery = !lifecycle && sequence % 41 === 0;
   const subscription = lifecycle ? undefined : sequence === 1 ? "sub-collision-a" : sequence === 2 ? "sub-collision-b" : sequence <= 120 ? "sub-retired-0" : sequence % 5 === 0 ? "sub-merge-2" : "sub-command-1";
@@ -81,5 +83,5 @@ function createRecord(sequence: number, commandOrdinal: number): DeterministicEv
     ...(!lifecycle && !delivery ? { phase: typedFacetValue("phase", "enum", sequence <= 180 ? "SNAPSHOT" : "LIVE") } : {}), ...(provenance ? { provenance: typedFacetValue("provenance", "enum", provenance) } : {}), ...(provenance === "SERVER" ? { observationPath: typedFacetValue("observationPath", "enum", sequence % 7 === 0 ? "WIRE" : "LISTENER") } : {})
   };
   const summary = lifecycle ? "Session connected and runtime lifecycle observed" : delivery ? `Update delivered to ${facets.listener?.label}` : `${item ?? "session"} ${key ?? "state"} ${provenance === "LOCAL" ? "risk-reviewed local state" : "state update"}`;
-  return Object.freeze({ identity: Object.freeze({ intervalId: DEFAULT_FILTER_INTERVAL.id, pageId: sequence % 211 === 0 ? "page-secondary" : "page-main", ownerId: sequence % 173 === 0 ? "owner-secondary" : "owner-main", sequence, eventId: `filter-event-${String(sequence).padStart(5, "0")}` }), timestamp: Date.UTC(2026, 7, 12, 18) + Math.floor(sequence / 2) * 7, summary, searchText: Object.values(facets).map((value) => `${value!.label} ${value!.value}`).concat(summary).join(" ").toLowerCase(), facets: Object.freeze(facets) });
+  return Object.freeze({ identity: Object.freeze({ intervalId, pageId: sequence % 211 === 0 ? `${namespace}-page-secondary` : `${namespace}-page-main`, ownerId: sequence % 173 === 0 ? `${namespace}-owner-secondary` : `${namespace}-owner-main`, sequence, eventId: `${namespace}-event-${String(sequence).padStart(5, "0")}` }), timestamp: Date.UTC(2026, 7, 12, 18) + Math.floor(sequence / 2) * 7, summary, searchText: Object.values(facets).map((value) => `${value!.label} ${value!.value}`).concat(summary).join(" ").toLowerCase(), facets: Object.freeze(facets) });
 }
