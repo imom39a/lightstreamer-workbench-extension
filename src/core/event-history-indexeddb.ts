@@ -55,11 +55,13 @@ import {
   matchesEvidenceQuery,
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
+import { extractEvidenceFacets } from "./evidence-facets";
 
 export type { EventHistory };
 
 export const AUTHORITATIVE_EVENT_HISTORY_BATCH_LIMIT = 256;
 export const AUTHORITATIVE_EVENT_HISTORY_SOFT_BATCH_BYTES = 2_097_152;
+const EVIDENCE_FACET_COUNT = 12;
 
 const LIVE_PANEL_LEASE_PREFIX = "lsew-events-panel-live-v2-";
 const LIVE_PANEL_LEASE_TTL_MS = 30_000;
@@ -89,6 +91,16 @@ type EvidenceRecord = {
   serializedBytes: number;
   accountedBytes: number;
   facets: string[];
+};
+
+export const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = "facet-v2";
+
+type FacetPostingRecord = {
+  token: string;
+  sequence: number;
+  intervalId: string;
+  eventId: string;
+  facetIdentity: string;
 };
 
 type Pending = {
@@ -1154,10 +1166,15 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 }
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readonly");
+  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readonly");
   try {
     const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
-    await validateJournalRecords(panelSessionId, control, transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence));
+    await validateJournalRecords(
+      panelSessionId,
+      control,
+      transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence),
+      transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings)
+    );
     await transactionDone(transaction, "loading Event History");
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
@@ -1213,8 +1230,9 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
 }
 
 async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, evidence: readonly CommittedEvidence[], serializedBatch: readonly ReturnType<typeof serializeJournalEvidenceCandidate>[], replayPayloadBytes: number, accountedBytes: number, phase: "RUNNING" | "DRAINING_TO_STOP", terminal: HistoryTerminalDiagnostic | null): Promise<void> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readwrite");
+  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
   const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+  const postingStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
   let serializedBatchBytes = 0;
   let accountedBatchBytes = 0;
   for (const [index, entry] of evidence.entries()) {
@@ -1224,6 +1242,9 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
     serializedBatchBytes += serialized.bytes;
     accountedBatchBytes += recordAccountedBytes;
     store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: recordAccountedBytes, facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
+    for (const posting of facetPostings(entry.candidate, entry.intervalId, entry.sequence)) {
+      postingStore.add(posting);
+    }
   }
   if (replayPayloadBytes < serializedBatchBytes || accountedBytes < accountedBatchBytes) throw new Error("The journal commit totals are incoherent.");
   const next = evidence.at(-1) ? evidence.at(-1)!.sequence + 1 : nextSequence;
@@ -1281,16 +1302,20 @@ async function finalizeTerminal(
 }
 
 async function clearJournalRecords(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence], "readwrite");
+  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, null, 0, 0, 0));
   await transactionDone(transaction, "clearing Event History");
 }
 
-function validateJournalRecords(panelSessionId: string, control: ControlRecord | undefined, store: IDBObjectStore): Promise<void> {
+function validateJournalRecords(panelSessionId: string, control: ControlRecord | undefined, store: IDBObjectStore, postingStore: IDBObjectStore): Promise<void> {
   if (!control) {
-    return requestToPromise<number>(store.count(), "checking for Evidence residue").then((count) => {
-      if (count > 0) throw new Error("Evidence residue exists without a history control record.");
+    return Promise.all([
+      requestToPromise<number>(store.count(), "checking for Evidence residue"),
+      requestToPromise<number>(postingStore.count(), "checking for facet posting residue")
+    ]).then(([count, postingCount]) => {
+      if (count > 0 || postingCount > 0) throw new Error("Evidence or facet posting residue exists without a history control record.");
     });
   }
   if ((control as { recordVersion?: unknown }).recordVersion === 1) {
@@ -1323,6 +1348,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
   let payloadBytes = 0;
   let accountedBytes = 0;
   let previous: EvidenceRecord | null = null;
+  const evidenceBySequence = new Map<number, EvidenceRecord>();
   let first: EvidenceRef | null = null;
   let last: EvidenceRef | null = null;
   return new Promise((resolve, reject) => {
@@ -1359,7 +1385,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
           reject(new Error("A non-initial History Interval must retain its panel-lifetime boundary."));
           return;
         }
-        resolve();
+        validateFacetPostingRecords(panelSessionId, control, postingStore, evidenceBySequence).then(resolve, reject);
         return;
       }
       const record = cursor.value as EvidenceRecord;
@@ -1372,6 +1398,7 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
         if (first === null) first = reference;
         last = reference;
         previous = record;
+        evidenceBySequence.set(record.sequence, record);
         count += 1;
         payloadBytes += record.serializedBytes;
         accountedBytes += record.accountedBytes;
@@ -1381,6 +1408,56 @@ function validateJournalRecords(panelSessionId: string, control: ControlRecord |
       }
     };
   });
+}
+
+function validateFacetPostingRecords(
+  panelSessionId: string,
+  control: ControlRecord,
+  store: IDBObjectStore,
+  evidenceBySequence: ReadonlyMap<number, EvidenceRecord>
+): Promise<void> {
+  const postingsBySequence = new Map<number, number>();
+  return new Promise((resolve, reject) => {
+    const request = store.openCursor();
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB facet posting validation failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+      try {
+        const posting = validateFacetPostingRecord(cursor.value as FacetPostingRecord, panelSessionId, control.interval.id, evidenceBySequence);
+        const count = (postingsBySequence.get(posting.sequence) ?? 0) + 1;
+        if (count > EVIDENCE_FACET_COUNT) throw new Error("An Evidence record exceeds the facet posting bound.");
+        postingsBySequence.set(posting.sequence, count);
+        cursor.continue();
+      } catch (error) {
+        reject(error);
+      }
+    };
+  });
+}
+
+function validateFacetPostingRecord(record: FacetPostingRecord, panelSessionId: string, intervalId: string, evidenceBySequence: ReadonlyMap<number, EvidenceRecord>): FacetPostingRecord {
+  assertExactKeys(record, ["eventId", "facetIdentity", "intervalId", "sequence", "token"]);
+  if (record.intervalId !== intervalId || typeof record.eventId !== "string" || record.eventId.length === 0
+    || !Number.isSafeInteger(record.sequence) || record.sequence < 1 || typeof record.facetIdentity !== "string"
+    || record.token !== facetPostingToken(record.facetIdentity)) {
+    throw new Error("A facet posting record is incoherent with the authoritative schema.");
+  }
+  const evidence = evidenceBySequence.get(record.sequence);
+  if (!evidence || evidence.eventId !== record.eventId) {
+    throw new Error("A facet posting does not match its Evidence record.");
+  }
+  const candidate = deserializeJournalEvidenceCandidate(evidence.replayPayload);
+  if (!facetPostings(candidate, intervalId, record.sequence).some((posting) => posting.facetIdentity === record.facetIdentity)) {
+    throw new Error("A facet posting does not match its replay payload.");
+  }
+  if (!record.token.startsWith(`[\"${AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE}\",`)) {
+    throw new Error(`A facet posting does not use the ${panelSessionId} token namespace.`);
+  }
+  return record;
 }
 
 function validateEvidenceRecord(record: EvidenceRecord, intervalId: string, expectedSequence?: number): EvidenceCandidate {
@@ -2018,9 +2095,24 @@ function exactFacets(candidate: EvidenceCandidate): string[] {
   ];
 }
 
+function facetPostingToken(facetIdentity: string): string {
+  return JSON.stringify([AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE, facetIdentity]);
+}
+
+function facetPostings(candidate: EvidenceCandidate, intervalId: string, sequence: number): FacetPostingRecord[] {
+  if (candidate.kind === "topology-checkpoint") return [];
+  return extractEvidenceFacets(candidate).selectableValues.slice(0, EVIDENCE_FACET_COUNT).map((facetValue) => ({
+    token: facetPostingToken(facetValue.identity),
+    sequence,
+    intervalId,
+    eventId: candidate.id,
+    facetIdentity: facetValue.identity
+  }));
+}
+
 /** The measured logical index fan-out for one persisted Evidence record. */
 export function authoritativeEventFacetCount(candidate: EvidenceCandidate): number {
-  return exactFacets(candidate).length;
+  return facetPostings(candidate, "facet-count", 1).length;
 }
 
 function facet(name: string, value: unknown): string {
