@@ -5,6 +5,7 @@ import { createMemoryEventHistoryForTests } from "../src/core/event-history-auth
 import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
 import { authoritativeEventDatabaseName } from "../src/core/indexeddb/authoritative-event-db";
 import { typedFacetValue, type EvidenceFilter } from "../src/core/evidence-filter-contract";
+import { EVIDENCE_FACET_KEYS } from "../src/core/evidence-facets";
 import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
 const emptyFilter = (): EvidenceFilter => ({ revision: 1, text: "", criteria: {}, around: null, unsupported: [] });
@@ -96,5 +97,86 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2 } } });
     if (result.ok) expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
     await durable.close();
+  });
+
+  it("fails discovery closed when a matching posting has the wrong event identity", async () => {
+    const name = `filter-impl-09-event-id-${Date.now()}`;
+    const { durable } = await setup(name, [event("event-1", "one"), event("event-2", "two")]);
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(authoritativeEventDatabaseName(name));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const transaction = db.transaction("facetPostings", "readwrite");
+        const store = transaction.objectStore("facetPostings");
+        const read = store.getAll();
+        read.onerror = () => reject(read.error);
+        read.onsuccess = () => {
+          const posting = read.result.find((candidate) => (candidate as Record<string, unknown>).facetIdentity === typedFacetValue("key", "string", "one").identity) as Record<string, unknown> | undefined;
+          if (!posting) { reject(new Error("No key posting found")); return; }
+          posting.eventId = "event-2";
+          store.put(posting);
+        };
+        transaction.oncomplete = () => { db.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    });
+    const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...emptyFilter(), criteria: { mode: { include: [typedFacetValue("mode", "enum", "COMMAND")], exclude: [] } } }, discover: [{ facet: "key", size: 10 }] });
+    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2 } } });
+    if (result.ok) expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    await durable.close();
+  });
+
+  it.each(["missing", "malformed"])("fails no-counterfactual discovery closed for %s discovered-facet postings", async (corruption) => {
+    const name = `filter-impl-09-no-counterfactual-${corruption}-${Date.now()}`;
+    const { durable } = await setup(name, [event("event-1", "one")]);
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(authoritativeEventDatabaseName(name));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const transaction = db.transaction("facetPostings", "readwrite");
+        const store = transaction.objectStore("facetPostings");
+        const read = store.getAll();
+        read.onerror = () => reject(read.error);
+        read.onsuccess = () => {
+          const posting = read.result.find((candidate) => (candidate as Record<string, unknown>).facetIdentity === typedFacetValue("key", "string", "one").identity) as Record<string, unknown> | undefined;
+          if (!posting) { reject(new Error("No key posting found")); return; }
+          if (corruption === "missing") store.delete([posting.token as string, posting.sequence as number]);
+          else {
+            posting.eventId = "";
+            store.put(posting);
+          }
+        };
+        transaction.oncomplete = () => { db.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    });
+    const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
+    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 1 } } });
+    if (result.ok) expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    await durable.close();
+  });
+
+  it("keeps durable discovery parity across the full catalog with typed absent and concrete identities", async () => {
+    const name = `filter-impl-09-catalog-${Date.now()}`;
+    const candidates = [event("event-1", "one", "COMMAND"), { ...event("event-2", "two", "MERGE"), update: { isSnapshot: true, key: "two", command: "DELETE", fields: { key: "two" } } }];
+    const { memory, durable } = await setup(name, candidates);
+    for (const facet of EVIDENCE_FACET_KEYS) {
+      const base = { at: "LATEST_COMMITTED" as const, page: { order: "OLDEST_FIRST" as const, size: 10 }, filter: emptyFilter(), discover: [{ facet, size: 10 }] };
+      const expectedBase = await memory.query!(base);
+      const actualBase = await durable.query!(base);
+      expect(actualBase.ok && expectedBase.ok && actualBase.value.discoveries.get(facet)).toEqual(expectedBase.ok && expectedBase.value.discoveries.get(facet));
+      if (!expectedBase.ok) continue;
+      const concrete = expectedBase.value.discoveries.get(facet)?.state === "AVAILABLE" ? expectedBase.value.discoveries.get(facet)?.values[0]?.value : undefined;
+      for (const value of [concrete, typedFacetValue(facet, "string", "absent")]) {
+        if (!value) continue;
+        const request = { ...base, filter: { ...emptyFilter(), criteria: { [facet]: { include: [value], exclude: [] } } } };
+        const expected = await memory.query!(request);
+        const actual = await durable.query!(request);
+        expect(actual.ok && expected.ok && actual.value.discoveries.get(facet)).toEqual(expected.ok && expected.value.discoveries.get(facet));
+      }
+    }
+    await Promise.all([memory.close(), durable.close()]);
   });
 });

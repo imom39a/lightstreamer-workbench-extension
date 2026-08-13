@@ -1422,7 +1422,7 @@ async function queryIndexedDb(
         };
         const candidates = await indexedDbPostingCandidates(postingStore, discoveryFilter, interval.id, firstSequence, lastSequence, telemetry);
         const projections = await readQueryProjections(projectionStore, interval.id, firstSequence, lastSequence, candidates, telemetry);
-        if (candidates !== null) await validateDiscoveryFacetPostings(postingStore, discovery.facet, interval.id, projections, telemetry);
+        await validateDiscoveryFacetPostings(postingStore, discovery.facet, interval.id, projections, telemetry);
         const records = projections.map((projection) => querySelectionRecord(projection, interval));
         discoveries.set(discovery.facet, discoverFacet(records, request.filter, readPoint, discovery));
       } catch {
@@ -1587,7 +1587,7 @@ async function indexedDbPostingCandidates(store: IDBObjectStore, filter: Evidenc
   return all;
 }
 
-function readPostingToken(store: IDBObjectStore, token: string, intervalId: string, first: number, last: number, telemetry: QueryTelemetryMutable): Promise<Set<number>> {
+function readPostingToken(store: IDBObjectStore, token: string, intervalId: string, first: number, last: number, telemetry: QueryTelemetryMutable, expectedEventId?: string): Promise<Set<number>> {
   const result = new Set<number>();
   if (last < first) return Promise.resolve(result);
   return new Promise((resolve, reject) => {
@@ -1602,7 +1602,9 @@ function readPostingToken(store: IDBObjectStore, token: string, intervalId: stri
         || typeof posting.facetIdentity !== "string"
         || posting.token !== facetPostingToken(posting.facetIdentity)
         || posting.intervalId !== intervalId
-        || !Number.isSafeInteger(posting.sequence) || posting.sequence < first || posting.sequence > last) {
+        || !Number.isSafeInteger(posting.sequence) || posting.sequence < 1
+        || (expectedEventId === undefined && (posting.sequence < first || posting.sequence > last))
+        || (expectedEventId !== undefined && posting.sequence === first && posting.eventId !== expectedEventId)) {
         reject(new Error("A facet posting is corrupt or outside the requested Evidence range."));
         return;
       }
@@ -1619,7 +1621,7 @@ async function validateDiscoveryFacetPostings(store: IDBObjectStore, facet: stri
   for (const projection of projections) {
     const value = projection.facets[facet] as { identity?: unknown } | undefined;
     if (!value || typeof value.identity !== "string") continue;
-    const sequences = await readPostingToken(store, facetPostingToken(value.identity), intervalId, projection.sequence, projection.sequence, telemetry);
+    const sequences = await readPostingToken(store, facetPostingToken(value.identity), intervalId, projection.sequence, projection.sequence, telemetry, projection.eventId);
     if (!sequences.has(projection.sequence)) throw new Error("Facet discovery postings are incomplete or corrupt.");
   }
 }
@@ -2765,7 +2767,8 @@ function facetPostingToken(facetIdentity: string): string {
 
 function facetPostings(candidate: EvidenceCandidate, intervalId: string, sequence: number): FacetPostingRecord[] {
   if (candidate.kind === "topology-checkpoint") return [];
-  return extractEvidenceFacets(candidate).selectableValues.slice(0, EVIDENCE_FACET_COUNT).map((facetValue) => ({
+  const context = { pageId: intervalId, listenerOwner: "memory-event-history" };
+  return extractEvidenceFacets(candidate, context).selectableValues.slice(0, EVIDENCE_FACET_COUNT).map((facetValue) => ({
     token: facetPostingToken(facetValue.identity),
     sequence,
     intervalId,

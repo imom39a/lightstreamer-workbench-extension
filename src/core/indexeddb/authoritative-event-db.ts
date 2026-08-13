@@ -416,7 +416,7 @@ function rebuildFacetPostingsFromEvidence(transaction: IDBTransaction, postings:
       const record = cursor.value as MigrationEvidenceRecord;
       const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
       if (candidate.kind !== "topology-checkpoint") {
-        for (const facet of extractEvidenceFacets(candidate).selectableValues.slice(0, AUTHORITATIVE_EVENT_FACET_COUNT).map((entry) => entry.identity)) {
+        for (const facet of extractEvidenceFacets(candidate, { pageId: record.intervalId, listenerOwner: "memory-event-history" }).selectableValues.slice(0, AUTHORITATIVE_EVENT_FACET_COUNT).map((entry) => entry.identity)) {
           postings.add({
             token: JSON.stringify([AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE, facet]),
             sequence: record.sequence,
