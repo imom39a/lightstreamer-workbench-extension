@@ -140,6 +140,7 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.equal(args.includes("--disable-background-timer-throttling"), true);
       assert.equal(args.includes("--disable-backgrounding-occluded-windows"), true);
       assert.equal(args.includes("--disable-renderer-backgrounding"), true);
+      assert.equal(args.includes("--disable-features=CalculateNativeWinOcclusion"), true);
       assert.equal(args.includes("--js-flags=--expose-gc"), true);
       assert.equal(args.at(-1), "about:blank");
       assert.equal(args.includes("http://127.0.0.1:4173/"), false);

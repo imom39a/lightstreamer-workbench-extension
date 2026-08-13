@@ -421,6 +421,7 @@ export function chromeLaunchArguments(profile) {
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
+    "--disable-features=CalculateNativeWinOcclusion",
     "--allow-file-access-from-files",
     "--js-flags=--expose-gc",
     "--no-first-run",
