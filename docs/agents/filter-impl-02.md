@@ -21,6 +21,10 @@ path, runtime commands, facet catalog, extractors, or browser-visible output.
   authoring order. Unsupported criteria remain represented and sort by
   `id`, `reason`, `detail`, then `facet`, with present optional fields before
   missing fields.
+- Canonical bytes and equality omit presentation labels while retaining the
+  deterministic in-memory display label. Runtime-malformed null mutation
+  payloads and null unsupported fields fail with `INVALID_FILTER_MUTATION` or
+  canonical validation failure without changing the prior Filter.
 - A documented temporary scalar adapter for Build 1 compatibility. The legacy
   matcher and Event History production path remain unchanged; filter-impl-03
   owns the eventual catalog boundary.
@@ -31,13 +35,29 @@ path, runtime commands, facet catalog, extractors, or browser-visible output.
 - `9e3a2d0` — canonical typed Filter algebra implementation and green tests.
 - `02d433d` — isolated temporary legacy scalar delegation and compatibility
   tests.
+- `8f089b9` — red adversarial tests for label independence and runtime-cast
+  null mutations/unsupported fields.
+- `53866b2` — green implementation for the remaining review blockers.
 
 ## Verification
 
-Focused algebra and Build 1 tests, typecheck, full unit tests, production
-build, docs checks, and diff checks are recorded in the implementation handoff
-for this ticket. No UI scenario or screenshot is affected because no shipped
-panel or rendering path consumes the new algebra yet.
+Verification for this pass:
+
+- `npx vitest run tests/filter-algebra.test.ts --no-file-parallelism
+  --maxWorkers=1`: 16/16 passed.
+- `npm run typecheck`: passed.
+- The requested single `npm test` run reached the known production extension
+  build timeout: `tests/production-extension-build.test.ts` failed after
+  6,210 ms in the ordinary suite. The unchanged test was rerun with
+  `--testTimeout=30000 --no-file-parallelism --maxWorkers=1`: 1/1 passed,
+  test time 1.95s.
+- `npm run test:release`: 74/74 files and 938/938 tests passed in 78.54s.
+- `npm run build`: passed; MV3 release artifact verification passed.
+- `npm run docs:check`: passed for 4 documents and 10 maintained commands.
+- `git diff --check`: passed.
+
+No UI scenario or screenshot is affected because no shipped panel or
+rendering path consumes the new algebra yet.
 
 ## Explicitly not delivered
 
