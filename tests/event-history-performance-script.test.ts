@@ -129,28 +129,18 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
-  it("includes macOS foreground activation for headed Chrome", () => {
+  it("keeps headed Chrome startup arguments platform-neutral", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
-      const args = chromeLaunchArguments("/tmp/lsew-profile", "darwin");
-      assert.equal(args.includes("--activate-on-launch"), true);
+      const args = chromeLaunchArguments("/tmp/lsew-profile");
+      assert.equal(args.some((arg) => arg === "--activate-on-launch"), false);
       assert.equal(args.includes("--headless"), false);
       assert.equal(args.includes("--no-proxy-server"), true);
+      assert.equal(args.includes("--disable-background-timer-throttling"), true);
+      assert.equal(args.includes("--disable-backgrounding-occluded-windows"), true);
+      assert.equal(args.includes("--disable-renderer-backgrounding"), true);
       assert.equal(args.includes("--js-flags=--expose-gc"), true);
-      assert.equal(args.at(-1), "about:blank");
-      assert.equal(args.includes("http://127.0.0.1:4173/"), false);
-    `);
-  });
-
-  it("omits macOS foreground activation on non-macOS platforms", () => {
-    runNode(`
-      import assert from "node:assert/strict";
-      const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
-      const args = chromeLaunchArguments("/tmp/lsew-profile", "linux");
-      assert.equal(args.includes("--activate-on-launch"), false);
-      assert.equal(args.includes("--headless"), false);
-      assert.equal(args.includes("--no-proxy-server"), true);
       assert.equal(args.at(-1), "about:blank");
       assert.equal(args.includes("http://127.0.0.1:4173/"), false);
     `);

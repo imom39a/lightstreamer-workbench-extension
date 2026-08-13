@@ -1,5 +1,21 @@
 # `filter-impl-08` repair proof
 
+## macOS activation-flag repair (2026-08-13)
+
+The performance runner no longer adds the macOS-only `--activate-on-launch`
+Chrome argument. Its behavior was isolated as the remaining macOS
+renderer-commit risk after proxy configuration and target topology were
+falsified, so retaining the flag would add an unneeded platform-specific
+startup variable. The runner still starts with `about:blank`, keeps
+`--no-proxy-server`, and creates the browser target through the existing
+browser-target flow.
+
+`Page.bringToFront` followed by the bounded double-frame
+`document.visibilityState` gate remains authoritative for foreground
+readiness. Exact URL polling still accepts only the committed harness URL
+and complete page-token/query identity. This repair was validated without
+launching Chrome; no Chrome performance result or claim is made.
+
 ## Fresh-document polling repair (2026-08-13)
 
 The failed capture stopped before benchmark execution at a redundant raw

@@ -409,9 +409,8 @@ function attachCleanupEvidence(primaryError, cleanupError) {
   }
 }
 
-export function chromeLaunchArguments(profile, platformName = process.platform) {
+export function chromeLaunchArguments(profile) {
   return [
-    ...(platformName === "darwin" ? ["--activate-on-launch"] : []),
     "--no-sandbox",
     "--no-proxy-server",
     "--disable-background-timer-throttling",
