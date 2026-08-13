@@ -6,13 +6,16 @@ import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb
 import { authoritativeEventDatabaseName } from "../src/core/indexeddb/authoritative-event-db";
 import { type EvidenceFilter, typedFacetValue } from "../src/core/evidence-filter-contract";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import { createTypedFilterValue, canonicalFilterFromLegacyScalars } from "../src/core/filter-algebra";
+import { toEvidenceQueryRequest } from "../src/extension/panel/evidence-investigation-query";
 
-function event(id: string, timestamp: number, value: string): LightstreamerEventEnvelope {
+function event(id: string, timestamp: number, value: string, listenerId?: string): LightstreamerEventEnvelope {
   return {
     id, timestamp, direction: "inbound", source: "server", captureSource: "listener", synthetic: false,
     kind: "item-update", client: { id: "client-1", sessionId: "session-1" },
-    subscription: { id: "sub-1", mode: "MERGE" }, item: { name: "item-1" },
-    update: { isSnapshot: false, fields: { value } }
+    subscription: { id: "sub-1", mode: "MERGE" }, item: { name: "item-1", position: 1 },
+    update: { isSnapshot: false, fields: { value } },
+    ...(listenerId === undefined ? {} : { listener: { id: listenerId } })
   };
 }
 
@@ -82,6 +85,109 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     const actual = await durable.query!(request);
     expect(actual).toMatchObject({ ok: true, value: { page: expected.ok ? expected.value.page : undefined, totals: expected.ok ? expected.value.totals : undefined, lookup: expected.ok ? expected.value.lookup : undefined, find: expected.ok ? expected.value.find : undefined, evaluation: expected.ok ? expected.value.evaluation : undefined } });
     await durable.close();
+  });
+
+  it("keeps structural, legacy, and canonical Item criteria in memory/IndexedDB parity", async () => {
+    const { memory, durable } = await histories(`filter-impl-08-identity-parity-${Date.now()}`);
+    const base = canonicalFilterFromLegacyScalars({});
+    const structural = toEvidenceQueryRequest({
+      at: "LATEST_COMMITTED",
+      scope: { kind: "ITEM", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1", item: "item-1", itemPosition: 1 },
+      filter: base,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      discover: []
+    });
+    const legacy = toEvidenceQueryRequest({
+      at: "LATEST_COMMITTED",
+      scope: { kind: "PAGE" },
+      filter: canonicalFilterFromLegacyScalars({ clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1", item: "item-1" }),
+      page: { order: "OLDEST_FIRST", size: 10 },
+      discover: []
+    });
+    const structuralBase = await memory.query!(structural);
+    const item = structuralBase.ok ? structuralBase.value.page.evidence[0]?.facets.item : undefined;
+    expect(item).toBeDefined();
+    const canonicalItem = toEvidenceQueryRequest({
+      at: "LATEST_COMMITTED",
+      scope: { kind: "ITEM", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1", item: "item-1", itemPosition: 1 },
+      filter: { ...base, criteria: { item: { include: [createTypedFilterValue("item", "item", item!.value, item!.label)], exclude: [] } } },
+      page: { order: "OLDEST_FIRST", size: 10 },
+      discover: []
+    });
+    const listenerEvent = event("listener-event", 30_000, "listener", "listener-1");
+    await memory.offer(listenerEvent).settled;
+    await durable.offer(listenerEvent).settled;
+    for (const request of [structural, legacy, canonicalItem]) {
+      const expected = await memory.query!(request);
+      const actual = await durable.query!(request);
+      expect(actual).toMatchObject({ ok: true, value: { page: expected.ok ? expected.value.page : undefined, totals: expected.ok ? expected.value.totals : undefined } });
+      expect(actual.ok && actual.value.page.evidence.map((record) => record.identity.eventId)).toEqual(
+        expected.ok ? expected.value.page.evidence.map((record) => record.identity.eventId) : []
+      );
+    }
+    const listener = toEvidenceQueryRequest({
+      at: "LATEST_COMMITTED",
+      scope: { kind: "LISTENER", listenerId: "listener-1" },
+      filter: base,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      discover: []
+    });
+    const expectedListener = await memory.query!(listener);
+    const actualListener = await durable.query!(listener);
+    expect(actualListener).toMatchObject({ ok: true, value: { totals: expectedListener.ok ? expectedListener.value.totals : undefined } });
+    expect(actualListener.ok && actualListener.value.page.evidence.map((record) => record.identity.eventId)).toEqual(["listener-event"]);
+    await Promise.all([memory.close(), durable.close()]);
+  });
+
+  it("excludes topology checkpoint Evidence from canonical pages and totals", async () => {
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const memory = await createMemoryEventHistoryForTests({ panelSessionId: `filter-impl-08-checkpoint-memory-${Date.now()}` });
+    const durable = await createIndexedDbEventHistory({ panelSessionId: `filter-impl-08-checkpoint-durable-${Date.now()}` });
+    const candidates = [
+      event("visible-one", 1, "one"),
+      { id: "checkpoint", kind: "topology-checkpoint" as const, checkpoint: { pageEpoch: "checkpoint" } },
+      event("visible-two", 2, "two")
+    ];
+    for (const candidate of candidates) {
+      await memory.offer(candidate).settled;
+      await durable.offer(candidate).settled;
+    }
+    const request = { at: "LATEST_COMMITTED" as const, page: { order: "OLDEST_FIRST" as const, size: 10 }, filter: emptyFilter() };
+    const expected = await memory.query!(request);
+    const actual = await durable.query!(request);
+    expect(expected).toMatchObject({ ok: true, value: { totals: { matching: 2, inScope: 2 } } });
+    expect(actual).toMatchObject({ ok: true, value: { totals: { matching: 2, inScope: 2 } } });
+    expect(actual.ok && actual.value.page.evidence.map((record) => record.identity.eventId)).toEqual(["visible-one", "visible-two"]);
+    await Promise.all([memory.close(), durable.close()]);
+  });
+
+  it("accepts a retained historical read point after a later commit", async () => {
+    const { memory, durable } = await histories(`filter-impl-08-retained-point-${Date.now()}`);
+    const firstMemory = await memory.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    const firstDurable = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(firstMemory.ok && firstDurable.ok).toBe(true);
+    await memory.offer(event("later", 30_000, "later")).settled;
+    await durable.offer(event("later", 30_000, "later")).settled;
+    if (!firstMemory.ok || !firstDurable.ok) return;
+    const memoryAtPoint = await memory.query!({ at: firstMemory.value.readPoint, page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    const durableAtPoint = await durable.query!({ at: firstDurable.value.readPoint, page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(memoryAtPoint).toMatchObject({ ok: true, value: { totals: { matching: 3 } } });
+    expect(durableAtPoint).toMatchObject({ ok: true, value: { totals: { matching: 3 } } });
+    if (memoryAtPoint.ok && durableAtPoint.ok) {
+      expect(memoryAtPoint.value.page.evidence.map((record) => record.identity.eventId)).toEqual(["one", "two", "three"]);
+      expect(durableAtPoint.value.page.evidence.map((record) => record.identity.eventId)).toEqual(["one", "two", "three"]);
+    }
+    await Promise.all([memory.close(), durable.close()]);
+  });
+
+  it("returns complete payloads only when the full-payload query path is requested", async () => {
+    const { memory, durable } = await histories(`filter-impl-08-payload-${Date.now()}`);
+    const request = { at: "LATEST_COMMITTED" as const, page: { order: "OLDEST_FIRST" as const, size: 1 }, filter: emptyFilter(), includePayload: true };
+    const expected = await memory.query!(request);
+    const actual = await durable.query!(request);
+    expect(expected.ok && expected.value.page.evidence[0]?.payload).toMatchObject({ update: { fields: { value: "alpha" } } });
+    expect(actual.ok && actual.value.page.evidence[0]?.payload).toMatchObject({ update: { fields: { value: "alpha" } } });
+    await Promise.all([memory.close(), durable.close()]);
   });
 
   it("fails closed for unsupported criteria and rejects a stale read point after Clear", async () => {

@@ -40,6 +40,7 @@ export type EvidenceInvestigationQueryRequest = Readonly<{
   discover: readonly FacetDiscoveryRequest[];
   lookup?: EvidenceIdentity;
   find?: EvidenceFindRequest;
+  includePayload?: boolean;
 }>;
 
 export type EvidenceInvestigationQueryResult =
@@ -75,7 +76,8 @@ export function toEvidenceQueryRequest(
     filter: mergeStructuralScope(filter, request.scope),
     ...(request.discover.length > 0 ? { discover: request.discover } : {}),
     ...(request.lookup === undefined ? {} : { lookup: request.lookup }),
-    ...(request.find === undefined ? {} : { find: request.find })
+    ...(request.find === undefined ? {} : { find: request.find }),
+    ...(request.includePayload === true ? { includePayload: true } : {})
   });
 }
 
@@ -177,9 +179,32 @@ function structuralValueMatches(
         (wanted[0] === null || wanted[0] === scope[0]) &&
         (wanted[1] === null || wanted[1] === scope[1]);
     }
+    if (criterion.type === "item") {
+      const observed = parseObservedItem(criterion.value);
+      return observed !== null &&
+        (observed[0] === null || observed[0] === scope[0]) &&
+        (observed[1] === null || observed[1] === scope[1]);
+    }
     return criterion.type === "string" && scope[0] === criterion.label;
   }
   return scopeValue.label === criterion.label;
+}
+
+function parseObservedItem(value: string): readonly [string | null, number | null] | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed[0] !== "owner-v1" || parsed[1] !== "subscription") return null;
+    const parts = parsed[4];
+    if (!Array.isArray(parts)) return null;
+    const nameEntry = parts.find((part) => Array.isArray(part) && part[0] === "name");
+    const positionEntry = parts.find((part) => Array.isArray(part) && part[0] === "position");
+    return [
+      Array.isArray(nameEntry) && typeof nameEntry[1] === "string" ? nameEntry[1] : null,
+      Array.isArray(positionEntry) && typeof positionEntry[1] === "number" ? positionEntry[1] : null
+    ];
+  } catch {
+    return null;
+  }
 }
 
 function parseStructuralItem(value: string): readonly [string | null, number | null] | null {

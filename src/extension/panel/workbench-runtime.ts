@@ -23,6 +23,7 @@ import {
   type Filter
 } from "../../core/filter-algebra";
 import {
+  MAX_EVIDENCE_PAGE_SIZE,
   type DeterministicEvidenceRecord,
   type EvidenceFilterReadProblem,
   type EvidenceFindResult,
@@ -997,7 +998,10 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "reveal-selected-evidence":
         if (!this.selectionEventId || !this.selectionHiddenByFilter) return;
+        this.invalidateEvidenceCopy();
         this.filters = {};
+        this.canonicalFilter = createFilter(this.canonicalFilter.revision);
+        this.clearedSelectionEventId = null;
         this.selectionHiddenByFilter = false;
         this.focusedEventId = this.selectionEventId;
         this.refreshEvidence("reveal-selection");
@@ -1005,9 +1009,12 @@ class Runtime implements WorkbenchRuntime {
       case "clear-evidence-selection": {
         const selectedEventId = this.selectionEventId;
         this.selectionEventId = null;
+        this.selectedEvidenceIdentity = null;
         this.selectedEventEnvelope = null;
+        this.focusedEventId = null;
         this.selectionHiddenByFilter = false;
         this.selectedPayloadLoadedForEventId = null;
+        this.clearedSelectionEventId = null;
         this.pendingLocalInjectionEntry = null;
         if (
           selectedEventId &&
@@ -1370,7 +1377,7 @@ class Runtime implements WorkbenchRuntime {
       lookup: investigation.lookup,
       find: investigation.find,
       evaluation: investigation.evaluation,
-      coverage: investigation.coverage,
+      coverage: this.historyStatus.phase === "STOPPED" ? "LIMITED" : investigation.coverage,
       storage: investigation.storage,
       queryState: this.investigationState,
       problem: this.investigationProblem
@@ -1451,9 +1458,7 @@ class Runtime implements WorkbenchRuntime {
           this.publish();
           return;
         }
-        this.commandStateProjections.clear();
-        this.retainedLocalEvidenceIds.clear();
-        this.topologyProjection.clear();
+        this.resetCoherentStateAfterClear();
         this.historyStatus = this.history.status();
         this.clearState = "idle";
         this.refreshEvidence("command");
@@ -1465,6 +1470,45 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
       }
     );
+  }
+
+  private resetCoherentStateAfterClear(): void {
+    this.queryGeneration += 1;
+    this.evidenceQueryPending = false;
+    this.evidenceLoading = false;
+    this.investigationState = "loading";
+    this.investigationProblem = null;
+    this.lastEvidenceQueryError = null;
+    this.cancelPassivePublication();
+    this.passiveRefreshPending = false;
+    this.commandStateProjections.clear();
+    this.retainedLocalEvidenceIds.clear();
+    this.topologyProjection.clear();
+    this.invalidateEvidenceCopy();
+    this.pendingVisibleBoundaries = [];
+    this.renderedEvidenceBoundary = null;
+    this.mode = "live";
+    this.frozenEvidence = null;
+    this.frozenInvestigation = null;
+    this.frozenInvestigationContract = null;
+    this.liveEvidence = emptyEvidence;
+    this.liveInvestigation = null;
+    this.liveInvestigationContract = null;
+    this.lastCoherentEvidence = emptyEvidence;
+    this.lastCoherentInvestigation = null;
+    this.lastCoherentInvestigationContract = null;
+    this.selectionEventId = null;
+    this.selectedEvidenceIdentity = null;
+    this.selectedEventEnvelope = null;
+    this.selectedPayloadLoadedForEventId = null;
+    this.selectionHiddenByFilter = false;
+    this.focusedEventId = null;
+    this.clearedSelectionEventId = null;
+    this.contextId = "context:scope";
+    this.commandProjectionReturnContextId = null;
+    this.actionsReturnContextId = null;
+    this.clearFindResults();
+    this.evidencePageCursors.clear();
   }
 
   private prepareExport(): void {
@@ -1574,9 +1618,9 @@ class Runtime implements WorkbenchRuntime {
       // A frame after Clear can only prove visibility for the new History
       // Interval. Boundaries accepted before the clear are no longer part of
       // the rendered Evidence snapshot and must not be coalesced into it.
-      this.pendingVisibleBoundaries = [];
-      this.renderedEvidenceBoundary = null;
-      shouldPublish = this.updateHistoryCondition(publication.status);
+      this.resetCoherentStateAfterClear();
+      this.updateHistoryCondition(publication.status);
+      shouldPublish = true;
     } else if (publication.type === "terminal") {
       this.historyStatus = publication.status;
       shouldPublish = this.updateHistoryCondition(publication.status);
@@ -1613,6 +1657,7 @@ class Runtime implements WorkbenchRuntime {
         shouldPublish = true;
       }
       if (shouldPublish) this.publish();
+      if (publication.type === "terminal") this.refreshEvidence("command");
       return;
     }
     this.captureBoundary = Object.freeze({
@@ -1624,6 +1669,7 @@ class Runtime implements WorkbenchRuntime {
       recovery: "Reload the inspected page with DevTools open"
     });
     if (shouldPublish || reason) this.publish();
+    if (publication.type === "terminal") this.refreshEvidence("command");
   }
 
   private updateHistoryCondition(
@@ -1782,7 +1828,8 @@ class Runtime implements WorkbenchRuntime {
           size: pageSize,
           ...(cursor === undefined ? {} : { cursor })
         }),
-        discover: []
+        discover: [],
+        includePayload: true
       });
       if (!result.ok) return result;
       if (readPoint === null) {
@@ -1794,6 +1841,15 @@ class Runtime implements WorkbenchRuntime {
           problem: {
             code: "QUERY_FAILED",
             message: "The complete Evidence read crossed a committed boundary."
+          }
+        };
+      }
+      if (result.value.page.evidence.some((record) => record.payload === undefined)) {
+        return {
+          ok: false,
+          problem: {
+            code: "QUERY_FAILED",
+            message: "The complete Evidence read did not return full payloads."
           }
         };
       }
@@ -2480,27 +2536,24 @@ class Runtime implements WorkbenchRuntime {
   ): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
 
     const pageSize = request.page.size;
+    // IndexedDB cursors are bound to the complete page request, including
+    // size. Traversal uses one stable storage page size and slices only the
+    // requested renderer window after the bounded fetches complete.
+    const storagePageSize = MAX_EVIDENCE_PAGE_SIZE;
     let startOffset = 0;
     let cursor: string | undefined;
-    for (const knownOffset of [...this.evidencePageCursors.keys()].sort((left, right) => left - right)) {
-      if (knownOffset <= targetOffset && knownOffset >= startOffset) {
-        startOffset = knownOffset;
-        cursor = this.evidencePageCursors.get(knownOffset);
-      }
-    }
     let at = request.at;
     let currentOffset = startOffset;
     let first: EvidenceSnapshot | null = null;
     let last: EvidenceSnapshot | null = null;
     const collected: DeterministicEvidenceRecord[] = [];
     while (true) {
-      const remaining = targetOffset + pageSize - currentOffset;
       const result = await this.evidenceQuery.query({
         ...request,
         at,
         page: Object.freeze({
           ...request.page,
-          size: Math.min(100, Math.max(pageSize, remaining)),
+          size: storagePageSize,
           ...(cursor === undefined ? {} : { cursor })
         })
       });
@@ -2797,11 +2850,11 @@ class Runtime implements WorkbenchRuntime {
       evidence: Object.freeze({
         events: Object.freeze(evidence.events.map((event) => this.presentEvidence(event))),
         loading: this.evidenceLoading,
-        total: this.evidenceLoading ? evidence.total : this.liveEvidence.total,
+        total: this.mode === "frozen" || this.evidenceLoading ? evidence.total : this.liveEvidence.total,
         windowSize: this.windowSize,
         mode: this.mode,
         newerCount,
-        offset: newerCount,
+        offset: this.mode === "frozen" ? evidence.offset : newerCount,
         visibleStart,
         visibleEnd,
         hasOlder: visibleStart > 1,

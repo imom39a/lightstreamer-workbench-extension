@@ -870,20 +870,22 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     // This is the sole read point. Everything below reads this immutable slice,
     // so a later commit cannot enter this result or change its totals.
     const intervalAtRead = interval;
-    const entriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
-    const readPoint = evidenceReadPoint(intervalAtRead, entriesAtRead, committedEvidenceBoundary);
-    if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, readPoint)) {
+    const currentEntriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
+    const currentReadPoint = evidenceReadPoint(intervalAtRead, currentEntriesAtRead, committedEvidenceBoundary);
+    const readPoint = request.at === "LATEST_COMMITTED" ? currentReadPoint : request.at;
+    if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, currentReadPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.") });
     }
-    if (request.at !== "LATEST_COMMITTED" && !matchesEvidenceReadPoint(request.at, readPoint)) {
+    if (request.at !== "LATEST_COMMITTED" && !readPointFitsCurrentInterval(request.at, currentReadPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
 
+    const entriesAtRead = entriesAtReadPoint(currentEntriesAtRead, readPoint);
     const evidenceEntriesAtRead = entriesAtRead.filter((entry) => entry.candidate.kind !== "topology-checkpoint");
     const records: SelectionRecord[] = evidenceEntriesAtRead.map((entry) => {
       const cached = deterministicRecordCache.get(entry);
-      if (cached) return cached;
-      const record = toDeterministicEvidenceRecord(entry, intervalAtRead);
+      if (cached && (!request.includePayload || cached.payload !== undefined)) return cached;
+      const record = toDeterministicEvidenceRecord(entry, intervalAtRead, request.includePayload === true);
       deterministicRecordCache.set(entry, record);
       return record;
     });
@@ -891,7 +893,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
     if (filter.around?.anchor) {
       const anchor = filter.around.anchor;
-      const anchorIndex = entriesAtRead.findIndex((entry) => sameEvidenceIdentity(evidenceIdentity(toRef(entry), intervalAtRead), anchor));
+      const anchorIndex = evidenceEntriesAtRead.findIndex((entry) => sameEvidenceIdentity(evidenceIdentity(toRef(entry), intervalAtRead), anchor));
       if (anchor.intervalId !== intervalAtRead.id || anchorIndex < 0 || (filter.around.anchorSequence !== undefined && filter.around.anchorSequence !== anchor.sequence)) {
         return Promise.resolve({ ok: false, problem: evidenceReadProblem("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.") });
       }
@@ -1283,10 +1285,15 @@ function evidenceReadPoint(interval: HistoryInterval, entries: readonly Committe
   });
 }
 
-function matchesEvidenceReadPoint(requested: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
+function readPointFitsCurrentInterval(requested: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
   if (requested.interval.id !== current.interval.id || requested.interval.ordinal !== current.interval.ordinal) return false;
-  return sameEvidenceIdentity(requested.committedEvidenceBoundary, current.committedEvidenceBoundary)
-    && sameEvidenceRange(requested.retainedRange, current.retainedRange);
+  const requestedBoundary = requested.committedEvidenceBoundary?.sequence ?? 0;
+  const currentBoundary = current.committedEvidenceBoundary?.sequence ?? 0;
+  if (requestedBoundary > currentBoundary) return false;
+  if (requested.retainedRange === null) return true;
+  if (current.retainedRange === null) return false;
+  return requested.retainedRange.first.sequence >= current.retainedRange.first.sequence
+    && requested.retainedRange.last.sequence <= current.retainedRange.last.sequence;
 }
 
 function sameHistoryInterval(requested: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
@@ -1296,11 +1303,6 @@ function sameHistoryInterval(requested: EvidenceReadPoint, current: EvidenceRead
 function sameEvidenceIdentity(left: EvidenceIdentity | null, right: EvidenceIdentity | null): boolean {
   if (left === null || right === null) return left === right;
   return left.intervalId === right.intervalId && left.pageId === right.pageId && left.ownerId === right.ownerId && left.sequence === right.sequence && left.eventId === right.eventId;
-}
-
-function sameEvidenceRange(left: EvidenceReadPoint["retainedRange"], right: EvidenceReadPoint["retainedRange"]): boolean {
-  if (left === null || right === null) return left === right;
-  return sameEvidenceIdentity(left.first, right.first) && sameEvidenceIdentity(left.last, right.last);
 }
 
 function readCursor(cursor: string | undefined): number {
@@ -1318,7 +1320,7 @@ function inEvidenceScope(record: DeterministicEvidenceRecord, around: EvidenceQu
   );
 }
 
-function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: HistoryInterval): DeterministicEvidenceRecord {
+function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: HistoryInterval, includePayload = false): DeterministicEvidenceRecord {
   const identity = evidenceIdentity(toRef(entry), interval);
   if (entry.candidate.kind === "topology-checkpoint") {
     const searchText = journalCandidateSearchText(entry.candidate);
@@ -1330,8 +1332,15 @@ function toDeterministicEvidenceRecord(entry: CommittedEvidence, interval: Histo
     timestamp: entry.candidate.timestamp,
     summary: entry.candidate.kind,
     searchText: canonicalEvidenceSearchText(entry.candidate, { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind }),
-    facets: Object.freeze(facets)
+    facets: Object.freeze(facets),
+    ...(includePayload ? { payload: copyCandidate(entry.candidate) } : {})
   });
+}
+
+function entriesAtReadPoint(entries: readonly CommittedEvidence[], readPoint: EvidenceReadPoint): CommittedEvidence[] {
+  const boundary = readPoint.committedEvidenceBoundary?.sequence ?? 0;
+  const range = readPoint.retainedRange;
+  return entries.filter((entry) => entry.sequence <= boundary && (range === null || (entry.sequence >= range.first.sequence && entry.sequence <= range.last.sequence)));
 }
 
 function makeEvidenceSnapshot(

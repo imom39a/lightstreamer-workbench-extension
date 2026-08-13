@@ -137,7 +137,7 @@ async function flushStorage(): Promise<void> {
 }
 
 async function waitForReady(runtime: ReturnType<typeof createWorkbenchRuntime>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
     if (projection(runtime).queryState === "ready" && !runtime.getPerformanceDiagnostics?.().evidenceQueryPending) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 1));
   }
@@ -248,6 +248,22 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
     runtime.dispose();
   });
 
+  it("does not resurrect the prior interval or selection when Clear is followed by query failure", async () => {
+    const history = createInMemoryEventHistory({ panelSessionId: "runtime-clear-query-failure" });
+    const query = queryFor(ready(snapshot(1, "before-clear")), failure("new interval unavailable"));
+    const runtime = createWorkbenchRuntime({ history, evidenceQuery: query } as never);
+    await flush();
+    runtime.dispatch({ type: "select-evidence", eventId: "before-clear" });
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await flushStorage();
+
+    expect(projection(runtime)).toMatchObject({ queryState: "error", page: { evidence: [] }, counts: { shown: 0, matching: 0, inScope: 0 }, readPoint: null });
+    expect(runtime.getSnapshot().selectionEventId).toBeNull();
+    expect(runtime.getSnapshot().selectedEvidence).toBeNull();
+    runtime.dispose();
+  });
+
   it("keeps usable Evidence when optional discovery is unavailable", async () => {
     const history = createInMemoryEventHistory({ panelSessionId: "runtime-discovery-isolation" });
     const discovery: FacetDiscoveryResult = {
@@ -342,5 +358,66 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
     memoryRuntime.dispose();
     durableRuntime.dispose();
     await Promise.all([memory.close(), durable.close()]);
+  });
+
+  it("reuses one IndexedDB cursor page size across multi-page Frozen navigation", async () => {
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const panelSessionId = `runtime-cursor-size-${Date.now()}`;
+    const memory = createInMemoryEventHistory({ panelSessionId: `${panelSessionId}-memory` });
+    const durable = await createIndexedDbEventHistory({ panelSessionId: `${panelSessionId}-durable` });
+    for (let index = 1; index <= 125; index += 1) {
+      const candidate = event(`cursor-${index}`);
+      await memory.offer(candidate).settled;
+      await durable.offer(candidate).settled;
+    }
+    const runtime = createWorkbenchRuntime({ history: durable, windowSize: 60 });
+    await flushStorage();
+    await waitForReady(runtime);
+    runtime.dispatch({ type: "show-older-evidence" });
+    await flushStorage();
+    await waitForReady(runtime);
+    expect(projection(runtime)).toMatchObject({ queryState: "ready", counts: { matching: 125, inScope: 125 } });
+    expect(runtime.getSnapshot().evidence.events.map(({ id }) => id)).toEqual(
+      Array.from({ length: 60 }, (_, index) => `cursor-${index + 6}`)
+    );
+    runtime.dispose();
+    await Promise.all([memory.close(), durable.close()]);
+  });
+
+  it("copies the complete persisted payload through the canonical query", async () => {
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const history = await createIndexedDbEventHistory({ panelSessionId: `runtime-copy-payload-${Date.now()}` });
+    await history.offer(event("copy-payload")).settled;
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStorage();
+    await waitForReady(runtime);
+    runtime.dispatch({ type: "prepare-scoped-evidence-copy" });
+    for (let attempt = 0; attempt < 1_000 && runtime.getSnapshot().evidenceCopy.state !== "ready"; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    }
+    expect(runtime.getSnapshot().evidenceCopy.state).toBe("ready");
+    const copy = JSON.parse(runtime.getSnapshot().evidenceCopy.text ?? "null") as { events: Array<{ update?: unknown }> };
+    expect(copy.events[0]?.update).toEqual({ fields: { value: "copy-payload" } });
+    runtime.dispose();
+    await history.close();
+  });
+
+  it("publishes LIMITED investigation coverage after a terminal history boundary", async () => {
+    const history = createInMemoryEventHistory({
+      panelSessionId: `runtime-terminal-coverage-${Date.now()}`,
+      capacity: { maxRetainedCount: 1 }
+    });
+    await history.offer(event("terminal-first")).settled;
+    const runtime = createWorkbenchRuntime({ history });
+    await flushStorage();
+    await waitForReady(runtime);
+    await history.offer(event("terminal-rejected")).settled;
+    await flushStorage();
+    await waitForReady(runtime);
+    expect(runtime.getSnapshot().capture).toMatchObject({ operation: "STOPPED", coverage: "LIMITED" });
+    expect(projection(runtime)).toMatchObject({ queryState: "ready" });
+    expect((runtime.getSnapshot().evidence.investigation as { coverage: string }).coverage).toBe("LIMITED");
+    runtime.dispose();
+    await history.close();
   });
 });
