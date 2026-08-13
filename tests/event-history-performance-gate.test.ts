@@ -3,13 +3,29 @@ import { describe, expect, it } from "vitest";
 import {
   classifyEventHistoryPerformance,
   EVENT_HISTORY_PERFORMANCE_LIMITS,
+  isExactQueryPage,
   validateEventHistoryPerformanceReference,
   type EventHistoryPerformanceCell,
   type EventHistoryPerformanceCheckpointScenario,
   type EventHistoryPerformanceHeapSample,
   type EventHistoryPerformanceReference,
-  type EventHistoryPerformanceReport
+  type EventHistoryPerformanceReport,
+  type EventHistoryPerformanceQueryCell
 } from "../benchmarks/event-history-performance-gate";
+
+function queryCell(adapter: "indexeddb" | "memory", sample: number): EventHistoryPerformanceQueryCell {
+  const operation = (payloadHydrations = 0) => ({ candidateBound: 3, projectionReads: 3, payloadHydrations, bounded: true, residualScan: false });
+  return {
+    adapter, sample,
+    fixture: { eventCount: adapter === "indexeddb" ? 10_000 : 5_000, distinctCommandKeyCount: 3_842 },
+    latency: { recentSimplePage50P95Ms: 5, recentSimplePage100P95Ms: 5, structuredPage50P95Ms: 10, structuredPage100P95Ms: 10, findP95Ms: 10, lookupP95Ms: 10, aroundP95Ms: 10 },
+    correctness: { totalsExact: true, orderExact: true, collisionExact: true, findIndependent: true, lookupExact: true, aroundExact: true },
+    telemetry: { operations: { recent50: operation(), recent100: operation(), structured50: operation(), structured100: operation(), find: operation(), lookup: operation(1), around: operation() } },
+    longTasks: [],
+    longTaskObserverSupported: true,
+    querySampleGc: Array.from({ length: 14 }, (_, index) => ({ query: `q-${index}`, afterSample: (index % 2 === 0 ? 1 : 2) as 1 | 2, gcPasses: 3 as const, phase: "BETWEEN_QUERY_SAMPLES" as const }))
+  };
+}
 
 function cell(
   adapter: EventHistoryPerformanceCell["adapter"],
@@ -269,6 +285,7 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
       interQueryGcLongTasks: "EXPLICIT_HYGIENE_PHASE_V1"
     },
     cells,
+    queryCells: [1, 2, 3].flatMap((sample) => [queryCell("indexeddb", sample), queryCell("memory", sample)]),
     cellCleanupGc: Array.from({ length: 35 }, (_, index) => ({
       afterCellIndex: index + 1,
       gcPasses: 3 as const,
@@ -328,11 +345,26 @@ function referenceFrom(reportValue: EventHistoryPerformanceReport): EventHistory
     disposition: "ACCEPTED_INITIAL_CLEAN_REFERENCE",
     rationale: "Pinned from a clean visible Chrome for Testing 151 run after the gate implementation was committed.",
     environment: reportValue.environment,
-    cells: reportValue.cells
+    cells: reportValue.cells,
+    queryCells: reportValue.queryCells
   };
 }
 
 describe("Event History real-Chrome performance gate classifier", () => {
+  it("rejects an Around page with the wrong size, order, or identity", () => {
+    const expected = [
+      { sequence: 1_999, eventId: "event-1999" },
+      { sequence: 1_998, eventId: "event-1998" },
+      { sequence: 1_997, eventId: "event-1997" }
+    ];
+    const page = { evidence: expected.map((identity) => ({ identity })) };
+
+    expect(isExactQueryPage(page, expected)).toBe(true);
+    expect(isExactQueryPage({ evidence: page.evidence.slice(0, 2) }, expected)).toBe(false);
+    expect(isExactQueryPage({ evidence: [page.evidence[1]!, page.evidence[0]!, page.evidence[2]!] }, expected)).toBe(false);
+    expect(isExactQueryPage({ evidence: [{ identity: { ...expected[0]!, eventId: "wrong-event" } }, ...page.evidence.slice(1)] }, expected)).toBe(false);
+  });
+
   it("fails unless all 35 ordered inter-cell three-pass GC boundaries are recorded", () => {
     const baseline = report();
     const evidence = baseline.cellCleanupGc!;
@@ -385,6 +417,41 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.verdict).toBe("PASS");
     expect(decision.checkedCells).toBe(12);
     expect(decision.checkedSamples).toBe(36);
+  });
+
+  it("runs capture-only absolute gates without accepting a reference operand", () => {
+    const current = report();
+    const decision = classifyEventHistoryPerformance(current, current, "capture-only");
+
+    expect(decision.verdict).toBe("NOT_CLASSIFIED");
+    expect(decision.failures).toEqual([]);
+    expect(decision.reviewReasons).toEqual([
+      "Candidate capture is not classified until a maintainer adopts a separately pinned reference."
+    ]);
+  });
+
+  it.each([
+    ["dirty source", () => ({ source: { revision: "dirty", dirty: true } })],
+    ["correctness", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, correctness: { ...entry.correctness, retainedInOrder: false } } : entry) })],
+    ["sustained latency", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, latency: { ...entry.latency, offerToVisibleFrameP95Ms: 101 } } : entry) })],
+    ["burst boundary latency", () => ({ cells: report().cells.map((entry, index) => index === 9 ? { ...entry, latency: { ...entry.latency, finalBoundaryVisibleMs: 30_001 } } : entry) })],
+    ["query latency", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, latency: { ...entry.latency, recentPageP95Ms: 51, structuredIndexedP95Ms: 101, findFullP95Ms: 501 } } : entry) })],
+    ["capture Long Task", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, capture: [50.001] } } : entry) })],
+    ["commit Long Task", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, commit: [50.001] } } : entry) })],
+    ["paint Long Task", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, paint: [50.001] } } : entry) })],
+    ["query Long Task", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, query: [126] } } : entry) })],
+    ["unsupported Long Task telemetry", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, supported: false } } : entry) })],
+    ["heap limit", () => ({ heapSamples: report().heapSamples.map((entry, index) => index === 0 ? { ...entry, postGcHeapDeltaBytes: 8 * 1_048_576 + 1 } : entry) })],
+    ["memory burst boundary latency", () => ({ cells: report().cells.map((entry, index) => index === 27 ? { ...entry, latency: { ...entry.latency, finalBoundaryVisibleMs: 1_001 } } : entry) })],
+    ["heap cleanup", () => ({ heapSamples: report().heapSamples.map((entry, index) => index === 0 ? { ...entry, status: "FAIL", failure: { code: "CLOSE_FAILED", message: "cleanup failed" }, postGcHeapDeltaBytes: null } : entry) })],
+    ["terminal scenario", () => ({ terminalScenarios: report().terminalScenarios.map((entry, index) => index === 0 ? { ...entry, pressureTransitions: ["EXHAUSTED"] } : entry) })],
+    ["checkpoint scenario", () => ({ checkpointScenarios: report().checkpointScenarios.map((entry, index) => index === 0 ? { ...entry, accepted: false } : entry) })],
+    ["lifecycle growth", () => ({ lifecycle: { retainedHeapBytes: [1, 2, 3], strictMonotonicGrowth: true } })]
+  ])("keeps capture-only mode fail-closed for %s", (_label, override) => {
+    const decision = classifyEventHistoryPerformance({ ...report(), ...override() } as unknown, undefined, "capture-only");
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.length).toBeGreaterThan(0);
   });
 
   it("fails when production-hook timestamps are a short burst despite sustained offer timestamps", () => {
@@ -1051,6 +1118,49 @@ describe("Event History real-Chrome performance gate classifier", () => {
 
     expect(decision.verdict).toBe("FAIL");
     expect(decision.failures.some((failure) => failure.includes("reference"))).toBe(true);
+  });
+
+  it.each([
+    ["duplicate query sample", (queryCells: readonly EventHistoryPerformanceQueryCell[]) => [
+      ...queryCells.slice(0, -1),
+      queryCells[0]!
+    ]],
+    ["missing query sample", (queryCells: readonly EventHistoryPerformanceQueryCell[]) => queryCells.slice(0, -1)]
+  ])("fails closed for a pinned reference with %s", (_label, mutateQueryCells) => {
+    const baseline = report();
+    const reference = referenceFrom(baseline);
+    const malformedReference = {
+      ...reference,
+      queryCells: mutateQueryCells(reference.queryCells)
+    };
+
+    expect(validateEventHistoryPerformanceReference(malformedReference)).toBe(false);
+    const decision = classifyEventHistoryPerformance(baseline, malformedReference);
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.reviewReasons).toEqual([]);
+  });
+
+  it.each([
+    ["malformed telemetry", (queryCells: readonly EventHistoryPerformanceQueryCell[]) => queryCells.map((cell, index) => index === 0
+      ? { ...cell, telemetry: { operations: { ...cell.telemetry.operations, find: undefined } } }
+      : cell)],
+    ["invalid absolute threshold", (queryCells: readonly EventHistoryPerformanceQueryCell[]) => queryCells.map((cell, index) => index === 0
+      ? { ...cell, latency: { ...cell.latency, findP95Ms: EVENT_HISTORY_PERFORMANCE_LIMITS.query.findFullP95Ms + 1 } }
+      : cell)]
+  ])("fails closed for a pinned reference with %s query cells", (_label, mutateQueryCells) => {
+    const baseline = report();
+    const reference = referenceFrom(baseline);
+    const malformedReference = {
+      ...reference,
+      queryCells: mutateQueryCells(reference.queryCells)
+    };
+
+    expect(validateEventHistoryPerformanceReference(malformedReference)).toBe(false);
+    const decision = classifyEventHistoryPerformance(baseline, malformedReference);
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.reviewReasons).toEqual([]);
   });
 
   it("fails closed for a pending reference disposition", () => {

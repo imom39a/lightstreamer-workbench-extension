@@ -39,7 +39,8 @@ const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
 
 async function main() {
   requireVisibleEnvironment();
-  const reference = JSON.parse(await readFile(referencePath, "utf8"));
+  const captureMode = process.env.LSEW_EVENT_HISTORY_PERF_CAPTURE === "true";
+  const reference = captureMode ? undefined : JSON.parse(await readFile(referencePath, "utf8"));
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-event-history-performance-"));
   const site = join(temporaryRoot, "site");
   const profile = join(temporaryRoot, "profile");
@@ -54,7 +55,7 @@ async function main() {
     await mkdir(site, { recursive: true });
     await build({ entryPoints: [join(rootDir, "benchmarks/event-history-performance-gate.ts")], outfile: gateModulePath, bundle: true, format: "esm", platform: "node", target: "node20", logLevel: "silent" });
     const { classifyEventHistoryPerformance, validateEventHistoryPerformanceReference } = await import(pathToFileURL(gateModulePath).href);
-    if (!validateEventHistoryPerformanceReference(reference)) {
+    if (!captureMode && !validateEventHistoryPerformanceReference(reference)) {
       throw new Error(`Pinned reference preflight failed: ${referencePath}`);
     }
     await build({
@@ -191,6 +192,7 @@ async function main() {
       shapeFacts: result.shapeFacts,
       shards: result.shards,
       cells: result.cells,
+      queryCells: result.queryCells,
       cellCleanupGc: result.cellCleanupGc,
       terminalScenarios: result.terminalScenarios,
       checkpointScenarios: result.checkpointScenarios,
@@ -202,8 +204,10 @@ async function main() {
       },
       telemetry: { storageEstimate: "Per-cell navigator.storage.estimate() telemetry is non-authoritative; unavailable/error states are retained and excluded from verdict gates." }
     };
-    const decision = classifyEventHistoryPerformance(report, reference);
-    const complete = { ...report, decision, reference: { path: referencePath, separatelyPinned: true } };
+    const decision = captureMode
+      ? classifyEventHistoryPerformance(report, undefined, "capture-only")
+      : classifyEventHistoryPerformance(report, reference);
+    const complete = { ...report, decision, reference: { path: referencePath, separatelyPinned: !captureMode, adopted: false } };
     await mkdir(dirname(outputPath), { recursive: true });
     await writeFile(outputPath, `${JSON.stringify(complete, null, 2)}\n`);
     await writeFile(markdownPath, markdown(complete));
@@ -408,7 +412,9 @@ function isStrictlyMonotonic(values) {
 }
 
 function markdown(report) {
-  const rows = report.cells.map((cell) => `| ${cell.adapter} | ${cell.workload} | ${cell.shape} | ${cell.sample} | ${cell.latency.offerToPublicationP95Ms.toFixed(2)} | ${cell.latency.offerToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.committedBoundaryToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.behindBacklogMs.toFixed(2)} | ${cell.latency.finalBoundaryVisibleMs === null ? "—" : cell.latency.finalBoundaryVisibleMs.toFixed(2)} | ${cell.latency.recentPageP95Ms.toFixed(2)} | ${cell.latency.structuredIndexedP95Ms.toFixed(2)} | ${cell.latency.findFullP95Ms.toFixed(2)} |`).join("\n");
+  const queryRows = (report.queryCells ?? []).map((cell) => `| ${cell.adapter} | ${cell.sample} | ${cell.fixture.eventCount} | ${cell.fixture.distinctCommandKeyCount} | ${cell.latency.recentSimplePage50P95Ms.toFixed(2)} | ${cell.latency.recentSimplePage100P95Ms.toFixed(2)} | ${cell.latency.structuredPage50P95Ms.toFixed(2)} | ${cell.latency.structuredPage100P95Ms.toFixed(2)} | ${cell.latency.findP95Ms.toFixed(2)} | ${cell.latency.lookupP95Ms.toFixed(2)} | ${cell.latency.aroundP95Ms.toFixed(2)} |`).join("\n");
+  const querySection = `## Public EventHistory.query() family\n\n| Adapter | Sample | Events | Distinct COMMAND keys | Recent 50 | Recent 100 | Structured 50 | Structured 100 | Find | Lookup | Around |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${queryRows}\n\n`;
+  const rows = querySection + report.cells.map((cell) => `| ${cell.adapter} | ${cell.workload} | ${cell.shape} | ${cell.sample} | ${cell.latency.offerToPublicationP95Ms.toFixed(2)} | ${cell.latency.offerToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.committedBoundaryToVisibleFrameP95Ms.toFixed(2)} | ${cell.latency.behindBacklogMs.toFixed(2)} | ${cell.latency.finalBoundaryVisibleMs === null ? "—" : cell.latency.finalBoundaryVisibleMs.toFixed(2)} | ${cell.latency.recentPageP95Ms.toFixed(2)} | ${cell.latency.structuredIndexedP95Ms.toFixed(2)} | ${cell.latency.findFullP95Ms.toFixed(2)} |`).join("\n");
   const evidenceRows = report.cells.map((cell) => {
     const key = `${cell.adapter}/${cell.workload}/${cell.shape}/sample-${cell.sample}`;
     const correctness = Object.entries(cell.correctness).every(([, value]) => value) ? "PASS" : "FAIL";

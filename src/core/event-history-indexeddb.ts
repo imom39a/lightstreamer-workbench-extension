@@ -29,6 +29,7 @@ import {
 } from "./indexeddb/authoritative-event-db";
 import {
   deserializeJournalEvidenceCandidate,
+  journalCandidateSearchText,
   registerJournalOwnedCandidate,
   journalAccountedBytes,
   serializeJournalEvidenceCandidate
@@ -56,6 +57,20 @@ import {
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
 import { extractEvidenceFacets } from "./evidence-facets";
+import { canonicalEvidenceSearchText, normalizeEvidenceSearchText } from "./evidence-facets";
+import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
+import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
+import {
+  MAX_EVIDENCE_PAGE_SIZE,
+  type DeterministicEvidenceRecord,
+  type EvidenceFilterReadProblem,
+  type EvidenceFilterQueryAdapter,
+  type EvidenceIdentity,
+  type EvidenceQueryRequest,
+  type EvidenceReadPoint,
+  type EvidenceSnapshot,
+  type FacetDiscoveryResult
+} from "./evidence-filter-contract";
 
 export type { EventHistory };
 
@@ -66,6 +81,7 @@ const EVIDENCE_FACET_COUNT = 12;
 const LIVE_PANEL_LEASE_PREFIX = "lsew-events-panel-live-v2-";
 const LIVE_PANEL_LEASE_TTL_MS = 30_000;
 const LIVE_PANEL_LEASE_HEARTBEAT_MS = 5_000;
+const inProcessLivePanelDatabases = new Set<string>();
 
 type ControlRecord = {
   key: typeof AUTHORITATIVE_EVENT_CONTROL_KEY;
@@ -91,6 +107,17 @@ type EvidenceRecord = {
   serializedBytes: number;
   accountedBytes: number;
   facets: string[];
+};
+
+type QueryProjection = {
+  sequence: number;
+  intervalId: string;
+  eventId: string;
+  timestamp: number;
+  summary: string;
+  searchText: string;
+  searchTokens: string[];
+  facets: Readonly<Record<string, unknown>>;
 };
 
 export const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = "facet-v2";
@@ -245,8 +272,9 @@ function livePanelLeaseKey(databaseName: string): string {
 }
 
 function claimLivePanelLease(databaseName: string): () => void {
+  inProcessLivePanelDatabases.add(databaseName);
   const storage = typeof localStorage === "undefined" ? null : localStorage;
-  if (!storage) return () => undefined;
+  if (!storage) return () => { inProcessLivePanelDatabases.delete(databaseName); };
   const key = livePanelLeaseKey(databaseName);
   let released = false;
   const refresh = (): void => {
@@ -262,6 +290,7 @@ function claimLivePanelLease(databaseName: string): () => void {
   return () => {
     if (released) return;
     released = true;
+    inProcessLivePanelDatabases.delete(databaseName);
     globalThis.clearInterval(heartbeat);
     try {
       storage.removeItem(key);
@@ -272,6 +301,7 @@ function claimLivePanelLease(databaseName: string): () => void {
 }
 
 function hasFreshLivePanelLease(databaseName: string): boolean {
+  if (inProcessLivePanelDatabases.has(databaseName)) return true;
   if (typeof localStorage === "undefined") return false;
   const key = livePanelLeaseKey(databaseName);
   try {
@@ -436,6 +466,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let terminalPersistenceFailed = false;
   let terminalIntentGeneration = 0;
   let lastNearLimit = false;
+  let lastCoherentQuery: EvidenceSnapshot | null = null;
   let awaitingCount = 0;
   let awaitingBytes = 0;
   const capacityTier = options.capacityTier ?? "NORMAL";
@@ -528,7 +559,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       accepted,
       notAccepted,
       retained: retainedCount,
-      ...(terminal ? { terminal } : {})
+      ...(terminal ? { terminal } : {}),
+      ...(lastCoherentQuery ? { lastCoherentQuery } : {})
     });
     return problemValue ? deepFreeze({ ...value, problem: problemValue }) as HistoryStatus : value;
   }
@@ -1165,11 +1197,27 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   }
 
   const storage: EventHistoryStorage = Object.freeze({ mode: "indexeddb" });
-  return { storage, status, offer, read, clear, follow, close };
+  const query: EvidenceFilterQueryAdapter["query"] = (request) => {
+    if (phase === "CLOSED") return Promise.resolve(queryFailure("HISTORY_TERMINAL", "Event History is closed."));
+    return queryIndexedDb(database, loaded.panelSessionId, request, {
+      tier: options.capacityTier ?? "NORMAL",
+      fallback: null,
+      terminal: Boolean(terminal),
+      projectionStore: AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections
+    }).then((result) => {
+      if (result.ok) {
+        lastCoherentQuery = result.value;
+      } else {
+        publish({ type: "status", status: status({ code: "QUERY_FAILED", message: result.problem.message }) });
+      }
+      return result;
+    });
+  };
+  return { storage, status, offer, read, query, clear, follow, close };
 }
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readonly");
+  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readonly");
   try {
     const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
     await validateJournalRecords(
@@ -1179,6 +1227,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings)
     );
     await transactionDone(transaction, "loading Event History");
+    await ensureQueryProjections(database, control, panelSessionId);
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
       await writeControl(database, createControl(panelSessionId, interval, "RUNNING", null, 1, null, null, 0, 0, 0));
@@ -1210,7 +1259,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
         durableAccountedBytes: control.accountedBytes,
         retainedCount: control.retainedCount,
         retainedRange: control.retainedRange,
-        committedEvidenceBoundary: control.committedEvidenceBoundary
+        committedEvidenceBoundary: control.committedEvidenceBoundary,
       };
     }
     return {
@@ -1224,7 +1273,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       durableAccountedBytes: control.accountedBytes,
       retainedCount: control.retainedCount,
       retainedRange: control.retainedRange,
-      committedEvidenceBoundary: control.committedEvidenceBoundary
+      committedEvidenceBoundary: control.committedEvidenceBoundary,
     };
   } catch (error) {
     try { transaction.abort(); } catch { /* the transaction may already be complete */ }
@@ -1232,10 +1281,569 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
   }
 }
 
+async function ensureQueryProjections(database: AuthoritativeEventDatabase, control: ControlRecord | undefined, panelSessionId: string): Promise<void> {
+  if (!control || control.retainedCount === 0) return;
+  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections], "readwrite");
+  const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
+  const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
+  await new Promise<void>((resolve, reject) => {
+    const request = projections.openCursor();
+    request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(); return; }
+      const projection = cursor.value as QueryProjection;
+      const searchTokens = querySearchTokens(projection.searchText);
+      if (!Array.isArray(projection.searchTokens) || JSON.stringify(projection.searchTokens) !== JSON.stringify(searchTokens)) {
+        projections.put({ ...projection, searchTokens });
+      }
+      cursor.continue();
+    };
+  });
+  const evidenceCount = await requestToPromise<number>(evidence.count(), "checking query projection migration state");
+  const projectionCount = await requestToPromise<number>(projections.count(), "checking query projection migration state");
+  if (projectionCount < evidenceCount) {
+    await new Promise<void>((resolve, reject) => {
+      const request = evidence.openCursor();
+      request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(); return; }
+        const record = cursor.value as EvidenceRecord;
+        const get = projections.get(record.sequence);
+        get.onerror = () => reject(get.error ?? new Error("Query projection migration failed."));
+        get.onsuccess = () => {
+          if (get.result === undefined) projections.put(queryProjection(deserializeJournalEvidenceCandidate(record.replayPayload), record.intervalId, record.sequence));
+          cursor.continue();
+        };
+      };
+    });
+  }
+  await transactionDone(transaction, `migrating query projections for ${panelSessionId}`);
+}
+
+type IndexedDbQueryOptions = Readonly<{
+  tier: HistoryCapacityTier;
+  fallback: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
+  terminal: boolean;
+  projectionStore: string;
+}>;
+
+/**
+ * The query transaction is deliberately separate from the legacy scalar read.
+ * It latches control and Evidence together, then evaluates the storage-neutral
+ * contract against that immutable transaction view.  The transaction is the
+ * read point: no local history counters are consulted after it starts.
+ */
+async function queryIndexedDb(
+  database: AuthoritativeEventDatabase,
+  panelSessionId: string,
+  request: EvidenceQueryRequest,
+  options: IndexedDbQueryOptions
+): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
+  if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > MAX_EVIDENCE_PAGE_SIZE) {
+    return queryFailure("QUERY_FAILED", request.page.size > MAX_EVIDENCE_PAGE_SIZE ? `Page size must not exceed ${MAX_EVIDENCE_PAGE_SIZE}.` : "Page size must be a positive integer.");
+  }
+  const started = Date.now();
+  const telemetry: QueryTelemetryMutable = { postingReads: 0, postingCandidates: 0, evidenceCursorReads: 0, payloadHydrations: 0, lookupPayloadHydrations: 0, candidateBound: 0, pageBound: request.page.size, retainedCount: 0, cursorWorkBound: 0, aroundCursorBound: 0, findCursorBound: 0, findCursorReads: 0, fullRetainedScan: false, shortFindFallback: false, residualScan: false, aroundIndexReads: 0, aroundCandidates: 0, aroundAnchorValidated: false, elapsedMs: 0 };
+  const transaction = database.db.transaction([
+    AUTHORITATIVE_EVENT_STORE_NAMES.historyControl,
+    AUTHORITATIVE_EVENT_STORE_NAMES.evidence,
+    AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings,
+    AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections
+  ], "readonly");
+  try {
+    const control = await requestToPromise<ControlRecord | undefined>(
+      transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY),
+      "reading Evidence query control"
+    );
+    if (!control || control.panelSessionId !== panelSessionId) return queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "The History Interval is unavailable.");
+    const interval = control.interval;
+    const currentReadPoint = queryReadPoint(control);
+    const readPoint = request.at === "LATEST_COMMITTED" ? currentReadPoint : request.at;
+    if (request.at !== "LATEST_COMMITTED") {
+      if (readPoint.interval.id !== interval.id || readPoint.interval.ordinal !== interval.ordinal) {
+        return queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.");
+      }
+      if (!readPointFitsCurrentInterval(readPoint, currentReadPoint)) {
+        return queryFailure("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.");
+      }
+    }
+    const retained = readPoint.retainedRange;
+    const boundary = readPoint.committedEvidenceBoundary?.intervalId === interval.id ? readPoint.committedEvidenceBoundary.sequence : 0;
+    const firstSequence = retained?.first.sequence ?? 1;
+    const lastSequence = Math.min(retained?.last.sequence ?? 0, boundary);
+    const expectedProjectionCount = lastSequence >= firstSequence ? lastSequence - firstSequence + 1 : 0;
+    telemetry.retainedCount = expectedProjectionCount;
+    telemetry.cursorWorkBound = expectedProjectionCount;
+    await validateProjectionCoverage(transaction.objectStore(options.projectionStore), transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), interval.id, firstSequence, lastSequence, expectedProjectionCount);
+    const aroundProjections = request.filter.around === null
+      ? null
+      : await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry);
+    const emptyFilterAround = request.filter.around !== null && isEmptyQueryFilter(request.filter);
+    const postingCandidates = await indexedDbPostingCandidates(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings), request.filter, interval.id, firstSequence, lastSequence, telemetry);
+    const candidateSequences = postingCandidates;
+    const simpleRecentPage = postingCandidates === null && request.filter.text.trim() === "" && request.filter.around === null;
+    let projections: QueryProjection[];
+    if (simpleRecentPage) {
+      const offset = decodeQueryCursor(request.page.cursor, readPoint, request, 0);
+      if (offset > expectedProjectionCount) throw new Error("The page cursor is beyond the committed result set.");
+      projections = await readProjectionPage(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.page, offset, telemetry);
+      telemetry.candidateBound = projections.length;
+    } else if (emptyFilterAround) {
+      projections = aroundProjections ?? [];
+      telemetry.candidateBound = projections.length;
+    } else {
+      telemetry.residualScan = request.filter.text.trim() !== "";
+      projections = candidateSequences
+        ? await readCandidateProjections(transaction.objectStore(options.projectionStore), candidateSequences, telemetry)
+        : await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry);
+      telemetry.candidateBound = projections.length;
+      if (!candidateSequences) telemetry.fullRetainedScan = true;
+    }
+    const retainedProjections = request.find !== undefined
+      ? await readSearchProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.find, telemetry)
+      : null;
+    const anchorProjection = request.filter.around?.anchor === undefined
+      ? null
+      : await readProjectionByIdentity(transaction.objectStore(options.projectionStore), request.filter.around.anchor, interval, firstSequence, lastSequence, request.filter.around.anchorSequence, telemetry);
+    const selectedPayload = request.lookup === undefined
+      ? null
+      : await readSelectedEvidence(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), request.lookup, interval, firstSequence, lastSequence, telemetry);
+    await transactionDone(transaction, "querying Evidence");
+    const selectionRecords = projections.map((record) => querySelectionRecord(record, interval));
+    const retainedRecords = retainedProjections?.map((record) => querySelectionRecord(record, interval)) ?? selectionRecords;
+    const around = normalizeAround(request.filter.around, readPoint.retainedRange);
+    const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
+    if (filter.around?.anchor && anchorProjection === null) {
+      return queryFailure("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.");
+    }
+    telemetry.aroundAnchorValidated = filter.around?.anchor !== undefined;
+    const discoveries = new Map<string, FacetDiscoveryResult>();
+    for (const discovery of request.discover ?? []) discoveries.set(discovery.facet, { state: "UNAVAILABLE", facet: discovery.facet, reason: "UNSUPPORTED_AT_READ_POINT", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null });
+    const lookupRecord = selectedPayload ? queryProjectionFromPayload(selectedPayload, interval) : null;
+    const lookupRecordsWithPayload = lookupRecord
+      ? [...selectionRecords.filter((record) => !sameQueryIdentity(record.identity, lookupRecord.identity)), Object.freeze({ ...lookupRecord, payload: copyQueryCandidate(deserializeJournalEvidenceCandidate(selectedPayload!.replayPayload)) })]
+      : selectionRecords;
+    if (filter.unsupported.length > 0) {
+      const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecordsWithPayload, readPoint, request.lookup, filter, around);
+      const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
+      telemetry.elapsedMs = Date.now() - started;
+      return { ok: true, value: querySnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", queryCoverage(options), queryStorage(options), null, lookup, find, telemetry) };
+    }
+    const matching: SelectionRecord[] = [];
+    const inScope: SelectionRecord[] = [];
+    const aroundSequences = aroundProjections === null ? null : new Set(aroundProjections.map((record) => record.sequence));
+    for (const record of selectionRecords) {
+      const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+        timestamp: record.timestamp,
+        intervalId: record.identity.intervalId,
+        searchText: record.searchText,
+        facets: record.facets as unknown as FilterRecord["facets"]
+      });
+      if (!evaluation.matches) continue;
+      matching.push(record);
+      if ((aroundSequences === null ? isInAround(record, around) : aroundSequences.has(record.identity.sequence)) && isInAround(record, around)) inScope.push(record);
+    }
+    const ordered = simpleRecentPage ? selectionRecords : (request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope);
+    const offset = decodeQueryCursor(request.page.cursor, readPoint, request, 0);
+    const page = simpleRecentPage ? selectionRecords : ordered.slice(offset, offset + request.page.size);
+    if (offset > (simpleRecentPage ? expectedProjectionCount : ordered.length)) throw new Error("The page cursor is beyond the committed result set.");
+    const lookupRecords = lookupRecordsWithPayload;
+    const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
+    const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
+    telemetry.elapsedMs = Date.now() - started;
+    const matchingTotal = simpleRecentPage || emptyFilterAround ? expectedProjectionCount : matching.length;
+    const inScopeTotal = simpleRecentPage ? expectedProjectionCount : inScope.length;
+    return { ok: true, value: querySnapshot(readPoint, page, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < expectedProjectionCount ? encodeQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
+  } catch (error) {
+    try { transaction.abort(); } catch { /* already completed */ }
+    return queryFailure("QUERY_FAILED", error instanceof Error ? error.message : "IndexedDB Evidence query failed.");
+  }
+}
+
+type QueryTelemetryMutable = { postingReads: number; postingCandidates: number; evidenceCursorReads: number; payloadHydrations: number; lookupPayloadHydrations: number; candidateBound: number; pageBound: number; retainedCount: number; cursorWorkBound: number; aroundCursorBound: number; findCursorBound: number; findCursorReads: number; fullRetainedScan: boolean; shortFindFallback: boolean; residualScan: boolean; aroundIndexReads: number; aroundCandidates: number; aroundAnchorValidated: boolean; elapsedMs: number };
+
+function recordProjectionCursorRead(telemetry: QueryTelemetryMutable, local: { reads: number; bound: number }, operation = "projection"): void {
+  local.reads += 1;
+  if (local.reads > local.bound) throw new Error(`Indexed ${operation} cursor exceeded the latched retained-count work bound (${local.reads}/${local.bound}).`);
+  telemetry.evidenceCursorReads += 1;
+}
+
+async function validateProjectionCoverage(store: IDBObjectStore, evidence: IDBObjectStore, intervalId: string, first: number, last: number, expected: number): Promise<void> {
+  const range = queryBoundRange(first, last);
+  const [total, evidenceTotal, rangeTotal, rangeEvidenceTotal] = await Promise.all([
+    requestToPromise<number>(store.count(), "validating query projection coverage"),
+    requestToPromise<number>(evidence.count(), "validating query projection coverage"),
+    last < first ? Promise.resolve(0) : requestToPromise<number>(store.count(range), "validating query projection range coverage"),
+    last < first ? Promise.resolve(0) : requestToPromise<number>(evidence.count(range), "validating Evidence range coverage")
+  ]);
+  if (total !== evidenceTotal || rangeTotal !== expected || rangeEvidenceTotal !== expected || rangeTotal !== rangeEvidenceTotal) {
+    throw new Error("The query projection store does not exactly cover Evidence records.");
+  }
+  if (expected === 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const request = store.openCursor(range);
+    request.onerror = () => reject(request.error ?? new Error("The query projection store could not be validated."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(); return; }
+      try {
+        const projection = cursor.value as QueryProjection;
+        const sequence = Number(cursor.primaryKey);
+        validateQueryProjection(projection, intervalId, sequence);
+        const evidenceRequest = evidence.get(sequence);
+        evidenceRequest.onerror = () => reject(evidenceRequest.error ?? new Error("The query projection store could not be cross-checked."));
+        evidenceRequest.onsuccess = () => {
+          const record = evidenceRequest.result as EvidenceRecord | undefined;
+          if (!record || record.intervalId !== intervalId || record.sequence !== sequence || record.eventId !== projection.eventId) {
+            reject(new Error("The query projection does not match its Evidence record."));
+            return;
+          }
+          cursor.continue();
+        };
+      } catch (error) { reject(error); }
+    };
+  });
+}
+
+function isEmptyQueryFilter(filter: EvidenceQueryRequest["filter"]): boolean {
+  return filter.text.trim() === "" && filter.unsupported.length === 0
+    && Object.values(filter.criteria).every((group) => !group || (group.include.length === 0 && group.exclude.length === 0));
+}
+
+function querySelectionRecord(projection: QueryProjection, interval: HistoryInterval): SelectionRecord {
+  validateQueryProjection(projection, interval.id, projection.sequence);
+  return Object.freeze({ identity: Object.freeze({ intervalId: projection.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId }), timestamp: projection.timestamp, summary: projection.summary, searchText: projection.searchText, facets: Object.freeze(projection.facets) as SelectionRecord["facets"] });
+}
+
+function validateQueryProjection(projection: QueryProjection, intervalId: string, expectedSequence?: number): void {
+  assertExactKeys(projection, ["eventId", "facets", "intervalId", "searchText", "searchTokens", "sequence", "summary", "timestamp"]);
+  if (projection.intervalId !== intervalId || typeof projection.eventId !== "string" || projection.eventId.length === 0
+    || !Number.isSafeInteger(projection.sequence) || projection.sequence < 1 || (expectedSequence !== undefined && projection.sequence !== expectedSequence) || !Number.isFinite(projection.timestamp)
+    || typeof projection.summary !== "string" || typeof projection.searchText !== "string" || !Array.isArray(projection.searchTokens)
+    || projection.searchTokens.some((token) => typeof token !== "string" || token.length === 0)
+    || projection.facets === null || typeof projection.facets !== "object" || Array.isArray(projection.facets)
+    || Object.entries(projection.facets).some(([key, value]) => key.length === 0 || !isValidProjectionValue(value))) {
+    throw new Error("The query projection is missing or corrupt.");
+  }
+}
+
+function isValidProjectionValue(value: unknown): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isValidProjectionValue);
+  if (typeof value !== "object") return false;
+  return Object.values(value as Record<string, unknown>).every(isValidProjectionValue);
+}
+
+async function indexedDbPostingCandidates(store: IDBObjectStore, filter: EvidenceQueryRequest["filter"], intervalId: string, first: number, last: number, telemetry: QueryTelemetryMutable): Promise<Set<number> | null> {
+  const groups = Object.values(filter.criteria).filter((group): group is NonNullable<typeof group> => Boolean(group));
+  if (groups.length === 0) return null;
+  const all = new Set<number>();
+  let initialized = false;
+  for (const group of groups) {
+    const include = new Set<number>();
+    if (group.include.length === 0 && !initialized) {
+      for (let sequence = first; sequence <= last; sequence += 1) all.add(sequence);
+      initialized = true;
+    }
+    for (const value of group.include) {
+      const token = facetPostingToken(value.identity);
+      telemetry.postingReads += 1;
+      const values = await readPostingToken(store, token, intervalId, first, last, telemetry);
+      for (const sequence of values) include.add(sequence);
+    }
+    if (!initialized) { for (const sequence of include) all.add(sequence); initialized = true; }
+    else if (group.include.length > 0) for (const sequence of [...all]) if (!include.has(sequence)) all.delete(sequence);
+    for (const value of group.exclude) {
+      telemetry.postingReads += 1;
+      const excluded = await readPostingToken(store, facetPostingToken(value.identity), intervalId, first, last, telemetry);
+      for (const sequence of excluded) all.delete(sequence);
+    }
+  }
+  return all;
+}
+
+function readPostingToken(store: IDBObjectStore, token: string, intervalId: string, first: number, last: number, telemetry: QueryTelemetryMutable): Promise<Set<number>> {
+  const result = new Set<number>();
+  if (last < first) return Promise.resolve(result);
+  return new Promise((resolve, reject) => {
+    const request = store.index("token").openCursor(queryOnlyRange(token));
+    request.onerror = () => reject(request.error ?? new Error("Facet posting read failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(result); return; }
+      const posting = cursor.value as FacetPostingRecord;
+      if (posting.intervalId === intervalId && posting.sequence >= first && posting.sequence <= last) {
+        result.add(posting.sequence);
+        telemetry.postingCandidates += 1;
+      }
+      cursor.continue();
+    };
+  });
+}
+
+function readProjectionPage(store: IDBObjectStore, intervalId: string, first: number, last: number, page: EvidenceQueryRequest["page"], offset: number, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  const result: QueryProjection[] = [];
+  if (last < first) return Promise.resolve(result);
+  return new Promise((resolve, reject) => {
+    const direction = page.order === "NEWEST_FIRST" ? "prev" : "next";
+    const request = store.openCursor(queryBoundRange(first, last), direction);
+    let skipped = 0;
+    request.onerror = () => reject(request.error ?? new Error("Evidence page cursor failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || result.length >= page.size) { resolve(result); return; }
+      const sequence = Number(cursor.key);
+      if (sequence < first || sequence > last) { resolve(result); return; }
+      try { recordProjectionCursorRead(telemetry, state, "page"); } catch (error) { reject(error); return; }
+      const projection = cursor.value as QueryProjection;
+      validateQueryProjection(projection, intervalId, sequence);
+      if (skipped++ < offset) { cursor.continue(); return; }
+      if (projection.intervalId === intervalId) result.push(projection);
+      cursor.continue();
+    };
+    const state = { reads: 0, bound: telemetry.cursorWorkBound };
+  });
+}
+
+function readQueryProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, candidates: Set<number> | null, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  const result: QueryProjection[] = [];
+  if (last < first) return Promise.resolve(result);
+  return new Promise((resolve, reject) => {
+    const range = queryBoundRange(first, last);
+    if (range === undefined) telemetry.fullRetainedScan = true;
+    const request = store.openCursor(range);
+    const state = { reads: 0, bound: telemetry.cursorWorkBound };
+    request.onerror = () => reject(request.error ?? new Error("Evidence projection cursor failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(result); return; }
+      const sequence = Number(cursor.key);
+      if (sequence < first || sequence > last) { resolve(result); return; }
+      try { recordProjectionCursorRead(telemetry, state, "range"); } catch (error) { reject(error); return; }
+      const projection = cursor.value as QueryProjection;
+      validateQueryProjection(projection, intervalId, sequence);
+      if (projection.intervalId === intervalId && (candidates === null || candidates.has(projection.sequence))) result.push(projection);
+      cursor.continue();
+    };
+  });
+}
+
+function readCandidateProjections(store: IDBObjectStore, candidates: Set<number>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  if (candidates.size > telemetry.cursorWorkBound) throw new Error("Indexed query candidate work exceeded the latched retained-count bound.");
+  return Promise.all([...candidates].map((sequence) => requestToPromise<QueryProjection | undefined>(store.get(sequence), "reading indexed query projection").then((projection) => {
+    telemetry.evidenceCursorReads += 1;
+    if (projection) validateQueryProjection(projection, projection.intervalId, sequence);
+    return projection;
+  }))).then((values) => values.filter((projection): projection is QueryProjection => projection !== undefined).sort((left, right) => left.sequence - right.sequence));
+}
+
+function readAroundProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, around: NonNullable<EvidenceQueryRequest["filter"]["around"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  telemetry.aroundIndexReads += 1;
+  telemetry.aroundCursorBound = telemetry.retainedCount;
+  return readProjectionCursor(store.index("timestamp"), queryOpenUpperBoundRange(around.start, around.end), intervalId, telemetry, telemetry.retainedCount, "Around")
+    .then((values) => values.filter((value) => value.timestamp >= around.start && value.timestamp < around.end && value.sequence >= first && value.sequence <= last))
+    .then((values) => { telemetry.aroundCandidates += values.length; if (telemetry.retainedCount > 0 && telemetry.aroundCandidates >= telemetry.retainedCount) telemetry.fullRetainedScan = true; return values; });
+}
+
+function readProjectionByIdentity(store: IDBObjectStore, identity: EvidenceIdentity, interval: HistoryInterval, first: number, last: number, anchorSequence: number | undefined, telemetry: QueryTelemetryMutable): Promise<QueryProjection | null> {
+  if (identity.intervalId !== interval.id || identity.sequence < first || identity.sequence > last || (anchorSequence !== undefined && anchorSequence !== identity.sequence)) return Promise.resolve(null);
+  telemetry.evidenceCursorReads += 1;
+  return requestToPromise<QueryProjection | undefined>(store.get(identity.sequence), "reading Around anchor projection").then((projection) => {
+    if (!projection || projection.intervalId !== interval.id || projection.eventId !== identity.eventId || projection.sequence !== identity.sequence) return null;
+    validateQueryProjection(projection, interval.id, identity.sequence);
+    return projection;
+  });
+}
+
+function readSearchProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, find: NonNullable<EvidenceQueryRequest["find"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  const normalized = normalizeEvidenceSearchText(find.text);
+  if (!normalized || last < first) return Promise.resolve([]);
+  const codePoints = Array.from(normalized);
+  const residual = (values: QueryProjection[]): QueryProjection[] => values.filter((value) =>
+    value.sequence >= first && value.sequence <= last && normalizeEvidenceSearchText(value.searchText).includes(normalized));
+  if (codePoints.length < 3) {
+    telemetry.shortFindFallback = true;
+    telemetry.fullRetainedScan = true;
+    return readQueryProjections(store, intervalId, first, last, null, telemetry).then(residual);
+  }
+  const trigrams = [...new Set(queryTrigrams(normalized))];
+  const index = store.index("searchTokens");
+  return Promise.all(trigrams.map(async (trigram) => ({ trigram, count: await requestToPromise<number>(index.count(queryOnlyRange(trigram)), "counting Find trigram candidates") })))
+    .then((counts) => counts.sort((left, right) => left.count - right.count || left.trigram.localeCompare(right.trigram))[0]!)
+    .then(({ trigram, count: rarestCount }) => {
+      telemetry.findCursorBound = rarestCount;
+      return readProjectionCursor(index, queryOnlyRange(trigram), intervalId, telemetry, rarestCount, "Find");
+    })
+    .then((values) => residual(values.filter((value) => value.sequence >= first && value.sequence <= last)));
+}
+
+function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | undefined, intervalId: string, telemetry: QueryTelemetryMutable, bound: number, operation: "Around" | "Find"): Promise<QueryProjection[]> {
+  const result: QueryProjection[] = [];
+  if (range === undefined) telemetry.fullRetainedScan = true;
+  return new Promise((resolve, reject) => {
+    const request = index.openCursor(range);
+    const state = { reads: 0, bound };
+    request.onerror = () => reject(request.error ?? new Error("Indexed query projection cursor failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(result); return; }
+      try { recordProjectionCursorRead(telemetry, state, "index"); } catch (error) { reject(error); return; }
+      const projection = cursor.value as QueryProjection;
+      try { validateQueryProjection(projection, intervalId, Number(cursor.primaryKey)); } catch (error) { reject(error); return; }
+      if (operation === "Find") telemetry.findCursorReads += 1;
+      if (projection.intervalId === intervalId) result.push(projection);
+      cursor.continue();
+    };
+  });
+}
+
+function queryOnlyRange(value: IDBValidKey): IDBKeyRange | undefined {
+  const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
+  return range ? range.only(value) : undefined;
+}
+
+function queryBoundRange(lower: IDBValidKey, upper: IDBValidKey): IDBKeyRange | undefined {
+  const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
+  return range ? range.bound(lower, upper) : undefined;
+}
+
+function queryOpenUpperBoundRange(lower: IDBValidKey, upper: IDBValidKey): IDBKeyRange | undefined {
+  const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
+  return range ? range.bound(lower, upper, false, true) : undefined;
+}
+
+async function readSelectedEvidence(store: IDBObjectStore, identity: EvidenceIdentity, interval: HistoryInterval, first: number, last: number, telemetry: QueryTelemetryMutable): Promise<EvidenceRecord | null> {
+  if (identity.intervalId !== interval.id || identity.sequence < first || identity.sequence > last) return null;
+  telemetry.payloadHydrations += 1;
+  telemetry.lookupPayloadHydrations += 1;
+  const record = await requestToPromise<EvidenceRecord | undefined>(store.get(identity.sequence), "reading selected Evidence payload");
+  if (!record || record.intervalId !== interval.id || record.eventId !== identity.eventId) return null;
+  return record;
+}
+
+function stableQueryValue(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableQueryValue).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${stableQueryValue(entry)}`).join(",")}}`;
+}
+
+function cursorBoundary(readPoint: EvidenceReadPoint): string {
+  return stableQueryValue({ interval: readPoint.interval, boundary: readPoint.committedEvidenceBoundary, range: readPoint.retainedRange });
+}
+
+function encodeQueryCursor(readPoint: EvidenceReadPoint, request: EvidenceQueryRequest, offset: number): string {
+  return encodeURIComponent(JSON.stringify({ v: 2, offset, query: cursorQueryBinding(request), point: cursorBoundary(readPoint) }));
+}
+
+function cursorQueryBinding(request: EvidenceQueryRequest): string {
+  return stableQueryValue({
+    discover: request.discover ?? null,
+    filter: request.filter,
+    find: request.find ?? null,
+    lookup: request.lookup ?? null,
+    page: { order: request.page.order, size: request.page.size }
+  });
+}
+
+function decodeQueryCursor(cursor: string | undefined, readPoint: EvidenceReadPoint, request: EvidenceQueryRequest, _fallback: number): number {
+  if (cursor === undefined) return 0;
+  try {
+    const value = JSON.parse(decodeURIComponent(cursor)) as { v?: unknown; offset?: unknown; query?: unknown; point?: unknown };
+    if (value.v !== 2 || value.query !== cursorQueryBinding(request) || value.point !== cursorBoundary(readPoint) || !Number.isSafeInteger(value.offset) || (value.offset as number) < 0) throw new Error("The page cursor is not bound to this query.");
+    return value.offset as number;
+  } catch {
+    throw new Error("The page cursor is malformed or no longer valid.");
+  }
+}
+
+function queryFailure(code: EvidenceFilterReadProblem["code"], message: string): Readonly<{ ok: false; problem: EvidenceFilterReadProblem }> {
+  return { ok: false, problem: Object.freeze({ code, message }) };
+}
+
+function queryReadPoint(control: ControlRecord): EvidenceReadPoint {
+  const identity = (ref: EvidenceRef): EvidenceIdentity => ({ intervalId: ref.intervalId, pageId: control.interval.id, ownerId: "memory-event-history", sequence: ref.sequence, eventId: ref.eventId });
+  const boundary = control.committedEvidenceBoundary ? identity(control.committedEvidenceBoundary) : null;
+  return Object.freeze({
+    interval: Object.freeze({ ...control.interval }),
+    committedEvidenceBoundary: boundary,
+    retainedRange: control.retainedRange ? Object.freeze({ first: identity(control.retainedRange.first), last: identity(control.retainedRange.last) }) : null
+  });
+}
+
+function deterministicQueryRecord(entry: CommittedEvidence, interval: HistoryInterval): SelectionRecord {
+  const identity: EvidenceIdentity = Object.freeze({ intervalId: entry.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: entry.sequence, eventId: entry.eventId });
+  if (entry.candidate.kind === "topology-checkpoint") return Object.freeze({ identity, timestamp: 0, summary: "Topology checkpoint", searchText: journalCandidateSearchText(entry.candidate), facets: Object.freeze({}) });
+  const context = { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind };
+  return Object.freeze({ identity, timestamp: entry.candidate.timestamp, summary: entry.candidate.kind, searchText: canonicalEvidenceSearchText(entry.candidate, context), facets: Object.freeze(extractEvidenceFacets(entry.candidate, context).facets) });
+}
+
+function queryProjection(candidate: EvidenceCandidate, intervalId: string, sequence: number): QueryProjection {
+  const identity: EvidenceIdentity = { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence, eventId: candidate.id };
+  if (candidate.kind === "topology-checkpoint") {
+    const searchText = journalCandidateSearchText(candidate);
+    return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText, searchTokens: querySearchTokens(searchText), facets: {} };
+  }
+  const context = { identity, pageId: intervalId, listenerOwner: identity.ownerId, summary: candidate.kind };
+  const searchText = canonicalEvidenceSearchText(candidate, context);
+  return {
+    sequence, intervalId, eventId: candidate.id,
+    timestamp: candidate.timestamp,
+    summary: candidate.kind,
+    searchText,
+    searchTokens: querySearchTokens(searchText),
+    facets: extractEvidenceFacets(candidate, context).facets
+  };
+}
+
+function querySearchTokens(value: string): string[] {
+  const normalized = normalizeEvidenceSearchText(value);
+  return [...new Set([...normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean), ...queryTrigrams(normalized)])];
+}
+
+function queryTrigrams(value: string): string[] {
+  const codePoints = Array.from(value);
+  if (codePoints.length < 3) return [];
+  return codePoints.slice(0, -2).map((_, index) => codePoints.slice(index, index + 3).join(""));
+}
+
+function queryProjectionFromPayload(record: EvidenceRecord, interval: HistoryInterval): SelectionRecord {
+  const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
+  return querySelectionRecord(queryProjection(candidate, record.intervalId, record.sequence), interval);
+}
+
+function querySnapshot(readPoint: EvidenceReadPoint, page: readonly SelectionRecord[], matching: number, inScope: number, discoveries: ReadonlyMap<string, FacetDiscoveryResult>, evaluation: EvidenceSnapshot["evaluation"], coverage: EvidenceSnapshot["coverage"], storage: EvidenceSnapshot["storage"], nextCursor: string | null, lookup: EvidenceSnapshot["lookup"], find: EvidenceSnapshot["find"], telemetry?: EvidenceSnapshot["telemetry"]): EvidenceSnapshot {
+  const publicPage = page.map((record) => ({ identity: record.identity, timestamp: record.timestamp, summary: record.summary, searchText: record.searchText, facets: record.facets }));
+  return Object.freeze({ readPoint, page: Object.freeze({ evidence: Object.freeze(publicPage), nextCursor }), totals: Object.freeze({ matching, inScope }), discoveries, lookup, find, evaluation, coverage, storage, ...(telemetry ? { telemetry } : {}) });
+}
+
+function queryCoverage(options: IndexedDbQueryOptions): EvidenceSnapshot["coverage"] { return options.tier === "LOWER" || options.fallback !== null || options.terminal ? "LIMITED" : "COMPLETE"; }
+function queryStorage(options: IndexedDbQueryOptions): EvidenceSnapshot["storage"] { return options.fallback === null ? "INDEXED_DB" : "MEMORY_FALLBACK"; }
+function queryCursor(cursor: string | undefined): number { const value = cursor === undefined ? 0 : Number(cursor); if (!Number.isSafeInteger(value) || value < 0) throw new Error("Page cursor must be a non-negative integer."); return value; }
+function isInQueryRange(sequence: number, range: ControlRecord["retainedRange"]): boolean { return range === null || (sequence >= range.first.sequence && sequence <= range.last.sequence); }
+function sameQueryIdentity(left: EvidenceIdentity, right: EvidenceIdentity): boolean { return left.intervalId === right.intervalId && left.pageId === right.pageId && left.ownerId === right.ownerId && left.sequence === right.sequence && left.eventId === right.eventId; }
+function sameQueryReadPoint(left: EvidenceReadPoint, right: EvidenceReadPoint): boolean { return left.interval.id === right.interval.id && left.interval.ordinal === right.interval.ordinal && sameNullableQueryIdentity(left.committedEvidenceBoundary, right.committedEvidenceBoundary) && sameNullableQueryRange(left.retainedRange, right.retainedRange); }
+function readPointFitsCurrentInterval(point: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
+  if (point.interval.id !== current.interval.id || point.interval.ordinal !== current.interval.ordinal) return false;
+  const pointBoundary = point.committedEvidenceBoundary?.sequence ?? 0;
+  const currentBoundary = current.committedEvidenceBoundary?.sequence ?? 0;
+  if (pointBoundary > currentBoundary) return false;
+  if (point.retainedRange === null) return true;
+  if (current.retainedRange === null) return false;
+  return point.retainedRange.first.sequence >= current.retainedRange.first.sequence
+    && point.retainedRange.last.sequence <= current.retainedRange.last.sequence;
+}
+function sameNullableQueryIdentity(left: EvidenceIdentity | null, right: EvidenceIdentity | null): boolean { return left === null || right === null ? left === right : sameQueryIdentity(left, right); }
+function sameNullableQueryRange(left: EvidenceReadPoint["retainedRange"], right: EvidenceReadPoint["retainedRange"]): boolean { return left === null || right === null ? left === right : sameQueryIdentity(left.first, right.first) && sameQueryIdentity(left.last, right.last); }
+function copyQueryCandidate(candidate: EvidenceCandidate): unknown { return JSON.parse(JSON.stringify(candidate)); }
+
 async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, evidence: readonly CommittedEvidence[], serializedBatch: readonly ReturnType<typeof serializeJournalEvidenceCandidate>[], replayPayloadBytes: number, accountedBytes: number, phase: "RUNNING" | "DRAINING_TO_STOP", terminal: HistoryTerminalDiagnostic | null): Promise<void> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
+  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
   const store = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
   const postingStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
+  const projectionStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
   let serializedBatchBytes = 0;
   let accountedBatchBytes = 0;
   for (const [index, entry] of evidence.entries()) {
@@ -1245,6 +1853,7 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
     serializedBatchBytes += serialized.bytes;
     accountedBatchBytes += recordAccountedBytes;
     store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: recordAccountedBytes, facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
+    projectionStore.add(queryProjection(entry.candidate, entry.intervalId, entry.sequence));
     for (const posting of facetPostings(entry.candidate, entry.intervalId, entry.sequence)) {
       postingStore.add(posting);
     }
@@ -1305,9 +1914,10 @@ async function finalizeTerminal(
 }
 
 async function clearJournalRecords(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, boundary: EvidenceRef | null): Promise<void> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
+  const transaction = database.db.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readwrite");
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings).clear();
+  transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections).clear();
   transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).put(createControl(panelSessionId, interval, "RUNNING", null, nextSequence, boundary, null, 0, 0, 0));
   await transactionDone(transaction, "clearing Event History");
 }

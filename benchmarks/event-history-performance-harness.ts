@@ -39,7 +39,9 @@ import {
   CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND,
   CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS,
   TERMINAL_PENDING_BYTE_EVENT_COUNT,
+  isExactQueryPage,
   type EventHistoryPerformanceCell,
+  type EventHistoryPerformanceQueryCell,
   type EventHistoryPerformanceCheckpointScenario,
   type EventHistoryPerformanceHeapSample,
   type EventHistoryPerformanceStorageEstimate,
@@ -49,6 +51,7 @@ import {
   type EventHistoryPerformanceTerminalScenario,
   type EventHistoryPerformanceWorkload
 } from "./event-history-performance-gate";
+import { typedFacetValue, type EvidenceQueryRequest } from "../src/core/evidence-filter-contract";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import {
   createWorkbenchRuntime,
@@ -140,7 +143,7 @@ async function yieldBurstOfferMacrotask(): Promise<void> {
   await delay(0);
 }
 
-type HarnessSelection = Readonly<
+  type HarnessSelection = Readonly<
   | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string }
   | { id: "scenarios"; kind: "scenarios"; pageToken: string }
 >;
@@ -965,6 +968,126 @@ function validateHarnessSelection(selection: HarnessSelection | undefined): Harn
   return selection;
 }
 
+async function runFilterQueryCell(
+  adapter: "indexeddb" | "memory",
+  sample: number,
+  operationId: string | null,
+  guard: HarnessStageGuard
+): Promise<EventHistoryPerformanceQueryCell> {
+  const count = adapter === "indexeddb" ? 10_000 : 5_000;
+  const runId = `filter-query-${adapter}-${sample}`;
+  const history = adapter === "indexeddb"
+    ? await createIndexedDbEventHistory({ panelSessionId: runId, capacityTier: "NORMAL" })
+    : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+  const events = Array.from({ length: count }, (_, index) => {
+    const sequence = index + 1;
+    const base = createEventHistoryWorkloadEvent("ordinary-item-update", index, runId) as LightstreamerEventEnvelope & { update?: { key?: string; fields?: Record<string, unknown> } };
+    const key = `order-${String(((sequence - 1) % 3_842) + 1).padStart(5, "0")}`;
+    return {
+      ...base,
+      id: `${runId}-event-${sequence}`,
+      timestamp: 1_700_000_000_000 + sequence,
+      update: base.update ? {
+        ...base.update,
+        key,
+        fields: { ...base.update.fields, key }
+      } : base.update
+    } as LightstreamerEventEnvelope;
+  });
+  try {
+    const receipts = events.map((event) => history.offer(event));
+    await Promise.all(receipts.map((receipt) => receipt.settled));
+    if (!guard.isActive()) throw new Error("Filter query benchmark was cancelled.");
+    const firstRequest = (pageSize: number): EvidenceQueryRequest => ({
+      at: "LATEST_COMMITTED",
+      page: { order: "NEWEST_FIRST", size: pageSize },
+      filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] }
+    });
+    const structuredValue = typedFacetValue("key", "string", "order-00001");
+    const structuredRequest = (pageSize: number): EvidenceQueryRequest => ({
+      at: "LATEST_COMMITTED",
+      page: { order: "OLDEST_FIRST", size: pageSize },
+      filter: { revision: 1, text: "", criteria: { key: { include: [structuredValue], exclude: [] } }, around: null, unsupported: [] }
+    });
+    let longTaskObserverSupported = true;
+    const timings = async (name: string, request: EvidenceQueryRequest): Promise<{ p95: number; result: any; telemetry: any; longTasks: number[]; gc: QuerySampleGcEvidence[] }> => {
+      const samples: number[] = [];
+      const gc: QuerySampleGcEvidence[] = [];
+      const operationTelemetry: any[] = [];
+      const longTasks: number[] = [];
+      let result: any;
+      for (let index = 0; index < 3; index += 1) {
+        const entries: PerformanceEntry[] = [];
+        const supported = PerformanceObserver.supportedEntryTypes.includes("longtask");
+        longTaskObserverSupported = longTaskObserverSupported && supported;
+        const observer = supported ? new PerformanceObserver((list) => entries.push(...list.getEntries())) : null;
+        observer?.observe({ entryTypes: ["longtask"] });
+        const started = performance.now();
+        result = await history.query!(request);
+        samples.push(performance.now() - started);
+        await delay(0);
+        entries.push(...(observer?.takeRecords() ?? []));
+        observer?.disconnect();
+        longTasks.push(...entries.filter((entry) => entry.duration > 50).map((entry) => entry.duration));
+        operationTelemetry.push(result.ok ? result.value.telemetry : null);
+        if (index < 2) gc.push(await collectGarbageBetweenQuerySamples(name, (index + 1) as 1 | 2, guard));
+      }
+      return { p95: percentile(samples, 0.95), result, telemetry: operationTelemetry.at(-1), longTasks, gc };
+    };
+    const recent50 = await timings("recent50", firstRequest(50));
+    const recent100 = await timings("recent100", firstRequest(100));
+    const structured50 = await timings("structured50", structuredRequest(50));
+    const structured100 = await timings("structured100", structuredRequest(100));
+    if (!recent50.result.ok || !recent100.result.ok || !structured50.result.ok || !structured100.result.ok) throw new Error("Filter query benchmark base query failed.");
+    const recent = recent100.result.value;
+    const structured = structured100.result.value;
+    const selected = recent.page.evidence[0]?.identity;
+    if (!selected) throw new Error("Filter query benchmark did not return a selected identity.");
+    const findMeasurement = await timings("find", { ...firstRequest(50), filter: { ...firstRequest(50).filter, criteria: { key: { include: [typedFacetValue("key", "string", "does-not-exist")], exclude: [] } }, around: null }, find: { text: "order-00001" } });
+    const lookupMeasurement = await timings("lookup", { ...firstRequest(50), lookup: selected });
+    const aroundMeasurement = await timings("around", { ...firstRequest(50), filter: { ...firstRequest(50).filter, around: { intervalId: selected.intervalId, start: 1_700_000_001_000, end: 1_700_000_002_000 } } });
+    if (!findMeasurement.result.ok || !lookupMeasurement.result.ok || !aroundMeasurement.result.ok) throw new Error("Filter query benchmark optional probe failed.");
+    const operation = (measurement: any) => ({ candidateBound: measurement.telemetry?.candidateBound ?? 0, projectionReads: measurement.telemetry?.evidenceCursorReads ?? 0, payloadHydrations: measurement.telemetry?.payloadHydrations ?? 0, bounded: measurement.telemetry ? !measurement.telemetry.residualScan : false, residualScan: Boolean(measurement.telemetry?.residualScan) });
+    const exactPage = (measurement: any, size: number, expected: number[]) => measurement.result.value.page.evidence.length === Math.min(size, expected.length) && measurement.result.value.page.evidence.every((record: any, index: number) => record.identity.sequence === expected[index] && record.identity.eventId === `${runId}-event-${expected[index]}`);
+    const recentExpected = Array.from({ length: count }, (_, index) => count - index);
+    const structuredExpected = [1, 3843, 7685];
+    const aroundExpected = Array.from({ length: 1_000 }, (_, index) => {
+      const sequence = 1_999 - index;
+      return { sequence, eventId: `${runId}-event-${sequence}` };
+    });
+    return {
+      adapter,
+      sample,
+      fixture: { eventCount: count, distinctCommandKeyCount: 3_842 },
+      latency: {
+        recentSimplePage50P95Ms: recent50.p95,
+        recentSimplePage100P95Ms: recent100.p95,
+        structuredPage50P95Ms: structured50.p95,
+        structuredPage100P95Ms: structured100.p95,
+        findP95Ms: findMeasurement.p95,
+        lookupP95Ms: lookupMeasurement.p95,
+        aroundP95Ms: aroundMeasurement.p95
+      },
+      correctness: {
+        totalsExact: recent50.result.value.totals.matching === count && recent100.result.value.totals.matching === count && structured50.result.value.totals.matching === 3 && structured100.result.value.totals.matching === 3 && aroundMeasurement.result.value.totals.matching === count && aroundMeasurement.result.value.totals.inScope === 1_000,
+        orderExact: exactPage(recent50, 50, recentExpected) && exactPage(recent100, 100, recentExpected) && exactPage(structured50, 50, structuredExpected) && exactPage(structured100, 100, structuredExpected),
+        collisionExact: structured.page.evidence.length === 3 && structured.page.evidence.every((record: any, index: number) => record.identity.eventId === `${runId}-event-${structuredExpected[index]}`),
+        findIndependent: findMeasurement.result.value.find?.total === 3 && findMeasurement.result.value.find?.matches?.map((entry: any) => entry.identity.sequence).join(",") === "1,3843,7685" && findMeasurement.result.value.totals.matching === 0,
+        lookupExact: lookupMeasurement.result.value.lookup?.state === "RETAINED" && lookupMeasurement.result.value.lookup.evidence.payload !== undefined,
+        aroundExact: aroundMeasurement.result.value.totals.matching === count
+          && aroundMeasurement.result.value.totals.inScope === 1_000
+          && isExactQueryPage(aroundMeasurement.result.value.page, aroundExpected.slice(0, 50))
+      },
+      telemetry: { operations: { recent50: operation(recent50), recent100: operation(recent100), structured50: operation(structured50), structured100: operation(structured100), find: operation(findMeasurement), lookup: operation(lookupMeasurement), around: operation(aroundMeasurement) } },
+      longTasks: [...recent50.longTasks, ...recent100.longTasks, ...structured50.longTasks, ...structured100.longTasks, ...findMeasurement.longTasks, ...lookupMeasurement.longTasks, ...aroundMeasurement.longTasks],
+      longTaskObserverSupported,
+      querySampleGc: [...recent50.gc, ...recent100.gc, ...structured50.gc, ...structured100.gc, ...findMeasurement.gc, ...lookupMeasurement.gc, ...aroundMeasurement.gc]
+    };
+  } finally {
+    await history.close();
+  }
+}
+
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
   async run(overrides = {}, requestedSelection) {
     const operationId = currentHarnessOperationId();
@@ -1069,6 +1192,14 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       }
     }
     const checkpointScenarios: EventHistoryPerformanceCheckpointScenario[] = [];
+    const queryCells: EventHistoryPerformanceQueryCell[] = [];
+    if (selection?.kind !== "matrix") {
+      for (const adapter of ["indexeddb", "memory"] as const) {
+        for (const sample of [1, 2, 3] as const) {
+          queryCells.push(await runFilterQueryCell(adapter, sample, operationId, runGuard));
+        }
+      }
+    }
     if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
       for (const name of ["representative", "maximum-2MiB"] as const) {
         if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
@@ -1100,6 +1231,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       config,
       shapeFacts: representativeEventHistoryShapeFacts(),
       cells,
+      queryCells,
       cellCleanupGc,
       terminalScenarios,
       checkpointScenarios

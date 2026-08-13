@@ -1,7 +1,7 @@
 import { extractEvidenceFacets } from "../evidence-facets";
 import { deserializeJournalEvidenceCandidate } from "../event-history-serialization";
 
-export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 3;
+export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 5;
 // The application identity predates the posting-store schema. Keep this
 // logical name stable so schema upgrades happen in the deployed database.
 export const AUTHORITATIVE_EVENT_DB_IDENTITY_VERSION = 2;
@@ -17,7 +17,8 @@ const INDEXEDDB_REQUEST_TIMEOUT_MS = 2_000;
 export const AUTHORITATIVE_EVENT_STORE_NAMES = {
   historyControl: "historyControl",
   evidence: "evidence",
-  facetPostings: "facetPostings"
+  facetPostings: "facetPostings",
+  queryProjections: "queryProjections"
 } as const;
 
 const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = "facet-v2";
@@ -303,11 +304,11 @@ function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> 
 
 function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   const stores = [...database.objectStoreNames].sort();
-  const expectedStores = [AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl].sort();
+  const expectedStores = Object.values(AUTHORITATIVE_EVENT_STORE_NAMES).sort();
   if (stores.length !== expectedStores.length || stores.some((name, index) => name !== expectedStores[index])) {
     throw new Error("Authoritative Event History requires exactly the historyControl and evidence stores.");
   }
-  const transaction = database.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl], "readonly");
+  const transaction = database.transaction(Object.values(AUTHORITATIVE_EVENT_STORE_NAMES), "readonly");
   const control = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl);
   if (control.keyPath !== "key") throw new Error("The historyControl store must be keyed by key.");
   const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
@@ -331,6 +332,20 @@ function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   const token = postings.index("token");
   if (token.keyPath !== "token" || token.unique) {
     throw new Error("The facet posting token index does not match the authoritative schema.");
+  }
+  const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
+  if (projections.keyPath !== "sequence") throw new Error("The query projection store must be keyed by sequence.");
+  const projectionIndexes = [...projections.indexNames].sort();
+  if (projectionIndexes.length !== 2 || projectionIndexes[0] !== "searchTokens" || projectionIndexes[1] !== "timestamp") {
+    throw new Error("The query projection indexes are incomplete.");
+  }
+  const timestamp = projections.index("timestamp");
+  const searchTokens = projections.index("searchTokens");
+  if (timestamp.keyPath !== "timestamp" || timestamp.unique || timestamp.multiEntry) {
+    throw new Error("The timestamp projection index does not match the authoritative schema.");
+  }
+  if (searchTokens.keyPath !== "searchTokens" || searchTokens.unique || !searchTokens.multiEntry) {
+    throw new Error("The search-token projection index does not match the authoritative schema.");
   }
 }
 
@@ -368,8 +383,18 @@ function upgradeAuthoritativeDatabase(
   if (!postings.indexNames.contains("token")) {
     postings.createIndex("token", "token", { unique: false });
   }
-  if (oldVersion === 2) {
+  if (oldVersion >= 2 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+    postings.clear();
     rebuildFacetPostingsFromEvidence(transaction!, postings);
+  }
+  if (!database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections)) {
+    const projections = database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections, { keyPath: "sequence" });
+    projections.createIndex("timestamp", "timestamp", { unique: false });
+    projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
+  } else {
+    const projections = transaction!.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
+    if (!projections.indexNames.contains("timestamp")) projections.createIndex("timestamp", "timestamp", { unique: false });
+    if (!projections.indexNames.contains("searchTokens")) projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
   }
 }
 

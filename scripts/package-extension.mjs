@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { deflateRawSync } from "node:zlib";
 import { existsSync } from "node:fs";
 import {
   access,
@@ -59,9 +60,9 @@ if (format === "zip" || format === "both") {
   await writeZipFromDirectory(distDir, zipPath);
   const zipBytes = (await stat(zipPath)).size;
   if (zipBytes >= 1_048_576) {
-    fail(`Stored ZIP exceeds the 1 MiB release budget (${zipBytes} bytes).`);
+    fail(`DEFLATE ZIP exceeds the 1 MiB release budget (${zipBytes} bytes).`);
   }
-  console.log(`ZIP: ${zipPath} (${zipBytes} bytes stored; budget < 1048576)`);
+  console.log(`ZIP: ${zipPath} (${zipBytes} bytes; DEFLATE level 9; budget < 1048576)`);
 }
 
 if (format === "crx" || format === "both") {
@@ -183,20 +184,23 @@ async function writeZipFromDirectory(sourceDir, zipPath) {
       fail("ZIP64 is not supported by this local packager.");
     }
 
+    const compressedData = deflateRawSync(data, { level: 9 });
     const entry = {
       crc,
       data,
+      compressedData,
+      compressedSize: compressedData.byteLength,
       dosDate,
       dosTime,
       nameBuffer,
       offset,
-      size: data.byteLength
+      uncompressedSize: data.byteLength
     };
 
     const localHeader = createLocalHeader(entry);
-    localParts.push(localHeader, data);
+    localParts.push(localHeader, compressedData);
     centralParts.push(createCentralDirectoryHeader(entry));
-    offset += localHeader.byteLength + data.byteLength;
+    offset += localHeader.byteLength + compressedData.byteLength;
   }
 
   const centralDirectoryStart = offset;
@@ -215,7 +219,7 @@ async function listZipFiles(sourceDir) {
 
   async function visit(directory) {
     const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => compareArchiveNames(left.name, right.name));
 
     for (const entry of entries) {
       if (shouldSkip(entry.name)) {
@@ -241,6 +245,17 @@ async function listZipFiles(sourceDir) {
   return files;
 }
 
+function compareArchiveNames(left, right) {
+  const leftCodePoints = [...left];
+  const rightCodePoints = [...right];
+  const length = Math.min(leftCodePoints.length, rightCodePoints.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = leftCodePoints[index].codePointAt(0) - rightCodePoints[index].codePointAt(0);
+    if (difference !== 0) return difference;
+  }
+  return leftCodePoints.length - rightCodePoints.length;
+}
+
 function shouldSkip(name) {
   return (
     name === ".DS_Store" ||
@@ -256,13 +271,13 @@ function createLocalHeader(entry) {
   const header = Buffer.alloc(30);
   header.writeUInt32LE(0x04034b50, 0);
   header.writeUInt16LE(20, 4);
-  header.writeUInt16LE(0, 6);
-  header.writeUInt16LE(0, 8);
+  header.writeUInt16LE(0x800, 6);
+  header.writeUInt16LE(8, 8);
   header.writeUInt16LE(entry.dosTime, 10);
   header.writeUInt16LE(entry.dosDate, 12);
   header.writeUInt32LE(entry.crc, 14);
-  header.writeUInt32LE(entry.size, 18);
-  header.writeUInt32LE(entry.size, 22);
+  header.writeUInt32LE(entry.compressedSize, 18);
+  header.writeUInt32LE(entry.uncompressedSize, 22);
   header.writeUInt16LE(entry.nameBuffer.byteLength, 26);
   header.writeUInt16LE(0, 28);
   return Buffer.concat([header, entry.nameBuffer]);
@@ -273,13 +288,13 @@ function createCentralDirectoryHeader(entry) {
   header.writeUInt32LE(0x02014b50, 0);
   header.writeUInt16LE(20, 4);
   header.writeUInt16LE(20, 6);
-  header.writeUInt16LE(0, 8);
-  header.writeUInt16LE(0, 10);
+  header.writeUInt16LE(0x800, 8);
+  header.writeUInt16LE(8, 10);
   header.writeUInt16LE(entry.dosTime, 12);
   header.writeUInt16LE(entry.dosDate, 14);
   header.writeUInt32LE(entry.crc, 16);
-  header.writeUInt32LE(entry.size, 20);
-  header.writeUInt32LE(entry.size, 24);
+  header.writeUInt32LE(entry.compressedSize, 20);
+  header.writeUInt32LE(entry.uncompressedSize, 24);
   header.writeUInt16LE(entry.nameBuffer.byteLength, 28);
   header.writeUInt16LE(0, 30);
   header.writeUInt16LE(0, 32);

@@ -10,6 +10,7 @@ import {
   type RevealBlocker,
   type TypedFacetValue
 } from "./evidence-filter-contract";
+import { normalizeEvidenceSearchText } from "./evidence-facets";
 
 export type SelectionRecord = DeterministicEvidenceRecord & Readonly<{ payload?: unknown }>;
 
@@ -65,8 +66,8 @@ export function lookupEvidence(
 }
 
 export function findEvidence(records: readonly SelectionRecord[], request: EvidenceFindRequest): EvidenceFindResult {
-  const text = request.text.trim().toLowerCase();
-  const matches = records.filter((record) => record.searchText.includes(text)).sort((left, right) => left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
+  const text = normalizeEvidenceSearchText(request.text);
+  const matches = records.filter((record) => normalizeEvidenceSearchText(record.searchText).includes(text)).sort((left, right) => left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
   const currentIndex = request.current ? matches.findIndex((record) => sameIdentity(record.identity, request.current!)) : -1;
   const fallbackIndex = currentIndex >= 0 ? currentIndex : nearestIndex(matches, request.current);
   const current = currentIndex >= 0 || request.current !== undefined

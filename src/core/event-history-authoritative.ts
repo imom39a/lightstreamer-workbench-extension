@@ -86,7 +86,8 @@ export type HistoryProblemCode =
   | "JOURNAL_COMMIT_FAILED"
   | HistoryTerminalReason
   | "CLEAR_FAILED"
-  | "CLOSE_FAILED";
+  | "CLOSE_FAILED"
+  | "QUERY_FAILED";
 
 export type HistoryProblem = Readonly<{
   code: HistoryProblemCode;
@@ -168,6 +169,8 @@ export type HistoryStatus = Readonly<{
   notAccepted: number;
   retained: number;
   terminal?: HistoryTerminalDiagnostic;
+  /** Diagnostic-only last successful Evidence query retained across a failed publication. */
+  lastCoherentQuery?: import("./evidence-filter-contract").EvidenceSnapshot;
 }>;
 
 export type EventHistoryStorage = Readonly<{
