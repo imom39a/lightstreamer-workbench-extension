@@ -1,12 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
-declare global {
-  interface Window {
-    __makeWorkbenchFilterStale?: () => void;
-  }
-}
-
 const evidenceRoot = process.env.LSEW_FILTER_EVIDENCE_DIR ?? "/tmp/filter-impl-12-composer-evidence";
 const evidenceVariant = process.env.LSEW_FILTER_EVIDENCE_VARIANT ?? "current";
 

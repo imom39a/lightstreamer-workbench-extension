@@ -176,6 +176,7 @@ window.__makeWorkbenchFilterStale = () => {
     operations: [{ type: "set-text", text: "external-change" }]
   });
 };
+window.__getWorkbenchFilterDiscoveryCount = () => runtime.getSnapshot().evidence.investigation.discoveries.size;
 let deferredEventsReleased = false;
 window.__appendDeferredWorkbenchEvents = () => {
   if (deferredEventsReleased) return 0;

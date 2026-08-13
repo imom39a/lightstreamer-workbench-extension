@@ -14,6 +14,10 @@ export const WORKBENCH_SCENARIO_IDS = [
   "selected-local-evidence",
   "frozen-high-volume",
   "live-high-scope",
+  "filter-high-cardinality",
+  "filter-active-zero",
+  "filter-no-concrete",
+  "filter-collision",
   "limited-capture",
   "storage-headroom-warning",
   "empty-scope",
@@ -140,6 +144,64 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         },
         captureStatus: "capturing"
       };
+    case "filter-high-cardinality":
+      return {
+        id,
+        initialEvents: highScopeEvents(1, 220),
+        captureStatus: "capturing"
+      };
+    case "filter-active-zero": {
+      const statusEvent = canonical[0];
+      if (!statusEvent) throw new Error("The canonical scenario must include a Filter event.");
+      return {
+        id,
+        initialEvents: [
+          ...canonical,
+          {
+            ...statusEvent,
+            id: "filter-active-zero-client-status",
+            kind: "client-status",
+            subscription: undefined,
+            listener: undefined,
+            item: undefined,
+            update: undefined,
+            raw: { scenario: "filter-active-zero" }
+          }
+        ],
+        captureStatus: "capturing"
+      };
+    }
+    case "filter-no-concrete": {
+      const statusEvent = canonical[0];
+      if (!statusEvent) throw new Error("The canonical scenario must include a Filter event.");
+      return {
+        id,
+        initialEvents: [{
+          ...statusEvent,
+          id: "filter-no-concrete-client-status",
+          kind: "client-status",
+          subscription: undefined,
+          listener: undefined,
+          item: undefined,
+          update: undefined,
+          raw: { scenario: "filter-no-concrete" }
+        }],
+        captureStatus: "capturing"
+      };
+    }
+    case "filter-collision": {
+      const first = canonical[0];
+      const second = canonical[1];
+      if (!first || !second) throw new Error("The canonical scenario must include two Filter events.");
+      return {
+        id,
+        initialEvents: [
+          { ...first, id: "filter-collision-position", client: { ...(first.client ?? {}), id: first.client?.id ?? "collision-client", sessionId: "collision-session" }, item: { name: "1", position: 1 } },
+          { ...second, id: "filter-collision-name", client: { ...(second.client ?? {}), id: second.client?.id ?? "collision-client", sessionId: "collision-session" }, item: { name: "1", position: 2 } }
+        ],
+        captureStatus: "capturing"
+      };
+    }
     case "limited-capture":
       return {
         id,

@@ -869,8 +869,8 @@ test("Workbench drafts free-text Filter, exposes exact counts, and keeps Find in
   await openScenario(page, "filter-find", { width: 900, height: 700 }, "light");
   const filter = page.getByRole("button", { name: "Filter", exact: true });
   await filter.click();
-  await expect(page.getByRole("button", { name: "Add structured criterion" })).toBeDisabled();
-  await expect(page.getByText(/Structured criteria are not available in this slice/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add structured criterion" })).toBeEnabled();
+  await expect(page.getByText("Choose one of twelve Evidence facets to browse exact observed values.", { exact: true })).toBeVisible();
   await page.getByLabel("Filter Evidence").fill("not-applied-yet");
   await expect(page.getByText("Filter: scenario-event", { exact: true })).toBeVisible();
   await page.evaluate(() => window.__makeWorkbenchFilterStale());
@@ -878,9 +878,9 @@ test("Workbench drafts free-text Filter, exposes exact counts, and keeps Find in
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator(".workbench-react__filter-status")).toContainText("Filter revision is stale");
   await expect(page.getByLabel("Filter Evidence")).toHaveValue("not-applied-yet");
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByText("Filter: not-applied-yet", { exact: true })).toBeVisible();
   await expect(filter).toBeFocused();
-  await expect(page.getByText("Filter: external-change", { exact: true })).toBeVisible();
 
   await filter.click();
   await page.getByLabel("Filter Evidence").fill("scenario-event-2");

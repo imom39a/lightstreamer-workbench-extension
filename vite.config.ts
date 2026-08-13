@@ -28,6 +28,7 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes("/src/core/filter-algebra.")) return "filter-algebra";
           if (id.includes("/src/core/evidence-filter-selection.")) return "evidence-filter-selection";
+          if (id.includes("/src/core/evidence-filter-discovery.") || id.includes("/src/core/evidence-facets.")) return "filter-discovery";
           // Keep optional browser-storage telemetry out of the guarded initial
           // panel chunk; the panel still loads this local static dependency
           // before Capture connects.

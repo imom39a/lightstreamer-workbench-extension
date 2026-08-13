@@ -294,6 +294,10 @@ function discoveryUnavailableMessage(result: Extract<FacetDiscoveryResult, { sta
   }
 }
 
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
+}
+
 function sensitiveCategoryLabel(category: TopologySensitiveCategory): string {
   switch (category) {
     case "server-addresses": return "Server addresses and URLs";
@@ -1081,6 +1085,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   };
 
   const openFilter = (origin: HTMLElement) => {
+    clearFilterDiscovery();
     filterOrigin.current = origin;
     setFilterDraft(appliedFilter.text);
     setFilterDraftCriteria(cloneFilterCriteria(appliedFilter.criteria));
@@ -1094,7 +1099,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     setFilterOpen(true);
   };
 
+  const clearFilterDiscovery = () => {
+    runtime.dispatch({ type: "request-filter-discovery", request: null });
+  };
+
   const closeFilter = () => {
+    clearFilterDiscovery();
     setFilterDraft(appliedFilter.text);
     setFilterDraftCriteria(cloneFilterCriteria(appliedFilter.criteria));
     setFilterStep("composer");
@@ -1161,6 +1171,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     event.preventDefault();
     event.stopPropagation();
     if (filterStep === "explorer") {
+      clearFilterDiscovery();
       setFilterStep("facets");
       setFilterFacet(null);
       setFilterDiscoveryCursor(null);
@@ -1181,7 +1192,12 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   useLayoutEffect(() => {
     if (filterSubmitVersion === null || snapshot.version <= filterSubmitVersion) return;
     const mutation = evidence.filterMutation;
-    if (mutation.state === "stale" || mutation.state === "invalid") {
+    if (mutation.state === "stale") {
+      setFilterDraftRevision(mutation.revision);
+      setFilterSubmitVersion(null);
+      return;
+    }
+    if (mutation.state === "invalid") {
       setFilterSubmitVersion(null);
       return;
     }
@@ -1573,7 +1589,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
           <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>Matching {matching.toLocaleString()}</span><span>In Scope {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : null}</div></header>
-          {filterOpen ? <form className={`workbench-react__filter${filterStep === "explorer" ? " workbench-react__filter--explorer-open" : ""}`} id="workbench-filter" aria-label="Filter ordered Evidence" onKeyDown={handleFilterEscape} onSubmit={(event) => {
+          {filterOpen ? <form className={`workbench-react__filter${filterStep !== "composer" ? " workbench-react__filter--structured-open" : ""}${filterStep === "explorer" ? " workbench-react__filter--explorer-open" : ""}`} id="workbench-filter" aria-label="Filter ordered Evidence" onKeyDown={handleFilterEscape} onSubmit={(event) => {
             event.preventDefault();
             setFilterSubmitVersion(snapshot.version);
             dispatch(runtime, {
@@ -1595,10 +1611,10 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               <div className="workbench-react__filter-facet-grid" role="listbox" aria-label="Evidence facets">{FACET_DESCRIPTORS.map((descriptor, index) => <button ref={(element) => { if (index === 0) facetPickerFirst.current = element; if (element) facetButtons.current.set(descriptor.key, element); else facetButtons.current.delete(descriptor.key); }} type="button" role="option" key={descriptor.key} aria-label={`Add ${descriptor.label} criterion`} onClick={() => openFacetExplorer(descriptor.key)}><strong>{descriptor.label}</strong><span>{descriptor.valueType} · exact observed values</span></button>)}</div>
               <footer><span>All twelve facets are available without query syntax.</span><button type="button" onClick={closeFilter}>Cancel</button></footer>
             </section> : <section className="workbench-react__filter-explorer" role="dialog" aria-label={`${activeFacetDescriptor?.label ?? "Facet"} exact values`}>
-              <header className="workbench-react__filter-explorer-header"><div><strong>{activeFacetDescriptor?.label ?? "Facet"} exact values</strong><span>Bounded contextual explorer · typed identities remain stable at this read point.</span></div><button type="button" onClick={() => { setFilterStep("facets"); setFilterFacet(null); setFilterDiscoveryCursor(null); window.requestAnimationFrame(() => facetPickerFirst.current?.focus()); }}>Back to facets</button></header>
-              <div className="workbench-react__filter-explorer-search"><label htmlFor="workbench-filter-value-search">Search exact values</label><input ref={facetSearchInput} id="workbench-filter-value-search" value={filterDiscoverySearch} onChange={(event) => { const search = event.currentTarget.value; setFilterDiscoverySearch(search); setFilterDiscoveryCursor(null); requestFacetDiscovery(search); }} /><span aria-live="polite">{activeFacetDiscovery?.state === "AVAILABLE" ? `${activeFacetDiscovery.distinctTotal.toLocaleString()} exact values` : "Exact contextual counts"}</span></div>
+              <header className="workbench-react__filter-explorer-header"><div><strong>{activeFacetDescriptor?.label ?? "Facet"} exact values</strong><span>Bounded contextual explorer · typed identities remain stable at this read point.</span></div><button type="button" onClick={() => { clearFilterDiscovery(); setFilterStep("facets"); setFilterFacet(null); setFilterDiscoveryCursor(null); window.requestAnimationFrame(() => facetPickerFirst.current?.focus()); }}>Back to facets</button></header>
+              <div className="workbench-react__filter-explorer-search"><label htmlFor="workbench-filter-value-search">Search exact values</label><input ref={facetSearchInput} id="workbench-filter-value-search" value={filterDiscoverySearch} onChange={(event) => { const search = event.currentTarget.value; setFilterDiscoverySearch(search); setFilterDiscoveryCursor(null); requestFacetDiscovery(search); }} /><span aria-live="polite">{activeFacetDiscovery?.state === "AVAILABLE" ? countLabel(activeFacetDiscovery.distinctTotal, "exact value") : "Exact contextual counts"}</span></div>
               {!activeFacetDiscovery || evidence.investigation.queryState === "loading" ? <div className="workbench-react__filter-explorer-empty" role="status"><strong>Loading exact values…</strong><span>Reading the current Scope and Filter at one coherent Evidence read point.</span></div> : activeFacetDiscovery.state === "UNAVAILABLE" ? <div className="workbench-react__filter-explorer-empty" role="status"><strong>Exact values unavailable</strong><span>{discoveryUnavailableMessage(activeFacetDiscovery)}</span></div> : <>
-                <p className="workbench-react__filter-explorer-counts" role="status">Exact contextual counts: {activeFacetDiscovery.baseEvidenceCount.toLocaleString()} Evidence · {activeFacetDiscovery.distinctTotal.toLocaleString()} distinct values{filterDiscoverySearch ? ` matching “${filterDiscoverySearch}”` : ""}.</p>
+                <p className="workbench-react__filter-explorer-counts" role="status">Exact contextual counts: {activeFacetDiscovery.baseEvidenceCount.toLocaleString()} Evidence · {countLabel(activeFacetDiscovery.distinctTotal, "distinct value")}{filterDiscoverySearch ? ` matching “${filterDiscoverySearch}”` : ""}.</p>
                 <div className="workbench-react__filter-value-list" role="list" aria-label={`${activeFacetDescriptor?.label ?? "Facet"} values`}>
                   {filterDiscoveryValues.length ? filterDiscoveryValues.map((entry) => {
                     const draftValue = filterValueForDraft(entry.value);
