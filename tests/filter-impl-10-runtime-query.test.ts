@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
@@ -9,6 +10,9 @@ import {
   type FacetDiscoveryResult
 } from "../src/core/evidence-filter-contract";
 import { createInMemoryEventHistory } from "../src/core/event-history-authoritative";
+import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
+import { canonicalFilterFromLegacyScalars } from "../src/core/filter-algebra";
+import { toEvidenceQueryRequest } from "../src/extension/panel/evidence-investigation-query";
 import { createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
 
 type InvestigationRequest = Readonly<{
@@ -18,7 +22,7 @@ type InvestigationRequest = Readonly<{
   page: Readonly<{ order: "NEWEST_FIRST" | "OLDEST_FIRST"; size: number; cursor?: string }>;
   discover: readonly Readonly<Record<string, unknown>>[];
   lookup?: EvidenceIdentity;
-  find?: Readonly<{ text: string; current?: EvidenceIdentity }>;
+  find?: Readonly<{ text: string; current?: EvidenceIdentity; scopeToFilter?: boolean }>;
 }>;
 
 type InvestigationResult =
@@ -30,6 +34,8 @@ type InvestigationQuery = {
 };
 
 type InvestigationProjection = Readonly<{
+  scope: Readonly<Record<string, unknown>>;
+  filter: Readonly<Record<string, unknown>>;
   readPoint: EvidenceSnapshot["readPoint"];
   page: EvidenceSnapshot["page"];
   counts: Readonly<{ shown: number; matching: number; inScope: number }>;
@@ -124,6 +130,20 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
+async function flushStorage(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+}
+
+async function waitForReady(runtime: ReturnType<typeof createWorkbenchRuntime>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (projection(runtime).queryState === "ready" && !runtime.getPerformanceDiagnostics?.().evidenceQueryPending) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error("WorkbenchRuntime did not publish a ready investigation snapshot.");
+}
+
 function queryFor(...results: InvestigationResult[]): InvestigationQuery {
   let index = 0;
   return {
@@ -131,7 +151,53 @@ function queryFor(...results: InvestigationResult[]): InvestigationQuery {
   };
 }
 
+function runtimeFacts(runtime: ReturnType<typeof createWorkbenchRuntime>): unknown {
+  const investigation = projection(runtime);
+  return {
+    scope: investigation.scope,
+    filter: investigation.filter,
+    readPoint: investigation.readPoint,
+    page: investigation.page.evidence.map((record) => record.identity),
+    counts: investigation.counts,
+    lookup: investigation.lookup?.state ?? null,
+    find: investigation.find
+      ? {
+          text: investigation.find.text,
+          total: investigation.find.total,
+          current: investigation.find.current,
+          previous: investigation.find.previous,
+          next: investigation.find.next,
+          first: investigation.find.first,
+          matches: investigation.find.matches,
+          window: investigation.find.window?.map((record) => record.identity),
+          nextWindow: investigation.find.nextWindow?.map((record) => record.identity)
+        }
+      : null,
+    queryState: investigation.queryState
+  };
+}
+
 describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
+  it("keeps structural Item Scope position when the canonical Filter names the same item", () => {
+    const request = toEvidenceQueryRequest({
+      at: "LATEST_COMMITTED",
+      scope: {
+        kind: "ITEM",
+        clientId: "client-1",
+        sessionId: "session-1",
+        subscriptionId: "subscription-1",
+        item: "orders",
+        itemPosition: 2
+      },
+      filter: canonicalFilterFromLegacyScalars({ item: "orders" }),
+      page: { order: "NEWEST_FIRST", size: 60 },
+      discover: []
+    });
+    const item = request.filter.criteria.item?.include[0];
+    expect(item).toMatchObject({ facet: "item", type: "structural-item", label: "orders" });
+    expect(JSON.parse(item?.value ?? "null")).toEqual(["orders", 2]);
+  });
+
   it("publishes one bounded canonical request and one coherent read point", async () => {
     const history = createInMemoryEventHistory({ panelSessionId: "runtime-query-contract" });
     const query = queryFor(ready(snapshot(1, "query-event-1")));
@@ -231,5 +297,50 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
       counts: { shown: 1, matching: 1, inScope: 1 }
     });
     runtime.dispose();
+  });
+
+  it("keeps the runtime investigation facts equivalent across memory and IndexedDB", async () => {
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const panelSessionId = `runtime-storage-parity-${Date.now()}`;
+    const memory = createInMemoryEventHistory({ panelSessionId });
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    for (const [index, eventId] of ["alpha-1", "beta-2", "alpha-3", "gamma-4"].entries()) {
+      const candidate = event(eventId);
+      const withValue = Object.freeze({
+        ...candidate,
+        timestamp: 1_780_000_000_000 + index,
+        update: { fields: { value: eventId } }
+      });
+      await memory.offer(withValue).settled;
+      await durable.offer(withValue).settled;
+    }
+    const memoryRuntime = createWorkbenchRuntime({ history: memory, windowSize: 2 });
+    const durableRuntime = createWorkbenchRuntime({ history: durable, windowSize: 2 });
+    await flushStorage();
+    await Promise.all([waitForReady(memoryRuntime), waitForReady(durableRuntime)]);
+    expect(runtimeFacts(durableRuntime)).toEqual(runtimeFacts(memoryRuntime));
+
+    memoryRuntime.dispatch({ type: "select-evidence", eventId: "alpha-3" });
+    durableRuntime.dispatch({ type: "select-evidence", eventId: "alpha-3" });
+    await flushStorage();
+    await Promise.all([waitForReady(memoryRuntime), waitForReady(durableRuntime)]);
+    expect(runtimeFacts(durableRuntime)).toEqual(runtimeFacts(memoryRuntime));
+
+    memoryRuntime.dispatch({ type: "set-find", value: "alpha" });
+    durableRuntime.dispatch({ type: "set-find", value: "alpha" });
+    await flushStorage();
+    await Promise.all([waitForReady(memoryRuntime), waitForReady(durableRuntime)]);
+    expect(runtimeFacts(durableRuntime)).toEqual(runtimeFacts(memoryRuntime));
+    expect(projection(durableRuntime).find?.total).toBe(2);
+
+    memoryRuntime.dispatch({ type: "set-filters", filters: { item: "orders" } });
+    durableRuntime.dispatch({ type: "set-filters", filters: { item: "orders" } });
+    await flushStorage();
+    await Promise.all([waitForReady(memoryRuntime), waitForReady(durableRuntime)]);
+    expect(runtimeFacts(durableRuntime)).toEqual(runtimeFacts(memoryRuntime));
+
+    memoryRuntime.dispose();
+    durableRuntime.dispose();
+    await Promise.all([memory.close(), durable.close()]);
   });
 });

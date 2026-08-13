@@ -16,6 +16,7 @@ import {
   type HistoryStatus
 } from "../src/core/event-history-authoritative";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import { type EvidenceQueryRequest } from "../src/core/evidence-filter-contract";
 
 function lightstreamerCandidate(id: string): LightstreamerEventEnvelope {
   return {
@@ -157,6 +158,49 @@ function createReplayableHistory(initial: EvidenceCandidate[]): EventHistory {
 }
 
 describe("committed-evidence pipeline", () => {
+  it("delegates the canonical query without falling back to legacy read", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "pipeline-query-delegate" });
+    const querySpy = vi.spyOn(history, "query");
+    const readSpy = vi.spyOn(history, "read");
+    const pipeline = bindCommittedEvidencePipeline({
+      history,
+      onCommittedEvidence: () => undefined
+    });
+    const request: EvidenceQueryRequest = {
+      at: "LATEST_COMMITTED",
+      page: { order: "NEWEST_FIRST", size: 10 },
+      filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] },
+      discover: []
+    };
+
+    await expect(pipeline.query(request)).resolves.toMatchObject({ ok: true, value: { page: { evidence: [] } } });
+    expect(querySpy).toHaveBeenCalledWith(request);
+    expect(readSpy).not.toHaveBeenCalled();
+    await pipeline.close();
+  });
+
+  it("reports a missing canonical query capability without using legacy read", async () => {
+    const source = await createMemoryEventHistoryForTests({ panelSessionId: "pipeline-query-missing" });
+    const readSpy = vi.spyOn(source, "read");
+    const history: EventHistory = { ...source, query: undefined };
+    const pipeline = bindCommittedEvidencePipeline({
+      history,
+      onCommittedEvidence: () => undefined
+    });
+
+    await expect(pipeline.query({
+      at: "LATEST_COMMITTED",
+      page: { order: "NEWEST_FIRST", size: 10 },
+      filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] },
+      discover: []
+    })).resolves.toMatchObject({
+      ok: false,
+      problem: { code: "QUERY_FAILED" }
+    });
+    expect(readSpy).not.toHaveBeenCalled();
+    await pipeline.close();
+  });
+
   it("binds synchronously and delegates operations to the opened history instance", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "pipeline-bind" });
     const follow = vi.spyOn(history, "follow");
