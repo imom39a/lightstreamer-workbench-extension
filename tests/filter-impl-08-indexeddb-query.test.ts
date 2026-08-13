@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
 import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb";
+import { authoritativeEventDatabaseName } from "../src/core/indexeddb/authoritative-event-db";
 import { type EvidenceFilter, typedFacetValue } from "../src/core/evidence-filter-contract";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
@@ -29,6 +30,41 @@ async function histories(name: string) {
 }
 
 describe("filter-impl-08 IndexedDB Evidence query", () => {
+  it("retains the last coherent publication when a later projection is corrupt", async () => {
+    const panelSessionId = `filter-impl-08-coherent-${Date.now()}`;
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    await durable.offer(event("one", 10_000, "alpha")).settled;
+    const first = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const publications: Array<{ lastCoherentQuery?: unknown; problem?: unknown }> = [];
+    const stop = durable.follow({ from: "NOW" }, (publication) => {
+      if (publication.type === "status") publications.push(publication.status as typeof publications[number]);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const database = request.result;
+        const transaction = database.transaction("evidence", "readwrite");
+        const get = transaction.objectStore("evidence").get(1);
+        get.onsuccess = () => {
+          const record = get.result as Record<string, unknown>;
+          delete record.projection;
+          transaction.objectStore("evidence").put(record);
+        };
+        transaction.oncomplete = () => { database.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    });
+    const failed = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(failed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+    expect(publications.at(-1)?.lastCoherentQuery).toEqual(first.value);
+    stop();
+    await durable.close();
+  });
+
   it("matches the memory oracle for page, totals, Around, lookup blockers, and Find", async () => {
     const { memory, durable } = await histories(`filter-impl-08-parity-${Date.now()}`);
     const base = await memory.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
@@ -66,6 +102,21 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     const filter: EvidenceFilter = { ...emptyFilter(), criteria: { mode: { include: [typedFacetValue("mode", "enum", "MERGE")], exclude: [] } } };
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 3, inScope: 3 }, page: { evidence: [{ identity: { eventId: "one" } }] } } });
+    await durable.close();
+  });
+
+  it("preserves empty-include semantics and applies same-facet exclusion after union", async () => {
+    const { durable } = await histories(`filter-impl-08-algebra-${Date.now()}`);
+    const kind = typedFacetValue("kind", "enum", "item-update");
+    const result = await durable.query!({
+      at: "LATEST_COMMITTED",
+      page: { order: "OLDEST_FIRST", size: 10 },
+      filter: { ...emptyFilter(), criteria: {
+        mode: { include: [], exclude: [] },
+        kind: { include: [kind], exclude: [] }
+      } }
+    });
+    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 3, inScope: 3 } } });
     await durable.close();
   });
 
