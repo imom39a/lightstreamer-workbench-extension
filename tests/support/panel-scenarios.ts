@@ -11,6 +11,11 @@ import {
   type TopologySyncFrame
 } from "../../src/bridge/messages";
 import { type LightstreamerEventEnvelope } from "../../src/core/event-envelope";
+import {
+  EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS,
+  EVIDENCE_FILTER_PANEL_SCENARIOS,
+  type EvidenceFilterPanelScenario
+} from "../../src/core/evidence-filter-contract";
 
 export const FIXED_SCENARIO_TIMESTAMP = 1_780_872_000_000;
 
@@ -73,7 +78,8 @@ export const PANEL_INTERACTION_SCENARIO_IDS = [
 
 export const ALL_PANEL_SCENARIO_IDS = [
   ...PANEL_SCENARIO_IDS,
-  ...PANEL_INTERACTION_SCENARIO_IDS
+  ...PANEL_INTERACTION_SCENARIO_IDS,
+  ...EVIDENCE_FILTER_PANEL_SCENARIOS
 ] as const;
 
 export type PanelScenarioId = (typeof ALL_PANEL_SCENARIO_IDS)[number];
@@ -150,7 +156,26 @@ export function getPanelScenario(id: PanelScenarioId): PanelScenario {
       return createTimelineScenario("timeline-live");
     case "timeline-frozen":
       return createTimelineScenario("timeline-frozen");
+    default:
+      return getEvidenceFilterPanelScenario(id as EvidenceFilterPanelScenario);
   }
+}
+
+/** Adapts the maintained renderer-neutral filter manifest to the shared panel scenario seam. */
+export function getEvidenceFilterPanelScenario(id: EvidenceFilterPanelScenario): PanelScenario {
+  const definition = EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS.find((candidate) => candidate.id === id);
+  if (!definition) throw new Error(`Unknown filter panel scenario: ${id}`);
+  return {
+    id,
+    status: "bridge connected",
+    initialView: "Timeline",
+    capturedEvents: [],
+    setupActions: definition.setupActions.map((action) => {
+      if (action.type === "set-value") return { type: "set-value", selector: action.selector, value: action.value ?? "" };
+      if (action.type === "select-row") return { type: "select-row", selector: action.selector, text: action.text ?? "" };
+      return { type: "click", selector: action.selector };
+    })
+  };
 }
 
 export function createExportOpenScenario(): PanelScenario {

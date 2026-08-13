@@ -30,8 +30,9 @@ describe("storage-neutral evidence filter seam", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.evaluation).toBe("COMPLETE");
-    expect(result.value.totals).toEqual({ matching: 0, inScope: 0 });
-    expect(result.value.page.evidence).toEqual([]);
+    expect(result.value.totals).toEqual({ matching: 420, inScope: 9 });
+    expect(result.value.page.evidence).toHaveLength(9);
+    expect(result.value.page.evidence.every((record) => record.timestamp >= fixture.cases.around.start && record.timestamp < fixture.cases.around.end)).toBe(true);
   });
 
   it("fails closed for unsupported criteria and reports unavailable discovery", async () => {
@@ -73,6 +74,42 @@ describe("storage-neutral evidence filter seam", () => {
 
     const next = await query(adapter, createEmptyEvidenceFilter(), { order: "OLDEST_FIRST", size: 7, cursor: first.value.page.nextCursor ?? undefined });
     expect(next.ok && next.value.page.evidence[0]?.identity.sequence).toBe(8);
+  });
+
+  it("reaches first, middle, and last records through bounded continuation without rendering the workload", async () => {
+    const fixture = createEvidenceFilterFixture();
+    const adapter = new DeterministicEvidenceFilterAdapter(fixture.records);
+    const seen: number[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = await query(adapter, createEmptyEvidenceFilter(), { order: "OLDEST_FIRST", size: 257, cursor });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.page.evidence.length).toBeLessThanOrEqual(257);
+      seen.push(...result.value.page.evidence.map((record) => record.identity.sequence));
+      cursor = result.value.page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(seen).toHaveLength(10_000);
+    expect(seen[0]).toBe(1);
+    expect(seen[4_999]).toBe(5_000);
+    expect(seen.at(-1)).toBe(10_000);
+  });
+
+  it("returns Reveal blockers for hidden retained selection and distinguishes another interval", async () => {
+    const fixture = createEvidenceFilterFixture();
+    const adapter = new DeterministicEvidenceFilterAdapter(fixture.records);
+    const selected = fixture.records[500]!.identity;
+    const result = await adapter.query({
+      at: "LATEST_COMMITTED",
+      page: { order: "OLDEST_FIRST", size: 1 },
+      filter: { ...createEmptyEvidenceFilter(), text: "does-not-match", around: { intervalId: fixture.interval.id, start: 0, end: 1 } },
+      lookup: selected
+    });
+    expect(result.ok && result.value.lookup).toMatchObject({ state: "RETAINED", inScope: false, matchesFilter: false });
+    if (!result.ok || !result.value.lookup || result.value.lookup.state !== "RETAINED") return;
+    expect(result.value.lookup.blockingCriteria.map(({ id }) => id)).toEqual(["free-text", "around-evidence"]);
+    const other = await adapter.query({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: createEmptyEvidenceFilter(), lookup: { ...selected, intervalId: "other-interval" } });
+    expect(other.ok && other.value.lookup).toMatchObject({ state: "OTHER_INTERVAL" });
   });
 
   it("keeps typed identities distinct when labels and values collide", () => {

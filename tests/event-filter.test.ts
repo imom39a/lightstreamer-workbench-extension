@@ -111,6 +111,15 @@ describe("event filters", () => {
     const retired = typedFacetValue("item", "item", "sub-retired-0:orders.eu", "orders.eu");
     expect(eu.label).toBe(retired.label);
     expect(eu.identity).not.toBe(retired.identity);
+    const fixture = createEvidenceFilterFixture(3_842);
+    expect(fixture.cases.collisions.clients[0]?.label).toBe(fixture.cases.collisions.clients[1]?.label);
+    expect(fixture.cases.collisions.clients[0]?.identity).not.toBe(fixture.cases.collisions.clients[1]?.identity);
+    expect(fixture.cases.collisions.sessions[0]?.identity).not.toBe(fixture.cases.collisions.sessions[1]?.identity);
+    expect(fixture.cases.collisions.listeners[0]?.identity).not.toBe(fixture.cases.collisions.listeners[1]?.identity);
+    expect(fixture.cases.collisions.missingItem.identity).not.toBe(fixture.cases.collisions.literalNullItem.identity);
+    expect(Object.isFrozen(EVIDENCE_FILTER_FACETS)).toBe(true);
+    expect(Object.isFrozen(fixture.records)).toBe(true);
+    expect(Object.isFrozen(fixture.records[0]?.identity)).toBe(true);
   });
 
   it("provides a normal-capacity fixture with all deterministic query cases", () => {
