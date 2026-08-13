@@ -213,6 +213,18 @@ function uppercase(value: string | undefined, fallback: string): string {
   return (value ?? fallback).replaceAll("-", "_").toUpperCase();
 }
 
+function filterSummary(filter: WorkbenchSnapshot["evidence"]["investigation"]["filter"]): string {
+  const entries: string[] = [];
+  if (filter.text) entries.push(filter.text);
+  for (const [facet, criterion] of Object.entries(filter.criteria)) {
+    for (const value of criterion.include) entries.push(`${facet}: ${value.label}`);
+    for (const value of criterion.exclude) entries.push(`${facet} excluding ${value.label}`);
+  }
+  if (filter.around) entries.push(`Around ${filter.around.start}–${filter.around.end}`);
+  for (const unsupported of filter.unsupported) entries.push(`${unsupported.facet ?? "criterion"} unavailable`);
+  return entries.length ? entries.join(" · ") : "none";
+}
+
 function sensitiveCategoryLabel(category: TopologySensitiveCategory): string {
   switch (category) {
     case "server-addresses": return "Server addresses and URLs";
@@ -374,6 +386,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const [contextCollapsed, setContextCollapsed] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState("");
+  const [filterDraftRevision, setFilterDraftRevision] = useState<number | null>(null);
+  const [filterSubmitVersion, setFilterSubmitVersion] = useState<number | null>(null);
   const [collapsedScopeIds, setCollapsedScopeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [scopeWindowStart, setScopeWindowStart] = useState(0);
   const [scopeTreeHeight, setScopeTreeHeight] = useState(SCOPE_NODE_HEIGHT * SCOPE_FALLBACK_VIEWPORT_ROWS);
@@ -521,12 +535,15 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const canAuthorCommandUpdate = snapshot.localInjection.availability.commandScope.available;
   const canCreateLocalInjectionDraft = snapshot.localInjection.availability.selectedUpdate.available;
   const total = evidence.total;
-  const shown = events.length;
+  const filterCounts = evidence.investigation.counts;
+  const shown = filterCounts.shown;
+  const matching = filterCounts.matching;
+  const inScope = filterCounts.inScope;
   const historyStatus = snapshot.retention.historyStatus;
   const limited = coverage === "LIMITED" || coverage === "UNAVAILABLE";
-  const activeFilterEntries = Object.entries(evidence.filters).filter(
-    ([, value]) => value !== undefined && value !== ""
-  );
+  const appliedFilter = evidence.investigation.filter;
+  const appliedFilterSummary = filterSummary(appliedFilter);
+  const hasActiveFilter = appliedFilterSummary !== "none";
   const compactSurface = snapshot.contextId === "context:scope" ? "scope" : snapshot.contextId ? "context" : undefined;
   const rawEvidence = snapshot.contextId?.startsWith("raw:") ? selected : null;
   const commandProjectionComparison = snapshot.contextId === "command-projections";
@@ -970,15 +987,32 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
 
   const openFilter = (origin: HTMLElement) => {
     filterOrigin.current = origin;
+    setFilterDraft(appliedFilter.text);
+    setFilterDraftRevision(appliedFilter.revision);
     setFilterOpen(true);
   };
 
   const closeFilter = () => {
+    setFilterDraft(appliedFilter.text);
+    setFilterDraftRevision(null);
     setFilterOpen(false);
     window.requestAnimationFrame(() => {
       (filterOrigin.current?.isConnected ? filterOrigin.current : filterTrigger.current)?.focus();
     });
   };
+
+  useLayoutEffect(() => {
+    if (filterSubmitVersion === null || snapshot.version <= filterSubmitVersion) return;
+    const mutation = evidence.filterMutation;
+    if (mutation.state === "stale" || mutation.state === "invalid") {
+      setFilterSubmitVersion(null);
+      return;
+    }
+    if (mutation.state === "applied" || mutation.state === "no-op") {
+      setFilterSubmitVersion(null);
+      closeFilter();
+    }
+  }, [evidence.filterMutation, filterSubmitVersion, snapshot.version]);
 
   const openActions = () => {
     actionsEvidenceScrollTop.current = evidenceLedger.current?.scrollTop ?? 0;
@@ -1018,8 +1052,16 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   useLayoutEffect(() => {
     const eventId = pendingEvidenceFocus.current;
     if (!eventId || snapshot.contextId) return;
-    evidenceRows.current.get(eventId)?.focus();
-    pendingEvidenceFocus.current = null;
+    const restore = () => {
+      const row = evidenceRows.current.get(eventId);
+      if (!row) return;
+      row.focus();
+      if (document.activeElement === row) pendingEvidenceFocus.current = null;
+    };
+    restore();
+    window.requestAnimationFrame(() => {
+      if (pendingEvidenceFocus.current === eventId) restore();
+    });
   }, [focusedEventId, snapshot.contextId, snapshot.version, scopePickerOpen]);
 
   useLayoutEffect(() => {
@@ -1148,8 +1190,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   }, [contextMode, snapshot.contextId]);
 
   useLayoutEffect(() => {
-    setFilterDraft(evidence.filters.query ?? "");
-  }, [evidence.filters.query]);
+    if (!filterOpen) setFilterDraft(appliedFilter.text);
+  }, [appliedFilter.text, filterOpen]);
 
   useLayoutEffect(() => {
     const pending = pendingPaneFocus.current;
@@ -1348,16 +1390,16 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </nav>
         <div ref={scopeSplitter} className="workbench-react__splitter workbench-react__splitter--scope" role="separator" aria-label="Resize Scope" aria-orientation="vertical" aria-valuemin={SCOPE_MIN_WIDTH} aria-valuemax={SCOPE_MAX_WIDTH} aria-valuenow={renderedScopeWidth} tabIndex={0} onKeyDown={(event) => handleSeparatorKey("scope", event)} onPointerDown={(event) => startResize("scope", event)} />
         <section className="workbench-react__pane workbench-react__evidence" aria-label="Ordered Evidence">
-          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>{shown.toLocaleString()} shown / {total.toLocaleString()}</span>{activeFilterEntries.length ? <><span className="workbench-react__active-filter">Filter: {activeFilterEntries.map(([, value]) => String(value)).join(" · ")}</span><button type="button" onClick={() => dispatch(runtime, { type: "clear-filters" })}>Clear filters</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : null}</div></header>
+          <header className="workbench-react__pane-header"><div><span className="workbench-react__eyebrow">Ordered Evidence</span><strong>{scopeLabel}</strong></div><div className="workbench-react__evidence-summary"><span>Shown {shown.toLocaleString()}</span><span>Matching {matching.toLocaleString()}</span><span>In Scope {inScope.toLocaleString()}</span>{hasActiveFilter ? <><span className="workbench-react__active-filter" title={`Filter: ${appliedFilterSummary}`}>Filter: {appliedFilterSummary}</span><button type="button" onClick={() => dispatch(runtime, { type: "reset-filter", expectedRevision: appliedFilter.revision })}>Reset Filter</button></> : null}{selected ? <button type="button" aria-controls="workbench-context" onClick={openContext}>{selectedContextActionLabel}</button> : null}</div></header>
           {filterOpen ? <form className="workbench-react__filter" id="workbench-filter" aria-label="Filter ordered Evidence" onSubmit={(event) => {
             event.preventDefault();
-            const query = filterDraft.trim();
-            dispatch(runtime, query ? { type: "set-filters", filters: { query } } : { type: "clear-filters" });
-            closeFilter();
-          }}><label htmlFor="workbench-filter-query">Filter Evidence</label><input ref={filterInput} id="workbench-filter-query" value={filterDraft} onChange={(event) => setFilterDraft(event.currentTarget.value)} /><button type="submit">Apply Filter</button><button type="button" onClick={() => {
-            setFilterDraft("");
-            dispatch(runtime, { type: "clear-filters" });
-          }}>Clear filters</button><button type="button" onClick={closeFilter}>Close Filter</button></form> : null}
+            setFilterSubmitVersion(snapshot.version);
+            dispatch(runtime, {
+              type: "apply-filter-mutations",
+              expectedRevision: filterDraftRevision ?? appliedFilter.revision,
+              operations: [{ type: "set-text", text: filterDraft }]
+            });
+          }}><div className="workbench-react__filter-controls"><label htmlFor="workbench-filter-query">Filter Evidence</label><input ref={filterInput} id="workbench-filter-query" value={filterDraft} onChange={(event) => setFilterDraft(event.currentTarget.value)} /><button type="submit">Apply</button><button type="button" onClick={closeFilter}>Cancel</button></div><button type="button" disabled aria-describedby="workbench-filter-structured-note">Add structured criterion</button><span id="workbench-filter-structured-note" className="workbench-react__filter-note">Structured criteria are not available in this slice; ticket13 will enable this route.</span>{evidence.filterMutation.state === "stale" || evidence.filterMutation.state === "invalid" ? <p className="workbench-react__filter-status" role="alert">{evidence.filterMutation.message ?? "The Filter could not be applied."} Draft remains editable; review it and Apply again.</p> : null}</form> : null}
           {hiddenSelection ? <div className="workbench-react__condition workbench-react__condition--selection" role="status"><strong>{hiddenSelection.message}</strong><span>Evidence {hiddenSelection.eventId} remains selected in Context.</span><div>{hiddenSelection.canReveal ? <button type="button" onClick={() => dispatch(runtime, { type: "reveal-selected-evidence" })}>Reveal selected Evidence</button> : null}{hiddenSelection.canClear ? <button type="button" onClick={() => dispatch(runtime, { type: "clear-evidence-selection" })}>Clear selection</button> : null}</div></div> : null}
           <div className="workbench-react__evidence-window" aria-label="Retained Evidence window"><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("oldest")}>Oldest</button><button type="button" aria-disabled={!evidence.hasOlder || undefined} onClick={() => evidence.hasOlder && navigateRetainedEvidence("older")}>Older</button><span>{evidence.visibleStart.toLocaleString()}–{evidence.visibleEnd.toLocaleString()} of {total.toLocaleString()}</span><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newer")}>Newer</button><button type="button" aria-disabled={!evidence.hasNewer || undefined} onClick={() => evidence.hasNewer && navigateRetainedEvidence("newest")}>Newest</button></div>
           {scopedCopyStatus ? <p className="workbench-react__copy-status" role="status">{scopedCopyStatus}</p> : null}

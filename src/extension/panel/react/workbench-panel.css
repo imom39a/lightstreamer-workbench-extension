@@ -204,11 +204,15 @@
 .workbench-react__restore-pane { flex: 0 0 auto; }
 .workbench-react__evidence-summary, .workbench-react__find, .workbench-react__filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .workbench-react__evidence-summary { justify-content: flex-end; }
+.workbench-react__evidence-summary > span { white-space: nowrap; }
 .workbench-react__active-filter { max-width: 180px; overflow: hidden; color: var(--wb-muted); text-overflow: ellipsis; white-space: nowrap; }
 .workbench-react__find { min-width: 0; }
 .workbench-react__find input, .workbench-react__filter input { min-width: 120px; }
 .workbench-react__filter { flex: 0 0 auto; border-bottom: 1px solid var(--wb-border); background: var(--wb-bg); padding: 6px 9px; }
+.workbench-react__filter-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .workbench-react__filter label { color: var(--wb-muted); }
+.workbench-react__filter-note { color: var(--wb-muted); }
+.workbench-react__filter-status { flex: 1 1 100%; margin: 0; border-left: 3px solid var(--wb-warning); background: var(--wb-warning-soft); padding: 4px 6px; }
 
 .workbench-react__scope { display: flex; flex-direction: column; }
 .workbench-react__scope-tree { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 6px 0; }

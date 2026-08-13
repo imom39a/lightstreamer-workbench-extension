@@ -168,6 +168,14 @@ window.__setWorkbenchStorageMode = (mode) => runtime.dispatch({
     ? { mode: "memory", reason: "IndexedDB is unavailable" }
     : { mode: "indexeddb" }
 });
+window.__makeWorkbenchFilterStale = () => {
+  const revision = runtime.getSnapshot().evidence.investigation.filter.revision;
+  runtime.dispatch({
+    type: "apply-filter-mutations",
+    expectedRevision: revision,
+    operations: [{ type: "set-text", text: "external-change" }]
+  });
+};
 let deferredEventsReleased = false;
 window.__appendDeferredWorkbenchEvents = () => {
   if (deferredEventsReleased) return 0;

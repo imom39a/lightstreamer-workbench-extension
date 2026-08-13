@@ -967,19 +967,74 @@ describe("React Workbench Diagnose panel", () => {
     const base = snapshot();
     const runtime = createTestRuntime({
       ...base,
-      evidence: { ...base.evidence, total: 20, filters: { query: "orders" } }
+      evidence: {
+        ...base.evidence,
+        total: 20,
+        investigation: {
+          ...base.evidence.investigation,
+          filter: { ...createFilter(2), text: "orders" },
+          counts: { shown: 2, matching: 2, inScope: 20 }
+        }
+      }
     });
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
     expect(rootElement.textContent).toContain("Filter: orders");
-    expect(rootElement.textContent).toContain("2 shown / 20");
+    expect(rootElement.textContent).toContain("Shown 2");
+    expect(rootElement.textContent).toContain("Matching 2");
+    expect(rootElement.textContent).toContain("In Scope 20");
     const clear = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent === "Clear filters"
+      (button) => button.textContent === "Reset Filter"
     );
     await act(async () => clear?.click());
 
-    expect(runtime.commands).toContainEqual({ type: "clear-filters" });
+    expect(runtime.commands).toContainEqual({ type: "reset-filter", expectedRevision: 2 });
+    await act(async () => root.unmount());
+  });
+
+  it("renders the canonical Filter summary and exact count labels with a revisioned Reset", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const appliedFilter = {
+      ...createFilter(3),
+      text: "orders",
+      criteria: {
+        provenance: {
+          include: [{ facet: "provenance", type: "enum", value: "LOCAL", label: "LOCAL", identity: '["v1","provenance","enum","LOCAL"]' }],
+          exclude: []
+        }
+      }
+    } as const;
+    const runtime = createTestRuntime({
+      ...base,
+      evidence: {
+        ...base.evidence,
+        filters: {},
+        find: "status",
+        findState: { query: "status", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" },
+        investigation: {
+          ...base.evidence.investigation,
+          filter: appliedFilter,
+          counts: { shown: 1, matching: 4, inScope: 7 }
+        }
+      }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    expect(rootElement.textContent).toContain("Shown 1");
+    expect(rootElement.textContent).toContain("Matching 4");
+    expect(rootElement.textContent).toContain("In Scope 7");
+    expect(rootElement.textContent).toContain("Filter: orders · provenance: LOCAL");
+    const reset = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Reset Filter"
+    );
+    await act(async () => reset?.click());
+    expect(runtime.commands).toContainEqual({ type: "reset-filter", expectedRevision: 3 });
+    expect(runtime.commands).not.toContainEqual({ type: "clear-filters" });
+
     await act(async () => root.unmount());
   });
 
