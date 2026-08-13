@@ -8,8 +8,23 @@ import {
   type EventHistoryPerformanceCheckpointScenario,
   type EventHistoryPerformanceHeapSample,
   type EventHistoryPerformanceReference,
-  type EventHistoryPerformanceReport
+  type EventHistoryPerformanceReport,
+  type EventHistoryPerformanceQueryCell
 } from "../benchmarks/event-history-performance-gate";
+
+function queryCell(adapter: "indexeddb" | "memory", sample: number): EventHistoryPerformanceQueryCell {
+  const operation = (payloadHydrations = 0) => ({ candidateBound: 3, projectionReads: 3, payloadHydrations, bounded: true, residualScan: false });
+  return {
+    adapter, sample,
+    fixture: { eventCount: adapter === "indexeddb" ? 10_000 : 5_000, distinctCommandKeyCount: 3_842 },
+    latency: { recentSimplePage50P95Ms: 5, recentSimplePage100P95Ms: 5, structuredPage50P95Ms: 10, structuredPage100P95Ms: 10, findP95Ms: 10, lookupP95Ms: 10, aroundP95Ms: 10 },
+    correctness: { totalsExact: true, orderExact: true, collisionExact: true, findIndependent: true, lookupExact: true, aroundExact: true },
+    telemetry: { operations: { recent50: operation(), recent100: operation(), structured50: operation(), structured100: operation(), find: operation(), lookup: operation(1), around: operation() } },
+    longTasks: [],
+    longTaskObserverSupported: true,
+    querySampleGc: Array.from({ length: 14 }, (_, index) => ({ query: `q-${index}`, afterSample: (index % 2 === 0 ? 1 : 2) as 1 | 2, gcPasses: 3 as const, phase: "BETWEEN_QUERY_SAMPLES" as const }))
+  };
+}
 
 function cell(
   adapter: EventHistoryPerformanceCell["adapter"],
@@ -269,6 +284,7 @@ function report(overrides: Partial<EventHistoryPerformanceReport> = {}): EventHi
       interQueryGcLongTasks: "EXPLICIT_HYGIENE_PHASE_V1"
     },
     cells,
+    queryCells: [1, 2, 3].flatMap((sample) => [queryCell("indexeddb", sample), queryCell("memory", sample)]),
     cellCleanupGc: Array.from({ length: 35 }, (_, index) => ({
       afterCellIndex: index + 1,
       gcPasses: 3 as const,
@@ -328,7 +344,8 @@ function referenceFrom(reportValue: EventHistoryPerformanceReport): EventHistory
     disposition: "ACCEPTED_INITIAL_CLEAN_REFERENCE",
     rationale: "Pinned from a clean visible Chrome for Testing 151 run after the gate implementation was committed.",
     environment: reportValue.environment,
-    cells: reportValue.cells
+    cells: reportValue.cells,
+    queryCells: reportValue.queryCells
   };
 }
 

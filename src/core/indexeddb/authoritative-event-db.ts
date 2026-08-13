@@ -1,7 +1,7 @@
 import { extractEvidenceFacets } from "../evidence-facets";
 import { deserializeJournalEvidenceCandidate } from "../event-history-serialization";
 
-export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 4;
+export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 5;
 // The application identity predates the posting-store schema. Keep this
 // logical name stable so schema upgrades happen in the deployed database.
 export const AUTHORITATIVE_EVENT_DB_IDENTITY_VERSION = 2;
@@ -335,6 +335,9 @@ function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   }
   const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
   if (projections.keyPath !== "sequence") throw new Error("The query projection store must be keyed by sequence.");
+  if (!projections.indexNames.contains("timestamp") || !projections.indexNames.contains("searchTokens")) {
+    throw new Error("The query projection indexes are incomplete.");
+  }
 }
 
 function upgradeAuthoritativeDatabase(
@@ -375,7 +378,13 @@ function upgradeAuthoritativeDatabase(
     rebuildFacetPostingsFromEvidence(transaction!, postings);
   }
   if (!database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections)) {
-    database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections, { keyPath: "sequence" });
+    const projections = database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections, { keyPath: "sequence" });
+    projections.createIndex("timestamp", "timestamp", { unique: false });
+    projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
+  } else {
+    const projections = transaction!.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
+    if (!projections.indexNames.contains("timestamp")) projections.createIndex("timestamp", "timestamp", { unique: false });
+    if (!projections.indexNames.contains("searchTokens")) projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
   }
 }
 

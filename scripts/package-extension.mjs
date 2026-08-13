@@ -219,7 +219,7 @@ async function listZipFiles(sourceDir) {
 
   async function visit(directory) {
     const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => compareArchiveNames(left.name, right.name));
 
     for (const entry of entries) {
       if (shouldSkip(entry.name)) {
@@ -245,6 +245,17 @@ async function listZipFiles(sourceDir) {
   return files;
 }
 
+function compareArchiveNames(left, right) {
+  const leftCodePoints = [...left];
+  const rightCodePoints = [...right];
+  const length = Math.min(leftCodePoints.length, rightCodePoints.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = leftCodePoints[index].codePointAt(0) - rightCodePoints[index].codePointAt(0);
+    if (difference !== 0) return difference;
+  }
+  return leftCodePoints.length - rightCodePoints.length;
+}
+
 function shouldSkip(name) {
   return (
     name === ".DS_Store" ||
@@ -260,7 +271,7 @@ function createLocalHeader(entry) {
   const header = Buffer.alloc(30);
   header.writeUInt32LE(0x04034b50, 0);
   header.writeUInt16LE(20, 4);
-  header.writeUInt16LE(0, 6);
+  header.writeUInt16LE(0x800, 6);
   header.writeUInt16LE(8, 8);
   header.writeUInt16LE(entry.dosTime, 10);
   header.writeUInt16LE(entry.dosDate, 12);
@@ -277,7 +288,7 @@ function createCentralDirectoryHeader(entry) {
   header.writeUInt32LE(0x02014b50, 0);
   header.writeUInt16LE(20, 4);
   header.writeUInt16LE(20, 6);
-  header.writeUInt16LE(0, 8);
+  header.writeUInt16LE(0x800, 8);
   header.writeUInt16LE(8, 10);
   header.writeUInt16LE(entry.dosTime, 12);
   header.writeUInt16LE(entry.dosDate, 14);

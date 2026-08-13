@@ -86,6 +86,10 @@ export function aggregatePerformanceShardResults(results) {
       if (!Array.isArray(result.queryCells) || result.queryCells.length !== 6) {
         throw new Error("Performance scenario shard must execute exactly six filter query samples.");
       }
+      const queryCellIds = result.queryCells.map((cell) => `${cell.adapter}/${cell.sample}`);
+      if (queryCellIds.join("|") !== "indexeddb/1|indexeddb/2|indexeddb/3|memory/1|memory/2|memory/3") {
+        throw new Error("Performance scenario query-cell identity/order mismatch.");
+      }
       queryCells = result.queryCells;
     }
     shards.push({ ...selection, cellCount: result.cells.length, cleanupCount: result.cellCleanupGc.length });

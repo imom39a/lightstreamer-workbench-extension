@@ -1008,33 +1008,48 @@ async function runFilterQueryCell(
       page: { order: "OLDEST_FIRST", size: pageSize },
       filter: { revision: 1, text: "", criteria: { key: { include: [structuredValue], exclude: [] } }, around: null, unsupported: [] }
     });
-    const timings = async (request: EvidenceQueryRequest): Promise<{ p95: number; result: any }> => {
+    let longTaskObserverSupported = true;
+    const timings = async (name: string, request: EvidenceQueryRequest): Promise<{ p95: number; result: any; telemetry: any; longTasks: number[]; gc: QuerySampleGcEvidence[] }> => {
       const samples: number[] = [];
+      const gc: QuerySampleGcEvidence[] = [];
+      const operationTelemetry: any[] = [];
+      const longTasks: number[] = [];
       let result: any;
       for (let index = 0; index < 3; index += 1) {
+        const entries: PerformanceEntry[] = [];
+        const supported = PerformanceObserver.supportedEntryTypes.includes("longtask");
+        longTaskObserverSupported = longTaskObserverSupported && supported;
+        const observer = supported ? new PerformanceObserver((list) => entries.push(...list.getEntries())) : null;
+        observer?.observe({ entryTypes: ["longtask"] });
         const started = performance.now();
         result = await history.query!(request);
         samples.push(performance.now() - started);
         await delay(0);
+        entries.push(...(observer?.takeRecords() ?? []));
+        observer?.disconnect();
+        longTasks.push(...entries.filter((entry) => entry.duration > 50).map((entry) => entry.duration));
+        operationTelemetry.push(result.ok ? result.value.telemetry : null);
+        if (index < 2) gc.push(await collectGarbageBetweenQuerySamples(name, (index + 1) as 1 | 2, guard));
       }
-      return { p95: percentile(samples, 0.95), result };
+      return { p95: percentile(samples, 0.95), result, telemetry: operationTelemetry.at(-1), longTasks, gc };
     };
-    const recent50 = await timings(firstRequest(50));
-    const recent100 = await timings(firstRequest(100));
-    const structured50 = await timings(structuredRequest(50));
-    const structured100 = await timings(structuredRequest(100));
+    const recent50 = await timings("recent50", firstRequest(50));
+    const recent100 = await timings("recent100", firstRequest(100));
+    const structured50 = await timings("structured50", structuredRequest(50));
+    const structured100 = await timings("structured100", structuredRequest(100));
     if (!recent50.result.ok || !recent100.result.ok || !structured50.result.ok || !structured100.result.ok) throw new Error("Filter query benchmark base query failed.");
     const recent = recent100.result.value;
     const structured = structured100.result.value;
     const selected = recent.page.evidence[0]?.identity;
     if (!selected) throw new Error("Filter query benchmark did not return a selected identity.");
-    const findMeasurement = await timings({ ...firstRequest(50), filter: { ...firstRequest(50).filter, criteria: { key: { include: [typedFacetValue("key", "string", "does-not-exist")], exclude: [] } }, around: null }, find: { text: "order-00001" } });
-    const lookupMeasurement = await timings({ ...firstRequest(50), lookup: selected });
-    const aroundMeasurement = await timings({ ...firstRequest(50), filter: { ...firstRequest(50).filter, around: { intervalId: selected.intervalId, start: 1_700_000_001_000, end: 1_700_000_002_000 } } });
+    const findMeasurement = await timings("find", { ...firstRequest(50), filter: { ...firstRequest(50).filter, criteria: { key: { include: [typedFacetValue("key", "string", "does-not-exist")], exclude: [] } }, around: null }, find: { text: "order-00001" } });
+    const lookupMeasurement = await timings("lookup", { ...firstRequest(50), lookup: selected });
+    const aroundMeasurement = await timings("around", { ...firstRequest(50), filter: { ...firstRequest(50).filter, around: { intervalId: selected.intervalId, start: 1_700_000_001_000, end: 1_700_000_002_000 } } });
     if (!findMeasurement.result.ok || !lookupMeasurement.result.ok || !aroundMeasurement.result.ok) throw new Error("Filter query benchmark optional probe failed.");
-    const telemetry = lookupMeasurement.result.value.telemetry ?? recent.telemetry;
-    const pageSequences = recent.page.evidence.map((record: any) => record.identity.sequence);
-    const structuredSequences = structured.page.evidence.map((record: any) => record.identity.sequence);
+    const operation = (measurement: any) => ({ candidateBound: measurement.telemetry?.candidateBound ?? 0, projectionReads: measurement.telemetry?.evidenceCursorReads ?? 0, payloadHydrations: measurement.telemetry?.payloadHydrations ?? 0, bounded: measurement.telemetry ? !measurement.telemetry.residualScan : false, residualScan: Boolean(measurement.telemetry?.residualScan) });
+    const exactPage = (measurement: any, size: number, expected: number[]) => measurement.result.value.page.evidence.length === Math.min(size, expected.length) && measurement.result.value.page.evidence.every((record: any, index: number) => record.identity.sequence === expected[index] && record.identity.eventId === `${runId}-event-${expected[index]}`);
+    const recentExpected = Array.from({ length: count }, (_, index) => count - index);
+    const structuredExpected = [1, 3843, 7685];
     return {
       adapter,
       sample,
@@ -1049,22 +1064,17 @@ async function runFilterQueryCell(
         aroundP95Ms: aroundMeasurement.p95
       },
       correctness: {
-        totalsExact: recent.totals.matching === count && structured.totals.matching === 3 && aroundMeasurement.result.value.totals.matching === count && aroundMeasurement.result.value.totals.inScope === 1_000,
-        orderExact: pageSequences.every((sequence: number, index: number) => sequence === count - index) && structuredSequences[0] === 1,
-        collisionExact: structured.page.evidence.length === 1 && structured.page.evidence[0]?.identity.eventId === `${runId}-event-1`,
-        findIndependent: findMeasurement.result.value.find?.total === 3 && findMeasurement.result.value.totals.matching === 0,
+        totalsExact: recent50.result.value.totals.matching === count && recent100.result.value.totals.matching === count && structured50.result.value.totals.matching === 3 && structured100.result.value.totals.matching === 3 && aroundMeasurement.result.value.totals.matching === count && aroundMeasurement.result.value.totals.inScope === 1_000,
+        orderExact: exactPage(recent50, 50, recentExpected) && exactPage(recent100, 100, recentExpected) && exactPage(structured50, 50, structuredExpected) && exactPage(structured100, 100, structuredExpected),
+        collisionExact: structured.page.evidence.length === 3 && structured.page.evidence.every((record: any, index: number) => record.identity.eventId === `${runId}-event-${structuredExpected[index]}`),
+        findIndependent: findMeasurement.result.value.find?.total === 3 && findMeasurement.result.value.find?.matches?.map((entry: any) => entry.identity.sequence).join(",") === "1,3843,7685" && findMeasurement.result.value.totals.matching === 0,
         lookupExact: lookupMeasurement.result.value.lookup?.state === "RETAINED" && lookupMeasurement.result.value.lookup.evidence.payload !== undefined,
         aroundExact: aroundMeasurement.result.value.totals.inScope === 1_000
       },
-      telemetry: {
-        candidateBounded: Boolean(telemetry && telemetry.candidateBound <= count),
-        projectionTraversalBounded: Boolean(telemetry && telemetry.evidenceCursorReads <= count),
-        payloadHydrations: telemetry?.payloadHydrations ?? 0,
-        selectedLookupPayloadHydrations: lookupMeasurement.result.value.telemetry?.payloadHydrations ?? 0,
-        noReplayPayloadFullScan: Boolean(telemetry && !telemetry.residualScan),
-        noFullMatchingPayloadHydration: Boolean(telemetry && telemetry.payloadHydrations < count)
-      },
-      longTasks: []
+      telemetry: { operations: { recent50: operation(recent50), recent100: operation(recent100), structured50: operation(structured50), structured100: operation(structured100), find: operation(findMeasurement), lookup: operation(lookupMeasurement), around: operation(aroundMeasurement) } },
+      longTasks: [...recent50.longTasks, ...recent100.longTasks, ...structured50.longTasks, ...structured100.longTasks, ...findMeasurement.longTasks, ...lookupMeasurement.longTasks, ...aroundMeasurement.longTasks],
+      longTaskObserverSupported,
+      querySampleGc: [...recent50.gc, ...recent100.gc, ...structured50.gc, ...structured100.gc, ...findMeasurement.gc, ...lookupMeasurement.gc, ...aroundMeasurement.gc]
     };
   } finally {
     await history.close();

@@ -181,6 +181,7 @@ export function aggregatePerformanceShardResults(results: readonly Record<string
   cellCleanupGc: readonly any[];
   terminalScenarios: readonly any[];
   checkpointScenarios: readonly any[];
+  queryCells: readonly any[];
   shards: readonly any[];
 }>;
 

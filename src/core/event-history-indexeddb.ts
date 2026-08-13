@@ -115,6 +115,7 @@ type QueryProjection = {
   timestamp: number;
   summary: string;
   searchText: string;
+  searchTokens: string[];
   facets: Readonly<Record<string, unknown>>;
 };
 
@@ -1281,29 +1282,36 @@ async function ensureQueryProjections(database: AuthoritativeEventDatabase, cont
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections], "readwrite");
   const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
   const projections = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections);
-  const count = await requestToPromise<number>(projections.count(), "checking query projection migration state");
-  if (count !== 0) {
-    transaction.abort();
-    return;
-  }
   await new Promise<void>((resolve, reject) => {
-    const request = evidence.openCursor();
+    const request = projections.openCursor();
     request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) { resolve(); return; }
-      const record = cursor.value as EvidenceRecord;
-      const get = projections.get(record.sequence);
-      get.onerror = () => reject(get.error ?? new Error("Query projection migration failed."));
-      get.onsuccess = () => {
-        if (get.result === undefined) {
-          const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
-          projections.put(queryProjection(candidate, record.intervalId, record.sequence));
-        }
-        cursor.continue();
-      };
+      const projection = cursor.value as QueryProjection;
+      if (!Array.isArray(projection.searchTokens)) projections.put({ ...projection, searchTokens: querySearchTokens(projection.searchText) });
+      cursor.continue();
     };
   });
+  const evidenceCount = await requestToPromise<number>(evidence.count(), "checking query projection migration state");
+  const projectionCount = await requestToPromise<number>(projections.count(), "checking query projection migration state");
+  if (projectionCount < evidenceCount) {
+    await new Promise<void>((resolve, reject) => {
+      const request = evidence.openCursor();
+      request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(); return; }
+        const record = cursor.value as EvidenceRecord;
+        const get = projections.get(record.sequence);
+        get.onerror = () => reject(get.error ?? new Error("Query projection migration failed."));
+        get.onsuccess = () => {
+          if (get.result === undefined) projections.put(queryProjection(deserializeJournalEvidenceCandidate(record.replayPayload), record.intervalId, record.sequence));
+          cursor.continue();
+        };
+      };
+    });
+  }
   await transactionDone(transaction, `migrating query projections for ${panelSessionId}`);
 }
 
@@ -1368,15 +1376,21 @@ async function queryIndexedDb(
     if (simpleRecentPage) {
       const offset = decodeQueryCursor(request.page.cursor, readPoint, request, 0);
       projections = await readProjectionPage(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.page, offset, telemetry);
-      telemetry.candidateBound = expectedProjectionCount;
+      telemetry.candidateBound = projections.length;
     } else {
-      telemetry.residualScan = request.filter.text.trim() !== "" || request.filter.around !== null || request.find !== undefined;
-      projections = await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, candidateSequences, telemetry);
+      telemetry.residualScan = request.filter.text.trim() !== "";
+      projections = candidateSequences
+        ? await readCandidateProjections(transaction.objectStore(options.projectionStore), candidateSequences, telemetry)
+        : request.filter.around !== null
+          ? await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry)
+          : await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry);
       telemetry.candidateBound = projections.length;
     }
-    const retainedProjections = (request.find !== undefined || request.filter.around?.anchor !== undefined)
-      ? await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry)
-      : null;
+    const retainedProjections = request.find !== undefined
+      ? await readSearchProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.find, telemetry)
+      : request.filter.around?.anchor !== undefined
+        ? await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry)
+        : null;
     const selectedPayload = request.lookup === undefined
       ? null
       : await readSelectedEvidence(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), request.lookup, interval, firstSequence, lastSequence, telemetry);
@@ -1421,7 +1435,8 @@ async function queryIndexedDb(
     const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
     const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
     telemetry.elapsedMs = Date.now() - started;
-    const matchingTotal = simpleRecentPage ? expectedProjectionCount : matching.length;
+    const aroundOnly = request.filter.around !== null && request.filter.text.trim() === "" && Object.keys(request.filter.criteria).length === 0 && request.filter.unsupported.length === 0;
+    const matchingTotal = simpleRecentPage || aroundOnly ? expectedProjectionCount : matching.length;
     const inScopeTotal = simpleRecentPage ? expectedProjectionCount : inScope.length;
     return { ok: true, value: querySnapshot(readPoint, page, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < expectedProjectionCount ? encodeQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
   } catch (error) {
@@ -1438,10 +1453,10 @@ function querySelectionRecord(projection: QueryProjection, interval: HistoryInte
 }
 
 function validateQueryProjection(projection: QueryProjection, intervalId: string): void {
-  assertExactKeys(projection, ["eventId", "facets", "intervalId", "searchText", "sequence", "summary", "timestamp"]);
+  assertExactKeys(projection, ["eventId", "facets", "intervalId", "searchText", "searchTokens", "sequence", "summary", "timestamp"]);
   if (projection.intervalId !== intervalId || typeof projection.eventId !== "string" || projection.eventId.length === 0
     || !Number.isSafeInteger(projection.sequence) || projection.sequence < 1 || !Number.isFinite(projection.timestamp)
-    || typeof projection.summary !== "string" || typeof projection.searchText !== "string"
+    || typeof projection.summary !== "string" || typeof projection.searchText !== "string" || !Array.isArray(projection.searchTokens)
     || projection.facets === null || typeof projection.facets !== "object") {
     throw new Error("The query projection is missing or corrupt.");
   }
@@ -1533,6 +1548,43 @@ function readQueryProjections(store: IDBObjectStore, intervalId: string, first: 
   });
 }
 
+function readCandidateProjections(store: IDBObjectStore, candidates: Set<number>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  return Promise.all([...candidates].map((sequence) => requestToPromise<QueryProjection | undefined>(store.get(sequence), "reading indexed query projection").then((projection) => {
+    telemetry.evidenceCursorReads += 1;
+    return projection;
+  }))).then((values) => values.filter((projection): projection is QueryProjection => projection !== undefined).sort((left, right) => left.sequence - right.sequence));
+}
+
+function readAroundProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, around: NonNullable<EvidenceQueryRequest["filter"]["around"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  return readProjectionCursor(store.index("timestamp"), queryBoundRange(around.start, around.end - Number.EPSILON), intervalId, telemetry)
+    .then((values) => values.filter((value) => value.sequence >= first && value.sequence <= last));
+}
+
+function readSearchProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, find: NonNullable<EvidenceQueryRequest["find"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  const token = querySearchTokens(find.text)[0];
+  if (!token) return Promise.resolve([]);
+  return readProjectionCursor(store.index("searchTokens"), queryOnlyRange(token), intervalId, telemetry).then((values) => {
+    const unique = new Map(values.map((value) => [value.sequence, value]));
+    return [...unique.values()].filter((value) => value.sequence >= first && value.sequence <= last && value.searchText.includes(find.text.trim().toLowerCase()));
+  });
+}
+
+function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | undefined, intervalId: string, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+  const result: QueryProjection[] = [];
+  return new Promise((resolve, reject) => {
+    const request = index.openCursor(range);
+    request.onerror = () => reject(request.error ?? new Error("Indexed query projection cursor failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(result); return; }
+      telemetry.evidenceCursorReads += 1;
+      const projection = cursor.value as QueryProjection;
+      if (projection.intervalId === intervalId) result.push(projection);
+      cursor.continue();
+    };
+  });
+}
+
 function queryOnlyRange(value: IDBValidKey): IDBKeyRange | undefined {
   const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
   return range ? range.only(value) : undefined;
@@ -1600,16 +1652,23 @@ function deterministicQueryRecord(entry: CommittedEvidence, interval: HistoryInt
 function queryProjection(candidate: EvidenceCandidate, intervalId: string, sequence: number): QueryProjection {
   const identity: EvidenceIdentity = { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence, eventId: candidate.id };
   if (candidate.kind === "topology-checkpoint") {
-    return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText: journalCandidateSearchText(candidate), facets: {} };
+    const searchText = journalCandidateSearchText(candidate);
+    return { sequence, intervalId, eventId: candidate.id, timestamp: 0, summary: "Topology checkpoint", searchText, searchTokens: querySearchTokens(searchText), facets: {} };
   }
   const context = { identity, pageId: intervalId, listenerOwner: identity.ownerId, summary: candidate.kind };
+  const searchText = canonicalEvidenceSearchText(candidate, context);
   return {
     sequence, intervalId, eventId: candidate.id,
     timestamp: candidate.timestamp,
     summary: candidate.kind,
-    searchText: canonicalEvidenceSearchText(candidate, context),
+    searchText,
+    searchTokens: querySearchTokens(searchText),
     facets: extractEvidenceFacets(candidate, context).facets
   };
+}
+
+function querySearchTokens(value: string): string[] {
+  return [...new Set(value.toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter(Boolean))];
 }
 
 function queryProjectionFromPayload(record: EvidenceRecord, interval: HistoryInterval): SelectionRecord {

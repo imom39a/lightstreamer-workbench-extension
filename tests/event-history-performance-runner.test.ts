@@ -29,6 +29,7 @@ describe("Event History fresh-page shard orchestration", () => {
       : [],
     terminalScenarios: shard.kind === "scenarios" ? [1, 2, 3, 4] : [],
     checkpointScenarios: shard.kind === "scenarios" ? [1, 2, 3, 4] : []
+    ,queryCells: shard.kind === "scenarios" ? ["indexeddb/1", "indexeddb/2", "indexeddb/3", "memory/1", "memory/2", "memory/3"].map((id) => { const [adapter, sample] = id.split("/"); return { adapter, sample: Number(sample) }; }) : []
   });
 
   it("defines four ordered nine-cell matrix shards plus one scenario shard", () => {
@@ -49,6 +50,7 @@ describe("Event History fresh-page shard orchestration", () => {
     expect(aggregated.terminalScenarios).toHaveLength(4);
     expect(aggregated.checkpointScenarios).toHaveLength(4);
     expect(aggregated.shards.map((shard: { id: string }) => shard.id)).toEqual(plan.map((shard) => shard.id));
+    expect(aggregated.queryCells.map((cell: { adapter: string; sample: number }) => `${cell.adapter}/${cell.sample}`)).toEqual(["indexeddb/1", "indexeddb/2", "indexeddb/3", "memory/1", "memory/2", "memory/3"]);
   });
 
   it("fails closed for missing, duplicate, reordered, or mismatched shard evidence", () => {

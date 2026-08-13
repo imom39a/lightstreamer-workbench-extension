@@ -158,14 +158,10 @@ export type EventHistoryPerformanceQueryCell = Readonly<{
     aroundExact: boolean;
   }>;
   telemetry: Readonly<{
-    candidateBounded: boolean;
-    projectionTraversalBounded: boolean;
-    payloadHydrations: number;
-    selectedLookupPayloadHydrations: number;
-    noReplayPayloadFullScan: boolean;
-    noFullMatchingPayloadHydration: boolean;
+    operations: Readonly<Record<"recent50" | "recent100" | "structured50" | "structured100" | "find" | "lookup" | "around", Readonly<{ candidateBound: number; projectionReads: number; payloadHydrations: number; bounded: boolean; residualScan: boolean }>>>;
   }>;
   longTasks: readonly number[];
+  longTaskObserverSupported: boolean;
   querySampleGc?: readonly EventHistoryPerformanceQuerySampleGc[];
 }>;
 
@@ -267,7 +263,7 @@ export type EventHistoryPerformanceReport = Readonly<{
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
   cells: readonly EventHistoryPerformanceCell[];
-  queryCells?: readonly EventHistoryPerformanceQueryCell[];
+  queryCells: readonly EventHistoryPerformanceQueryCell[];
   capabilities?: Readonly<{
     interCellGc?: "EXPOSED_THREE_PASS_V1";
     interQuerySampleGc?: "EXPOSED_THREE_PASS_V1";
@@ -297,7 +293,7 @@ export type EventHistoryPerformanceReference = Readonly<{
   rationale: string;
   environment: Pick<EventHistoryPerformanceEnvironment, "chromeMajor" | "platformClass" | "architectureClass">;
   cells: readonly EventHistoryPerformanceCell[];
-  queryCells?: readonly EventHistoryPerformanceQueryCell[];
+  queryCells: readonly EventHistoryPerformanceQueryCell[];
 }>;
 
 export type PerformanceGateVerdict = "PASS" | "REVIEW" | "FAIL";
@@ -506,7 +502,7 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && isRecord(environment) && environment.chromeMajor === 151 && typeof environment.platformClass === "string"
     && typeof environment.architectureClass === "string" && environment.headless === false
     && Array.isArray(value.cells) && value.cells.every(isPerformanceCell)
-    && (value.queryCells === undefined || (Array.isArray(value.queryCells) && value.queryCells.every(isQueryCell)))
+    && Array.isArray(value.queryCells) && value.queryCells.length === 6 && value.queryCells.every(isQueryCell)
     && (value.capabilities === undefined || (
       isRecord(value.capabilities)
       && (value.capabilities.interCellGc === undefined || value.capabilities.interCellGc === "EXPOSED_THREE_PASS_V1")
@@ -528,11 +524,15 @@ function isQueryCell(value: unknown): value is EventHistoryPerformanceQueryCell 
   if (!isRecord(value) || !ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
     || !Number.isSafeInteger(value.sample) || !isRecord(value.fixture) || !Number.isSafeInteger(value.fixture.eventCount)
     || !Number.isSafeInteger(value.fixture.distinctCommandKeyCount) || !isRecord(value.latency)
-    || !isRecord(value.correctness) || !isRecord(value.telemetry) || !Array.isArray(value.longTasks)) return false;
+    || !isRecord(value.correctness) || !isRecord(value.telemetry) || !isRecord(value.telemetry.operations) || !Array.isArray(value.longTasks) || !isBoolean(value.longTaskObserverSupported)) return false;
   return Object.values(value.latency).every(isFiniteNumber)
     && Object.values(value.correctness).every(isBoolean)
-    && Object.values(value.telemetry).every((entry) => typeof entry === "boolean" || Number.isSafeInteger(entry))
     && value.longTasks.every(isFiniteNumber)
+    && (["recent50", "recent100", "structured50", "structured100", "find", "lookup", "around"] as const).every((name) => {
+      const operation = (value.telemetry as { operations: Record<string, unknown> }).operations[name];
+      return isRecord(operation) && Number.isSafeInteger(operation.candidateBound) && Number.isSafeInteger(operation.projectionReads)
+        && Number.isSafeInteger(operation.payloadHydrations) && isBoolean(operation.bounded) && isBoolean(operation.residualScan);
+    })
     && (value.querySampleGc === undefined || Array.isArray(value.querySampleGc));
 }
 
@@ -553,11 +553,21 @@ function validateQueryCells(cells: readonly EventHistoryPerformanceQueryCell[], 
       if (value > limit) failures.push(`${label} ${name} exceeds ${limit} ms.`);
     }
     for (const [name, value] of Object.entries(cell.correctness)) if (!value) failures.push(`${label} correctness field ${name} is false.`);
-    if (!cell.telemetry.candidateBounded || !cell.telemetry.projectionTraversalBounded || !cell.telemetry.noReplayPayloadFullScan || !cell.telemetry.noFullMatchingPayloadHydration) {
-      failures.push(`${label} does not prove bounded candidate/projection traversal and zero full payload scan.`);
+    for (const [name, operation] of Object.entries(cell.telemetry.operations)) {
+      const bound = name.startsWith("recent") ? (name.endsWith("50") ? 50 : 100) : name.startsWith("structured") ? 3 : name === "around" ? 1_000 : name === "find" ? 3 : 1;
+      if (!operation.bounded || operation.projectionReads > Math.max(bound * 2, 8) || operation.candidateBound > cell.fixture.eventCount / 2) {
+        failures.push(`${label} ${name} does not prove meaningful bounded candidate/projection traversal.`);
+      }
+      if (operation.residualScan) failures.push(`${label} ${name} reports a discarded residual full scan.`);
     }
-    if (cell.telemetry.selectedLookupPayloadHydrations !== 1) failures.push(`${label} selected lookup must hydrate exactly one payload.`);
-    if (cell.telemetry.payloadHydrations < 1) failures.push(`${label} must report query payload hydration telemetry.`);
+    if (cell.telemetry.operations.lookup.payloadHydrations !== 1) failures.push(`${label} selected lookup must hydrate exactly one payload.`);
+    if ((["recent50", "recent100", "structured50", "structured100", "find", "around"] as const).some((name) => cell.telemetry.operations[name].payloadHydrations !== 0)) failures.push(`${label} non-lookup operations must not hydrate payloads.`);
+    const gc = cell.querySampleGc ?? [];
+    if (gc.length !== 14 || gc.some((entry, index) => entry.gcPasses !== 3 || entry.phase !== "BETWEEN_QUERY_SAMPLES" || entry.afterSample !== (index % 2 === 0 ? 1 : 2))) {
+      failures.push(`${label} must include ordered three-pass GC evidence between every query operation sample.`);
+    }
+    if (cell.longTasks.some((duration) => duration > 50)) failures.push(`${label} has a query Long Task over 50 ms.`);
+    if (!cell.longTaskObserverSupported) failures.push(`${label} lacks supported PerformanceObserver Long Task telemetry.`);
     if (cell.longTasks.some((duration) => duration > 125)) failures.push(`${label} has a query Long Task over 125 ms.`);
   }
   for (const key of expected) if (!seen.has(key)) failures.push(`Missing filter query sample ${key}.`);
@@ -833,7 +843,7 @@ function isPerformanceReference(value: unknown): value is EventHistoryPerformanc
     && isRecord(environment) && environment.chromeMajor === 151
     && typeof environment.platformClass === "string" && typeof environment.architectureClass === "string"
     && Array.isArray(value.cells) && hasIndependentMatrixSamples(value.cells)
-    && (value.queryCells === undefined || (Array.isArray(value.queryCells) && value.queryCells.every(isQueryCell)));
+    && Array.isArray(value.queryCells) && value.queryCells.length === 6 && value.queryCells.every(isQueryCell);
 }
 
 function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell {
@@ -1153,6 +1163,24 @@ function compareReference(
       const referenceMedian = median(referenceValues);
       if (referenceMedian > 0 && value > referenceMedian * (1 + EVENT_HISTORY_PERFORMANCE_LIMITS.query.relativeRegression)) {
         reviewReasons.push(`${cellLabel(current)} ${name} regressed more than 20% from the pinned median.`);
+      }
+    }
+  }
+  const referenceQueryByKey = new Map<string, EventHistoryPerformanceQueryCell>();
+  for (const cell of reference.queryCells) referenceQueryByKey.set(`${cell.adapter}/${cell.sample}`, cell);
+  for (const current of report.queryCells) {
+    if (current.sample !== 1) continue;
+    const matching = referenceQueryByKey.get(`${current.adapter}/${current.sample}`);
+    if (!matching) {
+      reviewReasons.push(`Pinned reference is missing comparable filter query sample ${current.adapter}.`);
+      continue;
+    }
+    const currentSamples = report.queryCells.filter((cell) => cell.adapter === current.adapter);
+    for (const [name, value] of Object.entries(current.latency)) {
+      const currentValue = median(currentSamples.map((cell) => cell.latency[name as keyof typeof current.latency]));
+      const referenceValue = matching.latency[name as keyof typeof matching.latency];
+      if (referenceValue > 0 && currentValue > referenceValue * (1 + EVENT_HISTORY_PERFORMANCE_LIMITS.query.relativeRegression)) {
+        reviewReasons.push(`${current.adapter} ${name} regressed more than 20% from the pinned query median.`);
       }
     }
   }
