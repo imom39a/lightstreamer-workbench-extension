@@ -17,9 +17,15 @@ import {
   type HistoryPublication
 } from "../src/core/event-history-authoritative";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { createIndexedDbEventHistory, transactionDone, type IndexedDbEventHistoryOptions } from "../src/core/event-history-indexeddb";
+import {
+  AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE,
+  createIndexedDbEventHistory,
+  transactionDone,
+  type IndexedDbEventHistoryOptions
+} from "../src/core/event-history-indexeddb";
 import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
+import { extractEvidenceFacets } from "../src/core/evidence-facets";
 
 function candidate(id: string, overrides: Partial<EvidenceCandidate> = {}): EvidenceCandidate {
   return {
@@ -145,58 +151,32 @@ async function createModernJournal(panelSessionId: string, count: number): Promi
   const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
   request.onupgradeneeded = () => {
     const database = request.result;
-    if (!database.objectStoreNames.contains("historyControl")) {
-      database.createObjectStore("historyControl", { keyPath: "key" });
-    }
-    if (!database.objectStoreNames.contains("evidence")) {
-      const evidence = database.createObjectStore("evidence", { keyPath: "sequence" });
-      evidence.createIndex("eventIdentity", "eventId", { unique: true });
-      evidence.createIndex("facets", "facets", { multiEntry: true });
-    }
+    database.createObjectStore("historyControl", { keyPath: "key" });
+    const evidence = database.createObjectStore("evidence", { keyPath: "sequence" });
+    evidence.createIndex("eventIdentity", "eventId", { unique: true });
+    evidence.createIndex("facets", "facets", { multiEntry: true });
+    const postings = database.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
+    postings.createIndex("token", "token", { unique: false });
   };
   const database = await requestValue(request);
-  try {
-    const transaction = database.transaction(["historyControl", "evidence"], "readwrite");
-    const evidenceStore = transaction.objectStore("evidence");
-    let accountedBytes = 0;
-    let replayPayloadBytes = 0;
-    for (let index = 0; index < count; index += 1) {
-      const entry = candidate(`event-${index}`);
-      const serialized = serializeJournalEvidenceCandidate(entry);
-      replayPayloadBytes += serialized.bytes;
-      accountedBytes += journalAccountedBytes(serialized.bytes);
-      evidenceStore.add({
-        intervalId: interval.id,
-        sequence: index + 1,
-        eventId: entry.id,
-        replayPayload: serialized.payload,
-        serializedBytes: serialized.bytes,
-        accountedBytes: journalAccountedBytes(serialized.bytes),
-        facets: itemUpdateFacets()
-      });
+  const transaction = database.transaction(["historyControl", "evidence", "facetPostings"], "readwrite");
+  let accountedBytes = 0;
+  let replayPayloadBytes = 0;
+  for (let index = 0; index < count; index += 1) {
+    const entry = candidate(`event-${index}`);
+    const serialized = serializeJournalEvidenceCandidate(entry);
+    const accounted = journalAccountedBytes(serialized.bytes);
+    replayPayloadBytes += serialized.bytes;
+    accountedBytes += accounted;
+    transaction.objectStore("evidence").add({ intervalId: interval.id, sequence: index + 1, eventId: entry.id, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: accounted, facets: itemUpdateFacets() });
+    for (const facet of extractEvidenceFacets(entry as LightstreamerEventEnvelope).selectableValues) {
+      const facetIdentity = facet.identity;
+      transaction.objectStore("facetPostings").add({ token: JSON.stringify([AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE, facetIdentity]), sequence: index + 1, intervalId: interval.id, eventId: entry.id, facetIdentity });
     }
-    transaction.objectStore("historyControl").put({
-      key: "control",
-      schemaVersion: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION,
-      recordVersion: 3,
-      panelSessionId,
-      interval,
-      phase: "RUNNING",
-      terminal: null,
-      nextSequence: count + 1,
-      committedEvidenceBoundary: { intervalId: interval.id, sequence: count, eventId: `event-${count - 1}` },
-      retainedRange: {
-        first: { intervalId: interval.id, sequence: 1, eventId: "event-0" },
-        last: { intervalId: interval.id, sequence: count, eventId: `event-${count - 1}` }
-      },
-      retainedCount: count,
-      replayPayloadBytes,
-      accountedBytes
-    });
-    await transactionDone(transaction, "building legacy-modern journal");
-  } finally {
-    database.close();
   }
+  transaction.objectStore("historyControl").put({ key: "control", schemaVersion: 2, recordVersion: 3, panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: count + 1, committedEvidenceBoundary: { intervalId: interval.id, sequence: count, eventId: `event-${count - 1}` }, retainedRange: { first: { intervalId: interval.id, sequence: 1, eventId: "event-0" }, last: { intervalId: interval.id, sequence: count, eventId: `event-${count - 1}` } }, retainedCount: count, replayPayloadBytes, accountedBytes });
+  await transactionDone(transaction, "building modern journal");
+  database.close();
 }
 
 type TransactionHandlers = {
@@ -672,7 +652,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    expect([...database.objectStoreNames]).toEqual(["evidence", "historyControl"]);
+    expect([...database.objectStoreNames]).toEqual(["evidence", "facetPostings", "historyControl"]);
     const transaction = database.transaction("evidence", "readonly");
     const evidence = transaction.objectStore("evidence");
     expect([...evidence.indexNames]).toEqual(["eventIdentity", "facets"]);
@@ -1500,7 +1480,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(replacedStatus).toMatchObject({ capacity: { tier: "NORMAL" }, fallback: null });
     const replacedDatabase = await requestValue(indexedDB.open(knownName, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION));
     expect(replacedDatabase.version).toBe(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
-    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "historyControl"]);
+    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "facetPostings", "historyControl"]);
     replacedDatabase.close();
     await replaced.close();
 
@@ -1536,6 +1516,8 @@ describe("IndexedDB authoritative EventHistory", () => {
       evidence.createIndex("eventIdentity", "eventId", { unique: true });
       evidence.createIndex("facets", "facets", { multiEntry: true });
       request.result.createObjectStore("historyControl", { keyPath: "key" });
+      const postings = request.result.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
+      postings.createIndex("token", "token", { unique: false });
     };
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
@@ -1543,7 +1525,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     const interval = { id: `${panelSessionId}:interval-1`, ordinal: 1 };
     const serialized = serializeJournalEvidenceCandidate(candidate("legacy-record"));
-    const transaction = database.transaction(["historyControl", "evidence"], "readwrite");
+    const transaction = database.transaction(["historyControl", "evidence", "facetPostings"], "readwrite");
     transaction.objectStore("evidence").put({
       intervalId: interval.id,
       sequence: 1,
@@ -1648,6 +1630,8 @@ describe("IndexedDB authoritative EventHistory", () => {
       evidence.createIndex("eventIdentity", "eventId", { unique: true });
       evidence.createIndex("facets", "facets", { multiEntry: true });
       request.result.createObjectStore("historyControl", { keyPath: "key" });
+      const postings = request.result.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
+      postings.createIndex("token", "token", { unique: false });
     };
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
@@ -1655,7 +1639,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     });
     const interval = { id: `${panelSessionId}:interval-1`, ordinal: 1 };
     const serialized = serializeJournalEvidenceCandidate(candidate("coherent-record"));
-    const transaction = database.transaction(["historyControl", "evidence"], "readwrite");
+    const transaction = database.transaction(["historyControl", "evidence", "facetPostings"], "readwrite");
     transaction.objectStore("evidence").put({
       intervalId: interval.id,
       sequence: 1,
@@ -1704,6 +1688,8 @@ describe("IndexedDB authoritative EventHistory", () => {
       evidence.createIndex("eventIdentity", "eventId", { unique: true });
       evidence.createIndex("facets", "facets", { multiEntry: true });
       request.result.createObjectStore("historyControl", { keyPath: "key" });
+      const postings = request.result.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
+      postings.createIndex("token", "token", { unique: false });
     };
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
@@ -1725,7 +1711,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       ["v1", "snapshot", false],
       ["v1", "synthetic", false]
     ].map((value) => JSON.stringify(value));
-    const transaction = database.transaction(["historyControl", "evidence"], "readwrite");
+    const transaction = database.transaction(["historyControl", "evidence", "facetPostings"], "readwrite");
     transaction.objectStore("evidence").put({
       intervalId: interval.id,
       sequence: 2,
@@ -2066,13 +2052,13 @@ describe("IndexedDB authoritative EventHistory", () => {
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
     await Promise.all([
       createLegacyJournalByName(legacyName, 1, "owned", "legacy-old"),
-      createLegacyJournalByName(newerLegacyName, 3, "owned", "legacy-new")
+      createLegacyJournalByName(newerLegacyName, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1, "owned", "legacy-new")
     ]);
 
     const runtime: AuthoritativeEventDatabaseRuntime = {
       listDatabases: vi.fn(async () => [
         { name: legacyName, version: 1 },
-        { name: newerLegacyName, version: 3 }
+        { name: newerLegacyName, version: AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION + 1 }
       ]),
       requestLock: vi.fn(async (_name, _options, callback) => callback())
     };

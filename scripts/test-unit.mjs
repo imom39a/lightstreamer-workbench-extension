@@ -17,7 +17,10 @@ const indexedDbFiles = Object.freeze([
   "tests/event-history-admission-performance.test.ts",
   "tests/history-impl-05-capacity.test.ts",
   "tests/history-impl-08-lifecycle.test.ts",
-  "tests/history-impl-09-lifecycle-blockers.test.ts"
+  "tests/history-impl-09-lifecycle-blockers.test.ts",
+  "tests/filter-impl-07-failure-cleanup.test.ts",
+  "tests/filter-impl-07-postings.test.ts",
+  "tests/filter-impl-07-schema.test.ts"
 ]);
 
 function discoverTestFiles(directory) {
