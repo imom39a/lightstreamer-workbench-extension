@@ -1417,12 +1417,21 @@ function validateFacetPostingRecords(
   evidenceBySequence: ReadonlyMap<number, EvidenceRecord>
 ): Promise<void> {
   const postingsBySequence = new Map<number, number>();
+  const identitiesBySequence = new Map<number, Set<string>>();
+  for (const [sequence, evidence] of evidenceBySequence) {
+    const candidate = deserializeJournalEvidenceCandidate(evidence.replayPayload);
+    identitiesBySequence.set(sequence, new Set(facetPostings(candidate, evidence.intervalId, sequence).map((posting) => posting.facetIdentity)));
+  }
   return new Promise((resolve, reject) => {
     const request = store.openCursor();
     request.onerror = () => reject(request.error ?? new Error("IndexedDB facet posting validation failed."));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) {
+        if ([...identitiesBySequence.values()].some((identities) => identities.size > 0)) {
+          reject(new Error("Facet posting metadata is incomplete."));
+          return;
+        }
         resolve();
         return;
       }
@@ -1431,6 +1440,8 @@ function validateFacetPostingRecords(
         const count = (postingsBySequence.get(posting.sequence) ?? 0) + 1;
         if (count > EVIDENCE_FACET_COUNT) throw new Error("An Evidence record exceeds the facet posting bound.");
         postingsBySequence.set(posting.sequence, count);
+        const identities = identitiesBySequence.get(posting.sequence);
+        if (!identities?.delete(posting.facetIdentity)) throw new Error("A facet posting is duplicated or unexpected.");
         cursor.continue();
       } catch (error) {
         reject(error);
