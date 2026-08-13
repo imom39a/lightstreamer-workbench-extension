@@ -1,45 +1,34 @@
 # `filter-impl-08` repair proof
 
-The IndexedDB adapter now executes one bounded readonly transaction. It latches
-`historyControl`, reads v3 `facetPostings` token ranges for structured
-candidates, uses bounded Evidence cursors/direction for recent pages, scans
-only stored lightweight projections for residual text/Around/Find, and
-hydrates only the requested lookup payload. No query path calls `getAll()` or
-deserializes the journal to derive ordinary totals. Lightweight projections are
-derived into a session cache at journal-open/commit time; authoritative v3
-Evidence record shape and accounting remain unchanged, including deployed
-v2→v3 records that never stored a projection.
+The IndexedDB query adapter uses one readonly transaction over `historyControl`,
+`facetPostings`, `queryProjections`, and selected `evidence` payloads. The
+authoritative v3 Evidence record shape remains exact; schema version 4 adds a
+separate sequence-keyed `queryProjections` store. Commits and Clear update the
+projection store atomically with Evidence, postings, and control. Empty v3
+projection stores are backfilled only during the explicit old-database upgrade
+path; ordinary opens do not hydrate replay payloads into a process cache.
 
-Successful snapshots include telemetry for posting reads/candidates, Evidence
-cursor reads, selected payload hydrations, candidate/page bounds, residual
-scanning, and elapsed time. Opaque page cursors bind interval, committed
-boundary, retained range, order, size, and filter. Malformed, stale,
-cross-interval, cross-boundary, range, order, filter, and oversized cursors
-fail closed.
+Find runs over the complete latched retained projection interval independently
+of Filter. Around anchors are validated against that complete interval before
+Filter evaluation. A read point from the same interval may remain valid after a
+later commit; the later boundary is excluded. Missing/corrupt projections and
+selected replay payloads fail closed, and the last coherent query remains the
+published diagnostic result.
 
-Discovery is outside filter-impl-08's exact body. Requested discovery returns
-an explicit `UNAVAILABLE`/`UNSUPPORTED_AT_READ_POINT` state. This repair does
-not implement filter-impl-09 posting-based exact-value discovery or use an
-empty map to imply success.
+Focused measured proof on 2026-08-13:
 
-The public adapter retains the memory fallback's fixed lower-capacity parity,
-terminal final snapshot, and controlled Close semantics. Query failures publish
-a `QUERY_FAILED` status while retaining the last coherent successful query on
-the diagnostic status publication; partial exact data is never published. v3 posting writes,
-migration, admission, cleanup, and ownership behavior are preserved.
+- `npx vitest run --no-file-parallelism --maxWorkers=1 tests/filter-impl-08-indexeddb-query.test.ts`: 9 tests passed.
+- `npx vitest run --no-file-parallelism --maxWorkers=1 tests/authoritative-event-history-indexeddb.test.ts`: 65 tests passed before the final combined run; the combined focused pair passed 71 tests before adversarial additions, and the current query suite is 9/9.
+- `npm test`: ordinary phase 74 files / 794 tests passed; serialized phase 9 files / 190 tests passed (40.95 seconds total for the two phases).
+- `npm run test:release`: 83 files / 984 tests passed in 77.56 seconds.
+- `npm run typecheck`, `npm run build`, and focused filter/posting/schema suites pass.
+- `LSEW_BROWSER_HEADLESS=false LSEW_UI_HEADLESS=false LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers npm run measure:event-history` was attempted with cached Chrome for Testing 151 installed, but fails closed before launch because `docs/reference/event-history-performance-reference.json` is empty and `PENDING_MAINTAINER_BASELINE`. No p95 claim is made and no machine-readable performance report was produced.
+- The deterministic package audit measured a stored ZIP of 1,069,630 bytes after removing the unused extension favicon; this remains above the 1 MiB budget and is a release blocker.
 
-Focused proof:
-
-- `tests/filter-impl-08-indexeddb-query.test.ts` covers memory/IndexedDB page
-  and totals parity, Around, lookup blockers and payload selection, Find,
-  unsupported fail-closed evaluation, Clear invalidation, typed facet algebra,
-  bounded telemetry, request-bound cursors, and the truthful discovery boundary.
-- `npm run typecheck` passes.
-- The fake-IndexedDB suite proves plan shape and telemetry, not browser latency.
-  The required deterministic 10,000-record normal-tier workload and ≤50 ms
-  recent, ≤100 ms structured, and ≤500 ms residual p95 gates belong to the
-  existing real-browser/manual harness in
-  `docs/reference/event-history-performance-manual-workflow.md`.
-
-UI, runtime visual verification, GitHub, push, merge, and status operations
-are outside this non-UI repair.
+The deep tests cover Filter-independent current/nearest Find, an excluded but
+retained Around anchor, same-timestamp ordering, old-schema projection
+migration, Clear/read-point invalidation, terminal/fallback behavior inherited
+from the authoritative suite, corrupt/missing selected data, concurrent-latch
+boundary exclusion, compound facet algebra, and zero replay-payload hydration
+for ordinary queries. Real-Chromium 10,000-record / 3,842-key evidence and
+package-size closure remain outstanding.

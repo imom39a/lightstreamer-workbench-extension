@@ -245,6 +245,7 @@ function shouldSkip(name) {
   return (
     name === ".DS_Store" ||
     name === "__MACOSX" ||
+    name === "title-icon.svg" ||
     name.endsWith(".map") ||
     name.endsWith(".pem") ||
     name.endsWith(".crx") ||
