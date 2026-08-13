@@ -48,9 +48,41 @@ describe("filter-impl-05 memory facet discovery", () => {
     const discovery = first.value.discoveries.get("key");
     expect(discovery?.values[0]?.value.value).toBe("A");
     expect(discovery?.nextCursor).toBeTruthy();
-    const second = await history.query!({ ...request, discover: [{ facet: "key", size: 1, cursor: discovery?.nextCursor }] });
+    const second = await history.query!({ ...request, discover: [{ facet: "key", size: 1, cursor: discovery?.nextCursor ?? undefined }] });
     expect(second.ok && second.value.discoveries.get("key")?.values[0]?.value.value).toBe("B");
-    const stale = await history.query!({ ...request, discover: [{ facet: "key", size: 1, cursor: discovery?.nextCursor }], filter: { ...filter(), text: "different" } });
+    const stale = await history.query!({ ...request, discover: [{ facet: "key", size: 1, cursor: discovery?.nextCursor ?? undefined }], filter: { ...filter(), text: "different" } });
     expect(stale.ok && stale.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+  });
+
+  it("searches labels, pins an active retired value, and distinguishes empty states", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-05-states" });
+    await history.offer(event("one", 1, "alpha")).settled;
+    const activeRetired = typedFacetValue("key", "string", "retired", "Retired key");
+    const base = { ...filter({ key: { include: [activeRetired], exclude: [] } }) };
+    const pinned = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: base, discover: [{ facet: "key", size: 10 }] });
+    expect(pinned.ok && pinned.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 1 });
+    expect(pinned.ok && pinned.value.discoveries.get("key")?.values.find((entry) => entry.value.identity === activeRetired.identity)).toMatchObject({ count: 0, pinned: true });
+
+    const searched = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: filter(), discover: [{ facet: "key", search: "ALP", size: 10 }] });
+    expect(searched.ok && searched.value.discoveries.get("key")?.values.map((entry) => entry.value.label)).toEqual(["alpha"]);
+
+    const zeroBase = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...filter(), text: "missing" }, discover: [{ facet: "key", size: 10 }] });
+    expect(zeroBase.ok && zeroBase.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "ZERO_BASE", baseEvidenceCount: 0 });
+
+    const noConcrete = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: filter(), discover: [{ facet: "operation", size: 10 }] });
+    expect(noConcrete.ok && noConcrete.value.discoveries.get("operation")).toMatchObject({ state: "UNAVAILABLE", reason: "NO_CONCRETE_VALUES", baseEvidenceCount: 1 });
+  });
+
+  it("keeps discovery and page on the same committed read point", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-05-latch" });
+    await history.offer(event("first", 1, "first")).settled;
+    const before = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: filter(), discover: [{ facet: "key", size: 10 }] });
+    expect(before.ok).toBe(true);
+    await history.offer(event("second", 2, "second")).settled;
+    if (!before.ok) return;
+    expect(before.value.totals).toEqual({ matching: 1, inScope: 1 });
+    expect(before.value.discoveries.get("key")?.distinctTotal).toBe(1);
+    const later = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: filter(), discover: [{ facet: "key", size: 10 }] });
+    expect(later.ok && later.value.discoveries.get("key")?.distinctTotal).toBe(2);
   });
 });
