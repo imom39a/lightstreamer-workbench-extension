@@ -124,6 +124,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.telemetry).toMatchObject({ postingReads: 0, payloadHydrations: 0, pageBound: 1 });
+    expect(first.value.telemetry?.evidenceCursorReads).toBeLessThanOrEqual(1);
     expect(first.value.page.nextCursor).toBeTypeOf("string");
     const next = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1, cursor: first.value.page.nextCursor! }, filter: emptyFilter() });
     expect(next.ok).toBe(true);
@@ -133,6 +134,52 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     expect(malformed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
     const discovery = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), discover: [{ facet: "mode", size: 10 }] });
     expect(discovery.ok && discovery.value.discoveries.get("mode")).toMatchObject({ state: "UNAVAILABLE", reason: "UNSUPPORTED_AT_READ_POINT" });
+    await durable.close();
+  });
+
+  it("latches a committed boundary while a later commit arrives", async () => {
+    const { durable } = await histories(`filter-impl-08-latch-${Date.now()}`);
+    const first = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await durable.offer(event("four", 30_000, "delta")).settled;
+    const latched = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(latched).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "one" } }, { identity: { eventId: "two" } }, { identity: { eventId: "three" } }] }, totals: { matching: 3 } } });
+    await durable.close();
+  });
+
+  it("keeps Find independent of Filter and validates an Around anchor outside the match set", async () => {
+    const { durable } = await histories(`filter-impl-08-independent-${Date.now()}`);
+    const base = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(base.ok).toBe(true);
+    if (!base.ok) return;
+    const anchor = base.value.page.evidence[0]!.identity;
+    const result = await durable.query!({
+      at: base.value.readPoint,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      filter: { ...emptyFilter(), text: "beta", around: { intervalId: anchor.intervalId, start: 0, end: 30_000, anchor, anchorSequence: anchor.sequence } },
+      find: { text: "alpha", current: anchor }
+    });
+    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 1 }, find: { total: 2, current: anchor, next: { eventId: "three" } } } });
+    await durable.close();
+  });
+
+  it("fails closed when a selected projection is missing or corrupt", async () => {
+    const panelSessionId = `filter-impl-08-projection-failure-${Date.now()}`;
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    await durable.offer(event("one", 10_000, "alpha")).settled;
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("queryProjections", "readwrite");
+    transaction.objectStore("queryProjections").delete(1);
+    await new Promise<void>((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error); });
+    database.close();
+    const failed = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(failed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
     await durable.close();
   });
 });

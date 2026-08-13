@@ -157,9 +157,10 @@ async function createModernJournal(panelSessionId: string, count: number): Promi
     evidence.createIndex("facets", "facets", { multiEntry: true });
     const postings = database.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
     postings.createIndex("token", "token", { unique: false });
+    database.createObjectStore("queryProjections", { keyPath: "sequence" });
   };
   const database = await requestValue(request);
-  const transaction = database.transaction(["historyControl", "evidence", "facetPostings"], "readwrite");
+  const transaction = database.transaction(["historyControl", "evidence", "facetPostings", "queryProjections"], "readwrite");
   let accountedBytes = 0;
   let replayPayloadBytes = 0;
   for (let index = 0; index < count; index += 1) {
@@ -652,7 +653,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    expect([...database.objectStoreNames]).toEqual(["evidence", "facetPostings", "historyControl"]);
+    expect([...database.objectStoreNames]).toEqual(["evidence", "facetPostings", "historyControl", "queryProjections"]);
     const transaction = database.transaction("evidence", "readonly");
     const evidence = transaction.objectStore("evidence");
     expect([...evidence.indexNames]).toEqual(["eventIdentity", "facets"]);
@@ -1480,7 +1481,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(replacedStatus).toMatchObject({ capacity: { tier: "NORMAL" }, fallback: null });
     const replacedDatabase = await requestValue(indexedDB.open(knownName, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION));
     expect(replacedDatabase.version).toBe(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
-    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "facetPostings", "historyControl"]);
+    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "facetPostings", "historyControl", "queryProjections"]);
     replacedDatabase.close();
     await replaced.close();
 
