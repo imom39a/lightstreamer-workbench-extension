@@ -107,17 +107,10 @@ async function main() {
           requestCeilingMs: Math.max(1, Math.floor(timeoutMs / 6))
         })
         : undefined;
-      let lastFocusCellIndex = Symbol("before-first-cell");
-      let cellFocusTarget = null;
-      const focusTargetForStatus = (status) => {
-        if (!focusTarget) return undefined;
-        const cellIndex = Number.isSafeInteger(status?.cellIndex) ? status.cellIndex : null;
-        if (cellFocusTarget === null || cellIndex !== lastFocusCellIndex) {
-          lastFocusCellIndex = cellIndex;
-          cellFocusTarget = ({ deadlineAt, timeoutMs }) => focusTarget({ deadlineAt, timeoutMs });
-        }
-        return cellFocusTarget;
-      };
+      const focusTargetForStatus = createForegroundFocusTargetSelector(
+        focusTarget,
+        foregroundKeeper.snapshot().cadenceMs
+      );
       return runPageOperation(pageCdp, expression, {
         ...operationOptions,
         propagateHeartbeatErrors: true,
@@ -848,6 +841,29 @@ export function activateSpawnedChromeWindow(pid, options = {}) {
 
 const FOREGROUND_KEEPER_CADENCE_MS = 5_000;
 const FOREGROUND_KEEPER_TIMEOUT_MS = 2_000;
+
+export function createForegroundFocusTargetSelector(focusTarget, cadenceMs = FOREGROUND_KEEPER_CADENCE_MS) {
+  if (typeof focusTarget !== "function") return () => undefined;
+  const boundedCadenceMs = positiveFiniteStartupOption(cadenceMs, "foreground focus cadenceMs");
+  let lastCellIndex = Symbol("before-first-cell");
+  let lastCadenceBucket = null;
+  let selectedTarget = null;
+  return (status = {}) => {
+    const cellIndex = Number.isSafeInteger(status?.cellIndex) ? status.cellIndex : null;
+    const elapsedMs = Number.isFinite(status?.elapsedMs) ? Math.max(0, status.elapsedMs) : null;
+    const cadenceBucket = elapsedMs === null ? null : Math.floor(elapsedMs / boundedCadenceMs);
+    if (
+      selectedTarget === null ||
+      cellIndex !== lastCellIndex ||
+      (cadenceBucket !== null && cadenceBucket !== lastCadenceBucket)
+    ) {
+      lastCellIndex = cellIndex;
+      lastCadenceBucket = cadenceBucket;
+      selectedTarget = ({ deadlineAt, timeoutMs }) => focusTarget({ deadlineAt, timeoutMs });
+    }
+    return selectedTarget;
+  };
+}
 
 export function createForegroundKeeper(pid, options = {}) {
   const platform = options.platform ?? process.platform;

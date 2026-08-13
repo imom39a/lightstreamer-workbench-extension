@@ -752,6 +752,20 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("refreshes exact target focus at the bounded keeper cadence", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createForegroundFocusTargetSelector } = await import(${JSON.stringify(scriptUrl)});
+      const select = createForegroundFocusTargetSelector(() => undefined, 5_000);
+      const first = select({ cellIndex: 1, elapsedMs: 100 });
+      assert.strictEqual(select({ cellIndex: 1, elapsedMs: 4_999 }), first);
+      const cadenceRefresh = select({ cellIndex: 1, elapsedMs: 5_000 });
+      assert.notStrictEqual(cadenceRefresh, first);
+      assert.strictEqual(select({ cellIndex: 1, elapsedMs: 5_100 }), cadenceRefresh);
+      assert.notStrictEqual(select({ cellIndex: 2, elapsedMs: 5_200 }), cadenceRefresh);
+    `);
+  });
+
   it("fails closed on keeper activation errors and expired proof deadlines", () => {
     runNode(`
       import assert from "node:assert/strict";
