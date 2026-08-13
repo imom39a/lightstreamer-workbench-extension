@@ -107,12 +107,14 @@ type EvidenceRecord = {
   accountedBytes: number;
   facets: string[];
   /** v3 lightweight query projection. Replay payload remains the authoritative source. */
-  projection?: {
-    timestamp: number;
-    summary: string;
-    searchText: string;
-    facets: Readonly<Record<string, unknown>>;
-  };
+  projection?: QueryProjection;
+};
+
+type QueryProjection = {
+  timestamp: number;
+  summary: string;
+  searchText: string;
+  facets: Readonly<Record<string, unknown>>;
 };
 
 export const AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE = "facet-v2";
@@ -395,6 +397,7 @@ type LoadedJournal = {
   retainedCount: number;
   retainedRange: { first: EvidenceRef; last: EvidenceRef } | null;
   committedEvidenceBoundary: EvidenceRef | null;
+  legacyProjections: ReadonlyMap<number, QueryProjection>;
 };
 
 type ReadLatch = Readonly<{
@@ -459,6 +462,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let terminalIntentGeneration = 0;
   let lastNearLimit = false;
   let lastCoherentQuery: EvidenceSnapshot | null = null;
+  const queryProjections = new Map(loaded.legacyProjections);
   let awaitingCount = 0;
   let awaitingBytes = 0;
   const capacityTier = options.capacityTier ?? "NORMAL";
@@ -852,6 +856,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
             controlPhase,
             controlTerminal
           );
+          for (const entry of evidence) queryProjections.set(entry.sequence, queryProjection(entry.candidate, entry.intervalId, entry.sequence));
         } catch (error) {
           const reason: HistoryTerminalReason = isQuotaError(error) ? "QUOTA_EXCEEDED" : "JOURNAL_COMMIT_FAILED";
           terminalFailureDetail = describeJournalError(error);
@@ -1194,7 +1199,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     return queryIndexedDb(database, loaded.panelSessionId, request, {
       tier: options.capacityTier ?? "NORMAL",
       fallback: null,
-      terminal: Boolean(terminal)
+      terminal: Boolean(terminal),
+      legacyProjections: queryProjections
     }).then((result) => {
       if (result.ok) {
         lastCoherentQuery = result.value;
@@ -1209,12 +1215,11 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
   // v2->v3 deployed journals may contain the authoritative replay payload and
-  // postings but no lightweight projection. Backfill that derived data once at
-  // open time so those records remain queryable without making normal queries
-  // deserialize the journal.
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
+  // postings but no lightweight projection. Derive those projections into a
+  // session cache; authoritative v3 records remain byte/schema compatible.
+  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readonly");
   try {
-    await backfillMissingQueryProjections(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence));
+    const legacyProjections = await collectQueryProjections(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence));
     const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
     await validateJournalRecords(
       panelSessionId,
@@ -1226,7 +1231,7 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
       await writeControl(database, createControl(panelSessionId, interval, "RUNNING", null, 1, null, null, 0, 0, 0));
-      return { panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, durableAccountedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null };
+      return { panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: 1, replayPayloadBytes: 0, retainedBytes: 0, durableAccountedBytes: 0, retainedCount: 0, retainedRange: null, committedEvidenceBoundary: null, legacyProjections };
     }
     if (control.phase === "DRAINING_TO_STOP") {
       if (!control.terminal) throw new Error("A draining history control must contain a terminal intent.");
@@ -1254,7 +1259,8 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
         durableAccountedBytes: control.accountedBytes,
         retainedCount: control.retainedCount,
         retainedRange: control.retainedRange,
-        committedEvidenceBoundary: control.committedEvidenceBoundary
+        committedEvidenceBoundary: control.committedEvidenceBoundary,
+        legacyProjections
       };
     }
     return {
@@ -1268,7 +1274,8 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       durableAccountedBytes: control.accountedBytes,
       retainedCount: control.retainedCount,
       retainedRange: control.retainedRange,
-      committedEvidenceBoundary: control.committedEvidenceBoundary
+      committedEvidenceBoundary: control.committedEvidenceBoundary,
+      legacyProjections
     };
   } catch (error) {
     try { transaction.abort(); } catch { /* the transaction may already be complete */ }
@@ -1276,18 +1283,17 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
   }
 }
 
-function backfillMissingQueryProjections(store: IDBObjectStore): Promise<void> {
+function collectQueryProjections(store: IDBObjectStore): Promise<ReadonlyMap<number, QueryProjection>> {
+  const projections = new Map<number, QueryProjection>();
   return new Promise((resolve, reject) => {
     const request = store.openCursor();
     request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
     request.onsuccess = () => {
       const cursor = request.result;
-      if (!cursor) { resolve(); return; }
+      if (!cursor) { resolve(projections); return; }
       const record = cursor.value as EvidenceRecord;
-      if (record.projection === undefined) {
-        const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
-        cursor.update({ ...record, projection: queryProjection(candidate, record.intervalId, record.sequence) });
-      }
+      const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
+      projections.set(record.sequence, record.projection ?? queryProjection(candidate, record.intervalId, record.sequence));
       cursor.continue();
     };
   });
@@ -1297,6 +1303,7 @@ type IndexedDbQueryOptions = Readonly<{
   tier: HistoryCapacityTier;
   fallback: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
   terminal: boolean;
+  legacyProjections: ReadonlyMap<number, QueryProjection>;
 }>;
 
 /**
@@ -1358,7 +1365,7 @@ async function queryIndexedDb(
       ? null
       : await readSelectedEvidence(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), request.lookup, interval, firstSequence, lastSequence, telemetry);
     await transactionDone(transaction, "querying Evidence");
-    const selectionRecords = projections.map((record) => querySelectionRecord(record, interval));
+    const selectionRecords = projections.map((record) => querySelectionRecord(record, interval, options.legacyProjections));
     const around = normalizeAround(request.filter.around, readPoint.retainedRange);
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
     if (filter.around?.anchor && !selectionRecords.some((record) => sameQueryIdentity(record.identity, filter.around!.anchor!) && (filter.around!.anchorSequence === undefined || filter.around!.anchorSequence === record.identity.sequence))) {
@@ -1366,7 +1373,7 @@ async function queryIndexedDb(
     }
     const discoveries = new Map<string, FacetDiscoveryResult>();
     for (const discovery of request.discover ?? []) discoveries.set(discovery.facet, { state: "UNAVAILABLE", facet: discovery.facet, reason: "UNSUPPORTED_AT_READ_POINT", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null });
-    const lookupRecord = selectedPayload ? querySelectionRecord(selectedPayload, interval) : null;
+    const lookupRecord = selectedPayload ? querySelectionRecord(selectedPayload, interval, options.legacyProjections) : null;
     const lookupRecordsWithPayload = lookupRecord
       ? [...selectionRecords.filter((record) => !sameQueryIdentity(record.identity, lookupRecord.identity)), Object.freeze({ ...lookupRecord, payload: copyQueryCandidate(deserializeJournalEvidenceCandidate(selectedPayload!.replayPayload)) })]
       : selectionRecords;
@@ -1408,8 +1415,8 @@ async function queryIndexedDb(
 
 type QueryTelemetryMutable = { postingReads: number; postingCandidates: number; evidenceCursorReads: number; payloadHydrations: number; candidateBound: number; pageBound: number; residualScan: boolean; elapsedMs: number };
 
-function querySelectionRecord(record: EvidenceRecord, interval: HistoryInterval): SelectionRecord {
-  const projection = record.projection;
+function querySelectionRecord(record: EvidenceRecord, interval: HistoryInterval, legacyProjections: ReadonlyMap<number, QueryProjection> = new Map()): SelectionRecord {
+  const projection = record.projection ?? legacyProjections.get(record.sequence);
   if (!projection) {
     throw new Error("Evidence record has no query projection; refusing an unbounded payload reconstruction.");
   }
@@ -1607,7 +1614,7 @@ async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId:
     const recordAccountedBytes = journalAccountedBytes(serialized.bytes);
     serializedBatchBytes += serialized.bytes;
     accountedBatchBytes += recordAccountedBytes;
-    store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: recordAccountedBytes, facets: exactFacets(entry.candidate), projection: queryProjection(entry.candidate, entry.intervalId, entry.sequence) } satisfies EvidenceRecord);
+    store.add({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: recordAccountedBytes, facets: exactFacets(entry.candidate) } satisfies EvidenceRecord);
     for (const posting of facetPostings(entry.candidate, entry.intervalId, entry.sequence)) {
       postingStore.add(posting);
     }

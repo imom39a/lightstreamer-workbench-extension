@@ -51,14 +51,14 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
         const get = transaction.objectStore("evidence").get(1);
         get.onsuccess = () => {
           const record = get.result as Record<string, unknown>;
-          delete record.projection;
+          record.replayPayload = "corrupt-payload";
           transaction.objectStore("evidence").put(record);
         };
         transaction.oncomplete = () => { database.close(); resolve(); };
         transaction.onerror = () => reject(transaction.error);
       };
     });
-    const failed = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    const failed = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), lookup: first.value.page.evidence[0]!.identity });
     expect(failed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
     expect(publications.at(-1)?.lastCoherentQuery).toEqual(first.value);
     stop();
