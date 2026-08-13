@@ -99,7 +99,7 @@ describe("filter-impl-06 memory selection planner", () => {
   it("rejects an Around anchor that is not retained in the latched interval", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-06-stale-anchor" });
     await history.offer(event("one", 1, 1_000)).settled;
-    const result = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: { ...emptyFilter(), around: { intervalId: "wrong", start: 0, end: 2_000, anchorSequence: 1, anchorTimestamp: 1_000 } } });
+    const result = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: { ...emptyFilter(), around: { intervalId: "wrong", start: 0, end: 2_000, anchor: { intervalId: "wrong", pageId: "wrong", ownerId: "memory-event-history", sequence: 1, eventId: "gone" }, anchorSequence: 1, anchorTimestamp: 1_000 } } });
     expect(result).toMatchObject({ ok: false, problem: { code: "AROUND_ANCHOR_UNAVAILABLE" } });
   });
 });

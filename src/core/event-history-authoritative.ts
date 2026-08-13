@@ -11,6 +11,7 @@ import {
   type EvidenceSnapshot,
   type FacetDiscoveryResult
 } from "./evidence-filter-contract";
+import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { canonicalEvidenceSearchText, extractEvidenceFacets } from "./evidence-facets";
 import {
@@ -872,24 +873,35 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
 
-    const records = entriesAtRead.map((entry) => {
+    const records: SelectionRecord[] = entriesAtRead.map((entry) => {
       const cached = deterministicRecordCache.get(entry);
       if (cached) return cached;
       const record = toDeterministicEvidenceRecord(entry, intervalAtRead);
       deterministicRecordCache.set(entry, record);
       return record;
     });
-    const unsupported = request.filter.unsupported.length > 0;
+    const around = normalizeAround(request.filter.around, readPoint.retainedRange);
+    const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
+    if (filter.around?.anchor) {
+      const anchor = filter.around.anchor;
+      const anchorIndex = entriesAtRead.findIndex((entry) => entry.intervalId === anchor.intervalId && entry.sequence === anchor.sequence && entry.eventId === anchor.eventId);
+      if (anchor.intervalId !== intervalAtRead.id || anchorIndex < 0 || (filter.around.anchorSequence !== undefined && filter.around.anchorSequence !== anchor.sequence)) {
+        return Promise.resolve({ ok: false, problem: evidenceReadProblem("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.") });
+      }
+    }
+    const unsupported = filter.unsupported.length > 0;
     const discoveries = new Map<string, FacetDiscoveryResult>();
     if (unsupported) {
-      return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK") });
+      const lookup = request.lookup === undefined ? null : lookupEvidence(records, readPoint, request.lookup, filter, around);
+      const find = request.find === undefined ? null : findEvidence(records, request.find);
+      return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", null, lookup, find) });
     }
 
     try {
       const matching: DeterministicEvidenceRecord[] = [];
       const inScope: DeterministicEvidenceRecord[] = [];
       for (const record of records) {
-        const evaluation = evaluateFilter({ ...request.filter, around: null } as unknown as Filter, {
+        const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
           timestamp: record.timestamp,
           intervalId: record.identity.intervalId,
           searchText: record.searchText,
@@ -897,15 +909,25 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         });
         if (!evaluation.matches) continue;
         matching.push(record);
-        if (inEvidenceScope(record, request.filter.around)) inScope.push(record);
+        if (isInAround(record, around)) inScope.push(record);
       }
       const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
       const offset = readCursor(request.page.cursor);
       const page = ordered.slice(offset, offset + request.page.size);
       const nextCursor = offset + page.length < ordered.length ? String(offset + page.length) : null;
+      let lookupRecords = records;
+      if (request.lookup !== undefined) {
+        const selectedIndex = records.findIndex((record) => sameEvidenceIdentity(record.identity, request.lookup!));
+        if (selectedIndex >= 0) {
+          lookupRecords = records.slice();
+          lookupRecords[selectedIndex] = Object.freeze({ ...lookupRecords[selectedIndex]!, payload: copyCandidate(entriesAtRead[selectedIndex]!.candidate) });
+        }
+      }
+      const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
+        const find = request.find === undefined ? null : findEvidence(records, request.find);
       return Promise.resolve({
         ok: true,
-        value: makeEvidenceSnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor)
+        value: makeEvidenceSnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find)
       });
     } catch (error) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", error instanceof Error ? error.message : "Evidence query failed.") });
@@ -1300,14 +1322,16 @@ function makeEvidenceSnapshot(
   coverage: EvidenceSnapshot["coverage"],
   storageName: EvidenceSnapshot["storage"],
   nextCursor: string | null = null
+  , lookup: EvidenceSnapshot["lookup"] = null
+  , find: EvidenceSnapshot["find"] = null
 ): EvidenceSnapshot {
   return Object.freeze({
     readPoint,
     page: Object.freeze({ evidence: Object.freeze([...page]), nextCursor }),
     totals: Object.freeze({ matching, inScope }),
     discoveries: immutableReadonlyMap(discoveries),
-    lookup: null,
-    find: null,
+    lookup,
+    find,
     evaluation,
     coverage,
     storage: storageName
