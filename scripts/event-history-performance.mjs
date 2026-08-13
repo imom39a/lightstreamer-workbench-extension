@@ -107,11 +107,22 @@ async function main() {
           requestCeilingMs: Math.max(1, Math.floor(timeoutMs / 6))
         })
         : undefined;
+      let lastFocusCellIndex = Symbol("before-first-cell");
+      let cellFocusTarget = null;
+      const focusTargetForStatus = (status) => {
+        if (!focusTarget) return undefined;
+        const cellIndex = Number.isSafeInteger(status?.cellIndex) ? status.cellIndex : null;
+        if (cellFocusTarget === null || cellIndex !== lastFocusCellIndex) {
+          lastFocusCellIndex = cellIndex;
+          cellFocusTarget = ({ deadlineAt, timeoutMs }) => focusTarget({ deadlineAt, timeoutMs });
+        }
+        return cellFocusTarget;
+      };
       return runPageOperation(pageCdp, expression, {
         ...operationOptions,
         propagateHeartbeatErrors: true,
         onHeartbeat: async (status) => {
-          await foregroundKeeper.keepAlive({ reason: "operation-heartbeat", focusTarget });
+          await foregroundKeeper.keepAlive({ reason: "operation-heartbeat", focusTarget: focusTargetForStatus(status) });
           await onHeartbeat?.(status);
         }
       });
