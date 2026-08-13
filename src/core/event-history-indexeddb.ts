@@ -1180,11 +1180,14 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   }
 
   const storage: EventHistoryStorage = Object.freeze({ mode: "indexeddb" });
-  const query: EvidenceFilterQueryAdapter["query"] = (request) => queryIndexedDb(database, loaded.panelSessionId, request, {
-    tier: options.capacityTier ?? "NORMAL",
-    fallback: null,
-    terminal: Boolean(terminal)
-  });
+  const query: EvidenceFilterQueryAdapter["query"] = (request) => {
+    if (phase === "CLOSED") return Promise.resolve(queryFailure("HISTORY_TERMINAL", "Event History is closed."));
+    return queryIndexedDb(database, loaded.panelSessionId, request, {
+      tier: options.capacityTier ?? "NORMAL",
+      fallback: null,
+      terminal: Boolean(terminal)
+    });
+  };
   return { storage, status, offer, read, query, clear, follow, close };
 }
 
