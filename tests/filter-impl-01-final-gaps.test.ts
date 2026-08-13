@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { createEvidenceFilterFixture } from "../src/core/evidence-filter-contract";
+import { createEvidenceFilterFixture } from "./support/evidence-filter-fixture";
 import {
   createReferenceFilterAdapter,
   createReferenceLifecycleHarness,
   readPointMatches
 } from "./support/evidence-filter-reference";
-import { getEvidenceFilterPanelScenario } from "./support/panel-scenarios";
+import { getEvidenceFilterPanelScenario, runEvidenceFilterPanelScenario } from "./support/panel-scenarios";
 
 describe("filter-impl-01 final contract gaps", () => {
   it("stores every collision case as accepted Evidence, including absent item values", () => {
@@ -76,13 +76,23 @@ describe("filter-impl-01 final contract gaps", () => {
     }
   });
 
-  it("gives every maintained adverse scenario deterministic setup and an asserted outcome", () => {
-    const ids = ["empty-history", "valid-zero-result-conflict", "unsupported-criterion", "discovery-unavailable", "hidden-selection", "terminal-history", "memory-fallback", "high-volume-command-keys"] as const;
+  it("runs all nine maintained scenarios against concrete reference outcomes", async () => {
+    const ids = [
+      "primary-include-exclude-reveal-reset",
+      "empty-history",
+      "valid-zero-result-conflict",
+      "unsupported-criterion",
+      "discovery-unavailable",
+      "hidden-selection",
+      "terminal-history",
+      "memory-fallback",
+      "high-volume-command-keys"
+    ] as const;
     for (const id of ids) {
       const scenario = getEvidenceFilterPanelScenario(id);
-      expect(scenario.capturedEvents.length).toBeGreaterThan(0);
-      expect(scenario.setupActions.length).toBeGreaterThan(0);
-      expect(scenario.expectedOutcome).toBeDefined();
+      expect(scenario.setupActions).toEqual([]);
+      const result = await runEvidenceFilterPanelScenario(id);
+      expect(result.actual).toEqual(result.expected);
     }
   });
 
