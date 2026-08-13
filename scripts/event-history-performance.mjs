@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import { execFileSync, spawn } from "node:child_process";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
+import { chromeUnattendedArguments } from "./chrome-launch-args.mjs";
 import WebSocket from "ws";
 import {
   collectHeapAfterRepeatedGc,
@@ -328,18 +329,17 @@ export async function closeFreshHarnessPage(controlCdp, page) {
 }
 
 export function chromeLaunchArguments(profile, url, platformName = process.platform) {
-  return [
+  return chromeUnattendedArguments([
     ...(platformName === "darwin" ? ["--activate-on-launch"] : []),
     "--no-sandbox",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--js-flags=--expose-gc",
-    "--no-first-run",
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
     url
-  ];
+  ]);
 }
 
 function requireVisibleEnvironment() {

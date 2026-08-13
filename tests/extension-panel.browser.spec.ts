@@ -19,6 +19,7 @@ import {
   waitForDebuggingPort,
   waitForNewLoadedDocument
 } from "./support/chrome-extension-cdp";
+import { chromeUnattendedArguments } from "../scripts/chrome-launch-args.mjs";
 import { CONTENT_BRIDGE_READY } from "../src/bridge/messages";
 import {
   formatTargets,
@@ -52,12 +53,9 @@ async function runExtensionPanelSmoke(): Promise<void> {
     const extensionManifest = await readExtensionManifest(extensionDir);
     inspectedPage = await startInspectedPage();
     const fixtureUrl = inspectedPage.url;
-    const chromeArguments = [
+    const chromeArguments = chromeUnattendedArguments([
       "--no-sandbox",
       "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--use-mock-keychain",
       "--auto-open-devtools-for-tabs",
       "--remote-debugging-port=0",
       `--user-data-dir=${profileDir}`,
@@ -65,7 +63,7 @@ async function runExtensionPanelSmoke(): Promise<void> {
       `--load-extension=${extensionDir}`,
       "--window-size=1200,900",
       fixtureUrl
-    ];
+    ]);
     if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
       chromeArguments.unshift("--headless=new");
     }

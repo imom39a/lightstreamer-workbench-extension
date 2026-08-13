@@ -18,6 +18,7 @@ import {
   waitForDebuggingPort,
   waitForExtensionPanelTarget
 } from "../support/chrome-extension-cdp";
+import { chromeUnattendedArguments } from "../../scripts/chrome-launch-args.mjs";
 import {
   formatTargets,
   type BrowserTarget,
@@ -53,12 +54,9 @@ async function runOfficialClientPanelJourney(
   try {
     await access(extensionDir, constants.R_OK);
     const extensionManifest = await readExtensionManifest(extensionDir);
-    const chromeArguments = [
+    const chromeArguments = chromeUnattendedArguments([
       "--no-sandbox",
       "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--use-mock-keychain",
       "--auto-open-devtools-for-tabs",
       "--remote-debugging-port=0",
       `--user-data-dir=${profileDir}`,
@@ -66,7 +64,7 @@ async function runOfficialClientPanelJourney(
       `--load-extension=${extensionDir}`,
       `--window-size=${windowSize}`,
       "about:blank"
-    ];
+    ]);
     if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
       chromeArguments.unshift("--headless=new");
     }

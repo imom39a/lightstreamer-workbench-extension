@@ -11,9 +11,12 @@ import { type DeterministicEvidenceRecord, type EvidenceFilter, type EvidenceRea
 export const DISCOVERY_CANDIDATE_BOUND_DESCRIPTION = "page size + active pins";
 
 export type DiscoveryInstrumentation = Readonly<{
-  onResult?: (stats: Readonly<{ compactIdentityCount: number; materializedCandidates: number; materializationBound: number }>) => void;
+  onResult?: (stats: Readonly<{ compactIdentityCount: number; materializedCandidates: number; materializationBound: number; candidateCount: number }>) => void;
   fail?: () => void;
 }>;
+
+export type DiscoveryAggregateObservation = Readonly<{ sequence: number; eventId: string }>;
+export type DiscoveryAggregateEntry = Readonly<{ value: TypedFacetValue; count: number; observations: readonly DiscoveryAggregateObservation[] }>;
 
 type Cursor = Readonly<{
   version: 1;
@@ -111,14 +114,14 @@ function unavailable(facet: string, reason: "ZERO_BASE" | "NO_CONCRETE_VALUES" |
   return Object.freeze({ state: "UNAVAILABLE", facet, reason, values: Object.freeze([]) as readonly [], distinctTotal: null, nextCursor: null, baseEvidenceCount });
 }
 
-export function discoverFacet(
-  records: readonly DeterministicEvidenceRecord[],
+function discoverFromAccounting(
+  accounting: Map<string, CompactValue>,
+  baseEvidenceCount: number,
   filter: EvidenceFilter,
   readPoint: EvidenceReadPoint,
   request: FacetDiscoveryRequest,
-  instrumentation: DiscoveryInstrumentation = {}
+  instrumentation: DiscoveryInstrumentation
 ): FacetDiscoveryResult {
-  instrumentation.fail?.();
   const descriptor = FACET_DESCRIPTORS.find((candidate) => candidate.key === request.facet);
   if (!descriptor || !Number.isSafeInteger(request.size) || request.size < 1 || request.size > 100) return unavailable(request.facet, "UNSUPPORTED_AT_READ_POINT", null);
   const search = text(request.search);
@@ -127,25 +130,13 @@ export function discoverFacet(
   const parsed = parseCursor(request.cursor);
   if (request.cursor && (!parsed || parsed.facet !== request.facet || parsed.search !== search || parsed.size !== request.size || parsed.filter !== filterKey || parsed.readPoint !== pointKey)) return unavailable(request.facet, "DISCOVERY_FAILED", null);
 
-  const base = records.filter((record) => matchesBase(record, withoutFacet(filter, request.facet)));
-  if (base.length === 0) return unavailable(request.facet, "ZERO_BASE", 0);
+  if (baseEvidenceCount === 0) return unavailable(request.facet, "ZERO_BASE", 0);
 
-  // This is compact identity accounting: it retains no TypedFacetValue
-  // objects and no complete sorted order. It is the exact source for counts
-  // and distinctTotal; ordered selection below is bounded by page size.
-  const accounting = new Map<string, CompactValue>();
-  for (const record of base) {
-    const value = record.facets[request.facet];
-    if (!value) continue;
-    const existing = accounting.get(value.identity);
-    if (existing) existing.count += 1;
-    else accounting.set(value.identity, compact(value));
-  }
   const active = [...(filter.criteria[request.facet]?.include ?? []), ...(filter.criteria[request.facet]?.exclude ?? [])];
   const activeIdentities = new Set(active.map((value) => value.identity));
   let distinctTotal = 0;
   for (const value of accounting.values()) if (matchesSearch(descriptor.label, value, search)) distinctTotal += 1;
-  if (distinctTotal === 0 && active.length === 0) return unavailable(request.facet, "NO_CONCRETE_VALUES", base.length);
+  if (distinctTotal === 0 && active.length === 0) return unavailable(request.facet, "NO_CONCRETE_VALUES", baseEvidenceCount);
 
   const searched = function* (): Iterable<CompactValue> {
     for (const value of accounting.values()) if (matchesSearch(descriptor.label, value, search)) yield value;
@@ -174,9 +165,68 @@ export function discoverFacet(
     values.push(Object.freeze({ value, count: observed?.count ?? 0, pinned: true }));
   }
   const materializationBound = request.size + active.length;
-  instrumentation.onResult?.({ compactIdentityCount: accounting.size, materializedCandidates: values.length, materializationBound });
+  instrumentation.onResult?.({ compactIdentityCount: accounting.size, materializedCandidates: values.length, materializationBound, candidateCount: baseEvidenceCount });
   const nextCursor = nextPosition < distinctTotal && orderedPage.length > 0
     ? cursorFor({ version: 1, facet: request.facet, search, size: request.size, filter: filterKey, readPoint: pointKey, position: nextPosition, anchor: orderedPage.at(-1)!.sortKey })
     : null;
-  return Object.freeze({ state: "AVAILABLE", facet: request.facet, values: Object.freeze(values), distinctTotal, nextCursor, baseEvidenceCount: base.length });
+  return Object.freeze({ state: "AVAILABLE", facet: request.facet, values: Object.freeze(values), distinctTotal, nextCursor, baseEvidenceCount });
+}
+
+export function discoverFacet(
+  records: readonly DeterministicEvidenceRecord[],
+  filter: EvidenceFilter,
+  readPoint: EvidenceReadPoint,
+  request: FacetDiscoveryRequest,
+  instrumentation: DiscoveryInstrumentation = {}
+): FacetDiscoveryResult {
+  instrumentation.fail?.();
+  const base = records.filter((record) => matchesBase(record, withoutFacet(filter, request.facet)));
+  if (base.length === 0) return unavailable(request.facet, "ZERO_BASE", 0);
+
+  // This is compact identity accounting: it retains no TypedFacetValue
+  // objects and no complete sorted order. It is the exact source for counts
+  // and distinctTotal; ordered selection below is bounded by page size.
+  const accounting = new Map<string, CompactValue>();
+  for (const record of base) {
+    const value = record.facets[request.facet];
+    if (!value) continue;
+    const existing = accounting.get(value.identity);
+    if (existing) existing.count += 1;
+    else accounting.set(value.identity, compact(value));
+  }
+  return discoverFromAccounting(accounting, base.length, filter, readPoint, request, instrumentation);
+}
+
+/**
+ * Exact discovery from a transactionally maintained aggregate catalog plus its
+ * versioned posting observations. The catalog is only a compact identity
+ * source; counts and event identities come from the postings, while paging,
+ * pins, cursor validation, typed ordering, and unavailable states remain the
+ * same oracle as record-backed discovery.
+ */
+export function discoverFacetFromAggregates(
+  entries: readonly DiscoveryAggregateEntry[],
+  baseEvidenceCount: number,
+  filter: EvidenceFilter,
+  readPoint: EvidenceReadPoint,
+  request: FacetDiscoveryRequest,
+  instrumentation: DiscoveryInstrumentation = {}
+): FacetDiscoveryResult {
+  instrumentation.fail?.();
+  const accounting = new Map<string, CompactValue>();
+  for (const entry of entries) {
+    if (!Number.isSafeInteger(entry.count) || entry.count < 1 || entry.value.facet !== request.facet) {
+      throw new Error("The facet discovery aggregate is corrupt.");
+    }
+    const existing = accounting.get(entry.value.identity);
+    if (existing) {
+      if (existing.facet !== entry.value.facet || existing.type !== entry.value.type || existing.value !== entry.value.value || existing.label !== entry.value.label) {
+        throw new Error("The facet discovery aggregate contains conflicting identities.");
+      }
+      existing.count += entry.count;
+    } else {
+      accounting.set(entry.value.identity, { ...compact(entry.value), count: entry.count });
+    }
+  }
+  return discoverFromAccounting(accounting, baseEvidenceCount, filter, readPoint, request, instrumentation);
 }

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { defineConfig } from "@playwright/test";
+import { chromeUnattendedArguments } from "./scripts/chrome-launch-args.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const selectedTheme = parseTheme(process.env.LSEW_UI_THEME ?? "auto");
@@ -39,7 +40,7 @@ export default defineConfig({
     deviceScaleFactor: 1,
     viewport,
     ...(chromeExecutable
-      ? { launchOptions: { executablePath: chromeExecutable } }
+      ? { launchOptions: { executablePath: chromeExecutable, args: chromeUnattendedArguments() } }
       : {})
   },
   webServer: {

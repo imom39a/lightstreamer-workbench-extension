@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
 import WebSocket from "ws";
+import { chromeUnattendedArguments } from "./chrome-launch-args.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(scriptDir, "..");
@@ -50,7 +51,7 @@ async function runTopologyPerformanceGate() {
     const chromeExecutable = await resolveChromeExecutable();
     chrome = spawn(
       chromeExecutable,
-      [
+      chromeUnattendedArguments([
         "--headless=new",
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -58,13 +59,11 @@ async function runTopologyPerformanceGate() {
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-features=CalculateNativeWinOcclusion",
-        "--no-first-run",
-        "--no-default-browser-check",
         "--remote-debugging-port=0",
         `--user-data-dir=${profileDir}`,
         "--window-size=1440,1000",
         harnessUrl
-      ],
+      ]),
       {
         cwd: rootDir,
         env: process.env,

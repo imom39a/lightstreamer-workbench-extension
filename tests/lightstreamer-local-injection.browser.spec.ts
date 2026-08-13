@@ -17,6 +17,7 @@ import {
   waitForDebuggingPort,
   waitForExtensionPanelTarget
 } from "./support/chrome-extension-cdp";
+import { chromeUnattendedArguments } from "../scripts/chrome-launch-args.mjs";
 import { waitForWorkbenchPanel } from "./support/devtools-panel";
 
 type CaptureMessage = {
@@ -50,13 +51,10 @@ async function runBrowserProof(): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-local-injection-transport-"));
   const chromeExecutable = await resolveChromeExecutable(rootDir);
   const chromeLogs: string[] = [];
-  const chrome = spawn(chromeExecutable, [
+  const chrome = spawn(chromeExecutable, chromeUnattendedArguments([
     ...(process.env.LSEW_BROWSER_HEADLESS === "false" ? [] : ["--headless=new"]),
     "--no-sandbox",
     "--disable-dev-shm-usage",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--use-mock-keychain",
     "--auto-open-devtools-for-tabs",
     "--remote-debugging-port=0",
     `--user-data-dir=${profileDir}`,
@@ -64,7 +62,7 @@ async function runBrowserProof(): Promise<void> {
     `--load-extension=${extensionDir}`,
     "--window-size=1280,900",
     "about:blank"
-  ], {
+  ]), {
     cwd: rootDir,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],

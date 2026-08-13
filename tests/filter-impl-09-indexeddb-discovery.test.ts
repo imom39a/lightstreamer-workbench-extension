@@ -31,6 +31,43 @@ async function setup(name: string, candidates: readonly LightstreamerEventEnvelo
   return { memory, durable };
 }
 
+async function mutateFacetAggregate(
+  name: string,
+  mutate: (aggregate: Record<string, unknown>) => Record<string, unknown>
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open(authoritativeEventDatabaseName(name));
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const database = request.result;
+      const transaction = database.transaction("facetAggregates", "readwrite");
+      const store = transaction.objectStore("facetAggregates");
+      const read = store.getAll();
+      read.onerror = () => reject(read.error);
+      read.onsuccess = () => {
+        const aggregate = read.result.find((candidate) => (candidate as Record<string, unknown>).facet === "key") as Record<string, unknown> | undefined;
+        if (!aggregate) {
+          reject(new Error("No facet aggregate found"));
+          return;
+        }
+        store.put(mutate(aggregate));
+      };
+      transaction.oncomplete = () => {
+        database.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error);
+      };
+      transaction.onabort = () => {
+        database.close();
+        reject(transaction.error ?? new Error("Facet aggregate mutation aborted."));
+      };
+    };
+  });
+}
+
 describe("filter-impl-09 IndexedDB facet discovery", () => {
   it("matches memory, pages every value, and pins an active zero-count value", async () => {
     const candidates = Array.from({ length: 130 }, (_, index) => event(`event-${index}`, `key-${String(index).padStart(3, "0")}`));
@@ -139,6 +176,21 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     await durable.close();
   });
 
+  it.each(["type", "identity-source"] as const)("fails discovery closed when the aggregate %s is corrupt", async (corruption) => {
+    const name = "filter-impl-09-aggregate-" + corruption + "-" + Date.now();
+    const { durable } = await setup(name, [event("event-1", "one"), event("event-2", "two")]);
+    await mutateFacetAggregate(name, (aggregate) => {
+      if (corruption === "type") return { ...aggregate, type: "forged-type" };
+      return { ...aggregate, facetIdentity: "forged-observation-source" };
+    });
+    const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
+    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2 } } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected aggregate-corruption query to succeed");
+    expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    await durable.close();
+  });
+
   it("fails discovery closed for same-interval out-of-range postings while preserving base totals", async () => {
     const name = `filter-impl-09-range-${Date.now()}`;
     const { durable } = await setup(name, [event("event-1", "one"), event("event-2", "two")]);
@@ -194,6 +246,31 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     if (!result.ok) throw new Error("Expected cross-interval query to succeed");
     expect(result.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 1 });
     await durable.close();
+  });
+
+  it("filters aggregate observations to the requested historical read point", async () => {
+    const name = "filter-impl-09-historical-" + Date.now();
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const durable = await createIndexedDbEventHistory({ panelSessionId: name });
+    try {
+      await durable.offer(event("event-1", "one")).settled;
+      const first = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
+      expect(first.ok).toBe(true);
+      if (!first.ok) throw new Error("Expected the first historical read point");
+      await durable.offer(event("event-2", "two")).settled;
+      const historical = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
+      expect(historical).toMatchObject({ ok: true, value: { totals: { matching: 1 }, page: { evidence: [{ identity: { eventId: "event-1" } }] } } });
+      expect(historical.ok).toBe(true);
+      if (!historical.ok) throw new Error("Expected the historical query to succeed");
+      expect(historical.value.discoveries.get("key")).toMatchObject({ state: "AVAILABLE", distinctTotal: 1, baseEvidenceCount: 1 });
+      const discovery = historical.value.discoveries.get("key");
+      if (discovery?.state === "AVAILABLE") {
+        expect(discovery.values.map((entry) => entry.value.value)).toEqual(["one"]);
+      }
+      expect(historical.value.telemetry).toMatchObject({ fullEvidencePayloadHydrations: 0, discoveryEvidencePayloadHydrations: 0 });
+    } finally {
+      await durable.close();
+    }
   });
 
   it.each(["missing", "malformed"])("fails no-counterfactual discovery closed for %s discovered-facet postings", async (corruption) => {

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { chromeUnattendedArguments } from "./chrome-launch-args.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const outputDir = resolve(projectRoot, "store-listing/screenshots");
@@ -467,7 +468,7 @@ async function runChromeScreenshot(url, outputPath) {
   try {
     await new Promise((resolveRun, rejectRun) => {
       let timedOut = false;
-      const child = spawn(chromePath, [
+      const child = spawn(chromePath, chromeUnattendedArguments([
         "--headless=new",
         "--disable-gpu",
         "--disable-dev-shm-usage",
@@ -480,7 +481,7 @@ async function runChromeScreenshot(url, outputPath) {
         `--user-data-dir=${profileDir}`,
         `--screenshot=${outputPath}`,
         url
-      ], {
+      ]), {
         stdio: "pipe"
       });
 
