@@ -55,6 +55,25 @@ describe("filter-impl-06 memory selection planner", () => {
     expect(result.ok && result.value.page.evidence.map((record) => record.identity.sequence)).toEqual([1, 2]);
   });
 
+  it.each([
+    ["pageId", { pageId: "forged-page" }],
+    ["ownerId", { ownerId: "forged-owner" }]
+  ] as const)("rejects an Around anchor forged by changing %s", async (_component, forged) => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: `filter-impl-06-forged-${_component}` });
+    await history.offer(event("one", 1, 10_000)).settled;
+    const base = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(base.ok).toBe(true);
+    if (!base.ok) return;
+    const retained = base.value.page.evidence[0]!.identity;
+    const anchor = { ...retained, ...forged };
+    const result = await history.query!({
+      at: base.value.readPoint,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      filter: { ...emptyFilter(), around: { intervalId: retained.intervalId, start: 5_000, end: 15_000, anchor, anchorSequence: retained.sequence, anchorTimestamp: retained.timestamp } }
+    });
+    expect(result).toMatchObject({ ok: false, problem: { code: "AROUND_ANCHOR_UNAVAILABLE" } });
+  });
+
   it("finds independently of Filter and keeps a valid current hit", async () => {
     const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-06-find" });
     await history.offer(event("one", 1, 1_000, "needle")).settled;
