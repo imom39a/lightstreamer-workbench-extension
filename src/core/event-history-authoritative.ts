@@ -12,6 +12,7 @@ import {
   type FacetDiscoveryResult
 } from "./evidence-filter-contract";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
+import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { canonicalEvidenceSearchText, extractEvidenceFacets } from "./evidence-facets";
 import {
@@ -872,7 +873,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, readPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.") });
     }
-    if (request.at !== "LATEST_COMMITTED" && !matchesEvidenceReadPoint(request.at, readPoint)) {
+    if (request.at !== "LATEST_COMMITTED" && !readPointFitsCurrentInterval(request.at, readPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
 
@@ -923,9 +924,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         if (isInAround(record, around)) inScope.push(record);
       }
       const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
-      const offset = readCursor(request.page.cursor);
+      const offset = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
       const page = ordered.slice(offset, offset + request.page.size);
-      const nextCursor = offset + page.length < ordered.length ? String(offset + page.length) : null;
+      const nextCursor = offset + page.length < ordered.length ? encodeEvidenceQueryCursor(readPoint, request, offset + page.length) : null;
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
         const find = request.find === undefined ? null : findEvidence(records, request.find);
       return Promise.resolve({
@@ -1264,10 +1265,15 @@ function evidenceReadPoint(interval: HistoryInterval, entries: readonly Committe
   });
 }
 
-function matchesEvidenceReadPoint(requested: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
+function readPointFitsCurrentInterval(requested: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
   if (requested.interval.id !== current.interval.id || requested.interval.ordinal !== current.interval.ordinal) return false;
-  return sameEvidenceIdentity(requested.committedEvidenceBoundary, current.committedEvidenceBoundary)
-    && sameEvidenceRange(requested.retainedRange, current.retainedRange);
+  const requestedBoundary = requested.committedEvidenceBoundary?.sequence ?? 0;
+  const currentBoundary = current.committedEvidenceBoundary?.sequence ?? 0;
+  if (requestedBoundary > currentBoundary) return false;
+  if (requested.retainedRange === null) return true;
+  if (current.retainedRange === null) return false;
+  return requested.retainedRange.first.sequence >= current.retainedRange.first.sequence
+    && requested.retainedRange.last.sequence <= current.retainedRange.last.sequence;
 }
 
 function sameHistoryInterval(requested: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
@@ -1277,18 +1283,6 @@ function sameHistoryInterval(requested: EvidenceReadPoint, current: EvidenceRead
 function sameEvidenceIdentity(left: EvidenceIdentity | null, right: EvidenceIdentity | null): boolean {
   if (left === null || right === null) return left === right;
   return left.intervalId === right.intervalId && left.pageId === right.pageId && left.ownerId === right.ownerId && left.sequence === right.sequence && left.eventId === right.eventId;
-}
-
-function sameEvidenceRange(left: EvidenceReadPoint["retainedRange"], right: EvidenceReadPoint["retainedRange"]): boolean {
-  if (left === null || right === null) return left === right;
-  return sameEvidenceIdentity(left.first, right.first) && sameEvidenceIdentity(left.last, right.last);
-}
-
-function readCursor(cursor: string | undefined): number {
-  if (cursor === undefined) return 0;
-  const value = Number(cursor);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error("Page cursor must be a non-negative integer.");
-  return value;
 }
 
 function inEvidenceScope(record: DeterministicEvidenceRecord, around: EvidenceQueryRequest["filter"]["around"]): boolean {

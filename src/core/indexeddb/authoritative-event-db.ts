@@ -57,6 +57,7 @@ function sanitizePanelSessionId(panelSessionId: string): string {
 export type AuthoritativeEventDatabase = Readonly<{
   db: IDBDatabase;
   name: string;
+  queryProjectionMigrationRequired: boolean;
 }>;
 
 export type AuthoritativeDatabaseOpenFailureCode =
@@ -248,6 +249,7 @@ function inspectDatabaseVersion(name: string): Promise<number> {
 function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let queryProjectionMigrationRequired = false;
     const request = indexedDB.open(name, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
     const timeout = globalThis.setTimeout(() => {
       settleReject(new AuthoritativeDatabaseOpenError("OPEN_FAILED", `Opening ${name} timed out.`));
@@ -269,7 +271,9 @@ function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> 
 
     request.onupgradeneeded = (event) => {
       try {
-        upgradeAuthoritativeDatabase(request.result, request.transaction, (event as IDBVersionChangeEvent).oldVersion);
+        const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
+        queryProjectionMigrationRequired = oldVersion > 0 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION;
+        upgradeAuthoritativeDatabase(request.result, request.transaction, oldVersion);
       } catch (error) {
         request.transaction?.abort();
         settleReject(new AuthoritativeDatabaseOpenError("OPEN_FAILED", `Failed to upgrade ${name}.`, error));
@@ -293,7 +297,7 @@ function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> 
       database.onversionchange = () => database.close();
       try {
         validateAuthoritativeDatabaseShape(database);
-        settleResolve({ db: database, name });
+        settleResolve({ db: database, name, queryProjectionMigrationRequired });
       } catch (error) {
         database.close();
         settleReject(new AuthoritativeDatabaseOpenError("OPEN_FAILED", `Database ${name} has an unsupported shape.`, error));

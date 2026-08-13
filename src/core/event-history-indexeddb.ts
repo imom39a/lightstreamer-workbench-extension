@@ -60,6 +60,7 @@ import { extractEvidenceFacets } from "./evidence-facets";
 import { canonicalEvidenceSearchText, normalizeEvidenceSearchText } from "./evidence-facets";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
+import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
 import {
   MAX_EVIDENCE_PAGE_SIZE,
   type DeterministicEvidenceRecord,
@@ -1227,7 +1228,9 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
       transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings)
     );
     await transactionDone(transaction, "loading Event History");
-    await ensureQueryProjections(database, control, panelSessionId);
+    if (database.queryProjectionMigrationRequired) {
+      await ensureQueryProjections(database, control, panelSessionId);
+    }
     if (!control) {
       const interval = Object.freeze({ id: `${panelSessionId}:interval-1`, ordinal: 1 });
       await writeControl(database, createControl(panelSessionId, interval, "RUNNING", null, 1, null, null, 0, 0, 0));
@@ -1386,7 +1389,7 @@ async function queryIndexedDb(
     const simpleRecentPage = postingCandidates === null && request.filter.text.trim() === "" && request.filter.around === null;
     let projections: QueryProjection[];
     if (simpleRecentPage) {
-      const offset = decodeQueryCursor(request.page.cursor, readPoint, request, 0);
+      const offset = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
       if (offset > expectedProjectionCount) throw new Error("The page cursor is beyond the committed result set.");
       projections = await readProjectionPage(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.page, offset, telemetry);
       telemetry.candidateBound = projections.length;
@@ -1446,7 +1449,7 @@ async function queryIndexedDb(
       if ((aroundSequences === null ? isInAround(record, around) : aroundSequences.has(record.identity.sequence)) && isInAround(record, around)) inScope.push(record);
     }
     const ordered = simpleRecentPage ? selectionRecords : (request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope);
-    const offset = decodeQueryCursor(request.page.cursor, readPoint, request, 0);
+    const offset = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
     const page = simpleRecentPage ? selectionRecords : ordered.slice(offset, offset + request.page.size);
     if (offset > (simpleRecentPage ? expectedProjectionCount : ordered.length)) throw new Error("The page cursor is beyond the committed result set.");
     const lookupRecords = lookupRecordsWithPayload;
@@ -1455,7 +1458,7 @@ async function queryIndexedDb(
     telemetry.elapsedMs = Date.now() - started;
     const matchingTotal = simpleRecentPage || emptyFilterAround ? expectedProjectionCount : matching.length;
     const inScopeTotal = simpleRecentPage ? expectedProjectionCount : inScope.length;
-    return { ok: true, value: querySnapshot(readPoint, page, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < expectedProjectionCount ? encodeQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
+    return { ok: true, value: querySnapshot(readPoint, page, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < expectedProjectionCount ? encodeEvidenceQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeEvidenceQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
   } catch (error) {
     try { transaction.abort(); } catch { /* already completed */ }
     return queryFailure("QUERY_FAILED", error instanceof Error ? error.message : "IndexedDB Evidence query failed.");
@@ -1722,41 +1725,6 @@ async function readSelectedEvidence(store: IDBObjectStore, identity: EvidenceIde
   const record = await requestToPromise<EvidenceRecord | undefined>(store.get(identity.sequence), "reading selected Evidence payload");
   if (!record || record.intervalId !== interval.id || record.eventId !== identity.eventId) return null;
   return record;
-}
-
-function stableQueryValue(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableQueryValue).join(",")}]`;
-  return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${stableQueryValue(entry)}`).join(",")}}`;
-}
-
-function cursorBoundary(readPoint: EvidenceReadPoint): string {
-  return stableQueryValue({ interval: readPoint.interval, boundary: readPoint.committedEvidenceBoundary, range: readPoint.retainedRange });
-}
-
-function encodeQueryCursor(readPoint: EvidenceReadPoint, request: EvidenceQueryRequest, offset: number): string {
-  return encodeURIComponent(JSON.stringify({ v: 2, offset, query: cursorQueryBinding(request), point: cursorBoundary(readPoint) }));
-}
-
-function cursorQueryBinding(request: EvidenceQueryRequest): string {
-  return stableQueryValue({
-    discover: request.discover ?? null,
-    filter: request.filter,
-    find: request.find ?? null,
-    lookup: request.lookup ?? null,
-    page: { order: request.page.order, size: request.page.size }
-  });
-}
-
-function decodeQueryCursor(cursor: string | undefined, readPoint: EvidenceReadPoint, request: EvidenceQueryRequest, _fallback: number): number {
-  if (cursor === undefined) return 0;
-  try {
-    const value = JSON.parse(decodeURIComponent(cursor)) as { v?: unknown; offset?: unknown; query?: unknown; point?: unknown };
-    if (value.v !== 2 || value.query !== cursorQueryBinding(request) || value.point !== cursorBoundary(readPoint) || !Number.isSafeInteger(value.offset) || (value.offset as number) < 0) throw new Error("The page cursor is not bound to this query.");
-    return value.offset as number;
-  } catch {
-    throw new Error("The page cursor is malformed or no longer valid.");
-  }
 }
 
 function queryFailure(code: EvidenceFilterReadProblem["code"], message: string): Readonly<{ ok: false; problem: EvidenceFilterReadProblem }> {
