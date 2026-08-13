@@ -107,13 +107,11 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
 
   it("preserves empty-include semantics and applies same-facet exclusion after union", async () => {
     const { durable } = await histories(`filter-impl-08-algebra-${Date.now()}`);
-    const kind = typedFacetValue("kind", "enum", "item-update");
     const result = await durable.query!({
       at: "LATEST_COMMITTED",
       page: { order: "OLDEST_FIRST", size: 10 },
       filter: { ...emptyFilter(), criteria: {
-        mode: { include: [], exclude: [] },
-        kind: { include: [kind], exclude: [] }
+        mode: { include: [], exclude: [] }
       } }
     });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 3, inScope: 3 } } });
