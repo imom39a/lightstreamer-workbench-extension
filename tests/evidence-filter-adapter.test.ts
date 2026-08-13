@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   createEmptyEvidenceFilter,
   createEvidenceFilterFixture,
-  DeterministicEvidenceFilterAdapter,
   type EvidenceFilterQueryAdapter,
   type EvidenceQueryRequest,
   typedFacetValue
 } from "../src/core/evidence-filter-contract";
+import { createReferenceFilterAdapter } from "./support/evidence-filter-reference";
+
 
 function query(adapter: EvidenceFilterQueryAdapter, filter = createEmptyEvidenceFilter(), page: EvidenceQueryRequest["page"] = { order: "OLDEST_FIRST", size: 25 }) {
   return adapter.query({ at: "LATEST_COMMITTED", page, filter });
@@ -16,7 +17,7 @@ function query(adapter: EvidenceFilterQueryAdapter, filter = createEmptyEvidence
 describe("storage-neutral evidence filter seam", () => {
   it("executes include, exclude, free text, and half-open Around filtering with exact totals", async () => {
     const fixture = createEvidenceFilterFixture();
-    const adapter = new DeterministicEvidenceFilterAdapter(fixture.records);
+    const adapter = createReferenceFilterAdapter(fixture.records);
     const include = fixture.cases.includeAndExclude.include;
     const exclude = fixture.cases.includeAndExclude.exclude;
     const filter = {
@@ -37,7 +38,7 @@ describe("storage-neutral evidence filter seam", () => {
 
   it("fails closed for unsupported criteria and reports unavailable discovery", async () => {
     const fixture = createEvidenceFilterFixture(3_842);
-    const adapter = new DeterministicEvidenceFilterAdapter(fixture.records);
+    const adapter = createReferenceFilterAdapter(fixture.records);
     const result = await adapter.query({
       at: "LATEST_COMMITTED",
       page: { order: "NEWEST_FIRST", size: 10 },
@@ -54,7 +55,7 @@ describe("storage-neutral evidence filter seam", () => {
 
   it("supports bounded page and discovery continuation with lookup, blockers, and Find navigation", async () => {
     const fixture = createEvidenceFilterFixture();
-    const adapter = new DeterministicEvidenceFilterAdapter(fixture.records);
+    const adapter = createReferenceFilterAdapter(fixture.records);
     const first = await adapter.query({
       at: "LATEST_COMMITTED",
       page: { order: "OLDEST_FIRST", size: 7 },
@@ -78,7 +79,7 @@ describe("storage-neutral evidence filter seam", () => {
 
   it("reaches first, middle, and last records through bounded continuation without rendering the workload", async () => {
     const fixture = createEvidenceFilterFixture();
-    const adapter = new DeterministicEvidenceFilterAdapter(fixture.records);
+    const adapter = createReferenceFilterAdapter(fixture.records);
     const seen: number[] = [];
     let cursor: string | undefined;
     do {
@@ -97,7 +98,7 @@ describe("storage-neutral evidence filter seam", () => {
 
   it("returns Reveal blockers for hidden retained selection and distinguishes another interval", async () => {
     const fixture = createEvidenceFilterFixture();
-    const adapter = new DeterministicEvidenceFilterAdapter(fixture.records);
+    const adapter = createReferenceFilterAdapter(fixture.records);
     const selected = fixture.records[500]!.identity;
     const result = await adapter.query({
       at: "LATEST_COMMITTED",

@@ -2,14 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   createEvidenceFilterFixture,
-  DeterministicEvidenceFilterLifecycleHarness,
   type EvidenceFilterQueryAdapter,
   type EvidenceReadPoint
 } from "../src/core/evidence-filter-contract";
+import { createReferenceLifecycleHarness } from "./support/evidence-filter-reference";
+
 
 describe("storage-neutral filter lifecycle seam", () => {
   it("invalidates a read point on Clear and exposes the empty new interval", async () => {
-    const harness = new DeterministicEvidenceFilterLifecycleHarness(createEvidenceFilterFixture(3_842).records);
+    const harness = createReferenceLifecycleHarness(createEvidenceFilterFixture(3_842).records);
     const before = await harness.query({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] } });
     expect(before.ok).toBe(true);
     if (!before.ok) return;
@@ -23,7 +24,7 @@ describe("storage-neutral filter lifecycle seam", () => {
 
   it("keeps terminal final boundaries, fallback storage, and limited coverage explicit", async () => {
     const fixture = createEvidenceFilterFixture(3_842);
-    const harness = new DeterministicEvidenceFilterLifecycleHarness(fixture.records, { storage: "MEMORY_FALLBACK", coverage: "LIMITED" });
+    const harness = createReferenceLifecycleHarness(fixture.records, { storage: "MEMORY_FALLBACK", coverage: "LIMITED" });
     harness.terminate();
     expect(harness.state()).toMatchObject({ phase: "TERMINAL", storage: "MEMORY_FALLBACK", coverage: "LIMITED", committedEvidenceBoundary: fixture.records.at(-1)?.identity });
     const result = await harness.query({ at: "LATEST_COMMITTED", page: { order: "NEWEST_FIRST", size: 3 }, filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] } });
@@ -32,7 +33,7 @@ describe("storage-neutral filter lifecycle seam", () => {
 
   it("publishes a new committed boundary for concurrent Capture without mutating the old result", async () => {
     const fixture = createEvidenceFilterFixture(3_842);
-    const harness = new DeterministicEvidenceFilterLifecycleHarness(fixture.records);
+    const harness = createReferenceLifecycleHarness(fixture.records);
     const old = await harness.query({ at: "LATEST_COMMITTED", page: { order: "NEWEST_FIRST", size: 1 }, filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] } });
     expect(old.ok).toBe(true);
     if (!old.ok) return;
@@ -44,7 +45,7 @@ describe("storage-neutral filter lifecycle seam", () => {
   });
 
   it("keeps the adapter contract assignable for alternate storage implementations", () => {
-    const adapter: EvidenceFilterQueryAdapter = new DeterministicEvidenceFilterLifecycleHarness([]);
+    const adapter: EvidenceFilterQueryAdapter = createReferenceLifecycleHarness([]);
     expect(adapter).toBeDefined();
   });
 });

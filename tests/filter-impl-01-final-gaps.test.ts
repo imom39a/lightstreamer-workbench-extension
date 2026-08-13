@@ -11,7 +11,7 @@ import { getEvidenceFilterPanelScenario } from "./support/panel-scenarios";
 describe("filter-impl-01 final contract gaps", () => {
   it("stores every collision case as accepted Evidence, including absent item values", () => {
     const fixture = createEvidenceFilterFixture();
-    const itemValues = fixture.records.map((record) => record.facets.item);
+    const itemValues = fixture.records.map((record) => record.facets.item?.value);
     const keys = fixture.records.map((record) => record.facets.key?.value);
 
     expect(fixture.records.some((record) => record.facets.client?.value === fixture.cases.collisions.clients[0].value)).toBe(true);
@@ -54,12 +54,26 @@ describe("filter-impl-01 final contract gaps", () => {
     expect(() => harness.capture(fixture.records[0]!)).toThrow(/terminal/i);
   });
 
+  it("enforces the concrete 5,000-record memory fallback bound", async () => {
+    const fixture = createEvidenceFilterFixture();
+    const result = await createReferenceFilterAdapter(fixture.records, { storage: "MEMORY_FALLBACK" }).query({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 5_001 }, filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.totals).toEqual({ matching: 5_000, inScope: 5_000 });
+    expect(result.value.page.evidence).toHaveLength(5_000);
+    expect(result.value.readPoint.retainedRange?.first.sequence).toBe(5_001);
+  });
+
   it("keeps memory and IndexedDB-shaped adapters equivalent at the contract seam", async () => {
     const fixture = createEvidenceFilterFixture(3_842);
     const request = { at: "LATEST_COMMITTED" as const, page: { order: "OLDEST_FIRST" as const, size: 17 }, filter: { revision: 1, text: "risk-reviewed", criteria: {}, around: null, unsupported: [] } };
     const memory = await createReferenceFilterAdapter(fixture.records, { storage: "MEMORY_FALLBACK" }).query(request);
     const indexedDb = await createReferenceFilterAdapter(fixture.records, { storage: "INDEXED_DB" }).query(request);
-    expect(memory).toEqual(indexedDb);
+    expect(memory).toMatchObject({ ok: true });
+    expect(indexedDb).toMatchObject({ ok: true });
+    if (memory.ok && indexedDb.ok) {
+      expect({ ...memory.value, storage: undefined }).toEqual({ ...indexedDb.value, storage: undefined });
+    }
   });
 
   it("gives every maintained adverse scenario deterministic setup and an asserted outcome", () => {

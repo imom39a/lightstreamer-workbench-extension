@@ -12,7 +12,8 @@ import {
   getPanelScenario,
   getEvidenceFilterPanelScenario
 } from "./support/panel-scenarios";
-import { EVIDENCE_FILTER_PANEL_SCENARIOS, EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS } from "../src/core/evidence-filter-contract";
+import { EVIDENCE_FILTER_PANEL_SCENARIOS } from "../src/core/evidence-filter-contract";
+import { EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS } from "./support/panel-scenarios";
 
 describe("deterministic panel scenarios", () => {
   it("creates repeatable store-listing state with fixed Capture identifiers and timestamps", () => {

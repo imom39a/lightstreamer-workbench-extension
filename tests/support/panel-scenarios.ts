@@ -12,8 +12,8 @@ import {
 } from "../../src/bridge/messages";
 import { type LightstreamerEventEnvelope } from "../../src/core/event-envelope";
 import {
-  EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS,
   EVIDENCE_FILTER_PANEL_SCENARIOS,
+  EVIDENCE_FILTER_PANEL_GEOMETRIES,
   type EvidenceFilterPanelScenario
 } from "../../src/core/evidence-filter-contract";
 
@@ -60,7 +60,37 @@ export type PanelScenario = {
   setupActions: readonly PanelScenarioSetupAction[];
   postRenderSetupActions?: readonly PanelScenarioSetupAction[];
   stream?: PanelScenarioStream;
+  expectedOutcome?: string;
 };
+
+const filterScenarioActions: Readonly<Record<EvidenceFilterPanelScenario, readonly PanelScenarioSetupAction[]>> = Object.freeze({
+  "primary-include-exclude-reveal-reset": [
+    { type: "click", selector: "[aria-label=Filter]" },
+    { type: "set-value", selector: "#workbench-filter-query", value: "risk-reviewed" },
+    { type: "click", selector: "[aria-label=Apply Filter]" },
+    { type: "click", selector: "[aria-label='Reveal selected Evidence']" },
+    { type: "click", selector: "[aria-label='Clear filters']" }
+  ],
+  "empty-history": [{ type: "click", selector: "[aria-label='Clear history']" }],
+  "valid-zero-result-conflict": [{ type: "click", selector: "[aria-label='Apply conflicting criteria']" }],
+  "unsupported-criterion": [{ type: "click", selector: "[aria-label='Apply unsupported criterion']" }],
+  "discovery-unavailable": [{ type: "click", selector: "[aria-label='Open unavailable discovery']" }],
+  "hidden-selection": [{ type: "click", selector: "[aria-label='Reveal selected Evidence']" }],
+  "terminal-history": [{ type: "click", selector: "[aria-label='Open terminal history']" }],
+  "memory-fallback": [{ type: "click", selector: "[aria-label='Open memory fallback']" }],
+  "high-volume-command-keys": [{ type: "click", selector: "[aria-label='Open key discovery']" }]
+});
+
+export const EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS = Object.freeze(
+  EVIDENCE_FILTER_PANEL_SCENARIOS.map((id) => Object.freeze({
+    id,
+    geometries: EVIDENCE_FILTER_PANEL_GEOMETRIES,
+    themes: Object.freeze(["Dark", "Light"] as const),
+    forcedColors: true,
+    setupActions: Object.freeze(filterScenarioActions[id].map((action) => Object.freeze(action))),
+    expectedOutcome: id
+  }))
+);
 
 export const PANEL_SCENARIO_IDS = [
   "command-state",
@@ -169,11 +199,13 @@ export function getEvidenceFilterPanelScenario(id: EvidenceFilterPanelScenario):
     id,
     status: "bridge connected",
     initialView: "Timeline",
-    capturedEvents: [],
+    capturedEvents: createStoreListingCapture(),
+    expectedOutcome: definition.expectedOutcome,
     setupActions: definition.setupActions.map((action) => {
       if (action.type === "set-value") return { type: "set-value", selector: action.selector, value: action.value ?? "" };
       if (action.type === "select-row") return { type: "select-row", selector: action.selector, text: action.text ?? "" };
-      return { type: "click", selector: action.selector };
+      if (action.type === "click") return { type: "click", selector: action.selector };
+      return action;
     })
   };
 }

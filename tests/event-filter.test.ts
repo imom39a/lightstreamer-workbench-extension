@@ -7,7 +7,6 @@ import {
   EVIDENCE_FILTER_FACETS,
   EVIDENCE_FILTER_LIFECYCLE_CASES,
   EVIDENCE_FILTER_PANEL_SCENARIOS,
-  EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS,
   EVIDENCE_FILTER_PANEL_GEOMETRIES,
   MINIMUM_COMMAND_KEY_COUNT,
   createEmptyEvidenceFilter,
@@ -16,6 +15,8 @@ import {
   type EvidenceFilterQueryAdapter,
   type EvidenceSnapshot
 } from "../src/core/evidence-filter-contract";
+import { EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS } from "./support/panel-scenarios";
+import { createReferenceFilterAdapter } from "./support/evidence-filter-reference";
 
 function event(overrides: Partial<LightstreamerEventEnvelope>): LightstreamerEventEnvelope {
   return {
@@ -153,7 +154,9 @@ describe("event filters", () => {
       discoveries: new Map(),
       lookup: null,
       find: null,
-      evaluation: "COMPLETE"
+      evaluation: "COMPLETE",
+      coverage: "COMPLETE",
+      storage: "INDEXED_DB"
     };
     expect(query.at).toBe("LATEST_COMMITTED");
     expect(snapshot.readPoint.interval.id).toBe("interval-1");
