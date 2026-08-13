@@ -1,4 +1,4 @@
-export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 2;
+export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 3;
 export const AUTHORITATIVE_EVENT_DB_NAME_PREFIX = "lsew-events-panel";
 export const AUTHORITATIVE_EVENT_DB_NAME = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-session`;
 export const AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION = 1;
@@ -10,7 +10,8 @@ const FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID = `${AUTHORITATIVE_EVENT_DB_NAM
 const INDEXEDDB_REQUEST_TIMEOUT_MS = 2_000;
 export const AUTHORITATIVE_EVENT_STORE_NAMES = {
   historyControl: "historyControl",
-  evidence: "evidence"
+  evidence: "evidence",
+  facetPostings: "facetPostings"
 } as const;
 
 type IndexedDatabaseDescriptor = Readonly<{ name?: string; version?: number }>;
@@ -293,11 +294,11 @@ function openAtCurrentSchema(name: string): Promise<AuthoritativeEventDatabase> 
 
 function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   const stores = [...database.objectStoreNames].sort();
-  const expectedStores = [AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl].sort();
+  const expectedStores = [AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl].sort();
   if (stores.length !== expectedStores.length || stores.some((name, index) => name !== expectedStores[index])) {
     throw new Error("Authoritative Event History requires exactly the historyControl and evidence stores.");
   }
-  const transaction = database.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl], "readonly");
+  const transaction = database.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, AUTHORITATIVE_EVENT_STORE_NAMES.historyControl], "readonly");
   const control = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl);
   if (control.keyPath !== "key") throw new Error("The historyControl store must be keyed by key.");
   const evidence = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
@@ -311,6 +312,17 @@ function validateAuthoritativeDatabaseShape(database: IDBDatabase): void {
   if (identity.keyPath !== "eventId" || !identity.unique || facets.keyPath !== "facets" || !facets.multiEntry) {
     throw new Error("The evidence indexes do not match the authoritative schema.");
   }
+  const postings = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
+  if (JSON.stringify(postings.keyPath) !== JSON.stringify(["token", "sequence"])) {
+    throw new Error("The facet posting store must use the versioned token and sequence key.");
+  }
+  if (postings.indexNames.length !== 1 || !postings.indexNames.contains("token")) {
+    throw new Error("The facet posting store must have exactly the token index.");
+  }
+  const token = postings.index("token");
+  if (token.keyPath !== "token" || token.unique) {
+    throw new Error("The facet posting token index does not match the authoritative schema.");
+  }
 }
 
 function upgradeAuthoritativeDatabase(
@@ -318,7 +330,7 @@ function upgradeAuthoritativeDatabase(
   transaction: IDBTransaction | null,
   oldVersion: number
 ): void {
-  if (oldVersion === AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION) {
+  if (oldVersion > 0 && oldVersion < AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
     for (const name of [...database.objectStoreNames]) {
       database.deleteObjectStore(name);
     }
@@ -337,5 +349,14 @@ function upgradeAuthoritativeDatabase(
   }
   if (!evidence.indexNames.contains("facets")) {
     evidence.createIndex("facets", "facets", { multiEntry: true });
+  }
+  const postings = database.objectStoreNames.contains(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings)
+    ? transaction?.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings)
+    : database.createObjectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings, { keyPath: ["token", "sequence"] });
+  if (!postings) {
+    throw new Error("The facet posting store is unavailable during upgrade.");
+  }
+  if (!postings.indexNames.contains("token")) {
+    postings.createIndex("token", "token", { unique: false });
   }
 }
