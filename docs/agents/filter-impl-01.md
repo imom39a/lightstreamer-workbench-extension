@@ -32,10 +32,10 @@ collision-incomplete fixtures, shallow immutability, missing lifecycle
 transitions, incomplete bounded-workload proof, and an unintegrated scenario
 manifest. The repair stays within this storage/renderer-neutral seam.
 
-The executable reference adapter, facet extraction, typed predicate evaluation,
-discovery, and lifecycle harness live in
-`tests/support/evidence-filter-reference.ts`; production exposes only the
-storage-neutral contract and immutable deterministic fixture data. The support
+The executable reference adapter, facet catalog, deterministic fixture builder,
+typed predicate evaluation, discovery, and lifecycle harness live entirely in
+`tests/support/`; production exposes only generic storage-neutral contract types
+and the atomic query interface. The support
 seam evaluates typed include/exclude criteria, free text, half-open Around
 Evidence, unsupported fail-closed queries, exact totals, bounded page and
 facet-discovery continuation, retained/other-interval lookup with Reveal
@@ -46,11 +46,13 @@ boundaries, Limited Observation Coverage, and concurrent Capture.
 The fixture now carries page- and owner-qualified identities plus explicit
 client, session, listener, missing-value, literal-`"null"`, and case-sensitive
 `ABC`/`abc` collision cases. Facet catalogs, scenario manifests, scenario
-themes/actions, fixture records, identities, and nested collision values are
-frozen. All nine maintained filter scenarios now construct deterministic
-Capture state, have non-empty setup actions, and assert expected outcomes
-through `tests/support/panel-scenarios.ts`, including Dark, Light, and
-forced-colors coverage, without adding runtime or visible UI behavior.
+themes, fixture records, identities, and nested collision values are frozen.
+All nine maintained filter scenarios now construct distinct deterministic
+Capture state and run through the test-only semantic reference runner. Their
+expected outcomes assert concrete totals plus relevant blockers, coverage,
+storage, terminal, discovery, retained-range, and high-volume key facts; the
+empty scenario is truly empty. Scenario setup uses semantic test actions rather
+than fictional UI selectors, without adding runtime or visible UI behavior.
 
 Red-first evidence is preserved in commits `ffc5ea9` and `b3916cb`; the
 executable repair is in `b232743` and `916f7bd`. Final documentation and
