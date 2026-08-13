@@ -165,6 +165,21 @@ export type EventHistoryPerformanceQueryCell = Readonly<{
   querySampleGc?: readonly EventHistoryPerformanceQuerySampleGc[];
 }>;
 
+type ExactQueryPageIdentity = Readonly<{ sequence: number; eventId: string }>;
+type ExactQueryPage = Readonly<{
+  evidence: readonly Readonly<{ identity: ExactQueryPageIdentity }>[];
+}>;
+
+export function isExactQueryPage(page: ExactQueryPage, expected: readonly ExactQueryPageIdentity[]): boolean {
+  return page.evidence.length === expected.length
+    && page.evidence.every((record, index) => {
+      const identity = expected[index];
+      return identity !== undefined
+        && record.identity.sequence === identity.sequence
+        && record.identity.eventId === identity.eventId;
+    });
+}
+
 export type EventHistoryPerformanceHeapSample = Readonly<{
   adapter: EventHistoryPerformanceAdapter;
   sample: number;

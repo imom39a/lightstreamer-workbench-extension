@@ -39,6 +39,7 @@ import {
   CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND,
   CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS,
   TERMINAL_PENDING_BYTE_EVENT_COUNT,
+  isExactQueryPage,
   type EventHistoryPerformanceCell,
   type EventHistoryPerformanceQueryCell,
   type EventHistoryPerformanceCheckpointScenario,
@@ -1050,6 +1051,10 @@ async function runFilterQueryCell(
     const exactPage = (measurement: any, size: number, expected: number[]) => measurement.result.value.page.evidence.length === Math.min(size, expected.length) && measurement.result.value.page.evidence.every((record: any, index: number) => record.identity.sequence === expected[index] && record.identity.eventId === `${runId}-event-${expected[index]}`);
     const recentExpected = Array.from({ length: count }, (_, index) => count - index);
     const structuredExpected = [1, 3843, 7685];
+    const aroundExpected = Array.from({ length: 1_000 }, (_, index) => {
+      const sequence = 1_999 - index;
+      return { sequence, eventId: `${runId}-event-${sequence}` };
+    });
     return {
       adapter,
       sample,
@@ -1069,7 +1074,9 @@ async function runFilterQueryCell(
         collisionExact: structured.page.evidence.length === 3 && structured.page.evidence.every((record: any, index: number) => record.identity.eventId === `${runId}-event-${structuredExpected[index]}`),
         findIndependent: findMeasurement.result.value.find?.total === 3 && findMeasurement.result.value.find?.matches?.map((entry: any) => entry.identity.sequence).join(",") === "1,3843,7685" && findMeasurement.result.value.totals.matching === 0,
         lookupExact: lookupMeasurement.result.value.lookup?.state === "RETAINED" && lookupMeasurement.result.value.lookup.evidence.payload !== undefined,
-        aroundExact: aroundMeasurement.result.value.totals.inScope === 1_000
+        aroundExact: aroundMeasurement.result.value.totals.matching === count
+          && aroundMeasurement.result.value.totals.inScope === 1_000
+          && isExactQueryPage(aroundMeasurement.result.value.page, aroundExpected.slice(0, 50))
       },
       telemetry: { operations: { recent50: operation(recent50), recent100: operation(recent100), structured50: operation(structured50), structured100: operation(structured100), find: operation(findMeasurement), lookup: operation(lookupMeasurement), around: operation(aroundMeasurement) } },
       longTasks: [...recent50.longTasks, ...recent100.longTasks, ...structured50.longTasks, ...structured100.longTasks, ...findMeasurement.longTasks, ...lookupMeasurement.longTasks, ...aroundMeasurement.longTasks],

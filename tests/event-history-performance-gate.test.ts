@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyEventHistoryPerformance,
   EVENT_HISTORY_PERFORMANCE_LIMITS,
+  isExactQueryPage,
   validateEventHistoryPerformanceReference,
   type EventHistoryPerformanceCell,
   type EventHistoryPerformanceCheckpointScenario,
@@ -350,6 +351,20 @@ function referenceFrom(reportValue: EventHistoryPerformanceReport): EventHistory
 }
 
 describe("Event History real-Chrome performance gate classifier", () => {
+  it("rejects an Around page with the wrong size, order, or identity", () => {
+    const expected = [
+      { sequence: 1_999, eventId: "event-1999" },
+      { sequence: 1_998, eventId: "event-1998" },
+      { sequence: 1_997, eventId: "event-1997" }
+    ];
+    const page = { evidence: expected.map((identity) => ({ identity })) };
+
+    expect(isExactQueryPage(page, expected)).toBe(true);
+    expect(isExactQueryPage({ evidence: page.evidence.slice(0, 2) }, expected)).toBe(false);
+    expect(isExactQueryPage({ evidence: [page.evidence[1]!, page.evidence[0]!, page.evidence[2]!] }, expected)).toBe(false);
+    expect(isExactQueryPage({ evidence: [{ identity: { ...expected[0]!, eventId: "wrong-event" } }, ...page.evidence.slice(1)] }, expected)).toBe(false);
+  });
+
   it("fails unless all 35 ordered inter-cell three-pass GC boundaries are recorded", () => {
     const baseline = report();
     const evidence = baseline.cellCleanupGc!;

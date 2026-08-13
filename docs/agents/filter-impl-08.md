@@ -24,6 +24,7 @@ Focused measured proof on 2026-08-13:
 - `npm run typecheck`, `npm run build`, and focused filter/posting/schema suites pass.
 - `LSEW_BROWSER_HEADLESS=false LSEW_UI_HEADLESS=false LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers npm run measure:event-history` was attempted with cached Chrome for Testing 151 installed, but fails closed before launch because `docs/reference/event-history-performance-reference.json` is empty and `PENDING_MAINTAINER_BASELINE`. No p95 claim is made and no machine-readable performance report was produced.
 - The deterministic package audit measured a stored ZIP of 1,069,630 bytes after removing the unused extension favicon; this remains above the 1 MiB budget and is a release blocker.
+- The performance harness proves the existing Around-only request with exact totals and the exact 50-record page length, newest-first order, sequence, and event identity on both its 10,000-record IndexedDB/3,842-key and 5,000-record memory fixtures. A focused gate test rejects wrong Around page size, order, and identity.
 
 The deep tests cover Filter-independent current/nearest Find, an excluded but
 retained Around anchor, same-timestamp ordering, old-schema projection
