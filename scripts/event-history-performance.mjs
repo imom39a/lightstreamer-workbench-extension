@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { build } from "esbuild";
 import WebSocket from "ws";
@@ -82,11 +82,15 @@ async function main() {
     chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
+    const activateWindow = () => activateSpawnedChromeWindow(chrome.pid, {
+      applicationPath: executable.replace(/\/Contents\/MacOS\/[^/]+$/u, "")
+    });
+    await activateWindow();
     const proofDeadlineAt = Date.now() + EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS;
     const browserSocketUrl = await browserTarget(debugPort, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-websocket") });
     browserCdp = await connect(browserSocketUrl, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-connect") });
     const environment = await requestControlCdpWithDeadline(browserCdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
-    initialTarget = await openHarnessTarget(browserCdp, debugPort, url, { deadlineAt: proofDeadlineAt });
+    initialTarget = await openHarnessTarget(browserCdp, debugPort, url, { deadlineAt: proofDeadlineAt, activateWindow });
     cdp = initialTarget.cdp;
     await prepareInitialPageForAuthoritativeRun(cdp, url, { deadlineAt: proofDeadlineAt });
     const chromeMajor = chromeMajorFromProduct(environment.product);
@@ -109,8 +113,9 @@ async function main() {
     let lastOperationStatus = null;
     for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
       const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
-      const page = await openFreshHarnessPage(browserCdp, debugPort, url, selection.pageToken, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+      const page = await openFreshHarnessPage(browserCdp, debugPort, url, selection.pageToken, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow });
       let primaryError = null;
+      let visibleFrameActivationIssued = false;
       try {
         shardResults.push(await runPageOperation(
           page.cdp,
@@ -118,6 +123,13 @@ async function main() {
           {
             deadlineAt: proofDeadlineAt,
             onHeartbeat(status) {
+              if (status.stage !== "visible-frame") {
+                visibleFrameActivationIssued = false;
+              } else if (!visibleFrameActivationIssued) {
+                visibleFrameActivationIssued = true;
+                void activateWindow().catch(() => undefined);
+                void page.cdp.request("Page.bringToFront", {}).catch(() => undefined);
+              }
               lastOperationStatus = status;
               process.stderr.write(
                 `[event-history-performance:${selection.id}] state=${status.state} elapsedMs=${status.elapsedMs.toFixed(0)} heartbeat=${status.heartbeat}\n`
@@ -134,7 +146,7 @@ async function main() {
     }
     const result = aggregatePerformanceShardResults(shardResults);
 
-    const heapPage = await openFreshHarnessPage(browserCdp, debugPort, url, `heap-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+    const heapPage = await openFreshHarnessPage(browserCdp, debugPort, url, `heap-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow });
     let heapPlan;
     let primaryHeapError = null;
     try {
@@ -170,7 +182,7 @@ async function main() {
     }
     const heapSamples = heapPlan.heapSamples;
 
-    const lifecyclePage = await openFreshHarnessPage(browserCdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+    const lifecyclePage = await openFreshHarnessPage(browserCdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow });
     const lifecycleRetainedHeapBytes = [];
     let primaryLifecycleError = null;
     try {
@@ -311,6 +323,7 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
 export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options = {}) {
   const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", { url: pageUrl }, { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the initial harness page.");
+  await options.activateWindow?.();
   let pageCdp;
   try {
     pageCdp = await connect(await pageTarget(debugPort, pageUrl, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket });
@@ -331,6 +344,7 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
   const pageUrl = new URL(harnessPageUrl(baseUrl, pageToken));
   const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", { url: pageUrl.href }, { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
+  await options.activateWindow?.();
   let pageCdp;
   try {
     pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket });
@@ -431,6 +445,47 @@ export function chromeLaunchArguments(profile, platform = process.platform) {
   if (platform === "darwin") args.push("--activate-on-launch");
   args.push("about:blank");
   return args;
+}
+
+/**
+ * Bring only the CfT application bundle owned by this run to the macOS
+ * foreground. Launch Services avoids Apple Events/Accessibility prompts.
+ * `document.visibilityState` is not sufficient evidence that a headed
+ * renderer is receiving compositor frames when the runner starts behind a
+ * terminal or another app. This control action never substitutes for the
+ * page's rAF-based visible-frame proof.
+ */
+export function activateSpawnedChromeWindow(pid, options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "darwin") return Promise.resolve({ attempted: false });
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    return Promise.reject(new Error("Cannot activate Chrome without its spawned process id."));
+  }
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 2_000;
+  if (typeof options.applicationPath !== "string" || options.applicationPath.length === 0) {
+    return Promise.reject(new Error("Cannot activate Chrome without its application bundle path."));
+  }
+  const execute = options.execute ?? ((file, args, callback) => execFile(file, args, { stdio: ["ignore", "ignore", "pipe"] }, callback));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let childProcess;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(new Error(`Could not activate spawned Chrome window: ${error.message ?? String(error)}`));
+      else resolve({ attempted: true, pid, applicationPath: options.applicationPath });
+    };
+    const timer = setTimeout(() => {
+      try { childProcess?.kill("SIGKILL"); } catch { /* preserve the activation timeout */ }
+      finish(new Error(`open timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
+    try {
+      childProcess = execute("/usr/bin/open", ["-a", options.applicationPath], (error) => finish(error));
+    } catch (error) {
+      finish(error);
+    }
+  });
 }
 
 function requireVisibleEnvironment() {

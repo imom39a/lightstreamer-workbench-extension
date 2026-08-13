@@ -1,5 +1,25 @@
 # `filter-impl-08` repair proof
 
+## Paint-stage activation and bounded watchdog (2026-08-13)
+
+The per-target activation capture still timed out after the workload, with the
+document visible and no callback for the final React-owned rAF. The runner now
+reasserts exact target `Page.bringToFront` and scoped CfT app activation once
+when a cell enters its visible-frame stage. The panel watchdog is capped at
+eight re-requests per committed snapshot and never reports a frame from its
+timer. A later capture must still pass the real rAF boundary to claim success.
+
+## Per-target macOS activation follow-up (2026-08-13)
+
+The first activation attempt ran only once before the initial target. A fresh
+CDP page target can still be created behind the invoking terminal, so the
+runner now invokes bounded Launch Services activation after every
+`Target.createTarget`, before page setup. It targets the exact cached CfT app
+bundle used by the spawned process; it does not use Accessibility/Apple Events
+or require manual permission. Activation is lifecycle control only: the
+foreground double-rAF gate and the workload's visible-frame rAF remain the
+only paint evidence, and any activation failure aborts setup closed.
+
 ## macOS activation-flag repair (2026-08-13)
 
 The performance runner restores the macOS-only `--activate-on-launch` Chrome

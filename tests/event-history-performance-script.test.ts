@@ -723,6 +723,26 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.equal(primary.outerDiagnostics[0].outcome, "timed-out");
     `);
   });
+
+  it("activates only the spawned Chrome process through a bounded macOS command", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { activateSpawnedChromeWindow } = await import(${JSON.stringify(scriptUrl)});
+      let invocation;
+      await activateSpawnedChromeWindow(49217, {
+        platform: "darwin",
+        applicationPath: "/tmp/Google Chrome for Testing.app",
+        timeoutMs: 50,
+        execute(file, args, callback) {
+          invocation = { file, args };
+          callback(null, "", "");
+          return { kill() { throw new Error("should not kill a completed activation"); } };
+        }
+      });
+      assert.equal(invocation.file, "/usr/bin/open");
+      assert.deepEqual(invocation.args, ["-a", "/tmp/Google Chrome for Testing.app"]);
+    `);
+  });
 });
 
 describe("Event History performance timeout evidence", () => {

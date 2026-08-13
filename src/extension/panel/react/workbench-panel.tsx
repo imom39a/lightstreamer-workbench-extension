@@ -307,6 +307,8 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const evidenceLedger = useRef<HTMLDivElement | null>(null);
   const contextBody = useRef<HTMLDivElement | null>(null);
   const visibleFrame = useRef<number | null>(null);
+  const visibleFrameWatchdog = useRef<number | null>(null);
+  const visibleFrameRetryCount = useRef(0);
   const latestCommittedEvidenceBoundary = useRef(snapshot.renderedEvidenceBoundary);
 
   useLayoutEffect(() => {
@@ -318,15 +320,34 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     });
     if (!runtime.reportVisibleFrame) return;
     if (visibleFrame.current !== null) return;
-    runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-requested", timestampMs: performance.now() });
-    let callbackRan = false;
-    const frame = window.requestAnimationFrame(() => {
-      callbackRan = true;
-      visibleFrame.current = null;
-      runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-callback", timestampMs: performance.now() });
-      runtime.reportVisibleFrame?.(latestCommittedEvidenceBoundary.current);
-    });
-    if (!callbackRan) visibleFrame.current = frame;
+    const scheduleVisibleFrame = () => {
+      runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-requested", timestampMs: performance.now() });
+      let callbackRan = false;
+      const frame = window.requestAnimationFrame(() => {
+        callbackRan = true;
+        visibleFrame.current = null;
+        visibleFrameRetryCount.current = 0;
+        if (visibleFrameWatchdog.current !== null) {
+          window.clearTimeout(visibleFrameWatchdog.current);
+          visibleFrameWatchdog.current = null;
+        }
+        runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-callback", timestampMs: performance.now() });
+        runtime.reportVisibleFrame?.(latestCommittedEvidenceBoundary.current);
+      });
+      if (!callbackRan) {
+        visibleFrame.current = frame;
+        visibleFrameWatchdog.current = window.setTimeout(() => {
+          if (visibleFrame.current !== frame) return;
+          window.cancelAnimationFrame(frame);
+          visibleFrame.current = null;
+          visibleFrameWatchdog.current = null;
+          visibleFrameRetryCount.current += 1;
+          runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-retried", timestampMs: performance.now() });
+          if (visibleFrameRetryCount.current <= 8) scheduleVisibleFrame();
+        }, 32);
+      }
+    };
+    scheduleVisibleFrame();
   }, [runtime, snapshot.version]);
   useLayoutEffect(() => {
     runtime.reportPanelPerformanceEvent?.({ type: "root-mounted", mounted: true });
@@ -335,6 +356,10 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         window.cancelAnimationFrame(visibleFrame.current);
         visibleFrame.current = null;
         runtime.reportPanelPerformanceEvent?.({ type: "animation-frame-cancelled" });
+      }
+      if (visibleFrameWatchdog.current !== null) {
+        window.clearTimeout(visibleFrameWatchdog.current);
+        visibleFrameWatchdog.current = null;
       }
       runtime.reportPanelPerformanceEvent?.({ type: "root-mounted", mounted: false });
     };
