@@ -14,6 +14,7 @@ import {
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
+import { discoverFacet, type DiscoveryInstrumentation } from "./evidence-filter-discovery";
 import { canonicalEvidenceSearchText, extractEvidenceFacets } from "./evidence-facets";
 import {
   deserializeJournalEvidenceCandidate,
@@ -273,6 +274,8 @@ type MemoryEventHistoryOptions = Readonly<{
   capacityTier?: HistoryCapacityTier;
   fallback?: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
   failure?: Readonly<{ commitBatch?: (batch: readonly EvidenceCandidate[]) => void | Promise<void> }>;
+  /** Internal memory-query seam used to prove discovery failure isolation and bounds. */
+  discovery?: DiscoveryInstrumentation;
 }> & HistoryCapacityOptions;
 
 /**
@@ -304,7 +307,7 @@ export async function openEventHistory(
       commitBatch: options.commitBatch === undefined
         ? undefined
         : async (batch) => { await options.commitBatch!(batch); },
-      failure: options.failure,
+        failure: options.failure,
       finalizeTerminal: options.finalizeTerminal
     });
   }
@@ -869,7 +872,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     // so a later commit cannot enter this result or change its totals.
     const intervalAtRead = interval;
     const currentEntriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
-    const currentReadPoint = evidenceReadPoint(intervalAtRead, currentEntriesAtRead);
+    const currentReadPoint = evidenceReadPoint(intervalAtRead, currentEntriesAtRead, committedEvidenceBoundary);
     const readPoint = request.at === "LATEST_COMMITTED" ? currentReadPoint : request.at;
     if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, currentReadPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.") });
@@ -911,6 +914,11 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       }
     }
     if (unsupported) {
+      for (const discoveryRequest of request.discover ?? []) {
+        discoveries.set(discoveryRequest.facet, {
+          state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "UNSUPPORTED_AT_READ_POINT", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
+        });
+      }
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
       const find = request.find === undefined ? null : findEvidence(records, request.find);
       return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", null, lookup, find) });
@@ -929,6 +937,15 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         if (!evaluation.matches) continue;
         matching.push(record);
         if (isInAround(record, around)) inScope.push(record);
+      }
+      for (const discoveryRequest of request.discover ?? []) {
+        try {
+          discoveries.set(discoveryRequest.facet, discoverFacet(records, request.filter, readPoint, discoveryRequest, options.discovery));
+        } catch {
+          discoveries.set(discoveryRequest.facet, {
+            state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "DISCOVERY_FAILED", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
+          });
+        }
       }
       const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
       const offset = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
@@ -1262,12 +1279,13 @@ function evidenceIdentity(ref: EvidenceRef, interval: HistoryInterval): Evidence
   });
 }
 
-function evidenceReadPoint(interval: HistoryInterval, entries: readonly CommittedEvidence[]): EvidenceReadPoint {
+function evidenceReadPoint(interval: HistoryInterval, entries: readonly CommittedEvidence[], boundary: EvidenceRef | null): EvidenceReadPoint {
   const first = entries[0] ? evidenceIdentity(toRef(entries[0]), interval) : null;
   const last = entries.at(-1) ? evidenceIdentity(toRef(entries.at(-1)!), interval) : null;
+  const committed = boundary ? evidenceIdentity(boundary, interval) : last;
   return Object.freeze({
     interval: Object.freeze({ id: interval.id, ordinal: interval.ordinal }),
-    committedEvidenceBoundary: last,
+    committedEvidenceBoundary: committed,
     retainedRange: first && last ? Object.freeze({ first, last }) : null
   });
 }

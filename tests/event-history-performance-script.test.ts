@@ -11,12 +11,14 @@ const temporaryModuleRoot = mkdtempSync(join(repositoryRoot, "test-results", ".e
 const scriptCopy = join(temporaryModuleRoot, "event-history-performance.mjs");
 const runnerOperationsCopy = join(temporaryModuleRoot, "event-history-performance-runner-operations.mjs");
 const chromePolicyCopy = join(temporaryModuleRoot, "chrome-test-policy.mjs");
+const chromeLaunchArgsCopy = join(temporaryModuleRoot, "chrome-launch-args.mjs");
 const cleanupTemporaryModuleRoot = () => rmSync(temporaryModuleRoot, { recursive: true, force: true });
 process.once("exit", cleanupTemporaryModuleRoot);
 try {
   writeFileSync(scriptCopy, readFileSync(join(repositoryRoot, "scripts/event-history-performance.mjs"), "utf8").replace(/^#![^\n]*\n/u, ""));
   writeFileSync(runnerOperationsCopy, readFileSync(join(repositoryRoot, "scripts/event-history-performance-runner-operations.mjs"), "utf8"));
   writeFileSync(chromePolicyCopy, readFileSync(join(repositoryRoot, "scripts/chrome-test-policy.mjs"), "utf8"));
+  writeFileSync(chromeLaunchArgsCopy, readFileSync(join(repositoryRoot, "scripts/chrome-launch-args.mjs"), "utf8"));
 } catch (error) {
   cleanupTemporaryModuleRoot();
   throw error;
@@ -173,6 +175,24 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.equal(nonInteractive.includes("--disable-sync"), true);
       assert.equal(nonInteractive.includes("--no-first-run"), true);
       assert.equal(nonInteractive.includes("--no-default-browser-check"), true);
+    `);
+  });
+
+  it("always includes unattended credential and onboarding safety flags", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
+      const args = chromeLaunchArguments("/tmp/lsew-fresh-profile", "http://127.0.0.1:4173/", "darwin");
+      for (const required of [
+        "--use-mock-keychain",
+        "--password-store=basic",
+        "--disable-sync",
+        "--no-first-run",
+        "--no-default-browser-check"
+      ]) assert.equal(args.includes(required), true, required);
+      assert.equal(args.includes("--disable-signin-promo"), true);
+      assert.equal(args.some((argument) => argument.startsWith("--disable-features=") && argument.includes("PasswordManagerOnboarding")), true);
+      assert.equal(args.at(-1), "http://127.0.0.1:4173/");
     `);
   });
 

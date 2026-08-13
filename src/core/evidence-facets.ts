@@ -164,8 +164,11 @@ function canonical(value: unknown): string {
   return `{${stableFields(value).join(",")}}`;
 }
 
-export function canonicalEvidenceSearchText(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): string {
-  const extracted = extractEvidenceFacets(event, context);
+function canonicalEvidenceSearchTextFromExtraction(
+  event: LightstreamerEventEnvelope,
+  context: EvidenceFacetContext,
+  extracted: EvidenceFacetExtraction
+): string {
   const facetText = FACET_DESCRIPTORS.flatMap((descriptor) => {
     const facet = extracted.facets[descriptor.key];
     return facet ? [descriptor.label, facet.label, facet.value] : [];
@@ -213,4 +216,17 @@ export function canonicalEvidenceSearchText(event: LightstreamerEventEnvelope, c
     ...stableFields(event.update?.changedFields),
     ...stableFields(event.update?.jsonPatches)
   ].filter((entry) => entry !== undefined && entry !== null && entry !== "").join(" "));
+}
+
+export function canonicalEvidenceSearchText(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): string {
+  return canonicalEvidenceSearchTextFromExtraction(event, context, extractEvidenceFacets(event, context));
+}
+
+/** Reuses one contextual facet extraction for the search projection and postings. */
+export function canonicalEvidenceSearchTextWithExtraction(
+  event: LightstreamerEventEnvelope,
+  context: EvidenceFacetContext,
+  extracted: EvidenceFacetExtraction
+): string {
+  return canonicalEvidenceSearchTextFromExtraction(event, context, extracted);
 }

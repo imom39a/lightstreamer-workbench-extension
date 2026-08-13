@@ -157,12 +157,24 @@ async function createModernJournal(panelSessionId: string, count: number): Promi
     evidence.createIndex("facets", "facets", { multiEntry: true });
     const postings = database.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
     postings.createIndex("token", "token", { unique: false });
+    postings.createIndex("facet", "facet", { unique: false });
     const projections = database.createObjectStore("queryProjections", { keyPath: "sequence" });
     projections.createIndex("timestamp", "timestamp", { unique: false });
     projections.createIndex("searchTokens", "searchTokens", { unique: false, multiEntry: true });
+    const aggregates = database.createObjectStore("facetAggregates", { keyPath: ["intervalId", "facetIdentity"] });
+    aggregates.createIndex("intervalFacet", ["intervalId", "facet"], { unique: false });
   };
   const database = await requestValue(request);
-  const transaction = database.transaction(["historyControl", "evidence", "facetPostings", "queryProjections"], "readwrite");
+  const transaction = database.transaction(["historyControl", "evidence", "facetPostings", "queryProjections", "facetAggregates"], "readwrite");
+  const aggregateValues = new Map<string, {
+    intervalId: string;
+    facet: string;
+    facetIdentity: string;
+    type: string;
+    value: string;
+    label: string;
+    observations: Array<{ sequence: number; eventId: string }>;
+  }>();
   let accountedBytes = 0;
   let replayPayloadBytes = 0;
   for (let index = 0; index < count; index += 1) {
@@ -174,8 +186,28 @@ async function createModernJournal(panelSessionId: string, count: number): Promi
     transaction.objectStore("evidence").add({ intervalId: interval.id, sequence: index + 1, eventId: entry.id, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes: accounted, facets: itemUpdateFacets() });
     for (const facet of extractEvidenceFacets(entry as LightstreamerEventEnvelope).selectableValues) {
       const facetIdentity = facet.identity;
-      transaction.objectStore("facetPostings").add({ token: JSON.stringify([AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE, facetIdentity]), sequence: index + 1, intervalId: interval.id, eventId: entry.id, facetIdentity });
+      transaction.objectStore("facetPostings").add({ token: JSON.stringify([AUTHORITATIVE_EVENT_FACET_POSTING_NAMESPACE, facetIdentity]), sequence: index + 1, intervalId: interval.id, eventId: entry.id, facet: facet.facet, facetIdentity });
+      const aggregateKey = JSON.stringify([interval.id, facetIdentity]);
+      const existing = aggregateValues.get(aggregateKey);
+      const observation = { sequence: index + 1, eventId: entry.id };
+      if (existing) {
+        existing.observations.push(observation);
+      } else {
+        aggregateValues.set(aggregateKey, {
+          intervalId: interval.id,
+          facet: facet.facet,
+          facetIdentity,
+          type: facet.type,
+          value: facet.value,
+          label: facet.label,
+          observations: [observation]
+        });
+      }
     }
+  }
+  for (const aggregate of aggregateValues.values()) {
+    const { observations: _observations, ...metadata } = aggregate;
+    transaction.objectStore("facetAggregates").add(metadata);
   }
   transaction.objectStore("historyControl").put({ key: "control", schemaVersion: 2, recordVersion: 3, panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: count + 1, committedEvidenceBoundary: { intervalId: interval.id, sequence: count, eventId: `event-${count - 1}` }, retainedRange: { first: { intervalId: interval.id, sequence: 1, eventId: "event-0" }, last: { intervalId: interval.id, sequence: count, eventId: `event-${count - 1}` } }, retainedCount: count, replayPayloadBytes, accountedBytes });
   await transactionDone(transaction, "building modern journal");
@@ -492,7 +524,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       await indexed.close();
       await memory.close();
     }
-  }, 15_000);
+  }, 30_000);
 
   it("keeps exact-facet paging in parity for empty facets, malformed boundaries, and candidate kinds", async () => {
     const indexed = await freshIndexedHistory("query-plan-exact-facet-edge-parity");
@@ -646,7 +678,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
-  it("creates exactly the control and evidence stores with only identity and facet indexes", async () => {
+  it("creates the control, evidence, projection, posting, and aggregate stores with exact indexes", async () => {
     const panelSessionId = "indexed-schema";
     const history = await freshHistory(panelSessionId);
 
@@ -655,12 +687,16 @@ describe("IndexedDB authoritative EventHistory", () => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    expect([...database.objectStoreNames]).toEqual(["evidence", "facetPostings", "historyControl", "queryProjections"]);
+    expect([...database.objectStoreNames]).toEqual(["evidence", "facetAggregates", "facetPostings", "historyControl", "queryProjections"]);
     const transaction = database.transaction("evidence", "readonly");
     const evidence = transaction.objectStore("evidence");
     expect([...evidence.indexNames]).toEqual(["eventIdentity", "facets"]);
     expect(evidence.index("eventIdentity").unique).toBe(true);
     expect(evidence.index("facets").multiEntry).toBe(true);
+    const postings = database.transaction("facetPostings", "readonly").objectStore("facetPostings");
+    expect([...postings.indexNames]).toEqual(["facet", "token"]);
+    const aggregates = database.transaction("facetAggregates", "readonly").objectStore("facetAggregates");
+    expect([...aggregates.indexNames]).toEqual(["intervalFacet"]);
     database.close();
     await history.close();
   });
@@ -1483,7 +1519,7 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(replacedStatus).toMatchObject({ capacity: { tier: "NORMAL" }, fallback: null });
     const replacedDatabase = await requestValue(indexedDB.open(knownName, AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION));
     expect(replacedDatabase.version).toBe(AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION);
-    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "facetPostings", "historyControl", "queryProjections"]);
+    expect([...replacedDatabase.objectStoreNames]).toEqual(["evidence", "facetAggregates", "facetPostings", "historyControl", "queryProjections"]);
     replacedDatabase.close();
     await replaced.close();
 

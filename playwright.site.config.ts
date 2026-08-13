@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { defineConfig } from "@playwright/test";
-import { chromeTestArguments } from "./scripts/chrome-test-policy.mjs";
+import { createPlaywrightLaunchOptions } from "./scripts/chrome-launch-args.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const chromeExecutable = resolveChromeExecutable();
@@ -27,10 +27,8 @@ export default defineConfig({
     trace: "retain-on-failure",
     timezoneId: "America/New_York",
     deviceScaleFactor: 1,
-    launchOptions: {
-      ...(chromeExecutable ? { executablePath: chromeExecutable } : {}),
-      args: chromeTestArguments({ headless: true, disableNativeOcclusion: true })
-    }
+    // Playwright owns the fresh temporary profile when user-data-dir is omitted.
+    launchOptions: createPlaywrightLaunchOptions(chromeExecutable)
   },
   webServer: {
     command: "npm run site:serve",

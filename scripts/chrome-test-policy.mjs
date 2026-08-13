@@ -12,7 +12,8 @@ export const REQUIRED_CHROME_TEST_ARGUMENTS = Object.freeze([
   "--password-store=basic",
   "--disable-sync",
   "--no-first-run",
-  "--no-default-browser-check"
+  "--no-default-browser-check",
+  "--disable-signin-promo"
 ]);
 
 export const CHROME_TEST_ONBOARDING_FEATURES = Object.freeze([

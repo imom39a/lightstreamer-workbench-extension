@@ -483,7 +483,7 @@ async function runChromeScreenshot(url, outputPath) {
           ]
         }),
         url
-      ], {
+      ]), {
         stdio: "pipe"
       });
 

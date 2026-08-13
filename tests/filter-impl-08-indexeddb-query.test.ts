@@ -135,7 +135,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     const malformed = await durable.query!({ at: first.value.readPoint, page: { order: "NEWEST_FIRST", size: 1, cursor: first.value.page.nextCursor! }, filter: emptyFilter() });
     expect(malformed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
     const discovery = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), discover: [{ facet: "mode", size: 10 }] });
-    expect(discovery.ok && discovery.value.discoveries.get("mode")).toMatchObject({ state: "UNAVAILABLE", reason: "UNSUPPORTED_AT_READ_POINT" });
+    expect(discovery.ok && discovery.value.discoveries.get("mode")).toMatchObject({ state: "AVAILABLE", distinctTotal: 1, baseEvidenceCount: 3 });
     await durable.close();
   });
 
@@ -282,7 +282,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
   it("does not backfill missing projections when reopening a current-schema journal", async () => {
     const panelSessionId = `filter-impl-08-current-schema-corruption-${Date.now()}`;
     Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
-    const durable = await createIndexedDbEventHistory({ panelSessionId, closeJournal: async () => undefined });
+    const durable = await createIndexedDbEventHistory({ panelSessionId, clearJournal: async () => false, closeJournal: async () => undefined });
     await durable.offer(event("one", 10_000, "alpha")).settled;
     const coherent = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
     expect(coherent).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "one" } }] } } });
@@ -302,7 +302,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    const reopened = await createIndexedDbEventHistory({ panelSessionId, closeJournal: async () => undefined });
+    const reopened = await createIndexedDbEventHistory({ panelSessionId, clearJournal: async () => false, closeJournal: async () => undefined });
     const failed = await reopened.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
     expect(failed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
     await reopened.close();

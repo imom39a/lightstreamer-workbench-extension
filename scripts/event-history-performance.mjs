@@ -874,9 +874,13 @@ function attachCleanupEvidence(primaryError, cleanupError) {
 
 export function chromeLaunchArguments(
   profile,
-  platform = process.platform,
-  proofMode = HEADED_VISIBLE_FRAME_PROOF_MODE
+  platformOrUrl = process.platform,
+  proofModeOrPlatform = HEADED_VISIBLE_FRAME_PROOF_MODE
 ) {
+  const urlCall = typeof platformOrUrl === "string" && /^(?:about|file|https?):/u.test(platformOrUrl);
+  const url = urlCall ? platformOrUrl : "about:blank";
+  const platform = urlCall ? proofModeOrPlatform : platformOrUrl;
+  const proofMode = urlCall ? HEADED_VISIBLE_FRAME_PROOF_MODE : proofModeOrPlatform;
   if (proofMode !== HEADED_VISIBLE_FRAME_PROOF_MODE && proofMode !== NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) {
     throw new Error(`Unsupported Event History Chrome proof mode: ${String(proofMode)}.`);
   }
@@ -892,7 +896,7 @@ export function chromeLaunchArguments(
       activateOnLaunch: proofMode === HEADED_VISIBLE_FRAME_PROOF_MODE && platform === "darwin",
       additional: ["--remote-debugging-port=0"]
     }),
-    "about:blank"
+    url
   ];
 }
 

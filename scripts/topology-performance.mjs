@@ -60,7 +60,7 @@ async function runTopologyPerformanceGate() {
           additional: ["--remote-debugging-port=0", "--window-size=1440,1000"]
         }),
         harnessUrl
-      ],
+      ]),
       {
         cwd: rootDir,
         env: process.env,

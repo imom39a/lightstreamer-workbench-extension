@@ -8,7 +8,7 @@
 export const FILTER_VERSION = 1 as const;
 
 export type FilterScalar = string | number | boolean | null;
-export type FilterValueType = "string" | "enum" | "number" | "boolean" | "null";
+export type FilterValueType = "string" | "enum" | "number" | "boolean" | "null" | (string & {});
 
 export type TypedFilterValue = Readonly<{
   facet: string;
@@ -354,7 +354,8 @@ function normalizeValue(type: FilterValueType, value: FilterScalar): FilterScala
       if (value !== null) throw new Error("Null Filter values must be null.");
       return value;
     default:
-      throw new Error(`Unsupported Filter value type ${String(type)}.`);
+      if (typeof value !== "string") throw new Error(`Custom Filter values must be strings.`);
+      return value;
   }
 }
 
