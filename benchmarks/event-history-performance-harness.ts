@@ -146,9 +146,10 @@ async function yieldBurstOfferMacrotask(): Promise<void> {
   await delay(0);
 }
 
-  export type HarnessSelection = Readonly<
+export type HarnessSelection = Readonly<
   | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string; cellOffset?: number }
   | { id: "scenarios"; kind: "scenarios"; pageToken: string }
+  | { id: "filter-impl-08-query"; kind: "filter-impl-08"; pageToken: string }
 >;
 
 export type HarnessProgressInput = Readonly<{
@@ -960,6 +961,10 @@ export function validateHarnessSelection(selection: HarnessSelection | undefined
     if (selection.id !== "scenarios") throw new Error("Performance scenario shard identity is invalid.");
     return selection;
   }
+  if (selection.kind === "filter-impl-08") {
+    if (selection.id !== "filter-impl-08-query") throw new Error("filter-impl-08 query shard identity is invalid.");
+    return selection;
+  }
   const expected = [
     ["matrix-indexeddb-sustained", "indexeddb", "sustained", 1, true],
     ["matrix-indexeddb-burst", "indexeddb", "burst", 10, true],
@@ -1132,7 +1137,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       for (const workload of workloads) {
         for (const shape of EVENT_HISTORY_SHAPES) {
           for (const sample of [1, 2, 3] as const) {
-            if (selection?.kind === "scenarios") continue;
+            if (selection?.kind === "scenarios" || selection?.kind === "filter-impl-08") continue;
             if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
             shardCellCount += 1;
             if (selectedCellOffset !== null && shardCellCount !== selectedCellOffset) continue;
@@ -1199,7 +1204,8 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       }
     }
     const terminalScenarios: EventHistoryPerformanceTerminalScenario[] = [];
-    if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
+    const runsScenarioShard = selection === undefined || selection?.kind === "scenarios";
+    if (runsScenarioShard) for (const adapter of ["indexeddb", "memory"] as const) {
       for (const trigger of ["PENDING_BYTES", "PENDING_AGE"] as const) {
         if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
         publishHarnessProgress({
@@ -1225,14 +1231,14 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     }
     const checkpointScenarios: EventHistoryPerformanceCheckpointScenario[] = [];
     const queryCells: EventHistoryPerformanceQueryCell[] = [];
-    if (selection?.kind !== "matrix") {
+    if (runsScenarioShard || selection?.kind === "filter-impl-08") {
       for (const adapter of ["indexeddb", "memory"] as const) {
         for (const sample of [1, 2, 3] as const) {
           queryCells.push(await runFilterQueryCell(adapter, sample, operationId, runGuard));
         }
       }
     }
-    if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
+    if (runsScenarioShard) for (const adapter of ["indexeddb", "memory"] as const) {
       for (const name of ["representative", "maximum-2MiB"] as const) {
         if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
         publishHarnessProgress({

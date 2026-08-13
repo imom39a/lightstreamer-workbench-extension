@@ -171,10 +171,15 @@ export type PerformanceMatrixShard = Readonly<{
   collectAfterFinal: boolean;
 }>;
 export type PerformanceScenarioShard = Readonly<{ id: "scenarios"; kind: "scenarios" }>;
-export type PerformanceShard = PerformanceMatrixShard | PerformanceScenarioShard;
-export function createPerformanceShardPlan(): PerformanceShard[];
-export function aggregatePerformanceShardResults(results: readonly Record<string, any>[]): Readonly<{
+export type PerformanceFilterImpl08Shard = Readonly<{ id: "filter-impl-08-query"; kind: "filter-impl-08" }>;
+export type PerformanceShard = PerformanceMatrixShard | PerformanceScenarioShard | PerformanceFilterImpl08Shard;
+export const PERFORMANCE_SELECTION_MODES: Readonly<{ FULL_RELEASE: "full-release"; FILTER_IMPL_08: "filter-impl-08" }>;
+export const FILTER_IMPL_08_PROOF_GATES: readonly string[];
+export const FILTER_IMPL_08_EXCLUDED_SCENARIOS: readonly string[];
+export function createPerformanceShardPlan(selectionMode?: "full-release" | "filter-impl-08"): PerformanceShard[];
+export function aggregatePerformanceShardResults(results: readonly Record<string, any>[], selectionMode?: "full-release" | "filter-impl-08"): Readonly<{
   schemaVersion: 2;
+  selectionMode?: "filter-impl-08";
   proofMode?: string;
   frameProof?: unknown;
   anchors: unknown;

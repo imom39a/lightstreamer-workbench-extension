@@ -66,6 +66,23 @@ The JSON and Markdown artifacts explicitly report
 operation, followed by a clean comparison run; a candidate never becomes its
 own reference.
 
+For the `filter-impl-08` closure, add the explicit scoped selection:
+
+```sh
+LSEW_EVENT_HISTORY_PERF_MODE=non-interactive-layout-commit \
+LSEW_EVENT_HISTORY_PERF_SELECTION=filter-impl-08 \
+LSEW_EVENT_HISTORY_PERF_CAPTURE=true \
+LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
+npm run measure:event-history
+```
+
+This selection runs the native IndexedDB/memory query matrix, bounded
+hydration/index telemetry, the existing exact-threshold query gates, and the
+post-GC heap check. It excludes terminal-pressure, checkpoint-pressure, and
+lifecycle scenarios. Its `filter-impl-08-noninteractive-layout-commit`
+metadata explicitly disclaims foreground scheduling and compositor proof.
+The ordinary full-release selection remains the default and is unchanged.
+
 ## Absolute decision
 
 `FAIL` is emitted for any correctness, ordering, boundary, terminal, telemetry,

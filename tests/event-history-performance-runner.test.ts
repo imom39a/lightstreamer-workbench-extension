@@ -8,6 +8,9 @@ import {
   aggregatePerformanceShardResults,
   createTimeoutDiagnostic,
   createPerformanceShardPlan,
+  FILTER_IMPL_08_EXCLUDED_SCENARIOS,
+  FILTER_IMPL_08_PROOF_GATES,
+  PERFORMANCE_SELECTION_MODES,
   collectHeapAfterRepeatedGc,
   runHeapMeasurementPlan,
   PerformanceOperationTimeout,
@@ -41,6 +44,50 @@ describe("Event History fresh-page shard orchestration", () => {
     expect(plan.slice(0, 4).map((shard) => shard.kind === "matrix" ? [shard.firstCellIndex, shard.collectAfterFinal] : null)).toEqual([
       [1, true], [10, true], [19, true], [28, false]
     ]);
+  });
+
+  it("selects every filter-impl-08 gate while full release retains terminal scenarios", () => {
+    const scoped = createPerformanceShardPlan(PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08);
+    const full = createPerformanceShardPlan(PERFORMANCE_SELECTION_MODES.FULL_RELEASE);
+
+    expect(scoped).toEqual([{ id: "filter-impl-08-query", kind: "filter-impl-08" }]);
+    expect(FILTER_IMPL_08_PROOF_GATES).toEqual([
+      "native-real-chrome-indexeddb-memory-query-matrix",
+      "bounded-hydration-index-telemetry",
+      "post-gc-heap-check",
+      "exact-query-and-heap-thresholds"
+    ]);
+    expect(FILTER_IMPL_08_EXCLUDED_SCENARIOS).toEqual(["terminal-pressure", "checkpoint-pressure", "lifecycle"]);
+    expect(full.at(-1)).toMatchObject({ id: "scenarios", kind: "scenarios" });
+    expect(scoped.some((shard) => shard.kind === "scenarios")).toBe(false);
+  });
+
+  it("aggregates the scoped query matrix without terminal or lifecycle evidence", () => {
+    const shard = createPerformanceShardPlan(PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08)[0]!;
+    const result = {
+      schemaVersion: 2,
+      selection: { ...shard, pageToken: "filter-impl-08-page" },
+      proofMode: "non-interactive-layout-commit",
+      frameProof: { publicationBoundary: "react-layout-commit-dom-publication", compositorFrameMeasured: false, coherent: true, missingBoundaryCount: 0 },
+      anchors: { issue16TotalEvents: 10_000 },
+      config: { sustainedCount: 1_000, sustainedEventsPerSecond: 2_000, burstCount: 10_000, burstPauseMs: 1 },
+      shapeFacts: { stable: true },
+      cells: [],
+      cellCleanupGc: [],
+      terminalScenarios: [],
+      checkpointScenarios: [],
+      queryCells: ["indexeddb/1", "indexeddb/2", "indexeddb/3", "memory/1", "memory/2", "memory/3"].map((id) => {
+        const [adapter, sample] = id.split("/");
+        return { adapter, sample: Number(sample) };
+      })
+    };
+
+    const aggregated = aggregatePerformanceShardResults([result], PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08);
+    expect(aggregated.selectionMode).toBe("filter-impl-08");
+    expect(aggregated.cells).toHaveLength(0);
+    expect(aggregated.queryCells).toHaveLength(6);
+    expect(aggregated.terminalScenarios).toHaveLength(0);
+    expect(aggregated.checkpointScenarios).toHaveLength(0);
   });
 
   it("aggregates exactly 36 ordered cells, 35 cleanup proofs, and one scenario execution", () => {
@@ -462,6 +509,15 @@ describe("Event History performance runner reference preflight", () => {
     expect(source).toContain('classifyEventHistoryPerformance(report, undefined, "capture-only")');
     expect(source).not.toContain("candidateReference");
     expect(source).toContain('const reference = captureMode ? undefined : JSON.parse');
+  });
+
+  it("records the scoped noninteractive selection and excludes unrelated lifecycle work", () => {
+    const source = readFileSync("scripts/event-history-performance.mjs", "utf8");
+    expect(source).toContain("LSEW_EVENT_HISTORY_PERF_SELECTION");
+    expect(source).toContain("filter-impl-08-noninteractive-layout-commit");
+    expect(source).toContain("does not prove foreground scheduling or compositor frames");
+    expect(source).toContain("aggregatePerformanceShardResults(shardResults, selectionMode)");
+    expect(source).toContain("if (selectionMode !== PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08)");
   });
 });
 

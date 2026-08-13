@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   classifyEventHistoryPerformance,
   EVENT_HISTORY_PERFORMANCE_PROOF_MODES,
+  EVENT_HISTORY_PERFORMANCE_SELECTION_MODES,
+  FILTER_IMPL_08_EXCLUDED_SCENARIOS,
+  FILTER_IMPL_08_PROOF_GATES,
   EVENT_HISTORY_PERFORMANCE_LIMITS,
   isExactQueryPage,
   validateEventHistoryPerformanceReference,
@@ -387,6 +390,46 @@ describe("Event History real-Chrome performance gate classifier", () => {
     });
     expect(classifyEventHistoryPerformance(candidate, undefined, "non-interactive-capture-only").verdict).toBe("FAIL");
     expect(classifyEventHistoryPerformance(candidate, undefined, "non-interactive-capture-only").failures.join(" ")).toMatch(/exceeds 100 ms/u);
+  });
+
+  it("classifies the scoped filter-impl-08 query and heap proof without lifecycle or terminal evidence", () => {
+    const scoped = report({
+      environment: { chromeMajor: 151, platformClass: "darwin", architectureClass: "arm64", headless: true },
+      selectionMode: EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08,
+      selection: {
+        mode: EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08,
+        proofSelection: "filter-impl-08-noninteractive-layout-commit",
+        includedGates: FILTER_IMPL_08_PROOF_GATES,
+        excludedScenarios: FILTER_IMPL_08_EXCLUDED_SCENARIOS,
+        disclaimer: "Scoped noninteractive layout-commit proof only; it does not prove foreground scheduling or compositor frames."
+      },
+      proofMode: EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT,
+      frameProof: {
+        publicationBoundary: "react-layout-commit-dom-publication",
+        compositorFrameMeasured: false,
+        coherent: true,
+        missingBoundaryCount: 0
+      },
+      capabilities: { interQuerySampleGc: "EXPOSED_THREE_PASS_V1", interQueryGcLongTasks: "EXPLICIT_HYGIENE_PHASE_V1" },
+      cells: [],
+      cellCleanupGc: [],
+      terminalScenarios: [],
+      checkpointScenarios: [],
+      lifecycle: { retainedHeapBytes: [], strictMonotonicGrowth: false }
+    });
+    const candidate = classifyEventHistoryPerformance(scoped, undefined, "filter-impl-08-capture-only");
+    expect(candidate.verdict).toBe("NOT_CLASSIFIED");
+    expect(candidate.failures).toEqual([]);
+
+    const reference: EventHistoryPerformanceReference = {
+      ...referenceFrom(scoped),
+      selectionMode: EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08,
+      environment: scoped.environment,
+      proofMode: scoped.proofMode,
+      cells: []
+    };
+    expect(validateEventHistoryPerformanceReference(reference)).toBe(true);
+    expect(classifyEventHistoryPerformance({ ...scoped, source: { revision: "comparison-revision", dirty: false } }, reference, "filter-impl-08").verdict).toBe("PASS");
   });
 
   it("rejects an Around page with the wrong size, order, or identity", () => {

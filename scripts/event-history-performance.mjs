@@ -19,6 +19,9 @@ import {
   createTimeoutDiagnostic,
   createPerformanceShardPlan,
   aggregatePerformanceShardResults,
+  FILTER_IMPL_08_EXCLUDED_SCENARIOS,
+  FILTER_IMPL_08_PROOF_GATES,
+  PERFORMANCE_SELECTION_MODES,
   PerformanceOperationTimeout,
   createSharedDeadlineTimeout,
   releaseHeapSessionWithCleanup,
@@ -43,15 +46,23 @@ const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
 );
 const HEADED_VISIBLE_FRAME_PROOF_MODE = "headed-visible-frame";
 const NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE = "non-interactive-layout-commit";
+const FILTER_IMPL_08_PROOF_SELECTION = "filter-impl-08-noninteractive-layout-commit";
+const FILTER_IMPL_08_DISCLAIMER = "Scoped noninteractive layout-commit proof only; it does not prove foreground scheduling or compositor frames.";
 
 async function main() {
   const proofMode = requestedProofMode();
+  const selectionMode = requestedSelectionMode();
+  if (selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08 && proofMode !== NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) {
+    throw new Error("filter-impl-08 selection requires non-interactive-layout-commit proof mode.");
+  }
   const nonInteractive = proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE;
   requireVisibleEnvironment(proofMode);
   const captureMode = process.env.LSEW_EVENT_HISTORY_PERF_CAPTURE === "true";
-  const classificationMode = nonInteractive
-    ? (captureMode ? "non-interactive-capture-only" : "non-interactive")
-    : (captureMode ? "capture-only" : "ordinary");
+  const classificationMode = selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08
+    ? (captureMode ? "filter-impl-08-capture-only" : "filter-impl-08")
+    : nonInteractive
+      ? (captureMode ? "non-interactive-capture-only" : "non-interactive")
+      : (captureMode ? "capture-only" : "ordinary");
   const reference = captureMode ? undefined : JSON.parse(await readFile(referencePath, "utf8"));
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-event-history-performance-"));
   const site = join(temporaryRoot, "site");
@@ -303,7 +314,7 @@ async function main() {
         await closeFreshHarnessPageWithErrorPreservation(browserCdp, page, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryError);
       }
     };
-    for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
+    for (const [index, plannedShard] of createPerformanceShardPlan(selectionMode).entries()) {
       const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
       if (plannedShard.kind !== "matrix") {
         shardResults.push(await runFreshHarnessSelection(selection));
@@ -329,7 +340,7 @@ async function main() {
         cellCleanupGc: cellResults.flatMap((result) => result.cellCleanupGc)
       });
     }
-    const result = aggregatePerformanceShardResults(shardResults);
+    const result = aggregatePerformanceShardResults(shardResults, selectionMode);
 
     const heapPage = await openFreshHarnessPage(browserCdp, debugPort, url, `heap-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow, interactive: !nonInteractive });
     let heapPlan;
@@ -367,27 +378,29 @@ async function main() {
     }
     const heapSamples = heapPlan.heapSamples;
 
-    const lifecyclePage = await openFreshHarnessPage(browserCdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow, interactive: !nonInteractive });
     const lifecycleRetainedHeapBytes = [];
-    let primaryLifecycleError = null;
-    try {
-      for (let sample = 0; sample < 3; sample += 1) {
-        const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt });
-        await runPageOperationForProof(lifecyclePage.cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1, ${JSON.stringify(proofMode)})`, { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId });
-        const released = await releaseHeapSessionWithCleanup({
-          release: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
-          removeRoot: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
-          yieldFrame: () => runPageOperationForProof(lifecyclePage.cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame(${JSON.stringify(proofMode)})`, { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
-          forceGc: () => collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt }),
-          deadlineAt: proofDeadlineAt
-        });
-        lifecycleRetainedHeapBytes.push(released.usedSize - baseline.usedSize);
+    if (selectionMode !== PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08) {
+      const lifecyclePage = await openFreshHarnessPage(browserCdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow, interactive: !nonInteractive });
+      let primaryLifecycleError = null;
+      try {
+        for (let sample = 0; sample < 3; sample += 1) {
+          const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt });
+          await runPageOperationForProof(lifecyclePage.cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1, ${JSON.stringify(proofMode)})`, { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId });
+          const released = await releaseHeapSessionWithCleanup({
+            release: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+            removeRoot: () => runPageOperationForProof(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+            yieldFrame: () => runPageOperationForProof(lifecyclePage.cdp, `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame(${JSON.stringify(proofMode)})`, { deadlineAt: proofDeadlineAt, targetId: lifecyclePage.targetId }),
+            forceGc: () => collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt }),
+            deadlineAt: proofDeadlineAt
+          });
+          lifecycleRetainedHeapBytes.push(released.usedSize - baseline.usedSize);
+        }
+      } catch (error) {
+        primaryLifecycleError = error;
+        throw error;
+      } finally {
+        await closeFreshHarnessPageWithErrorPreservation(browserCdp, lifecyclePage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryLifecycleError);
       }
-    } catch (error) {
-      primaryLifecycleError = error;
-      throw error;
-    } finally {
-      await closeFreshHarnessPageWithErrorPreservation(browserCdp, lifecyclePage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryLifecycleError);
     }
 
     if (!nonInteractive) await foregroundKeeper.assertHealthy({ reason: "before-report" });
@@ -396,6 +409,14 @@ async function main() {
       generatedAt: new Date().toISOString(),
       runner: chromeMetadata,
       proofMode,
+      selectionMode,
+      selection: {
+        mode: selectionMode,
+        proofSelection: selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08 ? FILTER_IMPL_08_PROOF_SELECTION : "full-release",
+        includedGates: selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08 ? [...FILTER_IMPL_08_PROOF_GATES] : ["full-release-matrix", "terminal-pressure", "checkpoint-pressure", "lifecycle"],
+        excludedScenarios: selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08 ? [...FILTER_IMPL_08_EXCLUDED_SCENARIOS] : [],
+        disclaimer: selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08 ? FILTER_IMPL_08_DISCLAIMER : ""
+      },
       source: {
         revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
         dirty: execFileSync("git", ["status", "--porcelain"], { cwd: rootDir, encoding: "utf8" }).trim().length > 0
@@ -419,7 +440,7 @@ async function main() {
       foregroundKeeper: foregroundKeeper?.snapshot() ?? null,
       anchors: result.anchors,
       capabilities: {
-        interCellGc: "EXPOSED_THREE_PASS_V1",
+        ...(selectionMode === PERFORMANCE_SELECTION_MODES.FULL_RELEASE ? { interCellGc: "EXPOSED_THREE_PASS_V1" } : {}),
         interQuerySampleGc: "EXPOSED_THREE_PASS_V1",
         interQueryGcLongTasks: "EXPLICIT_HYGIENE_PHASE_V1"
       },
@@ -1197,6 +1218,14 @@ function requestedProofMode() {
   return mode;
 }
 
+function requestedSelectionMode() {
+  const mode = process.env.LSEW_EVENT_HISTORY_PERF_SELECTION ?? PERFORMANCE_SELECTION_MODES.FULL_RELEASE;
+  if (mode !== PERFORMANCE_SELECTION_MODES.FULL_RELEASE && mode !== PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08) {
+    throw new Error(`LSEW_EVENT_HISTORY_PERF_SELECTION must be ${PERFORMANCE_SELECTION_MODES.FULL_RELEASE} or ${PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08}.`);
+  }
+  return mode;
+}
+
 function requireVisibleEnvironment(proofMode) {
   if (proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) return;
   if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
@@ -1417,6 +1446,12 @@ Proof mode: **${proofMode}**; Chrome headless: **${String(report.runner?.headles
 
 Real Chrome: ${report.runner?.product}; user agent: ${report.runner?.userAgent}; JS: ${report.runner?.jsVersion}; source: ${report.source.revision}; dirty: ${String(report.source.dirty)}; reference: ${report.reference.path}.
 
+Selection: **${report.selection?.proofSelection ?? report.selectionMode ?? "full-release"}**. ${report.selection?.disclaimer ?? ""}
+
+Included gates: ${(report.selection?.includedGates ?? []).join(", ") || "full release"}.
+
+Excluded scenarios: ${(report.selection?.excludedScenarios ?? []).join(", ") || "none"}.
+
 ## Exact matrix results
 
 The absolute thresholds are unchanged. The first publication column is the existing offer-to-publication metric; the next two retain the gate's structured fields but are measured at the declared ${boundaryLabel} in this mode.
@@ -1433,7 +1468,7 @@ ${queries}
 
 ## Gate evidence
 
-Cells: ${report.cells.length}; query cells: ${report.queryCells.length}; heap samples: ${report.heapSamples.length}; terminal scenarios: ${report.terminalScenarios.length}; checkpoint scenarios: ${report.checkpointScenarios.length}.
+Cells: ${report.cells.length}; query cells: ${report.queryCells.length}; heap samples: ${report.heapSamples.length}; terminal scenarios: ${report.terminalScenarios.length}; checkpoint scenarios: ${report.checkpointScenarios.length}; lifecycle samples: ${report.lifecycle.retainedHeapBytes.length}.
 
 Frame proof: ${JSON.stringify(report.frameProof)}
 
@@ -1443,7 +1478,7 @@ ${report.decision.failures.length ? report.decision.failures.map((failure) => `-
 Review reasons:
 ${report.decision.reviewReasons.length ? report.decision.reviewReasons.map((reason) => `- ${reason}`).join("\n") : "- None"}
 
-The JSON artifact is authoritative for the complete identity, storage, Long Task, heap, lifecycle, terminal, checkpoint, and workload evidence.
+The JSON artifact is authoritative for the declared selection. Scoped filter-impl-08 artifacts intentionally omit terminal-pressure, checkpoint-pressure, and lifecycle scenarios and do not claim foreground or compositor proof.
 `;
 }
 

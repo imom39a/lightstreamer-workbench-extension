@@ -261,5 +261,15 @@ boundary, `compositorFrameMeasured=false`, and zero missing boundaries. A
 non-interactive report cannot be classified as headed proof; missing or
 incoherent layout boundaries fail closed.
 
+The ticket-scoped selection is explicit and narrower than the ordinary
+full-release selection. Set `LSEW_EVENT_HISTORY_PERF_SELECTION=filter-impl-08`
+with `LSEW_EVENT_HISTORY_PERF_MODE=non-interactive-layout-commit` to run the
+complete native IndexedDB/memory query matrix, bounded hydration/index
+telemetry, exact query thresholds, and the six-sample post-GC heap check.
+It produces no terminal-pressure, checkpoint-pressure, or lifecycle evidence;
+those remain in the ordinary full-release selection. Its artifact names the
+`filter-impl-08-noninteractive-layout-commit` selection and explicitly does
+not claim foreground scheduling or compositor proof.
+
 The supplied headed artifact remains truthful environmental evidence: it is a
 `TIMED_OUT` run at the real-rAF compositor boundary with no PASS or p95 claim.

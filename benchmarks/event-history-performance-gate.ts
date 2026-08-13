@@ -34,9 +34,26 @@ export const EVENT_HISTORY_PERFORMANCE_PROOF_MODES = Object.freeze({
   HEADED_VISIBLE_FRAME: "headed-visible-frame",
   NON_INTERACTIVE_LAYOUT_COMMIT: "non-interactive-layout-commit"
 } as const);
+export const EVENT_HISTORY_PERFORMANCE_SELECTION_MODES = Object.freeze({
+  FULL_RELEASE: "full-release",
+  FILTER_IMPL_08: "filter-impl-08"
+} as const);
+export const FILTER_IMPL_08_PROOF_GATES = Object.freeze([
+  "native-real-chrome-indexeddb-memory-query-matrix",
+  "bounded-hydration-index-telemetry",
+  "post-gc-heap-check",
+  "exact-query-and-heap-thresholds"
+] as const);
+export const FILTER_IMPL_08_EXCLUDED_SCENARIOS = Object.freeze([
+  "terminal-pressure",
+  "checkpoint-pressure",
+  "lifecycle"
+] as const);
 
 export type EventHistoryPerformanceProofMode =
   typeof EVENT_HISTORY_PERFORMANCE_PROOF_MODES[keyof typeof EVENT_HISTORY_PERFORMANCE_PROOF_MODES];
+export type EventHistoryPerformanceSelectionMode =
+  typeof EVENT_HISTORY_PERFORMANCE_SELECTION_MODES[keyof typeof EVENT_HISTORY_PERFORMANCE_SELECTION_MODES];
 
 export type EventHistoryPerformanceFrameProof = Readonly<{
   publicationBoundary: "visible-compositor-frame" | "react-layout-commit-dom-publication";
@@ -292,6 +309,14 @@ export type EventHistoryPerformanceReport = Readonly<{
   schemaVersion: typeof PERFORMANCE_GATE_SCHEMA_VERSION;
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
+  selectionMode?: EventHistoryPerformanceSelectionMode;
+  selection?: Readonly<{
+    mode: EventHistoryPerformanceSelectionMode;
+    proofSelection: string;
+    includedGates: readonly string[];
+    excludedScenarios: readonly string[];
+    disclaimer: string;
+  }>;
   proofMode?: EventHistoryPerformanceProofMode;
   frameProof?: EventHistoryPerformanceFrameProof;
   cells: readonly EventHistoryPerformanceCell[];
@@ -324,6 +349,7 @@ export type EventHistoryPerformanceReference = Readonly<{
   disposition: "ACCEPTED_INITIAL_CLEAN_REFERENCE";
   rationale: string;
   environment: Pick<EventHistoryPerformanceEnvironment, "chromeMajor" | "platformClass" | "architectureClass"> & Readonly<{ headless?: boolean }>;
+  selectionMode?: EventHistoryPerformanceSelectionMode;
   proofMode?: EventHistoryPerformanceProofMode;
   cells: readonly EventHistoryPerformanceCell[];
   queryCells: readonly EventHistoryPerformanceQueryCell[];
@@ -333,7 +359,9 @@ export type PerformanceGateMode =
   | "ordinary"
   | "capture-only"
   | "non-interactive"
-  | "non-interactive-capture-only";
+  | "non-interactive-capture-only"
+  | "filter-impl-08"
+  | "filter-impl-08-capture-only";
 export type PerformanceGateVerdict = "PASS" | "REVIEW" | "FAIL" | "NOT_CLASSIFIED";
 
 export type PerformanceGateDecision = Readonly<{
@@ -370,7 +398,13 @@ export function classifyEventHistoryPerformance(
   if (failures.length > 0) return decision(failures, reviewReasons, 0, 0);
   const validReport = report as unknown as EventHistoryPerformanceReport;
   if (validReport.source.dirty !== false) failures.push("The performance report was not generated from a clean source revision.");
-  const nonInteractive = mode === "non-interactive" || mode === "non-interactive-capture-only";
+  const filterImpl08 = mode === "filter-impl-08" || mode === "filter-impl-08-capture-only";
+  const nonInteractive = filterImpl08
+    || mode === "non-interactive"
+    || mode === "non-interactive-capture-only";
+  if (filterImpl08 && validReport.selectionMode !== EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08) {
+    failures.push("The filter-impl-08 proof must report the explicit filter-impl-08 selection mode.");
+  }
   if (nonInteractive) {
     if (validReport.environment.headless !== true) {
       failures.push("The non-interactive performance proof must explicitly report headless Chrome.");
@@ -394,6 +428,9 @@ export function classifyEventHistoryPerformance(
   }
   if (validReport.environment.chromeMajor !== 151) {
     failures.push(`The performance proof must use Chrome for Testing 151, got ${validReport.environment.chromeMajor}.`);
+  }
+  if (filterImpl08) {
+    return classifyFilterImpl08Report(validReport, reference, mode, failures, reviewReasons);
   }
   if (validReport.cells.length !== expectedKeys.size * SAMPLE_COUNT) {
     failures.push(
@@ -528,6 +565,72 @@ export function classifyEventHistoryPerformance(
   return decision(failures, reviewReasons, expectedKeys.size, validReport.cells.length);
 }
 
+function classifyFilterImpl08Report(
+  report: EventHistoryPerformanceReport,
+  reference: unknown,
+  mode: PerformanceGateMode,
+  failures: string[],
+  reviewReasons: string[]
+): PerformanceGateDecision {
+  const selection = report.selection;
+  if (!selection
+    || selection.mode !== EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08
+    || selection.proofSelection !== "filter-impl-08-noninteractive-layout-commit"
+    || JSON.stringify(selection.includedGates) !== JSON.stringify(FILTER_IMPL_08_PROOF_GATES)
+    || JSON.stringify(selection.excludedScenarios) !== JSON.stringify(FILTER_IMPL_08_EXCLUDED_SCENARIOS)
+    || !/does not prove foreground scheduling or compositor frames/u.test(selection.disclaimer)) {
+    failures.push("The filter-impl-08 artifact must declare its exact scoped gates and foreground/compositor disclaimer.");
+  }
+  if (report.cells.length !== 0) failures.push("The filter-impl-08 selection must not execute full-release matrix cells.");
+  if ((report.cellCleanupGc?.length ?? 0) !== 0) failures.push("The filter-impl-08 selection must not report full-release cell cleanup evidence.");
+  if (report.terminalScenarios.length !== 0) failures.push("The filter-impl-08 selection must exclude terminal-pressure scenarios.");
+  if (report.checkpointScenarios.length !== 0) failures.push("The filter-impl-08 selection must exclude checkpoint-pressure scenarios.");
+  if (report.lifecycle.retainedHeapBytes.length !== 0) failures.push("The filter-impl-08 selection must exclude lifecycle scenarios.");
+
+  validateQueryCells(report.queryCells, failures);
+
+  const heapByAdapter = new Map<EventHistoryPerformanceAdapter, EventHistoryPerformanceHeapSample[]>();
+  for (const sample of report.heapSamples) {
+    const entries = heapByAdapter.get(sample.adapter) ?? [];
+    entries.push(sample);
+    heapByAdapter.set(sample.adapter, entries);
+  }
+  for (const adapter of ADAPTERS) {
+    const entries = heapByAdapter.get(adapter) ?? [];
+    const limit = EVENT_HISTORY_PERFORMANCE_LIMITS[adapter];
+    if (entries.length !== SAMPLE_COUNT) failures.push(`Expected three ${adapter} post-GC heap samples in filter-impl-08 proof.`);
+    if (entries.map((entry) => entry.sample).sort((left, right) => left - right).join(",") !== "1,2,3") {
+      failures.push(`${adapter} post-GC heap samples must be independent samples 1, 2, and 3 in filter-impl-08 proof.`);
+    }
+    for (const sample of entries) {
+      if (sample.eventCount !== limit.heapEventCount) failures.push(`${adapter} heap sample must contain ${limit.heapEventCount} events.`);
+      if (sample.status !== "PASS") failures.push(`${adapter} heap sample ${sample.sample} failed: ${sample.failure?.code ?? "unknown"}.`);
+      if (sample.status === "PASS" && (sample.postGcHeapDeltaBytes === null || sample.postGcHeapDeltaBytes > limit.heapDeltaBytes)) {
+        failures.push(`${adapter} post-GC heap delta exceeds ${limit.heapDeltaBytes} bytes.`);
+      }
+    }
+  }
+  validateHeapRuns(report.heapRuns, report.heapSamples, failures);
+
+  if (mode === "filter-impl-08-capture-only") {
+    if (failures.length === 0) reviewReasons.push("Candidate capture is not classified until a maintainer adopts a separately pinned reference.");
+    return decision(failures, reviewReasons, 0, report.queryCells.length, "NOT_CLASSIFIED");
+  }
+
+  if (reference === undefined) {
+    failures.push("No separately pinned filter-impl-08 reference was supplied; a report cannot self-adopt as its reference.");
+  } else if (!isPerformanceReference(reference)) {
+    failures.push("Missing or malformed filter-impl-08 pinned reference telemetry.");
+  } else if (reference.selectionMode !== EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08
+    || reference.proofMode !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT
+    || reference.environment.headless !== true) {
+    failures.push("The filter-impl-08 proof requires a separately adopted non-interactive layout-commit reference.");
+  } else if (failures.length === 0) {
+    compareReference(report, reference, reviewReasons);
+  }
+  return decision(failures, reviewReasons, 0, report.queryCells.length);
+}
+
 export function validateEventHistoryPerformanceReference(value: unknown): value is EventHistoryPerformanceReference {
   return isPerformanceReference(value);
 }
@@ -568,10 +671,12 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
   const source = value.source;
   const environment = value.environment;
   const lifecycle = value.lifecycle;
+  const scopedFilter = value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08;
   const valid = value.schemaVersion === PERFORMANCE_GATE_SCHEMA_VERSION
     && isRecord(source) && typeof source.revision === "string" && source.revision.length > 0 && isBoolean(source.dirty)
     && isRecord(environment) && environment.chromeMajor === 151 && typeof environment.platformClass === "string"
     && typeof environment.architectureClass === "string" && isBoolean(environment.headless)
+    && (value.selectionMode === undefined || value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FULL_RELEASE || scopedFilter)
     && (value.proofMode === undefined || isPerformanceProofMode(value.proofMode))
     && (value.frameProof === undefined || isPerformanceFrameProof(value.frameProof))
     && Array.isArray(value.cells) && value.cells.every(isPerformanceCell)
@@ -588,7 +693,7 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && Array.isArray(value.heapSamples) && value.heapSamples.every(isHeapSample)
     && Array.isArray(value.heapRuns) && value.heapRuns.every(isHeapRun)
     && isRecord(lifecycle) && Array.isArray(lifecycle.retainedHeapBytes)
-    && lifecycle.retainedHeapBytes.length === SAMPLE_COUNT && lifecycle.retainedHeapBytes.every(isFiniteNumber)
+    && lifecycle.retainedHeapBytes.length === (scopedFilter ? 0 : SAMPLE_COUNT) && lifecycle.retainedHeapBytes.every(isFiniteNumber)
     && isBoolean(lifecycle.strictMonotonicGrowth);
   return valid;
 }
@@ -920,8 +1025,14 @@ function isPerformanceReference(value: unknown): value is EventHistoryPerformanc
     && isRecord(environment) && environment.chromeMajor === 151
     && typeof environment.platformClass === "string" && typeof environment.architectureClass === "string"
     && (environment.headless === undefined || isBoolean(environment.headless))
+    && (value.selectionMode === undefined
+      || value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FULL_RELEASE
+      || value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08)
     && (value.proofMode === undefined || isPerformanceProofMode(value.proofMode))
-    && Array.isArray(value.cells) && hasIndependentMatrixSamples(value.cells)
+    && Array.isArray(value.cells)
+    && (value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08
+      ? value.cells.length === 0
+      : hasIndependentMatrixSamples(value.cells))
     && queryFailures.length === 0;
 }
 

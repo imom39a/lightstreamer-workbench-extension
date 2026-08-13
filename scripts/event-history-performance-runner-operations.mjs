@@ -15,13 +15,41 @@ const MATRIX_SHARDS = Object.freeze([
   Object.freeze({ id: "matrix-memory-burst", kind: "matrix", adapter: "memory", workload: "burst", firstCellIndex: 28, collectAfterFinal: false })
 ]);
 const SCENARIO_SHARD = Object.freeze({ id: "scenarios", kind: "scenarios" });
+export const PERFORMANCE_SELECTION_MODES = Object.freeze({
+  FULL_RELEASE: "full-release",
+  FILTER_IMPL_08: "filter-impl-08"
+});
+export const FILTER_IMPL_08_PROOF_GATES = Object.freeze([
+  "native-real-chrome-indexeddb-memory-query-matrix",
+  "bounded-hydration-index-telemetry",
+  "post-gc-heap-check",
+  "exact-query-and-heap-thresholds"
+]);
+export const FILTER_IMPL_08_EXCLUDED_SCENARIOS = Object.freeze([
+  "terminal-pressure",
+  "checkpoint-pressure",
+  "lifecycle"
+]);
+const FILTER_IMPL_08_QUERY_SHARD = Object.freeze({
+  id: "filter-impl-08-query",
+  kind: "filter-impl-08"
+});
 
-export function createPerformanceShardPlan() {
+export function createPerformanceShardPlan(selectionMode = PERFORMANCE_SELECTION_MODES.FULL_RELEASE) {
+  if (selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08) {
+    return [{ ...FILTER_IMPL_08_QUERY_SHARD }];
+  }
+  if (selectionMode !== PERFORMANCE_SELECTION_MODES.FULL_RELEASE) {
+    throw new Error(`Unsupported Event History performance selection mode: ${String(selectionMode)}.`);
+  }
   return [...MATRIX_SHARDS, SCENARIO_SHARD].map((shard) => ({ ...shard }));
 }
 
-export function aggregatePerformanceShardResults(results) {
-  const plan = createPerformanceShardPlan();
+export function aggregatePerformanceShardResults(results, selectionMode = PERFORMANCE_SELECTION_MODES.FULL_RELEASE) {
+  if (selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08) {
+    return aggregateFilterImpl08ShardResults(results);
+  }
+  const plan = createPerformanceShardPlan(selectionMode);
   if (!Array.isArray(results) || results.length !== plan.length) {
     throw new Error(`Performance proof requires exactly ${plan.length} ordered shards.`);
   }
@@ -114,6 +142,46 @@ export function aggregatePerformanceShardResults(results) {
     checkpointScenarios,
     queryCells,
     shards
+  };
+}
+
+function aggregateFilterImpl08ShardResults(results) {
+  const plan = createPerformanceShardPlan(PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08);
+  if (!Array.isArray(results) || results.length !== plan.length) {
+    throw new Error("filter-impl-08 proof requires exactly one ordered query shard.");
+  }
+  const result = results[0];
+  const selection = result?.selection;
+  if (!result || typeof result !== "object" || !selection
+    || selection.id !== plan[0].id || selection.kind !== plan[0].kind
+    || typeof selection.pageToken !== "string" || selection.pageToken.length === 0) {
+    throw new Error("filter-impl-08 query shard identity is invalid.");
+  }
+  if ((result.cells?.length ?? -1) !== 0 || (result.cellCleanupGc?.length ?? -1) !== 0) {
+    throw new Error("filter-impl-08 proof must not execute the full-release event matrix.");
+  }
+  if ((result.terminalScenarios?.length ?? -1) !== 0 || (result.checkpointScenarios?.length ?? -1) !== 0) {
+    throw new Error("filter-impl-08 proof must exclude terminal and checkpoint pressure scenarios.");
+  }
+  const expectedQueryIds = "indexeddb/1|indexeddb/2|indexeddb/3|memory/1|memory/2|memory/3";
+  if (!Array.isArray(result.queryCells) || result.queryCells.length !== 6
+    || result.queryCells.map((cell) => `${cell.adapter}/${cell.sample}`).join("|") !== expectedQueryIds) {
+    throw new Error("filter-impl-08 proof must execute the complete indexeddb/memory query matrix.");
+  }
+  return {
+    schemaVersion: 2,
+    selectionMode: PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08,
+    proofMode: result.proofMode,
+    frameProof: result.frameProof,
+    anchors: result.anchors,
+    config: result.config,
+    shapeFacts: result.shapeFacts,
+    cells: [],
+    cellCleanupGc: [],
+    terminalScenarios: [],
+    checkpointScenarios: [],
+    queryCells: result.queryCells,
+    shards: [{ ...selection, cellCount: 0, cleanupCount: 0, queryCellCount: result.queryCells.length }]
   };
 }
 

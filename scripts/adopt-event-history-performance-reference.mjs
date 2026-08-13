@@ -7,6 +7,7 @@ import { readFile, writeFile } from "node:fs/promises";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_REFERENCE = resolve(projectRoot, "docs/reference/event-history-performance-reference.json");
 const NON_INTERACTIVE_MODE = "non-interactive-layout-commit";
+const FILTER_IMPL_08_SELECTION = "filter-impl-08";
 
 export function createNonInteractiveReference(candidate) {
   if (!candidate || typeof candidate !== "object") throw new Error("Candidate report is missing or malformed.");
@@ -14,6 +15,8 @@ export function createNonInteractiveReference(candidate) {
   if ((candidate.decision?.failures ?? []).length !== 0) throw new Error("A candidate with absolute gate failures cannot be adopted.");
   if (candidate.source?.dirty !== false) throw new Error("Only a clean-source candidate may be adopted.");
   if (candidate.proofMode !== NON_INTERACTIVE_MODE) throw new Error("Only the non-interactive layout-commit proof can be adopted by this closure script.");
+  const scopedFilterImpl08 = candidate.selectionMode === FILTER_IMPL_08_SELECTION;
+  if (candidate.selectionMode !== undefined && !scopedFilterImpl08) throw new Error("Unsupported performance selection in adoption candidate.");
   if (candidate.runner?.kind !== "real-chrome" || candidate.runner?.headless !== true || candidate.runner?.fakeIndexedDbUsed !== false) {
     throw new Error("Candidate must explicitly prove real headless Chrome with native IndexedDB.");
   }
@@ -26,8 +29,13 @@ export function createNonInteractiveReference(candidate) {
     || candidate.frameProof.missingBoundaryCount !== 0) {
     throw new Error("Candidate does not contain a coherent non-compositor publication proof.");
   }
-  if (!Array.isArray(candidate.cells) || candidate.cells.length !== 36) throw new Error("Candidate must contain all 36 matrix cells.");
+  if (!Array.isArray(candidate.cells) || candidate.cells.length !== (scopedFilterImpl08 ? 0 : 36)) {
+    throw new Error(scopedFilterImpl08 ? "filter-impl-08 candidate must exclude the full-release matrix." : "Candidate must contain all 36 matrix cells.");
+  }
   if (!Array.isArray(candidate.queryCells) || candidate.queryCells.length !== 6) throw new Error("Candidate must contain all six query cells.");
+  if (scopedFilterImpl08 && (candidate.terminalScenarios?.length !== 0 || candidate.checkpointScenarios?.length !== 0 || candidate.lifecycle?.retainedHeapBytes?.length !== 0)) {
+    throw new Error("filter-impl-08 candidate must exclude terminal, checkpoint, and lifecycle scenarios.");
+  }
   return {
     schemaVersion: candidate.schemaVersion,
     referenceVersion: `filter-impl-08-${NON_INTERACTIVE_MODE}-chrome151`,
@@ -39,6 +47,7 @@ export function createNonInteractiveReference(candidate) {
       architectureClass: candidate.environment.architectureClass,
       headless: true
     },
+    ...(scopedFilterImpl08 ? { selectionMode: FILTER_IMPL_08_SELECTION } : {}),
     proofMode: NON_INTERACTIVE_MODE,
     cells: candidate.cells,
     queryCells: candidate.queryCells

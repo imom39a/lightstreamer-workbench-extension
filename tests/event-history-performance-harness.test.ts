@@ -77,6 +77,17 @@ describe("Event History performance checkpoint workload", () => {
     expect(() => validateHarnessSelection({ ...shard, cellOffset: 9, collectAfterFinal: true })).toThrow(/shard identity is invalid/u);
   });
 
+  it("accepts the explicit filter-impl-08 query shard", () => {
+    const selection: HarnessSelection = {
+      id: "filter-impl-08-query",
+      kind: "filter-impl-08",
+      pageToken: "filter-impl-08-page"
+    };
+
+    expect(validateHarnessSelection(selection)).toEqual(selection);
+    expect(() => validateHarnessSelection({ ...selection, id: "scenarios" } as never)).toThrow(/query shard identity/u);
+  });
+
   it("releases caller-owned heap workload candidates before yielding the retained frame", async () => {
     const candidates = [
       createEventHistoryWorkloadEvent("large-json-rich", 0, "heap-release"),
