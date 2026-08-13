@@ -41,6 +41,7 @@ export type EvidenceInvestigationQueryRequest = Readonly<{
   lookup?: EvidenceIdentity;
   find?: EvidenceFindRequest;
   includePayload?: boolean;
+  signal?: AbortSignal;
 }>;
 
 export type EvidenceInvestigationQueryResult =
@@ -77,7 +78,8 @@ export function toEvidenceQueryRequest(
     ...(request.discover.length > 0 ? { discover: request.discover } : {}),
     ...(request.lookup === undefined ? {} : { lookup: request.lookup }),
     ...(request.find === undefined ? {} : { find: request.find }),
-    ...(request.includePayload === true ? { includePayload: true } : {})
+    ...(request.includePayload === true ? { includePayload: true } : {}),
+    ...(request.signal === undefined ? {} : { signal: request.signal })
   });
 }
 

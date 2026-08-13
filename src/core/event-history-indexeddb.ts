@@ -58,15 +58,16 @@ import {
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
 import { extractEvidenceFacets, canonicalEvidenceSearchText, canonicalEvidenceSearchTextWithExtraction, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
-import { discoverFacet, discoverFacetFromAggregates, type DiscoveryAggregateEntry } from "./evidence-filter-discovery";
+import { discoverFacetFromAccounting, discoverFacetFromAggregates, type DiscoveryAccountingEntry, type DiscoveryAggregateEntry } from "./evidence-filter-discovery";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
-import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor } from "./evidence-filter-cursor";
+import { decodeEvidenceQueryCursor, encodeEvidenceQueryCursor, type EvidenceQueryCursor } from "./evidence-filter-cursor";
 import {
   MAX_EVIDENCE_PAGE_SIZE,
   type DeterministicEvidenceRecord,
   type EvidenceFilterReadProblem,
   type EvidenceFilterQueryAdapter,
+  type EvidenceFindResult,
   type EvidenceIdentity,
   type EvidenceQueryRequest,
   type EvidenceReadPoint,
@@ -1234,7 +1235,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     }).then((result) => {
       if (result.ok) {
         lastCoherentQuery = result.value;
-      } else {
+      } else if (result.problem.code !== "QUERY_CANCELLED") {
         publish({ type: "status", status: status({ code: "QUERY_FAILED", message: result.problem.message }) });
       }
       return result;
@@ -1374,9 +1375,10 @@ async function queryIndexedDb(
   if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > MAX_EVIDENCE_PAGE_SIZE) {
     return queryFailure("QUERY_FAILED", request.page.size > MAX_EVIDENCE_PAGE_SIZE ? `Page size must not exceed ${MAX_EVIDENCE_PAGE_SIZE}.` : "Page size must be a positive integer.");
   }
+  if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was read.");
   const started = Date.now();
   const telemetry: QueryTelemetryMutable = {
-    postingReads: 0, postingCandidates: 0, evidenceCursorReads: 0, payloadHydrations: 0, lookupPayloadHydrations: 0,
+    postingReads: 0, postingCandidates: 0, postingDriver: null, postingDriverCandidateCount: 0, evidenceCursorReads: 0, payloadHydrations: 0, lookupPayloadHydrations: 0,
     candidateBound: 0, pageBound: request.page.size, retainedCount: 0, cursorWorkBound: 0, aroundCursorBound: 0,
     findCursorBound: 0, findCursorReads: 0, fullRetainedScan: false, shortFindFallback: false, residualScan: false,
     aroundIndexReads: 0, aroundCandidates: 0, aroundAnchorValidated: false, elapsedMs: 0,
@@ -1393,6 +1395,9 @@ async function queryIndexedDb(
     AUTHORITATIVE_EVENT_STORE_NAMES.queryProjections,
     AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates
   ], "readonly");
+  request.signal?.addEventListener("abort", () => {
+    try { transaction.abort(); } catch { /* the readonly transaction may already be complete */ }
+  }, { once: true });
   try {
     const evidenceStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence);
     const control = await requestToPromise<ControlRecord | undefined>(
@@ -1424,40 +1429,98 @@ async function queryIndexedDb(
     const expectedEvidenceCount = lastSequence >= firstSequence ? lastSequence - firstSequence + 1 : 0;
     telemetry.retainedCount = expectedEvidenceCount;
     telemetry.cursorWorkBound = expectedEvidenceCount;
+    let pageCursor: EvidenceQueryCursor | null;
+    try {
+      pageCursor = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
+    } catch (error) {
+      return queryFailure("QUERY_FAILED", error instanceof Error ? error.message : "The page cursor is invalid.");
+    }
+    if (pageCursor !== null && (pageCursor.anchor.intervalId !== interval.id
+      || pageCursor.anchor.pageId !== interval.id
+      || pageCursor.anchor.ownerId !== "memory-event-history"
+      || pageCursor.anchor.sequence < firstSequence
+      || pageCursor.anchor.sequence > lastSequence)) {
+      return queryFailure("QUERY_FAILED", "The page cursor anchor is stale or outside the latched Evidence range.");
+    }
+    const around = normalizeAround(request.filter.around, readPoint.retainedRange);
+    const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
+    const emptyFilterAround = request.filter.around !== null && isEmptyQueryFilter(request.filter);
+    if (request.filter.around !== null) {
+      telemetry.aroundIndexReads += 1;
+      telemetry.aroundCursorBound = telemetry.retainedCount;
+    }
     await validateProjectionCoverage(transaction.objectStore(options.projectionStore), evidenceStore, interval.id, firstSequence, lastSequence, expectedEvidenceCount, telemetry);
     const topologyCheckpointCount = await countTopologyCheckpoints(evidenceStore, firstSequence, lastSequence, telemetry);
     const expectedProjectionCount = expectedEvidenceCount - topologyCheckpointCount;
-    const aroundProjections = request.filter.around === null
-      ? null
-      : await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry);
-    const emptyFilterAround = request.filter.around !== null && isEmptyQueryFilter(request.filter);
     const postingCandidates = await indexedDbPostingCandidates(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings), request.filter, interval.id, firstSequence, lastSequence, telemetry);
     const candidateSequences = postingCandidates;
+    if (pageCursor !== null && candidateSequences !== null && !candidateSequences.has(pageCursor.anchor.sequence)) {
+      return queryFailure("QUERY_FAILED", "The page cursor anchor is not part of the filtered Evidence result.");
+    }
     const hasCriteria = Object.values(request.filter.criteria).some((group) => Boolean(group && (group.include.length > 0 || group.exclude.length > 0)));
     const simpleRecentPage = postingCandidates === null && !hasCriteria && request.filter.text.trim() === "" && request.filter.around === null;
+    const pageCursorProjection = pageCursor === null
+      ? null
+      : await validatePageCursorAnchor(transaction.objectStore(options.projectionStore), pageCursor.anchor, interval.id, firstSequence, lastSequence, telemetry);
+    if (pageCursorProjection !== null && !matchesProjectionFilter(pageCursorProjection, interval.id, filter, around)) {
+      return queryFailure("QUERY_FAILED", "The page cursor anchor is not part of the filtered Evidence result.");
+    }
     let projections: QueryProjection[];
+    let streamedPage: StreamedProjectionPage | null = null;
+    let simplePageHasMore = false;
     if (simpleRecentPage) {
-      const offset = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
-      if (offset > expectedProjectionCount) throw new Error("The page cursor is beyond the committed result set.");
-      projections = await readProjectionPage(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.page, offset, telemetry);
+      const pageRead = await readProjectionPage(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.page, pageCursor?.anchor ?? null, telemetry);
+      projections = [...pageRead.projections];
+      simplePageHasMore = pageRead.hasMore;
       telemetry.candidateBound = projections.length;
     } else if (emptyFilterAround) {
-      projections = aroundProjections ?? [];
-      telemetry.candidateBound = projections.length;
+      streamedPage = await readAroundProjectionPage(
+        transaction.objectStore(options.projectionStore),
+        interval.id,
+        firstSequence,
+        lastSequence,
+        request.page,
+        pageCursor?.anchor ?? null,
+        around!,
+        request.signal,
+        telemetry
+      );
+      projections = [...streamedPage.projections];
+      telemetry.candidateBound = streamedPage.inScope;
     } else {
       telemetry.residualScan = request.filter.text.trim() !== "";
-      projections = candidateSequences
-        ? await readCandidateProjections(transaction.objectStore(options.projectionStore), candidateSequences, telemetry)
-        : await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry);
-      telemetry.candidateBound = projections.length;
+      streamedPage = await readEvaluatedProjectionPage(
+        transaction.objectStore(options.projectionStore),
+        interval.id,
+        firstSequence,
+        lastSequence,
+        candidateSequences,
+        request.page,
+        pageCursor?.anchor ?? null,
+        filter,
+        around,
+        request.signal,
+        telemetry
+      );
+      projections = [...streamedPage.projections];
+      telemetry.candidateBound = candidateSequences?.size ?? expectedEvidenceCount;
       if (!candidateSequences) telemetry.fullRetainedScan = true;
     }
-    const retainedProjections = request.find !== undefined
-      ? await readSearchProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.find, telemetry)
-      : null;
-    const findProjections = request.find?.scopeToFilter
-      ? await readFindProjectionContext(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, retainedProjections ?? [], request.find, telemetry)
-      : retainedProjections;
+    if (request.filter.around !== null && streamedPage !== null) telemetry.aroundCandidates = streamedPage.inScope;
+    const findResult = request.find === undefined
+      ? null
+      : (await readFindProjectionResult(
+        transaction.objectStore(options.projectionStore),
+        interval.id,
+        firstSequence,
+        lastSequence,
+        request.find,
+        request.find.scopeToFilter ? filter : null,
+        around,
+        interval,
+        request.signal,
+        telemetry
+      )).result;
     const anchorProjection = request.filter.around?.anchor === undefined
       ? null
       : await readProjectionByIdentity(transaction.objectStore(options.projectionStore), request.filter.around.anchor, interval, firstSequence, lastSequence, request.filter.around.anchorSequence, telemetry);
@@ -1466,14 +1529,12 @@ async function queryIndexedDb(
       : await readSelectedEvidence(evidenceStore, request.lookup, interval, firstSequence, lastSequence, telemetry);
     await validateProjectionEventIdentities(evidenceStore, interval.id, [
       ...projections,
-      ...(findProjections ?? []),
       ...(anchorProjection === null ? [] : [anchorProjection])
     ], telemetry);
     const discoveries = new Map<string, FacetDiscoveryResult>();
     const postingStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings);
     const projectionStore = transaction.objectStore(options.projectionStore);
     const aggregateStore = transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetAggregates);
-    const discoveryPostingCache = new Map<string, Map<number, string>>();
     for (const discovery of request.discover ?? []) {
       try {
         const discoveryFilter: EvidenceQueryRequest["filter"] = {
@@ -1482,8 +1543,8 @@ async function queryIndexedDb(
       };
       if (canUseFacetAggregate(request.filter, discovery.facet)) {
         const aggregateCatalog = await readFacetAggregates(aggregateStore, interval.id, discovery.facet, telemetry);
-        const aggregateEntries = await validateAggregateFacetPostings(postingStore, evidenceStore, discovery.facet, interval.id, currentFirstSequence, currentLastSequence, aggregateCatalog, telemetry);
-        const result = discoverFacetFromAggregates(restrictAggregateEntries(aggregateEntries, firstSequence, lastSequence), expectedProjectionCount, request.filter, readPoint, discovery, {
+        const aggregateEntries = await validateAggregateFacetPostings(postingStore, evidenceStore, discovery.facet, interval.id, currentFirstSequence, currentLastSequence, firstSequence, lastSequence, aggregateCatalog, telemetry);
+        const result = discoverFacetFromAggregates(aggregateEntries, expectedProjectionCount, request.filter, readPoint, discovery, {
           onResult: (stats) => {
             telemetry.discoveryCompactIdentityCount = Math.max(telemetry.discoveryCompactIdentityCount ?? 0, stats.compactIdentityCount);
             telemetry.discoveryMaterializedCandidates = Math.max(telemetry.discoveryMaterializedCandidates ?? 0, stats.materializedCandidates);
@@ -1495,16 +1556,19 @@ async function queryIndexedDb(
         discoveries.set(discovery.facet, result);
       } else {
         const candidates = await indexedDbPostingCandidates(postingStore, discoveryFilter, interval.id, firstSequence, lastSequence, telemetry);
-        const projectionReadsBefore = telemetry.projectionReads;
-        const projections = candidates === null
-          ? await readQueryProjections(projectionStore, interval.id, firstSequence, lastSequence, null, telemetry)
-          : await readCandidateProjections(projectionStore, candidates, telemetry);
-        telemetry.discoveryProjectionReads += telemetry.projectionReads - projectionReadsBefore;
-        telemetry.discoveryCandidateCount += candidates?.size ?? expectedProjectionCount;
-        if (candidates === null) telemetry.fullRetainedScan = true;
-        await validateDiscoveryFacetPostings(postingStore, discovery.facet, interval.id, firstSequence, lastSequence, projections, telemetry, discoveryPostingCache);
-        const records = projections.map((projection) => querySelectionRecord(projection, interval));
-        discoveries.set(discovery.facet, discoverFacet(records, request.filter, readPoint, discovery, {
+        const accounting = await readDiscoveryAccounting(
+          projectionStore,
+          postingStore,
+          interval.id,
+          firstSequence,
+          lastSequence,
+          candidates,
+          discoveryFilter,
+          discovery.facet,
+          request.signal,
+          telemetry
+        );
+        discoveries.set(discovery.facet, discoverFacetFromAccounting(accounting.entries, accounting.baseEvidenceCount, request.filter, readPoint, discovery, {
           onResult: (stats) => {
             telemetry.discoveryCompactIdentityCount = Math.max(telemetry.discoveryCompactIdentityCount ?? 0, stats.compactIdentityCount);
             telemetry.discoveryMaterializedCandidates = Math.max(telemetry.discoveryMaterializedCandidates ?? 0, stats.materializedCandidates);
@@ -1514,16 +1578,14 @@ async function queryIndexedDb(
           }
         }));
       }
-      } catch {
+      } catch (error) {
+        if (request.signal?.aborted || (error instanceof Error && error.message === "EVIDENCE_QUERY_CANCELLED")) throw error;
         // Discovery is optional. A malformed or incomplete posting index must
         // not erase an otherwise coherent base Evidence Snapshot.
         discoveries.set(discovery.facet, { state: "UNAVAILABLE", facet: discovery.facet, reason: "DISCOVERY_FAILED", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null });
       }
     }
     const selectionRecords = projections.map((record) => querySelectionRecord(record, interval));
-    const retainedRecords = findProjections?.map((record) => querySelectionRecord(record, interval)) ?? selectionRecords;
-    const around = normalizeAround(request.filter.around, readPoint.retainedRange);
-    const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
     if (filter.around?.anchor && anchorProjection === null) {
       return queryFailure("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.");
     }
@@ -1537,53 +1599,42 @@ async function queryIndexedDb(
       : selectionRecords;
     if (filter.unsupported.length > 0) {
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecordsWithPayload, readPoint, request.lookup, filter, around);
-      const find = request.find === undefined
-        ? null
-        : findEvidence(request.find.scopeToFilter ? [] : retainedRecords, request.find);
       await transactionDone(transaction, "querying Evidence");
+      if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
       telemetry.elapsedMs = Date.now() - started;
-      return { ok: true, value: querySnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", queryCoverage(options), queryStorage(options), null, lookup, find, telemetry) };
+      return { ok: true, value: querySnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", queryCoverage(options), queryStorage(options), null, lookup, findResult, telemetry) };
     }
-    const matching: SelectionRecord[] = [];
-    const inScope: SelectionRecord[] = [];
-    const aroundSequences = aroundProjections === null ? null : new Set(aroundProjections.map((record) => record.sequence));
-    for (const record of selectionRecords) {
-      const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
-        timestamp: record.timestamp,
-        intervalId: record.identity.intervalId,
-        searchText: record.searchText,
-        facets: record.facets as unknown as FilterRecord["facets"]
-      });
-      if (!evaluation.matches) continue;
-      matching.push(record);
-      if ((aroundSequences === null ? isInAround(record, around) : aroundSequences.has(record.identity.sequence)) && isInAround(record, around)) inScope.push(record);
-    }
-    const ordered = simpleRecentPage ? selectionRecords : (request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope);
-    const offset = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
-    const page = simpleRecentPage ? selectionRecords : ordered.slice(offset, offset + request.page.size);
-    if (offset > (simpleRecentPage ? expectedProjectionCount : ordered.length)) throw new Error("The page cursor is beyond the committed result set.");
+    const page = selectionRecords;
     const payloadPage = request.includePayload === true
       ? await hydrateQueryPage(evidenceStore, page, interval, telemetry)
       : page;
     await transactionDone(transaction, "querying Evidence");
     const lookupRecords = lookupRecordsWithPayload;
     const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
-    const findRecords = request.find?.scopeToFilter
-      ? findRecordsWithinFilter(retainedRecords, filter, around)
-      : retainedRecords;
-    const find = request.find === undefined ? null : findEvidence(findRecords, request.find);
     telemetry.elapsedMs = Date.now() - started;
-    const matchingTotal = simpleRecentPage || emptyFilterAround ? expectedProjectionCount : matching.length;
-    const inScopeTotal = simpleRecentPage ? expectedProjectionCount : inScope.length;
-    return { ok: true, value: querySnapshot(readPoint, payloadPage, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < expectedProjectionCount ? encodeEvidenceQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeEvidenceQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
+    if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
+    const matchingTotal = simpleRecentPage || emptyFilterAround
+      ? expectedProjectionCount
+      : streamedPage?.matching ?? 0;
+    const inScopeTotal = simpleRecentPage
+      ? expectedProjectionCount
+      : streamedPage?.inScope ?? 0;
+    const hasMore = simpleRecentPage
+      ? simplePageHasMore
+      : streamedPage?.hasMore ?? false;
+    const nextCursor = hasMore
+      ? encodeEvidenceQueryCursor(readPoint, request, page.at(-1)!.identity)
+      : null;
+    return { ok: true, value: querySnapshot(readPoint, payloadPage, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), nextCursor, lookup, findResult, telemetry) };
   } catch (error) {
     try { transaction.abort(); } catch { /* already completed */ }
+    if (request.signal?.aborted) return queryFailure("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.");
     return queryFailure("QUERY_FAILED", error instanceof Error ? error.message : "IndexedDB Evidence query failed.");
   }
 }
 
 type QueryTelemetryMutable = {
-  postingReads: number; postingCandidates: number; evidenceCursorReads: number; payloadHydrations: number; lookupPayloadHydrations: number;
+  postingReads: number; postingCandidates: number; postingDriver: string | null; postingDriverCandidateCount: number; evidenceCursorReads: number; payloadHydrations: number; lookupPayloadHydrations: number;
   candidateBound: number; pageBound: number; retainedCount: number; cursorWorkBound: number; aroundCursorBound: number;
   findCursorBound: number; findCursorReads: number; fullRetainedScan: boolean; shortFindFallback: boolean; residualScan: boolean;
   aroundIndexReads: number; aroundCandidates: number; aroundAnchorValidated: boolean; elapsedMs: number;
@@ -1622,17 +1673,19 @@ async function validateProjectionCoverage(store: IDBObjectStore, evidence: IDBOb
 
 function countTopologyCheckpoints(evidence: IDBObjectStore, first: number, last: number, telemetry: QueryTelemetryMutable): Promise<number> {
   if (last < first) return Promise.resolve(0);
-  const result = queryBoundRange(first, last);
+  const result = queryOnlyRange(facet("kind", "topology-checkpoint"));
   let count = 0;
   return new Promise((resolve, reject) => {
-    const request = evidence.openCursor(result);
+    // A key cursor keeps replayPayload out of the query heap while still
+    // counting checkpoint identities inside the latched sequence range.
+    const request = evidence.index("facets").openKeyCursor(result);
     request.onerror = () => reject(request.error ?? new Error("Evidence checkpoint count failed."));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) { resolve(count); return; }
       telemetry.projectionCoverageReads = (telemetry.projectionCoverageReads ?? 0) + 1;
-      const record = cursor.value as EvidenceRecord;
-      if (record.facets.includes(facet("kind", "topology-checkpoint"))) count += 1;
+      const sequence = Number(cursor.primaryKey);
+      if (sequence >= first && sequence <= last) count += 1;
       cursor.continue();
     };
   });
@@ -1702,22 +1755,12 @@ function readFacetAggregates(
           || identityParts === null || identityParts.facet !== aggregate.facet || identityParts.type !== aggregate.type || identityParts.value !== aggregate.value) {
           throw new Error("The facet discovery aggregate is corrupt.");
         }
-        result.push({ value: { facet: aggregate.facet, type: aggregate.type, value: aggregate.value, label: aggregate.label, identity: aggregate.facetIdentity }, count: 0, observations: Object.freeze([]) });
+        result.push({ value: { facet: aggregate.facet, type: aggregate.type, value: aggregate.value, label: aggregate.label, identity: aggregate.facetIdentity }, count: 0 });
         cursor.continue();
       } catch (error) {
         reject(error);
       }
     };
-  });
-}
-
-function restrictAggregateEntries(entries: readonly DiscoveryAggregateEntry[], first: number, last: number): DiscoveryAggregateEntry[] {
-  if (last < first) return [];
-  return entries.flatMap((entry) => {
-    const observations = entry.observations.filter((observation) => observation.sequence >= first && observation.sequence <= last);
-    return observations.length === 0
-      ? []
-      : [{ ...entry, count: observations.length, observations: Object.freeze(observations) }];
   });
 }
 
@@ -1732,15 +1775,17 @@ function validateAggregateFacetPostings(
   evidence: IDBObjectStore,
   facet: string,
   intervalId: string,
-  first: number,
-  last: number,
+  currentFirst: number,
+  currentLast: number,
+  requestedFirst: number,
+  requestedLast: number,
   entries: readonly DiscoveryAggregateEntry[],
   telemetry: QueryTelemetryMutable
 ): Promise<DiscoveryAggregateEntry[]> {
-  const expected = new Map<string, { entry: DiscoveryAggregateEntry; observations: Array<{ sequence: number; eventId: string }> }>();
+  const expected = new Map<string, { entry: DiscoveryAggregateEntry; currentCount: number; requestedCount: number; lastSequence: number; foreignInterval: boolean }>();
   for (const entry of entries) {
-    if (entry.observations.length !== 0 || expected.has(entry.value.identity)) throw new Error("The facet discovery aggregate observation source is corrupt.");
-    expected.set(entry.value.identity, { entry, observations: [] });
+    if (expected.has(entry.value.identity)) throw new Error("The facet discovery aggregate catalog is corrupt.");
+    expected.set(entry.value.identity, { entry, currentCount: 0, requestedCount: 0, lastSequence: 0, foreignInterval: false });
   }
   return new Promise((resolve, reject) => {
     const request = store.index("facet").openCursor(queryOnlyRange(facet));
@@ -1749,11 +1794,20 @@ function validateAggregateFacetPostings(
       const cursor = request.result;
       if (!cursor) {
         try {
-          resolve([...expected.values()].map(({ entry, observations }) => {
-            if (observations.length === 0) throw new Error("The facet discovery aggregate has no matching posting.");
-            observations.sort((left, right) => left.sequence - right.sequence);
-            return { ...entry, count: observations.length, observations: Object.freeze(observations.map((observation) => Object.freeze(observation))) };
-          }));
+          const result: DiscoveryAggregateEntry[] = [];
+          for (const state of expected.values()) {
+            if (state.currentCount === 0) {
+              // A posting from another History Interval is not evidence of a
+              // current corruption. Preserve the compact catalog entry in
+              // this compatibility case; same-interval omissions remain
+              // fail-closed below.
+              if (state.foreignInterval && requestedFirst <= requestedLast) result.push({ ...state.entry, count: 1 });
+              else throw new Error("The facet discovery aggregate has no matching posting.");
+            } else if (state.requestedCount > 0) {
+              result.push({ ...state.entry, count: state.requestedCount });
+            }
+          }
+          resolve(result);
         } catch (error) {
           reject(error);
         }
@@ -1763,6 +1817,8 @@ function validateAggregateFacetPostings(
         const posting = cursor.value as FacetPostingRecord;
         telemetry.discoveryPostingValidationReads += 1;
         if (posting.intervalId !== intervalId) {
+          const foreign = expected.get(typeof posting.facetIdentity === "string" ? posting.facetIdentity : "");
+          if (foreign) foreign.foreignInterval = true;
           cursor.continue();
           return;
         }
@@ -1770,7 +1826,7 @@ function validateAggregateFacetPostings(
         if (posting.facet !== facet || typeof posting.eventId !== "string" || posting.eventId.length === 0
           || typeof posting.facetIdentity !== "string" || facetFromIdentity(posting.facetIdentity) !== facet
           || posting.token !== facetPostingToken(posting.facetIdentity)
-          || !Number.isSafeInteger(posting.sequence) || posting.sequence < first || posting.sequence > last) {
+          || !Number.isSafeInteger(posting.sequence) || posting.sequence < currentFirst || posting.sequence > currentLast) {
           throw new Error("A facet discovery posting is corrupt or outside the requested Evidence range.");
         }
         const identity = evidence.index("eventIdentity").getKey(posting.eventId);
@@ -1782,11 +1838,13 @@ function validateAggregateFacetPostings(
           }
           telemetry.discoveryAggregateObservationReads += 1;
           const aggregate = expected.get(posting.facetIdentity);
-          if (!aggregate || aggregate.observations.some((observation) => observation.sequence === posting.sequence)) {
+          if (!aggregate || posting.sequence <= aggregate.lastSequence) {
             reject(new Error("The facet discovery postings do not match the aggregate catalog."));
             return;
           }
-          aggregate.observations.push({ sequence: posting.sequence, eventId: posting.eventId });
+          aggregate.currentCount += 1;
+          if (posting.sequence >= requestedFirst && posting.sequence <= requestedLast) aggregate.requestedCount += 1;
+          aggregate.lastSequence = posting.sequence;
           cursor.continue();
         };
       } catch (error) {
@@ -1842,39 +1900,62 @@ function isValidProjectionValue(value: unknown): boolean {
 }
 
 async function indexedDbPostingCandidates(store: IDBObjectStore, filter: EvidenceQueryRequest["filter"], intervalId: string, first: number, last: number, telemetry: QueryTelemetryMutable): Promise<Set<number> | null> {
-  const groups = Object.values(filter.criteria).filter((group): group is NonNullable<typeof group> => Boolean(group));
+  const groups = Object.entries(filter.criteria).filter((entry): entry is [string, NonNullable<typeof entry[1]>] => Boolean(entry[1]));
   if (groups.length === 0) return null;
   // Structural Scope and the legacy scalar bridge intentionally use labels or
   // raw item identities. They have no exact posting token; returning null
   // preserves the storage-neutral residual evaluator instead of turning a
   // valid criterion into an empty posting intersection.
-  for (const [facet, group] of Object.entries(filter.criteria)) {
+  for (const [facet, group] of groups) {
     if (!group) continue;
     if ([...group.include, ...group.exclude].some((value) => !canUseFacetPosting(facet, value))) return null;
   }
-  const all = new Set<number>();
-  let initialized = false;
-  for (const group of groups) {
-    const include = new Set<number>();
-    if (group.include.length === 0 && !initialized) {
-      for (let sequence = first; sequence <= last; sequence += 1) all.add(sequence);
-      initialized = true;
-    }
+  const drivers = groups.filter(([, group]) => group.include.length > 0);
+  if (drivers.length === 0) return null;
+
+  // A compound filter needs only one posting-derived candidate set. Choose
+  // the smallest include-union as the driver; every other Include/Exclude and
+  // free-text condition is evaluated against its compact projection metadata.
+  // This avoids retaining one complete retained-sequence set per facet.
+  let driver: [string, NonNullable<typeof groups[number][1]>] | null = null;
+  let driverEstimate = Number.POSITIVE_INFINITY;
+  for (const [facet, group] of drivers) {
+    let estimate = 0;
     for (const value of group.include) {
-      const token = facetPostingToken(value.identity);
       telemetry.postingReads += 1;
-      const values = await readPostingToken(store, token, intervalId, first, last, telemetry);
-      for (const sequence of values.keys()) include.add(sequence);
+      estimate += await countPostingToken(store, facetPostingToken(value.identity), intervalId, first, last);
     }
-    if (!initialized) { for (const sequence of include) all.add(sequence); initialized = true; }
-    else if (group.include.length > 0) for (const sequence of [...all]) if (!include.has(sequence)) all.delete(sequence);
-    for (const value of group.exclude) {
-      telemetry.postingReads += 1;
-      const excluded = await readPostingToken(store, facetPostingToken(value.identity), intervalId, first, last, telemetry);
-      for (const sequence of excluded.keys()) all.delete(sequence);
+    if (estimate < driverEstimate || (estimate === driverEstimate && (driver?.[0] ?? "").localeCompare(facet) > 0)) {
+      driver = [facet, group];
+      driverEstimate = estimate;
     }
   }
-  return all;
+  if (driver === null) return null;
+  telemetry.postingDriver = driver[0];
+  const candidates = new Set<number>();
+  for (const value of driver[1].include) {
+    telemetry.postingReads += 1;
+    const postings = await readPostingToken(store, facetPostingToken(value.identity), intervalId, first, last, telemetry);
+    for (const sequence of postings.keys()) candidates.add(sequence);
+  }
+  telemetry.postingDriverCandidateCount = candidates.size;
+  return candidates;
+}
+
+function countPostingToken(store: IDBObjectStore, token: string, intervalId: string, first: number, last: number): Promise<number> {
+  if (last < first) return Promise.resolve(0);
+  let count = 0;
+  return new Promise((resolve, reject) => {
+    const request = store.index("token").openCursor(queryOnlyRange(token));
+    request.onerror = () => reject(request.error ?? new Error("Facet posting count failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(count); return; }
+      const posting = cursor.value as FacetPostingRecord;
+      if (posting.intervalId === intervalId && posting.sequence >= first && posting.sequence <= last) count += 1;
+      cursor.continue();
+    };
+  });
 }
 
 function canUseFacetPosting(facet: string, value: TypedFacetValue): boolean {
@@ -1916,6 +1997,98 @@ function readPostingToken(store: IDBObjectStore, token: string, intervalId: stri
   });
 }
 
+type DiscoveryAccountingScan = Readonly<{
+  entries: readonly DiscoveryAccountingEntry[];
+  baseEvidenceCount: number;
+}>;
+
+/** Streams discovery projections into compact value counters. At most one
+ * projection and one posting validation record are live per step; the
+ * retained sequence set is never copied into a discovery-side array. */
+async function readDiscoveryAccounting(
+  projectionStore: IDBObjectStore,
+  postingStore: IDBObjectStore,
+  intervalId: string,
+  first: number,
+  last: number,
+  candidates: Set<number> | null,
+  filter: EvidenceQueryRequest["filter"],
+  facet: string,
+  signal: AbortSignal | undefined,
+  telemetry: QueryTelemetryMutable
+): Promise<DiscoveryAccountingScan> {
+  const accounting = new Map<string, { value: TypedFacetValue; count: number }>();
+  let baseEvidenceCount = 0;
+  const consume = async (projection: QueryProjection): Promise<void> => {
+    if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+    validateQueryProjection(projection, intervalId, projection.sequence);
+    if (isTopologyCheckpointProjection(projection) || projection.intervalId !== intervalId) return;
+    const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+      timestamp: projection.timestamp,
+      intervalId: projection.intervalId,
+      searchText: projection.searchText,
+      facets: projection.facets as unknown as FilterRecord["facets"]
+    });
+    if (!evaluation.matches || !isInAround({ identity: identityOfProjection(projection, intervalId), timestamp: projection.timestamp }, filter.around)) return;
+    baseEvidenceCount += 1;
+    const candidate = projection.facets[facet] as Partial<TypedFacetValue> | undefined;
+    if (!candidate || typeof candidate !== "object" || typeof candidate.identity !== "string" || typeof candidate.facet !== "string"
+      || typeof candidate.type !== "string" || typeof candidate.value !== "string" || typeof candidate.label !== "string") return;
+    if (candidate.facet !== facet) throw new Error("The query projection facet identity is corrupt.");
+    const token = facetPostingToken(candidate.identity);
+    const posting = await requestToPromise<FacetPostingRecord | undefined>(postingStore.get([token, projection.sequence]), "validating discovery facet posting");
+    telemetry.discoveryPostingValidationReads += 1;
+    if (!posting) throw new Error("Facet discovery postings are incomplete or corrupt.");
+    assertExactKeys(posting, ["eventId", "facet", "facetIdentity", "intervalId", "sequence", "token"]);
+    if (posting.intervalId !== intervalId || posting.facet !== facet || posting.facetIdentity !== candidate.identity
+      || posting.token !== token || posting.sequence !== projection.sequence || posting.eventId !== projection.eventId) {
+      throw new Error("Facet discovery postings are incomplete or corrupt.");
+    }
+    telemetry.discoveryAggregateObservationReads += 1;
+    const value = candidate as TypedFacetValue;
+    const existing = accounting.get(value.identity);
+    if (existing) existing.count += 1;
+    else accounting.set(value.identity, { value, count: 1 });
+  };
+
+  if (last < first) return { entries: [], baseEvidenceCount: 0 };
+  if (candidates !== null) {
+    const sequences = [...candidates].filter((sequence) => sequence >= first && sequence <= last).sort((left, right) => left - right);
+    telemetry.discoveryCandidateCount += sequences.length;
+    for (const sequence of sequences) {
+      if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+      telemetry.discoveryProjectionReads += 1;
+      const projection = await requestToPromise<QueryProjection | undefined>(projectionStore.get(sequence), "reading discovery query projection");
+      if (!projection) throw new Error("The discovery query projection is missing.");
+      await consume(projection);
+    }
+  } else {
+    telemetry.fullRetainedScan = true;
+    telemetry.discoveryCandidateCount += Math.max(0, last - first + 1);
+    const range = queryBoundRange(first, last);
+    await new Promise<void>((resolve, reject) => {
+      const request = projectionStore.openCursor(range);
+      const state = { reads: 0, bound: telemetry.cursorWorkBound };
+      request.onerror = () => reject(request.error ?? new Error("Discovery projection cursor failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(); return; }
+        void (async () => {
+          recordProjectionCursorRead(telemetry, state, "discovery");
+          telemetry.discoveryProjectionReads += 1;
+          await consume(cursor.value as QueryProjection);
+          cursor.continue();
+        })().catch(reject);
+      };
+    });
+  }
+  return { entries: [...accounting.values()], baseEvidenceCount };
+}
+
+function identityOfProjection(projection: QueryProjection, intervalId: string): EvidenceIdentity {
+  return { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId };
+}
+
 async function validateDiscoveryFacetPostings(store: IDBObjectStore, facet: string, intervalId: string, first: number, last: number, projections: readonly QueryProjection[], telemetry: QueryTelemetryMutable, cache: Map<string, Map<number, string>>): Promise<void> {
   const valuesByToken = new Map<string, Map<number, string>>();
   for (const projection of projections) {
@@ -1933,29 +2106,78 @@ async function validateDiscoveryFacetPostings(store: IDBObjectStore, facet: stri
   }
 }
 
-function readProjectionPage(store: IDBObjectStore, intervalId: string, first: number, last: number, page: EvidenceQueryRequest["page"], offset: number, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+type ProjectionPageRead = Readonly<{ projections: readonly QueryProjection[]; hasMore: boolean }>;
+
+function readProjectionPage(store: IDBObjectStore, intervalId: string, first: number, last: number, page: EvidenceQueryRequest["page"], anchor: EvidenceIdentity | null, telemetry: QueryTelemetryMutable): Promise<ProjectionPageRead> {
   const result: QueryProjection[] = [];
-  if (last < first) return Promise.resolve(result);
+  if (last < first) return Promise.resolve({ projections: Object.freeze(result), hasMore: false });
+  let hasMore = false;
   return new Promise((resolve, reject) => {
     const direction = page.order === "NEWEST_FIRST" ? "prev" : "next";
-    const request = store.openCursor(queryBoundRange(first, last), direction);
-    let skipped = 0;
+    const range = anchor === null
+      ? queryBoundRange(first, last)
+      : page.order === "NEWEST_FIRST"
+        ? queryOpenUpperBoundRange(first, Math.min(last, anchor.sequence))
+        : queryOpenLowerBoundRange(Math.max(first, anchor.sequence), last);
+    const request = store.openCursor(range, direction);
     request.onerror = () => reject(request.error ?? new Error("Evidence page cursor failed."));
     request.onsuccess = () => {
       const cursor = request.result;
-      if (!cursor || result.length >= page.size) { resolve(result); return; }
+      if (!cursor) { resolve({ projections: Object.freeze(result), hasMore }); return; }
       const sequence = Number(cursor.key);
-      if (sequence < first || sequence > last) { resolve(result); return; }
-      try { recordProjectionCursorRead(telemetry, state, "page"); } catch (error) { reject(error); return; }
+      if (sequence < first || sequence > last) { resolve({ projections: Object.freeze(result), hasMore }); return; }
+      const probingForMore = result.length >= page.size;
+      try { if (!probingForMore) recordProjectionCursorRead(telemetry, state, "page"); } catch (error) { reject(error); return; }
       const projection = cursor.value as QueryProjection;
       validateQueryProjection(projection, intervalId, sequence);
       if (isTopologyCheckpointProjection(projection)) { cursor.continue(); return; }
-      if (skipped++ < offset) { cursor.continue(); return; }
-      if (projection.intervalId === intervalId) result.push(projection);
+      if (projection.intervalId === intervalId) {
+        result.push(projection);
+        if (result.length > page.size) {
+          hasMore = true;
+          resolve({ projections: Object.freeze(result.slice(0, page.size)), hasMore });
+          return;
+        }
+      }
       cursor.continue();
     };
     const state = { reads: 0, bound: telemetry.cursorWorkBound };
   });
+}
+
+async function validatePageCursorAnchor(
+  store: IDBObjectStore,
+  anchor: EvidenceIdentity,
+  intervalId: string,
+  first: number,
+  last: number,
+  telemetry: QueryTelemetryMutable
+): Promise<QueryProjection> {
+  telemetry.evidenceCursorReads += 1;
+  telemetry.projectionReads += 1;
+  const projection = await requestToPromise<QueryProjection | undefined>(store.get(anchor.sequence), "validating page cursor anchor");
+  if (!projection || isTopologyCheckpointProjection(projection) || projection.intervalId !== intervalId || projection.eventId !== anchor.eventId
+    || projection.sequence < first || projection.sequence > last) {
+    throw new Error("The page cursor anchor is stale or no longer retained.");
+  }
+  validateQueryProjection(projection, intervalId, anchor.sequence);
+  return projection;
+}
+
+function matchesProjectionFilter(
+  projection: QueryProjection,
+  intervalId: string,
+  filter: EvidenceQueryRequest["filter"],
+  around: EvidenceQueryRequest["filter"]["around"]
+): boolean {
+  if (isTopologyCheckpointProjection(projection) || projection.intervalId !== intervalId) return false;
+  const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+    timestamp: projection.timestamp,
+    intervalId: projection.intervalId,
+    searchText: projection.searchText,
+    facets: projection.facets as unknown as FilterRecord["facets"]
+  });
+  return evaluation.matches && isInAround({ identity: identityOfProjection(projection, intervalId), timestamp: projection.timestamp }, around);
 }
 
 function readQueryProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, candidates: Set<number> | null, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
@@ -1981,22 +2203,167 @@ function readQueryProjections(store: IDBObjectStore, intervalId: string, first: 
   });
 }
 
-function readCandidateProjections(store: IDBObjectStore, candidates: Set<number>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
+function readCandidateProjections(store: IDBObjectStore, candidates: Set<number>, intervalId: string, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
   if (candidates.size > telemetry.cursorWorkBound) throw new Error("Indexed query candidate work exceeded the latched retained-count bound.");
   return Promise.all([...candidates].map((sequence) => requestToPromise<QueryProjection | undefined>(store.get(sequence), "reading indexed query projection").then((projection) => {
     telemetry.evidenceCursorReads += 1;
     telemetry.projectionReads += 1;
-    if (projection) validateQueryProjection(projection, projection.intervalId, sequence);
+    if (projection) validateQueryProjection(projection, intervalId, sequence);
     return projection;
   }))).then((values) => values.filter((projection): projection is QueryProjection => projection !== undefined && !isTopologyCheckpointProjection(projection)).sort((left, right) => left.sequence - right.sequence));
 }
 
-function readAroundProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, around: NonNullable<EvidenceQueryRequest["filter"]["around"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
-  telemetry.aroundIndexReads += 1;
-  telemetry.aroundCursorBound = telemetry.retainedCount;
-  return readProjectionCursor(store.index("timestamp"), queryOpenUpperBoundRange(around.start, around.end), intervalId, telemetry, telemetry.retainedCount, "Around")
-    .then((values) => values.filter((value) => value.timestamp >= around.start && value.timestamp < around.end && value.sequence >= first && value.sequence <= last))
-    .then((values) => { telemetry.aroundCandidates += values.length; if (telemetry.retainedCount > 0 && telemetry.aroundCandidates >= telemetry.retainedCount) telemetry.fullRetainedScan = true; return values; });
+type StreamedProjectionPage = Readonly<{
+  projections: readonly QueryProjection[];
+  matching: number;
+  inScope: number;
+  hasMore: boolean;
+}>;
+
+/**
+ * Evaluates compact projections in requested key order. The driver set is
+ * retained once (or not at all for a residual scan); page payloads are kept
+ * separately and never force the complete candidate projection collection
+ * into heap. Exact totals are counters advanced while the stream runs.
+ */
+function readEvaluatedProjectionPage(
+  store: IDBObjectStore,
+  intervalId: string,
+  first: number,
+  last: number,
+  candidates: Set<number> | null,
+  page: EvidenceQueryRequest["page"],
+  anchor: EvidenceIdentity | null,
+  filter: EvidenceQueryRequest["filter"],
+  around: EvidenceQueryRequest["filter"]["around"],
+  signal: AbortSignal | undefined,
+  telemetry: QueryTelemetryMutable
+): Promise<StreamedProjectionPage> {
+  const result: QueryProjection[] = [];
+  let matching = 0;
+  let inScope = 0;
+  let hasMore = false;
+  const isAfterAnchor = (sequence: number): boolean => anchor === null || (page.order === "NEWEST_FIRST" ? sequence < anchor.sequence : sequence > anchor.sequence);
+  const consume = (projection: QueryProjection): void => {
+    if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+    if (isTopologyCheckpointProjection(projection) || projection.intervalId !== intervalId) return;
+    const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+      timestamp: projection.timestamp,
+      intervalId: projection.intervalId,
+      searchText: projection.searchText,
+      facets: projection.facets as unknown as FilterRecord["facets"]
+    });
+    if (!evaluation.matches) return;
+    matching += 1;
+    if (!isInAround({
+      identity: { intervalId, pageId: intervalId, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId },
+      timestamp: projection.timestamp
+    }, around)) return;
+    inScope += 1;
+    if (isAfterAnchor(projection.sequence)) {
+      if (result.length < page.size) result.push(projection);
+      else hasMore = true;
+    }
+  };
+  if (last < first) return Promise.resolve({ projections: Object.freeze(result), matching, inScope, hasMore });
+  if (candidates !== null) {
+    const sequences = [...candidates].filter((sequence) => sequence >= first && sequence <= last).sort((left, right) => page.order === "NEWEST_FIRST" ? right - left : left - right);
+    const state = { reads: 0, bound: sequences.length };
+    return (async () => {
+      for (const sequence of sequences) {
+        recordProjectionCursorRead(telemetry, state, "candidate");
+        const projection = await requestToPromise<QueryProjection | undefined>(store.get(sequence), "reading candidate query projection");
+        if (projection === undefined) throw new Error("The indexed query candidate projection is missing.");
+        validateQueryProjection(projection, intervalId, sequence);
+        consume(projection);
+      }
+      return { projections: Object.freeze(result), matching, inScope, hasMore };
+    })();
+  }
+  telemetry.fullRetainedScan = true;
+  const range = anchor === null
+    ? queryBoundRange(first, last)
+    : page.order === "NEWEST_FIRST"
+      ? queryOpenUpperBoundRange(first, Math.min(last, anchor.sequence))
+      : queryOpenLowerBoundRange(Math.max(first, anchor.sequence), last);
+  const state = { reads: 0, bound: telemetry.cursorWorkBound };
+  return new Promise((resolve, reject) => {
+    const request = store.openCursor(range, page.order === "NEWEST_FIRST" ? "prev" : "next");
+    request.onerror = () => reject(request.error ?? new Error("Indexed residual projection scan failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve({ projections: Object.freeze(result), matching, inScope, hasMore }); return; }
+      try {
+        recordProjectionCursorRead(telemetry, state, "residual");
+        const projection = cursor.value as QueryProjection;
+        validateQueryProjection(projection, intervalId, Number(cursor.key));
+        consume(projection);
+        cursor.continue();
+      } catch (error) {
+        reject(error);
+      }
+    };
+  });
+}
+
+/**
+ * The empty Around filter can use the timestamp index without materializing
+ * every timestamp hit. A small sorted page buffer preserves sequence order
+ * even though the index is timestamp-ordered; exact totals are counters.
+ */
+function readAroundProjectionPage(
+  store: IDBObjectStore,
+  intervalId: string,
+  first: number,
+  last: number,
+  page: EvidenceQueryRequest["page"],
+  anchor: EvidenceIdentity | null,
+  around: NonNullable<EvidenceQueryRequest["filter"]["around"]>,
+  signal: AbortSignal | undefined,
+  telemetry: QueryTelemetryMutable
+): Promise<StreamedProjectionPage> {
+  const result: QueryProjection[] = [];
+  let inScope = 0;
+  let pageCandidates = 0;
+  const isAfterAnchor = (sequence: number): boolean => anchor === null || (page.order === "NEWEST_FIRST" ? sequence < anchor.sequence : sequence > anchor.sequence);
+  const insert = (projection: QueryProjection): void => {
+    if (!isAfterAnchor(projection.sequence)) return;
+    pageCandidates += 1;
+    result.push(projection);
+    result.sort((left, right) => page.order === "NEWEST_FIRST"
+      ? right.sequence - left.sequence
+      : left.sequence - right.sequence);
+    if (result.length > page.size) result.pop();
+  };
+  const range = queryOpenUpperBoundRange(around.start, around.end);
+  const state = { reads: 0, bound: telemetry.cursorWorkBound };
+  return new Promise((resolve, reject) => {
+    const request = store.index("timestamp").openCursor(range);
+    request.onerror = () => reject(request.error ?? new Error("Indexed Around projection cursor failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve({ projections: Object.freeze(result), matching: inScope, inScope, hasMore: pageCandidates > page.size });
+        return;
+      }
+      try {
+        if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+        recordProjectionCursorRead(telemetry, state, "Around");
+        const projection = cursor.value as QueryProjection;
+        validateQueryProjection(projection, intervalId, Number(cursor.primaryKey));
+        if (!isTopologyCheckpointProjection(projection) && projection.intervalId === intervalId && projection.intervalId === around.intervalId
+          && projection.sequence >= first && projection.sequence <= last
+          && projection.timestamp >= around.start && projection.timestamp < around.end) {
+          inScope += 1;
+          insert(projection);
+          if (inScope >= telemetry.retainedCount && telemetry.retainedCount > 0) telemetry.fullRetainedScan = true;
+        }
+        cursor.continue();
+      } catch (error) {
+        reject(error);
+      }
+    };
+  });
 }
 
 function readProjectionByIdentity(store: IDBObjectStore, identity: EvidenceIdentity, interval: HistoryInterval, first: number, last: number, anchorSequence: number | undefined, telemetry: QueryTelemetryMutable): Promise<QueryProjection | null> {
@@ -2030,6 +2397,146 @@ function readSearchProjections(store: IDBObjectStore, intervalId: string, first:
       return readProjectionCursor(index, queryOnlyRange(trigram), intervalId, telemetry, rarestCount, "Find");
     })
     .then((values) => residual(values.filter((value) => value.sequence >= first && value.sequence <= last)));
+}
+
+type FindProjectionScan = Readonly<{
+  result: EvidenceSnapshot["find"];
+}>;
+
+/** Finds exact totals and neighbors while retaining only compact identities
+ * near the requested current match. Replay payloads are never read here. */
+async function readFindProjectionResult(
+  store: IDBObjectStore,
+  intervalId: string,
+  first: number,
+  last: number,
+  find: NonNullable<EvidenceQueryRequest["find"]>,
+  scopeFilter: EvidenceQueryRequest["filter"] | null,
+  around: EvidenceQueryRequest["filter"]["around"],
+  interval: HistoryInterval,
+  signal: AbortSignal | undefined,
+  telemetry: QueryTelemetryMutable
+): Promise<FindProjectionScan> {
+  const normalized = normalizeEvidenceSearchText(find.text);
+  if (!normalized || last < first) {
+    return { result: Object.freeze({ text: find.text, total: 0, current: null, previous: null, next: null }) };
+  }
+  const firstMatches: EvidenceIdentity[] = [];
+  const nearby: QueryProjection[] = [];
+  let total = 0;
+  let firstMatch: QueryProjection | null = null;
+  const current = find.current;
+  const distance = (projection: QueryProjection): number => current === undefined ? Number.POSITIVE_INFINITY : Math.abs(projection.sequence - current.sequence);
+  const identityOf = (projection: QueryProjection): EvidenceIdentity => Object.freeze({ intervalId: projection.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: projection.sequence, eventId: projection.eventId });
+  const isCurrent = (projection: QueryProjection): boolean => current !== undefined
+    && projection.intervalId === current.intervalId && projection.sequence === current.sequence && projection.eventId === current.eventId;
+  const keepNearby = (projection: QueryProjection): void => {
+    if (current === undefined) {
+      if (nearby.length < 2) nearby.push(projection);
+      return;
+    }
+    nearby.push(projection);
+    nearby.sort((left, right) => distance(left) - distance(right) || left.sequence - right.sequence || left.eventId.localeCompare(right.eventId));
+    if (nearby.length > 8) nearby.pop();
+  };
+  const consume = (projection: QueryProjection): void => {
+    if (signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
+    if (isTopologyCheckpointProjection(projection) || projection.intervalId !== intervalId) return;
+    if (!normalizeEvidenceSearchText(projection.searchText).includes(normalized)) return;
+    if (scopeFilter !== null) {
+      const evaluation = evaluateFilter({ ...scopeFilter, around: null } as unknown as Filter, {
+        timestamp: projection.timestamp,
+        intervalId: projection.intervalId,
+        searchText: projection.searchText,
+        facets: projection.facets as unknown as FilterRecord["facets"]
+      });
+      if (!evaluation.matches || !isInAround({ identity: identityOf(projection), timestamp: projection.timestamp }, around)) return;
+    }
+    total += 1;
+    firstMatch ??= projection;
+    if (firstMatches.length < 1_000) firstMatches.push(identityOf(projection));
+    keepNearby(projection);
+  };
+  const codePoints = Array.from(normalized);
+  if (codePoints.length < 3) {
+    telemetry.shortFindFallback = true;
+    telemetry.fullRetainedScan = true;
+    const state = { reads: 0, bound: telemetry.cursorWorkBound };
+    await new Promise<void>((resolve, reject) => {
+      const request = store.openCursor(queryBoundRange(first, last));
+      request.onerror = () => reject(request.error ?? new Error("Find projection scan failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(); return; }
+        try {
+          recordProjectionCursorRead(telemetry, state, "Find");
+          const projection = cursor.value as QueryProjection;
+          validateQueryProjection(projection, intervalId, Number(cursor.key));
+          consume(projection);
+          cursor.continue();
+        } catch (error) { reject(error); }
+      };
+    });
+  } else {
+    const trigrams = [...new Set(queryTrigrams(normalized))];
+    const index = store.index("searchTokens");
+    const counts = await Promise.all(trigrams.map(async (trigram) => ({
+      trigram,
+      count: await requestToPromise<number>(index.count(queryOnlyRange(trigram)), "counting Find trigram candidates")
+    })));
+    const { trigram, count } = counts.sort((left, right) => left.count - right.count || left.trigram.localeCompare(right.trigram))[0]!;
+    telemetry.findCursorBound = count;
+    await new Promise<void>((resolve, reject) => {
+      const request = index.openCursor(queryOnlyRange(trigram));
+      const state = { reads: 0, bound: count };
+      request.onerror = () => reject(request.error ?? new Error("Find trigram scan failed."));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(); return; }
+        try {
+          recordProjectionCursorRead(telemetry, state, "Find");
+          telemetry.findCursorReads += 1;
+          const projection = cursor.value as QueryProjection;
+          validateQueryProjection(projection, intervalId, Number(cursor.primaryKey));
+          if (projection.sequence >= first && projection.sequence <= last) consume(projection);
+          cursor.continue();
+        } catch (error) { reject(error); }
+      };
+    });
+  }
+  let exact: QueryProjection | null = null;
+  if (current !== undefined) {
+    exact = nearby.find(isCurrent) ?? null;
+  }
+  const target = exact ?? (current === undefined ? (firstMatch as QueryProjection | null) : nearby[0] ?? null);
+  const orderedNearby = [...nearby].sort((left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId));
+  const targetIndex = target === null ? -1 : orderedNearby.findIndex((projection) => projection.sequence === target.sequence && projection.eventId === target.eventId);
+  const previous = targetIndex > 0 ? identityOf(orderedNearby[targetIndex - 1]!) : null;
+  const next = targetIndex >= 0 && targetIndex + 1 < orderedNearby.length ? identityOf(orderedNearby[targetIndex + 1]!) : null;
+  const base: EvidenceFindResult = Object.freeze({
+    text: find.text,
+    total,
+    current: current === undefined ? null : (target === null ? null : identityOf(target)),
+    previous,
+    next
+  });
+  const firstMatchSequence: number | undefined = (firstMatch as QueryProjection | null)?.sequence;
+  const targetSequence = target === null ? firstMatchSequence : target.sequence;
+  const targetWindow = targetSequence === undefined
+    ? []
+    : await readFindProjectionWindow(store, intervalId, first, last, targetSequence, telemetry);
+  const nextWindow = next === null
+    ? []
+    : await readFindProjectionWindow(store, intervalId, first, last, next.sequence, telemetry);
+  return {
+    result: Object.freeze({
+      ...base,
+      first: firstMatches[0] ?? null,
+      window: Object.freeze(targetWindow.map((projection) => querySelectionRecord(projection, interval))),
+      matches: Object.freeze(firstMatches),
+      ...(nextWindow.length > 0 ? { nextWindow: Object.freeze(nextWindow.map((projection) => querySelectionRecord(projection, interval))) } : {})
+    })
+  };
 }
 
 /**
@@ -2120,6 +2627,11 @@ function queryOnlyRange(value: IDBValidKey): IDBKeyRange | undefined {
 function queryBoundRange(lower: IDBValidKey, upper: IDBValidKey): IDBKeyRange | undefined {
   const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
   return range ? range.bound(lower, upper) : undefined;
+}
+
+function queryOpenLowerBoundRange(lower: IDBValidKey, upper: IDBValidKey): IDBKeyRange | undefined {
+  const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
+  return range ? range.bound(lower, upper, true, false) : undefined;
 }
 
 function queryOpenUpperBoundRange(lower: IDBValidKey, upper: IDBValidKey): IDBKeyRange | undefined {

@@ -66,43 +66,77 @@ export function lookupEvidence(
   return Object.freeze({ state: "RETAINED", evidence, inScope: isInAround(record, around), matchesFilter: blockingCriteria.length === 0, blockingCriteria: Object.freeze(blockingCriteria) });
 }
 
-export function findEvidence(records: readonly SelectionRecord[], request: EvidenceFindRequest): EvidenceFindResult {
+export function findEvidence(records: readonly SelectionRecord[], request: EvidenceFindRequest, eligible: (record: SelectionRecord) => boolean = () => true): EvidenceFindResult {
   const text = normalizeEvidenceSearchText(request.text);
   const orderedRecords = [...records].sort((left, right) => left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
-  const matches = orderedRecords.filter((record) => normalizeEvidenceSearchText(record.searchText).includes(text));
-  const currentIndex = request.current ? matches.findIndex((record) => sameIdentity(record.identity, request.current!)) : -1;
-  const fallbackIndex = currentIndex >= 0 ? currentIndex : nearestIndex(matches, request.current);
-  const current = currentIndex >= 0 || request.current !== undefined
-    ? (fallbackIndex >= 0 ? matches[fallbackIndex]!.identity : null)
-    : null;
-  const windowRecord = fallbackIndex >= 0 ? matches[fallbackIndex] : matches[0];
+  const firstMatches: EvidenceIdentity[] = [];
+  const nearby: SelectionRecord[] = [];
+  let total = 0;
+  let firstMatch: SelectionRecord | undefined;
+  let lastMatch: SelectionRecord | undefined;
+  let exactCurrent: SelectionRecord | undefined;
+  let previousExact: SelectionRecord | undefined;
+  let nextExact: SelectionRecord | undefined;
+  const addNearby = (record: SelectionRecord): void => {
+    if (request.current === undefined) {
+      if (nearby.length < 2) nearby.push(record);
+      return;
+    }
+    nearby.push(record);
+    nearby.sort((left, right) => Math.abs(left.identity.sequence - request.current!.sequence) - Math.abs(right.identity.sequence - request.current!.sequence)
+      || left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
+    if (nearby.length > 8) nearby.pop();
+  };
+  for (const record of orderedRecords) {
+    if (!eligible(record) || !normalizeEvidenceSearchText(record.searchText).includes(text)) continue;
+    total += 1;
+    firstMatch ??= record;
+    if (firstMatches.length < 1_000) firstMatches.push(record.identity);
+    addNearby(record);
+    if (request.current !== undefined && sameIdentity(record.identity, request.current)) {
+      exactCurrent = record;
+      previousExact = lastMatch;
+    } else if (exactCurrent !== undefined && nextExact === undefined) {
+      nextExact = record;
+    }
+    lastMatch = record;
+  }
+  const nearbyOrdered = [...nearby].sort((left, right) => left.identity.sequence - right.identity.sequence || left.identity.eventId.localeCompare(right.identity.eventId));
+  const fallback = request.current === undefined ? firstMatch : (exactCurrent ?? nearby[0]);
+  const fallbackIndex = fallback === undefined ? -1 : nearbyOrdered.findIndex((record) => sameIdentity(record.identity, fallback.identity));
+  const target = fallback ?? null;
+  const current = request.current === undefined ? null : target?.identity ?? null;
+  const previous = exactCurrent
+    ? previousExact?.identity ?? null
+    : fallbackIndex > 0 ? nearbyOrdered[fallbackIndex - 1]!.identity : null;
+  const next = exactCurrent
+    ? nextExact?.identity ?? null
+    : fallbackIndex >= 0 && fallbackIndex + 1 < nearbyOrdered.length ? nearbyOrdered[fallbackIndex + 1]!.identity : null;
+  const windowRecord = target ?? firstMatch;
   const windowStart = windowRecord
     ? Math.max(0, orderedRecords.findIndex((record) => sameIdentity(record.identity, windowRecord.identity)) - 50)
     : 0;
-  const window = orderedRecords.slice(windowStart, windowStart + 100);
-  const nextRecord = fallbackIndex >= 0 && fallbackIndex + 1 < matches.length ? matches[fallbackIndex + 1] : undefined;
+  const window = windowRecord === undefined ? [] : orderedRecords.slice(windowStart, windowStart + 100);
+  const nextRecord = next === null ? undefined : orderedRecords.find((record) => sameIdentity(record.identity, next));
   const nextWindowStart = nextRecord
     ? Math.max(0, orderedRecords.findIndex((record) => sameIdentity(record.identity, nextRecord.identity)) - 50)
     : -1;
   const result: EvidenceFindResult = {
     text: request.text,
-    total: matches.length,
+    total,
     current,
-    previous: fallbackIndex >= 0 && fallbackIndex > 0 ? matches[fallbackIndex - 1]!.identity : null,
-    next: fallbackIndex >= 0 && fallbackIndex + 1 < matches.length ? matches[fallbackIndex + 1]!.identity : null,
+    previous,
+    next,
   };
-  if (request.scopeToFilter) {
-    return Object.freeze({
-      ...result,
-      first: matches[0]?.identity ?? null,
-      window: Object.freeze(window),
-      matches: Object.freeze(matches.slice(0, 1_000).map((record) => record.identity)),
-      ...(nextWindowStart >= 0
-        ? { nextWindow: Object.freeze(orderedRecords.slice(nextWindowStart, nextWindowStart + 100)) }
-        : {})
-    });
-  }
-  return Object.freeze(result);
+  return Object.freeze({
+    ...result,
+    first: firstMatch?.identity ?? null,
+    window: Object.freeze(window),
+    matches: Object.freeze(firstMatches),
+    ...(nextWindowStart >= 0
+      ? { nextWindow: Object.freeze(orderedRecords.slice(nextWindowStart, nextWindowStart + 100)) }
+      : {})
+  });
 }
 
 /** Apply only the blockers returned for one retained selection. */
@@ -124,21 +158,6 @@ export function revealFilter(filter: EvidenceFilter, blockers: readonly RevealBl
     }
   }
   return Object.freeze(next);
-}
-
-function nearestIndex(records: readonly SelectionRecord[], current: EvidenceIdentity | undefined): number {
-  if (!current || records.length === 0) return records.length ? 0 : -1;
-  let best = 0;
-  let distance = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < records.length; index += 1) {
-    const candidate = records[index]!.identity;
-    const candidateDistance = Math.abs(candidate.sequence - current.sequence);
-    if (candidateDistance < distance || (candidateDistance === distance && candidate.sequence < records[best]!.identity.sequence)) {
-      best = index;
-      distance = candidateDistance;
-    }
-  }
-  return best;
 }
 
 function criterionBlocker(facet: string, polarity: "include" | "exclude", value: TypedFacetValue): RevealBlocker {

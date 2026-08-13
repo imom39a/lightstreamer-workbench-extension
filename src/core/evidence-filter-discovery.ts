@@ -15,8 +15,7 @@ export type DiscoveryInstrumentation = Readonly<{
   fail?: () => void;
 }>;
 
-export type DiscoveryAggregateObservation = Readonly<{ sequence: number; eventId: string }>;
-export type DiscoveryAggregateEntry = Readonly<{ value: TypedFacetValue; count: number; observations: readonly DiscoveryAggregateObservation[] }>;
+export type DiscoveryAggregateEntry = Readonly<{ value: TypedFacetValue; count: number }>;
 
 type Cursor = Readonly<{
   version: 1;
@@ -30,6 +29,7 @@ type Cursor = Readonly<{
 }>;
 
 type CompactValue = { facet: string; type: string; value: string; label: string; identity: string; sortKey: string; count: number };
+export type DiscoveryAccountingEntry = Readonly<{ value: TypedFacetValue; count: number }>;
 
 const text = (value: string | undefined): string => (value ?? "").trim().toLocaleLowerCase();
 function encoded(value: string): string {
@@ -179,21 +179,22 @@ export function discoverFacet(
   instrumentation: DiscoveryInstrumentation = {}
 ): FacetDiscoveryResult {
   instrumentation.fail?.();
-  const base = records.filter((record) => matchesBase(record, withoutFacet(filter, request.facet)));
-  if (base.length === 0 && request.cursor === undefined) return unavailable(request.facet, "ZERO_BASE", 0);
-
   // This is compact identity accounting: it retains no TypedFacetValue
   // objects and no complete sorted order. It is the exact source for counts
   // and distinctTotal; ordered selection below is bounded by page size.
   const accounting = new Map<string, CompactValue>();
-  for (const record of base) {
+  let baseEvidenceCount = 0;
+  const baseFilter = withoutFacet(filter, request.facet);
+  for (const record of records) {
+    if (!matchesBase(record, baseFilter)) continue;
+    baseEvidenceCount += 1;
     const value = record.facets[request.facet];
     if (!value) continue;
     const existing = accounting.get(value.identity);
     if (existing) existing.count += 1;
     else accounting.set(value.identity, compact(value));
   }
-  return discoverFromAccounting(accounting, base.length, filter, readPoint, request, instrumentation);
+  return discoverFromAccounting(accounting, baseEvidenceCount, filter, readPoint, request, instrumentation);
 }
 
 /**
@@ -205,6 +206,19 @@ export function discoverFacet(
  */
 export function discoverFacetFromAggregates(
   entries: readonly DiscoveryAggregateEntry[],
+  baseEvidenceCount: number,
+  filter: EvidenceFilter,
+  readPoint: EvidenceReadPoint,
+  request: FacetDiscoveryRequest,
+  instrumentation: DiscoveryInstrumentation = {}
+): FacetDiscoveryResult {
+  return discoverFacetFromAccounting(entries, baseEvidenceCount, filter, readPoint, request, instrumentation);
+}
+
+/** Storage adapters use this entry point when they can stream exact compact
+ * accounting without retaining every qualifying projection. */
+export function discoverFacetFromAccounting(
+  entries: readonly DiscoveryAccountingEntry[],
   baseEvidenceCount: number,
   filter: EvidenceFilter,
   readPoint: EvidenceReadPoint,

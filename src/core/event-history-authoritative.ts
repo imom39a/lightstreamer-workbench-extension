@@ -867,6 +867,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > MAX_EVIDENCE_PAGE_SIZE) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", request.page.size > MAX_EVIDENCE_PAGE_SIZE ? `Page size must not exceed ${MAX_EVIDENCE_PAGE_SIZE}.` : "Page size must be a positive integer.") });
     }
+    if (request.signal?.aborted) {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was read.") });
+    }
 
     // This is the sole read point. Everything below reads this immutable slice,
     // so a later commit cannot enter this result or change its totals.
@@ -886,12 +889,20 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const records: SelectionRecord[] = evidenceEntriesAtRead.map((entry) => {
       const cached = deterministicRecordCache.get(entry);
       if (cached && (!request.includePayload || cached.payload !== undefined)) return cached;
-      const record = toDeterministicEvidenceRecord(entry, intervalAtRead, request.includePayload === true);
+      // Query metadata is compact and payload-free. Hydration is performed
+      // only after page selection (or for the explicit lookup below).
+      const record = toDeterministicEvidenceRecord(entry, intervalAtRead, false);
       deterministicRecordCache.set(entry, record);
       return record;
     });
     const around = normalizeAround(request.filter.around, readPoint.retainedRange);
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
+    let cursor: ReturnType<typeof decodeEvidenceQueryCursor>;
+    try {
+      cursor = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
+    } catch (error) {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", error instanceof Error ? error.message : "The page cursor is invalid.") });
+    }
     if (filter.around?.anchor) {
       const anchor = filter.around.anchor;
       const anchorIndex = evidenceEntriesAtRead.findIndex((entry) => sameEvidenceIdentity(evidenceIdentity(toRef(entry), intervalAtRead), anchor));
@@ -905,8 +916,12 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     if (request.lookup !== undefined) {
       const selectedIndex = records.findIndex((record) => sameEvidenceIdentity(record.identity, request.lookup!));
       if (selectedIndex >= 0) {
-        lookupRecords = records.slice();
-        lookupRecords[selectedIndex] = Object.freeze({ ...lookupRecords[selectedIndex]!, payload: copyCandidate(evidenceEntriesAtRead[selectedIndex]!.candidate) });
+        const selected = records[selectedIndex]!;
+        const entry = evidenceEntriesAtRead.find((candidate) => candidate.sequence === selected.identity.sequence && candidate.eventId === selected.identity.eventId);
+        if (entry !== undefined) {
+          lookupRecords = records.slice();
+          lookupRecords[selectedIndex] = Object.freeze({ ...selected, payload: copyCandidate(entry.candidate) });
+        }
       }
     }
     if (unsupported) {
@@ -921,9 +936,17 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     }
 
     try {
-      const matching: DeterministicEvidenceRecord[] = [];
-      const inScope: DeterministicEvidenceRecord[] = [];
-      for (const record of records) {
+      let matching = 0;
+      let inScope = 0;
+      const page: DeterministicEvidenceRecord[] = [];
+      let hasMore = false;
+      let cursorFound = cursor === null;
+      const orderedStart = request.page.order === "NEWEST_FIRST" ? records.length - 1 : 0;
+      const orderedEnd = request.page.order === "NEWEST_FIRST" ? -1 : records.length;
+      const orderedStep = request.page.order === "NEWEST_FIRST" ? -1 : 1;
+      for (let index = orderedStart; index !== orderedEnd; index += orderedStep) {
+        const record = records[index]!;
+        if (request.signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
         const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
           timestamp: record.timestamp,
           intervalId: record.identity.intervalId,
@@ -931,29 +954,59 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
           facets: record.facets as unknown as FilterRecord["facets"]
         });
         if (!evaluation.matches) continue;
-        matching.push(record);
-        if (isInAround(record, around)) inScope.push(record);
+        matching += 1;
+        if (!isInAround(record, around)) continue;
+        inScope += 1;
+        if (cursor !== null && !cursorFound) {
+          if (sameEvidenceIdentity(record.identity, cursor.anchor)) cursorFound = true;
+          continue;
+        }
+        if (page.length < request.page.size) page.push(record);
+        else hasMore = true;
       }
+      if (cursor !== null && !cursorFound) throw new Error("The page cursor anchor is stale or is not part of the filtered Evidence result.");
       for (const discoveryRequest of request.discover ?? []) {
+        if (request.signal?.aborted) throw new Error("EVIDENCE_QUERY_CANCELLED");
         try {
           discoveries.set(discoveryRequest.facet, discoverFacet(records, request.filter, readPoint, discoveryRequest, options.discovery));
-        } catch {
+        } catch (error) {
+          if (request.signal?.aborted || (error instanceof Error && error.message === "EVIDENCE_QUERY_CANCELLED")) throw error;
           discoveries.set(discoveryRequest.facet, {
             state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "DISCOVERY_FAILED", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
           });
         }
       }
-      const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
-      const offset = decodeEvidenceQueryCursor(request.page.cursor, readPoint, request);
-      const page = ordered.slice(offset, offset + request.page.size);
-      const nextCursor = offset + page.length < ordered.length ? encodeEvidenceQueryCursor(readPoint, request, offset + page.length) : null;
+      const hydratedPage = request.includePayload === true
+        ? page.map((record) => {
+            const entry = evidenceEntriesAtRead.find((candidate) => candidate.sequence === record.identity.sequence && candidate.eventId === record.identity.eventId);
+            return entry === undefined
+              ? record
+              : Object.freeze({ ...record, payload: copyCandidate(entry.candidate) });
+          })
+        : page;
+      const nextCursor = hasMore
+        ? encodeEvidenceQueryCursor(readPoint, request, page.at(-1)!.identity)
+        : null;
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
-        const find = request.find === undefined ? null : findEvidence(request.find.scopeToFilter ? inScope : records, request.find);
+      const find = request.find === undefined ? null : findEvidence(records, request.find, request.find.scopeToFilter
+        ? (record) => {
+            const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+              timestamp: record.timestamp,
+              intervalId: record.identity.intervalId,
+              searchText: record.searchText,
+              facets: record.facets as unknown as FilterRecord["facets"]
+            });
+            return evaluation.matches && isInAround(record, around);
+          }
+        : undefined);
       return Promise.resolve({
         ok: true,
-        value: makeEvidenceSnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find)
+        value: makeEvidenceSnapshot(readPoint, hydratedPage, matching, inScope, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor, lookup, find)
       });
     } catch (error) {
+      if (request.signal?.aborted || (error instanceof Error && error.message === "EVIDENCE_QUERY_CANCELLED")) {
+        return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_CANCELLED", "The Evidence query was cancelled before its snapshot was published.") });
+      }
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", error instanceof Error ? error.message : "Evidence query failed.") });
     }
   }

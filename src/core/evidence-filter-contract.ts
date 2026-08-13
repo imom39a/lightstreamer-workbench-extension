@@ -69,6 +69,9 @@ export type EvidenceFindResult = Readonly<{
 export type EvidenceQueryTelemetry = Readonly<{
   postingReads: number;
   postingCandidates: number;
+  /** The single selective facet posting driver, when one was available. */
+  postingDriver?: EvidenceFilterFacet | null;
+  postingDriverCandidateCount?: number;
   evidenceCursorReads: number;
   payloadHydrations: number;
   lookupPayloadHydrations: number;
@@ -105,7 +108,7 @@ export type EvidenceQueryTelemetry = Readonly<{
   discoveryMaterializationBound?: number;
 }>;
 export type EvidenceSnapshot = Readonly<{ readPoint: EvidenceReadPoint; page: Readonly<{ evidence: readonly DeterministicEvidenceRecord[]; nextCursor: string | null }>; totals: Readonly<{ matching: number; inScope: number }>; discoveries: ReadonlyMap<EvidenceFilterFacet, FacetDiscoveryResult>; lookup: EvidenceLookupResult | null; find: EvidenceFindResult | null; evaluation: "COMPLETE" | "UNSUPPORTED_FILTER"; coverage: "COMPLETE" | "LIMITED"; storage: "INDEXED_DB" | "MEMORY_FALLBACK"; telemetry?: EvidenceQueryTelemetry }>;
-export type EvidenceQueryRequest = Readonly<{ at: "LATEST_COMMITTED" | EvidenceReadPoint; page: EvidencePageRequest; filter: EvidenceFilter; discover?: readonly FacetDiscoveryRequest[]; lookup?: EvidenceIdentity; find?: EvidenceFindRequest; includePayload?: boolean }>;
+export type EvidenceQueryRequest = Readonly<{ at: "LATEST_COMMITTED" | EvidenceReadPoint; page: EvidencePageRequest; filter: EvidenceFilter; discover?: readonly FacetDiscoveryRequest[]; lookup?: EvidenceIdentity; find?: EvidenceFindRequest; includePayload?: boolean; signal?: AbortSignal }>;
 export interface EvidenceFilterQueryAdapter { query(request: EvidenceQueryRequest): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>>; }
-export type EvidenceFilterReadProblem = Readonly<{ code: "HISTORY_INTERVAL_UNAVAILABLE" | "READ_POINT_UNAVAILABLE" | "QUERY_FAILED" | "HISTORY_TERMINAL" | "AROUND_ANCHOR_UNAVAILABLE"; message: string }>;
+export type EvidenceFilterReadProblem = Readonly<{ code: "HISTORY_INTERVAL_UNAVAILABLE" | "READ_POINT_UNAVAILABLE" | "QUERY_FAILED" | "QUERY_CANCELLED" | "HISTORY_TERMINAL" | "AROUND_ANCHOR_UNAVAILABLE"; message: string }>;
 export type EvidenceFilterLifecycleState = Readonly<{ phase: "ACTIVE" | "CLEARED" | "TERMINAL"; interval: Readonly<{ id: string; ordinal: number }>; committedEvidenceBoundary: EvidenceIdentity | null; retainedRange: Readonly<{ first: EvidenceIdentity; last: EvidenceIdentity }> | null; coverage: "COMPLETE" | "LIMITED"; storage: "INDEXED_DB" | "MEMORY_FALLBACK" }>;

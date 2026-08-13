@@ -761,6 +761,7 @@ class Runtime implements WorkbenchRuntime {
   private disposed = false;
   private disposePromise: Promise<void> = Promise.resolve();
   private queryGeneration = 0;
+  private evidenceQueryAbortController: AbortController | null = null;
   /** Opaque cursors are bound to the query and its read point. */
   private readonly evidencePageCursors = new Map<number, string>();
   private evidenceQueryPending = false;
@@ -1463,6 +1464,8 @@ class Runtime implements WorkbenchRuntime {
     }
     this.disposed = true;
     this.cancelPassivePublication();
+    this.evidenceQueryAbortController?.abort();
+    this.evidenceQueryAbortController = null;
     this.listeners.clear();
     this.disposePromise = this.evidencePipeline.close().then(
       (result) => {
@@ -1700,6 +1703,8 @@ class Runtime implements WorkbenchRuntime {
 
   private resetCoherentStateAfterClear(): void {
     this.queryGeneration += 1;
+    this.evidenceQueryAbortController?.abort();
+    this.evidenceQueryAbortController = null;
     this.evidenceQueryPending = false;
     this.evidenceLoading = false;
     this.investigationState = "loading";
@@ -2602,7 +2607,10 @@ class Runtime implements WorkbenchRuntime {
       this.evidencePageCursors.clear();
     }
     const generation = ++this.queryGeneration;
-    const request = this.investigationRequest(effectiveOffset, source);
+    this.evidenceQueryAbortController?.abort();
+    const queryController = new AbortController();
+    this.evidenceQueryAbortController = queryController;
+    const request = Object.freeze({ ...this.investigationRequest(effectiveOffset, source), signal: queryController.signal });
     this.evidenceQueryPending = true;
     this.evidenceLoading = true;
     this.investigationState = "loading";
@@ -2624,6 +2632,7 @@ class Runtime implements WorkbenchRuntime {
     void Promise.resolve(this.queryInvestigation(request, effectiveOffset)).then(
       (result) => {
         if (this.disposed || generation !== this.queryGeneration) return;
+        if (this.evidenceQueryAbortController === queryController) this.evidenceQueryAbortController = null;
         this.evidenceQueryPending = false;
         this.evidenceLoading = false;
         if (!result.ok) {
@@ -2704,6 +2713,7 @@ class Runtime implements WorkbenchRuntime {
       },
       (error: unknown) => {
         if (this.disposed || generation !== this.queryGeneration) return;
+        if (this.evidenceQueryAbortController === queryController) this.evidenceQueryAbortController = null;
         this.evidenceQueryPending = false;
         this.evidenceLoading = false;
         const problem: EvidenceFilterReadProblem = {
@@ -2783,7 +2793,7 @@ class Runtime implements WorkbenchRuntime {
     let currentOffset = startOffset;
     let first: EvidenceSnapshot | null = null;
     let last: EvidenceSnapshot | null = null;
-    const collected: DeterministicEvidenceRecord[] = [];
+    const selected: DeterministicEvidenceRecord[] = [];
     while (true) {
       const result = await this.evidenceQuery.query({
         ...request,
@@ -2806,19 +2816,23 @@ class Runtime implements WorkbenchRuntime {
           }
         };
       }
-      collected.push(...result.value.page.evidence);
-      if (result.value.page.nextCursor !== null) {
-        this.evidencePageCursors.set(currentOffset + result.value.page.evidence.length, result.value.page.nextCursor);
+      const resultStart = currentOffset;
+      const resultEnd = resultStart + result.value.page.evidence.length;
+      const selectionStart = Math.max(targetOffset, resultStart);
+      const selectionEnd = Math.min(targetOffset + pageSize, resultEnd);
+      if (selectionStart < selectionEnd) {
+        selected.push(...result.value.page.evidence.slice(selectionStart - resultStart, selectionEnd - resultStart));
       }
-      const collectedEnd = startOffset + collected.length;
-      if (collectedEnd >= targetOffset + pageSize || result.value.page.nextCursor === null) break;
+      if (result.value.page.nextCursor !== null) {
+        this.evidencePageCursors.set(resultEnd, result.value.page.nextCursor);
+      }
+      if (resultEnd >= targetOffset + pageSize || result.value.page.nextCursor === null) break;
       currentOffset += result.value.page.evidence.length;
       cursor = result.value.page.nextCursor;
       at = first.readPoint;
       if (result.value.page.evidence.length === 0) break;
     }
-    const start = Math.max(0, targetOffset - startOffset);
-    const page = collected.slice(start, start + pageSize);
+    const page = selected.slice(0, pageSize);
     const absoluteEnd = targetOffset + page.length;
     const lastPageEnd = currentOffset + (last?.page.evidence.length ?? 0);
     const nextCursor = absoluteEnd === lastPageEnd ? last?.page.nextCursor ?? null : null;

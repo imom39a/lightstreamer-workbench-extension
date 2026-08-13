@@ -26,7 +26,9 @@ export default defineConfig({
         // Keep the renderer-neutral Filter algebra shared and out of the
         // initial panel chunk as the runtime mutation seam grows.
         manualChunks(id) {
-          return id.includes("/src/core/filter-algebra.") ? "filter-algebra" : undefined;
+          if (id.includes("/src/core/filter-algebra.")) return "filter-algebra";
+          if (id.includes("/src/core/evidence-filter-selection.")) return "evidence-filter-selection";
+          return undefined;
         }
       }
     }

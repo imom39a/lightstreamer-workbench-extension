@@ -23,6 +23,7 @@ type InvestigationRequest = Readonly<{
   discover: readonly Readonly<Record<string, unknown>>[];
   lookup?: EvidenceIdentity;
   find?: Readonly<{ text: string; current?: EvidenceIdentity; scopeToFilter?: boolean }>;
+  signal?: AbortSignal;
 }>;
 
 type InvestigationResult =
@@ -312,6 +313,25 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
       readPoint: { committedEvidenceBoundary: { eventId: "newer-event" } },
       counts: { shown: 1, matching: 1, inScope: 1 }
     });
+    runtime.dispose();
+  });
+
+  it("aborts superseded Filter work while retaining generation-safe publication", async () => {
+    const history = createInMemoryEventHistory({ panelSessionId: "runtime-query-cancel" });
+    const pending: Array<{ request: InvestigationRequest; resolve: (result: InvestigationResult) => void }> = [];
+    const query: InvestigationQuery = {
+      query: vi.fn((request) => new Promise<InvestigationResult>((resolve) => pending.push({ request, resolve })))
+    };
+    const runtime = createWorkbenchRuntime({ history, evidenceQuery: query } as never);
+    await flush();
+    runtime.dispatch({ type: "refresh-evidence" });
+    await flush();
+
+    expect(pending).toHaveLength(2);
+    expect(pending[0]?.request.signal?.aborted).toBe(true);
+    pending[1]?.resolve(ready(snapshot(2, "newest-event")));
+    await flush();
+    expect(projection(runtime).page.evidence[0]?.identity.eventId).toBe("newest-event");
     runtime.dispose();
   });
 
