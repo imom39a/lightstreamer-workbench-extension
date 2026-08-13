@@ -1006,14 +1006,12 @@ async function runFilterQueryCell(
 ): Promise<EventHistoryPerformanceQueryCell> {
   const count = adapter === "indexeddb" ? 10_000 : 5_000;
   const runId = `filter-query-${adapter}-${sample}`;
-  let progressBoundary = 0;
   const publishQueryProgress = (stage: string, substage: string, offered: number | null, settled: number | null, query: string | null = null): void => {
-    progressBoundary += 1;
     publishHarnessProgress({
       operationId,
       phase: "cells",
       stage,
-      substage: `${substage}-${progressBoundary}`,
+      substage,
       sample,
       trigger: null,
       scenario: null,
