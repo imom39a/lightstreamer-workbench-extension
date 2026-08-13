@@ -419,6 +419,41 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.checkedSamples).toBe(36);
   });
 
+  it("runs capture-only absolute gates without accepting a reference operand", () => {
+    const current = report();
+    const decision = classifyEventHistoryPerformance(current, current, "capture-only");
+
+    expect(decision.verdict).toBe("NOT_CLASSIFIED");
+    expect(decision.failures).toEqual([]);
+    expect(decision.reviewReasons).toEqual([
+      "Candidate capture is not classified until a maintainer adopts a separately pinned reference."
+    ]);
+  });
+
+  it.each([
+    ["dirty source", () => ({ source: { revision: "dirty", dirty: true } })],
+    ["correctness", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, correctness: { ...entry.correctness, retainedInOrder: false } } : entry) })],
+    ["sustained latency", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, latency: { ...entry.latency, offerToVisibleFrameP95Ms: 101 } } : entry) })],
+    ["burst boundary latency", () => ({ cells: report().cells.map((entry, index) => index === 9 ? { ...entry, latency: { ...entry.latency, finalBoundaryVisibleMs: 30_001 } } : entry) })],
+    ["query latency", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, latency: { ...entry.latency, recentPageP95Ms: 51, structuredIndexedP95Ms: 101, findFullP95Ms: 501 } } : entry) })],
+    ["capture Long Task", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, capture: [50.001] } } : entry) })],
+    ["commit Long Task", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, commit: [50.001] } } : entry) })],
+    ["paint Long Task", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, paint: [50.001] } } : entry) })],
+    ["query Long Task", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, query: [126] } } : entry) })],
+    ["unsupported Long Task telemetry", () => ({ cells: report().cells.map((entry, index) => index === 0 ? { ...entry, longTasks: { ...entry.longTasks, supported: false } } : entry) })],
+    ["heap limit", () => ({ heapSamples: report().heapSamples.map((entry, index) => index === 0 ? { ...entry, postGcHeapDeltaBytes: 8 * 1_048_576 + 1 } : entry) })],
+    ["memory burst boundary latency", () => ({ cells: report().cells.map((entry, index) => index === 27 ? { ...entry, latency: { ...entry.latency, finalBoundaryVisibleMs: 1_001 } } : entry) })],
+    ["heap cleanup", () => ({ heapSamples: report().heapSamples.map((entry, index) => index === 0 ? { ...entry, status: "FAIL", failure: { code: "CLOSE_FAILED", message: "cleanup failed" }, postGcHeapDeltaBytes: null } : entry) })],
+    ["terminal scenario", () => ({ terminalScenarios: report().terminalScenarios.map((entry, index) => index === 0 ? { ...entry, pressureTransitions: ["EXHAUSTED"] } : entry) })],
+    ["checkpoint scenario", () => ({ checkpointScenarios: report().checkpointScenarios.map((entry, index) => index === 0 ? { ...entry, accepted: false } : entry) })],
+    ["lifecycle growth", () => ({ lifecycle: { retainedHeapBytes: [1, 2, 3], strictMonotonicGrowth: true } })]
+  ])("keeps capture-only mode fail-closed for %s", (_label, override) => {
+    const decision = classifyEventHistoryPerformance({ ...report(), ...override() } as unknown, undefined, "capture-only");
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.failures.length).toBeGreaterThan(0);
+  });
+
   it("fails when production-hook timestamps are a short burst despite sustained offer timestamps", () => {
     const baseline = report();
     const current = report({

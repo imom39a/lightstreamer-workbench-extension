@@ -365,6 +365,14 @@ describe("Event History performance runner reference preflight", () => {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("uses explicit capture-only classification without constructing a self-reference", () => {
+    const source = readFileSync("scripts/event-history-performance.mjs", "utf8");
+
+    expect(source).toContain('classifyEventHistoryPerformance(report, undefined, "capture-only")');
+    expect(source).not.toContain("candidateReference");
+    expect(source).toContain('const reference = captureMode ? undefined : JSON.parse');
+  });
 });
 
 describe("Event History heap measurement plan", () => {

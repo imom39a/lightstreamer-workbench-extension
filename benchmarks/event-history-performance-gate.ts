@@ -311,7 +311,8 @@ export type EventHistoryPerformanceReference = Readonly<{
   queryCells: readonly EventHistoryPerformanceQueryCell[];
 }>;
 
-export type PerformanceGateVerdict = "PASS" | "REVIEW" | "FAIL";
+export type PerformanceGateMode = "ordinary" | "capture-only";
+export type PerformanceGateVerdict = "PASS" | "REVIEW" | "FAIL" | "NOT_CLASSIFIED";
 
 export type PerformanceGateDecision = Readonly<{
   verdict: PerformanceGateVerdict;
@@ -331,7 +332,8 @@ const SHAPES: readonly EventHistoryPerformanceShape[] = [
 
 export function classifyEventHistoryPerformance(
   report: unknown,
-  reference?: unknown
+  reference?: unknown,
+  mode: PerformanceGateMode = "ordinary"
 ): PerformanceGateDecision {
   const failures: string[] = [];
   const reviewReasons: string[] = [];
@@ -462,6 +464,13 @@ export function classifyEventHistoryPerformance(
     failures.push("Panel Session lifecycle samples show strict monotonic retained-heap growth.");
   }
 
+  if (mode === "capture-only") {
+    if (failures.length === 0) {
+      reviewReasons.push("Candidate capture is not classified until a maintainer adopts a separately pinned reference.");
+    }
+    return decision(failures, reviewReasons, expectedKeys.size, validReport.cells.length, "NOT_CLASSIFIED");
+  }
+
   if (reference === undefined) {
     failures.push("No separately pinned reference was supplied; a report cannot self-adopt as its reference.");
   } else if (!isPerformanceReference(reference)) {
@@ -481,10 +490,11 @@ function decision(
   failures: readonly string[],
   reviewReasons: readonly string[],
   checkedCells: number,
-  checkedSamples: number
+  checkedSamples: number,
+  successfulVerdict?: PerformanceGateVerdict
 ): PerformanceGateDecision {
   return {
-    verdict: failures.length > 0 ? "FAIL" : reviewReasons.length > 0 ? "REVIEW" : "PASS",
+    verdict: failures.length > 0 ? "FAIL" : successfulVerdict ?? (reviewReasons.length > 0 ? "REVIEW" : "PASS"),
     failures: Object.freeze([...failures]),
     reviewReasons: Object.freeze([...reviewReasons]),
     checkedCells,

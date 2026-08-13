@@ -39,8 +39,8 @@ const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
 
 async function main() {
   requireVisibleEnvironment();
-  const reference = JSON.parse(await readFile(referencePath, "utf8"));
   const captureMode = process.env.LSEW_EVENT_HISTORY_PERF_CAPTURE === "true";
+  const reference = captureMode ? undefined : JSON.parse(await readFile(referencePath, "utf8"));
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-event-history-performance-"));
   const site = join(temporaryRoot, "site");
   const profile = join(temporaryRoot, "profile");
@@ -204,20 +204,10 @@ async function main() {
       },
       telemetry: { storageEstimate: "Per-cell navigator.storage.estimate() telemetry is non-authoritative; unavailable/error states are retained and excluded from verdict gates." }
     };
-    const candidateReference = {
-      schemaVersion: 2,
-      referenceVersion: "capture-only",
-      disposition: "ACCEPTED_INITIAL_CLEAN_REFERENCE",
-      rationale: "Internal self-comparison used only to validate absolute candidate gates; not a pinned reference.",
-      environment: report.environment,
-      cells: report.cells,
-      queryCells: report.queryCells
-    };
-    const absoluteDecision = classifyEventHistoryPerformance(report, captureMode ? candidateReference : reference);
     const decision = captureMode
-      ? { ...absoluteDecision, verdict: absoluteDecision.verdict === "PASS" ? "NOT_CLASSIFIED" : absoluteDecision.verdict, failures: absoluteDecision.failures, reviewReasons: [...absoluteDecision.reviewReasons, "Candidate capture is not classified until a maintainer adopts a pinned reference."] }
-      : absoluteDecision;
-    const complete = { ...report, decision, reference: { path: referencePath, separatelyPinned: true } };
+      ? classifyEventHistoryPerformance(report, undefined, "capture-only")
+      : classifyEventHistoryPerformance(report, reference);
+    const complete = { ...report, decision, reference: { path: referencePath, separatelyPinned: !captureMode, adopted: false } };
     await mkdir(dirname(outputPath), { recursive: true });
     await writeFile(outputPath, `${JSON.stringify(complete, null, 2)}\n`);
     await writeFile(markdownPath, markdown(complete));
