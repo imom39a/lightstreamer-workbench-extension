@@ -201,7 +201,7 @@ async function main() {
         }
       }
       let primaryError = null;
-            try {
+      try {
         shardResults.push(await runPageOperation(
           page.cdp,
           `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)})`,
