@@ -1373,6 +1373,10 @@ async function queryIndexedDb(
     telemetry.retainedCount = expectedProjectionCount;
     telemetry.cursorWorkBound = expectedProjectionCount;
     await validateProjectionCoverage(transaction.objectStore(options.projectionStore), transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), interval.id, firstSequence, lastSequence, expectedProjectionCount);
+    const aroundProjections = request.filter.around === null
+      ? null
+      : await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry);
+    const emptyFilterAround = request.filter.around !== null && isEmptyQueryFilter(request.filter);
     const postingCandidates = await indexedDbPostingCandidates(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings), request.filter, interval.id, firstSequence, lastSequence, telemetry);
     const candidateSequences = postingCandidates;
     const simpleRecentPage = postingCandidates === null && request.filter.text.trim() === "" && request.filter.around === null && request.lookup === undefined && request.find === undefined;
@@ -1382,6 +1386,9 @@ async function queryIndexedDb(
       if (offset > expectedProjectionCount) throw new Error("The page cursor is beyond the committed result set.");
       projections = await readProjectionPage(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.page, offset, telemetry);
       telemetry.candidateBound = projections.length;
+    } else if (emptyFilterAround) {
+      projections = aroundProjections ?? [];
+      telemetry.candidateBound = projections.length;
     } else {
       telemetry.residualScan = request.filter.text.trim() !== "";
       projections = candidateSequences
@@ -1390,14 +1397,12 @@ async function queryIndexedDb(
       telemetry.candidateBound = projections.length;
       if (!candidateSequences) telemetry.fullRetainedScan = true;
     }
-    const aroundProjections = request.filter.around === null
-      ? null
-      : await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry);
     const retainedProjections = request.find !== undefined
       ? await readSearchProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.find, telemetry)
-      : request.filter.around?.anchor !== undefined
-        ? (telemetry.fullRetainedScan = true, await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry))
-        : null;
+      : null;
+    const anchorProjection = request.filter.around?.anchor === undefined
+      ? null
+      : await readProjectionByIdentity(transaction.objectStore(options.projectionStore), request.filter.around.anchor, interval, firstSequence, lastSequence, request.filter.around.anchorSequence, telemetry);
     const selectedPayload = request.lookup === undefined
       ? null
       : await readSelectedEvidence(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence), request.lookup, interval, firstSequence, lastSequence, telemetry);
@@ -1406,7 +1411,7 @@ async function queryIndexedDb(
     const retainedRecords = retainedProjections?.map((record) => querySelectionRecord(record, interval)) ?? selectionRecords;
     const around = normalizeAround(request.filter.around, readPoint.retainedRange);
     const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
-    if (filter.around?.anchor && !retainedRecords.some((record) => sameQueryIdentity(record.identity, filter.around!.anchor!) && (filter.around!.anchorSequence === undefined || filter.around!.anchorSequence === record.identity.sequence))) {
+    if (filter.around?.anchor && anchorProjection === null) {
       return queryFailure("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.");
     }
     telemetry.aroundAnchorValidated = filter.around?.anchor !== undefined;
@@ -1444,7 +1449,7 @@ async function queryIndexedDb(
     const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
     const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
     telemetry.elapsedMs = Date.now() - started;
-    const matchingTotal = simpleRecentPage ? expectedProjectionCount : matching.length;
+    const matchingTotal = simpleRecentPage || emptyFilterAround ? expectedProjectionCount : matching.length;
     const inScopeTotal = simpleRecentPage ? expectedProjectionCount : inScope.length;
     return { ok: true, value: querySnapshot(readPoint, page, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < expectedProjectionCount ? encodeQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
   } catch (error) {
@@ -1462,30 +1467,21 @@ function recordProjectionCursorRead(telemetry: QueryTelemetryMutable, local: { r
 }
 
 async function validateProjectionCoverage(store: IDBObjectStore, evidence: IDBObjectStore, intervalId: string, first: number, last: number, expected: number): Promise<void> {
-  const total = await requestToPromise<number>(store.count(), "validating query projection coverage");
-  const evidenceTotal = await requestToPromise<number>(evidence.count(), "validating query projection coverage");
-  if (total !== evidenceTotal) throw new Error("The query projection store does not exactly cover Evidence records.");
-  if (last < first) return;
-  await new Promise<void>((resolve, reject) => {
-    const request = store.openCursor(queryBoundRange(first, last));
-    let expectedSequence = first;
-    request.onerror = () => reject(request.error ?? new Error("Query projection coverage validation failed."));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) {
-        if (expectedSequence <= last) reject(new Error("The query projection store is missing retained records."));
-        else resolve();
-        return;
-      }
-      if (Number(cursor.key) !== expectedSequence || (cursor.value as QueryProjection).intervalId !== intervalId) {
-        reject(new Error("The query projection store does not exactly cover retained records."));
-        return;
-      }
-      validateQueryProjection(cursor.value as QueryProjection, intervalId);
-      expectedSequence += 1;
-      cursor.continue();
-    };
-  });
+  const range = queryBoundRange(first, last);
+  const [total, evidenceTotal, rangeTotal, rangeEvidenceTotal] = await Promise.all([
+    requestToPromise<number>(store.count(), "validating query projection coverage"),
+    requestToPromise<number>(evidence.count(), "validating query projection coverage"),
+    last < first ? Promise.resolve(0) : requestToPromise<number>(store.count(range), "validating query projection range coverage"),
+    last < first ? Promise.resolve(0) : requestToPromise<number>(evidence.count(range), "validating Evidence range coverage")
+  ]);
+  if (total !== evidenceTotal || rangeTotal !== expected || rangeEvidenceTotal !== expected || rangeTotal !== rangeEvidenceTotal) {
+    throw new Error("The query projection store does not exactly cover Evidence records.");
+  }
+}
+
+function isEmptyQueryFilter(filter: EvidenceQueryRequest["filter"]): boolean {
+  return filter.text.trim() === "" && filter.unsupported.length === 0
+    && Object.values(filter.criteria).every((group) => !group || (group.include.length === 0 && group.exclude.length === 0));
 }
 
 function querySelectionRecord(projection: QueryProjection, interval: HistoryInterval): SelectionRecord {
@@ -1611,6 +1607,16 @@ function readAroundProjections(store: IDBObjectStore, intervalId: string, first:
     .then((values) => { telemetry.aroundCandidates += values.length; return values; });
 }
 
+function readProjectionByIdentity(store: IDBObjectStore, identity: EvidenceIdentity, interval: HistoryInterval, first: number, last: number, anchorSequence: number | undefined, telemetry: QueryTelemetryMutable): Promise<QueryProjection | null> {
+  if (identity.intervalId !== interval.id || identity.sequence < first || identity.sequence > last || (anchorSequence !== undefined && anchorSequence !== identity.sequence)) return Promise.resolve(null);
+  telemetry.evidenceCursorReads += 1;
+  return requestToPromise<QueryProjection | undefined>(store.get(identity.sequence), "reading Around anchor projection").then((projection) => {
+    if (!projection || projection.intervalId !== interval.id || projection.eventId !== identity.eventId || projection.sequence !== identity.sequence) return null;
+    validateQueryProjection(projection, interval.id);
+    return projection;
+  });
+}
+
 function readSearchProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, find: NonNullable<EvidenceQueryRequest["find"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
   const normalized = normalizeEvidenceSearchText(find.text);
   if (!normalized || last < first) return Promise.resolve([]);
@@ -1623,16 +1629,11 @@ function readSearchProjections(store: IDBObjectStore, intervalId: string, first:
     return readQueryProjections(store, intervalId, first, last, null, telemetry).then(residual);
   }
   const trigrams = [...new Set(queryTrigrams(normalized))];
-  return Promise.all(trigrams.map((trigram) => readProjectionCursor(store.index("searchTokens"), queryOnlyRange(trigram), intervalId, telemetry)))
-    .then((groups) => {
-      const bySequence = new Map<number, QueryProjection>();
-      for (const value of groups[0] ?? []) if (value.sequence >= first && value.sequence <= last) bySequence.set(value.sequence, value);
-      for (const group of groups.slice(1)) {
-        const sequences = new Set(group.map((value) => value.sequence));
-        for (const sequence of bySequence.keys()) if (!sequences.has(sequence)) bySequence.delete(sequence);
-      }
-      return residual([...bySequence.values()]);
-    });
+  const index = store.index("searchTokens");
+  return Promise.all(trigrams.map(async (trigram) => ({ trigram, count: await requestToPromise<number>(index.count(queryOnlyRange(trigram)), "counting Find trigram candidates") })))
+    .then((counts) => counts.sort((left, right) => left.count - right.count || left.trigram.localeCompare(right.trigram))[0]!.trigram)
+    .then((rarest) => readProjectionCursor(index, queryOnlyRange(rarest), intervalId, telemetry))
+    .then((values) => residual(values.filter((value) => value.sequence >= first && value.sequence <= last)));
 }
 
 function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | undefined, intervalId: string, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {

@@ -1,4 +1,4 @@
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 
 import { createMemoryEventHistoryForTests } from "../src/core/event-history-authoritative";
@@ -19,7 +19,7 @@ function event(id: string, timestamp: number, value: string): LightstreamerEvent
 const emptyFilter = (): EvidenceFilter => ({ revision: 1, text: "", criteria: {}, around: null, unsupported: [] });
 
 async function histories(name: string) {
-  Reflect.set(globalThis, "indexedDB", new IDBFactory());
+  Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
   const memory = await createMemoryEventHistoryForTests({ panelSessionId: name });
   const durable = await createIndexedDbEventHistory({ panelSessionId: name });
   for (const candidate of [event("one", 10_000, "alpha"), event("two", 10_000, "beta"), event("three", 20_000, "alpha")]) {
@@ -32,7 +32,7 @@ async function histories(name: string) {
 describe("filter-impl-08 IndexedDB Evidence query", () => {
   it("retains the last coherent publication when a later projection is corrupt", async () => {
     const panelSessionId = `filter-impl-08-coherent-${Date.now()}`;
-    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const durable = await createIndexedDbEventHistory({ panelSessionId });
     await durable.offer(event("one", 10_000, "alpha")).settled;
     const first = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
@@ -166,7 +166,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
 
   it("uses complete normalized substring Find candidates and a half-open timestamp Around", async () => {
     const panelSessionId = `filter-impl-08-adversarial-${Date.now()}`;
-    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const durable = await createIndexedDbEventHistory({ panelSessionId });
     for (const candidate of [
       event("alpha-one", 10_000, "first"),
@@ -197,7 +197,17 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     expect(around).toMatchObject({ ok: true, value: {
       totals: { matching: 4, inScope: 2 },
       page: { evidence: [{ identity: { eventId: "alpha-one" } }, { identity: { eventId: "alpha-two" } }] },
-      telemetry: { aroundIndexReads: 1, aroundCandidates: 2, fullRetainedScan: true, pageBound: 10 }
+      telemetry: { aroundIndexReads: 1, aroundCandidates: 2, candidateBound: 2, evidenceCursorReads: 2, fullRetainedScan: false, pageBound: 10 }
+    } });
+    const newestAround = await durable.query!({
+      at: base.value.readPoint,
+      page: { order: "NEWEST_FIRST", size: 1 },
+      filter: { ...emptyFilter(), around: { intervalId: base.value.readPoint.interval.id, start: 10_000, end: 20_000 } }
+    });
+    expect(newestAround).toMatchObject({ ok: true, value: {
+      totals: { matching: 4, inScope: 2 },
+      page: { evidence: [{ identity: { eventId: "alpha-two" } }] },
+      telemetry: { candidateBound: 2, evidenceCursorReads: 2, fullRetainedScan: false }
     } });
     const isolated = await durable.query!({
       at: base.value.readPoint,
@@ -210,7 +220,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
 
   it("fails closed when a selected projection is missing or corrupt", async () => {
     const panelSessionId = `filter-impl-08-projection-failure-${Date.now()}`;
-    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const durable = await createIndexedDbEventHistory({ panelSessionId });
     await durable.offer(event("one", 10_000, "alpha")).settled;
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -229,7 +239,7 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
 
   it("fails closed when projection count matches but the retained primary-key range does not", async () => {
     const panelSessionId = `filter-impl-08-range-coverage-${Date.now()}`;
-    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
     const durable = await createIndexedDbEventHistory({ panelSessionId });
     for (const candidate of [event("one", 10_000, "alpha"), event("two", 20_000, "beta"), event("three", 30_000, "gamma")]) {
       await durable.offer(candidate).settled;
