@@ -6,6 +6,8 @@ import { createIndexedDbEventHistory } from "../src/core/event-history-indexeddb
 import { authoritativeEventDatabaseName } from "../src/core/indexeddb/authoritative-event-db";
 import { type EvidenceFilter, typedFacetValue } from "../src/core/evidence-filter-contract";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import { extractEvidenceFacets } from "../src/core/evidence-facets";
+import { journalAccountedBytes, serializeJournalEvidenceCandidate } from "../src/core/event-history-serialization";
 
 function event(id: string, timestamp: number, value: string): LightstreamerEventEnvelope {
   return {
@@ -262,6 +264,74 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
   });
 
+  it("does not backfill missing projections when reopening a current-schema journal", async () => {
+    const panelSessionId = `filter-impl-08-current-schema-corruption-${Date.now()}`;
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const durable = await createIndexedDbEventHistory({ panelSessionId, closeJournal: async () => undefined });
+    await durable.offer(event("one", 10_000, "alpha")).settled;
+    const coherent = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(coherent).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "one" } }] } } });
+
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(authoritativeEventDatabaseName(panelSessionId));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("queryProjections", "readwrite");
+    transaction.objectStore("queryProjections").clear();
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+    database.close();
+    await durable.close();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const reopened = await createIndexedDbEventHistory({ panelSessionId, closeJournal: async () => undefined });
+    const failed = await reopened.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(failed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+    await reopened.close();
+  });
+
+  it("backfills projections only while upgrading an old-schema journal", async () => {
+    const panelSessionId = `filter-impl-08-old-schema-migration-${Date.now()}`;
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const name = authoritativeEventDatabaseName(panelSessionId);
+    const candidate = event("legacy", 10_000, "alpha");
+    const serialized = serializeJournalEvidenceCandidate(candidate);
+    const interval = { id: `${panelSessionId}:interval-1`, ordinal: 1 };
+    const request = indexedDB.open(name, 4);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      const evidence = database.createObjectStore("evidence", { keyPath: "sequence" });
+      evidence.createIndex("eventIdentity", "eventId", { unique: true });
+      evidence.createIndex("facets", "facets", { multiEntry: true });
+      const postings = database.createObjectStore("facetPostings", { keyPath: ["token", "sequence"] });
+      postings.createIndex("token", "token", { unique: false });
+      database.createObjectStore("historyControl", { keyPath: "key" });
+    };
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const accountedBytes = journalAccountedBytes(serialized.bytes);
+    const transaction = database.transaction(["historyControl", "evidence", "facetPostings"], "readwrite");
+    transaction.objectStore("evidence").put({ intervalId: interval.id, sequence: 1, eventId: candidate.id, replayPayload: serialized.payload, serializedBytes: serialized.bytes, accountedBytes, facets: [
+      ["v1", "kind", "item-update"], ["v1", "clientId", "client-1"], ["v1", "sessionId", "session-1"], ["v1", "subscriptionId", "sub-1"], ["v1", "mode", "MERGE"], ["v1", "item", "item-1"], ["v1", "itemPosition", null], ["v1", "listenerId", null], ["v1", "key", null], ["v1", "command", null], ["v1", "snapshot", false], ["v1", "synthetic", false]
+    ].map((value) => JSON.stringify(value)) });
+    for (const value of extractEvidenceFacets(candidate).selectableValues) {
+      transaction.objectStore("facetPostings").put({ token: JSON.stringify(["facet-v2", value.identity]), sequence: 1, intervalId: interval.id, eventId: candidate.id, facetIdentity: value.identity });
+    }
+    transaction.objectStore("historyControl").put({ key: "control", schemaVersion: 2, recordVersion: 3, panelSessionId, interval, phase: "RUNNING", terminal: null, nextSequence: 2, committedEvidenceBoundary: { intervalId: interval.id, sequence: 1, eventId: candidate.id }, retainedRange: { first: { intervalId: interval.id, sequence: 1, eventId: candidate.id }, last: { intervalId: interval.id, sequence: 1, eventId: candidate.id } }, retainedCount: 1, replayPayloadBytes: serialized.bytes, accountedBytes });
+    await new Promise<void>((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error); });
+    database.close();
+
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(result).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "legacy" } }] } } });
+    await durable.close();
+  });
+
   it("binds cursors to discover, lookup, Find, Filter, page shape, and read point", async () => {
     const { durable } = await histories(`filter-impl-08-cursor-bindings-${Date.now()}`);
     const base = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
@@ -287,5 +357,60 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     const changedPage = await durable.query!({ at: base.value.readPoint, page: { order: "NEWEST_FIRST", size: 1, cursor: page.value.page.nextCursor }, filter: emptyFilter(), find: { text: "item" } });
     expect(changedPage).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
     await durable.close();
+  });
+
+  it("binds memory cursors to the complete query request", async () => {
+    const { memory } = await histories(`filter-impl-08-memory-cursor-${Date.now()}`);
+    const first = await memory.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(first).toMatchObject({ ok: true, value: { page: { nextCursor: expect.any(String) } } });
+    if (!first.ok || !first.value.page.nextCursor) return;
+    const altered = await memory.query!({
+      at: first.value.readPoint,
+      page: { order: "OLDEST_FIRST", size: 1, cursor: first.value.page.nextCursor },
+      filter: { ...emptyFilter(), text: "alpha" }
+    });
+    expect(altered).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+    await memory.close();
+  });
+
+  it("keeps memory cursor failures and continuation behavior at the IndexedDB contract boundary", async () => {
+    const { memory, durable } = await histories(`filter-impl-08-cursor-parity-${Date.now()}`);
+    const runMatrix = async (history: NonNullable<typeof memory>): Promise<void> => {
+      const seed = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+      expect(seed.ok).toBe(true);
+      if (!seed.ok) return;
+      const selected = seed.value.page.evidence[1]!.identity;
+      const cases = [
+        { name: "filter", request: {}, altered: { filter: { ...emptyFilter(), text: "alpha" } } },
+        { name: "order", request: {}, altered: { page: { order: "NEWEST_FIRST" as const, size: 1 } } },
+        { name: "size", request: {}, altered: { page: { order: "OLDEST_FIRST" as const, size: 2 } } },
+        { name: "lookup", request: { lookup: selected }, altered: { lookup: seed.value.page.evidence[0]!.identity } },
+        { name: "find", request: { find: { text: "alpha" } }, altered: { find: { text: "beta" } } },
+        { name: "discoveries", request: { discover: [{ facet: "mode", size: 10 }] }, altered: { discover: [{ facet: "mode", size: 11 }] } }
+      ] as const;
+      for (const testCase of cases) {
+        const first = await history.query!({ at: seed.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), ...testCase.request });
+        expect(first.ok, testCase.name).toBe(true);
+        if (!first.ok || !first.value.page.nextCursor) continue;
+        const continuation = await history.query!({ at: seed.value.readPoint, page: { order: "OLDEST_FIRST", size: 1, cursor: first.value.page.nextCursor }, filter: emptyFilter(), ...testCase.request });
+        expect(continuation, `${testCase.name} valid continuation`).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "two" } }] } } });
+        const alteredPage = "page" in testCase.altered ? { ...testCase.altered.page, cursor: first.value.page.nextCursor } : { order: "OLDEST_FIRST" as const, size: 1, cursor: first.value.page.nextCursor };
+        const altered = await history.query!({ at: seed.value.readPoint, filter: emptyFilter(), ...testCase.altered, page: alteredPage });
+        expect(altered, `${testCase.name} altered request`).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+      }
+      const malformed = await history.query!({ at: seed.value.readPoint, page: { order: "OLDEST_FIRST", size: 1, cursor: "foreign-cursor" }, filter: emptyFilter() });
+      expect(malformed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+      await history.offer(event("four", 30_000, "delta")).settled;
+      const changedReadPoint = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+      expect(changedReadPoint.ok).toBe(true);
+      const oldPoint = await history.query!({ at: seed.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+      expect(oldPoint).toMatchObject({ ok: true });
+      await history.clear();
+      const cleared = await history.query!({ at: seed.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+      expect(cleared).toMatchObject({ ok: false, problem: { code: "HISTORY_INTERVAL_UNAVAILABLE" } });
+    };
+    await runMatrix(memory);
+    await runMatrix(durable);
+    await Promise.all([memory.close(), durable.close()]);
   });
 });
