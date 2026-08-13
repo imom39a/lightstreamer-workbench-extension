@@ -53,6 +53,6 @@ describe("release packaging verification gate", () => {
       "tests/history-impl-08-lifecycle.test.ts",
       "tests/history-impl-09-lifecycle-blockers.test.ts"
     ]);
-    expect(new Set([...plan.ordinary, ...plan.isolated]).size).toBe(72);
+    expect(new Set([...plan.ordinary, ...plan.isolated]).size).toBe(73);
   });
 });
