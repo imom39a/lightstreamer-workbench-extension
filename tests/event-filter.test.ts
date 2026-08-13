@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import { filterEvents, matchesEventFilters } from "../src/core/event-filter";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
+  typedFacetValue,
+  type EvidenceFilterQueryAdapter,
+  type EvidenceSnapshot
+} from "../src/core/evidence-filter-contract";
+import {
   DEFAULT_EVIDENCE_FILTER_FIXTURE_SIZE,
   EVIDENCE_FILTER_FACETS,
   EVIDENCE_FILTER_LIFECYCLE_CASES,
@@ -10,11 +15,8 @@ import {
   EVIDENCE_FILTER_PANEL_GEOMETRIES,
   MINIMUM_COMMAND_KEY_COUNT,
   createEmptyEvidenceFilter,
-  createEvidenceFilterFixture,
-  typedFacetValue,
-  type EvidenceFilterQueryAdapter,
-  type EvidenceSnapshot
-} from "../src/core/evidence-filter-contract";
+  createEvidenceFilterFixture
+} from "./support/evidence-filter-fixture";
 import { EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS } from "./support/panel-scenarios";
 import { createReferenceFilterAdapter } from "./support/evidence-filter-reference";
 

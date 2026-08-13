@@ -91,6 +91,8 @@ describe("filter-impl-01 final contract gaps", () => {
     for (const id of ids) {
       const scenario = getEvidenceFilterPanelScenario(id);
       expect(scenario.setupActions).toEqual([]);
+      expect(scenario.semanticSetup?.length).toBeGreaterThan(0);
+      expect(scenario.capturedEvents).toHaveLength(id === "empty-history" || id === "discovery-unavailable" ? 0 : id === "valid-zero-result-conflict" ? 2 : id === "unsupported-criterion" ? 1 : id === "hidden-selection" ? 3 : id === "terminal-history" ? 4 : 6);
       const result = await runEvidenceFilterPanelScenario(id);
       expect(result.actual).toEqual(result.expected);
     }

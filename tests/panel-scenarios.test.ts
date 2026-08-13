@@ -12,7 +12,7 @@ import {
   getPanelScenario,
   getEvidenceFilterPanelScenario
 } from "./support/panel-scenarios";
-import { EVIDENCE_FILTER_PANEL_SCENARIOS } from "../src/core/evidence-filter-contract";
+import { EVIDENCE_FILTER_PANEL_SCENARIOS } from "./support/evidence-filter-fixture";
 import { EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS } from "./support/panel-scenarios";
 
 describe("deterministic panel scenarios", () => {

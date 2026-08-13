@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createEmptyEvidenceFilter,
-  createEvidenceFilterFixture,
   type EvidenceFilterQueryAdapter,
   type EvidenceQueryRequest,
   typedFacetValue
 } from "../src/core/evidence-filter-contract";
+import { createEmptyEvidenceFilter, createEvidenceFilterFixture } from "./support/evidence-filter-fixture";
 import { createReferenceFilterAdapter } from "./support/evidence-filter-reference";
 
 

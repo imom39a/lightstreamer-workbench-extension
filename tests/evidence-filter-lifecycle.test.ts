@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createEvidenceFilterFixture,
   type EvidenceFilterQueryAdapter,
   type EvidenceReadPoint
 } from "../src/core/evidence-filter-contract";
+import { createEvidenceFilterFixture } from "./support/evidence-filter-fixture";
 import { createReferenceLifecycleHarness } from "./support/evidence-filter-reference";
 
 

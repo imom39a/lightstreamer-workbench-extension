@@ -1,5 +1,4 @@
 import {
-  DEFAULT_FILTER_INTERVAL,
   type AroundEvidence,
   type DeterministicEvidenceRecord,
   type EvidenceFilter,
@@ -19,6 +18,7 @@ import {
   type RevealBlocker,
   type UnsupportedCriterion
 } from "../../src/core/evidence-filter-contract";
+import { DEFAULT_FILTER_INTERVAL } from "./evidence-filter-fixture";
 
 type ReferenceOptions = Readonly<{
   storage?: "INDEXED_DB" | "MEMORY_FALLBACK";
@@ -205,6 +205,7 @@ function discover(records: readonly DeterministicEvidenceRecord[], request: Face
     if (existing) existing.count += 1; else values.set(value.identity, { value, count: 1 });
   }
   const ordered = [...values.values()].sort((left, right) => left.value.identity.localeCompare(right.value.identity));
+  if (ordered.length === 0) return { state: "UNAVAILABLE", facet: request.facet, reason: "NO_CONCRETE_VALUES", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: records.length };
   const start = cursorValue(request.cursor);
   const selected = ordered.slice(start, start + request.size).map(({ value, count }) => Object.freeze({ value, count, pinned: false }));
   return Object.freeze({ state: "AVAILABLE", facet: request.facet, values: Object.freeze(selected), distinctTotal: ordered.length, nextCursor: start + selected.length < ordered.length ? String(start + selected.length) : null, baseEvidenceCount: records.length });
