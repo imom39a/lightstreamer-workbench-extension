@@ -15,6 +15,7 @@ function event(overrides: Partial<LightstreamerEventEnvelope> = {}): Lightstream
     timestamp: 100,
     direction: "inbound",
     source: "server",
+    captureSource: "listener",
     synthetic: false,
     kind: "item-update",
     client: { id: "client-main", sessionId: "session-main" },
@@ -76,6 +77,25 @@ describe("canonical Evidence facets", () => {
     expect(missing.key).toBeUndefined();
     expect(missing.operation).toBeUndefined();
     expect(extractEvidenceFacets(event({ subscription: { id: "sub-main" } }), context).facets.mode).toBeUndefined();
+  });
+
+  it("uses immutable accepted identity only for missing ownership context", () => {
+    const extracted = extractEvidenceFacets(event(), {
+      identity: { intervalId: "interval-1", pageId: "page-identity", ownerId: "listener-owner", sequence: 1, eventId: "evidence-1" }
+    });
+    expect(extracted.facets.client?.value).toContain("page-identity");
+    expect(extracted.facets.listener?.value).toContain("listener-owner");
+    expect(extractEvidenceFacets(event(), {}).facets.client).toBeUndefined();
+  });
+
+  it("does not expose semantic unknown, unavailable, redacted, or not-applicable states as values", () => {
+    for (const state of ["unknown", "unavailable", "redacted", "not-applicable"] as const) {
+      const extracted = extractEvidenceFacets(event({
+        subscription: { id: "sub-main", mode: "COMMAND", semanticValueStates: { mode: { state } } }
+      }), context);
+      expect(extracted.facets.mode).toBeUndefined();
+      expect(extracted.selectableValues).not.toContainEqual(expect.objectContaining({ value: state }));
+    }
   });
 
   it("keeps kind, operation, provenance, and path independent", () => {

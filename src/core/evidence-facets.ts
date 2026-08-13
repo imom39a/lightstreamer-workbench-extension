@@ -17,7 +17,7 @@ export type EvidenceFacetContext = Readonly<{
 export type EvidenceFacetDescriptor = Readonly<{
   key: EvidenceFacetKey;
   label: string;
-  valueType: "string" | "enum" | "number" | "boolean" | "null";
+  valueType: string;
   extract: (event: LightstreamerEventEnvelope, context?: EvidenceFacetContext) => TypedFacetValue | undefined;
 }>;
 
@@ -27,7 +27,7 @@ export type EvidenceFacetExtraction = Readonly<{
   unavailable: readonly EvidenceFacetKey[];
 }> & Readonly<Partial<Record<EvidenceFacetKey, TypedFacetValue>>>;
 
-const value = (facet: EvidenceFacetKey, type: "string" | "enum" | "number", raw: string, label = raw): TypedFacetValue =>
+const value = (facet: EvidenceFacetKey, type: string, raw: string, label = raw): TypedFacetValue =>
   typedFacetValue(facet, type, raw, label);
 
 function qualified(parts: readonly unknown[]): string {
@@ -45,22 +45,23 @@ function concrete(state: EventSemanticValueState["state"] | undefined): boolean 
 
 function extractClient(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): TypedFacetValue | undefined {
   const id = event.client?.id;
-  if (!id || !context.pageId || !concrete(semanticState(event, "client", "id"))) return undefined;
-  return value("client", "string", qualified(["page", context.pageId, "client", id]), id);
+  const pageId = context.pageId ?? context.identity?.pageId;
+  if (!id || !pageId || !concrete(semanticState(event, "client", "id"))) return undefined;
+  return value("client", "client", qualified(["page", pageId, "client", id]), id);
 }
 
 function extractSession(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): TypedFacetValue | undefined {
   const client = extractClient(event, context);
   const sessionId = event.client?.sessionId;
   if (!client || !sessionId || !concrete(semanticState(event, "client", "sessionId"))) return undefined;
-  return value("session", "string", qualified(["client", client.value, "session", sessionId]), sessionId);
+  return value("session", "session", qualified(["client", client.value, "session", sessionId]), sessionId);
 }
 
 function extractSubscription(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): TypedFacetValue | undefined {
   const session = extractSession(event, context);
   const id = event.subscription?.id;
   if (!session || !id || !concrete(semanticState(event, "subscription", "id"))) return undefined;
-  return value("subscription", "string", qualified(["session", session.value, "subscription", id]), id);
+  return value("subscription", "subscription", qualified(["session", session.value, "subscription", id]), id);
 }
 
 function extractMode(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
@@ -77,13 +78,14 @@ function extractItem(event: LightstreamerEventEnvelope, context: EvidenceFacetCo
   const item = event.item;
   if (!subscription || !item || (item.name === undefined || item.name === null) && item.position === undefined) return undefined;
   const parts = [item.name === undefined || item.name === null ? null : ["name", item.name], item.position === undefined ? null : ["position", item.position]];
-  return value("item", "string", qualified(["subscription", subscription.value, "item", parts]), item.name ?? String(item.position));
+  return value("item", "item", qualified(["subscription", subscription.value, "item", parts]), item.name ?? String(item.position));
 }
 
 function extractListener(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): TypedFacetValue | undefined {
   const id = event.listener?.id;
-  if (!id || !context.listenerOwner) return undefined;
-  return value("listener", "string", qualified(["owner", context.listenerOwner, "listener", id]), id);
+  const owner = context.listenerOwner ?? context.identity?.ownerId;
+  if (!id || !owner) return undefined;
+  return value("listener", "listener", qualified(["owner", owner, "listener", id]), id);
 }
 
 function extractKey(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
@@ -111,17 +113,18 @@ function extractProvenance(event: LightstreamerEventEnvelope): TypedFacetValue |
 
 function extractObservationPath(event: LightstreamerEventEnvelope): TypedFacetValue | undefined {
   if (event.synthetic || event.source !== "server") return undefined;
+  if (event.captureSource === undefined) return undefined;
   return value("observationPath", "enum", event.captureSource === "wire" ? "WIRE" : "LISTENER");
 }
 
 const descriptors: EvidenceFacetDescriptor[] = [
-  { key: "client", label: "Client", valueType: "string", extract: extractClient },
-  { key: "session", label: "Session", valueType: "string", extract: extractSession },
-  { key: "subscription", label: "Subscription", valueType: "string", extract: extractSubscription },
+  { key: "client", label: "Client", valueType: "client", extract: extractClient },
+  { key: "session", label: "Session", valueType: "session", extract: extractSession },
+  { key: "subscription", label: "Subscription", valueType: "subscription", extract: extractSubscription },
   { key: "mode", label: "Mode", valueType: "enum", extract: extractMode },
   { key: "kind", label: "Evidence kind", valueType: "enum", extract: extractKind },
-  { key: "item", label: "Item", valueType: "string", extract: extractItem },
-  { key: "listener", label: "Listener", valueType: "string", extract: extractListener },
+  { key: "item", label: "Item", valueType: "item", extract: extractItem },
+  { key: "listener", label: "Listener", valueType: "listener", extract: extractListener },
   { key: "key", label: "COMMAND key", valueType: "string", extract: extractKey },
   { key: "operation", label: "COMMAND operation", valueType: "enum", extract: extractOperation },
   { key: "phase", label: "Update phase", valueType: "enum", extract: extractPhase },
@@ -162,9 +165,22 @@ export function canonicalEvidenceSearchText(event: LightstreamerEventEnvelope, c
   return normalizeText([
     event.id,
     event.kind,
+    event.kind.replaceAll("-", " "),
     event.source,
     event.direction,
     context.summary,
+    event.client?.id,
+    event.client?.status,
+    event.client?.sessionId,
+    event.subscription?.id,
+    event.subscription?.mode,
+    ...(event.subscription?.items ?? []),
+    event.listener?.id,
+    event.item?.name,
+    event.item?.position,
+    event.update?.key,
+    event.update?.command,
+    event.update?.isSnapshot === true ? "SNAPSHOT" : event.update?.isSnapshot === false ? "LIVE" : undefined,
     ...facetText,
     ...stableFields(event.update?.fields),
     ...stableFields(event.update?.changedFields),
