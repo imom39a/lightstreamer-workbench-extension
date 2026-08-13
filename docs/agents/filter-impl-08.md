@@ -1,5 +1,26 @@
 # `filter-impl-08` repair proof
 
+## Outer finalization repair (2026-08-13)
+
+The final lifecycle review found that outer timeout evidence and `finally`
+cleanup could replace the primary `PerformanceOperationTimeout` or keep the
+runner alive indefinitely. `main()` now records the primary outcome before
+entering finalization. Evidence writing, CDP close, Chrome termination, HTTP
+server cleanup, and temporary-root removal each run through a finite,
+best-effort bound that catches synchronous throws and rejected promises.
+
+Secondary failures are retained as structured `outerDiagnostics` on the
+primary error when it is extensible. A cleanup failure without a primary
+failure raises an explicit `PerformanceOuterCleanupError`, so cleanup cannot
+silently turn a run into success. Workload sizes, the shared proof deadline,
+thresholds, and capture/reference semantics are unchanged. No Chrome was
+launched and no real capture was run.
+
+Deterministic regressions combine a primary timeout with failing and
+never-settling evidence, throwing CDP close, rejecting and throwing child
+termination, never-settling server cleanup, and failing and never-settling
+temporary-root removal.
+
 ## Final lifecycle repair (2026-08-13)
 
 The final lifecycle review found three fail-closed gaps. Startup timeout handling

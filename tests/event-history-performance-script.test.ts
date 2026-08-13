@@ -28,6 +28,68 @@ const runNode = (source: string) => execFileSync(process.execPath, ["--input-typ
 afterAll(cleanupTemporaryModuleRoot);
 
 describe("Event History performance startup fail-closed seams", () => {
+  it("preserves a primary timeout across every outer evidence and cleanup failure", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { finalizePerformanceRun } = await import(${JSON.stringify(scriptUrl)});
+      const primary = new Error("primary timeout");
+      primary.name = "PerformanceOperationTimeout";
+      const never = () => new Promise(() => undefined);
+      const started = Date.now();
+      const result = await finalizePerformanceRun({
+        primaryError: primary,
+        timeout: primary,
+        writeEvidence: () => { throw new Error("evidence write failed"); },
+        closeCdp: () => { throw new Error("cdp close failed"); },
+        terminateChrome: () => Promise.reject(new Error("termination failed")),
+        closeServer: never,
+        removeTemporaryRoot: never,
+        timeoutMs: 25
+      });
+      assert.strictEqual(result, primary);
+      assert.ok(Date.now() - started < 500);
+      assert.deepEqual(
+        primary.outerDiagnostics.map(({ phase }) => phase),
+        ["timeout-evidence", "cdp-close", "chrome-termination", "server-close", "temporary-root-removal"]
+      );
+      assert.equal(primary.outerDiagnostics.every(({ outcome }) => outcome === "failed" || outcome === "timed-out"), true);
+    `);
+  });
+
+  it("reports cleanup failure when there is no primary error", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { finalizePerformanceRun } = await import(${JSON.stringify(scriptUrl)});
+      await assert.rejects(
+        finalizePerformanceRun({ closeCdp: () => { throw new Error("cdp close failed"); }, timeoutMs: 25 }),
+        (error) => error?.name === "PerformanceOuterCleanupError"
+          && error.diagnostics[0].phase === "cdp-close"
+      );
+    `);
+  });
+
+  it("records synchronous termination and temporary-root failures without masking timeout", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { finalizePerformanceRun } = await import(${JSON.stringify(scriptUrl)});
+      const primary = new Error("primary timeout");
+      const result = await finalizePerformanceRun({
+        primaryError: primary,
+        timeout: primary,
+        writeEvidence: () => new Promise(() => undefined),
+        terminateChrome: () => { throw new Error("kill failed"); },
+        removeTemporaryRoot: () => Promise.reject(new Error("rm failed")),
+        timeoutMs: 20
+      });
+      assert.strictEqual(result, primary);
+      assert.deepEqual(primary.outerDiagnostics.map(({ phase, outcome }) => [phase, outcome]), [
+        ["timeout-evidence", "timed-out"],
+        ["chrome-termination", "failed"],
+        ["temporary-root-removal", "failed"]
+      ]);
+    `);
+  });
+
   it("preserves a primary setup error when bounded target cleanup also fails", () => {
     runNode(`
       import assert from "node:assert/strict";

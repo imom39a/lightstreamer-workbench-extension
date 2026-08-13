@@ -35,6 +35,7 @@ const referencePath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_REFER
 const BROWSER_TIMEOUT_MS = 240_000;
 const STARTUP_REQUEST_TIMEOUT_MS = 5_000;
 const SERVER_CLEANUP_TIMEOUT_MS = 1_000;
+const OUTER_FINALIZATION_TIMEOUT_MS = 1_000;
 const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
   "LSEW_EVENT_HISTORY_PERF_DEADLINE_MS",
   3_600_000
@@ -54,6 +55,7 @@ async function main() {
   let chromeOutput = "";
   let chromeMetadata = null;
   let environmentMetadata = null;
+  let primaryError = null;
   try {
     await mkdir(site, { recursive: true });
     await build({ entryPoints: [join(rootDir, "benchmarks/event-history-performance-gate.ts")], outfile: gateModulePath, bundle: true, format: "esm", platform: "node", target: "node20", logLevel: "silent" });
@@ -231,26 +233,31 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ verdict: decision.verdict, failures: decision.failures, reviewReasons: decision.reviewReasons, report: outputPath }, null, 2)}\n`);
     if (decision.verdict === "FAIL") throw new Error(`Event History performance gate failed. See ${outputPath}.`);
   } catch (error) {
-    const timeout = normalizePerformanceTimeout(error);
-    if (timeout) {
-      await writeTimeoutEvidenceForTimeout({
-        outputPath,
-        markdownPath,
-        timeout,
-        source: safeSourceState(),
-        runner: chromeMetadata,
-        environment: environmentMetadata,
-        referencePath,
-        deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS
-      });
-    }
+    primaryError = normalizePerformanceTimeout(error) ?? error;
     if (chromeOutput) process.stderr.write(`\nChrome output:\n${chromeOutput.slice(-8_000)}\n`);
-    throw timeout ?? error;
   } finally {
-    cdp?.close();
-    if (chrome) await terminateChild(chrome);
-    if (server) await closeServerWithDeadline(server, SERVER_CLEANUP_TIMEOUT_MS);
-    await rm(temporaryRoot, { recursive: true, force: true });
+    const finalizedError = await finalizePerformanceRun({
+      primaryError,
+      timeout: primaryError instanceof PerformanceOperationTimeout ? primaryError : null,
+      writeEvidence: primaryError instanceof PerformanceOperationTimeout
+        ? () => writeTimeoutEvidenceForTimeout({
+          outputPath,
+          markdownPath,
+          timeout: primaryError,
+          source: safeSourceState(),
+          runner: chromeMetadata,
+          environment: environmentMetadata,
+          referencePath,
+          deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS
+        })
+        : null,
+      closeCdp: cdp ? () => cdp.close() : null,
+      terminateChrome: chrome ? () => terminateChild(chrome) : null,
+      closeServer: server ? () => closeServerWithDeadline(server, SERVER_CLEANUP_TIMEOUT_MS) : null,
+      removeTemporaryRoot: () => rm(temporaryRoot, { recursive: true, force: true }),
+      timeoutMs: OUTER_FINALIZATION_TIMEOUT_MS
+    });
+    if (finalizedError) throw finalizedError;
   }
 }
 
@@ -449,6 +456,67 @@ export function normalizePerformanceTimeout(error) {
     }
   };
   return new PerformanceOperationTimeout("Event History performance harness stage timed out.", status);
+}
+
+export async function finalizePerformanceRun({
+  primaryError = null,
+  timeout = null,
+  writeEvidence = null,
+  closeCdp = null,
+  terminateChrome = null,
+  closeServer = null,
+  removeTemporaryRoot = null,
+  timeoutMs = OUTER_FINALIZATION_TIMEOUT_MS
+}) {
+  const diagnostics = [];
+  if (timeout && writeEvidence) {
+    diagnostics.push(await runBoundedOuterOperation("timeout-evidence", writeEvidence, timeoutMs));
+  }
+  for (const [phase, operation] of [
+    ["cdp-close", closeCdp],
+    ["chrome-termination", terminateChrome],
+    ["server-close", closeServer],
+    ["temporary-root-removal", removeTemporaryRoot]
+  ]) {
+    if (operation) diagnostics.push(await runBoundedOuterOperation(phase, operation, timeoutMs));
+  }
+  const failures = diagnostics.filter((diagnostic) => diagnostic.outcome !== "completed");
+  if (primaryError) {
+    if (failures.length && (typeof primaryError === "object" || typeof primaryError === "function")) {
+      try { primaryError.outerDiagnostics = failures; } catch { /* Preserve the primary even when it is non-extensible. */ }
+    }
+    return primaryError;
+  }
+  if (failures.length) {
+    const error = new Error("Event History performance outer cleanup failed.");
+    error.name = "PerformanceOuterCleanupError";
+    error.diagnostics = failures;
+    throw error;
+  }
+  return null;
+}
+
+async function runBoundedOuterOperation(phase, operation, timeoutMs) {
+  const bound = positiveFiniteStartupOption(timeoutMs, "outer finalization timeoutMs");
+  let timer;
+  try {
+    const result = await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((resolvePromise) => {
+        timer = setTimeout(() => resolvePromise({ outcome: "timed-out", phase, code: "OUTER_FINALIZATION_TIMEOUT", message: `Outer ${phase} did not settle within ${bound} ms.` }), bound);
+      })
+    ]);
+    return result?.outcome ? result : { outcome: "completed", phase };
+  } catch (error) {
+    return {
+      outcome: "failed",
+      phase,
+      code: error?.code ?? error?.name ?? "OUTER_FINALIZATION_FAILED",
+      message: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function writeTimeoutEvidence({ outputPath: targetOutputPath, markdownPath: targetMarkdownPath, diagnostic }) {
