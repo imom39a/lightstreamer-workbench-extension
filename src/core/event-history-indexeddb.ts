@@ -329,7 +329,10 @@ async function runStartupSweep(
     if (!identity) {
       continue;
     }
-    if (identity.schemaVersion > AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
+    // The v2 database name is the stable application identity. Its embedded
+    // version is not the physical schema version after an in-place upgrade.
+    const physicalSchemaVersion = descriptor.version ?? identity.schemaVersion;
+    if (physicalSchemaVersion > AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION) {
       unknownNewerVersion = true;
       continue;
     }

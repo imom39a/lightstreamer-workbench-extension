@@ -2,13 +2,16 @@ import { extractEvidenceFacets } from "../evidence-facets";
 import { deserializeJournalEvidenceCandidate } from "../event-history-serialization";
 
 export const AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION = 3;
+// The application identity predates the posting-store schema. Keep this
+// logical name stable so schema upgrades happen in the deployed database.
+export const AUTHORITATIVE_EVENT_DB_IDENTITY_VERSION = 2;
 export const AUTHORITATIVE_EVENT_DB_NAME_PREFIX = "lsew-events-panel";
 export const AUTHORITATIVE_EVENT_DB_NAME = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-session`;
 export const AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION = 1;
 export const AUTHORITATIVE_EVENT_CONTROL_KEY = "control";
 
 const FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_PREFIX = "session";
-const FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-${AUTHORITATIVE_EVENT_DB_KNOWN_LEGACY_SCHEMA_VERSION}-${FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_PREFIX}`;
+const FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID = `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v${AUTHORITATIVE_EVENT_DB_IDENTITY_VERSION}-${FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_PREFIX}`;
 
 const INDEXEDDB_REQUEST_TIMEOUT_MS = 2_000;
 export const AUTHORITATIVE_EVENT_STORE_NAMES = {
@@ -76,7 +79,7 @@ export function authoritativeEventDatabaseName(panelSessionId?: string | null): 
   if (!panelSessionId) {
     return FALLBACK_AUTHORITATIVE_EVENT_DB_SESSION_ID;
   }
-  return `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v${AUTHORITATIVE_EVENT_DB_SCHEMA_VERSION}-${sanitizePanelSessionId(panelSessionId)}`;
+  return `${AUTHORITATIVE_EVENT_DB_NAME_PREFIX}-v${AUTHORITATIVE_EVENT_DB_IDENTITY_VERSION}-${sanitizePanelSessionId(panelSessionId)}`;
 }
 
 export function parseAuthoritativeEventDatabaseName(name: string): AuthoritativeEventDatabaseIdentity | null {
