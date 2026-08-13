@@ -68,4 +68,22 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 3, inScope: 3 }, page: { evidence: [{ identity: { eventId: "one" } }] } } });
     await durable.close();
   });
+
+  it("publishes bounded-plan telemetry and rejects cursors outside their request-bound read point", async () => {
+    const { durable } = await histories(`filter-impl-08-cursor-${Date.now()}`);
+    const first = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter() });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.telemetry).toMatchObject({ postingReads: 0, payloadHydrations: 0, pageBound: 1 });
+    expect(first.value.page.nextCursor).toBeTypeOf("string");
+    const next = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1, cursor: first.value.page.nextCursor! }, filter: emptyFilter() });
+    expect(next.ok).toBe(true);
+    if (!next.ok) return;
+    expect(next.value.page.evidence.map((record) => record.identity.eventId)).toEqual(["two"]);
+    const malformed = await durable.query!({ at: first.value.readPoint, page: { order: "NEWEST_FIRST", size: 1, cursor: first.value.page.nextCursor! }, filter: emptyFilter() });
+    expect(malformed).toMatchObject({ ok: false, problem: { code: "QUERY_FAILED" } });
+    const discovery = await durable.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 1 }, filter: emptyFilter(), discover: [{ facet: "mode", size: 10 }] });
+    expect(discovery.ok && discovery.value.discoveries.get("mode")).toMatchObject({ state: "UNAVAILABLE", reason: "UNSUPPORTED_AT_READ_POINT" });
+    await durable.close();
+  });
 });
