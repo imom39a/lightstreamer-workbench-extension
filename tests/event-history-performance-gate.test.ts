@@ -1120,6 +1120,49 @@ describe("Event History real-Chrome performance gate classifier", () => {
     expect(decision.failures.some((failure) => failure.includes("reference"))).toBe(true);
   });
 
+  it.each([
+    ["duplicate query sample", (queryCells: readonly EventHistoryPerformanceQueryCell[]) => [
+      ...queryCells.slice(0, -1),
+      queryCells[0]!
+    ]],
+    ["missing query sample", (queryCells: readonly EventHistoryPerformanceQueryCell[]) => queryCells.slice(0, -1)]
+  ])("fails closed for a pinned reference with %s", (_label, mutateQueryCells) => {
+    const baseline = report();
+    const reference = referenceFrom(baseline);
+    const malformedReference = {
+      ...reference,
+      queryCells: mutateQueryCells(reference.queryCells)
+    };
+
+    expect(validateEventHistoryPerformanceReference(malformedReference)).toBe(false);
+    const decision = classifyEventHistoryPerformance(baseline, malformedReference);
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.reviewReasons).toEqual([]);
+  });
+
+  it.each([
+    ["malformed telemetry", (queryCells: readonly EventHistoryPerformanceQueryCell[]) => queryCells.map((cell, index) => index === 0
+      ? { ...cell, telemetry: { operations: { ...cell.telemetry.operations, find: undefined } } }
+      : cell)],
+    ["invalid absolute threshold", (queryCells: readonly EventHistoryPerformanceQueryCell[]) => queryCells.map((cell, index) => index === 0
+      ? { ...cell, latency: { ...cell.latency, findP95Ms: EVENT_HISTORY_PERFORMANCE_LIMITS.query.findFullP95Ms + 1 } }
+      : cell)]
+  ])("fails closed for a pinned reference with %s query cells", (_label, mutateQueryCells) => {
+    const baseline = report();
+    const reference = referenceFrom(baseline);
+    const malformedReference = {
+      ...reference,
+      queryCells: mutateQueryCells(reference.queryCells)
+    };
+
+    expect(validateEventHistoryPerformanceReference(malformedReference)).toBe(false);
+    const decision = classifyEventHistoryPerformance(baseline, malformedReference);
+
+    expect(decision.verdict).toBe("FAIL");
+    expect(decision.reviewReasons).toEqual([]);
+  });
+
   it("fails closed for a pending reference disposition", () => {
     const baseline = report();
     const decision = classifyEventHistoryPerformance(baseline, {

@@ -861,6 +861,10 @@ function validateStorageTelemetry(cell: EventHistoryPerformanceCell, failures: s
 function isPerformanceReference(value: unknown): value is EventHistoryPerformanceReference {
   if (!isRecord(value)) return false;
   const environment = value.environment;
+  const queryCells = value.queryCells;
+  if (!Array.isArray(queryCells) || queryCells.length !== ADAPTERS.length * SAMPLE_COUNT || !queryCells.every(isQueryCell)) return false;
+  const queryFailures: string[] = [];
+  validateQueryCells(queryCells, queryFailures);
   return value.schemaVersion === PERFORMANCE_GATE_SCHEMA_VERSION
     && typeof value.referenceVersion === "string" && value.referenceVersion.length > 0
     && value.disposition === "ACCEPTED_INITIAL_CLEAN_REFERENCE"
@@ -868,7 +872,7 @@ function isPerformanceReference(value: unknown): value is EventHistoryPerformanc
     && isRecord(environment) && environment.chromeMajor === 151
     && typeof environment.platformClass === "string" && typeof environment.architectureClass === "string"
     && Array.isArray(value.cells) && hasIndependentMatrixSamples(value.cells)
-    && Array.isArray(value.queryCells) && value.queryCells.length === 6 && value.queryCells.every(isQueryCell);
+    && queryFailures.length === 0;
 }
 
 function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell {
