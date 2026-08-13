@@ -125,9 +125,13 @@ export class PerformanceOperationTimeout extends Error {
 export async function collectHeapAfterRepeatedGc(cdp, passes = FORCED_GC_PASSES, options = {}) {
   if (passes !== FORCED_GC_PASSES) throw new Error(`Heap measurement requires exactly ${FORCED_GC_PASSES} forced GC passes.`);
   const now = options.now ?? Date.now;
-  const deadlineMs = positiveFinite(options.deadlineMs ?? DEFAULT_HEAP_GC_DEADLINE_MS, "heap GC deadlineMs");
+  const startedAt = now();
+  const deadlineMs = options.deadlineAt === undefined
+    ? positiveFinite(options.deadlineMs ?? DEFAULT_HEAP_GC_DEADLINE_MS, "heap GC deadlineMs")
+    : options.deadlineAt - startedAt;
+  if (!Number.isFinite(deadlineMs)) throw new Error("heap GC deadlineAt must be finite.");
   const requestCeilingMs = positiveFinite(options.requestCeilingMs ?? DEFAULT_REQUEST_CEILING_MS, "heap GC requestCeilingMs");
-  const deadlineAt = now() + deadlineMs;
+  const deadlineAt = options.deadlineAt ?? startedAt + deadlineMs;
   const request = (method, phase) => requestWithDeadline(cdp, {}, deadlineAt, requestCeilingMs, now, phase, false, method);
   await request("HeapProfiler.enable", "heap-gc-enable");
   for (let pass = 1; pass <= passes; pass += 1) {
@@ -152,7 +156,7 @@ function completeCloseOutcome(value) {
     && value.value.cleanupDisposition === "COMPLETE";
 }
 
-export async function releaseHeapSessionWithCleanup({ release, removeRoot, yieldFrame, forceGc }) {
+export async function releaseHeapSessionWithCleanup({ release, removeRoot, yieldFrame, forceGc, deadlineAt, now = Date.now }) {
   let firstFailure = null;
   let closeOutcome = null;
   let rootRemoved = false;
@@ -160,6 +164,7 @@ export async function releaseHeapSessionWithCleanup({ release, removeRoot, yield
   let gcPasses = null;
   let gcSample = null;
   try {
+    assertSharedDeadline(deadlineAt, now, "lifecycle-release");
     closeOutcome = await release();
     if (!completeCloseOutcome(closeOutcome)) {
       const problem = closeOutcome !== null && typeof closeOutcome === "object" && "problem" in closeOutcome
@@ -176,6 +181,7 @@ export async function releaseHeapSessionWithCleanup({ release, removeRoot, yield
     firstFailure ??= normalizeCleanupFailure(error, "CLOSE_FAILED", "Lifecycle heap cleanup close failed.");
   }
   try {
+    assertSharedDeadline(deadlineAt, now, "lifecycle-remove-root");
     rootRemoved = await removeRoot();
     if (rootRemoved !== true) {
       const failure = new Error("Lifecycle heap cleanup did not remove its owned root.");
@@ -186,6 +192,7 @@ export async function releaseHeapSessionWithCleanup({ release, removeRoot, yield
     firstFailure ??= normalizeCleanupFailure(error, "ROOT_REMOVAL_FAILED", "Lifecycle heap cleanup root removal failed.");
   }
   try {
+    assertSharedDeadline(deadlineAt, now, "lifecycle-yield-frame");
     frameYielded = await yieldFrame();
     if (frameYielded !== true) {
       const failure = new Error("Lifecycle heap cleanup did not yield a frame.");
@@ -196,6 +203,7 @@ export async function releaseHeapSessionWithCleanup({ release, removeRoot, yield
     firstFailure ??= normalizeCleanupFailure(error, "FRAME_YIELD_FAILED", "Lifecycle heap cleanup frame yield failed.");
   }
   try {
+    assertSharedDeadline(deadlineAt, now, "lifecycle-gc");
     gcSample = await forceGc();
     gcPasses = gcSample?.gcPasses ?? null;
     if (gcPasses !== FORCED_GC_PASSES) {
@@ -222,7 +230,9 @@ export async function runHeapMeasurementPlan({
   record,
   close,
   removeRoot,
-  yieldFrame
+  yieldFrame,
+  deadlineAt,
+  now = Date.now
 }) {
   if (sampleCount !== 3) throw new Error("Heap measurement requires exactly three samples per adapter.");
   const heapSamples = [];
@@ -230,11 +240,13 @@ export async function runHeapMeasurementPlan({
   const sessionIds = new Set();
   const databaseNames = new Set();
   for (const adapter of adapters) {
+    assertSharedDeadline(deadlineAt, now, "heap");
     const eventCount = eventCounts[adapter];
     let warmup = null;
     let prepareFailure = null;
     try {
-      warmup = await prepare({ adapter, eventCount, phase: "warmup", sample: null });
+      assertSharedDeadline(deadlineAt, now, "heap-warmup");
+      warmup = await prepare({ adapter, eventCount, phase: "warmup", sample: null, deadlineAt });
     } catch (error) {
       prepareFailure = error;
       if (error?.cleanupEvidence) {
@@ -257,7 +269,7 @@ export async function runHeapMeasurementPlan({
       warmupFailure = error;
     }
     try {
-      const evidence = await cleanupHeapSession({ adapter, eventCount, phase: "warmup", sample: null, session: warmup, close, removeRoot, yieldFrame, forceGc });
+      const evidence = await cleanupHeapSession({ adapter, eventCount, phase: "warmup", sample: null, session: warmup, close, removeRoot, yieldFrame, forceGc, deadlineAt, now });
       heapRuns.push(evidence);
     } catch (error) {
       if (error.evidence) heapRuns.push(error.evidence);
@@ -268,6 +280,7 @@ export async function runHeapMeasurementPlan({
     }
 
     for (let sample = 1; sample <= sampleCount; sample += 1) {
+      assertSharedDeadline(deadlineAt, now, "heap-sample");
       let session = null;
       let baseline = null;
       let retained = null;
@@ -275,12 +288,12 @@ export async function runHeapMeasurementPlan({
       let failure = null;
       let cleanupEvidence = null;
       try {
-        baseline = await forceGc({ adapter, eventCount, phase: "baseline", sample });
+        baseline = await forceGc({ adapter, eventCount, phase: "baseline", sample, deadlineAt });
         assertGcPasses(baseline, "baseline", adapter, sample);
-        session = await prepare({ adapter, eventCount, phase: "sample", sample });
+        session = await prepare({ adapter, eventCount, phase: "sample", sample, deadlineAt });
         assertHeapSessionIdentity(session, adapter, "sample", sample, sessionIds, databaseNames);
         assertRetainedCount(session, adapter, "sample", sample, eventCount);
-        retained = await forceGc({ adapter, eventCount, phase: "retained", sample });
+        retained = await forceGc({ adapter, eventCount, phase: "retained", sample, deadlineAt });
         assertGcPasses(retained, "retained", adapter, sample);
         recorded = await record({ adapter, eventCount, sample, session, baseline, retained });
       } catch (error) {
@@ -314,7 +327,7 @@ export async function runHeapMeasurementPlan({
 
       if (session) {
         try {
-          cleanupEvidence = await cleanupHeapSession({ adapter, eventCount, phase: "cleanup", sample, session, close, removeRoot, yieldFrame, forceGc });
+          cleanupEvidence = await cleanupHeapSession({ adapter, eventCount, phase: "cleanup", sample, session, close, removeRoot, yieldFrame, forceGc, deadlineAt, now });
           heapRuns.push(cleanupEvidence);
         } catch (error) {
           cleanupEvidence = error.evidence ?? null;
@@ -353,13 +366,14 @@ export async function runHeapMeasurementPlan({
   return { heapSamples, heapRuns };
 }
 
-async function cleanupHeapSession({ adapter, eventCount, phase, sample, session, close, removeRoot, yieldFrame, forceGc }) {
+async function cleanupHeapSession({ adapter, eventCount, phase, sample, session, close, removeRoot, yieldFrame, forceGc, deadlineAt, now }) {
   let failure = null;
   let closeOutcome = null;
   let rootRemoved = false;
   let frameYielded = false;
   let gc = null;
   try {
+    assertSharedDeadline(deadlineAt, now, `${phase}-close`);
     closeOutcome = await close(session);
     if (closeOutcome?.ok !== true || closeOutcome.value?.dataDisposition !== "ERASED" || closeOutcome.value?.cleanupDisposition !== "COMPLETE") {
       const error = new Error(`authoritative close did not confirm ERASED/COMPLETE: ${JSON.stringify(closeOutcome)}`);
@@ -371,18 +385,21 @@ async function cleanupHeapSession({ adapter, eventCount, phase, sample, session,
     failure = error;
   }
   try {
+    assertSharedDeadline(deadlineAt, now, `${phase}-remove-root`);
     rootRemoved = (await removeRoot(session)) === true;
     if (!rootRemoved) throw new Error("owned DOM root was not confirmed removed.");
   } catch (error) {
     failure ??= error;
   }
   try {
+    assertSharedDeadline(deadlineAt, now, `${phase}-yield-frame`);
     frameYielded = (await yieldFrame({ adapter, eventCount, phase, sample })) === true;
     if (!frameYielded) throw new Error("task/frame yield was not confirmed.");
   } catch (error) {
     failure ??= error;
   }
   try {
+    assertSharedDeadline(deadlineAt, now, `${phase}-gc`);
     gc = await forceGc({ adapter, eventCount, phase: phase === "warmup" ? "warmup-cleanup" : "cleanup", sample });
     assertGcPasses(gc, phase === "warmup" ? "warmup-cleanup" : "cleanup", adapter, sample);
   } catch (error) {
@@ -448,6 +465,56 @@ async function finishFailedPreparationCleanup(evidence, { adapter, eventCount, s
     completed.gcFailure = failureDetails(error);
   }
   return completed;
+}
+
+export function createSharedDeadlineTimeout(phase, deadlineAt, now = Date.now, operation = null) {
+  const elapsedMs = operation?.elapsedMs ?? Math.max(0, now() - (deadlineAt ?? now()));
+  const status = {
+    ...(operation ?? { operationId: null, state: "pending", heartbeat: 0, progress: null }),
+    state: "rejected",
+    elapsedMs,
+    error: {
+      name: "CdpRequestTimeout",
+      code: "SHARED_DEADLINE_EXCEEDED",
+      message: `Event History performance proof deadline expired during ${phase}.`,
+      stack: null
+    }
+  };
+  return new PerformanceOperationTimeout(status.error.message, status);
+}
+
+export function requestControlCdpWithDeadline(cdp, method, params, options = {}) {
+  const now = options.now ?? Date.now;
+  const startedAt = options.startedAt ?? now();
+  const deadlineAt = options.deadlineAt;
+  if (!Number.isFinite(deadlineAt)) throw new Error("control CDP deadlineAt must be finite.");
+  const requestCeilingMs = positiveFinite(options.requestCeilingMs ?? DEFAULT_REQUEST_CEILING_MS, "control CDP requestCeilingMs");
+  return requestWithDeadline(
+    cdp,
+    params,
+    deadlineAt,
+    requestCeilingMs,
+    now,
+    options.phase ?? method,
+    options.allowAfterDeadline === true,
+    method
+  ).catch((error) => {
+    if (!(error instanceof CdpRequestTimeout)) throw error;
+    const operation = options.operation ?? null;
+    const status = {
+      ...(operation ?? { operationId: null, state: "pending", heartbeat: 0, progress: null }),
+      state: "rejected",
+      elapsedMs: operation?.elapsedMs ?? Math.max(0, now() - startedAt),
+      lastRequestTimeout: { phase: error.phase, timeoutMs: error.timeoutMs, ceilingMs: error.ceilingMs },
+      error: {
+        name: error.name,
+        code: "SHARED_DEADLINE_EXCEEDED",
+        message: error.message,
+        stack: null
+      }
+    };
+    throw new PerformanceOperationTimeout(`Event History performance control request timed out during ${method}.`, status);
+  });
 }
 
 function failureDetails(error) {
@@ -612,12 +679,15 @@ function assertProgressAge(status, monitor, now) {
 export async function runPageOperation(cdp, expression, options = {}) {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? delay;
-  const deadlineMs = positiveFinite(options.deadlineMs ?? 3_600_000, "deadlineMs");
+  const startedAt = now();
+  const deadlineMs = options.deadlineAt === undefined
+    ? positiveFinite(options.deadlineMs ?? 3_600_000, "deadlineMs")
+    : options.deadlineAt - startedAt;
+  if (!Number.isFinite(deadlineMs)) throw new Error("deadlineAt must be finite.");
   const pollIntervalMs = positiveFinite(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, "pollIntervalMs");
   const requestCeilingMs = positiveFinite(options.requestCeilingMs ?? DEFAULT_REQUEST_CEILING_MS, "requestCeilingMs");
   const operationId = options.operationId ?? `${now()}-${Math.random().toString(36).slice(2)}`;
-  const startedAt = now();
-  const deadlineAt = startedAt + deadlineMs;
+  const deadlineAt = options.deadlineAt ?? startedAt + deadlineMs;
   let lastRequestTimeout = null;
   let pollToken = 0;
   const progressMonitor = {
@@ -1135,6 +1205,12 @@ function emitHeartbeat(onHeartbeat, status) {
 function positiveFinite(value, name) {
   if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive finite number.`);
   return value;
+}
+
+function assertSharedDeadline(deadlineAt, now, phase) {
+  if (deadlineAt !== undefined && deadlineAt - now() <= 0) {
+    throw createSharedDeadlineTimeout(phase, deadlineAt, now);
+  }
 }
 
 function delay(milliseconds) {

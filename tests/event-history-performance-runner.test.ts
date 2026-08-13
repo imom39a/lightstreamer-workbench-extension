@@ -12,7 +12,8 @@ import {
   runHeapMeasurementPlan,
   PerformanceOperationTimeout,
   releaseHeapSessionWithCleanup,
-  runPageOperation
+  runPageOperation,
+  requestControlCdpWithDeadline
 } from "../scripts/event-history-performance-runner-operations.mjs";
 
 describe("Event History fresh-page shard orchestration", () => {
@@ -61,6 +62,79 @@ describe("Event History fresh-page shard orchestration", () => {
     expect(() => aggregatePerformanceShardResults([results[1], results[0], ...results.slice(2)])).toThrow(/shard 1 identity/u);
     expect(() => aggregatePerformanceShardResults(results.map((result, index) => index === 2 ? { ...result, config: { changed: true } } : result))).toThrow(/config mismatch/u);
     expect(() => aggregatePerformanceShardResults(results.map((result, index) => index === 0 ? { ...result, cells: result.cells.slice(0, -1) } : result))).toThrow(/exactly 9 cells/u);
+  });
+});
+
+describe("Event History shared proof deadline", () => {
+  it("fails closed with structured evidence when Target.createTarget hangs", async () => {
+    const neverSettles = new Promise(() => undefined);
+    const controlCdp = { request: () => neverSettles };
+    const result = await watchdog(requestControlCdpWithDeadline(controlCdp, "Target.createTarget", { url: "http://127.0.0.1:1/?pageToken=hung-create" }, {
+      deadlineAt: Date.now() + 10,
+      requestCeilingMs: 5,
+      phase: "Target.createTarget"
+    }).then((value) => ({ value }), (error) => ({ error })));
+
+    expect(result).not.toBe("WATCHDOG");
+    expect(result).toHaveProperty("error");
+    expect((result as { error: PerformanceOperationTimeout }).error).toBeInstanceOf(PerformanceOperationTimeout);
+    expect((result as { error: PerformanceOperationTimeout }).error.status).toMatchObject({
+      state: "rejected",
+      lastRequestTimeout: { phase: "Target.createTarget", ceilingMs: 5 },
+      error: { code: "SHARED_DEADLINE_EXCEEDED" }
+    });
+  });
+
+  it("fails closed with structured evidence when Target.closeTarget hangs", async () => {
+    const neverSettles = new Promise(() => undefined);
+    const controlCdp = { request: () => neverSettles };
+    const page = { cdp: { close: () => undefined }, targetId: "hung-close", pageToken: "hung-close" };
+    const result = await watchdog(requestControlCdpWithDeadline(controlCdp, "Target.closeTarget", { targetId: page.targetId }, {
+      deadlineAt: Date.now() - 1,
+      requestCeilingMs: 5,
+      phase: "Target.closeTarget",
+      allowAfterDeadline: true,
+      operation: { operationId: "last-op", state: "pending", elapsedMs: 12, heartbeat: 3, lastHeartbeatAt: 12, progress: strictProgress("last-op", { phase: "heap", stage: "cleanup", sequence: 4 }) as never }
+    }).then((value) => ({ value }), (error) => ({ error })));
+
+    expect(result).not.toBe("WATCHDOG");
+    expect(result).toHaveProperty("error");
+    expect((result as { error: PerformanceOperationTimeout }).error.status).toMatchObject({
+      operationId: "last-op",
+      progress: { phase: "heap", stage: "cleanup" },
+      lastRequestTimeout: { phase: "Target.closeTarget", ceilingMs: 5 },
+      error: { code: "SHARED_DEADLINE_EXCEEDED" }
+    });
+  });
+
+  it("does not start heap work after the shared deadline expires", async () => {
+    let prepared = false;
+    await expect(runHeapMeasurementPlan({
+      adapters: ["memory"],
+      eventCounts: { memory: 5_000 },
+      deadlineAt: 10,
+      now: () => 11,
+      prepare: async () => { prepared = true; throw new Error("must not prepare"); },
+      forceGc: async () => ({ usedSize: 1, gcPasses: 3 }),
+      record: () => { throw new Error("must not record"); },
+      close: async () => ({ ok: true, value: { dataDisposition: "ERASED", cleanupDisposition: "COMPLETE" } }),
+      removeRoot: async () => true,
+      yieldFrame: async () => true
+    })).rejects.toMatchObject({ name: "PerformanceOperationTimeout", status: { state: "rejected" } });
+    expect(prepared).toBe(false);
+  });
+
+  it("does not start lifecycle work after the shared deadline expires", async () => {
+    const events: string[] = [];
+    await expect(releaseHeapSessionWithCleanup({
+      deadlineAt: 10,
+      now: () => 11,
+      release: async () => { events.push("release"); return { ok: true }; },
+      removeRoot: async () => { events.push("remove"); return true; },
+      yieldFrame: async () => { events.push("yield"); return true; },
+      forceGc: async () => { events.push("gc"); return { usedSize: 1, gcPasses: 3 }; }
+    })).rejects.toMatchObject({ name: "PerformanceOperationTimeout", status: { state: "rejected" } });
+    expect(events).toEqual([]);
   });
 });
 

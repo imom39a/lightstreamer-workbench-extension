@@ -76,6 +76,7 @@ export type HeapSession = Readonly<{
 export type HeapGcSample = Readonly<{ usedSize: number; gcPasses: 3 }>;
 export type HeapGcRequestOptions = Readonly<{
   deadlineMs?: number;
+  deadlineAt?: number;
   requestCeilingMs?: number;
   now?: () => number;
 }>;
@@ -200,6 +201,8 @@ export function releaseHeapSessionWithCleanup(input: {
   removeRoot(): Promise<boolean>;
   yieldFrame(): Promise<boolean>;
   forceGc(): Promise<HeapGcSample>;
+  deadlineAt?: number;
+  now?: () => number;
 }): Promise<Readonly<{
   usedSize: number;
   gcPasses: 3;
@@ -213,6 +216,7 @@ export function runPageOperation(
   expression: string,
   options?: {
     deadlineMs?: number;
+    deadlineAt?: number;
     pollIntervalMs?: number;
     requestCeilingMs?: number;
     operationId?: string;
@@ -232,10 +236,28 @@ export function runHeapMeasurementPlan(input: {
   close(session: HeapSession): Promise<HeapCloseOutcome>;
   removeRoot(session: HeapSession): Promise<boolean>;
   yieldFrame(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: string; sample: number | null }>): Promise<boolean>;
+  deadlineAt?: number;
+  now?: () => number;
 }): Promise<Readonly<{
   heapSamples: readonly HeapSample[];
   heapRuns: readonly HeapRun[];
 }>>;
+
+export function createSharedDeadlineTimeout(phase: string, deadlineAt: number, now?: () => number, operation?: PerformanceOperationStatus | null): PerformanceOperationTimeout;
+export function requestControlCdpWithDeadline(
+  cdp: { request(method: string, params?: Record<string, unknown>): Promise<unknown> },
+  method: string,
+  params: Record<string, unknown>,
+  options: Readonly<{
+    deadlineAt: number;
+    requestCeilingMs?: number;
+    now?: () => number;
+    startedAt?: number;
+    phase?: string;
+    allowAfterDeadline?: boolean;
+    operation?: PerformanceOperationStatus | null;
+  }>
+): Promise<unknown>;
 
 export function createTimeoutDiagnostic(input: {
   generatedAt: string;

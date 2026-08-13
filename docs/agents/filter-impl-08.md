@@ -1,5 +1,22 @@
 # `filter-impl-08` repair proof
 
+## Deadline repair (2026-08-13)
+
+The live timeout audit found that the performance proof's shared deadline stopped
+at matrix shard operations: fresh harness `Target.createTarget` and
+`Target.closeTarget` used unbounded control-CDP promises, and heap/lifecycle
+work reset to independent one-hour or phase ceilings. The repair establishes one
+absolute `deadlineAt` after authoritative preparation, threads it through matrix,
+heap, forced-GC, lifecycle, and cleanup work, and bounds target creation/close
+requests (including setup-failure cleanup). Expiry produces the existing
+fail-closed `PerformanceOperationTimeout` evidence with the last operation and
+progress status when available; cleanup remains bounded after expiry.
+
+Deterministic verification covers hung `Target.createTarget`, hung
+`Target.closeTarget`, expired shared deadlines before heap, expired shared
+deadlines before lifecycle, and structured timeout evidence. No real performance
+candidate was launched and no Chrome performance success is claimed.
+
 The IndexedDB query adapter uses one readonly transaction over `historyControl`,
 `facetPostings`, `queryProjections`, and selected `evidence` payloads. The
 authoritative v3 Evidence record shape remains exact; schema version 4 adds a
