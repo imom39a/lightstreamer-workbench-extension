@@ -355,6 +355,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
   const inFlight: PendingCandidate[] = [];
   const terminalReceipts: PendingCandidate[] = [];
   const committedReceipts: Array<{ entry: PendingCandidate; evidence: EvidenceRef }> = [];
+  const deterministicRecordCache = new WeakMap<object, DeterministicEvidenceRecord>();
   const idleWaiters: Array<() => void> = [];
   let intervalOrdinal = 1;
   let interval = createInterval(sessionId, intervalOrdinal);
@@ -867,7 +868,13 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
 
-    const records = entriesAtRead.map((entry) => toDeterministicEvidenceRecord(entry, intervalAtRead));
+    const records = entriesAtRead.map((entry) => {
+      const cached = deterministicRecordCache.get(entry);
+      if (cached) return cached;
+      const record = toDeterministicEvidenceRecord(entry, intervalAtRead);
+      deterministicRecordCache.set(entry, record);
+      return record;
+    });
     const unsupported = request.filter.unsupported.length > 0;
     const discoveries = new Map<string, FacetDiscoveryResult>();
     if (unsupported) {
