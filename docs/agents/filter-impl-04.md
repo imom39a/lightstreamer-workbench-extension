@@ -30,8 +30,8 @@ omit them.
 - Focused query/performance: 8/8 tests passed.
 - Concurrency/lifecycle/IndexedDB suites: 143/143 tests passed.
 - Event History benchmark: 10,000 retained records completed successfully.
-- Default suite: ordinary 71 files / 773 tests plus serialized IndexedDB 8
-  files / 192 tests (965 total) passed.
+- Default suite: ordinary 71 files / 773 tests plus serialized IndexedDB 6
+  files / 184 tests (957 total) passed.
 - Release suite: 77 files / 957 tests passed with one-file-at-a-time
   execution.
 - `npm run typecheck`: passed.
