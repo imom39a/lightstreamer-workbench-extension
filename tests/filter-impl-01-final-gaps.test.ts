@@ -8,6 +8,20 @@ import {
 } from "./support/evidence-filter-reference";
 import { getEvidenceFilterPanelScenario, runEvidenceFilterPanelScenario } from "./support/panel-scenarios";
 
+const FILTER_SCENARIO_EXPECTATIONS = Object.freeze({
+  "primary-include-exclude-reveal-reset": { totals: { matching: 420, inScope: 9 }, page: 9, evaluation: "COMPLETE", coverage: "COMPLETE", storage: "INDEXED_DB" },
+  "empty-history": { totals: { matching: 0, inScope: 0 }, page: 0, retained: null, coverage: "COMPLETE", storage: "INDEXED_DB" },
+  "valid-zero-result-conflict": { totals: { matching: 0, inScope: 0 }, page: 0, evaluation: "COMPLETE", coverage: "COMPLETE", storage: "INDEXED_DB" },
+  "unsupported-criterion": { totals: { matching: 0, inScope: 0 }, page: 0, evaluation: "UNSUPPORTED_FILTER", coverage: "COMPLETE", storage: "INDEXED_DB" },
+  "discovery-unavailable": { totals: { matching: 0, inScope: 0 }, discovery: "UNAVAILABLE", discoveryReason: "NO_CONCRETE_VALUES", coverage: "COMPLETE", storage: "INDEXED_DB" },
+  "hidden-selection": { totals: { matching: 0, inScope: 0 }, blockers: ["free-text", "around-evidence"], coverage: "COMPLETE", storage: "INDEXED_DB" },
+  "terminal-history": { totals: { matching: 10000, inScope: 10000 }, coverage: "COMPLETE", storage: "INDEXED_DB", phase: "TERMINAL", terminalBoundary: 10000 },
+  "memory-fallback": { totals: { matching: 5000, inScope: 5000 }, page: 25, storage: "MEMORY_FALLBACK", coverage: "COMPLETE", first: 5001 },
+  "high-volume-command-keys": { totals: { matching: 10000, inScope: 10000 }, discovery: "AVAILABLE", distinctTotal: 3842, coverage: "COMPLETE", storage: "INDEXED_DB" }
+} as const);
+
+const FILTER_SCENARIO_IDS = Object.keys(FILTER_SCENARIO_EXPECTATIONS) as Array<keyof typeof FILTER_SCENARIO_EXPECTATIONS>;
+
 describe("filter-impl-01 final contract gaps", () => {
   it("stores every collision case as accepted Evidence, including absent item values", () => {
     const fixture = createEvidenceFilterFixture();
@@ -77,25 +91,27 @@ describe("filter-impl-01 final contract gaps", () => {
   });
 
   it("runs all nine maintained scenarios against concrete reference outcomes", async () => {
-    const ids = [
-      "primary-include-exclude-reveal-reset",
-      "empty-history",
-      "valid-zero-result-conflict",
-      "unsupported-criterion",
-      "discovery-unavailable",
-      "hidden-selection",
-      "terminal-history",
-      "memory-fallback",
-      "high-volume-command-keys"
-    ] as const;
-    for (const id of ids) {
+    for (const id of FILTER_SCENARIO_IDS) {
       const scenario = getEvidenceFilterPanelScenario(id);
       expect(scenario.setupActions).toEqual([]);
       expect(scenario.semanticSetup?.length).toBeGreaterThan(0);
-      expect(scenario.capturedEvents).toHaveLength(id === "empty-history" || id === "discovery-unavailable" ? 0 : id === "valid-zero-result-conflict" ? 2 : id === "unsupported-criterion" ? 1 : id === "hidden-selection" ? 3 : id === "terminal-history" ? 4 : 6);
-      const result = await runEvidenceFilterPanelScenario(id);
-      expect(result.actual).toEqual(result.expected);
+      const contract = (scenario as typeof scenario & { filterContract: { records: readonly unknown[]; fingerprint: string; capturedEventIds: readonly string[] } }).filterContract;
+      expect(contract).toBeDefined();
+      expect(new Set(scenario.capturedEvents.map((event) => event.id))).toEqual(new Set(contract.capturedEventIds));
+      expect(new Set(contract.records.map((record) => JSON.stringify(record))).size).toBe(contract.records.length);
+      const result = await runEvidenceFilterPanelScenario(scenario);
+      expect(result.actual).toEqual(FILTER_SCENARIO_EXPECTATIONS[id]);
+      expect(result.sourceFingerprint).toBe(contract.fingerprint);
     }
+  });
+
+  it("gives each maintained filter scenario a distinct source fingerprint", () => {
+    const scenarios = FILTER_SCENARIO_IDS.map((id) => getEvidenceFilterPanelScenario(id));
+    const contracts = scenarios.map((scenario) => (scenario as typeof scenario & { filterContract: { fingerprint: string } }).filterContract);
+    expect(new Set(contracts.map((contract) => contract.fingerprint)).size).toBe(9);
+    expect(scenarios.find((scenario) => scenario.id === "empty-history")?.capturedEvents).toHaveLength(0);
+    expect(scenarios.find((scenario) => scenario.id === "high-volume-command-keys")?.capturedEvents).toHaveLength(10_000);
+    expect(contracts.find((contract, index) => scenarios[index]?.id === "high-volume-command-keys")?.records).toHaveLength(10_000);
   });
 
   it("compares read-point identities as complete values", () => {
