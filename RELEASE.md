@@ -41,6 +41,22 @@ The package step fails if `package.json` and `public/manifest.json` do not use t
 
 The local packager also enforces the Workbench release budget: the stored ZIP must remain below 1 MiB. Inspect the ZIP root, run its integrity check, and record the final byte count with the release evidence.
 
+## Version 2.0.1 Preparation Record
+
+Version 2.0.1 is a Non-UI maintenance release of the verified 2.0.0 extension. It changes the package version metadata only; it does not change extension runtime behavior, permissions, data handling, UI, Capture, Event History, or Local Injection semantics. The post-2.0.0 product-source delta is empty. The only intervening repository change updates the internal feature-opportunity assessment and does not ship in the extension package.
+
+The preparation gate completed on 2026-08-12 from base revision `4022f4a130c219567785ca9a99f57625e2b92862` on Darwin arm64 with Node.js `v25.9.0` and npm `11.12.1`:
+
+- `npm ci` completed with zero reported vulnerabilities.
+- `npm run store:assets` completed. All three Store screenshots remained byte-identical; the other generated images remained visually identical and their timestamp-only PNG metadata changes were omitted from the release diff.
+- `npm run release:package` passed type checking, the serialized `899/899` test suite, the production build, and the release extension audit.
+- `release/lightstreamer-workbench-v2.0.1.zip` is 1,041,359 bytes, 7,217 bytes below the strict 1 MiB budget, with SHA-256 `47de573877f632e1cc2291febce14e7fa4efcd9f4fbb1ab37a862a1c657c7678`.
+- Compared with the verified 2.0.0 ZIP, `15/16` archive entries are byte-identical. The only changed entry is root `manifest.json`, and its only change is the version from `2.0.0` to `2.0.1`.
+- ZIP integrity passed with `manifest.json` at the archive root. The archive and `dist/` manifests are byte-identical, declare version `2.0.1` and Manifest V3, and add neither a `permissions` key nor `unlimitedStorage`.
+- `npm run docs:check` passed, and `npm run test:site` passed the isolated site audit and `4/4` browser tests.
+
+The artifact was uploaded on 2026-08-12 to Chrome Web Store item `kfpgbhfphbhkebglopimjhfnnmbifocf` and saved as the version 2.0.1 draft. The dashboard continues to show version 2.0.0 as the published package. The draft Store listing was updated from the maintained `store-listing/` sources with the current description, first-party homepage and support URLs, icon, three screenshots in the prescribed order, small promo tile, and marquee promo tile. No review submission, rollout, publication, Git tag, commit, or push was performed.
+
 ## No-analytics release invariant
 
 Version 2 official builds contain no product analytics, tracking transport, remote error logging, or persistent analytics identifier. `npm run build` audits the compiled extension for retired endpoints, configuration names, and identifier keys. The panel mount also clears legacy 0.1.x consent and identifier records without affecting investigation state when storage is unavailable.

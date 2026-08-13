@@ -1,4 +1,14 @@
-## 2.0.0 — current release
+## 2.0.1 — pending Chrome Web Store release
+
+Version 2.0.1 is a maintenance package for the unified **Scoped Evidence Workspace** delivered in 2.0.0.
+
+- Carries forward the verified 2.0.0 extension behavior without user-facing feature or UI changes.
+- Keeps the same Manifest V3 permissions, local-only data handling, Panel Session-owned temporary Event History, and Local Injection boundaries.
+- Refreshes the extension package with 2.0.1 version metadata for the Chrome Web Store update.
+
+Version 2.0.1 is prepared for Chrome Web Store review and is not yet the current public release.
+
+## 2.0.0 — current Chrome Web Store release
 
 Version 2 is the first public release of the unified **Scoped Evidence Workspace**.
 

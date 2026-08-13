@@ -106,22 +106,17 @@ store-listing/promo/marquee-promo-tile.png
 Version:
 
 ```text
-2.0.0
+2.0.1
 ```
 
 What's new:
 
 ```text
-Unified Scoped Evidence Workspace and Local Injection release.
+Maintenance release for the 2.0 Scoped Evidence Workspace.
 
-- Brings Runtime Scope, Ordered Evidence, and Context into one responsive investigation workspace.
-- Keeps Scope, Find, Filter, Evidence selection, Capture, Coverage, and Live/Frozen position independent during ongoing activity.
-- Compares Observed Server and Local Effective COMMAND State with explicit provenance and authority limits.
-- Adds exactly one protected Local Injection Draft with raw JSON editing, immutable Source comparison, validation, Review, and truthful delivery outcomes.
-- Retains committed current-session Evidence in one Panel Session-owned temporary Event History, with explicit normal/lower History Capacity and bounded high-volume rendering.
-- Defines exact Clear, fail-closed terminal boundaries, guarded abnormal cleanup, and no cross-session Evidence recovery or replay.
-- Removes product analytics, tracking configuration, remote transport, and the persistent installation identifier; 2.0 also clears the two retired 0.1.x preference/identifier records.
-- Adds first-party Documentation, Privacy, and Support links in Session operations.
+- Carries forward the verified 2.0.0 extension behavior without user-facing feature or UI changes.
+- Keeps the same Manifest V3 permissions, local-only data handling, temporary Event History, and Local Injection boundaries.
+- Refreshes the Chrome Web Store package with 2.0.1 version metadata.
 ```
 
 ## Privacy Practices Draft
@@ -163,19 +158,19 @@ For deterministic local verification from the repository:
 
 ## Release Checklist
 
-- [ ] Confirm `public/manifest.json` version matches `package.json`.
-- [ ] Run `npm run release:package`.
-- [ ] Upload `release/lightstreamer-workbench-v2.0.0.zip`.
-- [ ] Upload `public/icons/icon-128.png` as the store icon.
-- [ ] Upload all three screenshots in the order listed above.
-- [ ] Upload `store-listing/promo/small-promo-tile.png`.
-- [ ] Optionally upload `store-listing/promo/marquee-promo-tile.png`.
-- [ ] Paste the summary and detailed description from this file.
+- [x] Confirm `public/manifest.json` version matches `package.json`.
+- [x] Run `npm run release:package`.
+- [x] Upload `release/lightstreamer-workbench-v2.0.1.zip`.
+- [x] Upload `public/icons/icon-128.png` as the store icon.
+- [x] Upload all three screenshots in the order listed above.
+- [x] Upload `store-listing/promo/small-promo-tile.png`.
+- [x] Optionally upload `store-listing/promo/marquee-promo-tile.png`.
+- [x] Confirm the package-derived summary and paste the detailed description from this file.
 - [ ] Review the privacy practices answer before submission.
 - [ ] Remove the retired product-usage analytics and identifier declarations from the dashboard privacy fields.
-- [ ] Confirm the packaged build contains no analytics endpoint, configuration, event, or identifier residue.
-- [ ] Confirm the packaged Manifest V3 has no new storage permission and no `unlimitedStorage` declaration.
-- [ ] Confirm the final Event History real-Chrome report is `PASS`, or retain the explicit maintainer-accepted `REVIEW` disposition in the internal Project ticket; a `FAIL` blocks publication.
+- [x] Confirm the packaged build contains no analytics endpoint, configuration, event, or identifier residue.
+- [x] Confirm the packaged Manifest V3 has no new storage permission and no `unlimitedStorage` declaration.
+- [x] Confirm the final Event History real-Chrome report is `PASS`, or retain the explicit maintainer-accepted `REVIEW` disposition in the internal Project ticket; a `FAIL` blocks publication.
 - [ ] Confirm the privacy policy URL is `https://imom39a.github.io/lightstreamer-workbench-extension/privacy/`.
 - [ ] Confirm the support URL is `https://imom39a.github.io/lightstreamer-workbench-extension/support/`.
 - [ ] Confirm the homepage URL is `https://imom39a.github.io/lightstreamer-workbench-extension/` and staged publishing remains enabled.
