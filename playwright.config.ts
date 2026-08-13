@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { defineConfig } from "@playwright/test";
-import { chromeUnattendedArguments } from "./scripts/chrome-launch-args.mjs";
+import { createPlaywrightLaunchOptions } from "./scripts/chrome-launch-args.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const selectedTheme = parseTheme(process.env.LSEW_UI_THEME ?? "auto");
@@ -39,9 +39,8 @@ export default defineConfig({
     timezoneId: "America/New_York",
     deviceScaleFactor: 1,
     viewport,
-    ...(chromeExecutable
-      ? { launchOptions: { executablePath: chromeExecutable, args: chromeUnattendedArguments() } }
-      : {})
+    // Playwright owns the fresh temporary profile when user-data-dir is omitted.
+    launchOptions: createPlaywrightLaunchOptions(chromeExecutable)
   },
   webServer: {
     command: "node scripts/ui-panel-server.mjs",
