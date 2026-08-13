@@ -147,7 +147,7 @@ export function extractEvidenceFacets(event: LightstreamerEventEnvelope, context
   return Object.freeze({ ...facets, facets: Object.freeze(facets), selectableValues: Object.freeze(Object.values(facets)), unavailable: Object.freeze(unavailable) });
 }
 
-function normalizeText(value: string): string {
+export function normalizeEvidenceSearchText(value: string): string {
   return value.toLocaleLowerCase().replace(/\s+/g, " ").trim();
 }
 
@@ -170,7 +170,7 @@ export function canonicalEvidenceSearchText(event: LightstreamerEventEnvelope, c
     const facet = extracted.facets[descriptor.key];
     return facet ? [descriptor.label, facet.label, facet.value] : [];
   });
-  return normalizeText([
+  return normalizeEvidenceSearchText([
     event.id,
     event.kind,
     event.kind.replaceAll("-", " "),

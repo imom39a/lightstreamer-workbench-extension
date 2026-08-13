@@ -57,7 +57,7 @@ import {
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
 import { extractEvidenceFacets } from "./evidence-facets";
-import { canonicalEvidenceSearchText } from "./evidence-facets";
+import { canonicalEvidenceSearchText, normalizeEvidenceSearchText } from "./evidence-facets";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import {
@@ -1289,7 +1289,10 @@ async function ensureQueryProjections(database: AuthoritativeEventDatabase, cont
       const cursor = request.result;
       if (!cursor) { resolve(); return; }
       const projection = cursor.value as QueryProjection;
-      if (!Array.isArray(projection.searchTokens)) projections.put({ ...projection, searchTokens: querySearchTokens(projection.searchText) });
+      const searchTokens = querySearchTokens(projection.searchText);
+      if (!Array.isArray(projection.searchTokens) || JSON.stringify(projection.searchTokens) !== JSON.stringify(searchTokens)) {
+        projections.put({ ...projection, searchTokens });
+      }
       cursor.continue();
     };
   });
@@ -1381,15 +1384,16 @@ async function queryIndexedDb(
       telemetry.residualScan = request.filter.text.trim() !== "";
       projections = candidateSequences
         ? await readCandidateProjections(transaction.objectStore(options.projectionStore), candidateSequences, telemetry)
-        : request.filter.around !== null
-          ? await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry)
-          : await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry);
+        : await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry);
       telemetry.candidateBound = projections.length;
     }
+    const aroundProjections = request.filter.around === null
+      ? null
+      : await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry);
     const retainedProjections = request.find !== undefined
       ? await readSearchProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.find, telemetry)
       : request.filter.around?.anchor !== undefined
-        ? await readAroundProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, request.filter.around, telemetry)
+        ? await readQueryProjections(transaction.objectStore(options.projectionStore), interval.id, firstSequence, lastSequence, null, telemetry)
         : null;
     const selectedPayload = request.lookup === undefined
       ? null
@@ -1416,6 +1420,7 @@ async function queryIndexedDb(
     }
     const matching: SelectionRecord[] = [];
     const inScope: SelectionRecord[] = [];
+    const aroundSequences = aroundProjections === null ? null : new Set(aroundProjections.map((record) => record.sequence));
     for (const record of selectionRecords) {
       const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
         timestamp: record.timestamp,
@@ -1425,7 +1430,7 @@ async function queryIndexedDb(
       });
       if (!evaluation.matches) continue;
       matching.push(record);
-      if (isInAround(record, around)) inScope.push(record);
+      if ((aroundSequences === null ? isInAround(record, around) : aroundSequences.has(record.identity.sequence)) && isInAround(record, around)) inScope.push(record);
     }
     const ordered = simpleRecentPage ? selectionRecords : (request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope);
     const offset = decodeQueryCursor(request.page.cursor, readPoint, request, 0);
@@ -1435,8 +1440,7 @@ async function queryIndexedDb(
     const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
     const find = request.find === undefined ? null : findEvidence(retainedRecords, request.find);
     telemetry.elapsedMs = Date.now() - started;
-    const aroundOnly = request.filter.around !== null && request.filter.text.trim() === "" && Object.keys(request.filter.criteria).length === 0 && request.filter.unsupported.length === 0;
-    const matchingTotal = simpleRecentPage || aroundOnly ? expectedProjectionCount : matching.length;
+    const matchingTotal = simpleRecentPage ? expectedProjectionCount : matching.length;
     const inScopeTotal = simpleRecentPage ? expectedProjectionCount : inScope.length;
     return { ok: true, value: querySnapshot(readPoint, page, matchingTotal, inScopeTotal, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), simpleRecentPage ? (offset + page.length < expectedProjectionCount ? encodeQueryCursor(readPoint, request, offset + page.length) : null) : (offset + page.length < ordered.length ? encodeQueryCursor(readPoint, request, offset + page.length) : null), lookup, find, telemetry) };
   } catch (error) {
@@ -1457,6 +1461,7 @@ function validateQueryProjection(projection: QueryProjection, intervalId: string
   if (projection.intervalId !== intervalId || typeof projection.eventId !== "string" || projection.eventId.length === 0
     || !Number.isSafeInteger(projection.sequence) || projection.sequence < 1 || !Number.isFinite(projection.timestamp)
     || typeof projection.summary !== "string" || typeof projection.searchText !== "string" || !Array.isArray(projection.searchTokens)
+    || projection.searchTokens.some((token) => typeof token !== "string" || token.length === 0)
     || projection.facets === null || typeof projection.facets !== "object") {
     throw new Error("The query projection is missing or corrupt.");
   }
@@ -1556,17 +1561,28 @@ function readCandidateProjections(store: IDBObjectStore, candidates: Set<number>
 }
 
 function readAroundProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, around: NonNullable<EvidenceQueryRequest["filter"]["around"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
-  return readProjectionCursor(store.index("timestamp"), queryBoundRange(around.start, around.end - Number.EPSILON), intervalId, telemetry)
-    .then((values) => values.filter((value) => value.sequence >= first && value.sequence <= last));
+  return readProjectionCursor(store.index("timestamp"), queryOpenUpperBoundRange(around.start, around.end), intervalId, telemetry)
+    .then((values) => values.filter((value) => value.timestamp >= around.start && value.timestamp < around.end && value.sequence >= first && value.sequence <= last));
 }
 
 function readSearchProjections(store: IDBObjectStore, intervalId: string, first: number, last: number, find: NonNullable<EvidenceQueryRequest["find"]>, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
-  const token = querySearchTokens(find.text)[0];
-  if (!token) return Promise.resolve([]);
-  return readProjectionCursor(store.index("searchTokens"), queryOnlyRange(token), intervalId, telemetry).then((values) => {
-    const unique = new Map(values.map((value) => [value.sequence, value]));
-    return [...unique.values()].filter((value) => value.sequence >= first && value.sequence <= last && value.searchText.includes(find.text.trim().toLowerCase()));
-  });
+  const normalized = normalizeEvidenceSearchText(find.text);
+  if (!normalized || last < first) return Promise.resolve([]);
+  const codePoints = Array.from(normalized);
+  const residual = (values: QueryProjection[]): QueryProjection[] => values.filter((value) =>
+    value.sequence >= first && value.sequence <= last && normalizeEvidenceSearchText(value.searchText).includes(normalized));
+  if (codePoints.length < 3) return readQueryProjections(store, intervalId, first, last, null, telemetry).then(residual);
+  const trigrams = [...new Set(queryTrigrams(normalized))];
+  return Promise.all(trigrams.map((trigram) => readProjectionCursor(store.index("searchTokens"), queryOnlyRange(trigram), intervalId, telemetry)))
+    .then((groups) => {
+      const bySequence = new Map<number, QueryProjection>();
+      for (const value of groups[0] ?? []) if (value.sequence >= first && value.sequence <= last) bySequence.set(value.sequence, value);
+      for (const group of groups.slice(1)) {
+        const sequences = new Set(group.map((value) => value.sequence));
+        for (const sequence of bySequence.keys()) if (!sequences.has(sequence)) bySequence.delete(sequence);
+      }
+      return residual([...bySequence.values()]);
+    });
 }
 
 function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | undefined, intervalId: string, telemetry: QueryTelemetryMutable): Promise<QueryProjection[]> {
@@ -1593,6 +1609,11 @@ function queryOnlyRange(value: IDBValidKey): IDBKeyRange | undefined {
 function queryBoundRange(lower: IDBValidKey, upper: IDBValidKey): IDBKeyRange | undefined {
   const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
   return range ? range.bound(lower, upper) : undefined;
+}
+
+function queryOpenUpperBoundRange(lower: IDBValidKey, upper: IDBValidKey): IDBKeyRange | undefined {
+  const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
+  return range ? range.bound(lower, upper, false, true) : undefined;
 }
 
 async function readSelectedEvidence(store: IDBObjectStore, identity: EvidenceIdentity, interval: HistoryInterval, first: number, last: number, telemetry: QueryTelemetryMutable): Promise<EvidenceRecord | null> {
@@ -1668,7 +1689,14 @@ function queryProjection(candidate: EvidenceCandidate, intervalId: string, seque
 }
 
 function querySearchTokens(value: string): string[] {
-  return [...new Set(value.toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter(Boolean))];
+  const normalized = normalizeEvidenceSearchText(value);
+  return [...new Set([...normalized.split(/[^\p{L}\p{N}_-]+/u).filter(Boolean), ...queryTrigrams(normalized)])];
+}
+
+function queryTrigrams(value: string): string[] {
+  const codePoints = Array.from(value);
+  if (codePoints.length < 3) return [];
+  return codePoints.slice(0, -2).map((_, index) => codePoints.slice(index, index + 3).join(""));
 }
 
 function queryProjectionFromPayload(record: EvidenceRecord, interval: HistoryInterval): SelectionRecord {

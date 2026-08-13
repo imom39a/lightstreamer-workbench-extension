@@ -164,6 +164,47 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
   });
 
+  it("uses complete normalized substring Find candidates and a half-open timestamp Around", async () => {
+    const panelSessionId = `filter-impl-08-adversarial-${Date.now()}`;
+    Reflect.set(globalThis, "indexedDB", new IDBFactory());
+    const durable = await createIndexedDbEventHistory({ panelSessionId });
+    for (const candidate of [
+      event("alpha-one", 10_000, "first"),
+      event("alpha-two", 10_000, "duplicate"),
+      event("alphabet", 20_000, "phrase value"),
+      event("outside", 30_000, "last")
+    ]) await durable.offer(candidate).settled;
+    const base = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    expect(base.ok).toBe(true);
+    if (!base.ok) return;
+    const find = async (text: string) => durable.query!({
+      at: base.value.readPoint,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      filter: emptyFilter(),
+      find: { text }
+    });
+    await expect(find("lph")).resolves.toMatchObject({ ok: true, value: { find: { total: 3 } } });
+    await expect(find("ALPHA")).resolves.toMatchObject({ ok: true, value: { find: { total: 3 } } });
+    await expect(find("ITEM   UPDATE")).resolves.toMatchObject({ ok: true, value: { find: { total: 4 } } });
+
+    const around = await durable.query!({
+      at: base.value.readPoint,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      filter: { ...emptyFilter(), around: { intervalId: base.value.readPoint.interval.id, start: 10_000, end: 20_000 } }
+    });
+    expect(around).toMatchObject({ ok: true, value: {
+      totals: { matching: 4, inScope: 2 },
+      page: { evidence: [{ identity: { eventId: "alpha-one" } }, { identity: { eventId: "alpha-two" } }] }
+    } });
+    const isolated = await durable.query!({
+      at: base.value.readPoint,
+      page: { order: "OLDEST_FIRST", size: 10 },
+      filter: { ...emptyFilter(), around: { intervalId: "other-interval", start: 0, end: 40_000 } }
+    });
+    expect(isolated).toMatchObject({ ok: true, value: { totals: { matching: 4, inScope: 0 }, page: { evidence: [] } } });
+    await durable.close();
+  });
+
   it("fails closed when a selected projection is missing or corrupt", async () => {
     const panelSessionId = `filter-impl-08-projection-failure-${Date.now()}`;
     Reflect.set(globalThis, "indexedDB", new IDBFactory());
