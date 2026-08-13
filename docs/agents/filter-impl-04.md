@@ -23,11 +23,20 @@ omit them.
 ## Red-green evidence
 
 - `faab2e9` — red contract tests for the review findings.
-- Follow-up green implementation commit records the repaired query behavior.
+- `f36eaf9` — green implementation and Non-UI evidence record.
 
 ## Verification
 
-The final command matrix is recorded below after completion. No UI, discovery,
-lookup, find, IndexedDB query parity, GitHub issue, or push changes are part of
-this ticket.
+- Focused query/performance: 8/8 tests passed.
+- Concurrency/lifecycle/IndexedDB suites: 143/143 tests passed.
+- Event History benchmark: 10,000 retained records completed successfully.
+- Default suite: 71 files / 773 tests plus 6 serialized files / 184 tests
+  passed.
+- Release suite: passed with one-file-at-a-time execution.
+- `npm run typecheck`: passed.
+- `npm run build`: passed with MV3/CSP/local-script release checks.
+- `npm run docs:check`: passed for 4 documents and 10 maintained commands.
+- `git diff --check`: passed.
 
+No UI, discovery, lookup, find, IndexedDB query parity, GitHub issue, or push
+changes are part of this ticket.
