@@ -378,25 +378,25 @@ export function bindCommittedEvidencePipeline(
       }
       return trackRead(history.read(query));
     },
-    async query(request: EvidenceQueryRequest) {
+    query(request: EvidenceQueryRequest) {
       if (closed) {
-        return {
+        return Promise.resolve({
           ok: false as const,
           problem: {
             code: "HISTORY_TERMINAL" as const,
             message: "The committed-evidence pipeline is closed and cannot query Evidence."
           }
-        };
+        });
       }
       const queryAdapter = history.query as EvidenceFilterQueryAdapter["query"] | undefined;
       if (!queryAdapter) {
-        return {
+        return Promise.resolve({
           ok: false as const,
           problem: {
             code: "QUERY_FAILED" as const,
             message: "The committed Event History does not expose the canonical Evidence query capability."
           }
-        };
+        });
       }
       return trackRead(queryAdapter.call(history, request));
     },

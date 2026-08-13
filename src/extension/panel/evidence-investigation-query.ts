@@ -133,18 +133,67 @@ function mergeStructuralScope(
     const user = criteria[facet];
     if (user && (user.include.length > 0 || user.exclude.length > 0)) {
       const scopeValue = group.include[0];
-      const compatible = scopeValue !== undefined && user.include.some((value) => value.identity === scopeValue.identity);
+      const compatible = scopeValue !== undefined &&
+        (user.include.length === 0 || user.include.some((value) => structuralValueMatches(scopeValue, value)));
+      const excluded = scopeValue !== undefined && user.exclude.some((value) => structuralValueMatches(scopeValue, value));
       if (!compatible) {
         criteria[facet] = Object.freeze({
-          include: Object.freeze([typedFacetValue(facet, "string", "\u0000workbench:no-filter-intersection")]),
+          include: Object.freeze([typedFacetValue(facet, "structural-none", "\u0000workbench:no-filter-intersection")]),
           exclude: Object.freeze([])
         });
+      } else if (excluded) {
+        criteria[facet] = Object.freeze({
+          include: Object.freeze([typedFacetValue(facet, "structural-none", "\u0000workbench:no-filter-intersection")]),
+          exclude: Object.freeze([])
+        });
+      } else {
+        // The structural value is the narrower side of the intersection. In
+        // particular, an Item Scope carries both name and position; retaining
+        // only a matching legacy item-name criterion would silently widen it.
+        criteria[facet] = group;
       }
       continue;
     }
     criteria[facet] = group;
   }
   return Object.freeze({ ...filter, criteria: criteria as EvidenceFilter["criteria"] });
+}
+
+function structuralValueMatches(
+  scopeValue: ReturnType<typeof typedFacetValue>,
+  criterion: ReturnType<typeof typedFacetValue>
+): boolean {
+  if (criterion.type === "structural-none") return false;
+  if (scopeValue.type === "structural-item") {
+    const scope = parseStructuralItem(scopeValue.value);
+    if (!scope) return false;
+    if (criterion.facet === "legacy:item-position" && criterion.type === "number") {
+      return scope[1] === Number(criterion.value);
+    }
+    if (criterion.facet !== "item") return false;
+    if (criterion.type === "structural-item") {
+      const wanted = parseStructuralItem(criterion.value);
+      return wanted !== null &&
+        (wanted[0] === null || wanted[0] === scope[0]) &&
+        (wanted[1] === null || wanted[1] === scope[1]);
+    }
+    return criterion.type === "string" && scope[0] === criterion.label;
+  }
+  return scopeValue.label === criterion.label;
+}
+
+function parseStructuralItem(value: string): readonly [string | null, number | null] | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+    const name = parsed[0] === null ? null : typeof parsed[0] === "string" ? parsed[0] : null;
+    const position = parsed[1] === null ? null : typeof parsed[1] === "number" ? parsed[1] : null;
+    return (name !== null || parsed[0] === null) && (position !== null || parsed[1] === null)
+      ? [name, position]
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function structuralScopeCriteria(
@@ -158,17 +207,23 @@ function structuralScopeCriteria(
     })
   };
   const criteria: Record<string, { include: readonly ReturnType<typeof typedFacetValue>[]; exclude: readonly ReturnType<typeof typedFacetValue>[] }> = {};
-  const include = (facet: string, value: string | number): void => {
+  const include = (facet: string, value: string | number, type = `structural-${facet}`, label = String(value)): void => {
     criteria[facet] = Object.freeze({
-      include: Object.freeze([typedFacetValue(facet, typeof value === "number" ? "number" : "string", String(value))]),
+      include: Object.freeze([typedFacetValue(facet, type, String(value), label)]),
       exclude: Object.freeze([])
     });
   };
   if (scope.clientId !== undefined) include("client", scope.clientId === null ? "\u0000workbench:no-client" : scope.clientId);
   if (scope.sessionId !== undefined) include("session", scope.sessionId === null ? "\u0000workbench:no-session" : scope.sessionId);
   if (scope.subscriptionId !== undefined) include("subscription", scope.subscriptionId);
-  if (scope.item !== undefined) include("item", scope.item);
-  if (scope.itemPosition !== undefined) include("legacy:item-position", scope.itemPosition);
+  if (scope.item !== undefined || scope.itemPosition !== undefined) {
+    include(
+      "item",
+      JSON.stringify([scope.item ?? null, scope.itemPosition ?? null]),
+      "structural-item",
+      scope.item ?? String(scope.itemPosition)
+    );
+  }
   if (scope.listenerId !== undefined) include("listener", scope.listenerId);
   return criteria;
 }
