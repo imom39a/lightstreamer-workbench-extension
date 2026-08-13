@@ -59,6 +59,7 @@ describe("filter-impl-09 durable IndexedDB workload", () => {
     const durable = await createIndexedDbEventHistory({ panelSessionId: name });
     try {
       await offerBatch(durable, Array.from({ length: 20 }, (_, sequence) => workloadEvent(sequence)));
+      expect(await postingCount(name)).toBe(20 * 12);
       const result = await durable.query!({
         at: "LATEST_COMMITTED",
         page: { order: "OLDEST_FIRST", size: 20 },

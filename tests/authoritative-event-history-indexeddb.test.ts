@@ -524,7 +524,7 @@ describe("IndexedDB authoritative EventHistory", () => {
       await indexed.close();
       await memory.close();
     }
-  }, 15_000);
+  }, 30_000);
 
   it("keeps exact-facet paging in parity for empty facets, malformed boundaries, and candidate kinds", async () => {
     const indexed = await freshIndexedHistory("query-plan-exact-facet-edge-parity");

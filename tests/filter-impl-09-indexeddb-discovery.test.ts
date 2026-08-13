@@ -68,6 +68,45 @@ async function mutateFacetAggregate(
   });
 }
 
+type RawFacetPosting = Record<string, unknown> & Readonly<{ token: string; sequence: number }>;
+
+async function mutateFacetPosting(
+  name: string,
+  predicate: (posting: RawFacetPosting) => boolean,
+  mutate: (posting: RawFacetPosting) => RawFacetPosting | undefined
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open(authoritativeEventDatabaseName(name));
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const database = request.result;
+      const transaction = database.transaction("facetPostings", "readwrite");
+      const store = transaction.objectStore("facetPostings");
+      const finish = (error?: unknown): void => {
+        database.close();
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const read = store.getAll();
+      read.onerror = () => finish(read.error ?? new Error("Reading facet postings failed."));
+      read.onsuccess = () => {
+        const posting = read.result.find((candidate) => predicate(candidate as RawFacetPosting)) as RawFacetPosting | undefined;
+        if (!posting) {
+          try { transaction.abort(); } catch { /* the transaction may already be settled */ }
+          finish(new Error("No matching facet posting found."));
+          return;
+        }
+        const replacement = mutate(posting);
+        if (replacement === undefined) store.delete([posting.token, posting.sequence]);
+        else store.put(replacement);
+      };
+      transaction.oncomplete = () => finish();
+      transaction.onerror = () => finish(transaction.error ?? new Error("Facet posting mutation failed."));
+      transaction.onabort = () => finish(transaction.error ?? new Error("Facet posting mutation aborted."));
+    };
+  });
+}
+
 describe("filter-impl-09 IndexedDB facet discovery", () => {
   it("matches memory, pages every value, and pins an active zero-count value", async () => {
     const candidates = Array.from({ length: 130 }, (_, index) => event(`event-${index}`, `key-${String(index).padStart(3, "0")}`));
@@ -109,6 +148,9 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
     expect(zero.ok).toBe(true);
     if (!zero.ok) throw new Error("Expected zero-base query to succeed");
     expect(zero.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "ZERO_BASE", baseEvidenceCount: 0 });
+    const invalidZeroCursor = await durable.query!({ at: zero.value.readPoint, page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...emptyFilter(), criteria: { client: { include: [typedFacetValue("client", "client", "missing")], exclude: [] } } }, discover: [{ facet: "key", size: 10, cursor: "not-a-cursor" }] });
+    expect(invalidZeroCursor).toMatchObject({ ok: true });
+    expect(invalidZeroCursor.ok && invalidZeroCursor.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
     const noConcrete = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "operation", size: 10 }] });
     expect(noConcrete.ok).toBe(true);
     if (!noConcrete.ok) throw new Error("Expected no-concrete-values query to succeed");
@@ -120,24 +162,7 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
   it("fails discovery closed when a posting used by the counterfactual base is corrupt", async () => {
     const name = `filter-impl-09-corrupt-${Date.now()}`;
     const { durable } = await setup(name, [event("event-1", "one"), event("event-2", "two")]);
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open(authoritativeEventDatabaseName(name));
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const db = request.result;
-        const transaction = db.transaction("facetPostings", "readwrite");
-        const store = transaction.objectStore("facetPostings");
-        const read = store.getAll();
-        read.onsuccess = () => {
-          const posting = read.result.find((candidate) => String((candidate as Record<string, unknown>).facetIdentity).includes('"key"')) as Record<string, unknown> | undefined;
-          if (!posting) { reject(new Error("No posting found")); return; }
-          posting.facetIdentity = JSON.stringify(["v1", "key", "corrupt"]);
-          store.put(posting);
-        };
-        transaction.oncomplete = () => { db.close(); resolve(); };
-        transaction.onerror = () => reject(transaction.error);
-      };
-    });
+    await mutateFacetPosting(name, (posting) => String(posting.facetIdentity).includes('"key"'), (posting) => ({ ...posting, facetIdentity: JSON.stringify(["v1", "key", "corrupt"]) }));
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...emptyFilter(), criteria: { mode: { include: [typedFacetValue("mode", "enum", "COMMAND")], exclude: [] } } }, discover: [{ facet: "key", size: 10 }] });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2 } } });
     expect(result.ok).toBe(true);
@@ -149,29 +174,26 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
   it("fails discovery closed when a matching posting has the wrong event identity", async () => {
     const name = `filter-impl-09-event-id-${Date.now()}`;
     const { durable } = await setup(name, [event("event-1", "one"), event("event-2", "two")]);
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open(authoritativeEventDatabaseName(name));
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const db = request.result;
-        const transaction = db.transaction("facetPostings", "readwrite");
-        const store = transaction.objectStore("facetPostings");
-        const read = store.getAll();
-        read.onerror = () => reject(read.error);
-        read.onsuccess = () => {
-          const posting = read.result.find((candidate) => (candidate as Record<string, unknown>).facetIdentity === typedFacetValue("key", "string", "one").identity) as Record<string, unknown> | undefined;
-          if (!posting) { reject(new Error("No key posting found")); return; }
-          posting.eventId = "event-2";
-          store.put(posting);
-        };
-        transaction.oncomplete = () => { db.close(); resolve(); };
-        transaction.onerror = () => reject(transaction.error);
-      };
-    });
+    await mutateFacetPosting(name, (posting) => posting.facetIdentity === typedFacetValue("key", "string", "one").identity, (posting) => ({ ...posting, eventId: "event-2" }));
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...emptyFilter(), criteria: { mode: { include: [typedFacetValue("mode", "enum", "COMMAND")], exclude: [] } } }, discover: [{ facet: "key", size: 10 }] });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2 } } });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("Expected wrong-event-id query to succeed");
+    expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
+    await durable.close();
+  });
+
+  it.each([
+    ["forged", "forged-event-id"],
+    ["moved", "event-2"]
+  ] as const)("fails aggregate discovery closed when a posting has a %s event identity", async (_kind, eventId) => {
+    const name = `filter-impl-09-aggregate-event-id-${_kind}-${Date.now()}`;
+    const { durable } = await setup(name, [event("event-1", "one"), event("event-2", "two")]);
+    await mutateFacetPosting(name, (posting) => posting.facetIdentity === typedFacetValue("key", "string", "one").identity, (posting) => ({ ...posting, eventId }));
+    const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
+    expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2 } } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected aggregate event-id query to succeed");
     expect(result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "DISCOVERY_FAILED" });
     await durable.close();
   });
@@ -194,24 +216,7 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
   it("fails discovery closed for same-interval out-of-range postings while preserving base totals", async () => {
     const name = `filter-impl-09-range-${Date.now()}`;
     const { durable } = await setup(name, [event("event-1", "one"), event("event-2", "two")]);
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open(authoritativeEventDatabaseName(name));
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const db = request.result;
-        const transaction = db.transaction("facetPostings", "readwrite");
-        const store = transaction.objectStore("facetPostings");
-        const read = store.getAll();
-        read.onerror = () => reject(read.error);
-        read.onsuccess = () => {
-          const legitimate = read.result.find((candidate) => (candidate as Record<string, unknown>).facetIdentity === typedFacetValue("key", "string", "one").identity) as Record<string, unknown> | undefined;
-          if (!legitimate) { reject(new Error("No key posting found")); return; }
-          store.put({ ...legitimate, sequence: 99 });
-        };
-        transaction.oncomplete = () => { db.close(); resolve(); };
-        transaction.onerror = () => reject(transaction.error);
-      };
-    });
+    await mutateFacetPosting(name, (posting) => posting.facetIdentity === typedFacetValue("key", "string", "one").identity, (posting) => ({ ...posting, sequence: 99 }));
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 2, inScope: 2 }, page: { evidence: [{ identity: { sequence: 1 } }, { identity: { sequence: 2 } }] } } });
     expect(result.ok).toBe(true);
@@ -223,24 +228,7 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
   it("ignores valid postings belonging to a genuinely different interval", async () => {
     const name = `filter-impl-09-other-interval-${Date.now()}`;
     const { durable } = await setup(name, [event("event-1", "one")]);
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open(authoritativeEventDatabaseName(name));
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const db = request.result;
-        const transaction = db.transaction("facetPostings", "readwrite");
-        const store = transaction.objectStore("facetPostings");
-        const read = store.getAll();
-        read.onerror = () => reject(read.error);
-        read.onsuccess = () => {
-          const legitimate = read.result.find((candidate) => (candidate as Record<string, unknown>).facetIdentity === typedFacetValue("key", "string", "one").identity) as Record<string, unknown> | undefined;
-          if (!legitimate) { reject(new Error("No key posting found")); return; }
-          store.put({ ...legitimate, intervalId: `${name}:interval-0`, sequence: 2, eventId: "prior-interval" });
-        };
-        transaction.oncomplete = () => { db.close(); resolve(); };
-        transaction.onerror = () => reject(transaction.error);
-      };
-    });
+    await mutateFacetPosting(name, (posting) => posting.facetIdentity === typedFacetValue("key", "string", "one").identity, (posting) => ({ ...posting, intervalId: `${name}:interval-0`, sequence: 2, eventId: "prior-interval" }));
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("Expected cross-interval query to succeed");
@@ -276,28 +264,7 @@ describe("filter-impl-09 IndexedDB facet discovery", () => {
   it.each(["missing", "malformed"])("fails no-counterfactual discovery closed for %s discovered-facet postings", async (corruption) => {
     const name = `filter-impl-09-no-counterfactual-${corruption}-${Date.now()}`;
     const { durable } = await setup(name, [event("event-1", "one")]);
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open(authoritativeEventDatabaseName(name));
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const db = request.result;
-        const transaction = db.transaction("facetPostings", "readwrite");
-        const store = transaction.objectStore("facetPostings");
-        const read = store.getAll();
-        read.onerror = () => reject(read.error);
-        read.onsuccess = () => {
-          const posting = read.result.find((candidate) => (candidate as Record<string, unknown>).facetIdentity === typedFacetValue("key", "string", "one").identity) as Record<string, unknown> | undefined;
-          if (!posting) { reject(new Error("No key posting found")); return; }
-          if (corruption === "missing") store.delete([posting.token as string, posting.sequence as number]);
-          else {
-            posting.eventId = "";
-            store.put(posting);
-          }
-        };
-        transaction.oncomplete = () => { db.close(); resolve(); };
-        transaction.onerror = () => reject(transaction.error);
-      };
-    });
+    await mutateFacetPosting(name, (posting) => posting.facetIdentity === typedFacetValue("key", "string", "one").identity, (posting) => corruption === "missing" ? undefined : ({ ...posting, eventId: "" }));
     const result = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter(), discover: [{ facet: "key", size: 10 }] });
     expect(result).toMatchObject({ ok: true, value: { totals: { matching: 1 } } });
     expect(result.ok).toBe(true);

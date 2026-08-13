@@ -12,7 +12,7 @@ export const CHROME_UNATTENDED_FLAGS = Object.freeze([
   "--no-first-run",
   "--no-default-browser-check",
   "--disable-signin-promo",
-  "--disable-features=PasswordManagerOnboarding,SigninIntercept,AutofillServerCommunication"
+  "--disable-features=PasswordManagerOnboarding,SigninIntercept,AutofillServerCommunication,ProfilePickerOnboarding"
 ]);
 
 export function chromeUnattendedArguments(extra = []) {
@@ -37,4 +37,15 @@ export function chromeUnattendedArguments(extra = []) {
   }
   if (disabledFeaturesIndex !== -1) result[disabledFeaturesIndex] = `--disable-features=${[...disabledFeatures].join(",")}`;
   return result;
+}
+
+/**
+ * Playwright launch options keep the unattended flags even when no explicit
+ * executable is selected. Omitting user-data-dir lets Playwright own a fresh
+ * temporary profile for every browser context.
+ */
+export function createPlaywrightLaunchOptions(executablePath) {
+  const options = { args: chromeUnattendedArguments() };
+  if (executablePath) options.executablePath = executablePath;
+  return options;
 }

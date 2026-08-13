@@ -1,13 +1,21 @@
-import { readFileSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { readFileSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { tmpdir as systemTmpdir } from "node:os";
 
 import { describe, expect, it } from "vitest";
 
 const projectRoot = process.cwd();
+
+function discoverUnitTestFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return discoverUnitTestFiles(path);
+    return entry.isFile() && entry.name.endsWith(".test.ts") ? [relative(projectRoot, path).replaceAll("\\", "/")] : [];
+  }).sort();
+}
 
 describe("release packaging verification gate", () => {
   it("isolates the fake-IndexedDB suites while keeping the release gate serial", () => {
@@ -34,6 +42,9 @@ describe("release packaging verification gate", () => {
     expect(testRunner).toContain("discoverTestFiles");
     expect(testRunner).toContain("validatePlan");
     expect(testRunner).toContain('"tests/authoritative-event-history-indexeddb.test.ts"');
+    expect(testRunner).toContain('"tests/filter-impl-09-indexeddb-discovery.test.ts"');
+    expect(testRunner).toContain('"tests/filter-impl-09-indexeddb-parity.test.ts"');
+    expect(testRunner).toContain('"tests/filter-impl-09-indexeddb-workload.test.ts"');
     expect(testRunner).toContain('"tests/history-impl-09-lifecycle-blockers.test.ts"');
     expect(testRunner).toContain('"--no-file-parallelism", "--maxWorkers=1"');
     expect(testRunner).toContain("if (ordinaryStatus !== 0) process.exit(ordinaryStatus);");
@@ -47,8 +58,7 @@ describe("release packaging verification gate", () => {
     });
     expect(result.status, result.stderr).toBe(0);
     const plan = JSON.parse(result.stdout) as { ordinary: string[]; isolated: string[] };
-    expect(plan.ordinary).toHaveLength(79);
-    expect(plan.isolated).toEqual([
+    expect(plan.isolated).toEqual(expect.arrayContaining([
       "tests/authoritative-event-history-contract.test.ts",
       "tests/authoritative-event-history-indexeddb.test.ts",
       "tests/event-history-admission-performance.test.ts",
@@ -57,9 +67,15 @@ describe("release packaging verification gate", () => {
       "tests/history-impl-09-lifecycle-blockers.test.ts",
       "tests/filter-impl-07-failure-cleanup.test.ts",
       "tests/filter-impl-07-postings.test.ts",
-      "tests/filter-impl-07-schema.test.ts"
-    ]);
-    expect(new Set([...plan.ordinary, ...plan.isolated]).size).toBe(88);
+      "tests/filter-impl-07-schema.test.ts",
+      "tests/filter-impl-09-indexeddb-discovery.test.ts",
+      "tests/filter-impl-09-indexeddb-parity.test.ts",
+      "tests/filter-impl-09-indexeddb-workload.test.ts"
+     ]));
+    const discovered = discoverUnitTestFiles(join(projectRoot, "tests"));
+    expect(plan.ordinary).toHaveLength(discovered.length - plan.isolated.length);
+    expect(new Set([...plan.ordinary, ...plan.isolated])).toEqual(new Set(discovered));
+     expect(new Set(plan.isolated).size).toBe(plan.isolated.length);
   });
 
   it("writes deterministic raw-DEFLATE entries with valid headers and contents", () => {
