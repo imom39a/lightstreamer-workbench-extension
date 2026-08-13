@@ -1468,7 +1468,7 @@ async function queryIndexedDb(
       };
       if (canUseFacetAggregate(request.filter, discovery.facet)) {
         const aggregateCatalog = await readFacetAggregates(aggregateStore, interval.id, discovery.facet, telemetry);
-        const aggregateEntries = await validateAggregateFacetPostings(postingStore, discovery.facet, interval.id, currentFirstSequence, currentLastSequence, aggregateCatalog, telemetry);
+        const aggregateEntries = await validateAggregateFacetPostings(postingStore, evidenceStore, discovery.facet, interval.id, currentFirstSequence, currentLastSequence, aggregateCatalog, telemetry);
         const result = discoverFacetFromAggregates(restrictAggregateEntries(aggregateEntries, firstSequence, lastSequence), expectedProjectionCount, request.filter, readPoint, discovery, {
           onResult: (stats) => {
             telemetry.discoveryCompactIdentityCount = Math.max(telemetry.discoveryCompactIdentityCount ?? 0, stats.compactIdentityCount);
@@ -1584,7 +1584,7 @@ function recordProjectionCursorRead(telemetry: QueryTelemetryMutable, local: { r
  * fail-closed payload/index reconciliation boundary.
  */
 async function validateProjectionCoverage(store: IDBObjectStore, evidence: IDBObjectStore, _intervalId: string, first: number, last: number, expected: number, telemetry: QueryTelemetryMutable): Promise<void> {
-  const range = queryBoundRange(first, last);
+  const range = last < first ? undefined : queryBoundRange(first, last);
   const [total, evidenceTotal, rangeTotal, rangeEvidenceTotal] = await Promise.all([
     requestToPromise<number>(store.count(), "validating query projection coverage"),
     requestToPromise<number>(evidence.count(), "validating query projection coverage"),
@@ -1688,6 +1688,7 @@ function restrictAggregateEntries(entries: readonly DiscoveryAggregateEntry[], f
  */
 function validateAggregateFacetPostings(
   store: IDBObjectStore,
+  evidence: IDBObjectStore,
   facet: string,
   intervalId: string,
   first: number,
@@ -1731,11 +1732,22 @@ function validateAggregateFacetPostings(
           || !Number.isSafeInteger(posting.sequence) || posting.sequence < first || posting.sequence > last) {
           throw new Error("A facet discovery posting is corrupt or outside the requested Evidence range.");
         }
-        telemetry.discoveryAggregateObservationReads += 1;
-        const aggregate = expected.get(posting.facetIdentity);
-        if (!aggregate || aggregate.observations.some((observation) => observation.sequence === posting.sequence)) throw new Error("The facet discovery postings do not match the aggregate catalog.");
-        aggregate.observations.push({ sequence: posting.sequence, eventId: posting.eventId });
-        cursor.continue();
+        const identity = evidence.index("eventIdentity").getKey(posting.eventId);
+        identity.onerror = () => reject(identity.error ?? new Error("IndexedDB Evidence identity validation failed."));
+        identity.onsuccess = () => {
+          if (identity.result !== posting.sequence) {
+            reject(new Error("A facet discovery posting does not match its authoritative Evidence identity."));
+            return;
+          }
+          telemetry.discoveryAggregateObservationReads += 1;
+          const aggregate = expected.get(posting.facetIdentity);
+          if (!aggregate || aggregate.observations.some((observation) => observation.sequence === posting.sequence)) {
+            reject(new Error("The facet discovery postings do not match the aggregate catalog."));
+            return;
+          }
+          aggregate.observations.push({ sequence: posting.sequence, eventId: posting.eventId });
+          cursor.continue();
+        };
       } catch (error) {
         reject(error);
       }

@@ -128,16 +128,13 @@ function discoverFromAccounting(
   const filterKey = JSON.stringify(filter);
   const pointKey = readPointKey(readPoint);
   const parsed = parseCursor(request.cursor);
-  if (request.cursor && (!parsed || parsed.facet !== request.facet || parsed.search !== search || parsed.size !== request.size || parsed.filter !== filterKey || parsed.readPoint !== pointKey)) return unavailable(request.facet, "DISCOVERY_FAILED", null);
-
-  if (baseEvidenceCount === 0) return unavailable(request.facet, "ZERO_BASE", 0);
+  const hasCursor = request.cursor !== undefined;
+  if (hasCursor && (!parsed || parsed.facet !== request.facet || parsed.search !== search || parsed.size !== request.size || parsed.filter !== filterKey || parsed.readPoint !== pointKey)) return unavailable(request.facet, "DISCOVERY_FAILED", null);
 
   const active = [...(filter.criteria[request.facet]?.include ?? []), ...(filter.criteria[request.facet]?.exclude ?? [])];
   const activeIdentities = new Set(active.map((value) => value.identity));
   let distinctTotal = 0;
   for (const value of accounting.values()) if (matchesSearch(descriptor.label, value, search)) distinctTotal += 1;
-  if (distinctTotal === 0 && active.length === 0) return unavailable(request.facet, "NO_CONCRETE_VALUES", baseEvidenceCount);
-
   const searched = function* (): Iterable<CompactValue> {
     for (const value of accounting.values()) if (matchesSearch(descriptor.label, value, search)) yield value;
   };
@@ -154,6 +151,8 @@ function discoverFromAccounting(
     }
     if (!anchorFound || anchorRank !== position - 1) return unavailable(request.facet, "DISCOVERY_FAILED", null);
   }
+  if (baseEvidenceCount === 0) return unavailable(request.facet, "ZERO_BASE", 0);
+  if (distinctTotal === 0 && active.length === 0) return unavailable(request.facet, "NO_CONCRETE_VALUES", baseEvidenceCount);
   const nextPosition = position + orderedPage.length;
   const values: FacetCount[] = orderedPage.map((entry) => Object.freeze({ value: Object.freeze({ facet: entry.facet, type: entry.type, value: entry.value, label: entry.label, identity: entry.identity }), count: entry.count, pinned: activeIdentities.has(entry.identity) }));
   const returned = new Set(values.map((entry) => entry.value.identity));
@@ -181,7 +180,7 @@ export function discoverFacet(
 ): FacetDiscoveryResult {
   instrumentation.fail?.();
   const base = records.filter((record) => matchesBase(record, withoutFacet(filter, request.facet)));
-  if (base.length === 0) return unavailable(request.facet, "ZERO_BASE", 0);
+  if (base.length === 0 && request.cursor === undefined) return unavailable(request.facet, "ZERO_BASE", 0);
 
   // This is compact identity accounting: it retains no TypedFacetValue
   // objects and no complete sorted order. It is the exact source for counts

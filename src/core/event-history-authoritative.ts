@@ -871,7 +871,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     // so a later commit cannot enter this result or change its totals.
     const intervalAtRead = interval;
     const entriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
-    const readPoint = evidenceReadPoint(intervalAtRead, entriesAtRead);
+    const readPoint = evidenceReadPoint(intervalAtRead, entriesAtRead, committedEvidenceBoundary);
     if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, readPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.") });
     }
@@ -1271,12 +1271,13 @@ function evidenceIdentity(ref: EvidenceRef, interval: HistoryInterval): Evidence
   });
 }
 
-function evidenceReadPoint(interval: HistoryInterval, entries: readonly CommittedEvidence[]): EvidenceReadPoint {
+function evidenceReadPoint(interval: HistoryInterval, entries: readonly CommittedEvidence[], boundary: EvidenceRef | null): EvidenceReadPoint {
   const first = entries[0] ? evidenceIdentity(toRef(entries[0]), interval) : null;
   const last = entries.at(-1) ? evidenceIdentity(toRef(entries.at(-1)!), interval) : null;
+  const committed = boundary ? evidenceIdentity(boundary, interval) : last;
   return Object.freeze({
     interval: Object.freeze({ id: interval.id, ordinal: interval.ordinal }),
-    committedEvidenceBoundary: last,
+    committedEvidenceBoundary: committed,
     retainedRange: first && last ? Object.freeze({ first, last }) : null
   });
 }
