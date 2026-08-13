@@ -111,7 +111,16 @@ try {
   browser = await chromium.launch({
     executablePath: chromeExecutable,
     headless: false,
-    args: ["--js-flags=--expose-gc", "--disable-background-timer-throttling"]
+    args: [
+      "--js-flags=--expose-gc",
+      "--disable-background-timer-throttling",
+      "--use-mock-keychain",
+      "--password-store=basic",
+      "--disable-sync",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-features=PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"
+    ]
   });
   const measuredBrowserVersion = await browser.version();
   if (!/\b151\./u.test(measuredBrowserVersion)) {

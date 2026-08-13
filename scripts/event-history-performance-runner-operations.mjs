@@ -709,7 +709,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
     now
   );
   let lastStatus = statusAt({ operationId, state: "pending", heartbeat: 0 });
-  emitHeartbeat(options.onHeartbeat, lastStatus);
+  await emitHeartbeat(options.onHeartbeat, lastStatus, options.propagateHeartbeatErrors === true);
 
   try {
     const startResponse = await requestWithDeadline(cdp, {
@@ -732,7 +732,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
         if (!(error instanceof CdpRequestTimeout) || error.phase !== "poll") throw error;
         lastRequestTimeout = requestTimeoutDetails(error);
         lastStatus = statusAt(lastStatus, lastRequestTimeout);
-        emitHeartbeat(options.onHeartbeat, lastStatus);
+        await emitHeartbeat(options.onHeartbeat, lastStatus, options.propagateHeartbeatErrors === true);
         assertProgressAge(lastStatus, progressMonitor, now);
         if (lastStatus.elapsedMs >= deadlineMs) {
           throw new PerformanceOperationTimeout(
@@ -744,7 +744,7 @@ export async function runPageOperation(cdp, expression, options = {}) {
         continue;
       }
       lastStatus = statusAt(evaluationValue(pollResponse), lastRequestTimeout);
-      emitHeartbeat(options.onHeartbeat, lastStatus);
+      await emitHeartbeat(options.onHeartbeat, lastStatus, options.propagateHeartbeatErrors === true);
       assertProgressAge(lastStatus, progressMonitor, now);
       if (lastStatus.state === "resolved") return lastStatus.result;
       if (lastStatus.state === "rejected") throw remoteOperationError(lastStatus.error);
@@ -788,7 +788,8 @@ export function createTimeoutDiagnostic({
   referencePath,
   deadlineMs,
   operation,
-  identity = null
+  identity = null,
+  foregroundKeeper = null
 }) {
   return {
     schemaVersion: 2,
@@ -798,6 +799,7 @@ export function createTimeoutDiagnostic({
     runner,
     environment,
     identity,
+    foregroundKeeper,
     operation: {
       deadlineMs,
       phase: operation.phase ?? operation.lastRequestTimeout?.phase ?? null,
@@ -1199,11 +1201,12 @@ function serializeCleanupEvidence(value) {
   };
 }
 
-function emitHeartbeat(onHeartbeat, status) {
+async function emitHeartbeat(onHeartbeat, status, propagateErrors) {
   try {
-    onHeartbeat?.(status);
-  } catch {
-    // Heartbeat reporting must never change the operation verdict.
+    await onHeartbeat?.(status);
+  } catch (error) {
+    if (propagateErrors) throw error;
+    // Ordinary heartbeat reporting must never change the operation verdict.
   }
 }
 

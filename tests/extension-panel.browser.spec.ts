@@ -55,9 +55,12 @@ async function runExtensionPanelSmoke(): Promise<void> {
     const chromeArguments = [
       "--no-sandbox",
       "--disable-dev-shm-usage",
+      "--use-mock-keychain",
+      "--password-store=basic",
+      "--disable-sync",
       "--no-first-run",
       "--no-default-browser-check",
-      "--use-mock-keychain",
+      "--disable-features=PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup",
       "--auto-open-devtools-for-tabs",
       "--remote-debugging-port=0",
       `--user-data-dir=${profileDir}`,

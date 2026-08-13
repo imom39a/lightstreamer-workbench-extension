@@ -58,6 +58,7 @@ async function main() {
   let environmentMetadata = null;
   let frameDiagnostics = null;
   const targetIdentity = [];
+  let foregroundKeeper = null;
   let primaryError = null;
   try {
     await mkdir(site, { recursive: true });
@@ -93,6 +94,22 @@ async function main() {
       return lastActivationEvidence;
     };
     await activateWindow();
+    foregroundKeeper = createForegroundKeeper(chrome.pid, {
+      helperPath: processActivationHelper,
+      deadlineAt: proofDeadlineAt
+    });
+    foregroundKeeper.start();
+    const runPageOperationWithForegroundKeeper = (pageCdp, expression, options = {}) => {
+      const { onHeartbeat, ...operationOptions } = options;
+      return runPageOperation(pageCdp, expression, {
+        ...operationOptions,
+        propagateHeartbeatErrors: true,
+        onHeartbeat: async (status) => {
+          await foregroundKeeper.keepAlive({ reason: "operation-heartbeat" });
+          await onHeartbeat?.(status);
+        }
+      });
+    };
     const browserSocketUrl = await browserTarget(debugPort, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-websocket") });
     browserCdp = await connect(browserSocketUrl, {
       deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-connect"),
@@ -202,7 +219,7 @@ async function main() {
       }
       let primaryError = null;
       try {
-        shardResults.push(await runPageOperation(
+        shardResults.push(await runPageOperationWithForegroundKeeper(
           page.cdp,
           `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)})`,
           {
@@ -252,7 +269,7 @@ async function main() {
       heapPlan = await runHeapMeasurementPlan({
       eventCounts: { indexeddb: 10_000, memory: 5_000 },
       deadlineAt: proofDeadlineAt,
-      prepare: ({ adapter, eventCount, phase, sample }) => runPageOperation(
+      prepare: ({ adapter, eventCount, phase, sample }) => runPageOperationWithForegroundKeeper(
         heapPage.cdp,
         `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample(${JSON.stringify(adapter)}, ${eventCount}, ${JSON.stringify(phase)}, ${sample === null ? "null" : sample})`,
         { deadlineAt: proofDeadlineAt }
@@ -269,9 +286,9 @@ async function main() {
         retainedUsedSizeBytes: retained.usedSize,
         postGcHeapDeltaBytes: retained.usedSize - baseline.usedSize
       }),
-      close: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt }),
-      removeRoot: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt }),
-      yieldFrame: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt })
+      close: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt }),
+      removeRoot: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt }),
+      yieldFrame: () => runPageOperationWithForegroundKeeper(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt })
       });
     } catch (error) {
       primaryHeapError = error;
@@ -287,11 +304,11 @@ async function main() {
     try {
       for (let sample = 0; sample < 3; sample += 1) {
         const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt });
-        await runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineAt: proofDeadlineAt });
+        await runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.prepareRetainedHeapSample('memory', 100, 'sample', 1)", { deadlineAt: proofDeadlineAt });
         const released = await releaseHeapSessionWithCleanup({
-          release: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt }),
-          removeRoot: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt }),
-          yieldFrame: () => runPageOperation(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt }),
+          release: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.releaseRetainedHeapSample()", { deadlineAt: proofDeadlineAt }),
+          removeRoot: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt }),
+          yieldFrame: () => runPageOperationWithForegroundKeeper(lifecyclePage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt }),
           forceGc: () => collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt }),
           deadlineAt: proofDeadlineAt
         });
@@ -304,6 +321,7 @@ async function main() {
       await closeFreshHarnessPageWithErrorPreservation(browserCdp, lifecyclePage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryLifecycleError);
     }
 
+    await foregroundKeeper.assertHealthy({ reason: "before-report" });
     const report = {
       schemaVersion: 2,
       generatedAt: new Date().toISOString(),
@@ -315,6 +333,7 @@ async function main() {
       environment: {
         ...environmentMetadata
       },
+      foregroundKeeper: foregroundKeeper.snapshot(),
       anchors: result.anchors,
       capabilities: {
         interCellGc: "EXPOSED_THREE_PASS_V1",
@@ -384,8 +403,17 @@ async function main() {
           environment: environmentMetadata,
           referencePath,
           deadlineMs: EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS,
-          identity: targetIdentity
+          identity: targetIdentity,
+          foregroundKeeper: foregroundKeeper?.snapshot() ?? null
         })
+        : null,
+      stopForegroundKeeper: foregroundKeeper
+        ? async ({ deadlineAt }) => {
+          const evidence = await foregroundKeeper.stop({ deadlineAt });
+          const keeperFailure = foregroundKeeper.failure();
+          if (keeperFailure) throw keeperFailure;
+          return evidence;
+        }
         : null,
       closeCdp: cdp ? () => cdp.close() : null,
       closeInitialTarget: initialTarget ? ({ deadlineAt }) => closeFreshHarnessPage(browserCdp, initialTarget, { deadlineAt }) : null,
@@ -620,10 +648,14 @@ export function chromeLaunchArguments(profile, platform = process.platform) {
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
-    "--disable-features=CalculateNativeWinOcclusion",
+    "--disable-features=CalculateNativeWinOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup",
     "--allow-file-access-from-files",
     "--js-flags=--expose-gc",
+    "--use-mock-keychain",
+    "--password-store=basic",
+    "--disable-sync",
     "--no-first-run",
+    "--no-default-browser-check",
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
   ];
@@ -724,6 +756,160 @@ export function activateSpawnedChromeWindow(pid, options = {}) {
   });
 }
 
+const FOREGROUND_KEEPER_CADENCE_MS = 1_000;
+const FOREGROUND_KEEPER_TIMEOUT_MS = 2_000;
+
+export function createForegroundKeeper(pid, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const cadenceMs = positiveFiniteStartupOption(options.cadenceMs ?? FOREGROUND_KEEPER_CADENCE_MS, "foreground keeper cadenceMs");
+  const attemptTimeoutMs = positiveFiniteStartupOption(options.attemptTimeoutMs ?? FOREGROUND_KEEPER_TIMEOUT_MS, "foreground keeper attemptTimeoutMs");
+  const deadlineAt = options.deadlineAt;
+  if (!Number.isFinite(deadlineAt)) throw new Error("foreground keeper deadlineAt must be finite.");
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("foreground keeper requires the exact spawned process id.");
+  const now = options.now ?? Date.now;
+  const helperPath = options.helperPath ?? null;
+  const activate = options.activate ?? ((targetPID, activationOptions) => activateSpawnedChromeWindow(targetPID, {
+    ...activationOptions,
+    platform,
+    helperPath: helperPath ?? activationOptions.helperPath
+  }));
+  const setIntervalImplementation = options.setInterval ?? ((callback, milliseconds) => setInterval(callback, milliseconds));
+  const clearIntervalImplementation = options.clearInterval ?? ((handle) => clearInterval(handle));
+  let startedAt = null;
+  let stoppedAt = null;
+  let intervalHandle = null;
+  let lastAttemptAt = null;
+  let inFlight = null;
+  let failure = null;
+  let attemptNumber = 0;
+  const attempts = [];
+
+  const snapshot = () => ({
+    schemaVersion: 1,
+    platform,
+    pid,
+    cadenceMs,
+    attemptTimeoutMs,
+    startedAt,
+    stopped: stoppedAt !== null,
+    stoppedAt,
+    lastAttemptAt,
+    failure: failure === null ? null : foregroundKeeperError(failure),
+    attempts: attempts.map((attempt) => ({
+      ...attempt,
+      result: attempt.result ?? null,
+      error: attempt.error ?? null
+    }))
+  });
+
+  const attempt = async (reason) => {
+    const record = {
+      attempt: ++attemptNumber,
+      pid,
+      reason,
+      startedAt: now(),
+      finishedAt: null,
+      status: "PENDING",
+      result: null,
+      error: null
+    };
+    attempts.push(record);
+    lastAttemptAt = record.startedAt;
+    try {
+      if (deadlineAt - now() <= 0) throw createSharedDeadlineTimeout("foreground-keeper", deadlineAt, now);
+      const result = await activate(pid, {
+        helperPath,
+        deadlineAt,
+        timeoutMs: attemptTimeoutMs
+      });
+      if (platform === "darwin" && (result?.attempted !== true || result.activatedPID !== pid)) {
+        throw new Error(`Foreground keeper activation did not verify spawned PID ${pid}.`);
+      }
+      record.status = "PASS";
+      record.result = result;
+      return result;
+    } catch (error) {
+      record.status = "FAIL";
+      record.error = foregroundKeeperError(error);
+      failure ??= error;
+      throw error;
+    } finally {
+      record.finishedAt = now();
+    }
+  };
+
+  const keepAlive = async ({ reason = "heartbeat" } = {}) => {
+    if (startedAt === null) throw new Error("Foreground keeper has not started.");
+    if (stoppedAt !== null) return snapshot();
+    if (failure !== null) throw failure;
+    if (inFlight !== null) {
+      await inFlight;
+      if (failure !== null) throw failure;
+      return snapshot();
+    }
+    if (platform !== "darwin" || (lastAttemptAt !== null && now() - lastAttemptAt < cadenceMs)) return snapshot();
+    const operation = attempt(reason);
+    inFlight = operation;
+    try {
+      await operation;
+      return snapshot();
+    } finally {
+      if (inFlight === operation) inFlight = null;
+    }
+  };
+
+  const start = () => {
+    if (startedAt !== null) throw new Error("Foreground keeper cannot be started twice.");
+    startedAt = now();
+    lastAttemptAt = startedAt;
+    if (platform !== "darwin") return snapshot();
+    try {
+      intervalHandle = setIntervalImplementation(() => {
+        const operation = keepAlive({ reason: "cadence" });
+        operation.catch(() => undefined);
+        return operation;
+      }, cadenceMs);
+    } catch (error) {
+      startedAt = null;
+      lastAttemptAt = null;
+      throw error;
+    }
+    return snapshot();
+  };
+
+  const stop = async () => {
+    if (stoppedAt === null) {
+      stoppedAt = now();
+      if (intervalHandle !== null) {
+        clearIntervalImplementation(intervalHandle);
+        intervalHandle = null;
+      }
+    }
+    if (inFlight !== null) {
+      try { await inFlight; } catch { /* failure is retained for the finalizer */ }
+    }
+    return snapshot();
+  };
+
+  return Object.freeze({
+    start,
+    keepAlive,
+    assertHealthy: keepAlive,
+    stop,
+    snapshot,
+    failure: () => failure
+  });
+}
+
+function foregroundKeeperError(error) {
+  const statusError = error?.status?.error;
+  return {
+    name: typeof error?.name === "string" ? error.name : "Error",
+    message: error instanceof Error ? error.message : String(error),
+    code: typeof error?.code === "string" ? error.code : (typeof statusError?.code === "string" ? statusError.code : null)
+  };
+}
+
 function requireVisibleEnvironment() {
   if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
     throw new Error("Event History proof requires LSEW_BROWSER_HEADLESS=false; refusing to switch to headless Chrome.");
@@ -794,6 +980,7 @@ export async function finalizePerformanceRun({
   closeCdp = null,
   closeInitialTarget = null,
   closeBrowserCdp = null,
+  stopForegroundKeeper = null,
   terminateChrome = null,
   removeTemporaryRoot = null,
   timeoutMs = OUTER_FINALIZATION_TIMEOUT_MS
@@ -803,6 +990,7 @@ export async function finalizePerformanceRun({
     diagnostics.push(await runBoundedOuterOperation("timeout-evidence", writeEvidence, timeoutMs));
   }
   for (const [phase, operation] of [
+    ["foreground-keeper-stop", stopForegroundKeeper],
     ["cdp-close", closeCdp],
     ["initial-target-close", closeInitialTarget],
     ["browser-cdp-close", closeBrowserCdp],
@@ -872,7 +1060,8 @@ export async function writeTimeoutEvidenceForTimeout({
   environment = null,
   referencePath,
   deadlineMs,
-  identity = null
+  identity = null,
+  foregroundKeeper = null
 }) {
   const diagnostic = createTimeoutDiagnostic({
     generatedAt: new Date().toISOString(),
@@ -882,7 +1071,8 @@ export async function writeTimeoutEvidenceForTimeout({
     referencePath,
     deadlineMs,
     operation: { ...timeout.status, phase: timeoutPhase(timeout) },
-    identity
+    identity,
+    foregroundKeeper
   });
   await writeTimeoutEvidence({ outputPath: targetOutputPath, markdownPath: targetMarkdownPath, diagnostic });
 }

@@ -222,7 +222,8 @@ export function runPageOperation(
     operationId?: string;
     now?: () => number;
     sleep?: (milliseconds: number) => Promise<void>;
-    onHeartbeat?: (status: PerformanceOperationStatus) => void;
+    onHeartbeat?: (status: PerformanceOperationStatus) => unknown | Promise<unknown>;
+    propagateHeartbeatErrors?: boolean;
   }
 ): Promise<unknown>;
 
@@ -267,4 +268,6 @@ export function createTimeoutDiagnostic(input: {
   referencePath: string;
   deadlineMs: number;
   operation: PerformanceOperationStatus;
+  identity?: unknown;
+  foregroundKeeper?: unknown;
 }): Readonly<Record<string, unknown>>;

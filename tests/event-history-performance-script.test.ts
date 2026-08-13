@@ -142,11 +142,23 @@ describe("Event History performance startup fail-closed seams", () => {
         assert.equal(args.some((arg) => arg === "--activate-on-launch"), activates);
         assert.equal(args.includes("--headless"), false);
         assert.equal(args.includes("--no-proxy-server"), true);
+        assert.equal(args.includes("--use-mock-keychain"), true);
+        assert.equal(args.includes("--password-store=basic"), true);
+        assert.equal(args.includes("--disable-sync"), true);
+        assert.equal(args.includes("--no-first-run"), true);
+        assert.equal(args.includes("--no-default-browser-check"), true);
+        assert.equal(
+          args.includes("--disable-features=CalculateNativeWinOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"),
+          true
+        );
         assert.equal(args.includes("--allow-file-access-from-files"), true);
         assert.equal(args.includes("--disable-background-timer-throttling"), true);
         assert.equal(args.includes("--disable-backgrounding-occluded-windows"), true);
         assert.equal(args.includes("--disable-renderer-backgrounding"), true);
-        assert.equal(args.includes("--disable-features=CalculateNativeWinOcclusion"), true);
+        assert.equal(
+          args.includes("--disable-features=CalculateNativeWinOcclusion,PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"),
+          true
+        );
         assert.equal(args.includes("--js-flags=--expose-gc"), true);
         assert.equal(args.at(-1), "about:blank");
         assert.equal(args.includes("http://127.0.0.1:4173/"), false);
@@ -510,6 +522,91 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("keeps the exact spawned PID foreground at a bounded cadence and cleans up", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createForegroundKeeper } = await import(${JSON.stringify(scriptUrl)});
+      let now = 0;
+      let tick;
+      let cleared = null;
+      const activations = [];
+      const keeper = createForegroundKeeper(49217, {
+        platform: "darwin",
+        helperPath: "/tmp/process-activation-helper",
+        deadlineAt: 10_000,
+        cadenceMs: 1_000,
+        now: () => now,
+        setInterval(callback, milliseconds) {
+          assert.equal(milliseconds, 1_000);
+          tick = callback;
+          return 17;
+        },
+        clearInterval(handle) { cleared = handle; },
+        activate(pid, options) {
+          activations.push({ pid, options });
+          return Promise.resolve({ attempted: true, pid, activatedPID: pid, frontmostPID: pid, windows: [] });
+        }
+      });
+      keeper.start();
+      now = 1_000;
+      await tick();
+      assert.deepEqual(activations, [{
+        pid: 49217,
+        options: { helperPath: "/tmp/process-activation-helper", deadlineAt: 10_000, timeoutMs: 2_000 }
+      }]);
+      assert.deepEqual(keeper.snapshot().attempts.map(({ status, pid }) => ({ status, pid })), [{ status: "PASS", pid: 49217 }]);
+      await keeper.stop();
+      assert.equal(cleared, 17);
+      assert.equal(keeper.snapshot().stopped, true);
+      assert.equal(keeper.failure(), null);
+    `);
+  });
+
+  it("fails closed on keeper activation errors and expired proof deadlines", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { createForegroundKeeper } = await import(${JSON.stringify(scriptUrl)});
+      let now = 0;
+      let tick;
+      const activationError = new Error("native helper failed");
+      const keeper = createForegroundKeeper(49217, {
+        platform: "darwin",
+        deadlineAt: 10_000,
+        cadenceMs: 1_000,
+        now: () => now,
+        setInterval(callback) { tick = callback; return 1; },
+        clearInterval() {},
+        activate() { return Promise.reject(activationError); }
+      });
+      keeper.start();
+      now = 1_000;
+      await assert.rejects(tick(), (error) => error === activationError);
+      assert.equal(keeper.failure(), activationError);
+      assert.equal(keeper.snapshot().attempts[0].status, "FAIL");
+      await assert.rejects(keeper.assertHealthy(), (error) => error === activationError);
+      await keeper.stop();
+
+      let deadlineNow = 0;
+      let deadlineTick;
+      const expired = createForegroundKeeper(49218, {
+        platform: "darwin",
+        deadlineAt: 50,
+        cadenceMs: 1_000,
+        now: () => deadlineNow,
+        setInterval(callback) { deadlineTick = callback; return 2; },
+        clearInterval() {},
+        activate() { throw new Error("must not call helper after deadline"); }
+      });
+      expired.start();
+      deadlineNow = 1_000;
+      await assert.rejects(deadlineTick(), (error) => error?.name === "PerformanceOperationTimeout"
+        && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
+        && error.status.error.message.includes("foreground-keeper"));
+      assert.equal(expired.snapshot().attempts[0].error.code, "SHARED_DEADLINE_EXCEEDED");
+      await expired.stop();
+    `);
+  });
+
   it("preserves the initial setup error when initial target cleanup fails", () => {
     runNode(`
       import assert from "node:assert/strict";
@@ -781,6 +878,27 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.strictEqual(result, primary);
       assert.equal(primary.outerDiagnostics[0].phase, "chrome-termination");
       assert.equal(primary.outerDiagnostics[0].outcome, "timed-out");
+    `);
+  });
+
+  it("stops the foreground keeper before Chrome termination and preserves its failure", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { finalizePerformanceRun } = await import(${JSON.stringify(scriptUrl)});
+      const primary = new Error("primary timeout");
+      const keeperFailure = new Error("keeper stop failed");
+      const order = [];
+      const result = await finalizePerformanceRun({
+        primaryError: primary,
+        stopForegroundKeeper: () => { order.push("keeper"); throw keeperFailure; },
+        terminateChrome: () => { order.push("chrome"); },
+        timeoutMs: 25
+      });
+      assert.strictEqual(result, primary);
+      assert.deepEqual(order, ["keeper", "chrome"]);
+      assert.deepEqual(primary.outerDiagnostics.map(({ phase, outcome }) => [phase, outcome]), [
+        ["foreground-keeper-stop", "failed"]
+      ]);
     `);
   });
 

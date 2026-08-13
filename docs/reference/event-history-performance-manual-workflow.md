@@ -22,14 +22,17 @@ workload, and payload-shape matrix cell, plus three post-GC heap samples for
 each checkpoint tier. It writes the machine report and concise interpretation
 to `test-results/event-history-performance.json` and `.md`.
 
-The headed file harness launches Chrome with
+The headed file harness launches Chrome with the centralized unattended-test
+policy (`--use-mock-keychain`, `--password-store=basic`, `--disable-sync`,
+`--no-first-run`, `--no-default-browser-check`, and the supported password,
+sign-in, and profile-onboarding feature disables). It also uses
 `--disable-features=CalculateNativeWinOcclusion` and, on macOS,
 `--activate-on-launch`, in addition to its visible foreground gate
-(`Page.bringToFront` plus the bounded double-frame probe). Both launch
-controls are needed for reliable `requestAnimationFrame` scheduling when the
-headed runner is launched from background cmux: the first prevents native
-window-occlusion suppression and the second activates the macOS window. The
-workload, long-task, and boundary semantics are unchanged.
+(`Page.bringToFront` plus the bounded double-frame probe). The exact spawned
+Chrome PID is reactivated by the bounded native helper during the proof. These
+launch controls prevent credential prompts and reduce native occlusion and
+activation scheduling failures; the workload, long-task, and boundary
+semantics are unchanged.
 
 The pinned reference is [event-history-performance-reference.json](event-history-performance-reference.json).
 A report never replaces it automatically. A reference update requires an

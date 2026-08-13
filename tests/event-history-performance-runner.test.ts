@@ -1105,6 +1105,27 @@ describe("Event History performance runner page operation", () => {
     expect(cdp.calls.every(({ params }) => params.awaitPromise === false)).toBe(true);
   });
 
+  it("charges an awaited heartbeat failure when explicitly requested", async () => {
+    const failure = new Error("foreground keeper failed");
+    let heartbeatCount = 0;
+    const cdp = new FakeCdp([
+      evaluated({ operationId: "heartbeat-failure", state: "pending", heartbeat: 0 }),
+      evaluated({ operationId: "heartbeat-failure", state: "pending", heartbeat: 1 }),
+      evaluated(true)
+    ]);
+
+    await expect(runPageOperation(cdp, "window.run()", {
+      operationId: "heartbeat-failure",
+      propagateHeartbeatErrors: true,
+      onHeartbeat: () => {
+        heartbeatCount += 1;
+        if (heartbeatCount === 2) throw failure;
+      }
+    })).rejects.toBe(failure);
+
+    expect(cdp.calls.at(-1)?.params.expression).toContain("delete globalThis");
+  });
+
   it("returns the exact resolved page report and cleans the operation record", async () => {
     const report = { anchors: { issue16TotalEvents: 1_692 }, cells: [] };
     const cdp = new FakeCdp([

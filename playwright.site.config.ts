@@ -26,7 +26,17 @@ export default defineConfig({
     trace: "retain-on-failure",
     timezoneId: "America/New_York",
     deviceScaleFactor: 1,
-    ...(chromeExecutable ? { launchOptions: { executablePath: chromeExecutable } } : {})
+    launchOptions: {
+      ...(chromeExecutable ? { executablePath: chromeExecutable } : {}),
+      args: [
+        "--use-mock-keychain",
+        "--password-store=basic",
+        "--disable-sync",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"
+      ]
+    }
   },
   webServer: {
     command: "npm run site:serve",

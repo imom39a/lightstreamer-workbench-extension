@@ -68,7 +68,18 @@ try {
     readyUrl: `http://127.0.0.1:${panelPort}/index.html`
   }));
 
-  browser = await chromium.launch({ executablePath: await resolveChromeExecutable(), headless: browserHeadless });
+  browser = await chromium.launch({
+    executablePath: await resolveChromeExecutable(),
+    headless: browserHeadless,
+    args: [
+      "--use-mock-keychain",
+      "--password-store=basic",
+      "--disable-sync",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-features=PasswordManagerOnboarding,SigninInterception,ProfilePickerOnStartup"
+    ]
+  });
   const results = [];
   for (const scenario of scenarios) {
     const reference = await capturePrototype(browser, scenario);
