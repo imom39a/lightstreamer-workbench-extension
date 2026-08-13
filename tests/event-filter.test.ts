@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { filterEvents, matchesEventFilters } from "../src/core/event-filter";
+import { FACET_DESCRIPTORS, canonicalEvidenceSearchText, extractEvidenceFacets } from "../src/core/evidence-facets";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   typedFacetValue,
@@ -45,6 +46,49 @@ function event(overrides: Partial<LightstreamerEventEnvelope>): LightstreamerEve
 }
 
 describe("event filters", () => {
+  it("exposes the frozen twelve-facet catalog and extracts independent typed facts", () => {
+    expect(FACET_DESCRIPTORS.map(({ key }) => key)).toEqual([
+      "client", "session", "subscription", "mode", "kind", "item", "listener",
+      "key", "operation", "phase", "provenance", "observationPath"
+    ]);
+    expect(Object.isFrozen(FACET_DESCRIPTORS)).toBe(true);
+    const extracted = extractEvidenceFacets(event({ captureSource: "listener", client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "sub-1", mode: "COMMAND" } }), { pageId: "page-a", listenerOwner: "owner-a" });
+    expect(Object.keys(extracted.facets)).toEqual(expect.arrayContaining([
+      "client", "session", "subscription", "mode", "kind", "item", "listener",
+      "key", "operation", "phase", "provenance", "observationPath"
+    ]));
+    for (const facet of Object.values(extracted.facets)) {
+      if (facet) expect(facet.identity).toBe(JSON.stringify(["v1", facet.facet, facet.type, facet.value]));
+    }
+  });
+
+  it("keeps ownership collisions, semantic absence, and Local path provenance truthful", () => {
+    const first = extractEvidenceFacets(event({ captureSource: "wire", client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "sub-1", mode: "COMMAND" } }), { pageId: "page-a", listenerOwner: "owner-a" }).facets;
+    const second = extractEvidenceFacets(event({ captureSource: "wire", client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "sub-1", mode: "COMMAND" } }), { pageId: "page-b", listenerOwner: "owner-b" }).facets;
+    expect(first.client?.identity).not.toBe(second.client?.identity);
+    expect(first.session?.identity).not.toBe(second.session?.identity);
+    expect(first.subscription?.identity).not.toBe(second.subscription?.identity);
+    expect(first.item?.identity).not.toBe(second.item?.identity);
+    expect(first.listener?.identity).not.toBe(second.listener?.identity);
+    const local = extractEvidenceFacets(event({ source: "synthetic", synthetic: true, captureSource: "wire" }), { pageId: "page-a", listenerOwner: "owner-a" }).facets;
+    expect(local.provenance?.value).toBe("LOCAL");
+    expect(local.observationPath).toBeUndefined();
+    expect(extractEvidenceFacets(event({ item: undefined, update: {} }), { pageId: "page-a", listenerOwner: "owner-a" }).facets.item).toBeUndefined();
+    expect(extractEvidenceFacets(event({ client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "sub-1", mode: "COMMAND" }, item: { name: "null" } }), { pageId: "page-a", listenerOwner: "owner-a" }).facets.item).toBeDefined();
+  });
+
+  it("uses strict snapshot phases and property-order-independent canonical Find text", () => {
+    const context = { pageId: "page-a", listenerOwner: "owner-a" };
+    expect(extractEvidenceFacets(event({ update: { isSnapshot: true } }), context).facets.phase?.value).toBe("SNAPSHOT");
+    expect(extractEvidenceFacets(event({ update: { isSnapshot: false } }), context).facets.phase?.value).toBe("LIVE");
+    expect(extractEvidenceFacets(event({ update: {} }), context).facets.phase).toBeUndefined();
+    expect(extractEvidenceFacets(event({ kind: "end-of-snapshot", update: {} }), context).facets.phase?.value).toBe("END OF SNAPSHOT");
+    const a = canonicalEvidenceSearchText(event({ update: { command: "UPDATE", key: "ABC", fields: { b: "x", a: 1 } }, raw: { irrelevant: "one" } }), context);
+    const b = canonicalEvidenceSearchText(event({ update: { fields: { a: 1, b: "x" }, key: "ABC", command: "UPDATE" }, raw: { irrelevant: "two" } }), context);
+    expect(a).toBe(b);
+    expect(a).not.toContain("live");
+    expect(a).toContain("item update");
+  });
   it("matches free-text search against a COMMAND key value", () => {
     expect(matchesEventFilters(event({}), { query: "alpha" })).toBe(true);
     expect(matchesEventFilters(event({}), { query: "missing-key" })).toBe(false);
