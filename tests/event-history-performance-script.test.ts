@@ -528,6 +528,32 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
+  it("closes a created target when per-target activation fails", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { openHarnessTarget, openFreshHarnessPage } = await import(${JSON.stringify(scriptUrl)});
+      const activationError = new Error("activation failed");
+      const run = async (open, expectedTarget, args) => {
+        const closed = [];
+        const control = { request(method) {
+          if (method === "Target.createTarget") return Promise.resolve({ targetId: expectedTarget });
+          if (method === "Target.closeTarget") {
+            closed.push(expectedTarget);
+            return Promise.resolve({ success: true });
+          }
+          return Promise.resolve({});
+        } };
+        await assert.rejects(open(control, 9222, ...args, {
+          deadlineAt: Date.now() + 500,
+          activateWindow: async () => { throw activationError; }
+        }), (error) => error === activationError);
+        assert.deepEqual(closed, [expectedTarget]);
+      };
+      await run(openHarnessTarget, "initial-activation-failure", ["file:///tmp/lsew-event-history/index.html"]);
+      await run(openFreshHarnessPage, "fresh-activation-failure", ["file:///tmp/lsew-event-history/index.html", "fresh"]);
+    `);
+  });
+
   it("bounds a hung target response body read", () => {
     runNode(`
       import assert from "node:assert/strict";
