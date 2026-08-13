@@ -108,8 +108,8 @@ export function canonicalFilterFromLegacyScalars(legacy: LegacyScalarFilter, rev
     const typed = createTypedFilterValue(facet, type, value);
     criteria[facet] = { include: [typed], exclude: [] };
   };
-  if (legacy.clientId !== undefined && legacy.clientId !== null) add("client", "string", legacy.clientId);
-  if (legacy.sessionId !== undefined && legacy.sessionId !== null) add("session", "string", legacy.sessionId);
+  if (legacy.clientId !== undefined) add("client", legacy.clientId === null ? "null" : "string", legacy.clientId);
+  if (legacy.sessionId !== undefined) add("session", legacy.sessionId === null ? "null" : "string", legacy.sessionId);
   if (legacy.subscriptionId !== undefined) add("subscription", "string", legacy.subscriptionId);
   if (legacy.mode !== undefined) add("mode", "enum", legacy.mode);
   if (legacy.item !== undefined) add("item", "string", legacy.item);
@@ -161,7 +161,7 @@ export function canonicalizeFilter(input: FilterInput): Filter {
   }
   const unsupported = [...(input.unsupported ?? [])]
     .map((criterion) => canonicalUnsupported(criterion))
-    .sort((left, right) => left.id.localeCompare(right.id) || left.reason.localeCompare(right.reason));
+    .sort(compareUnsupported);
   return freezeFilter({
     version: FILTER_VERSION,
     revision: input.revision,
@@ -218,7 +218,7 @@ export function applyFilterMutations(currentInput: FilterInput, expectedRevision
     let next: Filter = current;
     for (const operation of operations) next = applyMutation(next, operation);
     const changed = !filterEquals(current, next);
-    return { ok: true, filter: canonicalizeFilter({ ...next, revision: current.revision + 1 }), changed };
+    return { ok: true, filter: changed ? canonicalizeFilter({ ...next, revision: current.revision + 1 }) : current, changed };
   } catch (error) {
     return { ok: false, filter: current, problem: { code: "INVALID_FILTER_MUTATION", message: error instanceof Error ? error.message : "Invalid Filter mutation." } };
   }
@@ -232,6 +232,7 @@ function applyMutation(current: Filter, operation: FilterMutation): Filter {
     case "reset":
     case "clear": return createFilter(current.revision);
     case "clear-facet": {
+      assertNonEmptyString(operation.facet, "facet");
       const criteria = { ...current.criteria };
       delete criteria[operation.facet];
       return canonicalizeFilter({ ...current, criteria });
@@ -239,9 +240,10 @@ function applyMutation(current: Filter, operation: FilterMutation): Filter {
     case "add-criterion": return setCriterion(current, operation.facet, operation.value, operation.polarity ?? "include");
     case "set-polarity": return setCriterion(current, operation.facet, operation.value, operation.polarity);
     case "remove-criterion": {
+      const value = canonicalValue(operation.facet, operation.value);
       const criteria = { ...current.criteria };
       const existing = criteria[operation.facet];
-      if (existing) criteria[operation.facet] = { include: existing.include.filter((value) => value.identity !== operation.value.identity), exclude: existing.exclude.filter((value) => value.identity !== operation.value.identity) };
+      if (existing) criteria[operation.facet] = { include: existing.include.filter((candidate) => candidate.identity !== value.identity), exclude: existing.exclude.filter((candidate) => candidate.identity !== value.identity) };
       return canonicalizeFilter({ ...current, criteria });
     }
     case "add-unsupported": return canonicalizeFilter({ ...current, unsupported: [...current.unsupported, operation.criterion] });
@@ -266,9 +268,10 @@ function canonicalValues(facet: string, values: readonly TypedFilterValue[]): re
   const deduped = new Map<string, TypedFilterValue>();
   for (const value of values) {
     const canonical = canonicalValue(facet, value);
-    deduped.set(canonical.identity, canonical);
+    const existing = deduped.get(canonical.identity);
+    if (!existing || compareStrings(canonical.label, existing.label) < 0) deduped.set(canonical.identity, canonical);
   }
-  return Object.freeze([...deduped.values()].sort((left, right) => left.identity.localeCompare(right.identity)));
+  return Object.freeze([...deduped.values()].sort((left, right) => compareStrings(left.identity, right.identity)));
 }
 
 function canonicalValue(facet: string, value: TypedFilterValue): TypedFilterValue {
@@ -279,7 +282,30 @@ function canonicalValue(facet: string, value: TypedFilterValue): TypedFilterValu
 function canonicalUnsupported(value: UnsupportedFilterCriterion): UnsupportedFilterCriterion {
   assertNonEmptyString(value.id, "unsupported criterion id");
   assertNonEmptyString(value.reason, "unsupported criterion reason");
-  return Object.freeze({ ...value });
+  return Object.freeze({
+    id: value.id,
+    reason: value.reason,
+    ...(value.facet === undefined ? {} : { facet: value.facet }),
+    ...(value.detail === undefined ? {} : { detail: value.detail })
+  });
+}
+
+function compareUnsupported(left: UnsupportedFilterCriterion, right: UnsupportedFilterCriterion): number {
+  return compareStrings(left.id, right.id)
+    || compareStrings(left.reason, right.reason)
+    || compareOptionalStrings(left.detail, right.detail)
+    || compareOptionalStrings(left.facet, right.facet);
+}
+
+function compareOptionalStrings(left: string | undefined, right: string | undefined): number {
+  if (left === undefined && right === undefined) return 0;
+  if (left === undefined) return 1;
+  if (right === undefined) return -1;
+  return compareStrings(left, right);
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function canonicalAround(value: FilterAround): FilterAround {

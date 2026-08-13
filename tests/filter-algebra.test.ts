@@ -193,7 +193,8 @@ describe("canonical Filter algebra", () => {
     expect(evaluateFilter(left, record({ facets: { ...record().facets, kind: a } }), () => false)).toMatchObject({ inScope: false, matches: false });
     const source = { ...left, criteria: { ...left.criteria, kind: { ...left.criteria.kind!, include: [...left.criteria.kind!.include] } } };
     const stable = canonicalizeFilter(source);
-    (source.criteria.kind!.include as typeof source.criteria.kind!.include & { push: (v: typeof a) => void }).push(a);
+    const mutableInclude = source.criteria.kind!.include as Array<typeof a>;
+    mutableInclude.push(a);
     expect(stable.criteria.kind?.include).toHaveLength(2);
     expect(serializeFilter(canonicalizeFilter(JSON.parse(serializeFilter(left))))).toBe(serializeFilter(left));
   });

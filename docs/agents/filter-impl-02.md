@@ -16,6 +16,11 @@ path, runtime commands, facet catalog, extractors, or browser-visible output.
   invalid outcomes that preserve the prior Filter.
 - Typed string, enum, number, boolean, and null rules; unsupported criteria
   evaluate fail-closed.
+- Canonical duplicate typed identities retain the lexicographically smallest
+  label (using code-unit ordering), making display labels independent of
+  authoring order. Unsupported criteria remain represented and sort by
+  `id`, `reason`, `detail`, then `facet`, with present optional fields before
+  missing fields.
 - A documented temporary scalar adapter for Build 1 compatibility. The legacy
   matcher and Event History production path remain unchanged; filter-impl-03
   owns the eventual catalog boundary.
