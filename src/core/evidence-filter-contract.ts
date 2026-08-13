@@ -40,6 +40,7 @@ export type EvidenceFilter = Readonly<{ revision: number; text: string; criteria
 export type AroundEvidence = Readonly<{ intervalId: string; start: number; end: number }>;
 export type UnsupportedCriterion = Readonly<{ id: string; label: string; reason: "UNSUPPORTED_FACET" | "UNSUPPORTED_VALUE" | "UNSUPPORTED_OPERATOR" }>;
 export type EvidenceIdentity = Readonly<{ intervalId: string; pageId: string; ownerId: string; sequence: number; eventId: string }>;
+export const MAX_EVIDENCE_PAGE_SIZE = 100;
 export type EvidenceReadPoint = Readonly<{ interval: Readonly<{ id: string; ordinal: number }>; committedEvidenceBoundary: EvidenceIdentity | null; retainedRange: Readonly<{ first: EvidenceIdentity; last: EvidenceIdentity }> | null }>;
 export type EvidencePageRequest = Readonly<{ order: "NEWEST_FIRST" | "OLDEST_FIRST"; size: number; cursor?: string }>;
 export type FacetDiscoveryRequest = Readonly<{ facet: EvidenceFilterFacet; search?: string; size: number; cursor?: string }>;

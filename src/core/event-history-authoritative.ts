@@ -5,6 +5,7 @@ import {
   type EvidenceFilterQueryAdapter,
   type EvidenceFilterReadProblem,
   type EvidenceIdentity,
+  MAX_EVIDENCE_PAGE_SIZE,
   type EvidenceQueryRequest,
   type EvidenceReadPoint,
   type EvidenceSnapshot,
@@ -855,8 +856,8 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     if (clearInProgress || closing) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", "A History Interval transition is currently pending.") });
     }
-    if (!Number.isSafeInteger(request.page.size) || request.page.size < 1) {
-      return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", "Page size must be a positive integer.") });
+    if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > MAX_EVIDENCE_PAGE_SIZE) {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", request.page.size > MAX_EVIDENCE_PAGE_SIZE ? `Page size must not exceed ${MAX_EVIDENCE_PAGE_SIZE}.` : "Page size must be a positive integer.") });
     }
 
     // This is the sole read point. Everything below reads this immutable slice,
@@ -864,6 +865,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const intervalAtRead = interval;
     const entriesAtRead = committed.filter((entry) => entry.intervalId === intervalAtRead.id).slice();
     const readPoint = evidenceReadPoint(intervalAtRead, entriesAtRead);
+    if (request.at !== "LATEST_COMMITTED" && !sameHistoryInterval(request.at, readPoint)) {
+      return Promise.resolve({ ok: false, problem: evidenceReadProblem("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.") });
+    }
     if (request.at !== "LATEST_COMMITTED" && !matchesEvidenceReadPoint(request.at, readPoint)) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.") });
     }
@@ -878,7 +882,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
     const unsupported = request.filter.unsupported.length > 0;
     const discoveries = new Map<string, FacetDiscoveryResult>();
     if (unsupported) {
-      return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", "COMPLETE", "MEMORY_FALLBACK") });
+      return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK") });
     }
 
     try {
@@ -901,7 +905,7 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       const nextCursor = offset + page.length < ordered.length ? String(offset + page.length) : null;
       return Promise.resolve({
         ok: true,
-        value: makeEvidenceSnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", "COMPLETE", "MEMORY_FALLBACK", nextCursor)
+        value: makeEvidenceSnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", nextCursor)
       });
     } catch (error) {
       return Promise.resolve({ ok: false, problem: evidenceReadProblem("QUERY_FAILED", error instanceof Error ? error.message : "Evidence query failed.") });
@@ -1241,6 +1245,10 @@ function matchesEvidenceReadPoint(requested: EvidenceReadPoint, current: Evidenc
     && sameEvidenceRange(requested.retainedRange, current.retainedRange);
 }
 
+function sameHistoryInterval(requested: EvidenceReadPoint, current: EvidenceReadPoint): boolean {
+  return requested.interval.id === current.interval.id && requested.interval.ordinal === current.interval.ordinal;
+}
+
 function sameEvidenceIdentity(left: EvidenceIdentity | null, right: EvidenceIdentity | null): boolean {
   if (left === null || right === null) return left === right;
   return left.intervalId === right.intervalId && left.pageId === right.pageId && left.ownerId === right.ownerId && left.sequence === right.sequence && left.eventId === right.eventId;
@@ -1297,13 +1305,32 @@ function makeEvidenceSnapshot(
     readPoint,
     page: Object.freeze({ evidence: Object.freeze([...page]), nextCursor }),
     totals: Object.freeze({ matching, inScope }),
-    discoveries,
+    discoveries: immutableReadonlyMap(discoveries),
     lookup: null,
     find: null,
     evaluation,
     coverage,
     storage: storageName
   });
+}
+
+function coverageFor(tier: HistoryCapacityTier, fallback: MemoryEventHistoryOptions["fallback"], terminal: boolean): EvidenceSnapshot["coverage"] {
+  return tier === "LOWER" || fallback !== null || terminal ? "LIMITED" : "COMPLETE";
+}
+
+function immutableReadonlyMap<K, V>(source: ReadonlyMap<K, V>): ReadonlyMap<K, V> {
+  const entries = [...source.entries()];
+  const view: ReadonlyMap<K, V> = {
+    get size() { return entries.length; },
+    get(key) { return entries.find(([candidate]) => Object.is(candidate, key))?.[1]; },
+    has(key) { return entries.some(([candidate]) => Object.is(candidate, key)); },
+    entries() { return entries[Symbol.iterator](); },
+    keys() { return entries.map(([key]) => key)[Symbol.iterator](); },
+    values() { return entries.map(([, value]) => value)[Symbol.iterator](); },
+    forEach(callback, thisArg) { for (const [key, value] of entries) callback.call(thisArg, value, key, view); },
+    [Symbol.iterator]() { return entries[Symbol.iterator](); }
+  };
+  return Object.freeze(view);
 }
 
 export function copyCandidate(candidate: EvidenceCandidate): EvidenceCandidate {
