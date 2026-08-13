@@ -24,3 +24,30 @@ Capture.
 Lifecycle and panel-state scenario contracts remain separate from production
 rendering; later implementation tickets can run the same suite against memory
 and IndexedDB adapters and add browser scenarios without changing this seam.
+
+## Repair record
+
+The independent review of `dd40e67` identified declaration-only coverage,
+collision-incomplete fixtures, shallow immutability, missing lifecycle
+transitions, incomplete bounded-workload proof, and an unintegrated scenario
+manifest. The repair stays within this storage/renderer-neutral seam.
+
+`DeterministicEvidenceFilterAdapter` is an executable reference adapter for
+atomic reads. It evaluates typed include/exclude criteria, free text, half-open
+Around Evidence, unsupported fail-closed queries, exact totals, bounded page
+and facet-discovery continuation, retained/other-interval lookup with Reveal
+blockers, and Find navigation. The lifecycle harness exercises Clear
+invalidation, terminal final boundaries, memory fallback, Limited Observation
+Coverage, and a new committed boundary after Capture.
+
+The fixture now carries page- and owner-qualified identities plus explicit
+client, session, listener, missing-value, literal-`"null"`, and case-sensitive
+`ABC`/`abc` collision cases. Facet catalogs, scenario manifests, scenario
+themes/actions, fixture records, identities, and nested collision values are
+frozen. Filter scenarios are adapted through the maintained panel-scenario
+registry, including Dark, Light, and forced-colors coverage, without adding
+runtime or visible UI behavior.
+
+Red-first evidence is preserved in commit `ffc5ea9`; the executable repair is
+in `b232743` (with subsequent immutability/documentation verification commits
+listed in the handoff).

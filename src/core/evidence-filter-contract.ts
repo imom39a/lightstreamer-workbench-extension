@@ -203,17 +203,17 @@ export type EvidenceFilterFixture = Readonly<{
   }>;
 }>;
 
-export const EVIDENCE_FILTER_LIFECYCLE_CASES = [
+export const EVIDENCE_FILTER_LIFECYCLE_CASES = Object.freeze([
   "clear-invalidates-stale-read-point",
   "terminal-history-final-boundary",
   "lower-capacity-memory-fallback",
   "limited-observation-coverage",
   "concurrent-committed-capture"
-] as const;
+] as const);
 
 export type EvidenceFilterLifecycleCase = (typeof EVIDENCE_FILTER_LIFECYCLE_CASES)[number];
 
-export const EVIDENCE_FILTER_PANEL_SCENARIOS = [
+export const EVIDENCE_FILTER_PANEL_SCENARIOS = Object.freeze([
   "primary-include-exclude-reveal-reset",
   "empty-history",
   "valid-zero-result-conflict",
@@ -223,7 +223,7 @@ export const EVIDENCE_FILTER_PANEL_SCENARIOS = [
   "terminal-history",
   "memory-fallback",
   "high-volume-command-keys"
-] as const;
+] as const);
 
 export type EvidenceFilterPanelScenario = (typeof EVIDENCE_FILTER_PANEL_SCENARIOS)[number];
 
@@ -240,7 +240,7 @@ export const EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS = Object.freeze(
     geometries: EVIDENCE_FILTER_PANEL_GEOMETRIES,
     themes: Object.freeze(["Dark", "Light"] as const),
     forcedColors: true,
-    setupActions: Object.freeze(panelScenarioActions(id))
+    setupActions: Object.freeze(panelScenarioActions(id).map((action) => Object.freeze(action)))
   }))
 );
 
