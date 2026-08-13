@@ -35,7 +35,9 @@ const referencePath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_REFER
 const BROWSER_TIMEOUT_MS = 240_000;
 const STARTUP_REQUEST_TIMEOUT_MS = 5_000;
 const SERVER_CLEANUP_TIMEOUT_MS = 1_000;
-const OUTER_FINALIZATION_TIMEOUT_MS = 1_000;
+// terminateChild has a documented 1,000 ms SIGTERM grace period followed by a
+// 1,000 ms SIGKILL/close period. The outer bound must contain both phases.
+const OUTER_FINALIZATION_TIMEOUT_MS = 3_000;
 const EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS = positiveFiniteEnvironment(
   "LSEW_EVENT_HISTORY_PERF_DEADLINE_MS",
   3_600_000
@@ -252,7 +254,7 @@ async function main() {
         })
         : null,
       closeCdp: cdp ? () => cdp.close() : null,
-      terminateChrome: chrome ? () => terminateChild(chrome) : null,
+      terminateChrome: chrome ? ({ deadlineAt }) => terminateChild(chrome, deadlineAt) : null,
       closeServer: server ? () => closeServerWithDeadline(server, SERVER_CLEANUP_TIMEOUT_MS) : null,
       removeTemporaryRoot: () => rm(temporaryRoot, { recursive: true, force: true }),
       timeoutMs: OUTER_FINALIZATION_TIMEOUT_MS
@@ -334,11 +336,18 @@ export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 1
     : { ...options, deadlineAt: Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs") };
   await requestSetupCdp(cdp, "Page.enable", {}, effectiveOptions.deadlineAt, "page-enable", effectiveOptions);
   await requestSetupCdp(cdp, "Runtime.enable", {}, effectiveOptions.deadlineAt, "runtime-enable", effectiveOptions);
-  // Target.createTarget can publish the requested URL before the renderer has
-  // committed it. Re-issue navigation after attaching so a fresh target cannot
-  // leave the first Runtime.evaluate pointed at about:blank indefinitely.
-  await requestSetupCdp(cdp, "Page.navigate", { url: expectedUrl }, effectiveOptions.deadlineAt, "page-navigate", effectiveOptions);
   const deadline = Math.min(Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs"), effectiveOptions.deadlineAt);
+  const initialResponse = await evaluateResponseWithDeadline(cdp, {
+    expression: "location.href",
+    awaitPromise: true,
+    returnByValue: true
+  }, effectiveOptions.deadlineAt, "page-document-evaluate", effectiveOptions);
+  if (initialResponse?.result?.value === expectedUrl) return;
+
+  // Target.createTarget can publish stale metadata before the renderer has
+  // committed it. Navigate only when the attached document is not the exact
+  // expected URL; pageToken and query identity are deliberately preserved.
+  await requestSetupCdp(cdp, "Page.navigate", { url: expectedUrl }, effectiveOptions.deadlineAt, "page-navigate", effectiveOptions);
   while (Date.now() < deadline) {
     const response = await evaluateResponseWithDeadline(cdp, {
       expression: "location.href",
@@ -498,10 +507,11 @@ export async function finalizePerformanceRun({
 
 async function runBoundedOuterOperation(phase, operation, timeoutMs) {
   const bound = positiveFiniteStartupOption(timeoutMs, "outer finalization timeoutMs");
+  const deadlineAt = Date.now() + bound;
   let timer;
   try {
     const result = await Promise.race([
-      Promise.resolve().then(operation),
+      Promise.resolve().then(() => operation({ deadlineAt })),
       new Promise((resolvePromise) => {
         timer = setTimeout(() => resolvePromise({ outcome: "timed-out", phase, code: "OUTER_FINALIZATION_TIMEOUT", message: `Outer ${phase} did not settle within ${bound} ms.` }), bound);
       })
@@ -869,7 +879,7 @@ function remainingDeadlineMs(deadlineAt, fallbackMs, phase) {
   return remaining;
 }
 
-async function terminateChild(child) {
+async function terminateChild(child, deadlineAt = Date.now() + 2_000) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   await new Promise((resolvePromise) => {
     let settled = false;
@@ -882,10 +892,12 @@ async function terminateChild(child) {
     };
     child.once("close", settle);
     child.kill("SIGTERM");
+    const remaining = () => Math.max(0, deadlineAt - Date.now());
     setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      setTimeout(settle, 1_000);
-    }, 1_000);
+      setTimeout(settle, remaining());
+    }, Math.min(1_000, remaining()));
+    setTimeout(settle, remaining());
   });
 }
 

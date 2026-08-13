@@ -193,14 +193,56 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.deepEqual(calls.map(({ method }) => method), [
         "Page.enable",
         "Runtime.enable",
-        "Page.navigate",
         "Runtime.evaluate",
         "Runtime.evaluate",
         "Page.bringToFront",
         "Runtime.evaluate"
       ]);
-      assert.equal(calls[3].params.expression, "location.href");
-      assert.match(calls[6].params.expression, /requestAnimationFrame/);
+      assert.equal(calls[2].params.expression, "location.href");
+      assert.match(calls[5].params.expression, /requestAnimationFrame/);
+  `);
+  });
+
+  it("navigates exactly once when the initial URL is stale", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
+      const expected = "http://127.0.0.1:4173/?pageToken=fresh";
+      const calls = [];
+      let href = "http://127.0.0.1:4173/?pageToken=stale";
+      const cdp = { request(method, params) {
+        calls.push({ method, params });
+        if (method === "Page.navigate") { href = expected; return Promise.resolve({}); }
+        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: href } });
+        return Promise.resolve({});
+      }};
+      await ensureFreshHarnessDocument(cdp, expected, 100);
+      assert.equal(calls.filter(({ method }) => method === "Page.navigate").length, 1);
+      assert.equal(calls[2].params.expression, "location.href");
+      assert.equal(calls[3].method, "Page.navigate");
+    `);
+  });
+
+  it("fails closed and cancels a pending initial URL evaluation", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
+      let cancelled = 0;
+      const cdp = { request(method, params) {
+        if (method === "Runtime.evaluate" && params.expression === "location.href") {
+          const pending = new Promise(() => undefined);
+          pending.cancel = () => { cancelled += 1; };
+          return pending;
+        }
+        return Promise.resolve({});
+      }};
+      await assert.rejects(
+        ensureFreshHarnessDocument(cdp, "http://127.0.0.1:4173/?pageToken=pending", 20, { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }),
+        (error) => error?.name === "PerformanceOperationTimeout"
+          && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
+          && error.status.error.message.includes("page-document-evaluate")
+      );
+      assert.equal(cancelled, 1);
     `);
   });
 
@@ -254,7 +296,7 @@ describe("Event History performance startup fail-closed seams", () => {
           && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
           && error.status.error.name === "CdpRequestTimeout"
       );
-      assert.deepEqual(calls, ["Page.enable", "Runtime.enable", "Page.navigate"]);
+      assert.deepEqual(calls, ["Page.enable", "Runtime.enable", "Runtime.evaluate", "Page.navigate"]);
     `);
   });
 
@@ -411,7 +453,7 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
-  it("re-navigates a fresh target whose metadata URL precedes renderer commit", () => {
+  it("navigates a fresh target whose metadata URL precedes renderer commit", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
@@ -425,7 +467,7 @@ describe("Event History performance startup fail-closed seams", () => {
         return Promise.resolve({});
       }};
       await ensureFreshHarnessDocument(cdp, expected, 100);
-      assert.deepEqual(calls.slice(0, 3).map(({ method }) => method), ["Page.enable", "Runtime.enable", "Page.navigate"]);
+      assert.deepEqual(calls.slice(0, 4).map(({ method }) => method), ["Page.enable", "Runtime.enable", "Runtime.evaluate", "Page.navigate"]);
       assert.equal(calls.some(({ method, params }) => method === "Runtime.evaluate" && params.expression === "location.href"), true);
     `);
   });
@@ -578,6 +620,44 @@ describe("Event History performance startup fail-closed seams", () => {
       }};
       await assert.rejects(ensureFreshHarnessDocument(cdp, expected, 20));
       assert.equal(cancelled, 1);
+    `);
+  });
+
+  it("composes the chrome termination budget and preserves the primary error", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { finalizePerformanceRun } = await import(${JSON.stringify(scriptUrl)});
+      const primary = new Error("primary timeout");
+      let received;
+      const started = Date.now();
+      const result = await finalizePerformanceRun({
+        primaryError: primary,
+        terminateChrome: ({ deadlineAt }) => {
+          received = { deadlineAt };
+          return new Promise((resolve) => setTimeout(resolve, 10));
+        },
+        timeoutMs: 25
+      });
+      assert.strictEqual(result, primary);
+      assert.ok(received.deadlineAt >= started + 9);
+      assert.ok(received.deadlineAt <= started + 25);
+      assert.equal(primary.outerDiagnostics, undefined);
+    `);
+  });
+
+  it("records termination overrun without replacing the primary error", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { finalizePerformanceRun } = await import(${JSON.stringify(scriptUrl)});
+      const primary = new Error("primary timeout");
+      const result = await finalizePerformanceRun({
+        primaryError: primary,
+        terminateChrome: ({ deadlineAt }) => new Promise((resolve) => setTimeout(resolve, Math.max(0, deadlineAt - Date.now()) + 20)),
+        timeoutMs: 25
+      });
+      assert.strictEqual(result, primary);
+      assert.equal(primary.outerDiagnostics[0].phase, "chrome-termination");
+      assert.equal(primary.outerDiagnostics[0].outcome, "timed-out");
     `);
   });
 });

@@ -1,5 +1,29 @@
 # `filter-impl-08` repair proof
 
+## Conditional initial navigation repair (2026-08-13)
+
+The failed capture stopped before benchmark execution at the first raw
+`Page.navigate` request: CDP and the renderer were live, but the redundant
+same-URL navigation remained pending until the page-navigation deadline. This
+repair boundary is intentionally limited to startup document selection. After
+`Page.enable` and `Runtime.enable`, the runner performs one bounded
+`Runtime.evaluate("location.href")`; exact string equality with the expected
+URL (including pageToken and query identity) skips navigation and continues
+normal readiness/document validation. `about:blank`, stale metadata, a
+different pageToken, or any other URL performs exactly one existing bounded
+`Page.navigate`, then polls. A pending initial evaluation is cancelled and
+reported as structured `page-document-evaluate` failure; a pending mismatch
+navigation remains structured and is never retried. Capture remains
+observational, and no Chrome was launched during this implementation or its
+tests.
+
+The same failed run exposed a separate cleanup-composition defect: the outer
+finalizer's one-second bound could expire before `terminateChild` completed its
+documented SIGTERM/SIGKILL sequence. Finalization now passes an absolute
+deadline into termination, with an outer allowance that contains both cleanup
+phases; deterministic just-under and over-budget tests preserve the primary
+error and retain termination diagnostics.
+
 ## Outer finalization repair (2026-08-13)
 
 The final lifecycle review found that outer timeout evidence and `finally`
