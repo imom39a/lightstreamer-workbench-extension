@@ -453,7 +453,6 @@ export type WorkbenchPanelPerformanceEvent =
   | Readonly<{ type: "layout-effect"; snapshotVersion: number; boundary: EvidenceRef | null }>
   | Readonly<{ type: "animation-frame-requested"; timestampMs: number }>
   | Readonly<{ type: "animation-frame-callback"; timestampMs: number }>
-  | Readonly<{ type: "animation-frame-retried"; timestampMs: number }>
   | Readonly<{ type: "animation-frame-cancelled" }>;
 
 export type WorkbenchPanelPerformanceDiagnostics = Readonly<{
@@ -466,7 +465,6 @@ export type WorkbenchPanelPerformanceDiagnostics = Readonly<{
   lastAnimationFrameRequestedAtMs: number | null;
   animationFrameCallbackCount: number;
   lastAnimationFrameCallbackAtMs: number | null;
-  animationFrameRetryCount: number;
   animationFrameCancelCount: number;
 }>;
 
@@ -623,7 +621,6 @@ class Runtime implements WorkbenchRuntime {
     lastAnimationFrameRequestedAtMs: null,
     animationFrameCallbackCount: 0,
     lastAnimationFrameCallbackAtMs: null,
-    animationFrameRetryCount: 0,
     animationFrameCancelCount: 0
   };
   private topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null = null;
@@ -760,12 +757,6 @@ class Runtime implements WorkbenchRuntime {
           animationFramePending: false,
           animationFrameCallbackCount: current.animationFrameCallbackCount + 1,
           lastAnimationFrameCallbackAtMs: event.timestampMs
-        };
-        return;
-      case "animation-frame-retried":
-        this.panelPerformanceDiagnostics = {
-          ...current,
-          animationFrameRetryCount: current.animationFrameRetryCount + 1
         };
         return;
       case "animation-frame-cancelled":

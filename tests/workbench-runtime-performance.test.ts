@@ -118,7 +118,6 @@ describe("production React runtime performance boundary seam", () => {
       "lastAnimationFrameRequestedAtMs",
       "animationFrameCallbackCount",
       "lastAnimationFrameCallbackAtMs",
-      "animationFrameRetryCount",
       "animationFrameCancelCount"
     ]);
 
@@ -434,55 +433,6 @@ describe("production React runtime performance boundary seam", () => {
     }
     expect(requestFrame).toHaveBeenCalledTimes(2);
     expect(callbacks.size).toBe(2);
-
-    await act(async () => root.unmount());
-    runtime.dispose();
-    await history.close();
-    rootElement.remove();
-  });
-
-  it("re-requests a suppressed frame without treating the watchdog as paint", async () => {
-    const visible: number[] = [];
-    const history = createInMemoryEventHistory({ panelSessionId: "performance-react-frame-watchdog" });
-    const runtime = createWorkbenchRuntime({
-      history,
-      captureStatus: "capturing",
-      performanceHooks: { onVisibleFrame(boundary) { visible.push(boundary.sequence); } }
-    });
-    const callbacks = new Map<number, FrameRequestCallback>();
-    const timers = new Map<number, () => void>();
-    let nextId = 0;
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      const id = ++nextId;
-      callbacks.set(id, callback);
-      return id;
-    });
-    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { callbacks.delete(id); });
-    vi.spyOn(window, "setTimeout").mockImplementation(((callback: TimerHandler, delay?: number) => {
-      const id = ++nextId;
-      if (delay === 32 && typeof callback === "function") timers.set(id, callback as () => void);
-      return id;
-    }) as typeof window.setTimeout);
-    vi.spyOn(window, "clearTimeout").mockImplementation((id) => { timers.delete(id as number); });
-    const rootElement = document.createElement("main");
-    document.body.append(rootElement);
-    const root = createRoot(rootElement);
-    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
-    expect(callbacks.size).toBe(1);
-    expect(visible).toEqual([]);
-
-    const watchdog = timers.values().next().value as (() => void) | undefined;
-    await act(async () => watchdog?.());
-    expect(visible).toEqual([]);
-    expect(callbacks.size).toBe(1);
-    expect(runtime.getPerformanceDiagnostics?.()?.panel).toMatchObject({
-      animationFrameRetryCount: 1,
-      animationFrameCallbackCount: 0
-    });
-
-    const callback = callbacks.values().next().value;
-    await act(async () => callback?.(performance.now()));
-    expect(visible).toEqual([]);
 
     await act(async () => root.unmount());
     runtime.dispose();

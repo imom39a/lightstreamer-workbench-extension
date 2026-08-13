@@ -56,6 +56,7 @@ async function main() {
   let chromeOutput = "";
   let chromeMetadata = null;
   let environmentMetadata = null;
+  let frameDiagnostics = null;
   let primaryError = null;
   try {
     await mkdir(site, { recursive: true });
@@ -88,8 +89,26 @@ async function main() {
     await activateWindow();
     const proofDeadlineAt = Date.now() + EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS;
     const browserSocketUrl = await browserTarget(debugPort, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-websocket") });
-    browserCdp = await connect(browserSocketUrl, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-connect") });
+    browserCdp = await connect(browserSocketUrl, {
+      deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-connect"),
+      onEvent(event) {
+        if (!frameDiagnostics) return;
+        if (event.method === "Target.targetCreated" || event.method === "Target.targetInfoChanged" || event.method === "Target.targetDestroyed") {
+          frameDiagnostics.lifecycle.push({ method: event.method, params: event.params });
+        }
+        if (event.method === "Tracing.dataCollected") frameDiagnostics.traceChunks.push(...(event.params?.value ?? []));
+        if (event.method === "Tracing.tracingComplete") frameDiagnostics.tracingComplete = event.params ?? null;
+      }
+    });
     const environment = await requestControlCdpWithDeadline(browserCdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
+    if (process.env.LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS === "true") {
+      frameDiagnostics = { lifecycle: [], traceChunks: [], tracingComplete: null };
+      await requestControlCdpWithDeadline(browserCdp, "Target.setDiscoverTargets", { discover: true }, { deadlineAt: proofDeadlineAt, phase: "Target.setDiscoverTargets" });
+      await requestControlCdpWithDeadline(browserCdp, "Tracing.start", {
+        categories: "toplevel,blink,cc,devtools.timeline",
+        transferMode: "ReportEvents"
+      }, { deadlineAt: proofDeadlineAt, phase: "Tracing.start" });
+    }
     initialTarget = await openHarnessTarget(browserCdp, debugPort, url, { deadlineAt: proofDeadlineAt, activateWindow });
     cdp = initialTarget.cdp;
     await prepareInitialPageForAuthoritativeRun(cdp, url, { deadlineAt: proofDeadlineAt });
@@ -115,21 +134,13 @@ async function main() {
       const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
       const page = await openFreshHarnessPage(browserCdp, debugPort, url, selection.pageToken, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus, activateWindow });
       let primaryError = null;
-      let visibleFrameActivationIssued = false;
-      try {
+            try {
         shardResults.push(await runPageOperation(
           page.cdp,
           `window.__LSEW_EVENT_HISTORY_PERFORMANCE__.run({}, ${JSON.stringify(selection)})`,
           {
             deadlineAt: proofDeadlineAt,
             onHeartbeat(status) {
-              if (status.stage !== "visible-frame") {
-                visibleFrameActivationIssued = false;
-              } else if (!visibleFrameActivationIssued) {
-                visibleFrameActivationIssued = true;
-                void activateWindow().catch(() => undefined);
-                void page.cdp.request("Page.bringToFront", {}).catch(() => undefined);
-              }
               lastOperationStatus = status;
               process.stderr.write(
                 `[event-history-performance:${selection.id}] state=${status.state} elapsedMs=${status.elapsedMs.toFixed(0)} heartbeat=${status.heartbeat}\n`
@@ -251,6 +262,20 @@ async function main() {
     primaryError = normalizePerformanceTimeout(error) ?? error;
     if (chromeOutput) process.stderr.write(`\nChrome output:\n${chromeOutput.slice(-8_000)}\n`);
   } finally {
+    if (frameDiagnostics && browserCdp) {
+      try {
+        await requestControlCdpWithDeadline(browserCdp, "Tracing.end", {}, { deadlineAt: Date.now() + 5_000, phase: "Tracing.end", requestCeilingMs: 2_000, allowAfterDeadline: true });
+        await delay(250);
+      } catch (error) {
+        frameDiagnostics.stopError = { name: error?.name, message: error?.message ?? String(error) };
+      }
+      try {
+        const diagnosticsPath = outputPath.replace(/\.json$/u, ".frame-diagnostics.json");
+        await writeFile(diagnosticsPath, `${JSON.stringify({ schemaVersion: 1, diagnosticOnly: true, lifecycle: frameDiagnostics.lifecycle, tracingComplete: frameDiagnostics.tracingComplete, traceEvents: frameDiagnostics.traceChunks }, null, 2)}\n`);
+      } catch (error) {
+        frameDiagnostics.writeError = { name: error?.name, message: error?.message ?? String(error) };
+      }
+    }
     const finalizedError = await finalizePerformanceRun({
       primaryError,
       timeout: primaryError instanceof PerformanceOperationTimeout ? primaryError : null,
@@ -321,14 +346,16 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
 }
 
 export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options = {}) {
-  const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", { url: pageUrl }, { ...options, phase: "Target.createTarget" });
+  const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", nativeWindowTargetParams(pageUrl), { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the initial harness page.");
   await options.activateWindow?.();
+  let windowEvidence;
   let pageCdp;
   try {
+    windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, options);
     pageCdp = await connect(await pageTarget(debugPort, pageUrl, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket });
     await ensureFreshHarnessDocument(pageCdp, pageUrl, 15_000, options);
-    return { cdp: pageCdp, targetId: created.targetId, pageToken: "initial", url: pageUrl };
+    return { cdp: pageCdp, targetId: created.targetId, pageToken: "initial", url: pageUrl, windowEvidence };
   } catch (error) {
     try {
       await closeFreshHarnessPageWithErrorPreservation(controlCdp, { cdp: pageCdp ?? { close() {} }, targetId: created.targetId, pageToken: "initial" }, options, error);
@@ -342,11 +369,13 @@ export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options 
 export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageToken, options = {}) {
   if (typeof pageToken !== "string" || pageToken.length === 0) throw new Error("Fresh harness page requires a non-empty page token.");
   const pageUrl = new URL(harnessPageUrl(baseUrl, pageToken));
-  const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", { url: pageUrl.href }, { ...options, phase: "Target.createTarget" });
+  const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", nativeWindowTargetParams(pageUrl.href), { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
   await options.activateWindow?.();
+  let windowEvidence;
   let pageCdp;
   try {
+    windowEvidence = await activateAndVerifyHarnessTarget(controlCdp, created.targetId, options);
     pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket });
     await ensureFreshHarnessDocument(pageCdp, pageUrl.href, 15_000, options);
     await waitForHarness(pageCdp, options);
@@ -355,7 +384,7 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
       ? await evaluateWithDeadline(pageCdp, "new URL(location.href).searchParams.get('pageToken')", options.deadlineAt, "page-token")
       : await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", BROWSER_TIMEOUT_MS);
     if (observedToken !== pageToken) throw new Error("Fresh harness page token mismatch.");
-    return { cdp: pageCdp, targetId: created.targetId, pageToken, url: pageUrl.href };
+    return { cdp: pageCdp, targetId: created.targetId, pageToken, url: pageUrl.href, windowEvidence };
   } catch (error) {
 
     try {
@@ -374,13 +403,50 @@ export function harnessPageUrl(baseUrl, pageToken) {
   return pageUrl.href;
 }
 
+const AUTHORITATIVE_WINDOW_BOUNDS = Object.freeze({ left: 40, top: 40, width: 1280, height: 900 });
+
+export function nativeWindowTargetParams(url) {
+  return {
+    url,
+    newWindow: true,
+    background: false,
+    ...AUTHORITATIVE_WINDOW_BOUNDS
+  };
+}
+
+export async function activateAndVerifyHarnessTarget(controlCdp, targetId, options = {}) {
+  const request = (method, params, phase) => requestControlCdpWithDeadline(controlCdp, method, params, { ...options, phase });
+  const targetBefore = await request("Target.getTargetInfo", { targetId }, "Target.getTargetInfo");
+  if (targetBefore?.targetInfo?.targetId !== targetId) throw new Error(`Chrome returned the wrong target for ${targetId}.`);
+  const windowBefore = await request("Browser.getWindowForTarget", { targetId }, "Browser.getWindowForTarget");
+  if (!Number.isInteger(windowBefore?.windowId)) throw new Error(`Chrome did not return a native window for target ${targetId}.`);
+  await request("Browser.setWindowBounds", {
+    windowId: windowBefore.windowId,
+    bounds: { ...AUTHORITATIVE_WINDOW_BOUNDS, windowState: "normal", focused: true }
+  }, "Browser.setWindowBounds");
+  const windowAfter = await request("Browser.getWindowForTarget", { targetId }, "Browser.getWindowForTarget");
+  const targetAfter = await request("Target.getTargetInfo", { targetId }, "Target.getTargetInfo");
+  if (targetAfter?.targetInfo?.targetId !== targetId || windowAfter?.windowId !== windowBefore.windowId || windowAfter?.bounds?.windowState !== "normal") {
+    throw new Error(`Chrome did not confirm the requested native window is active for target ${targetId}.`);
+  }
+  return Object.freeze({
+    targetId,
+    windowId: windowAfter.windowId,
+    targetType: targetAfter.targetInfo.type,
+    targetUrl: targetAfter.targetInfo.url,
+    windowState: windowAfter.bounds.windowState,
+    bounds: windowAfter.bounds
+  });
+}
+
 export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 15_000, options = {}) {
+  const localDeadlineAt = Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs");
   const effectiveOptions = Number.isFinite(options.deadlineAt)
     ? options
-    : { ...options, deadlineAt: Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs") };
+    : { ...options, deadlineAt: localDeadlineAt };
   await requestSetupCdp(cdp, "Page.enable", {}, effectiveOptions.deadlineAt, "page-enable", effectiveOptions);
   await requestSetupCdp(cdp, "Runtime.enable", {}, effectiveOptions.deadlineAt, "runtime-enable", effectiveOptions);
-  const deadline = Math.min(Date.now() + positiveFiniteStartupOption(timeoutMs, "timeoutMs"), effectiveOptions.deadlineAt);
+  const deadline = Number.isFinite(options.deadlineAt) ? options.deadlineAt : localDeadlineAt;
   const initialResponse = await evaluateResponseWithDeadline(cdp, {
     expression: "location.href",
     awaitPromise: true,
@@ -687,12 +753,13 @@ function timeoutMarkdown(diagnostic) {
 }
 
 class Cdp {
-  constructor(socket) {
+  constructor(socket, onEvent = null) {
     this.socket = socket;
     this.id = 0;
     this.pending = new Map();
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(String(event.data));
+      if (message.method) onEvent?.(message);
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
@@ -727,7 +794,7 @@ export async function connect(url, options = {}) {
       socket.addEventListener("open", onOpen, { once: true });
       socket.addEventListener("error", onError, { once: true });
     }), Math.min(deadlineMs, requestTimeoutMs), () => socket.close(), "Timed out waiting for CDP WebSocket open.");
-    return new Cdp(socket);
+    return new Cdp(socket, options.onEvent);
   } catch (error) {
     socket.close();
     throw error;

@@ -480,7 +480,14 @@ describe("Event History performance startup fail-closed seams", () => {
       const { openHarnessTarget } = await import(${JSON.stringify(scriptUrl)});
       const expected = "file:///tmp/lsew-event-history/index.html";
       const calls = [];
-      const control = { request(method, params) { calls.push([method, params]); return Promise.resolve({ targetId: "initial-1" }); } };
+      const control = { request(method, params) {
+        calls.push([method, params]);
+        if (method === "Target.createTarget") return Promise.resolve({ targetId: "initial-1" });
+        if (method === "Target.getTargetInfo") return Promise.resolve({ targetInfo: { targetId: params.targetId, type: "page", url: expected } });
+        if (method === "Browser.getWindowForTarget") return Promise.resolve({ windowId: 7, bounds: { windowState: "normal" } });
+        if (method === "Target.closeTarget") return Promise.resolve({ success: true });
+        return Promise.resolve({});
+      } };
       let fetches = 0;
       const pageCdp = { request(method, params) {
         calls.push([method, params]);
@@ -493,7 +500,7 @@ describe("Event History performance startup fail-closed seams", () => {
         fetchJson: async (url) => { fetches += 1; assert.equal(url, "http://127.0.0.1:9222/json/list"); return [{ id: "other", type: "page", webSocketDebuggerUrl: "ws://other" }, { id: "initial-1", type: "page", webSocketDebuggerUrl: "ws://initial" }]; },
         createSocket: () => { const listeners = {}; return { addEventListener(name, handler) { listeners[name] = handler; if (name === "open") queueMicrotask(handler); }, removeEventListener() {}, send(raw) { const request = JSON.parse(raw); queueMicrotask(() => listeners.message?.({ data: JSON.stringify({ id: request.id, result: request.method === "Runtime.evaluate" ? { result: { value: request.params.expression === "location.href" ? expected : true } } : {} }) })); }, close() {} }; }
       });
-      assert.deepEqual(calls[0], ["Target.createTarget", { url: expected }]);
+      assert.deepEqual(calls[0], ["Target.createTarget", { url: expected, newWindow: true, background: false, left: 40, top: 40, width: 1280, height: 900 }]);
       assert.equal(fetches, 1);
     `);
   });
@@ -504,7 +511,12 @@ describe("Event History performance startup fail-closed seams", () => {
       const { openHarnessTarget } = await import(${JSON.stringify(scriptUrl)});
       const primary = await (async () => {
         try {
-          await openHarnessTarget({ request: async () => ({ targetId: "initial-1" }) }, 9222, "file:///tmp/lsew-event-history/index.html", {
+          await openHarnessTarget({ request: async (method, params) => {
+            if (method === "Target.createTarget") return { targetId: "initial-1" };
+            if (method === "Target.getTargetInfo") return { targetInfo: { targetId: params.targetId, type: "page", url: "file:///tmp/lsew-event-history/index.html" } };
+            if (method === "Browser.getWindowForTarget") return { windowId: 7, bounds: { windowState: "normal" } };
+            return {};
+          } }, 9222, "file:///tmp/lsew-event-history/index.html", {
             deadlineAt: Date.now() + 100,
             fetchJson: async () => [{ id: "initial-1", type: "page", webSocketDebuggerUrl: "ws://initial" }],
             createSocket: () => { const listeners = {}; return { addEventListener(name, handler) { listeners[name] = handler; if (name === "open") queueMicrotask(handler); }, removeEventListener() {}, send(raw) { const request = JSON.parse(raw); queueMicrotask(() => listeners.message?.({ data: JSON.stringify({ id: request.id, result: request.method === "Runtime.evaluate" ? { result: { value: false } } : {} }) })); }, close() {} }; }
@@ -683,6 +695,23 @@ describe("Event History performance startup fail-closed seams", () => {
       }};
       await assert.rejects(ensureFreshHarnessDocument(cdp, expected, 20));
       assert.equal(cancelled, 1);
+    `);
+  });
+
+  it("bounds no-options document setup and URL polling in one elapsed budget", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
+      const started = Date.now();
+      const expected = "file:///tmp/lsew-event-history/index.html?pageToken=budget";
+      const cdp = { request(method, params) {
+        if (method === "Runtime.evaluate" && params.expression === "location.href") {
+          return Promise.resolve({ result: { value: "about:blank" } });
+        }
+        return new Promise((resolve) => setTimeout(() => resolve({}), 12));
+      }};
+      await assert.rejects(ensureFreshHarnessDocument(cdp, expected, 20));
+      assert.ok(Date.now() - started < 80, "setup plus polling must not receive a second timeout window");
     `);
   });
 
