@@ -901,6 +901,11 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
       }
     }
     if (unsupported) {
+      for (const discoveryRequest of request.discover ?? []) {
+        discoveries.set(discoveryRequest.facet, {
+          state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "UNSUPPORTED_AT_READ_POINT", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
+        });
+      }
       const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
       const find = request.find === undefined ? null : findEvidence(records, request.find);
       return Promise.resolve({ ok: true, value: makeEvidenceSnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", coverageFor(capacityTier, fallback, Boolean(terminal)), "MEMORY_FALLBACK", null, lookup, find) });

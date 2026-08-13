@@ -85,4 +85,12 @@ describe("filter-impl-05 memory facet discovery", () => {
     const later = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: filter(), discover: [{ facet: "key", size: 10 }] });
     expect(later.ok && later.value.discoveries.get("key")?.distinctTotal).toBe(2);
   });
+
+  it("reports unsupported discovery locally while preserving the atomic page result", async () => {
+    const history = await createMemoryEventHistoryForTests({ panelSessionId: "filter-impl-05-unavailable" });
+    await history.offer(event("one", 1, "one")).settled;
+    const result = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: { ...filter(), unsupported: [{ id: "future", label: "future", reason: "UNSUPPORTED_FACET" }] }, discover: [{ facet: "key", size: 10 }] });
+    expect(result.ok && result.value.totals).toEqual({ matching: 0, inScope: 0 });
+    expect(result.ok && result.value.discoveries.get("key")).toMatchObject({ state: "UNAVAILABLE", reason: "UNSUPPORTED_AT_READ_POINT" });
+  });
 });
