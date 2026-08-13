@@ -54,6 +54,8 @@ async function main() {
   let server;
   let chrome;
   let cdp;
+  let browserCdp;
+  let initialTarget;
   let chromeOutput = "";
   let chromeMetadata = null;
   let environmentMetadata = null;
@@ -80,14 +82,17 @@ async function main() {
     const port = server.address().port;
     const url = `http://127.0.0.1:${port}/`;
     const executable = await chromeExecutable();
-    chrome = spawn(executable, chromeLaunchArguments(profile, url), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
+    chrome = spawn(executable, chromeLaunchArguments(profile), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
     chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
     chrome.stderr.on("data", (chunk) => { chromeOutput += String(chunk); });
     const debugPort = await debuggingPort(profile, chrome);
-    cdp = await connect(await pageTarget(debugPort, url, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
     const proofDeadlineAt = Date.now() + EVENT_HISTORY_PERFORMANCE_RUN_DEADLINE_MS;
+    const browserSocketUrl = await browserTarget(debugPort, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-websocket") });
+    browserCdp = await connect(browserSocketUrl, { deadlineMs: remainingDeadlineMs(proofDeadlineAt, BROWSER_TIMEOUT_MS, "browser-connect") });
+    const environment = await requestControlCdpWithDeadline(browserCdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
+    initialTarget = await openHarnessTarget(browserCdp, debugPort, url, { deadlineAt: proofDeadlineAt });
+    cdp = initialTarget.cdp;
     await prepareInitialPageForAuthoritativeRun(cdp, url, { deadlineAt: proofDeadlineAt });
-    const environment = await requestControlCdpWithDeadline(cdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
     const chromeMajor = chromeMajorFromProduct(environment.product);
     if (chromeMajor !== 151) throw new Error(`Expected Chrome for Testing major 151, got ${environment.product}.`);
     chromeMetadata = {
@@ -108,7 +113,7 @@ async function main() {
     let lastOperationStatus = null;
     for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
       const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
-      const page = await openFreshHarnessPage(cdp, debugPort, url, selection.pageToken, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+      const page = await openFreshHarnessPage(browserCdp, debugPort, url, selection.pageToken, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
       let primaryError = null;
       try {
         shardResults.push(await runPageOperation(
@@ -128,12 +133,12 @@ async function main() {
         primaryError = error;
         throw error;
       } finally {
-        await closeFreshHarnessPageWithErrorPreservation(cdp, page, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryError);
+        await closeFreshHarnessPageWithErrorPreservation(browserCdp, page, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryError);
       }
     }
     const result = aggregatePerformanceShardResults(shardResults);
 
-    const heapPage = await openFreshHarnessPage(cdp, debugPort, url, `heap-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+    const heapPage = await openFreshHarnessPage(browserCdp, debugPort, url, `heap-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
     let heapPlan;
     let primaryHeapError = null;
     try {
@@ -165,11 +170,11 @@ async function main() {
       primaryHeapError = error;
       throw error;
     } finally {
-      await closeFreshHarnessPageWithErrorPreservation(cdp, heapPage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryHeapError);
+      await closeFreshHarnessPageWithErrorPreservation(browserCdp, heapPage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryHeapError);
     }
     const heapSamples = heapPlan.heapSamples;
 
-    const lifecyclePage = await openFreshHarnessPage(cdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+    const lifecyclePage = await openFreshHarnessPage(browserCdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
     const lifecycleRetainedHeapBytes = [];
     let primaryLifecycleError = null;
     try {
@@ -189,7 +194,7 @@ async function main() {
       primaryLifecycleError = error;
       throw error;
     } finally {
-      await closeFreshHarnessPageWithErrorPreservation(cdp, lifecyclePage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryLifecycleError);
+      await closeFreshHarnessPageWithErrorPreservation(browserCdp, lifecyclePage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryLifecycleError);
     }
 
     const report = {
@@ -254,6 +259,8 @@ async function main() {
         })
         : null,
       closeCdp: cdp ? () => cdp.close() : null,
+      closeInitialTarget: initialTarget ? ({ deadlineAt }) => closeFreshHarnessPage(browserCdp, initialTarget, { deadlineAt }) : null,
+      closeBrowserCdp: browserCdp ? () => browserCdp.close() : null,
       terminateChrome: chrome ? ({ deadlineAt }) => terminateChild(chrome, deadlineAt) : null,
       closeServer: server ? () => closeServerWithDeadline(server, SERVER_CLEANUP_TIMEOUT_MS) : null,
       removeTemporaryRoot: () => rm(temporaryRoot, { recursive: true, force: true }),
@@ -302,6 +309,24 @@ export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
   }
 }
 
+export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options = {}) {
+  const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", { url: pageUrl }, { ...options, phase: "Target.createTarget" });
+  if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the initial harness page.");
+  let pageCdp;
+  try {
+    pageCdp = await connect(await pageTarget(debugPort, pageUrl, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket });
+    await ensureFreshHarnessDocument(pageCdp, pageUrl, 15_000, options);
+    return { cdp: pageCdp, targetId: created.targetId, pageToken: "initial", url: pageUrl };
+  } catch (error) {
+    try {
+      await closeFreshHarnessPageWithErrorPreservation(controlCdp, { cdp: pageCdp ?? { close() {} }, targetId: created.targetId, pageToken: "initial" }, options, error);
+    } catch (cleanupError) {
+      attachCleanupEvidence(error, cleanupError);
+    }
+    throw error;
+  }
+}
+
 export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageToken, options = {}) {
   if (typeof pageToken !== "string" || pageToken.length === 0) throw new Error("Fresh harness page requires a non-empty page token.");
   const pageUrl = new URL(baseUrl);
@@ -310,7 +335,7 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
   let pageCdp;
   try {
-    pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect") });
+    pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { ...options, targetId: created.targetId, deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect"), createSocket: options.createSocket });
     await ensureFreshHarnessDocument(pageCdp, pageUrl.href, 15_000, options);
     await waitForHarness(pageCdp, options);
     await preparePageForAuthoritativeRun(pageCdp, options);
@@ -384,7 +409,7 @@ function attachCleanupEvidence(primaryError, cleanupError) {
   }
 }
 
-export function chromeLaunchArguments(profile, url, platformName = process.platform) {
+export function chromeLaunchArguments(profile, platformName = process.platform) {
   return [
     ...(platformName === "darwin" ? ["--activate-on-launch"] : []),
     "--no-sandbox",
@@ -395,7 +420,7 @@ export function chromeLaunchArguments(profile, url, platformName = process.platf
     "--no-first-run",
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
-    url
+    "about:blank"
   ];
 }
 
@@ -467,6 +492,8 @@ export async function finalizePerformanceRun({
   timeout = null,
   writeEvidence = null,
   closeCdp = null,
+  closeInitialTarget = null,
+  closeBrowserCdp = null,
   terminateChrome = null,
   closeServer = null,
   removeTemporaryRoot = null,
@@ -478,6 +505,8 @@ export async function finalizePerformanceRun({
   }
   for (const [phase, operation] of [
     ["cdp-close", closeCdp],
+    ["initial-target-close", closeInitialTarget],
+    ["browser-cdp-close", closeBrowserCdp],
     ["chrome-termination", terminateChrome],
     ["server-close", closeServer],
     ["temporary-root-removal", removeTemporaryRoot]
@@ -734,7 +763,9 @@ export async function pageTarget(port, expected, options = {}) {
   while (Date.now() < deadline) {
     try {
       const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`, Math.min(requestTimeoutMs, deadline - Date.now()));
-      const target = targets.find((entry) => entry.type === "page" && entry.url.startsWith(expected));
+      const target = targets.find((entry) => entry.type === "page"
+        && (options.targetId === undefined || entry.id === options.targetId)
+        && typeof entry.webSocketDebuggerUrl === "string");
       if (target) return target.webSocketDebuggerUrl;
     } catch {
       // Retry until the bounded startup deadline; a hung fetch/body is not allowed to escape it.
@@ -744,6 +775,26 @@ export async function pageTarget(port, expected, options = {}) {
     await sleep(Math.min(100, remaining));
   }
   throw new StartupTimeout("Timed out waiting for visible performance page.");
+}
+
+export async function browserTarget(port, options = {}) {
+  const deadlineMs = positiveFiniteStartupOption(options.deadlineMs ?? BROWSER_TIMEOUT_MS, "browserTarget deadlineMs");
+  const requestTimeoutMs = positiveFiniteStartupOption(options.requestTimeoutMs ?? Math.min(STARTUP_REQUEST_TIMEOUT_MS, deadlineMs), "browserTarget requestTimeoutMs");
+  const fetchJson = options.fetchJson ?? ((target, timeoutMs) => fetchJsonWithStartupTimeout(target, timeoutMs, options.fetchImplementation ?? fetch));
+  const sleep = options.sleep ?? delay;
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    try {
+      const version = await fetchJson(`http://127.0.0.1:${port}/json/version`, Math.min(requestTimeoutMs, deadline - Date.now()));
+      if (typeof version?.webSocketDebuggerUrl === "string" && version.webSocketDebuggerUrl.length > 0) return version.webSocketDebuggerUrl;
+    } catch {
+      // Retry until the bounded startup deadline; a hung fetch/body is not allowed to escape it.
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(100, remaining));
+  }
+  throw new StartupTimeout("Timed out waiting for the browser CDP WebSocket.");
 }
 
 class StartupTimeout extends Error {

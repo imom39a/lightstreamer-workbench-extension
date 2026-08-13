@@ -133,11 +133,12 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
-      const args = chromeLaunchArguments("/tmp/lsew-profile", "http://127.0.0.1:4173/", "darwin");
+      const args = chromeLaunchArguments("/tmp/lsew-profile", "darwin");
       assert.equal(args.includes("--activate-on-launch"), true);
       assert.equal(args.includes("--headless"), false);
       assert.equal(args.includes("--js-flags=--expose-gc"), true);
-      assert.equal(args.at(-1), "http://127.0.0.1:4173/");
+      assert.equal(args.at(-1), "about:blank");
+      assert.equal(args.includes("http://127.0.0.1:4173/"), false);
     `);
   });
 
@@ -145,10 +146,11 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
-      const args = chromeLaunchArguments("/tmp/lsew-profile", "http://127.0.0.1:4173/", "linux");
+      const args = chromeLaunchArguments("/tmp/lsew-profile", "linux");
       assert.equal(args.includes("--activate-on-launch"), false);
       assert.equal(args.includes("--headless"), false);
-      assert.equal(args.at(-1), "http://127.0.0.1:4173/");
+      assert.equal(args.at(-1), "about:blank");
+      assert.equal(args.includes("http://127.0.0.1:4173/"), false);
     `);
   });
 
@@ -435,6 +437,59 @@ describe("Event History performance startup fail-closed seams", () => {
         pageTarget(9222, "http://127.0.0.1", { deadlineMs: 30, requestTimeoutMs: 10, fetchImplementation: pending, sleep: async () => undefined }),
         (error) => error?.name === "StartupTimeout"
       );
+    `);
+  });
+
+  it("bounds browser websocket discovery from /json/version", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { browserTarget } = await import(${JSON.stringify(scriptUrl)});
+      await assert.rejects(
+        browserTarget(9222, { deadlineMs: 30, requestTimeoutMs: 10, fetchImplementation: () => new Promise(() => undefined), sleep: async () => undefined }),
+        (error) => error?.name === "StartupTimeout"
+      );
+    `);
+  });
+
+  it("creates and attaches the initial target by exact target id and URL", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { openHarnessTarget } = await import(${JSON.stringify(scriptUrl)});
+      const expected = "http://127.0.0.1:4173/";
+      const calls = [];
+      const control = { request(method, params) { calls.push([method, params]); return Promise.resolve({ targetId: "initial-1" }); } };
+      let fetches = 0;
+      const pageCdp = { request(method, params) {
+        calls.push([method, params]);
+        if (method === "Runtime.evaluate" && params.expression === "location.href") return Promise.resolve({ result: { value: expected } });
+        if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: true } });
+        return Promise.resolve({});
+      }, close() {} };
+      await openHarnessTarget(control, 9222, expected, {
+        deadlineAt: Date.now() + 500,
+        fetchJson: async (url) => { fetches += 1; assert.equal(url, "http://127.0.0.1:9222/json/list"); return [{ id: "other", type: "page", webSocketDebuggerUrl: "ws://other" }, { id: "initial-1", type: "page", webSocketDebuggerUrl: "ws://initial" }]; },
+        createSocket: () => { const listeners = {}; return { addEventListener(name, handler) { listeners[name] = handler; if (name === "open") queueMicrotask(handler); }, removeEventListener() {}, send(raw) { const request = JSON.parse(raw); queueMicrotask(() => listeners.message?.({ data: JSON.stringify({ id: request.id, result: request.method === "Runtime.evaluate" ? { result: { value: request.params.expression === "location.href" ? expected : true } } : {} }) })); }, close() {} }; }
+      });
+      assert.deepEqual(calls[0], ["Target.createTarget", { url: expected }]);
+      assert.equal(fetches, 1);
+    `);
+  });
+
+  it("preserves the initial setup error when initial target cleanup fails", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { openHarnessTarget } = await import(${JSON.stringify(scriptUrl)});
+      const primary = await (async () => {
+        try {
+          await openHarnessTarget({ request: async () => ({ targetId: "initial-1" }) }, 9222, "http://127.0.0.1:4173/", {
+            deadlineAt: Date.now() + 100,
+            fetchJson: async () => [{ id: "initial-1", type: "page", webSocketDebuggerUrl: "ws://initial" }],
+            createSocket: () => { const listeners = {}; return { addEventListener(name, handler) { listeners[name] = handler; if (name === "open") queueMicrotask(handler); }, removeEventListener() {}, send(raw) { const request = JSON.parse(raw); queueMicrotask(() => listeners.message?.({ data: JSON.stringify({ id: request.id, result: request.method === "Runtime.evaluate" ? { result: { value: false } } : {} }) })); }, close() {} }; }
+          });
+        } catch (error) { return error; }
+      })();
+      assert.match(primary?.message ?? "", /visible foreground|page/u);
+      assert.equal(primary?.cleanupEvidence?.code, "Error");
     `);
   });
 
