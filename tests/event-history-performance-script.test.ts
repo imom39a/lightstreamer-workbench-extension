@@ -28,6 +28,45 @@ const runNode = (source: string) => execFileSync(process.execPath, ["--input-typ
 afterAll(cleanupTemporaryModuleRoot);
 
 describe("Event History performance startup fail-closed seams", () => {
+  it("preserves a primary setup error when bounded target cleanup also fails", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { closeFreshHarnessPageWithErrorPreservation } = await import(${JSON.stringify(scriptUrl)});
+      const primary = new Error("primary setup failed");
+      const controlCdp = { request: () => new Promise(() => undefined) };
+      const page = { cdp: { close() {} }, targetId: "target-1", pageToken: "page-1" };
+      await closeFreshHarnessPageWithErrorPreservation(controlCdp, page, { deadlineAt: Date.now() - 1, requestCeilingMs: 5 }, primary);
+      assert.equal(primary.message, "primary setup failed");
+      assert.equal(primary.cleanupEvidence.code, "SHARED_DEADLINE_EXCEEDED");
+      assert.equal(primary.cleanupEvidence.status.state, "rejected");
+    `);
+  });
+
+  it("fails closed when standalone target cleanup times out", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { closeFreshHarnessPageWithErrorPreservation } = await import(${JSON.stringify(scriptUrl)});
+      const controlCdp = { request: () => new Promise(() => undefined) };
+      const page = { cdp: { close() {} }, targetId: "target-1", pageToken: "page-1" };
+      await assert.rejects(
+        closeFreshHarnessPageWithErrorPreservation(controlCdp, page, { deadlineAt: Date.now() - 1, requestCeilingMs: 5 }),
+        (error) => error?.name === "PerformanceOperationTimeout" && error.status.lastRequestTimeout.ceilingMs === 5
+      );
+    `);
+  });
+
+  it("keeps fresh-page setup on the supplied absolute deadline", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { openFreshHarnessPage } = await import(${JSON.stringify(scriptUrl)});
+      const deadlineAt = Date.now() + 37;
+      await assert.rejects(
+        openFreshHarnessPage({ request: () => new Promise(() => undefined) }, 9222, "http://127.0.0.1:4173/", "deadline", { deadlineAt, requestCeilingMs: 5 }),
+        (error) => error?.name === "PerformanceOperationTimeout"
+      );
+    `);
+  });
+
   it("includes macOS foreground activation for headed Chrome", () => {
     runNode(`
       import assert from "node:assert/strict";

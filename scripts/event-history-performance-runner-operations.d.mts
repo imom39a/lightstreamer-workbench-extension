@@ -230,8 +230,8 @@ export function runHeapMeasurementPlan(input: {
   adapters?: readonly HeapAdapter[];
   eventCounts: Readonly<{ indexeddb?: number; memory?: number }>;
   sampleCount?: number;
-  prepare(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: "warmup" | "sample"; sample: number | null }>): Promise<HeapSession>;
-  forceGc(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: string; sample: number | null }>): Promise<HeapGcSample>;
+  prepare(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: "warmup" | "sample"; sample: number | null; deadlineAt?: number }>): Promise<HeapSession>;
+  forceGc(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: string; sample: number | null; deadlineAt?: number }>): Promise<HeapGcSample>;
   record(input: Readonly<{ adapter: HeapAdapter; eventCount: number; sample: number; session: HeapSession; baseline: HeapGcSample; retained: HeapGcSample }>): Promise<HeapRecord> | HeapRecord;
   close(session: HeapSession): Promise<HeapCloseOutcome>;
   removeRoot(session: HeapSession): Promise<boolean>;

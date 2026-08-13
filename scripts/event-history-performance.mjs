@@ -103,6 +103,7 @@ async function main() {
     for (const [index, plannedShard] of createPerformanceShardPlan().entries()) {
       const selection = { ...plannedShard, pageToken: `${index + 1}-${randomUUID()}` };
       const page = await openFreshHarnessPage(cdp, debugPort, url, selection.pageToken, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+      let primaryError = null;
       try {
         shardResults.push(await runPageOperation(
           page.cdp,
@@ -117,14 +118,18 @@ async function main() {
             }
           }
         ));
+      } catch (error) {
+        primaryError = error;
+        throw error;
       } finally {
-        await closeFreshHarnessPage(cdp, page, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+        await closeFreshHarnessPageWithErrorPreservation(cdp, page, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryError);
       }
     }
     const result = aggregatePerformanceShardResults(shardResults);
 
     const heapPage = await openFreshHarnessPage(cdp, debugPort, url, `heap-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
     let heapPlan;
+    let primaryHeapError = null;
     try {
       heapPlan = await runHeapMeasurementPlan({
       eventCounts: { indexeddb: 10_000, memory: 5_000 },
@@ -150,13 +155,17 @@ async function main() {
       removeRoot: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.removeRetainedHeapRoot()", { deadlineAt: proofDeadlineAt }),
       yieldFrame: () => runPageOperation(heapPage.cdp, "window.__LSEW_EVENT_HISTORY_PERFORMANCE__.yieldRetainedHeapFrame()", { deadlineAt: proofDeadlineAt })
       });
+    } catch (error) {
+      primaryHeapError = error;
+      throw error;
     } finally {
-      await closeFreshHarnessPage(cdp, heapPage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+      await closeFreshHarnessPageWithErrorPreservation(cdp, heapPage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryHeapError);
     }
     const heapSamples = heapPlan.heapSamples;
 
     const lifecyclePage = await openFreshHarnessPage(cdp, debugPort, url, `lifecycle-${randomUUID()}`, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
     const lifecycleRetainedHeapBytes = [];
+    let primaryLifecycleError = null;
     try {
       for (let sample = 0; sample < 3; sample += 1) {
         const baseline = await collectHeapAfterRepeatedGc(lifecyclePage.cdp, 3, { deadlineAt: proofDeadlineAt });
@@ -170,8 +179,11 @@ async function main() {
         });
         lifecycleRetainedHeapBytes.push(released.usedSize - baseline.usedSize);
       }
+    } catch (error) {
+      primaryLifecycleError = error;
+      throw error;
     } finally {
-      await closeFreshHarnessPage(cdp, lifecyclePage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus });
+      await closeFreshHarnessPageWithErrorPreservation(cdp, lifecyclePage, { deadlineAt: proofDeadlineAt, operation: lastOperationStatus }, primaryLifecycleError);
     }
 
     const report = {
@@ -247,7 +259,9 @@ export async function prepareInitialPageForAuthoritativeRun(cdp, expectedUrl, ti
 }
 
 export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
-  await cdp.request("Page.bringToFront");
+  if (typeof timeoutMs === "object") timeoutMs = remainingDeadlineMs(timeoutMs.deadlineAt, 30_000, "page-visibility");
+  const deadlineAt = typeof arguments[1] === "object" ? arguments[1].deadlineAt : undefined;
+  await requestSetupCdp(cdp, "Page.bringToFront", {}, deadlineAt, "page-bring-to-front");
   const probeTimeoutMs = Math.max(1, Math.min(1_000, timeoutMs - 1));
   const visible = await evaluate(cdp, `new Promise((resolve) => {
     let settled = false;
@@ -284,29 +298,32 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
   let pageCdp;
   try {
-    pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { deadlineMs: BROWSER_TIMEOUT_MS }), { deadlineMs: BROWSER_TIMEOUT_MS });
-    await ensureFreshHarnessDocument(pageCdp, pageUrl.href);
-    await waitForHarness(pageCdp);
-    await preparePageForAuthoritativeRun(pageCdp);
-    const observedToken = await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", BROWSER_TIMEOUT_MS);
+    pageCdp = await connect(await pageTarget(debugPort, pageUrl.href, { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-target") }), { deadlineMs: remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-connect") });
+    await ensureFreshHarnessDocument(pageCdp, pageUrl.href, 15_000, options);
+    await waitForHarness(pageCdp, options);
+    await preparePageForAuthoritativeRun(pageCdp, options);
+    const observedToken = await evaluate(pageCdp, "new URL(location.href).searchParams.get('pageToken')", remainingDeadlineMs(options.deadlineAt, BROWSER_TIMEOUT_MS, "page-token"));
     if (observedToken !== pageToken) throw new Error("Fresh harness page token mismatch.");
     return { cdp: pageCdp, targetId: created.targetId, pageToken, url: pageUrl.href };
   } catch (error) {
-    pageCdp?.close();
-    const closed = await requestControlCdpWithDeadline(controlCdp, "Target.closeTarget", { targetId: created.targetId }, { ...options, phase: "Target.closeTarget", allowAfterDeadline: true });
-    if (closed?.success !== true) throw new Error("Fresh harness page setup failed and its target could not be closed.", { cause: error });
+
+    try {
+      await closeFreshHarnessPageWithErrorPreservation(controlCdp, { cdp: pageCdp ?? { close() {} }, targetId: created.targetId, pageToken }, { ...options, phase: "Target.closeTarget" }, error);
+    } catch (cleanupError) {
+      attachCleanupEvidence(error, cleanupError);
+    }
     throw error;
   }
 }
 
-export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 15_000) {
-  await cdp.request("Page.enable");
-  await cdp.request("Runtime.enable");
+export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 15_000, options = {}) {
+  await requestSetupCdp(cdp, "Page.enable", {}, options.deadlineAt, "page-enable");
+  await requestSetupCdp(cdp, "Runtime.enable", {}, options.deadlineAt, "runtime-enable");
   // Target.createTarget can publish the requested URL before the renderer has
   // committed it. Re-issue navigation after attaching so a fresh target cannot
   // leave the first Runtime.evaluate pointed at about:blank indefinitely.
-  await cdp.request("Page.navigate", { url: expectedUrl });
-  const deadline = Date.now() + timeoutMs;
+  await requestSetupCdp(cdp, "Page.navigate", { url: expectedUrl }, options.deadlineAt, "page-navigate");
+  const deadline = Math.min(Date.now() + timeoutMs, options.deadlineAt ?? Number.POSITIVE_INFINITY);
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
     const response = await Promise.race([
@@ -328,6 +345,28 @@ export async function closeFreshHarnessPage(controlCdp, page, options = {}) {
   const closed = await requestControlCdpWithDeadline(controlCdp, "Target.closeTarget", { targetId: page.targetId }, { ...options, phase: "Target.closeTarget", allowAfterDeadline: true });
   if (closed?.success !== true) throw new Error(`Fresh harness page ${page.pageToken} did not close cleanly.`);
   return { pageToken: page.pageToken, targetId: page.targetId, closed: true };
+}
+
+export async function closeFreshHarnessPageWithErrorPreservation(controlCdp, page, options = {}, primaryError = null) {
+  try {
+    return await closeFreshHarnessPage(controlCdp, page, options);
+  } catch (cleanupError) {
+    if (primaryError) {
+      attachCleanupEvidence(primaryError, cleanupError);
+      return null;
+    }
+    throw cleanupError;
+  }
+}
+
+function attachCleanupEvidence(primaryError, cleanupError) {
+  if (primaryError && (typeof primaryError === "object" || typeof primaryError === "function")) {
+    primaryError.cleanupEvidence = {
+      code: cleanupError?.status?.error?.code ?? cleanupError?.code ?? cleanupError?.name ?? "CLEANUP_FAILED",
+      message: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      status: cleanupError?.status ?? null
+    };
+  }
 }
 
 export function chromeLaunchArguments(profile, url, platformName = process.platform) {
@@ -620,10 +659,10 @@ async function fetchJsonWithStartupTimeout(url, timeoutMs, fetchImplementation) 
   }
 }
 
-async function waitForHarness(cdp) {
-  const deadline = Date.now() + BROWSER_TIMEOUT_MS;
+async function waitForHarness(cdp, options = {}) {
+  const deadline = Math.min(Date.now() + BROWSER_TIMEOUT_MS, options.deadlineAt ?? Number.POSITIVE_INFINITY);
   while (Date.now() < deadline) {
-    if (await evaluate(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", BROWSER_TIMEOUT_MS)) return;
+    if (await evaluate(cdp, "Boolean(window.__LSEW_EVENT_HISTORY_PERFORMANCE__)", Math.max(1, deadline - Date.now()))) return;
     await delay(100);
   }
   throw new Error("Timed out waiting for the visible Event History harness.");
@@ -642,6 +681,43 @@ async function evaluate(cdp, expression, timeoutMs = 30_000) {
 }
 
 function delay(milliseconds) { return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)); }
+
+async function requestSetupCdp(cdp, method, params, deadlineAt, phase) {
+  if (deadlineAt === undefined) return cdp.request(method, params);
+  const timeoutMs = Math.max(1, Math.min(STARTUP_REQUEST_TIMEOUT_MS, remainingDeadlineMs(deadlineAt, STARTUP_REQUEST_TIMEOUT_MS, phase)));
+  let timer;
+  try {
+    return await Promise.race([
+      cdp.request(method, params),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new PerformanceOperationTimeout(`Event History performance setup timed out during ${phase}.`, {
+          operationId: null,
+          state: "rejected",
+          elapsedMs: timeoutMs,
+          heartbeat: 0,
+          progress: null,
+          error: { name: "CdpRequestTimeout", code: "SHARED_DEADLINE_EXCEEDED", message: `Event History performance setup timed out during ${phase}.`, stack: null }
+        })), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function remainingDeadlineMs(deadlineAt, fallbackMs, phase) {
+  if (deadlineAt === undefined) return fallbackMs;
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new PerformanceOperationTimeout(`Event History performance proof deadline expired during ${phase}.`, {
+    operationId: null,
+    state: "rejected",
+    elapsedMs: Math.max(0, -remaining),
+    heartbeat: 0,
+    progress: null,
+    error: { name: "CdpRequestTimeout", code: "SHARED_DEADLINE_EXCEEDED", message: `Event History performance proof deadline expired during ${phase}.`, stack: null }
+  });
+  return remaining;
+}
 
 async function terminateChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;

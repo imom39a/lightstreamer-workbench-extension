@@ -105,6 +105,22 @@ describe("Event History shared proof deadline", () => {
       lastRequestTimeout: { phase: "Target.closeTarget", ceilingMs: 5 },
       error: { code: "SHARED_DEADLINE_EXCEEDED" }
     });
+    expect((result as { error: PerformanceOperationTimeout }).error.status.elapsedMs).toBeGreaterThanOrEqual(5);
+  });
+
+  it("reports control cleanup timeout elapsed time separately from prior progress", async () => {
+    const neverSettles = new Promise(() => undefined);
+    const result = await watchdog(requestControlCdpWithDeadline({ request: () => neverSettles }, "Target.closeTarget", {}, {
+      deadlineAt: Date.now() - 1,
+      requestCeilingMs: 5,
+      allowAfterDeadline: true,
+      operation: { operationId: "last-op", state: "pending", elapsedMs: 12, heartbeat: 3, lastHeartbeatAt: 12, progress: strictProgress("last-op", { phase: "heap", stage: "cleanup", sequence: 4 }) as never }
+    }).then((value) => ({ value }), (error) => ({ error })));
+    const status = (result as { error: PerformanceOperationTimeout }).error.status;
+    expect(status.elapsedMs).toBeGreaterThanOrEqual(5);
+    expect(status.elapsedMs).not.toBe(12);
+    expect(status.operationId).toBe("last-op");
+    expect(status.progress?.stage).toBe("cleanup");
   });
 
   it("does not start heap work after the shared deadline expires", async () => {

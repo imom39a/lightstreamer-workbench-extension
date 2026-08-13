@@ -12,10 +12,31 @@ requests (including setup-failure cleanup). Expiry produces the existing
 fail-closed `PerformanceOperationTimeout` evidence with the last operation and
 progress status when available; cleanup remains bounded after expiry.
 
+The hardening follow-up preserves a primary matrix, heap, lifecycle, or fresh-page
+setup error when bounded target cleanup also fails, while standalone cleanup still
+fails closed. Fresh-page attach, document setup, harness readiness, and foreground
+activation consume the same absolute deadline; cleanup after expiry remains capped
+by the control-request ceiling. Timeout evidence reports the elapsed time of the
+timed-out request while retaining the prior operation id and progress.
+
 Deterministic verification covers hung `Target.createTarget`, hung
-`Target.closeTarget`, expired shared deadlines before heap, expired shared
-deadlines before lifecycle, and structured timeout evidence. No real performance
-candidate was launched and no Chrome performance success is claimed.
+`Target.closeTarget`, primary-error preservation with cleanup timeout, standalone
+cleanup timeout, expired shared deadlines before heap and lifecycle, truthful
+control-timeout elapsed time, declaration callback parity, and whole-run deadline
+propagation. No real performance candidate was launched and no Chrome performance
+success is claimed.
+
+### Hardening verification
+
+- Focused runner: 1 file, 78 tests passed.
+- Isolated authoritative IndexedDB regression: 1 file, 65 tests passed.
+- Isolated postings regression: 1 file, 3 tests passed.
+- Isolated startup/timeout script tests: 1 file, 17 tests passed.
+- `npm test`: ordinary phase 74 files / 830 tests passed; serialized phase passed.
+- `npm run test:release`: 83 files / 1,026 tests passed.
+- `npm run typecheck`, `npm run build`, and `npm run docs:check` passed; docs check covered 4 documents and 10 maintained commands.
+- `npm run release:package:all` passed. ZIP: 326,633 bytes; CRX: 329,219 bytes.
+- No real Chrome performance candidate was launched, and no Chrome success is claimed.
 
 The IndexedDB query adapter uses one readonly transaction over `historyControl`,
 `facetPostings`, `queryProjections`, and selected `evidence` payloads. The
