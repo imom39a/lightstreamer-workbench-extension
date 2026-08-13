@@ -29,6 +29,7 @@ import {
 } from "./indexeddb/authoritative-event-db";
 import {
   deserializeJournalEvidenceCandidate,
+  journalCandidateSearchText,
   registerJournalOwnedCandidate,
   journalAccountedBytes,
   serializeJournalEvidenceCandidate
@@ -56,6 +57,20 @@ import {
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
 import { extractEvidenceFacets } from "./evidence-facets";
+import { canonicalEvidenceSearchText } from "./evidence-facets";
+import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
+import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
+import {
+  MAX_EVIDENCE_PAGE_SIZE,
+  type DeterministicEvidenceRecord,
+  type EvidenceFilterReadProblem,
+  type EvidenceFilterQueryAdapter,
+  type EvidenceIdentity,
+  type EvidenceQueryRequest,
+  type EvidenceReadPoint,
+  type EvidenceSnapshot,
+  type FacetDiscoveryResult
+} from "./evidence-filter-contract";
 
 export type { EventHistory };
 
@@ -1165,7 +1180,12 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   }
 
   const storage: EventHistoryStorage = Object.freeze({ mode: "indexeddb" });
-  return { storage, status, offer, read, clear, follow, close };
+  const query: EvidenceFilterQueryAdapter["query"] = (request) => queryIndexedDb(database, loaded.panelSessionId, request, {
+    tier: options.capacityTier ?? "NORMAL",
+    fallback: null,
+    terminal: Boolean(terminal)
+  });
+  return { storage, status, offer, read, query, clear, follow, close };
 }
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
@@ -1231,6 +1251,144 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     throw error;
   }
 }
+
+type IndexedDbQueryOptions = Readonly<{
+  tier: HistoryCapacityTier;
+  fallback: "PRIMARY_JOURNAL_UNAVAILABLE" | "UNKNOWN_NEWER_SCHEMA" | null;
+  terminal: boolean;
+}>;
+
+/**
+ * The query transaction is deliberately separate from the legacy scalar read.
+ * It latches control and Evidence together, then evaluates the storage-neutral
+ * contract against that immutable transaction view.  The transaction is the
+ * read point: no local history counters are consulted after it starts.
+ */
+async function queryIndexedDb(
+  database: AuthoritativeEventDatabase,
+  panelSessionId: string,
+  request: EvidenceQueryRequest,
+  options: IndexedDbQueryOptions
+): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
+  if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > MAX_EVIDENCE_PAGE_SIZE) {
+    return queryFailure("QUERY_FAILED", request.page.size > MAX_EVIDENCE_PAGE_SIZE ? `Page size must not exceed ${MAX_EVIDENCE_PAGE_SIZE}.` : "Page size must be a positive integer.");
+  }
+  const transaction = database.db.transaction([
+    AUTHORITATIVE_EVENT_STORE_NAMES.historyControl,
+    AUTHORITATIVE_EVENT_STORE_NAMES.evidence,
+    AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings
+  ], "readonly");
+  try {
+    const control = await requestToPromise<ControlRecord | undefined>(
+      transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY),
+      "reading Evidence query control"
+    );
+    if (!control || control.panelSessionId !== panelSessionId) return queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "The History Interval is unavailable.");
+    const interval = control.interval;
+    const readPoint = queryReadPoint(control);
+    if (request.at !== "LATEST_COMMITTED") {
+      if (request.at.interval.id !== interval.id || request.at.interval.ordinal !== interval.ordinal) {
+        return queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "The requested History Interval is unavailable.");
+      }
+      if (!sameQueryReadPoint(request.at, readPoint)) {
+        return queryFailure("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable.");
+      }
+    }
+    const raw = await requestToPromise<unknown[]>(
+      transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence).getAll(),
+      "reading Evidence records"
+    );
+    await transactionDone(transaction, "querying Evidence");
+    const records: CommittedEvidence[] = raw
+      .map((value) => {
+        const persisted = value as EvidenceRecord;
+        return { intervalId: persisted.intervalId, sequence: persisted.sequence, eventId: persisted.eventId, candidate: validateEvidenceRecord(persisted, interval.id) };
+      })
+      .filter((entry) => entry.intervalId === interval.id && isInQueryRange(entry.sequence, control.retainedRange));
+    const selectionRecords = records
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((entry) => deterministicQueryRecord(entry, interval));
+    const around = normalizeAround(request.filter.around, readPoint.retainedRange);
+    const filter = around === request.filter.around ? request.filter : { ...request.filter, around };
+    if (filter.around?.anchor && !selectionRecords.some((record) => sameQueryIdentity(record.identity, filter.around!.anchor!) && (filter.around!.anchorSequence === undefined || filter.around!.anchorSequence === record.identity.sequence))) {
+      return queryFailure("AROUND_ANCHOR_UNAVAILABLE", "The Around Evidence anchor is no longer retained in this History Interval.");
+    }
+    const discoveries = new Map<string, FacetDiscoveryResult>();
+    if (filter.unsupported.length > 0) {
+      const lookup = request.lookup === undefined ? null : lookupEvidence(selectionRecords, readPoint, request.lookup, filter, around);
+      const find = request.find === undefined ? null : findEvidence(selectionRecords, request.find);
+      return { ok: true, value: querySnapshot(readPoint, [], 0, 0, discoveries, "UNSUPPORTED_FILTER", queryCoverage(options), queryStorage(options), null, lookup, find) };
+    }
+    const matching: SelectionRecord[] = [];
+    const inScope: SelectionRecord[] = [];
+    for (const record of selectionRecords) {
+      const evaluation = evaluateFilter({ ...filter, around: null } as unknown as Filter, {
+        timestamp: record.timestamp,
+        intervalId: record.identity.intervalId,
+        searchText: record.searchText,
+        facets: record.facets as unknown as FilterRecord["facets"]
+      });
+      if (!evaluation.matches) continue;
+      matching.push(record);
+      if (isInAround(record, around)) inScope.push(record);
+    }
+    const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
+    const offset = queryCursor(request.page.cursor);
+    const page = ordered.slice(offset, offset + request.page.size);
+    let lookupRecords = selectionRecords;
+    if (request.lookup !== undefined) {
+      const selected = records.find((entry) => sameQueryIdentity(deterministicQueryRecord(entry, interval).identity, request.lookup!));
+      if (selected) {
+        const selectedRecord = deterministicQueryRecord(selected, interval);
+        lookupRecords = selectionRecords.map((record) => sameQueryIdentity(record.identity, selectedRecord.identity)
+          ? Object.freeze({ ...record, payload: copyQueryCandidate(selected.candidate) })
+          : record);
+      }
+    }
+    const lookup = request.lookup === undefined ? null : lookupEvidence(lookupRecords, readPoint, request.lookup, filter, around);
+    const find = request.find === undefined ? null : findEvidence(selectionRecords, request.find);
+    return { ok: true, value: querySnapshot(readPoint, page, matching.length, inScope.length, discoveries, "COMPLETE", queryCoverage(options), queryStorage(options), offset + page.length < ordered.length ? String(offset + page.length) : null, lookup, find) };
+  } catch (error) {
+    try { transaction.abort(); } catch { /* already completed */ }
+    return queryFailure("QUERY_FAILED", error instanceof Error ? error.message : "IndexedDB Evidence query failed.");
+  }
+}
+
+function queryFailure(code: EvidenceFilterReadProblem["code"], message: string): Readonly<{ ok: false; problem: EvidenceFilterReadProblem }> {
+  return { ok: false, problem: Object.freeze({ code, message }) };
+}
+
+function queryReadPoint(control: ControlRecord): EvidenceReadPoint {
+  const identity = (ref: EvidenceRef): EvidenceIdentity => ({ intervalId: ref.intervalId, pageId: control.interval.id, ownerId: "memory-event-history", sequence: ref.sequence, eventId: ref.eventId });
+  const boundary = control.committedEvidenceBoundary ? identity(control.committedEvidenceBoundary) : null;
+  return Object.freeze({
+    interval: Object.freeze({ ...control.interval }),
+    committedEvidenceBoundary: boundary,
+    retainedRange: control.retainedRange ? Object.freeze({ first: identity(control.retainedRange.first), last: identity(control.retainedRange.last) }) : null
+  });
+}
+
+function deterministicQueryRecord(entry: CommittedEvidence, interval: HistoryInterval): SelectionRecord {
+  const identity: EvidenceIdentity = Object.freeze({ intervalId: entry.intervalId, pageId: interval.id, ownerId: "memory-event-history", sequence: entry.sequence, eventId: entry.eventId });
+  if (entry.candidate.kind === "topology-checkpoint") return Object.freeze({ identity, timestamp: 0, summary: "Topology checkpoint", searchText: journalCandidateSearchText(entry.candidate), facets: Object.freeze({}) });
+  const context = { identity, pageId: identity.pageId, listenerOwner: identity.ownerId, summary: entry.candidate.kind };
+  return Object.freeze({ identity, timestamp: entry.candidate.timestamp, summary: entry.candidate.kind, searchText: canonicalEvidenceSearchText(entry.candidate, context), facets: Object.freeze(extractEvidenceFacets(entry.candidate, context).facets) });
+}
+
+function querySnapshot(readPoint: EvidenceReadPoint, page: readonly SelectionRecord[], matching: number, inScope: number, discoveries: ReadonlyMap<string, FacetDiscoveryResult>, evaluation: EvidenceSnapshot["evaluation"], coverage: EvidenceSnapshot["coverage"], storage: EvidenceSnapshot["storage"], nextCursor: string | null, lookup: EvidenceSnapshot["lookup"], find: EvidenceSnapshot["find"]): EvidenceSnapshot {
+  const publicPage = page.map((record) => ({ identity: record.identity, timestamp: record.timestamp, summary: record.summary, searchText: record.searchText, facets: record.facets }));
+  return Object.freeze({ readPoint, page: Object.freeze({ evidence: Object.freeze(publicPage), nextCursor }), totals: Object.freeze({ matching, inScope }), discoveries, lookup, find, evaluation, coverage, storage });
+}
+
+function queryCoverage(options: IndexedDbQueryOptions): EvidenceSnapshot["coverage"] { return options.tier === "LOWER" || options.fallback !== null || options.terminal ? "LIMITED" : "COMPLETE"; }
+function queryStorage(options: IndexedDbQueryOptions): EvidenceSnapshot["storage"] { return options.fallback === null ? "INDEXED_DB" : "MEMORY_FALLBACK"; }
+function queryCursor(cursor: string | undefined): number { const value = cursor === undefined ? 0 : Number(cursor); if (!Number.isSafeInteger(value) || value < 0) throw new Error("Page cursor must be a non-negative integer."); return value; }
+function isInQueryRange(sequence: number, range: ControlRecord["retainedRange"]): boolean { return range === null || (sequence >= range.first.sequence && sequence <= range.last.sequence); }
+function sameQueryIdentity(left: EvidenceIdentity, right: EvidenceIdentity): boolean { return left.intervalId === right.intervalId && left.pageId === right.pageId && left.ownerId === right.ownerId && left.sequence === right.sequence && left.eventId === right.eventId; }
+function sameQueryReadPoint(left: EvidenceReadPoint, right: EvidenceReadPoint): boolean { return left.interval.id === right.interval.id && left.interval.ordinal === right.interval.ordinal && sameNullableQueryIdentity(left.committedEvidenceBoundary, right.committedEvidenceBoundary) && sameNullableQueryRange(left.retainedRange, right.retainedRange); }
+function sameNullableQueryIdentity(left: EvidenceIdentity | null, right: EvidenceIdentity | null): boolean { return left === null || right === null ? left === right : sameQueryIdentity(left, right); }
+function sameNullableQueryRange(left: EvidenceReadPoint["retainedRange"], right: EvidenceReadPoint["retainedRange"]): boolean { return left === null || right === null ? left === right : sameQueryIdentity(left.first, right.first) && sameQueryIdentity(left.last, right.last); }
+function copyQueryCandidate(candidate: EvidenceCandidate): unknown { return JSON.parse(JSON.stringify(candidate)); }
 
 async function commitBatch(database: AuthoritativeEventDatabase, panelSessionId: string, interval: HistoryInterval, nextSequence: number, previousRange: { first: EvidenceRef; last: EvidenceRef } | null, previousCount: number, evidence: readonly CommittedEvidence[], serializedBatch: readonly ReturnType<typeof serializeJournalEvidenceCandidate>[], replayPayloadBytes: number, accountedBytes: number, phase: "RUNNING" | "DRAINING_TO_STOP", terminal: HistoryTerminalDiagnostic | null): Promise<void> {
   const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
