@@ -13,6 +13,7 @@ import {
 } from "./evidence-filter-contract";
 import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "./evidence-filter-selection";
 import { evaluateFilter, type Filter, type FilterRecord } from "./filter-algebra";
+import { discoverFacet } from "./evidence-filter-discovery";
 import { canonicalEvidenceSearchText, extractEvidenceFacets } from "./evidence-facets";
 import {
   deserializeJournalEvidenceCandidate,
@@ -918,6 +919,15 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
         if (!evaluation.matches) continue;
         matching.push(record);
         if (isInAround(record, around)) inScope.push(record);
+      }
+      for (const discoveryRequest of request.discover ?? []) {
+        try {
+          discoveries.set(discoveryRequest.facet, discoverFacet(records, request.filter, readPoint, discoveryRequest));
+        } catch {
+          discoveries.set(discoveryRequest.facet, {
+            state: "UNAVAILABLE", facet: discoveryRequest.facet, reason: "DISCOVERY_FAILED", values: [], distinctTotal: null, nextCursor: null, baseEvidenceCount: null
+          });
+        }
       }
       const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
       const offset = readCursor(request.page.cursor);
