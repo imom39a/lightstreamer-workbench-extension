@@ -168,6 +168,8 @@ export type HistoryStatus = Readonly<{
   notAccepted: number;
   retained: number;
   terminal?: HistoryTerminalDiagnostic;
+  /** Diagnostic-only last successful Evidence query retained across a failed publication. */
+  lastCoherentQuery?: import("./evidence-filter-contract").EvidenceSnapshot;
 }>;
 
 export type EventHistoryStorage = Readonly<{

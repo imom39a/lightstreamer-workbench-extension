@@ -458,6 +458,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
   let terminalPersistenceFailed = false;
   let terminalIntentGeneration = 0;
   let lastNearLimit = false;
+  let lastCoherentQuery: EvidenceSnapshot | null = null;
   let awaitingCount = 0;
   let awaitingBytes = 0;
   const capacityTier = options.capacityTier ?? "NORMAL";
@@ -550,7 +551,8 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       accepted,
       notAccepted,
       retained: retainedCount,
-      ...(terminal ? { terminal } : {})
+      ...(terminal ? { terminal } : {}),
+      ...(lastCoherentQuery ? { lastCoherentQuery } : {})
     });
     return problemValue ? deepFreeze({ ...value, problem: problemValue }) as HistoryStatus : value;
   }
@@ -1194,7 +1196,11 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
       fallback: null,
       terminal: Boolean(terminal)
     }).then((result) => {
-      if (!result.ok) publish({ type: "status", status: status({ code: "QUERY_FAILED", message: result.problem.message }) });
+      if (result.ok) {
+        lastCoherentQuery = result.value;
+      } else {
+        publish({ type: "status", status: status({ code: "QUERY_FAILED", message: result.problem.message }) });
+      }
       return result;
     });
   };
@@ -1202,8 +1208,13 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
 }
 
 async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId: string): Promise<LoadedJournal> {
-  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readonly");
+  // v2->v3 deployed journals may contain the authoritative replay payload and
+  // postings but no lightweight projection. Backfill that derived data once at
+  // open time so those records remain queryable without making normal queries
+  // deserialize the journal.
+  const transaction = database.db.transaction([AUTHORITATIVE_EVENT_STORE_NAMES.historyControl, AUTHORITATIVE_EVENT_STORE_NAMES.evidence, AUTHORITATIVE_EVENT_STORE_NAMES.facetPostings], "readwrite");
   try {
+    await backfillMissingQueryProjections(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.evidence));
     const control = await requestToPromise<ControlRecord | undefined>(transaction.objectStore(AUTHORITATIVE_EVENT_STORE_NAMES.historyControl).get(AUTHORITATIVE_EVENT_CONTROL_KEY), "loading history control");
     await validateJournalRecords(
       panelSessionId,
@@ -1263,6 +1274,23 @@ async function loadJournal(database: AuthoritativeEventDatabase, panelSessionId:
     try { transaction.abort(); } catch { /* the transaction may already be complete */ }
     throw error;
   }
+}
+
+function backfillMissingQueryProjections(store: IDBObjectStore): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = store.openCursor();
+    request.onerror = () => reject(request.error ?? new Error("Query projection migration failed."));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(); return; }
+      const record = cursor.value as EvidenceRecord;
+      if (record.projection === undefined) {
+        const candidate = deserializeJournalEvidenceCandidate(record.replayPayload);
+        cursor.update({ ...record, projection: queryProjection(candidate, record.intervalId, record.sequence) });
+      }
+      cursor.continue();
+    };
+  });
 }
 
 type IndexedDbQueryOptions = Readonly<{
@@ -1408,7 +1436,6 @@ async function indexedDbPostingCandidates(store: IDBObjectStore, filter: Evidenc
     }
     if (!initialized) { for (const sequence of include) all.add(sequence); initialized = true; }
     else if (group.include.length > 0) for (const sequence of [...all]) if (!include.has(sequence)) all.delete(sequence);
-    if (group.include.length === 0 && initialized) all.clear();
     for (const value of group.exclude) {
       telemetry.postingReads += 1;
       const excluded = await readPostingToken(store, facetPostingToken(value.identity), intervalId, first, last, telemetry);
