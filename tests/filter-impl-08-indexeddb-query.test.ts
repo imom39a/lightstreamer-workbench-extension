@@ -150,6 +150,21 @@ describe("filter-impl-08 IndexedDB Evidence query", () => {
     await durable.close();
   });
 
+  it("keeps memory read points bounded like IndexedDB when a later commit arrives", async () => {
+    const { memory, durable } = await histories(`filter-impl-08-memory-latch-${Date.now()}`);
+    const queryAtLaterCommit = async (history: NonNullable<typeof memory>) => {
+      const first = await history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return first;
+      await history.offer(event("four", 30_000, "delta")).settled;
+      return history.query!({ at: first.value.readPoint, page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
+    };
+    const [memoryResult, durableResult] = await Promise.all([queryAtLaterCommit(memory), queryAtLaterCommit(durable)]);
+    expect(memoryResult).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "one" } }, { identity: { eventId: "two" } }, { identity: { eventId: "three" } }] }, totals: { matching: 3, inScope: 3 } } });
+    expect(durableResult).toMatchObject({ ok: true, value: { page: { evidence: [{ identity: { eventId: "one" } }, { identity: { eventId: "two" } }, { identity: { eventId: "three" } }] }, totals: { matching: 3, inScope: 3 } } });
+    await Promise.all([memory.close(), durable.close()]);
+  });
+
   it("keeps Find independent of Filter and validates an Around anchor outside the match set", async () => {
     const { durable } = await histories(`filter-impl-08-independent-${Date.now()}`);
     const base = await durable.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 10 }, filter: emptyFilter() });
