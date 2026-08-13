@@ -5,7 +5,6 @@
  * proof must not silently turn into a headless or synthetic measurement.
  */
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -34,7 +33,6 @@ const markdownPath = outputPath.replace(/\.json$/u, ".md");
 const referencePath = resolve(rootDir, process.env.LSEW_EVENT_HISTORY_PERF_REFERENCE ?? "docs/reference/event-history-performance-reference.json");
 const BROWSER_TIMEOUT_MS = 240_000;
 const STARTUP_REQUEST_TIMEOUT_MS = 5_000;
-const SERVER_CLEANUP_TIMEOUT_MS = 1_000;
 // terminateChild has a documented 1,000 ms SIGTERM grace period followed by a
 // 1,000 ms SIGKILL/close period. The outer bound must contain both phases.
 const OUTER_FINALIZATION_TIMEOUT_MS = 3_000;
@@ -51,7 +49,6 @@ async function main() {
   const site = join(temporaryRoot, "site");
   const profile = join(temporaryRoot, "profile");
   const gateModulePath = join(temporaryRoot, "event-history-performance-gate.mjs");
-  let server;
   let chrome;
   let cdp;
   let browserCdp;
@@ -77,10 +74,9 @@ async function main() {
       loader: { ".css": "css" },
       logLevel: "silent"
     });
-    await writeFile(join(site, "index.html"), '<!doctype html><meta charset="utf-8"><title>Event History performance gate</title><link rel="stylesheet" href="/harness.css"><main id="app"></main><script type="module" src="/harness.js"></script>');
-    server = await serve(site);
-    const port = server.address().port;
-    const url = `http://127.0.0.1:${port}/`;
+    const indexPath = join(site, "index.html");
+    await writeFile(indexPath, createHarnessDocument());
+    const url = pathToFileURL(indexPath).href;
     const executable = await chromeExecutable();
     chrome = spawn(executable, chromeLaunchArguments(profile), { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
     chrome.stdout.on("data", (chunk) => { chromeOutput += String(chunk); });
@@ -262,7 +258,6 @@ async function main() {
       closeInitialTarget: initialTarget ? ({ deadlineAt }) => closeFreshHarnessPage(browserCdp, initialTarget, { deadlineAt }) : null,
       closeBrowserCdp: browserCdp ? () => browserCdp.close() : null,
       terminateChrome: chrome ? ({ deadlineAt }) => terminateChild(chrome, deadlineAt) : null,
-      closeServer: server ? () => closeServerWithDeadline(server, SERVER_CLEANUP_TIMEOUT_MS) : null,
       removeTemporaryRoot: () => rm(temporaryRoot, { recursive: true, force: true }),
       timeoutMs: OUTER_FINALIZATION_TIMEOUT_MS
     });
@@ -275,6 +270,10 @@ export async function prepareInitialPageForAuthoritativeRun(cdp, expectedUrl, ti
   await ensureFreshHarnessDocument(cdp, expectedUrl, Math.min(15_000, remainingDeadlineMs(options.deadlineAt, 15_000, "initial-document")), options);
   await waitForHarness(cdp, options);
   await preparePageForAuthoritativeRun(cdp, options);
+}
+
+export function createHarnessDocument() {
+  return '<!doctype html><meta charset="utf-8"><title>Event History performance gate</title><link rel="stylesheet" href="./harness.css"><main id="app"></main><script type="module" src="./harness.js"></script>';
 }
 
 export async function preparePageForAuthoritativeRun(cdp, timeoutMs = 30_000) {
@@ -329,8 +328,7 @@ export async function openHarnessTarget(controlCdp, debugPort, pageUrl, options 
 
 export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageToken, options = {}) {
   if (typeof pageToken !== "string" || pageToken.length === 0) throw new Error("Fresh harness page requires a non-empty page token.");
-  const pageUrl = new URL(baseUrl);
-  pageUrl.searchParams.set("pageToken", pageToken);
+  const pageUrl = new URL(harnessPageUrl(baseUrl, pageToken));
   const created = await requestControlCdpWithDeadline(controlCdp, "Target.createTarget", { url: pageUrl.href }, { ...options, phase: "Target.createTarget" });
   if (typeof created?.targetId !== "string" || created.targetId.length === 0) throw new Error("Chrome did not return a target id for the fresh harness page.");
   let pageCdp;
@@ -353,6 +351,13 @@ export async function openFreshHarnessPage(controlCdp, debugPort, baseUrl, pageT
     }
     throw error;
   }
+}
+
+export function harnessPageUrl(baseUrl, pageToken) {
+  if (typeof pageToken !== "string" || pageToken.length === 0) throw new Error("Fresh harness page requires a non-empty page token.");
+  const pageUrl = new URL(baseUrl);
+  pageUrl.searchParams.set("pageToken", pageToken);
+  return pageUrl.href;
 }
 
 export async function ensureFreshHarnessDocument(cdp, expectedUrl, timeoutMs = 15_000, options = {}) {
@@ -416,6 +421,7 @@ export function chromeLaunchArguments(profile) {
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
+    "--allow-file-access-from-files",
     "--js-flags=--expose-gc",
     "--no-first-run",
     "--remote-debugging-port=0",
@@ -495,7 +501,6 @@ export async function finalizePerformanceRun({
   closeInitialTarget = null,
   closeBrowserCdp = null,
   terminateChrome = null,
-  closeServer = null,
   removeTemporaryRoot = null,
   timeoutMs = OUTER_FINALIZATION_TIMEOUT_MS
 }) {
@@ -508,7 +513,6 @@ export async function finalizePerformanceRun({
     ["initial-target-close", closeInitialTarget],
     ["browser-cdp-close", closeBrowserCdp],
     ["chrome-termination", terminateChrome],
-    ["server-close", closeServer],
     ["temporary-root-removal", removeTemporaryRoot]
   ]) {
     if (operation) diagnostics.push(await runBoundedOuterOperation(phase, operation, timeoutMs));
@@ -622,59 +626,6 @@ function timeoutMarkdown(diagnostic) {
   const operation = diagnostic.operation?.lastStatus ?? {};
   const progress = diagnostic.operation?.progress ?? operation.progress ?? null;
   return `# Event History performance gate\n\nVerdict: **FAIL**\n\nStatus: **TIMED_OUT**\n\nSource revision: ${diagnostic.source?.revision ?? "unknown"}; dirty at run: ${diagnostic.source?.dirty ?? "unknown"}.\n\nEnvironment: ${JSON.stringify(diagnostic.environment)}.\n\nGlobal deadline: ${diagnostic.operation?.deadlineMs ?? "unknown"} ms.\n\nOperation phase: **${diagnostic.operation?.phase ?? "unknown"}**\n\nLast operation status: ${JSON.stringify(operation)}\n\n## Latest harness progress\n\n${progress ? `\`${JSON.stringify(progress)}\`` : "No structured harness progress was observed."}\n\nThe timeout is fail-closed and was not classified as a performance PASS or REVIEW.\n`;
-}
-
-async function serve(directory) {
-  const server = createServer(async (request, response) => {
-    try {
-      const path = new URL(request.url ?? "/", "http://localhost").pathname;
-      const name = path === "/" ? "index.html" : path.slice(1);
-      const content = await readFile(join(directory, name));
-      response.writeHead(200, { "content-type": name.endsWith(".js") ? "text/javascript" : name.endsWith(".css") ? "text/css" : "text/html", "cache-control": "no-store" });
-      response.end(content);
-    } catch {
-      response.writeHead(404).end();
-    }
-  });
-  const sockets = new Set();
-  server.__eventHistorySockets = sockets;
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
-  await new Promise((resolvePromise, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolvePromise); });
-  return server;
-}
-
-export async function closeServerWithDeadline(server, timeoutMs = SERVER_CLEANUP_TIMEOUT_MS) {
-  const timeout = positiveFiniteStartupOption(timeoutMs, "server cleanup timeoutMs");
-  let callbackCalled = false;
-  let timer;
-  const closePromise = new Promise((resolvePromise) => {
-    try {
-      server.close(() => {
-        callbackCalled = true;
-        resolvePromise({ timedOut: false });
-      });
-    } catch {
-      resolvePromise({ timedOut: false });
-    }
-  });
-  const timeoutPromise = new Promise((resolvePromise) => {
-    timer = setTimeout(() => resolvePromise({ timedOut: true }), timeout);
-  });
-  try {
-    const result = await Promise.race([closePromise, timeoutPromise]);
-    if (result.timedOut && !callbackCalled) {
-      for (const socket of server.__eventHistorySockets ?? []) {
-        try { socket.destroy(); } catch { /* Best effort socket retirement. */ }
-      }
-      try { server.closeAllConnections?.(); } catch { /* Best effort server retirement. */ }
-    }
-    return result;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 class Cdp {

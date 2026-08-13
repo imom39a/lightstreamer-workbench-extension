@@ -42,7 +42,6 @@ describe("Event History performance startup fail-closed seams", () => {
         writeEvidence: () => { throw new Error("evidence write failed"); },
         closeCdp: () => { throw new Error("cdp close failed"); },
         terminateChrome: () => Promise.reject(new Error("termination failed")),
-        closeServer: never,
         removeTemporaryRoot: never,
         timeoutMs: 25
       });
@@ -50,7 +49,7 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.ok(Date.now() - started < 500);
       assert.deepEqual(
         primary.outerDiagnostics.map(({ phase }) => phase),
-        ["timeout-evidence", "cdp-close", "chrome-termination", "server-close", "temporary-root-removal"]
+        ["timeout-evidence", "cdp-close", "chrome-termination", "temporary-root-removal"]
       );
       assert.equal(primary.outerDiagnostics.every(({ outcome }) => outcome === "failed" || outcome === "timed-out"), true);
     `);
@@ -123,7 +122,7 @@ describe("Event History performance startup fail-closed seams", () => {
       const { openFreshHarnessPage } = await import(${JSON.stringify(scriptUrl)});
       const deadlineAt = Date.now() + 37;
       await assert.rejects(
-        openFreshHarnessPage({ request: () => new Promise(() => undefined) }, 9222, "http://127.0.0.1:4173/", "deadline", { deadlineAt, requestCeilingMs: 5 }),
+        openFreshHarnessPage({ request: () => new Promise(() => undefined) }, 9222, "file:///tmp/lsew-event-history/index.html", "deadline", { deadlineAt, requestCeilingMs: 5 }),
         (error) => error?.name === "PerformanceOperationTimeout"
       );
     `);
@@ -137,12 +136,41 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.equal(args.some((arg) => arg === "--activate-on-launch"), false);
       assert.equal(args.includes("--headless"), false);
       assert.equal(args.includes("--no-proxy-server"), true);
+      assert.equal(args.includes("--allow-file-access-from-files"), true);
       assert.equal(args.includes("--disable-background-timer-throttling"), true);
       assert.equal(args.includes("--disable-backgrounding-occluded-windows"), true);
       assert.equal(args.includes("--disable-renderer-backgrounding"), true);
       assert.equal(args.includes("--js-flags=--expose-gc"), true);
       assert.equal(args.at(-1), "about:blank");
       assert.equal(args.includes("http://127.0.0.1:4173/"), false);
+    `);
+  });
+
+  it("builds a self-contained file harness with relative assets and no HTTP server dependency", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      import { readFile } from "node:fs/promises";
+      const { createHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
+      const html = createHarnessDocument();
+      assert.match(html, /href="\\.\\/harness\\.css"/u);
+      assert.match(html, /src="\\.\\/harness\\.js"/u);
+      assert.doesNotMatch(html, /href="\\/|src="\\//u);
+      const source = await readFile(${JSON.stringify(join(repositoryRoot, "scripts/event-history-performance.mjs"))}, "utf8");
+      assert.match(source, /pathToFileURL\\(indexPath\\)\\.href/u);
+      assert.doesNotMatch(source, /createServer|server = await serve|closeServerWithDeadline/u);
+    `);
+  });
+
+  it("keeps file page-token URLs exact and unique", () => {
+    runNode(`
+      import assert from "node:assert/strict";
+      const { harnessPageUrl } = await import(${JSON.stringify(scriptUrl)});
+      const base = "file:///tmp/lsew-event-history/index.html";
+      const first = harnessPageUrl(base, "shard-1-token");
+      const second = harnessPageUrl(base, "shard-2-token");
+      assert.equal(first, "file:///tmp/lsew-event-history/index.html?pageToken=shard-1-token");
+      assert.equal(second, "file:///tmp/lsew-event-history/index.html?pageToken=shard-2-token");
+      assert.notEqual(first, second);
     `);
   });
 
@@ -170,7 +198,7 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { prepareInitialPageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
-      const expected = "http://127.0.0.1:4173/";
+        const expected = "file:///tmp/lsew-event-history/index.html";
       const calls = [];
       const cdp = {
         request(method, params) {
@@ -201,9 +229,9 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
-      const expected = "http://127.0.0.1:4173/?pageToken=fresh";
+      const expected = "file:///tmp/lsew-event-history/index.html?pageToken=fresh";
       const calls = [];
-      const hrefs = ["about:blank", "http://127.0.0.1:4173/?pageToken=stale", expected];
+      const hrefs = ["about:blank", "file:///tmp/lsew-event-history/index.html?pageToken=stale", expected];
       const cdp = { request(method, params) {
         calls.push({ method, params });
         if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: hrefs.shift() ?? expected } });
@@ -221,9 +249,9 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
-      const expected = "http://127.0.0.1:4173/?pageToken=fresh";
+      const expected = "file:///tmp/lsew-event-history/index.html?pageToken=fresh";
       const calls = [];
-      const hrefs = ["http://127.0.0.1:4173/?pageToken=wrong", expected];
+      const hrefs = ["file:///tmp/lsew-event-history/index.html?pageToken=wrong", expected];
       const cdp = { request(method, params) {
         calls.push({ method, params });
         if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: hrefs.shift() ?? expected } });
@@ -251,7 +279,7 @@ describe("Event History performance startup fail-closed seams", () => {
         return Promise.resolve({});
       }};
       await assert.rejects(
-        ensureFreshHarnessDocument(cdp, "http://127.0.0.1:4173/?pageToken=pending", 20, { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }),
+        ensureFreshHarnessDocument(cdp, "file:///tmp/lsew-event-history/index.html?pageToken=pending", 20, { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }),
         (error) => error?.name === "PerformanceOperationTimeout"
           && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
           && error.status.error.message.includes("page-document-evaluate")
@@ -271,7 +299,7 @@ describe("Event History performance startup fail-closed seams", () => {
         return method === "Page.enable" ? new Promise(() => undefined) : Promise.resolve({});
       }};
       await assert.rejects(
-        prepareInitialPageForAuthoritativeRun(cdp, "http://127.0.0.1:4173/", { deadlineAt: Date.now() + 25, requestCeilingMs: 10 }),
+        prepareInitialPageForAuthoritativeRun(cdp, "file:///tmp/lsew-event-history/index.html", { deadlineAt: Date.now() + 25, requestCeilingMs: 10 }),
         (error) => error?.name === "PerformanceOperationTimeout"
           && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
           && error.status.error.name === "CdpRequestTimeout"
@@ -302,13 +330,13 @@ describe("Event History performance startup fail-closed seams", () => {
       const { prepareInitialPageForAuthoritativeRun, openFreshHarnessPage } = await import(${JSON.stringify(scriptUrl)});
       const deadlineAt = Date.now() + 100;
       const cdp = { request(method, params) {
-        if (method === "Runtime.evaluate" && params.expression === "location.href") return Promise.resolve({ result: { value: "http://127.0.0.1:4173/" } });
+        if (method === "Runtime.evaluate" && params.expression === "location.href") return Promise.resolve({ result: { value: "file:///tmp/lsew-event-history/index.html" } });
         if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: true } });
         return new Promise((resolve) => setTimeout(() => resolve({}), 15));
       }};
-      await prepareInitialPageForAuthoritativeRun(cdp, "http://127.0.0.1:4173/", { deadlineAt, requestCeilingMs: 20 });
+      await prepareInitialPageForAuthoritativeRun(cdp, "file:///tmp/lsew-event-history/index.html", { deadlineAt, requestCeilingMs: 20 });
       await assert.rejects(
-        openFreshHarnessPage(cdp, 9222, "http://127.0.0.1:4173/", "later", { deadlineAt, requestCeilingMs: 10 }),
+        openFreshHarnessPage(cdp, 9222, "file:///tmp/lsew-event-history/index.html", "later", { deadlineAt, requestCeilingMs: 10 }),
         (error) => error?.name === "PerformanceOperationTimeout" && error.status.error.code === "SHARED_DEADLINE_EXCEEDED"
       );
     `);
@@ -447,7 +475,7 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { openHarnessTarget } = await import(${JSON.stringify(scriptUrl)});
-      const expected = "http://127.0.0.1:4173/";
+      const expected = "file:///tmp/lsew-event-history/index.html";
       const calls = [];
       const control = { request(method, params) { calls.push([method, params]); return Promise.resolve({ targetId: "initial-1" }); } };
       let fetches = 0;
@@ -473,7 +501,7 @@ describe("Event History performance startup fail-closed seams", () => {
       const { openHarnessTarget } = await import(${JSON.stringify(scriptUrl)});
       const primary = await (async () => {
         try {
-          await openHarnessTarget({ request: async () => ({ targetId: "initial-1" }) }, 9222, "http://127.0.0.1:4173/", {
+          await openHarnessTarget({ request: async () => ({ targetId: "initial-1" }) }, 9222, "file:///tmp/lsew-event-history/index.html", {
             deadlineAt: Date.now() + 100,
             fetchJson: async () => [{ id: "initial-1", type: "page", webSocketDebuggerUrl: "ws://initial" }],
             createSocket: () => { const listeners = {}; return { addEventListener(name, handler) { listeners[name] = handler; if (name === "open") queueMicrotask(handler); }, removeEventListener() {}, send(raw) { const request = JSON.parse(raw); queueMicrotask(() => listeners.message?.({ data: JSON.stringify({ id: request.id, result: request.method === "Runtime.evaluate" ? { result: { value: false } } : {} }) })); }, close() {} }; }
@@ -506,7 +534,7 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
-      const expected = "http://127.0.0.1:4173/?pageToken=fresh";
+      const expected = "file:///tmp/lsew-event-history/index.html?pageToken=fresh";
       const calls = [];
       const hrefs = ["about:blank", expected];
       const cdp = { request(method, params) {
@@ -525,7 +553,7 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
-      const expected = "http://127.0.0.1:4173/?pageToken=never";
+      const expected = "file:///tmp/lsew-event-history/index.html?pageToken=never";
       const calls = [];
       const cdp = { request(method, params) {
         calls.push({ method, params });
@@ -549,7 +577,7 @@ describe("Event History performance startup fail-closed seams", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { prepareInitialPageForAuthoritativeRun } = await import(${JSON.stringify(scriptUrl)});
-      const expected = "http://127.0.0.1:4173/";
+      const expected = "file:///tmp/lsew-event-history/index.html";
       const cdp = { request(method, params) {
         if (method === "Runtime.evaluate" && params.expression === "location.href") {
           return Promise.resolve({ result: { value: expected } });
@@ -581,7 +609,7 @@ describe("Event History performance startup fail-closed seams", () => {
         const cdp = { request(method) {
           return method === "Page.enable" ? new Promise(() => undefined) : Promise.resolve({});
         }};
-        const timeout = await prepareInitialPageForAuthoritativeRun(cdp, "http://127.0.0.1:4173/", { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }).then(() => null, (error) => error);
+        const timeout = await prepareInitialPageForAuthoritativeRun(cdp, "file:///tmp/lsew-event-history/index.html", { deadlineAt: Date.now() + 20, requestCeilingMs: 5 }).then(() => null, (error) => error);
         assert.equal(timeout.name, "PerformanceOperationTimeout");
         await writeTimeoutEvidenceForTimeout({
           outputPath: ${JSON.stringify(outputPath)}, markdownPath: ${JSON.stringify(markdownPath)}, timeout,
@@ -612,7 +640,7 @@ describe("Event History performance startup fail-closed seams", () => {
         import assert from "node:assert/strict";
         import { readFile } from "node:fs/promises";
         const { prepareInitialPageForAuthoritativeRun, writeTimeoutEvidenceForTimeout } = await import(${JSON.stringify(scriptUrl)});
-        const expected = "http://127.0.0.1:4173/";
+        const expected = "file:///tmp/lsew-event-history/index.html";
         const cdp = { request(method, params) {
           if (method === "Runtime.evaluate" && params.expression === "location.href") return Promise.resolve({ result: { value: expected } });
           if (method === "Runtime.evaluate") return Promise.resolve({ result: { value: false } });
@@ -636,31 +664,11 @@ describe("Event History performance startup fail-closed seams", () => {
     }
   });
 
-  it("bounds final server cleanup when close never invokes its callback", () => {
-    runNode(`
-      import assert from "node:assert/strict";
-      const { closeServerWithDeadline } = await import(${JSON.stringify(scriptUrl)});
-      let destroyed = 0;
-      let closedAll = 0;
-      const server = {
-        close() {},
-        closeAllConnections() { closedAll += 1; },
-        __eventHistorySockets: new Set([{ destroy() { destroyed += 1; } }])
-      };
-      const started = Date.now();
-      const result = await closeServerWithDeadline(server, 20);
-      assert.equal(result.timedOut, true);
-      assert.ok(Date.now() - started < 500);
-      assert.equal(closedAll, 1);
-      assert.equal(destroyed, 1);
-    `);
-  });
-
   it("retires the Runtime.evaluate request when ensureFreshHarnessDocument uses no options", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { ensureFreshHarnessDocument } = await import(${JSON.stringify(scriptUrl)});
-      const expected = "http://127.0.0.1:4173/?pageToken=retire";
+      const expected = "file:///tmp/lsew-event-history/index.html?pageToken=retire";
       let cancelled = 0;
       const cdp = { request(method, params) {
         if (method === "Runtime.evaluate" && params.expression === "location.href") {
