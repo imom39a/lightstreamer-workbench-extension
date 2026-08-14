@@ -91,6 +91,15 @@ describe("Scenario Checkpoints", () => {
     expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "command-key-exists", item: { name: "orders", position: 1 }, key: "order-1", expected: "maybe" } as never]), {
       targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
     })).toEqual({ ok: false, assertionId: "a", reason: "COMMAND key expectation must select present or absent." });
+    expect(validateScenarioCheckpoint(checkpoint([null] as never), {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "<missing>", reason: "Scenario Assertion must be an object." });
+    expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "correlated-local-evidence-exists" } as never]), {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "a", reason: "Checkpoint assertions may reference only an earlier Scenario Step." });
+    expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "command-key-exists", item: { name: 42, position: null }, key: "order-1", expected: "present" } as never]), {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "a", reason: "COMMAND assertion requires an exact item name or positive item position." });
   });
 
   it("compares JSON primitives by exact type and distinguishes own absence from concrete null", () => {

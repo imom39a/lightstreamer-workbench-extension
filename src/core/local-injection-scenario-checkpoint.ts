@@ -80,6 +80,9 @@ export function validateScenarioCheckpoint(
   }
   const ids = new Set<string>();
   for (const rawAssertion of checkpoint.assertions as readonly unknown[]) {
+    if (typeof rawAssertion !== "object" || rawAssertion === null || Array.isArray(rawAssertion)) {
+      return frozen({ ok: false, assertionId: "<missing>", reason: "Scenario Assertion must be an object." });
+    }
     const assertion = rawAssertion as Partial<ScenarioAssertion> & { id?: unknown; kind?: unknown; withinActiveMs?: unknown; stepId?: unknown };
     const assertionId = typeof assertion.id === "string" ? assertion.id : "<missing>";
     if (typeof assertion.id !== "string" || assertion.id.length === 0 || assertion.id.length > 256 || ids.has(assertion.id)) {
@@ -87,7 +90,8 @@ export function validateScenarioCheckpoint(
     }
     ids.add(assertion.id);
     if (!isAssertionKind(assertion.kind)) return frozen({ ok: false, assertionId, reason: "Unsupported Scenario Assertion kind." });
-    if ("stepId" in assertion && (typeof assertion.stepId !== "string" || !context.earlierStepIds.includes(assertion.stepId))) {
+    const requiresStep = assertion.kind === "prior-injection-outcome" || assertion.kind === "listener-count" || assertion.kind === "correlated-local-evidence-exists";
+    if (requiresStep && (typeof assertion.stepId !== "string" || !context.earlierStepIds.includes(assertion.stepId))) {
       return frozen({ ok: false, assertionId, reason: "Checkpoint assertions may reference only an earlier Scenario Step." });
     }
     if (assertion.kind === "prior-injection-outcome" && !["delivered", "partial", "failed", "acknowledgement-unknown", "blocked"].includes(assertion.expectedDisposition as string)) {
@@ -111,10 +115,21 @@ export function validateScenarioCheckpoint(
     if ((assertion.kind === "command-key-exists" || assertion.kind === "command-field-equals") && (typeof assertion.key !== "string" || assertion.key.length === 0)) {
       return frozen({ ok: false, assertionId, reason: "COMMAND key must not be empty." });
     }
-    if ((assertion.kind === "command-key-exists" || assertion.kind === "command-field-equals")
-      && (!assertion.item || (assertion.item.name === null
-      && (assertion.item.position === null || !Number.isSafeInteger(assertion.item.position) || assertion.item.position < 1)))) {
-      return frozen({ ok: false, assertionId, reason: "COMMAND assertion requires an exact item name or positive item position." });
+    if (assertion.kind === "command-key-exists" || assertion.kind === "command-field-equals") {
+      const item = assertion.item as unknown;
+      const itemRecord = typeof item === "object" && item !== null && !Array.isArray(item)
+        ? item as Readonly<Record<string, unknown>>
+        : null;
+      const name = itemRecord?.name;
+      const position = itemRecord?.position;
+      const validName = typeof name === "string" && name.length > 0;
+      const validPosition = typeof position === "number" && Number.isSafeInteger(position) && position >= 1;
+      const validShape = itemRecord !== null
+        && (name === null || typeof name === "string")
+        && (position === null || validPosition);
+      if (!validShape || (!validName && !validPosition)) {
+        return frozen({ ok: false, assertionId, reason: "COMMAND assertion requires an exact item name or positive item position." });
+      }
     }
     if (assertion.kind === "command-field-equals" && (typeof assertion.field !== "string" || assertion.field.length === 0 || !isJsonPrimitive(assertion.expected))) {
       return frozen({ ok: false, assertionId, reason: "Primitive equality requires a named field and one finite JSON primitive expectation." });
