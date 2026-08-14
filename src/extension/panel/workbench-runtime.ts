@@ -369,6 +369,10 @@ export type WorkbenchEvidenceCopySnapshot = Readonly<{
 
 export type WorkbenchActivitySnapshot = Readonly<{
   open: boolean;
+  transition: Readonly<{
+    sequence: number;
+    kind: "idle" | "opened" | "explicit-close" | "supporting-evidence" | "back";
+  }>;
   projection: ActivityProjection;
   scope: ActivityScope;
   filter: Filter;
@@ -747,6 +751,7 @@ type InvestigationCheckpoint = Readonly<{
   mode: "live" | "frozen";
   offset: number;
   readPoint: EvidenceReadPoint | null;
+  activityDocument: ActivityDocumentState | null;
 }>;
 
 const emptyEvidence: EvidenceData = Object.freeze({
@@ -803,6 +808,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly activityEvidence: ActivityEvidence[] = [];
   private readonly activityEvidenceKeys = new Set<string>();
   private activityOpen = false;
+  private activityTransition: WorkbenchActivitySnapshot["transition"] = Object.freeze({ sequence: 0, kind: "idle" });
   private activityDocumentState: ActivityDocumentState | null = null;
   private activityHydrationPromise: Promise<void> | null = null;
   private activityHydrated = false;
@@ -1084,7 +1090,11 @@ class Runtime implements WorkbenchRuntime {
     this.refreshEvidence("reveal-selection");
   }
 
-  private recordInvestigationCheckpoint(): void {
+  private markActivityTransition(kind: Exclude<WorkbenchActivitySnapshot["transition"]["kind"], "idle">): void {
+    this.activityTransition = Object.freeze({ sequence: this.activityTransition.sequence + 1, kind });
+  }
+
+  private recordInvestigationCheckpoint(activityDocument: ActivityDocumentState | null = null): void {
     const checkpoint: InvestigationCheckpoint = Object.freeze({
       scopeId: this.scopeId,
       filter: this.canonicalFilter,
@@ -1095,7 +1105,8 @@ class Runtime implements WorkbenchRuntime {
       contextId: this.contextId,
       mode: this.mode,
       offset: this.displayedEvidence().offset,
-      readPoint: this.mode === "frozen" ? this.frozenInvestigation?.readPoint ?? this.restorationReadPoint : null
+      readPoint: this.mode === "frozen" ? this.frozenInvestigation?.readPoint ?? this.restorationReadPoint : null,
+      activityDocument
     });
     if (this.restorationIndex < this.restorationCheckpoints.length - 1) {
       this.restorationCheckpoints.splice(this.restorationIndex + 1);
@@ -1118,6 +1129,12 @@ class Runtime implements WorkbenchRuntime {
     this.contextId = checkpoint.contextId;
     this.mode = checkpoint.mode;
     this.restorationReadPoint = checkpoint.readPoint;
+    if (checkpoint.activityDocument) {
+      this.markActivityTransition("back");
+      this.activityDocumentState = Object.freeze({ ...checkpoint.activityDocument, open: true });
+      this.activityOpen = true;
+      this.activityPublishedProjection = checkpoint.activityDocument.projection;
+    }
     if (checkpoint.mode === "live") {
       this.frozenEvidence = null;
       this.frozenInvestigation = null;
@@ -1547,6 +1564,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "open-activity":
         if (!this.activityOpen) {
+          this.markActivityTransition("opened");
           const checkpoint = this.restorationCheckpoints[this.restorationIndex] ?? null;
           this.activityOriginCheckpoint = checkpoint
             ? Object.freeze({
@@ -1568,6 +1586,7 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       case "close-activity":
+        if (this.activityOpen) this.markActivityTransition("explicit-close");
         if (this.activityDocumentState) {
           const origin = closeActivityDocument(this.activityDocumentState);
           this.selectionEventId = origin.evidenceSelectionId;
@@ -1617,6 +1636,9 @@ class Runtime implements WorkbenchRuntime {
           ...(clipped ? [{ type: "set-around" as const, around: { intervalId: this.historyStatus.interval.id, ...clipped } }] : [])
         ]);
         if (result.ok) {
+          this.markActivityTransition("supporting-evidence");
+          const activityDocument = this.activityDocumentState;
+          if (activityDocument) this.recordInvestigationCheckpoint(activityDocument);
           this.canonicalFilter = result.filter;
           this.activityOpen = false;
           if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
@@ -4080,11 +4102,13 @@ class Runtime implements WorkbenchRuntime {
       }
     }
     const document = this.activityDocumentState;
+    const presentedReadPoint = document?.view === "FROZEN" ? document.readPoint : presentedProjection.readPoint;
     return Object.freeze({
       open: this.activityOpen,
+      transition: this.activityTransition,
       scope: activityScope,
       filter: this.canonicalFilter,
-      readPoint: presentedProjection.readPoint,
+      readPoint: presentedReadPoint,
       projection: document?.view === "FROZEN" ? document.projection : presentedProjection,
       document
     });

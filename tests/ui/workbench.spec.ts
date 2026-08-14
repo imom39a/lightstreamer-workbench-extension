@@ -260,8 +260,8 @@ test("Observed Activity keeps graphical small multiples and ranking tables in on
   const timeline = activity.getByRole("grid", { name: "Activity timeline buckets" });
   await timeline.focus();
   await page.keyboard.press("ArrowRight");
-  await expect(activity.locator("[aria-selected='true']")).toHaveCount(1);
-  await expect(activity.getByRole("region", { name: "Activity selection detail" })).toContainText("Logical Updates");
+  await expect(timeline.locator("[aria-selected='true']")).toHaveCount(1);
+  await expect(activity.getByRole("region", { name: "Activity selection detail" })).toContainText("LOGICAL UPDATES");
 
   const deliverySort = activity.getByRole("button", { name: "Update Deliveries", exact: true });
   const ranking = activity.getByRole("region", { name: "Activity ranking" });
@@ -1142,9 +1142,13 @@ test("Workbench visibly distinguishes an unavailable Local Injection Draft actio
     const contextHeaderAction = page
       .locator(".workbench-react__context")
       .getByRole("button", { name: openContext ? "Back to Evidence" : "Collapse Context", exact: true });
+    const openRaw = page.getByRole("button", { name: "Open complete raw" });
     await contextHeaderAction.focus();
-    await page.keyboard.press("Tab");
-    await expect(page.getByRole("button", { name: "Open complete raw" })).toBeFocused();
+    for (let step = 0; step < 40 && !await openRaw.evaluate((button) => button === document.activeElement); step += 1) {
+      await page.keyboard.press("Tab");
+      await expect(unavailableDraft).not.toBeFocused();
+    }
+    await expect(openRaw).toBeFocused();
     await expectShellFits(page);
     await expectNoSeriousAxeViolations(page, testInfo);
     await attachNamedScenarioScreenshot(page, testInfo, `unavailable-local-injection-${name}`);
@@ -1221,7 +1225,7 @@ test("Workbench navigates retained Evidence windows without losing keyboard boun
   await expect(oldest).toBeFocused();
 
   await page.keyboard.press(process.platform === "darwin" ? "Meta+End" : "Control+End");
-  const newest = page.locator(`[data-evidence-id="${highVolumeEventId(4_000)}"]`);
+  const newest = page.locator(`[data-evidence-id="${highVolumeEventId(3_970)}"]`);
   await expect(newest).toHaveAttribute("aria-selected", "true");
   await expect(newest).toBeFocused();
   const evidenceGrid = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });

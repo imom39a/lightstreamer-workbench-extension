@@ -543,14 +543,35 @@
 .workbench-react__activity-markers li + li { margin-top: 4px; }
 .workbench-react__activity-markers button { width: 100%; border: 0; background: transparent; color: var(--wb-text); padding: 4px; text-align: left; }
 .workbench-react__activity-markers button[aria-pressed="true"] { background: var(--wb-selection); }
+.workbench-react__activity-connection-grid { display: grid; gap: 5px; padding: 5px 0; }
+.workbench-react__activity-connection-grid:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
+.workbench-react__activity-connection-lane { display: grid; grid-template-columns: minmax(150px, 220px) minmax(120px, 1fr); gap: 6px; align-items: center; border-left: 3px solid var(--wb-border-strong); padding: 5px 6px; }
+.workbench-react__activity-connection-lane[aria-selected="true"] { border-left-color: var(--wb-focus); background: var(--wb-selection); }
+.workbench-react__activity-connection-lane > span { color: var(--wb-muted); font-size: 11px; }
+.workbench-react__activity-connection-points { grid-column: 1 / -1; display: flex; gap: 5px; flex-wrap: wrap; }
+.workbench-react__activity-connection-points button { border: 1px solid var(--wb-border); background: var(--wb-control); color: var(--wb-text); padding: 3px 5px; text-align: left; }
+.workbench-react__activity-connection-points button[data-focused="true"] { outline: 2px solid var(--wb-focus); outline-offset: 1px; }
+.workbench-react__activity-connection-points button[aria-pressed="true"] { background: var(--wb-selection); }
+.workbench-react__activity-context-facts { display: grid; gap: 6px; margin: 0; }
+.workbench-react__activity-context-facts > div { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); gap: 8px; }
+.workbench-react__activity-context-facts dt { font-weight: 600; }
+.workbench-react__activity-context-facts dd { margin: 0; color: var(--wb-muted); }
+.workbench-react__activity-context-plot { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; color: var(--wb-text); }
+.workbench-react__activity-context-plot span { border-bottom: 2px solid var(--wb-focus); padding: 2px 4px; }
+.workbench-react__activity-filter-warning, .workbench-react__activity-filter-exclusions { color: var(--wb-muted); }
+.workbench-react__activity-filter-exclusions { margin: 0; padding-left: 18px; }
+.workbench-react__activity-filter-exclusions li + li { margin-top: 5px; }
 .workbench-react__activity-small-multiples { display: grid; gap: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--wb-border); padding-bottom: 10px; }
 .workbench-react__activity-scale-note { margin: 0; color: var(--wb-muted); font-size: 11px; }
 .workbench-react__activity-multiple { display: grid; grid-template-columns: 180px minmax(240px, 1fr); align-items: end; gap: 8px; }
 .workbench-react__activity-multiple strong { align-self: center; font-size: 11px; }
+.workbench-react__activity-multiple strong span { display: block; margin-top: 2px; color: var(--wb-muted); font-weight: 400; }
 .workbench-react__activity-bars { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(4px, 1fr); align-items: end; gap: 2px; min-height: 54px; border-bottom: 1px solid var(--wb-border-strong); border-left: 1px solid var(--wb-border-strong); padding: 2px 2px 0; }
 .workbench-react__activity-bar { display: flex; align-items: end; min-width: 4px; height: 50px; }
 .workbench-react__activity-bar > span { display: block; width: 100%; min-height: 1px; background: var(--wb-text); }
+.workbench-react__activity-bar[data-selection-overlay="true"] { outline: 1px dashed var(--wb-border-strong); outline-offset: 1px; }
 .workbench-react__activity-bar[data-selected="true"] > span { background: var(--wb-focus); outline: 2px solid var(--wb-focus); outline-offset: 1px; }
+.workbench-react__activity-plot tr[data-selection-overlay="true"] { outline: 1px dashed var(--wb-border-strong); outline-offset: -1px; }
 .workbench-react__activity-ranking-bars { display: grid; gap: 5px; margin-bottom: 10px; }
 .workbench-react__activity-ranking-bars:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
 .workbench-react__activity-ranking-bars > [role="row"] { display: block; }

@@ -8,6 +8,8 @@ import { tmpdir as systemTmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = process.cwd();
+const packageVersion = (JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")) as { version: string }).version;
+const releaseZipName = `lightstreamer-workbench-v${packageVersion}.zip`;
 
 function discoverUnitTestFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -86,7 +88,7 @@ describe("release packaging verification gate", () => {
         encoding: "utf8"
       });
       expect(first.status, first.stderr).toBe(0);
-      const zipPath = join(output, "lightstreamer-workbench-v2.0.0.zip");
+      const zipPath = join(output, releaseZipName);
       const firstBytes = readFileSync(zipPath);
       const second = spawnSync(process.execPath, [join(projectRoot, "scripts/package-extension.mjs"), "--skip-tests", "--skip-typecheck", "--skip-build", "--out-dir", output], {
         cwd: projectRoot,
@@ -138,7 +140,7 @@ describe("release packaging verification gate", () => {
     try {
       const result = spawnSync(process.execPath, [join(projectRoot, "scripts/package-extension.mjs"), "--skip-tests", "--skip-typecheck", "--skip-build", "--out-dir", output], { cwd: projectRoot, encoding: "utf8" });
       expect(result.status, result.stderr).toBe(0);
-      const bytes = readFileSync(join(output, "lightstreamer-workbench-v2.0.0.zip"));
+      const bytes = readFileSync(join(output, releaseZipName));
       const eocd = bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
       expect(eocd).toBeGreaterThan(0);
       const count = bytes.readUInt16LE(eocd + 10);

@@ -127,9 +127,23 @@ describe("Observed Activity projection", () => {
       readPoint: readPoint([evidence(1, 1_000), evidence(2, 2_000), evidence(3, 3_000)])
     });
 
-    expect(scoped.state).toBe("EMPTY_MATCH");
+    expect(scoped.state).toBe("AVAILABLE");
     expect(scoped.logicalUpdateTotal).toBe(0);
     expect(scoped.matchingEvidence).toBe(1);
+  });
+
+  it("keeps connection-only matching Evidence available with exact zero update counts", () => {
+    const event = evidence(1, 1_000, {
+      kind: "client-status",
+      client: { id: "client-1", sessionId: "session-1", status: "CONNECTED" }
+    });
+    const projection = rebuildActivityProjection({ evidence: [event], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([event]) });
+
+    expect(projection.state).toBe("AVAILABLE");
+    expect(projection.emptyMatchCause).toBeNull();
+    expect(projection.matchingEvidence).toBe(1);
+    expect(projection.logicalUpdateTotal).toBe(0);
+    expect(projection.updateDeliveryTotal).toBe(0);
   });
 
   it("matches newer Evidence against the active Scope, Filter, and provenance", () => {
@@ -150,6 +164,108 @@ describe("Observed Activity projection", () => {
     expect([local, serverOtherSubscription, server].filter((entry) => matchesActivityEvidence(entry, filter, scope))).toEqual([server]);
   });
 
+  it("uses captured topology identity when a session-absence event has no client sessionId", () => {
+    const absence = evidence(1, 1_000, {
+      kind: "client-status",
+      client: { id: "client-1", sessionId: null, status: "DISCONNECTED" },
+      topology: {
+        version: 1,
+        kind: "session-absent",
+        pageEpoch: "page-1",
+        captureSequence: 1,
+        provenance: { instrumentationSource: "official-public-api" },
+        coverage: { status: "complete", getters: {} },
+        client: { id: "client-1", sessionId: { state: "real", value: "session-2" }, status: "DISCONNECTED" }
+      }
+    });
+    const projection = rebuildActivityProjection({
+      evidence: [absence],
+      scope: { kind: "SESSION", clientId: "client-1", sessionId: "session-2" },
+      filter: createFilter(1),
+      readPoint: readPoint([absence])
+    });
+
+    expect(projection.matchingEvidence).toBe(1);
+    expect(projection.markers[0]).toMatchObject({ kind: "CLIENT_STATUS", clientId: "client-1", sessionId: "session-2", status: "DISCONNECTED" });
+  });
+
+  it("keeps bounded Page client lanes separate and exposes overflow as Other", () => {
+    const entries = Array.from({ length: 7 }, (_, index) => evidence(index + 1, (index + 1) * 1_000, {
+      client: { id: `client-${index + 1}`, sessionId: `session-${index + 1}`, status: "CONNECTED" }
+    }));
+    const projection = rebuildActivityProjection({ evidence: entries, scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint(entries) });
+
+    expect(projection.connectionLanes.map((lane) => lane.clientId)).toEqual(["client-7", "client-6", "client-5", "client-4", "client-3"]);
+    expect(projection.connectionOverflow).toMatchObject({ label: "Other clients", clientIds: ["client-2", "client-1"] });
+    expect(projection.connectionLanes.every((lane) => lane.sessions.length === 1)).toBe(true);
+  });
+
+  it("shows all client Session epochs but only the owning epoch below Client Scope", () => {
+    const entries = [
+      evidence(1, 1_000, { client: { id: "client-1", sessionId: "session-a", status: "CONNECTED" } }),
+      evidence(2, 2_000, { client: { id: "client-1", sessionId: "session-b", status: "CONNECTED" } }),
+      evidence(3, 3_000, { client: { id: "client-1", sessionId: "session-a", status: "DISCONNECTED" } })
+    ];
+    const client = rebuildActivityProjection({ evidence: entries, scope: { kind: "CLIENT", clientId: "client-1" }, filter: createFilter(1), readPoint: readPoint(entries) });
+    const session = rebuildActivityProjection({ evidence: entries, scope: { kind: "SESSION", clientId: "client-1", sessionId: "session-b" }, filter: createFilter(1), readPoint: readPoint(entries) });
+    const subscription = rebuildActivityProjection({ evidence: entries, scope: { kind: "SUBSCRIPTION", clientId: "client-1", sessionId: "session-b", subscriptionId: "subscription-1" }, filter: createFilter(1), readPoint: readPoint(entries) });
+
+    expect(client.connectionLanes[0]?.sessions.map((epoch) => epoch.sessionId)).toEqual(["session-a", "session-b"]);
+    expect(session.connectionLanes[0]?.sessions.map((epoch) => epoch.sessionId)).toEqual(["session-b"]);
+    expect(subscription.connectionLanes[0]?.sessions.map((epoch) => epoch.sessionId)).toEqual(["session-b"]);
+  });
+
+  it("uses a structural Subscription criterion for Page ranking drilldown without an item constraint", () => {
+    const entries = [
+      evidence(1, 1_000, { item: { name: "item-a", position: 1 } }),
+      evidence(2, 2_000, { item: { name: "item-b", position: 2 } })
+    ];
+    const projection = rebuildActivityProjection({ evidence: entries, scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint(entries) });
+    const ranking = projection.allRankings[0];
+    const subscription = ranking?.supportingFilterMutations?.find((mutation) => "facet" in mutation && mutation.facet === "subscription");
+
+    expect(subscription).toMatchObject({ type: "add-criterion", value: { type: "structural-subscription", value: "subscription-1" } });
+    expect(ranking?.supportingFilterMutations?.map((mutation) => "facet" in mutation ? mutation.facet : null)).not.toContain("item");
+  });
+
+  it("exposes requested and real bandwidth/frequency facts and plots only distinct numeric changes", () => {
+    const first = evidence(1, 1_000, {
+      client: { id: "client-1", sessionId: "session-1", requestedMaxBandwidth: 10, realMaxBandwidth: 5 },
+      subscription: { id: "subscription-1", requestedMaxFrequency: 4, realMaxFrequency: 2 }
+    });
+    const second = evidence(2, 2_000, {
+      client: { id: "client-1", sessionId: "session-1", requestedMaxBandwidth: 10, realMaxBandwidth: 7 },
+      subscription: { id: "subscription-1", requestedMaxFrequency: 4, realMaxFrequency: 3 }
+    });
+    const projection = rebuildActivityProjection({ evidence: [first, second], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([first, second]) });
+
+    expect(projection.contextFacts.find((fact) => fact.key === "REQUESTED_MAX_BANDWIDTH")?.values.map(({ value }) => value)).toEqual(["10"]);
+    expect(projection.contextFacts.find((fact) => fact.key === "REAL_MAX_BANDWIDTH")?.plotValues).toHaveLength(2);
+    expect(projection.contextFacts.find((fact) => fact.key === "REQUESTED_MAX_FREQUENCY")?.plotValues).toHaveLength(0);
+    expect(projection.contextFacts.find((fact) => fact.key === "REAL_MAX_FREQUENCY")?.plotValues).toHaveLength(2);
+  });
+
+  it("labels connection/loss/error layers excluded by Filter with an explicit amendment", () => {
+    const event = evidence(1, 1_000, { kind: "client-status", client: { id: "client-1", sessionId: "session-1", status: "DISCONNECTED" } });
+    const filter = { ...createFilter(1), criteria: { kind: { include: [createTypedFilterValue("kind", "enum", "ITEM-UPDATE")], exclude: [] } } };
+    const projection = rebuildActivityProjection({ evidence: [event], scope: { kind: "PAGE" }, filter, readPoint: readPoint([event]) });
+
+    expect(projection.excludedLayers).toEqual(expect.arrayContaining([expect.objectContaining({ layer: "CONNECTION", label: "Connection transitions", filterMutations: expect.any(Array) })]));
+  });
+
+  it("drills transition Evidence with available kind, provenance, and identity criteria", () => {
+    const transition = evidence(1, 1_000, {
+      kind: "client-status",
+      client: { id: "client-1", sessionId: "session-1", status: "CONNECTED" },
+      subscription: { id: "subscription-1" },
+      item: { name: "item-1", position: 1 }
+    });
+    const projection = rebuildActivityProjection({ evidence: [transition], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([transition]) });
+    const facets = projection.markers[0]?.supportingFilterMutations?.map((mutation) => "facet" in mutation ? mutation.facet : null);
+
+    expect(facets).toEqual(expect.arrayContaining(["kind", "provenance", "client", "session", "subscription", "item"]));
+  });
+
   it("retains evidence order and marks backward captured timestamps as discontinuities", () => {
     const projection = rebuildActivityProjection({
       evidence: [evidence(1, 5_000), evidence(2, 4_000)],
@@ -162,6 +278,22 @@ describe("Observed Activity projection", () => {
     expect(projection.clockSegments).toHaveLength(2);
     expect(projection.clockSegments[1]).toMatchObject({ startSequence: 2, startTimestamp: 4_000 });
     expect(projection.committedEvidenceBoundary?.sequence).toBe(2);
+  });
+
+  it("uses Evidence sequence to order equal timestamps on both sides of a normal clock segment", () => {
+    const entries = [
+      evidence(1, 1_000),
+      evidence(2, 1_000, { kind: "client-status" }),
+      evidence(3, 1_000, { kind: "client-status" }),
+      evidence(4, 2_000),
+      evidence(5, 2_000, { kind: "client-status" }),
+      evidence(6, 2_000, { kind: "client-status" }),
+      evidence(7, 3_000)
+    ];
+    const projection = rebuildActivityProjection({ evidence: entries, scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint(entries) });
+
+    expect(projection.clockSegments).toEqual([{ index: 0, startSequence: 1, endSequence: 7, startTimestamp: 1_000, endTimestamp: 3_000 }]);
+    expect(projection.markers.map(({ sequence }) => sequence)).toEqual([2, 3, 5, 6]);
   });
 
   it("keeps clock-regressed evidence in separate bucket segments", () => {
@@ -284,7 +416,7 @@ describe("Observed Activity projection", () => {
       readPoint: { ...readPoint([event]), coverage: "LIMITED" }
     });
 
-    expect(projection.state).toBe("EMPTY_MATCH");
+    expect(projection.state).toBe("LIMITED");
     expect(projection.reason).toContain("limited");
     expect(projection.markers[0]).toMatchObject({
       kind: "SUBSCRIPTION_ERROR",
@@ -305,6 +437,29 @@ describe("Observed Activity projection", () => {
     expect(terminal.reason).toContain("complete through the terminal");
     expect(failed.state).toBe("AGGREGATION_FAILED");
     expect(failed.reason).toBe("bucket failure");
+  });
+
+  it("rebuilds current accepted Evidence after a recoverable aggregation failure", () => {
+    let failed = true;
+    const first = evidence(1, 1_000);
+    const second = evidence(2, 2_000);
+    const input = {
+      evidence: [first],
+      scope: { kind: "PAGE" as const },
+      filter: createFilter(1),
+      readPoint: readPoint([first]),
+      aggregate: () => { if (failed) throw new Error("temporary aggregation failure"); }
+    };
+
+    const unavailable = rebuildActivityProjection(input);
+    failed = false;
+    const recovered = rebuildActivityProjection({ ...input, evidence: [first, second], readPoint: readPoint([first, second]) });
+
+    expect(unavailable.state).toBe("AGGREGATION_FAILED");
+    expect(unavailable.reason).toBe("temporary aggregation failure");
+    expect(recovered.state).toBe("AVAILABLE");
+    expect(recovered.matchingEvidence).toBe(2);
+    expect(recovered.logicalUpdateTotal).toBe(2);
   });
 
   it("sorts ranking rows by either exact metric with stable identity ties", () => {

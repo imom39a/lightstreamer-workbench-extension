@@ -54,7 +54,8 @@ describe("canonical Evidence facets", () => {
     expect(extracted.facets.session?.value).toBeDefined();
     expect(extracted.facets.subscription?.value).toBeDefined();
     expect(extracted.facets.mode?.value).toBe("COMMAND");
-    expect(extracted.facets.kind?.value).toBe("item-update");
+    expect(extracted.facets.kind?.value).toBe("ITEM-UPDATE");
+    expect(extracted.facets.kind?.label).toBe("item-update");
     expect(extracted.facets.item?.value).toBeDefined();
     expect(extracted.facets.listener?.value).toBeDefined();
     expect(extracted.facets.key?.value).toBe("ABC");

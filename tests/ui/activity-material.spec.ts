@@ -113,13 +113,105 @@ test("Activity exposes the Local series in chart, table, selection, and drill-do
   const timeline = activity.getByRole("grid", { name: "Activity timeline buckets" });
   await expect(timeline).toContainText("LOCAL LOGICAL UPDATES");
   await timeline.locator("tbody tr").first().getByRole("button").click();
-  await expect(activity.getByRole("region", { name: "Activity selection detail" })).toContainText("Local Logical Updates");
+  await expect(activity.getByRole("region", { name: "Activity selection detail" })).toContainText("LOCAL LOGICAL UPDATES");
   await timeline.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("region", { name: "Ordered Evidence" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Reset Filter" })).toBeVisible();
   await expect(page.getByText(/Filter:.*provenance.*LOCAL/i).first()).toBeVisible();
   await expectNoSeriousAxeViolations(page, testInfo);
+});
+
+test("Activity snapshot and live series keep phase-specific chart and selection counts", async ({ page }) => {
+  await openActivity(page, "activity-graphical", { width: 900, height: 700 }, "light");
+  const activity = page.getByRole("main", { name: "Observed Activity" });
+  const timeline = activity.getByRole("grid", { name: "Activity timeline buckets" });
+
+  await activity.getByRole("button", { name: "SERVER SNAPSHOT", exact: true }).click();
+  await expect(activity.getByRole("img", { name: /Server Snapshot Logical Updates/ })).toBeVisible();
+  const firstRow = timeline.locator("tbody tr").first();
+  const snapshotCount = await firstRow.locator("td").nth(0).innerText();
+  await firstRow.getByRole("button").click();
+  const selection = activity.getByRole("region", { name: "Activity selection detail" });
+  await expect(selection).toContainText(`${snapshotCount} SERVER SNAPSHOT`);
+  await selection.getByRole("button", { name: "Show supporting Evidence" }).click();
+  await expect(page.getByText(/Filter:.*phase.*SNAPSHOT/i).first()).toBeVisible();
+});
+
+test("Activity keeps connection lanes composite, epochs textual, and contextual facts truthful", async ({ page }) => {
+  await openActivity(page, "activity-graphical", { width: 900, height: 700 }, "dark");
+  const activity = page.getByRole("main", { name: "Observed Activity" });
+  const lanes = activity.getByRole("grid", { name: "Connection activity lanes" });
+  await expect(lanes).toHaveAttribute("tabindex", "0");
+  await expect(lanes.getByRole("button").first()).toHaveAttribute("tabindex", "-1");
+
+  const context = activity.getByRole("region", { name: "Activity contextual facts" });
+  await expect(context).toContainText("Requested max bandwidth");
+  await expect(context).toContainText("Real max bandwidth");
+  await expect(context).toContainText("Requested max frequency");
+  await expect(context).toContainText("Real max frequency");
+  await expect(context.locator('[data-contextual-plot="REAL_MAX_BANDWIDTH"]')).toBeVisible();
+  await expect(context.locator('[data-contextual-plot="REQUESTED_MAX_BANDWIDTH"]')).toHaveCount(0);
+
+  const epoch = lanes.getByRole("button").first();
+  await epoch.click();
+  const selection = activity.getByRole("region", { name: "Activity selection detail" });
+  await expect(selection).toContainText("client");
+  await expect(selection).toContainText("session");
+  await expect(selection).toContainText("status");
+  await expect(selection).toContainText("timestamps");
+  await expect(selection).toContainText("Committed Boundary");
+  await expect(selection).toContainText("Observation Coverage");
+  await expect(selection).toContainText("no duration");
+  await expect(selection.getByRole("button", { name: "Show supporting Evidence" })).toBeVisible();
+  await selection.getByRole("button", { name: "Show supporting Evidence" }).click();
+  await expect(page.getByRole("region", { name: "Ordered Evidence" })).toBeVisible();
+});
+
+test("Activity connection composite Enter drills the focused epoch", async ({ page }) => {
+  await openActivity(page, "activity-graphical", { width: 900, height: 700 }, "light");
+  const activity = page.getByRole("main", { name: "Observed Activity" });
+  const lanes = activity.getByRole("grid", { name: "Connection activity lanes" });
+  await lanes.focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("region", { name: "Ordered Evidence" })).toBeVisible();
+});
+
+test("Activity Back restores its composite, selection, and scroll while explicit close restores its trigger", async ({ page }) => {
+  await openActivity(page, "activity-graphical", { width: 563, height: 700 }, "dark");
+  let activity = page.getByRole("main", { name: "Observed Activity" });
+  const ranking = activity.getByRole("grid", { name: "Busiest ranking graph" });
+  await ranking.scrollIntoViewIfNeeded();
+  await ranking.focus();
+  await page.keyboard.press("ArrowRight");
+  const selectedIdentity = await ranking.locator('[role="gridcell"][aria-selected="true"]').getAttribute("data-ranking-identity");
+  expect(selectedIdentity).toBeTruthy();
+  const documentScroll = activity.locator(".workbench-react__activity-scroll");
+  const plotScroll = activity.locator(".workbench-react__activity-plot");
+  await documentScroll.evaluate((element) => { element.scrollTop = Math.min(120, element.scrollHeight - element.clientHeight); element.dispatchEvent(new Event("scroll")); });
+  await plotScroll.evaluate((element) => { element.scrollLeft = Math.min(80, element.scrollWidth - element.clientWidth); element.dispatchEvent(new Event("scroll")); });
+  const before = {
+    documentTop: await documentScroll.evaluate((element) => element.scrollTop),
+    plotLeft: await plotScroll.evaluate((element) => element.scrollLeft)
+  };
+
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("region", { name: "Ordered Evidence" })).toBeVisible();
+  const back = page.getByRole("button", { name: "Back investigation" });
+  await expect(back).toBeEnabled();
+  await back.click();
+
+  activity = page.getByRole("main", { name: "Observed Activity" });
+  await expect(activity).toBeVisible();
+  const restoredRanking = activity.getByRole("grid", { name: "Busiest ranking graph" });
+  await expect(restoredRanking).toBeFocused();
+  await expect(restoredRanking.locator(`[data-ranking-identity="${selectedIdentity}"]`)).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => activity.locator(".workbench-react__activity-scroll").evaluate((element) => element.scrollTop)).toBe(before.documentTop);
+  await expect.poll(() => activity.locator(".workbench-react__activity-plot").evaluate((element) => element.scrollLeft)).toBe(before.plotLeft);
+
+  await activity.getByRole("button", { name: "Back to Evidence" }).click();
+  await expect(page.getByRole("button", { name: "Open Activity" })).toBeFocused();
 });
 
 test("Activity keeps compact ranking columns and diagnostics clear of the document", async ({ page }, testInfo) => {
@@ -147,6 +239,7 @@ test("Activity keeps compact ranking columns and diagnostics clear of the docume
   expect(selectionBox).not.toBeNull();
   expect(footerBox).not.toBeNull();
   expect(selectionBox!.y + selectionBox!.height).toBeLessThanOrEqual(footerBox!.y + 1);
+  await attachActivityScreenshot(page, testInfo, "activity-compact-selection-dark");
 
   await openActivity(page, "limited-capture", { width: 900, height: 700 }, "dark");
   const limitedActivity = page.getByRole("main", { name: "Observed Activity" });
@@ -156,6 +249,7 @@ test("Activity keeps compact ranking columns and diagnostics clear of the docume
   const limitedStatusBox = await limitedStatus.boundingBox();
   const limitedSelectionBox = await limitedSelection.boundingBox();
   expect(limitedSelectionBox!.y + limitedSelectionBox!.height).toBeLessThanOrEqual(limitedStatusBox!.y + 1);
+  await attachActivityScreenshot(page, testInfo, "activity-limited-selection-dark");
 
   await openActivity(page, "memory-fallback", { width: 563, height: 700 }, "light");
   const memoryActivity = page.getByRole("main", { name: "Observed Activity" });
@@ -165,6 +259,7 @@ test("Activity keeps compact ranking columns and diagnostics clear of the docume
   const memoryStatusBox = await memoryStatus.boundingBox();
   const memorySelectionBox = await memorySelection.boundingBox();
   expect(memorySelectionBox!.y + memorySelectionBox!.height).toBeLessThanOrEqual(memoryStatusBox!.y + 1);
+  await attachActivityScreenshot(page, testInfo, "activity-memory-selection-light");
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 

@@ -74,7 +74,7 @@ function extractMode(event: LightstreamerEventEnvelope): TypedFacetValue | undef
 }
 
 function extractKind(event: LightstreamerEventEnvelope): TypedFacetValue {
-  return value("kind", "enum", event.kind);
+  return value("kind", "enum", protocolEnum(event.kind), event.kind);
 }
 
 function extractItem(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): TypedFacetValue | undefined {

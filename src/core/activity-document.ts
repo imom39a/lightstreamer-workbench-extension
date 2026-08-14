@@ -54,10 +54,11 @@ export function openActivityDocument(
   return Object.freeze({ open: true, origin: Object.freeze({ ...context }), scope: context.scope, filter: context.filter, readPoint: context.readPoint, view: context.view, projection, selection: null, selectionRange: null, timelineSeries: "SERVER_LOGICAL_UPDATES", localSeries: false, rankingSort: "LOGICAL_UPDATES", documentScrollTop: 0, plotScrollLeft: 0, newerMatchingEvidence: 0 });
 }
 
-function bucketForSelection(projection: ActivityProjection, selection: ActivityDocumentState["selection"]): ActivityProjection["buckets"][number] | null {
+function bucketForSelection(projection: ActivityProjection, selection: ActivityDocumentState["selection"], allowLegacyIndex = false): ActivityProjection["buckets"][number] | null {
   if (!selection || selection.kind !== "bucket") return null;
   const byIdentity = projection.buckets.find((bucket) => bucket.id === selection.id);
   if (byIdentity) return byIdentity;
+  if (!allowLegacyIndex) return null;
   const index = Number(selection.id);
   return Number.isInteger(index) ? projection.buckets[index] ?? null : null;
 }
@@ -77,7 +78,7 @@ export function reconcileActivityDocumentProjection(
     ? projection.buckets.find((bucket) => bucket.start === selectionRange.start && bucket.end === selectionRange.end)
     : null;
   const selection = rebound
-    ? Object.freeze({ ...state.selection, id: String(projection.buckets.indexOf(rebound)) })
+    ? Object.freeze({ ...state.selection, id: rebound.id })
     : state.selection;
   return Object.freeze({ ...state, readPoint, projection, selection, selectionRange });
 }
@@ -108,8 +109,11 @@ export function reduceActivityDocument(state: ActivityDocumentState, command: Ac
   }
   switch (command.type) {
     case "select": {
-      const bucket = bucketForSelection(state.projection, command.selection);
-      return { state: Object.freeze({ ...state, selection: command.selection, selectionRange: bucket ? { start: bucket.start, end: bucket.end } : null }), supportingEvidence: null };
+      const bucket = bucketForSelection(state.projection, command.selection, true);
+      const selection = command.selection?.kind === "bucket" && bucket
+        ? Object.freeze({ ...command.selection, id: bucket.id })
+        : command.selection;
+      return { state: Object.freeze({ ...state, selection, selectionRange: bucket ? { start: bucket.start, end: bucket.end } : null }), supportingEvidence: null };
     }
     case "set-local-series": return { state: Object.freeze({ ...state, localSeries: command.enabled }), supportingEvidence: null };
     case "set-timeline-series": return { state: Object.freeze({ ...state, timelineSeries: command.series }), supportingEvidence: null };

@@ -67,6 +67,7 @@ describe("Activity runtime seam", () => {
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
     expect(runtime.getSnapshot().evidence.investigation.filter.around).toEqual({ intervalId: expect.any(String), start: 1_000, end: 2_001 });
+    expect(runtime.getSnapshot().evidence.investigation.scope.kind).toBe("PAGE");
     runtime.dispose();
   });
 
@@ -221,6 +222,84 @@ describe("Activity runtime seam", () => {
     expect(snapshot.selectionEventId).toBe("event-1");
     expect(snapshot.evidence.focusedEventId).toBe("event-1");
     expect(snapshot.evidence.scrollTop).toBe(84);
+    runtime.dispose();
+  });
+
+  it("reopens supporting Evidence in the exact Activity document state", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
+    const runtime = createWorkbenchRuntime({ history });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    runtime.dispatch({ type: "open-activity" });
+    const activity = runtime.getSnapshot().activity!;
+    const bucketId = activity.projection.buckets[0]!.id;
+    runtime.dispatch({ type: "select-activity", selection: { kind: "bucket", id: bucketId } });
+    runtime.dispatch({ type: "set-activity-timeline-series", series: "SERVER_LIVE" });
+    runtime.dispatch({ type: "set-activity-local-series", enabled: true });
+    runtime.dispatch({ type: "set-activity-ranking-sort", sort: "UPDATE_DELIVERIES" });
+    runtime.dispatch({ type: "set-activity-scroll", documentTop: 84, plotLeft: 19 });
+    runtime.dispatch({ type: "freeze-activity" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    const before = runtime.getSnapshot().activity!.document!;
+    runtime.dispatch({ type: "show-activity-supporting-evidence", start: 1_000, end: 2_001 });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    expect(runtime.getSnapshot().activity?.open).toBe(false);
+
+    runtime.dispatch({ type: "back-investigation" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    const restored = runtime.getSnapshot().activity!;
+    expect(restored.open).toBe(true);
+    expect(restored.readPoint).toEqual(before.readPoint);
+    expect(restored.document).toMatchObject({
+      scope: before.scope,
+      filter: before.filter,
+      readPoint: before.readPoint,
+      view: "FROZEN",
+      selection: before.selection,
+      selectionRange: before.selectionRange,
+      timelineSeries: "SERVER_LIVE",
+      localSeries: true,
+      rankingSort: "UPDATE_DELIVERIES",
+      documentScrollTop: 84,
+      plotScrollLeft: 19
+    });
+    runtime.dispose();
+  });
+
+  it("exposes the Activity navigation cause for panel focus restoration", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
+    const runtime = createWorkbenchRuntime({ history });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    runtime.dispatch({ type: "open-activity" });
+    expect(runtime.getSnapshot().activity?.transition.kind).toBe("opened");
+
+    runtime.dispatch({ type: "close-activity" });
+    expect(runtime.getSnapshot().activity?.transition.kind).toBe("explicit-close");
+
+    runtime.dispatch({ type: "open-activity" });
+    runtime.dispatch({ type: "show-activity-supporting-evidence", start: 1_000, end: 2_001 });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    expect(runtime.getSnapshot().activity?.transition.kind).toBe("supporting-evidence");
+
+    runtime.dispatch({ type: "back-investigation" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    expect(runtime.getSnapshot().activity?.transition.kind).toBe("back");
+    runtime.dispose();
+  });
+
+  it("normalizes a legacy renderer bucket index to the stable Activity bucket identity", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
+    const runtime = createWorkbenchRuntime({ history });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    runtime.dispatch({ type: "open-activity" });
+    const bucket = runtime.getSnapshot().activity!.projection.buckets[0]!;
+    runtime.dispatch({ type: "select-activity", selection: { kind: "bucket", id: "0" } });
+
+    expect(runtime.getSnapshot().activity?.document?.selection).toEqual({ kind: "bucket", id: bucket.id });
     runtime.dispose();
   });
 

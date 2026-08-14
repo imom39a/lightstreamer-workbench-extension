@@ -42,7 +42,38 @@ describe("promoted Activity document seam", () => {
 
     const updated = reconcileActivityDocumentProjection(selected, rebucketed.readPoint, rebucketed);
     expect(updated.selectionRange).toEqual({ start: 1_000, end: 2_000 });
-    expect(updated.selection).toEqual({ kind: "bucket", id: "0" });
+    expect(updated.selection).toEqual({ kind: "bucket", id: initial.buckets[0].id });
+  });
+
+  it("normalizes bucket selection to stable identity while retaining an absolute overlay", () => {
+    const { filter, readPoint } = fixture();
+    const first: ActivityEvidence = { intervalId: "interval-1", sequence: 1, event: { id: "event-1", timestamp: 1_000, direction: "inbound", source: "server", synthetic: false, kind: "item-update", logicalEventId: "logical-1", client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "subscription-1" }, update: {} } };
+    const second = { ...first, sequence: 2, event: { ...first.event, id: "event-2", logicalEventId: "logical-2", timestamp: 2_000 } };
+    const far = { ...first, sequence: 3, event: { ...first.event, id: "event-3", logicalEventId: "logical-3", timestamp: 200_000 } };
+    const initialReadPoint = { ...readPoint, committedEvidenceBoundary: { ...readPoint.committedEvidenceBoundary!, sequence: 2, eventId: "event-2" }, retainedRange: { first: { timestamp: 1_000, sequence: 1 }, last: { timestamp: 2_000, sequence: 2 } } };
+    const initial = rebuildActivityProjection({ evidence: [first, second], scope: { kind: "PAGE" }, filter, readPoint: initialReadPoint });
+    const selected = reduceActivityDocument(openActivityDocument(initial, { scope: { kind: "PAGE" }, filter, readPoint: initialReadPoint, evidenceSelectionId: null, evidenceScrollTop: 0, view: "FOLLOW LIVE", localDraftId: null }), { type: "select", selection: { kind: "bucket", id: "0" } }).state;
+
+    expect(selected.selection).toEqual({ kind: "bucket", id: initial.buckets[0].id });
+    const rebucketed = rebuildActivityProjection({ evidence: [first, second, far], scope: { kind: "PAGE" }, filter, readPoint: { ...readPoint, committedEvidenceBoundary: { ...readPoint.committedEvidenceBoundary!, sequence: 3, eventId: "event-3" }, retainedRange: { first: { timestamp: 1_000, sequence: 1 }, last: { timestamp: 200_000, sequence: 3 } } } });
+    const updated = reconcileActivityDocumentProjection(selected, rebucketed.readPoint, rebucketed);
+
+    expect(updated.selection).toEqual({ kind: "bucket", id: initial.buckets[0].id });
+    expect(updated.selectionRange).toEqual({ start: 1_000, end: 2_000 });
+  });
+
+  it("restores all Activity presentation preferences from a supporting-Evidence return state", () => {
+    const { filter, readPoint, projection } = fixture();
+    const document = openActivityDocument(projection, { scope: { kind: "PAGE" }, filter, readPoint, evidenceSelectionId: "event-1", evidenceFocusId: "event-1", evidenceScrollTop: 42, view: "FOLLOW LIVE", localDraftId: "draft-1" });
+    const configured = reduceActivityDocument(document, { type: "select", selection: { kind: "marker", id: "0" } }).state;
+    const withPreferences = reduceActivityDocument(configured, { type: "set-timeline-series", series: "SERVER_LIVE" }).state;
+    const withLocal = reduceActivityDocument(withPreferences, { type: "set-local-series", enabled: true }).state;
+    const withSort = reduceActivityDocument(withLocal, { type: "set-ranking-sort", sort: "UPDATE_DELIVERIES" }).state;
+    const withScroll = reduceActivityDocument(withSort, { type: "set-scroll", documentTop: 84, plotLeft: 19 }).state;
+    const closed = closeActivityDocument(withScroll);
+
+    expect(closed).toEqual({ scope: { kind: "PAGE" }, filter, readPoint, evidenceSelectionId: "event-1", evidenceFocusId: "event-1", evidenceScrollTop: 42, view: "FOLLOW LIVE", localDraftId: "draft-1" });
+    expect(withScroll).toMatchObject({ selection: { kind: "marker", id: "0" }, timelineSeries: "SERVER_LIVE", localSeries: true, rankingSort: "UPDATE_DELIVERIES", documentScrollTop: 84, plotScrollLeft: 19 });
   });
 
   it("does not invent a private pause and reports newer matching Evidence while frozen", () => {
