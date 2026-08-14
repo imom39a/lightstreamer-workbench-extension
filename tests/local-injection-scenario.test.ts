@@ -81,9 +81,9 @@ describe("Local Injection Scenario", () => {
   it("previews retained Evidence in stable order and adds only confirmed compatible members atomically", () => {
     const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
     const preview = previewScenarioMembership(scenario, [
-      { evidenceId: "evidence-12", retainedSequence: 12, draft: { ...input("draft-12", "UPDATE", 12), sourceEventId: "evidence-12" } },
-      { evidenceId: "evidence-10", retainedSequence: 10, draft: { ...input("draft-10", "UPDATE", 10), sourceEventId: "evidence-10" } },
-      { evidenceId: "evidence-11", retainedSequence: 11, draft: { ...input("draft-11", "UPDATE", 11), sourceEventId: "evidence-11", target: { ...target, sessionId: "other" } } }
+      { evidence: { intervalId: "interval-1", sequence: 12, eventId: "evidence-12" }, draft: { ...input("draft-12", "UPDATE", 12), sourceEventId: "evidence-12" } },
+      { evidence: { intervalId: "interval-1", sequence: 10, eventId: "evidence-10" }, draft: { ...input("draft-10", "UPDATE", 10), sourceEventId: "evidence-10" } },
+      { evidence: { intervalId: "interval-1", sequence: 11, eventId: "evidence-11" }, draft: { ...input("draft-11", "UPDATE", 11), sourceEventId: "evidence-11", target: { ...target, sessionId: "other" } } }
     ]);
 
     expect(preview.members.map(({ evidenceId, available }) => [evidenceId, available])).toEqual([
@@ -149,6 +149,28 @@ describe("Local Injection Scenario", () => {
     const edited = updateScenarioStepDraft(scenario, before.id, { ...before.draft, rawText: "x".repeat(SCENARIO_MAX_ACCOUNTED_BYTES) });
     expect(edited).toMatchObject({ ok: false, capacity: "bytes" });
     expect(scenario.steps[0]).toBe(before);
+  });
+
+  it("refuses duplicate, confirmed multi-add, and Run admission overflow atomically", () => {
+    const sized = (id: string, bytes: number): ScenarioDraftInput => ({ ...input(id, "ADD", 1), rawText: "x".repeat(bytes) });
+    const duplicateBase = createScenarioFromDraft(sized("duplicate", 5 * 1024 * 1024), { scenarioId: "duplicate-capacity" });
+    expect(duplicateScenarioStep(duplicateBase, "step-1")).toMatchObject({ ok: false, capacity: "bytes" });
+    expect(duplicateBase.steps).toHaveLength(1);
+
+    let bulkBase = createScenarioFromDraft(sized("bulk-1", 3 * 1024 * 1024), { scenarioId: "bulk-capacity" });
+    const second = addScenarioStep(bulkBase, sized("bulk-2", 3 * 1024 * 1024));
+    if (!second.ok) throw new Error(second.reason);
+    bulkBase = second.scenario;
+    const preview = previewScenarioMembership(bulkBase, [
+      { evidence: { intervalId: "interval-1", sequence: 3, eventId: "bulk-3" }, draft: sized("bulk-3", 1100 * 1024) },
+      { evidence: { intervalId: "interval-1", sequence: 4, eventId: "bulk-4" }, draft: sized("bulk-4", 1100 * 1024) }
+    ]);
+    expect(confirmScenarioMembershipPreview(bulkBase, preview)).toMatchObject({ ok: false, capacity: "bytes" });
+    expect(bulkBase.steps).toHaveLength(2);
+
+    const runBase = createScenarioFromDraft(sized("run", 4 * 1024 * 1024), { scenarioId: "run-capacity" });
+    expect(reviewScenario(runBase, { runId: "run-overflow", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] }))
+      .toMatchObject({ ok: false, reason: expect.stringContaining("immutable plan") });
   });
 
   it("uses one Run-admission seam for immutable plan and worst-case append-only trace reservation", () => {
@@ -322,6 +344,26 @@ describe("Local Injection Scenario", () => {
       expect.objectContaining({ kind: "not-run", stepId: "step-2", timestamp: 7 })
     ]);
     expect(stopped.trace.every((entry) => !("injectionId" in entry))).toBe(true);
+  });
+
+  it("keeps every actual Trace entry inside its admitted reservation with an explicit detail limitation", async () => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const reviewed = reviewScenario(scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    const run = await stepScenarioRun(reviewed.run, {
+      injectionId: "injection-1",
+      execute: async () => ({
+        kind: "attempted" as const,
+        outcome: { ...outcome("DELIVERED LOCALLY", "delivered"), detail: "external-detail".repeat(10_000) },
+        evidence: { intervalId: "interval-1", sequence: 1, eventId: "local-1" }
+      })
+    });
+    expect(run.trace[0]).toMatchObject({
+      kind: "attempted",
+      outcome: { detail: expect.stringContaining("detail limited") },
+      detailLimited: { originalBytes: expect.any(Number), retainedBytes: expect.any(Number) }
+    });
+    expect(new TextEncoder().encode(JSON.stringify(run.trace[0])).byteLength).toBeLessThanOrEqual(run.traceReservationBytes);
   });
 });
 

@@ -288,6 +288,30 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("refuses an exact bulk preview after Clear invalidates its full Evidence identities", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [
+      commandEvent("journey-1", "client-created"), commandEvent("journey-2", "client-status"),
+      commandEvent("journey-3", "subscription-created"), commandEvent("journey-4", "subscription-started"),
+      commandEvent("journey-5", "listener-added"), commandEvent("source-6", "item-update"),
+      commandEvent("source-7", "item-update", { update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 2 }, changedFields: { qty: 2 } } })
+    ] });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "open-scenario-evidence-picker" });
+    runtime.dispatch({ type: "preview-visible-evidence-for-scenario" });
+    const identity = runtime.getSnapshot().scenario?.membershipPreview?.members.find(({ eventId }) => eventId === "source-7");
+    expect(identity).toMatchObject({ intervalId: expect.any(String), retainedSequence: 7, available: true });
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await flushAsync();
+    runtime.dispatch({ type: "confirm-scenario-membership-preview" });
+    expect(runtime.getSnapshot().scenario?.scenario.steps).toHaveLength(1);
+    expect(runtime.getSnapshot().scenario?.membershipError).toContain("no Steps were added");
+    runtime.dispose();
+  });
+
   it("keys Draft ownership by stable Step identity through author, reorder, duplicate, remove, and Undo", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     await flushAsync();
@@ -326,6 +350,44 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispatch({ type: "set-scenario-step-json", stepId: step.id, text: "x".repeat(8 * 1024 * 1024) });
     expect(runtime.getSnapshot().scenario!.scenario.steps[0]!.draft.rawText).toBe(beforeText);
     expect(runtime.getSnapshot().scenario?.membershipError).toContain("8 MiB");
+    runtime.dispose();
+  });
+
+  it("accounts serialized editor state and refuses undo growth before it crosses capacity", async () => {
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    const before = runtime.getSnapshot().scenario!.scenario;
+    const stepId = before.steps[0]!.id;
+    runtime.dispatch({ type: "set-scenario-step-editor-presentation", stepId, presentation: {
+      cursor: 1, selectionFrom: 1, selectionTo: 1, scrollTop: 0, scrollLeft: 0, compareOpen: false,
+      serializedState: { undo: "x".repeat(8 * 1024 * 1024) }
+    } });
+    const after = runtime.getSnapshot().scenario!.scenario;
+    expect(after.accountedBytes).toBe(before.accountedBytes);
+    expect(after.steps[0]!.draft.editor.serializedState).toEqual(before.steps[0]!.draft.editor.serializedState);
+    expect(runtime.getSnapshot().scenario?.membershipError).toContain("8 MiB");
+    runtime.dispose();
+  });
+
+  it("retains a prior immutable Run and Trace when Edit starts a new revision", async () => {
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", localInjectionExecutor: {
+      execute: vi.fn(async () => result("success", { requestId: "archive-run", attemptedCount: 1, deliveredCount: 1, failedCount: 0 }))
+    } });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "review-scenario" });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    const completed = runtime.getSnapshot().scenario!.run!;
+    expect(completed.trace).toHaveLength(1);
+    runtime.dispatch({ type: "edit-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "edit", run: null, retainedRunBytes: expect.any(Number) });
+    expect(runtime.getSnapshot().scenario!.priorRuns[0]).toBe(completed);
+    expect(runtime.getSnapshot().scenario!.priorRuns[0]!.trace).toEqual(completed.trace);
     runtime.dispose();
   });
 

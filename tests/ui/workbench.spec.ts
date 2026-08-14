@@ -2195,9 +2195,7 @@ test("Scenario authoring confirms explicit membership and keeps only the focused
   await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
   await expect(scenario.getByRole("textbox", { name: "Step 2 Local Injection JSON" })).toBeVisible();
 
-  const ordered = scenario.getByLabel("Ordered Scenario Steps");
-  await ordered.focus();
-  await page.keyboard.press("ArrowUp");
+  await scenario.getByRole("button", { name: "Step 1", exact: true }).click();
   await expect(scenario.getByRole("textbox", { name: "Step 1 Local Injection JSON" })).toBeVisible();
   await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
 
@@ -2214,7 +2212,7 @@ test("Scenario authoring confirms explicit membership and keeps only the focused
   await scenario.getByRole("button", { name: "Add captured update" }).click();
   const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
   await picker.getByRole("button", { name: "Preview visible set" }).click();
-  await expect(picker).toContainText("retained sequence");
+  await expect(picker).toContainText(/retained .* sequence/);
   await expect(picker).toContainText("Already an explicit Scenario Step");
   await expect(picker).toContainText("Will add after confirmation");
   await picker.getByRole("button", { name: "Confirm compatible Steps" }).click();
@@ -2233,7 +2231,6 @@ test("Scenario authoring confirms explicit membership and keeps only the focused
 test("Scenario high-volume document mounts one of 100 representative large editors and keeps keyboard reorder usable", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-scenario-high-volume", { width: 563, height: 700 }, "light");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-  const ordered = scenario.getByLabel("Ordered Scenario Steps");
   await expect(scenario.getByRole("article")).toHaveCount(100);
   await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
   await expect(scenario.getByText("Collapsed Draft · BLOCKED", { exact: false })).toHaveCount(99);
@@ -2241,10 +2238,33 @@ test("Scenario high-volume document mounts one of 100 representative large edito
   await scenario.getByRole("button", { name: "Add authored update" }).click();
   await expect(scenario.getByRole("alert")).toContainText("at most 100 Steps");
   await expect(scenario.getByRole("article")).toHaveCount(100);
-  await ordered.focus();
-  await page.keyboard.press("ArrowUp");
+  const step100Editor = scenario.getByRole("textbox", { name: "Step 100 Local Injection JSON" });
+  await step100Editor.focus();
+  await page.keyboard.press("ControlOrMeta+Home");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Shift+ArrowRight");
+  const step100Host = step100Editor.locator('xpath=ancestor::*[@data-editor-engine="codemirror-6"]');
+  await step100Host.locator(".cm-scroller").evaluate((scroller) => {
+    scroller.scrollTop = 500;
+    scroller.dispatchEvent(new Event("scroll"));
+  });
+  const beforePresentation = await step100Host.evaluate((host) => ({
+    anchor: host.getAttribute("data-selection-anchor"), head: host.getAttribute("data-selection-head"), scrollTop: host.getAttribute("data-scroll-top")
+  }));
+  await scenario.getByRole("button", { name: "Step 99", exact: true }).click();
   await expect(scenario.getByRole("textbox", { name: "Step 99 Local Injection JSON" })).toBeVisible();
-  await scenario.getByLabel("Step 99 actions").getByRole("button", { name: "Move later" }).click();
+  await scenario.getByRole("button", { name: "Step 100", exact: true }).click();
+  await expect(step100Editor).toBeVisible();
+  await expect.poll(() => step100Host.evaluate((host) => ({
+    anchor: host.getAttribute("data-selection-anchor"), head: host.getAttribute("data-selection-head"), scrollTop: host.getAttribute("data-scroll-top")
+  }))).toEqual(beforePresentation);
+  const heapBytes = await page.evaluate(() => (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0);
+  expect(heapBytes).toBeGreaterThan(0);
+  expect(heapBytes).toBeLessThan(256 * 1024 * 1024);
+  await scenario.getByRole("button", { name: "Step 99", exact: true }).click();
+  const moveLater = scenario.getByLabel("Step 99 actions").getByRole("button", { name: "Move later" });
+  await moveLater.focus();
+  await page.keyboard.press("Enter");
   await expect(scenario.getByRole("article").last()).toContainText("step-99");
   await expectShellFitsExactly(page);
   await expectShellFits(page);

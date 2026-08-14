@@ -81,8 +81,7 @@ export type ScenarioCapacityRefusal = Readonly<{
 type ScenarioMutation = Readonly<{ ok: true; scenario: LocalInjectionScenario }> | ScenarioCapacityRefusal | Readonly<{ ok: false; reason: string }>;
 
 export type ScenarioMembershipCandidate = Readonly<{
-  evidenceId: string;
-  retainedSequence: number;
+  evidence: EvidenceRef;
   draft: ScenarioDraftInput | null;
   unavailableReason?: string;
 }>;
@@ -92,6 +91,7 @@ export type ScenarioMembershipPreview = Readonly<{
   scenarioRevision: number;
   members: readonly Readonly<{
     evidenceId: string;
+    evidence: EvidenceRef;
     retainedSequence: number;
     available: boolean;
     reason: string | null;
@@ -116,6 +116,7 @@ export type ScenarioTraceEntry = Readonly<{
   injectionId: string;
   outcome: LocalInjectionOutcome;
   evidence: EvidenceRef | null;
+  detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
 }> | Readonly<{
   stepId: string;
   ordinal: number;
@@ -124,6 +125,7 @@ export type ScenarioTraceEntry = Readonly<{
   timestamp: number;
   detail: string;
   evidence: null;
+  detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
 }>;
 
 export type ScenarioRun = Readonly<{
@@ -182,12 +184,13 @@ export function previewScenarioMembership(
   return freeze({
     scenarioId: scenario.id,
     scenarioRevision: scenario.revision,
-    members: [...candidates].sort((left, right) => left.retainedSequence - right.retainedSequence).map((candidate) => {
+    members: [...candidates].sort((left, right) => left.evidence.sequence - right.evidence.sequence).map((candidate) => {
       const reason = candidate.unavailableReason
         ?? (candidate.draft ? scenarioTargetIncompatibility(scenario.target, candidate.draft.target) : "Captured Item Update is unavailable for Scenario authoring.");
       return {
-        evidenceId: candidate.evidenceId,
-        retainedSequence: candidate.retainedSequence,
+        evidenceId: candidate.evidence.eventId,
+        evidence: candidate.evidence,
+        retainedSequence: candidate.evidence.sequence,
         available: reason === null || reason === undefined,
         reason: reason ?? null,
         draft: candidate.draft
@@ -264,6 +267,20 @@ export function updateScenarioStepDraft(scenario: LocalInjectionScenario, stepId
   });
 }
 
+export function updateScenarioStepPresentation(
+  scenario: LocalInjectionScenario,
+  stepId: string,
+  editor: ScenarioEditorState
+): ScenarioMutation {
+  const index = scenario.steps.findIndex(({ id }) => id === stepId);
+  if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
+  return commitScenarioMutation(scenario, {
+    steps: scenario.steps.map((step, stepIndex) => stepIndex === index
+      ? { ...step, draft: { ...step.draft, editor } }
+      : step)
+  }, false);
+}
+
 export function reviewScenario(
   scenario: LocalInjectionScenario,
   facts: Readonly<{
@@ -271,6 +288,7 @@ export function reviewScenario(
     committedEvidenceSeed: EvidenceRef | null;
     targetFingerprint: string;
     activeCommandKeysByItem: readonly Readonly<{ item: ScenarioDraftInput["item"]; keys: readonly string[] }>[];
+    retainedRunBytes?: number;
   }>
 ): Readonly<{ ok: true; run: ScenarioRun }> | Readonly<{ ok: false; reason: string; stepId?: string }> {
   if (scenario.steps.length === 0) return Object.freeze({ ok: false as const, reason: "Add at least one Scenario Step before Review." });
@@ -323,7 +341,7 @@ export function reviewScenario(
       accountedBytes: 0,
       traceReservationBytes: 0
   });
-  const admission = scenarioRunAdmission(scenario, candidate);
+  const admission = scenarioRunAdmission(scenario, candidate, facts.retainedRunBytes ?? 0);
   if (!admission.ok) return Object.freeze({ ok: false as const, reason: admission.reason });
   return Object.freeze({
     ok: true as const,
@@ -333,12 +351,13 @@ export function reviewScenario(
 
 export function scenarioRunAdmission(
   scenario: LocalInjectionScenario,
-  run: ScenarioRun
+  run: ScenarioRun,
+  retainedRunBytes = 0
 ): Readonly<{ ok: true; accountedBytes: number; traceReservationBytes: number; stepCount: number }>
   | Readonly<{ ok: false; capacity: "bytes"; reason: string }> {
   const traceReservationBytes = run.steps.reduce((bytes, member) => bytes + scenarioMemberTraceReservationBytes(member), 0);
   const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, trace: _trace, ...immutablePlan } = run;
-  const accountedBytes = scenario.accountedBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes;
+  const accountedBytes = scenario.accountedBytes + retainedRunBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes;
   if (accountedBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
     return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario Run would exceed 8 MiB after reserving its immutable plan and append-only Trace; no Run was created." });
   }
@@ -392,7 +411,7 @@ export async function stepScenarioRun<T extends Readonly<{
   if (terminal.kind === "not-run") return freeze({
     ...run,
     status: "stopped" as const,
-    trace: [...run.trace, ...run.steps.slice(run.nextOrdinal - 1).map((remaining) => ({
+    trace: [...run.trace, ...run.steps.slice(run.nextOrdinal - 1).map((remaining) => fitScenarioTraceEntry({
       stepId: remaining.id,
       ordinal: remaining.ordinal,
       kind: "not-run" as const,
@@ -402,17 +421,17 @@ export async function stepScenarioRun<T extends Readonly<{
       evidence: null
     }))]
   });
-  const trace: ScenarioTraceEntry = {
+  const trace = fitScenarioTraceEntry({
     stepId: step.id,
     ordinal: step.ordinal,
     kind: "attempted",
     injectionId: adapter.injectionId,
     outcome: terminal.outcome,
     evidence: terminal.evidence
-  };
+  });
   const nextOrdinal = run.nextOrdinal + 1;
   const delivered = terminal.outcome.disposition === "delivered" && terminal.evidence !== null;
-  const stoppedRemainder: ScenarioTraceEntry[] = delivered ? [] : run.steps.slice(run.nextOrdinal).map((remaining) => ({
+  const stoppedRemainder: ScenarioTraceEntry[] = delivered ? [] : run.steps.slice(run.nextOrdinal).map((remaining) => fitScenarioTraceEntry({
     stepId: remaining.id,
     ordinal: remaining.ordinal,
     kind: "not-run" as const,
@@ -448,7 +467,8 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 
 function commitScenarioMutation(
   scenario: LocalInjectionScenario,
-  change: Partial<Pick<LocalInjectionScenario, "steps" | "nextStepSequence" | "removedSteps">>
+  change: Partial<Pick<LocalInjectionScenario, "steps" | "nextStepSequence" | "removedSteps">>,
+  advanceRevision = true
 ): ScenarioMutation {
   const steps = change.steps ?? scenario.steps;
   if (steps.length > SCENARIO_MAX_STEPS) {
@@ -458,7 +478,7 @@ function commitScenarioMutation(
     ...scenario,
     ...change,
     steps,
-    revision: scenario.revision + 1,
+    revision: scenario.revision + (advanceRevision ? 1 : 0),
     accountedBytes: 0
   };
   const accountedBytes = scenarioDefinitionBytes(candidate);
@@ -474,7 +494,49 @@ function scenarioDefinitionBytes(scenario: Omit<LocalInjectionScenario, "account
 }
 
 function canonicalBytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  return new TextEncoder().encode(JSON.stringify(canonicalize(value))).byteLength;
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, canonicalize((value as Record<string, unknown>)[key])]));
+  }
+  return value;
+}
+
+function fitScenarioTraceEntry(entry: ScenarioTraceEntry): ScenarioTraceEntry {
+  if (canonicalBytes(entry) <= SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER) return freeze(entry);
+  const original = entry.kind === "attempted" ? entry.outcome.detail : entry.detail;
+  const originalBytes = canonicalBytes(original);
+  const retained = limitUtf8Text(original, 4 * 1024);
+  const limited = entry.kind === "attempted"
+    ? {
+        ...entry,
+        outcome: { ...entry.outcome, detail: `${retained}\n[Scenario Trace detail limited from ${originalBytes} canonical bytes.]` },
+        detailLimited: { originalBytes, retainedBytes: canonicalBytes(retained) }
+      }
+    : {
+        ...entry,
+        detail: `${retained}\n[Scenario Trace detail limited from ${originalBytes} canonical bytes.]`,
+        detailLimited: { originalBytes, retainedBytes: canonicalBytes(retained) }
+      };
+  if (canonicalBytes(limited) > SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER) {
+    throw new RangeError("Scenario Trace identity fields exceed the admitted per-member reservation.");
+  }
+  return freeze(limited);
+}
+
+function limitUtf8Text(value: string, byteLimit: number): string {
+  if (new TextEncoder().encode(value).byteLength <= byteLimit) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (new TextEncoder().encode(value.slice(0, middle)).byteLength <= byteLimit) low = middle;
+    else high = middle - 1;
+  }
+  return value.slice(0, low);
 }
 
 function cloneScenarioDraft(draft: ScenarioDraftInput, id: string): ScenarioDraftInput {

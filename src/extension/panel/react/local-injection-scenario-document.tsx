@@ -55,7 +55,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
         const preview = state.membershipPreview?.members.find(({ eventId }) => eventId === event.id);
         const compatible = membership?.available ?? false;
         const reasonId = `scenario-membership-${event.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-        return <li key={event.id}><div><strong>{event.id}</strong><span>{event.object} · {event.command ?? event.kind}{preview ? ` · retained sequence ${preview.retainedSequence}` : ""}</span>{preview ? <small>{preview.available ? "Will add after confirmation" : `Unavailable · ${preview.reason}`}</small> : !compatible ? <small id={reasonId}>Unavailable · {membership?.reason ?? "compatibility could not be proven."}</small> : null}</div><button type="button" disabled={!compatible} aria-describedby={!compatible ? reasonId : undefined} onClick={() => {
+        return <li key={event.id}><div><strong>{event.id}</strong><span>{event.object} · {event.command ?? event.kind}{preview ? ` · retained ${preview.intervalId} sequence ${preview.retainedSequence}` : ""}</span>{preview ? <small>{preview.available ? "Will add after confirmation" : `Unavailable · ${preview.reason}`}</small> : !compatible ? <small id={reasonId}>Unavailable · {membership?.reason ?? "compatibility could not be proven."}</small> : null}</div><button type="button" disabled={!compatible} aria-describedby={!compatible ? reasonId : undefined} onClick={() => {
           runtime.dispatch({ type: "select-evidence", eventId: event.id });
           runtime.dispatch({ type: "add-selected-evidence-to-scenario" });
         }}>Add this update</button></li>;
@@ -63,15 +63,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       {snapshot.evidence.events.length === 0 ? <p>No retained Evidence is available to add.</p> : null}
       <button type="button" onClick={() => runtime.dispatch({ type: "close-scenario-evidence-picker" })}>Cancel</button>
     </section> : null}
-    <div className="workbench-react__scenario-steps" aria-label="Ordered Scenario Steps" tabIndex={0} onKeyDown={(event) => {
-      if (state.phase !== "edit" || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
-      const index = state.scenario.steps.findIndex(({ id }) => id === state.focusedStepId);
-      const nextIndex = Math.max(0, Math.min(state.scenario.steps.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
-      const step = state.scenario.steps[nextIndex];
-      if (!step || nextIndex === index) return;
-      event.preventDefault();
-      runtime.dispatch({ type: "focus-scenario-step", stepId: step.id });
-    }}>
+    <div className="workbench-react__scenario-steps" aria-label="Ordered Scenario Steps">
       {state.scenario.steps.map((step, index) => {
         const trace = run?.trace.find((entry) => entry.stepId === step.id);
         const focused = state.focusedStepId === step.id;

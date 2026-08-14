@@ -150,6 +150,7 @@ import {
   scenarioTargetIncompatibility,
   undoScenarioStepRemoval,
   updateScenarioStepDraft,
+  updateScenarioStepPresentation,
   type LocalInjectionScenario,
   type ScenarioDraftInput,
   type ScenarioEditorState,
@@ -479,10 +480,12 @@ export type WorkbenchScenarioSnapshot = Readonly<{
   membership: readonly Readonly<{ eventId: string; available: boolean; reason: string | null }>[];
   membershipPreview: Readonly<{
     scenarioRevision: number;
-    members: readonly Readonly<{ eventId: string; retainedSequence: number; available: boolean; reason: string | null }>[];
+    members: readonly Readonly<{ eventId: string; intervalId: string; retainedSequence: number; available: boolean; reason: string | null }>[];
   }> | null;
   focusedStepId: string;
   canUndoRemoval: boolean;
+  priorRuns: readonly ScenarioRun[];
+  retainedRunBytes: number;
 }> | null;
 
 /** The immutable, renderer-neutral investigation state for one panel session. */
@@ -787,7 +790,9 @@ type ScenarioState = {
   pickerOpen: boolean;
   membershipPreview: ScenarioMembershipPreview | null;
   focusedStepId: string;
-  removedDrafts: readonly Readonly<{ stepId: string; draft: LocalInjectionDraftState }>[];
+  removedDrafts: Map<string, LocalInjectionDraftState>;
+  priorRuns: ScenarioRun[];
+  retainedRunBytes: number;
 };
 
 type InvestigationCheckpoint = Readonly<{
@@ -1623,6 +1628,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "edit-scenario":
         if (!this.scenarioState || this.scenarioState.phase === "running") return;
+        this.archiveCurrentScenarioRun(this.scenarioState);
         this.scenarioState.phase = "edit";
         this.scenarioState.run = null;
         this.scenarioState.reviews.clear();
@@ -3373,7 +3379,9 @@ class Runtime implements WorkbenchRuntime {
       pickerOpen: false,
       membershipPreview: null,
       focusedStepId: scenario.steps[0]!.id,
-      removedDrafts: []
+      removedDrafts: new Map(),
+      priorRuns: [],
+      retainedRunBytes: 0
     };
     draft.open = false;
     draft.parked = false;
@@ -3412,23 +3420,25 @@ class Runtime implements WorkbenchRuntime {
     const existing = new Set(state.scenario.steps.map(({ draft }) => draft.sourceEventId).filter(Boolean));
     const candidates = displayed.events.map((event, index) => {
       const record = displayed.records[index];
+      const evidence = Object.freeze({
+        intervalId: record?.identity.intervalId ?? "unavailable",
+        sequence: record?.identity.sequence ?? index,
+        eventId: event.id
+      });
       if (existing.has(event.id)) return {
-        evidenceId: event.id,
-        retainedSequence: record?.identity.sequence ?? index,
+        evidence,
         draft: null,
         unavailableReason: "Already an explicit Scenario Step."
       };
       const availability = this.scenarioMembershipAvailability(event);
       if (!availability.available) return {
-        evidenceId: event.id,
-        retainedSequence: record?.identity.sequence ?? index,
+        evidence,
         draft: null,
         unavailableReason: availability.reason ?? "Compatibility could not be proven."
       };
       const candidate = this.createLocalInjectionCandidate({ kind: "selected-event", eventId: event.id });
       return {
-        evidenceId: event.id,
-        retainedSequence: record?.identity.sequence ?? index,
+        evidence,
         draft: candidate ? this.scenarioDraftInput(candidate) : null,
         ...(candidate ? {} : { unavailableReason: this.localInjectionEntryError ?? "Captured Item Update is unavailable for Scenario authoring." })
       };
@@ -3446,8 +3456,22 @@ class Runtime implements WorkbenchRuntime {
     const candidates = new Map<string, LocalInjectionDraftState>();
     for (const member of preview.members) {
       if (!member.available) continue;
+      const displayed = this.displayedEvidence();
+      const index = displayed.events.findIndex(({ id }) => id === member.evidence.eventId);
+      const identity = displayed.records[index]?.identity;
+      if (!identity || identity.intervalId !== member.evidence.intervalId || identity.sequence !== member.evidence.sequence || identity.eventId !== member.evidence.eventId) {
+        state.membershipError = `Evidence ${member.evidence.eventId} is no longer retained at ${member.evidence.intervalId} sequence ${member.evidence.sequence}. Preview membership again; no Steps were added.`;
+        state.membershipPreview = null;
+        this.publish();
+        return;
+      }
       const candidate = this.createLocalInjectionCandidate({ kind: "selected-event", eventId: member.evidenceId });
-      if (candidate) candidates.set(member.evidenceId, candidate);
+      if (!candidate) {
+        state.membershipError = this.localInjectionEntryError ?? `Evidence ${member.evidenceId} is no longer available; no Steps were added.`;
+        this.publish();
+        return;
+      }
+      candidates.set(member.evidenceId, candidate);
     }
     const result = confirmScenarioMembershipPreview(state.scenario, preview);
     if (!result.ok) {
@@ -3534,7 +3558,7 @@ class Runtime implements WorkbenchRuntime {
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     state.scenario = result.scenario;
     state.drafts.delete(stepId);
-    state.removedDrafts = [...state.removedDrafts, { stepId, draft }];
+    state.removedDrafts.set(stepId, draft);
     state.focusedStepId = result.scenario.steps[Math.min(index, result.scenario.steps.length - 1)]!.id;
     state.membershipError = null;
     this.publish();
@@ -3542,15 +3566,15 @@ class Runtime implements WorkbenchRuntime {
 
   private undoCurrentScenarioStepRemoval(): void {
     const state = this.scenarioState;
-    const removed = state?.removedDrafts.at(-1);
-    if (!state || state.phase !== "edit" || !removed) return;
+    const removedStep = state?.scenario.removedSteps.at(-1)?.step;
+    const removed = removedStep ? state?.removedDrafts.get(removedStep.id) : null;
+    if (!state || state.phase !== "edit" || !removedStep || !removed) return;
     const result = undoScenarioStepRemoval(state.scenario);
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
-    const index = result.scenario.steps.findIndex(({ id }) => id === removed.stepId);
     state.scenario = result.scenario;
-    state.drafts.set(removed.stepId, removed.draft);
-    state.removedDrafts = state.removedDrafts.slice(0, -1);
-    state.focusedStepId = removed.stepId;
+    state.drafts.set(removedStep.id, removed);
+    state.removedDrafts.delete(removedStep.id);
+    state.focusedStepId = removedStep.id;
     state.membershipError = null;
     this.publish();
   }
@@ -3580,7 +3604,8 @@ class Runtime implements WorkbenchRuntime {
       activeCommandKeysByItem: state.scenario.steps.map(({ id }) => state.drafts.get(id)!).map((draft) => ({
         item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
         keys: this.activeCommandKeys(draft.anchor)
-      }))
+      })),
+      retainedRunBytes: state.retainedRunBytes
     });
     if (!reviewed.ok) {
       state.membershipError = `${reviewed.stepId ? `${reviewed.stepId}: ` : ""}${reviewed.reason}`;
@@ -3620,6 +3645,13 @@ class Runtime implements WorkbenchRuntime {
     state.phase = "review";
     state.membershipError = null;
     this.publish();
+  }
+
+  private archiveCurrentScenarioRun(state: ScenarioState): void {
+    const run = state.run;
+    if (!run) return;
+    state.priorRuns.push(run);
+    state.retainedRunBytes = Math.max(state.retainedRunBytes, run.accountedBytes - state.scenario.accountedBytes);
   }
 
   private stepNextScenario(): void {
@@ -3693,17 +3725,15 @@ class Runtime implements WorkbenchRuntime {
   private setScenarioStepCompare(stepId: string, open: boolean): void {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
-    const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
     const draft = state.drafts.get(stepId);
     if (!draft || (open && draft.sourceRawText === null)) return;
+    const presentation = Object.freeze({ ...draft.editorPresentation, compareOpen: open });
+    const result = updateScenarioStepPresentation(state.scenario, stepId, presentation);
+    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     draft.compareOpen = open;
-    draft.editorPresentation = Object.freeze({ ...draft.editorPresentation, compareOpen: open });
-    state.scenario = Object.freeze({
-      ...state.scenario,
-      revision: state.scenario.revision + 1,
-      steps: Object.freeze(state.scenario.steps.map((step, stepIndex) =>
-        stepIndex === index ? Object.freeze({ ...step, draft: this.scenarioDraftInput(draft) }) : step))
-    });
+    draft.editorPresentation = presentation;
+    state.scenario = result.scenario;
+    state.membershipError = null;
     this.publish();
   }
 
@@ -3715,12 +3745,11 @@ class Runtime implements WorkbenchRuntime {
     if (!draft) return;
     const next = Object.freeze({ ...presentation, compareOpen: draft.compareOpen });
     if (sameScenarioEditorState(draft.editorPresentation, next)) return;
+    const result = updateScenarioStepPresentation(state.scenario, stepId, next);
+    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     draft.editorPresentation = next;
-    state.scenario = Object.freeze({
-      ...state.scenario,
-      steps: Object.freeze(state.scenario.steps.map((step, stepIndex) =>
-        stepIndex === index ? Object.freeze({ ...step, draft: this.scenarioDraftInput(draft) }) : step))
-    });
+    state.scenario = result.scenario;
+    state.membershipError = null;
     this.publish();
   }
 
@@ -4328,6 +4357,7 @@ class Runtime implements WorkbenchRuntime {
                   scenarioRevision: this.scenarioState.membershipPreview.scenarioRevision,
                   members: Object.freeze(this.scenarioState.membershipPreview.members.map((member) => Object.freeze({
                     eventId: member.evidenceId,
+                    intervalId: member.evidence.intervalId,
                     retainedSequence: member.retainedSequence,
                     available: member.available,
                     reason: member.reason
@@ -4335,7 +4365,9 @@ class Runtime implements WorkbenchRuntime {
                 })
               : null,
             focusedStepId: this.scenarioState.focusedStepId,
-            canUndoRemoval: this.scenarioState.removedDrafts.length > 0
+            canUndoRemoval: this.scenarioState.scenario.removedSteps.length > 0,
+            priorRuns: Object.freeze([...this.scenarioState.priorRuns]),
+            retainedRunBytes: this.scenarioState.retainedRunBytes
           })
         : null,
       evidence: Object.freeze({
