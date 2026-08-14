@@ -144,12 +144,12 @@ export function reviewScenario(
     const step = scenario.steps[index]!;
     const keys = keysByItem.get(itemKey(step.draft.item)) ?? new Set<string>();
     keysByItem.set(itemKey(step.draft.item), keys);
-    const plannedUpdateBecomesValid = step.draft.document?.command === "UPDATE"
+    const plannedCommandBecomesValid = (step.draft.document?.command === "UPDATE" || step.draft.document?.command === "DELETE")
       && typeof step.draft.document.key === "string"
       && keys.has(step.draft.document.key)
       && step.draft.diagnostics.length > 0
-      && step.draft.diagnostics.every(({ code }) => code === "unknown-key-update");
-    if ((!step.draft.ready && !plannedUpdateBecomesValid) || !step.draft.document) {
+      && step.draft.diagnostics.every(({ code }) => code === `unknown-key-${step.draft.document?.command?.toLowerCase()}`);
+    if ((!step.draft.ready && !plannedCommandBecomesValid) || !step.draft.document) {
       return Object.freeze({ ok: false as const, reason: step.draft.diagnostics[0]?.message ?? "Step is not ready for Review.", stepId: step.id });
     }
     const { command, key } = step.draft.document;

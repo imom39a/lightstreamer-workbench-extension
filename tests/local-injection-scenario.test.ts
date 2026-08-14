@@ -19,7 +19,7 @@ const target = Object.freeze({
   schemaFields: Object.freeze(["command", "key", "qty"])
 });
 
-function input(id: string, command: "ADD" | "UPDATE", qty: number): ScenarioDraftInput {
+function input(id: string, command: "ADD" | "UPDATE" | "DELETE", qty: number): ScenarioDraftInput {
   return {
     id,
     sourceEventId: `source-${id}`,
@@ -123,6 +123,22 @@ describe("Local Injection Scenario", () => {
       targetFingerprint: "fp",
       activeCommandKeysByItem: []
     })).toMatchObject({ ok: false, stepId: "step-2", reason: "Unknown key on this item." });
+  });
+
+  it("validates planned ADD then DELETE only for the same item", () => {
+    const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const plannedDelete = {
+      ...input("draft-2", "DELETE", 0),
+      ready: false,
+      diagnostics: [{ category: "semantic" as const, severity: "error" as const, code: "unknown-key-delete", message: "Unknown key." }]
+    };
+    const sameItem = addScenarioStep(first, plannedDelete);
+    if (!sameItem.ok) throw new Error(sameItem.reason);
+    expect(reviewScenario(sameItem.scenario, { runId: "same-item-delete", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] })).toMatchObject({ ok: true });
+
+    const crossItem = addScenarioStep(first, { ...plannedDelete, item: { name: "other-orders", position: 2 } });
+    if (!crossItem.ok) throw new Error(crossItem.reason);
+    expect(reviewScenario(crossItem.scenario, { runId: "cross-item-delete", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] })).toMatchObject({ ok: false, stepId: "step-2" });
   });
 
   it("dispatches one Step, waits for Evidence settlement, then pauses with a correlated trace", async () => {
