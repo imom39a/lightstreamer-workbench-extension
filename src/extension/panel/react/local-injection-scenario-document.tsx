@@ -67,7 +67,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       <div><span className="workbench-react__eyebrow">Temporary promoted document</span><h1 tabIndex={-1} ref={heading}>Local Injection Scenario</h1><span>{state.scenario.id} · revision {state.scenario.revision}</span></div>
       <strong>{(state.runner?.phase ?? state.phase).toUpperCase()}</strong>
     </header>
-    <dl className="workbench-react__local-boundary">
+    <dl className="workbench-react__local-boundary" aria-label="Protected Scenario target and execution boundary" tabIndex={state.phase === "stopped" ? 0 : undefined}>
       <div><dt>Target</dt><dd>{state.scenario.target.subscriptionId} · Session {state.scenario.target.sessionId ?? "Unknown"}</dd></div>
       <div><dt>Delivery</dt><dd>{state.scenario.target.deliveryPath.toUpperCase()} · exact shared Subscription target</dd></div>
       <div><dt>Boundary</dt><dd>LOCAL ONLY · one ordinary Local Injection per Step · Lightstreamer Server is not contacted</dd></div>

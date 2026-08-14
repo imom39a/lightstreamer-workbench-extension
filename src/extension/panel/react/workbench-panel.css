@@ -371,7 +371,9 @@
 .workbench-react__scenario .workbench-react__local-footer button:last-child { border-color: var(--wb-border-strong); }
 .workbench-react__scenario .workbench-react__local-footer .workbench-react__primary { border-color: var(--wb-info); background: var(--wb-info-soft); }
 @media (max-height: 420px) {
-  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary { display: none; }
+  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary { display: flex; flex: 0 0 44px; overflow-x: auto; overflow-y: hidden; }
+  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary > div { min-width: max-content; flex: 0 0 auto; padding: 2px 7px; }
+  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary dd { margin-top: 1px; white-space: nowrap; }
   .workbench-react__scenario[data-phase="stopped"] .workbench-react__scenario-steps { gap: 4px; padding: 5px 9px; }
   .workbench-react__scenario[data-phase="stopped"] .workbench-react__scenario-steps article { gap: 3px; padding: 4px 8px; }
 }
