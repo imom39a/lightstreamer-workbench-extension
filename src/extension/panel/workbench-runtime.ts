@@ -110,6 +110,13 @@ import {
   type StorageHeadroomSampler,
   type StorageEstimateThreshold
 } from "./storage-headroom";
+import {
+  createActivityProjection,
+  type ActivityEvidence,
+  type ActivityProjection,
+  type ActivityScope,
+  type ActivityReadPoint
+} from "../../core/activity-projection";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 export const DEFAULT_EVIDENCE_OUTPUT_BYTE_LIMIT = 32 * 1024 * 1024;
@@ -348,6 +355,14 @@ export type WorkbenchEvidenceCopySnapshot = Readonly<{
   progress?: WorkbenchEvidenceOperationProgress;
 }>;
 
+export type WorkbenchActivitySnapshot = Readonly<{
+  open: boolean;
+  projection: ActivityProjection;
+  scope: ActivityScope;
+  filter: Filter;
+  readPoint: ActivityReadPoint;
+}>;
+
 export type LocalInjectionExecutionResult = Readonly<{
   requestId: string;
   ok: boolean;
@@ -488,6 +503,7 @@ export type WorkbenchSnapshot = Readonly<{
   retention: WorkbenchRetentionSnapshot;
   export: WorkbenchExportSnapshot;
   evidenceCopy: WorkbenchEvidenceCopySnapshot;
+  activity?: WorkbenchActivitySnapshot;
   localInjection: WorkbenchLocalInjectionSnapshot;
   evidence: WorkbenchEvidenceSnapshot;
 }>;
@@ -551,6 +567,9 @@ export type WorkbenchCommand =
   | { type: "export-scope" }
   | { type: "open-actions" }
   | { type: "close-actions" }
+  | { type: "open-activity" }
+  | { type: "close-activity" }
+  | { type: "show-activity-supporting-evidence"; start: number; end: number }
   | { type: "freeze-evidence" }
   | { type: "follow-live" }
   | { type: "back-investigation" }
@@ -754,6 +773,8 @@ class Runtime implements WorkbenchRuntime {
   private commandStateProjections: CommandStateProjections = createCommandStateProjections();
   private readonly retainedLocalEvidenceIds = new Set<string>();
   private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
+  private readonly activityEvidence: ActivityEvidence[] = [];
+  private activityOpen = false;
   private topologyProjection: TopologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
@@ -1482,6 +1503,24 @@ class Runtime implements WorkbenchRuntime {
         this.actionsReturnContextId = null;
         this.publish();
         return;
+      case "open-activity":
+        this.activityOpen = true;
+        this.publish();
+        return;
+      case "close-activity":
+        this.activityOpen = false;
+        this.publish();
+        return;
+      case "show-activity-supporting-evidence": {
+        const result = applyFilterMutations(this.canonicalFilter, this.canonicalFilter.revision, [{ type: "set-around", around: { intervalId: this.historyStatus.interval.id, start: command.start, end: command.end } }]);
+        if (result.ok) {
+          this.canonicalFilter = result.filter;
+          this.activityOpen = false;
+          this.recordInvestigationCheckpoint();
+          this.refreshEvidence("filter");
+        }
+        return;
+      }
       case "freeze-evidence":
         this.mode = "frozen";
         this.restorationReadPoint = null;
@@ -1784,6 +1823,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private resetCoherentStateAfterClear(): void {
+    this.activityEvidence.splice(0, this.activityEvidence.length);
     this.queryGeneration += 1;
     this.evidenceQueryAbortController?.abort();
     this.evidenceQueryAbortController = null;
@@ -2005,6 +2045,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     const event = entry.candidate;
+    this.activityEvidence.push(Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, event }));
     // The canonical page projection is intentionally payload-light. Retain
     // the already-observed immutable envelope as a presentation cache so
     // fields that are legitimately unavailable to the facet catalog (for
@@ -3480,6 +3521,7 @@ class Runtime implements WorkbenchRuntime {
       retention: this.retentionSnapshot(),
       export: this.exportSnapshot(),
       evidenceCopy: this.evidenceCopy,
+      activity: this.activitySnapshot(scope),
       localInjection: this.localInjectionSnapshot(),
       evidence: Object.freeze({
         events: Object.freeze(evidence.events.map((event) => this.presentEvidence(event))),
@@ -3775,6 +3817,32 @@ class Runtime implements WorkbenchRuntime {
       historyStatus: this.historyStatus,
       clearState: this.clearState,
       ...(this.clearError ? { clearError: this.clearError } : {})
+    });
+  }
+
+  private activitySnapshot(scope: WorkbenchSnapshot["scope"]): WorkbenchActivitySnapshot {
+    const target = findTopologySelection(this.topologyProjection.snapshot(), this.scopeId ?? "page");
+    const activityScope = activityScopeFor(target);
+    const entries = this.activityEvidence.filter((entry) => entry.intervalId === this.historyStatus.interval.id);
+    const first = entries[0];
+    const last = entries.at(-1);
+    const retained = first && last
+      ? { first: { timestamp: first.event.timestamp, sequence: first.sequence }, last: { timestamp: last.event.timestamp, sequence: last.sequence } }
+      : null;
+    const boundary = this.historyStatus.committedEvidenceBoundary;
+    const readPoint: ActivityReadPoint = {
+      intervalId: this.historyStatus.interval.id,
+      committedEvidenceBoundary: boundary ? { intervalId: boundary.intervalId, sequence: boundary.sequence, eventId: boundary.eventId } : null,
+      retainedRange: retained,
+      coverage: this.captureSnapshot().coverage,
+      terminal: this.historyStatus.phase === "STOPPED" || Boolean(this.historyStatus.terminal)
+    };
+    return Object.freeze({
+      open: this.activityOpen,
+      scope: activityScope,
+      filter: this.canonicalFilter,
+      readPoint,
+      projection: createActivityProjection({ evidence: entries, scope: activityScope, filter: this.canonicalFilter, readPoint })
     });
   }
 
@@ -5144,6 +5212,19 @@ function structuralEvidenceScope(target: TopologySelectionTarget | null): Struct
         subscriptionId: target.subscription.id
       });
   }
+}
+
+function activityScopeFor(target: TopologySelectionTarget | null): ActivityScope {
+  if (!target || target.kind === "page") return { kind: "PAGE" };
+  if (target.kind === "client") return { kind: "CLIENT", clientId: target.client.id };
+  if (target.kind === "session") return { kind: "SESSION", clientId: target.client.id, sessionId: target.session.id };
+  if (target.kind === "subscription" || target.kind === "generation" || target.kind === "inferred-child") {
+    return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
+  }
+  if (target.kind === "item") {
+    return { kind: "ITEM", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id, item: target.item.name, itemPosition: target.item.position };
+  }
+  return { kind: "LISTENER", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id, listenerId: target.listener.id };
 }
 
 function eventFromDeterministicRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {

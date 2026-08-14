@@ -27,6 +27,7 @@ import type { EvidenceFilterActionDescriptor } from "../../../core/evidence-filt
 import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
+import { ObservedActivityDocument } from "./observed-activity-document";
 
 import "./workbench-panel.css";
 
@@ -1586,6 +1587,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         <strong className="workbench-react__scope-label">{scopeLabel}</strong>
         <span className="workbench-react__scope-status">{scopeStatus}</span>
         {canAuthorCommandUpdate ? <button type="button" onClick={() => dispatch(runtime, { type: "begin-local-injection-from-scope" })}>Author COMMAND Item Update</button> : null}
+        {snapshot.activity ? <button type="button" onClick={() => dispatch(runtime, { type: "open-activity" })}>Open Activity</button> : null}
       </nav>
       {localInjection.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Local Injection unavailable</strong><span>{localInjection.entryError}</span></div> : null}
       {localInjectionDraft ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection editor…</div>}><LazyLocalInjectionDocument
@@ -1612,7 +1614,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           dispatch(runtime, { type: "cancel-discard-local-injection" });
         }}>Keep draft</button><button type="button" onClick={() => dispatch(runtime, { type: "confirm-discard-local-injection" })}>Confirm discard</button>
       </section> : null}
-      {localInjectionDraft?.open ? null : commandProjectionComparison ? <CommandProjectionComparison
+      {localInjectionDraft?.open ? null : snapshot.activity?.open && snapshot.activity ? <ObservedActivityDocument runtime={runtime} activity={snapshot.activity} scopeLabel={scopeLabel} /> : commandProjectionComparison ? <CommandProjectionComparison
         scope={scopeLabel}
         capture={snapshot.capture}
         projections={snapshot.commandProjections}
