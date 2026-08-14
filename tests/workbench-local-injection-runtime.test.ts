@@ -226,13 +226,19 @@ describe("WorkbenchRuntime Local Injection", () => {
     await flushAsync();
     await flushAsync();
     expect(executor.execute).toHaveBeenCalledTimes(1);
-    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "paused", run: { nextOrdinal: 2, trace: [{ ordinal: 1, evidence: { eventId: "synthetic-scenario-request-1" } }] } });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "paused", run: { nextOrdinal: 2, trace: [{
+      ordinal: 1,
+      kind: "attempted",
+      outcome: { status: "success", requestId: "scenario-request-1", attemptedCount: 1, deliveredCount: 1, failedCount: 0, detail: expect.any(String) },
+      evidence: { eventId: "synthetic-scenario-request-1" }
+    }] } });
     runtime.dispatch({ type: "step-next-scenario" });
     await flushAsync();
     await flushAsync();
     expect(executor.execute).toHaveBeenCalledTimes(2);
     expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "complete", run: { trace: [{ injectionId: expect.any(String) }, { injectionId: expect.any(String) }] } });
-    expect(runtime.getSnapshot().scenario?.run?.trace[0]?.injectionId).not.toBe(runtime.getSnapshot().scenario?.run?.trace[1]?.injectionId);
+    const attempted = runtime.getSnapshot().scenario?.run?.trace.filter((entry) => entry.kind === "attempted") ?? [];
+    expect(attempted[0]?.injectionId).not.toBe(attempted[1]?.injectionId);
     runtime.dispose();
   });
 

@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   addScenarioStep,
   createScenarioFromDraft,
-  MAX_SCENARIO_ACCOUNTED_BYTES,
   reviewScenario,
   stepScenarioRun,
   type ScenarioDraftInput
@@ -30,7 +29,7 @@ function input(id: string, command: "ADD" | "UPDATE", qty: number): ScenarioDraf
     ready: true,
     diagnostics: [],
     target,
-    editor: { cursor: 19, selectionFrom: 19, selectionTo: 22, scrollTop: 31, compareOpen: true },
+    editor: { cursor: 19, selectionFrom: 19, selectionTo: 22, scrollTop: 31, scrollLeft: 0, compareOpen: true },
     restorationOrigin: { scopeId: "sub:1", selectionEventId: `source-${id}`, focusedEventId: `source-${id}`, contextId: `context:source-${id}` },
     relativeDelayMs: 0
   };
@@ -107,18 +106,6 @@ describe("Local Injection Scenario", () => {
     expect(reviewScenario(added.scenario, { runId: "run-ordered", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeys: [] })).toMatchObject({ ok: true });
   });
 
-  it("fails closed when a candidate crosses the 8 MiB accounted Scenario boundary", () => {
-    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
-    const oversized = {
-      ...input("draft-2", "UPDATE", 2),
-      rawText: "x".repeat(MAX_SCENARIO_ACCOUNTED_BYTES + 1)
-    };
-    expect(addScenarioStep(scenario, oversized)).toEqual({
-      ok: false,
-      reason: "Adding this Step would exceed the 8 MiB accounted Scenario boundary."
-    });
-  });
-
   it("dispatches one Step, waits for Evidence settlement, then pauses with a correlated trace", async () => {
     const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
     const added = addScenarioStep(first, input("draft-2", "UPDATE", 2));
@@ -127,16 +114,17 @@ describe("Local Injection Scenario", () => {
       runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fingerprint-1", activeCommandKeys: []
     });
     if (!reviewed.ok) throw new Error(reviewed.reason);
-    let settle!: (value: { outcome: { headline: "DELIVERED LOCALLY"; disposition: "delivered" }; evidence: { eventId: string } }) => void;
+    let settle!: (value: { kind: "attempted"; outcome: ReturnType<typeof outcome>; evidence: { eventId: string } }) => void;
     const execute = vi.fn(() => new Promise<{
-      outcome: { headline: "DELIVERED LOCALLY"; disposition: "delivered" };
+      kind: "attempted";
+      outcome: ReturnType<typeof outcome>;
       evidence: { eventId: string };
     }>((resolve) => { settle = resolve; }));
     const pending = stepScenarioRun(reviewed.run, { execute, injectionId: "injection-1" });
     await Promise.resolve();
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ stepId: "step-1", ordinal: 1, injectionId: "injection-1" }));
-    settle({ outcome: { headline: "DELIVERED LOCALLY", disposition: "delivered" }, evidence: { eventId: "local-1" } });
+    settle({ kind: "attempted", outcome: outcome("DELIVERED LOCALLY", "delivered"), evidence: { eventId: "local-1" } });
     const next = await pending;
     expect(next).toMatchObject({ status: "paused", nextOrdinal: 2, trace: [{ stepId: "step-1", injectionId: "injection-1", evidence: { eventId: "local-1" } }] });
     expect(next.trace).toHaveLength(1);
@@ -155,8 +143,46 @@ describe("Local Injection Scenario", () => {
     if (!reviewed.ok) throw new Error(reviewed.reason);
     const stopped = await stepScenarioRun(reviewed.run, {
       injectionId: "injection-failed",
-      execute: async () => ({ outcome: { headline, disposition }, evidence })
+      execute: async () => ({ kind: "attempted" as const, outcome: outcome(headline, disposition), evidence })
     });
-    expect(stopped).toMatchObject({ status: "stopped", nextOrdinal: 1, trace: [{ outcome: { headline, disposition } }] });
+    expect(stopped).toMatchObject({ status: "stopped", nextOrdinal: 1, trace: [
+      { kind: "attempted", outcome: { headline, disposition } },
+      { kind: "not-run", reason: "RUN STOPPED", detail: expect.stringContaining("not attempted") }
+    ] });
+  });
+
+  it("records review invalidation and every remaining Step as not run without fake Injection identity", async () => {
+    const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const added = addScenarioStep(first, input("draft-2", "UPDATE", 2));
+    if (!added.ok) throw new Error(added.reason);
+    const reviewed = reviewScenario(added.scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeys: [] });
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    const stopped = await stepScenarioRun(reviewed.run, {
+      injectionId: "reserved-but-not-attempted",
+      execute: async () => ({ kind: "not-run" as const, reason: "REVIEW INVALIDATED" as const, timestamp: 7, detail: "Review invalidated before dispatch." })
+    });
+    expect(stopped.trace).toEqual([
+      expect.objectContaining({ kind: "not-run", stepId: "step-1", timestamp: 7, detail: "Review invalidated before dispatch." }),
+      expect.objectContaining({ kind: "not-run", stepId: "step-2", timestamp: 7 })
+    ]);
+    expect(stopped.trace.every((entry) => !("injectionId" in entry))).toBe(true);
   });
 });
+
+function outcome(
+  headline: "DELIVERED LOCALLY" | "NOT RUN" | "PARTIALLY DELIVERED" | "DELIVERY UNKNOWN",
+  disposition: "delivered" | "blocked" | "partial" | "acknowledgement-unknown"
+) {
+  return {
+    headline,
+    disposition,
+    status: disposition === "blocked" ? "review-blocked" : disposition === "acknowledgement-unknown" ? "acknowledgement-unknown" : "success",
+    executionId: "execution-1",
+    requestId: "request-1",
+    timestamp: 1,
+    detail: `Precise ${headline} detail`,
+    attemptedCount: 2,
+    deliveredCount: disposition === "partial" ? 1 : 2,
+    failedCount: disposition === "partial" ? 1 : 0
+  } as const;
+}

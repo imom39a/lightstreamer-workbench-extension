@@ -7,6 +7,7 @@ type VisualCase = Readonly<{
   id: string;
   viewport: { width: number; height: number };
   theme: "dark" | "light";
+  forcedColors?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
   production: { scenario: string; setup: "none" | "scenario" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
 }>;
@@ -23,7 +24,7 @@ for (const visual of matrix) {
 
 async function openScenario(page: Page, visual: VisualCase): Promise<void> {
   await page.setViewportSize(visual.viewport);
-  await page.emulateMedia({ colorScheme: visual.theme });
+  await page.emulateMedia({ colorScheme: visual.theme, forcedColors: visual.forcedColors ? "active" : "none" });
   await page.goto(`/?scenario=${visual.production.scenario}&theme=${visual.theme}`);
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
   await warmVisualRenderer(page, ".workbench-react");

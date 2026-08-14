@@ -322,7 +322,9 @@ export function LocalInjectionDocument({
             diagnostics={draft.diagnostics}
             tabIndents={tabIndents}
             readOnly={!editing}
+            presentation={draft.editorPresentation}
             onChange={(text) => dispatch(runtime, { type: "set-local-injection-json", text })}
+            onPresentationChange={(presentation) => dispatch(runtime, { type: "set-local-injection-editor-presentation", presentation })}
           />
           <section className="workbench-react__local-problems" aria-label="Local Injection validation">
             <strong>{draft.ready ? "Ready for Review" : `${draft.diagnostics.length} blocking problem${draft.diagnostics.length === 1 ? "" : "s"}`}</strong>

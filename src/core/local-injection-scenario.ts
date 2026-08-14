@@ -1,7 +1,6 @@
 import type { EvidenceRef } from "./event-history-authoritative";
 import type { LocalInjectionDiagnostic, LocalInjectionDocument } from "./local-injection-document";
-
-export const MAX_SCENARIO_ACCOUNTED_BYTES = 8 * 1024 * 1024;
+import type { LocalInjectionOutcome } from "./local-injection-outcome";
 
 export type ScenarioTarget = Readonly<{
   pageEpoch: string | null;
@@ -19,6 +18,7 @@ export type ScenarioEditorState = Readonly<{
   selectionFrom: number;
   selectionTo: number;
   scrollTop: number;
+  scrollLeft: number;
   compareOpen: boolean;
 }>;
 
@@ -69,9 +69,18 @@ export type ReviewedScenarioStep = Readonly<{
 export type ScenarioTraceEntry = Readonly<{
   stepId: string;
   ordinal: number;
+  kind: "attempted";
   injectionId: string;
-  outcome: Readonly<{ headline: string; disposition: string }>;
+  outcome: LocalInjectionOutcome;
   evidence: Readonly<{ eventId: string }> | null;
+}> | Readonly<{
+  stepId: string;
+  ordinal: number;
+  kind: "not-run";
+  reason: "RUN STOPPED";
+  timestamp: number;
+  detail: string;
+  evidence: null;
 }>;
 
 export type ScenarioRun = Readonly<{
@@ -107,13 +116,6 @@ export function addScenarioStep(
 ): Readonly<{ ok: true; scenario: LocalInjectionScenario }> | Readonly<{ ok: false; reason: string }> {
   const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return Object.freeze({ ok: false as const, reason });
-  if (scenario.steps.length >= 100) {
-    return Object.freeze({ ok: false as const, reason: "Scenario already contains the maximum 100 Steps." });
-  }
-  const candidateBytes = jsonBytes({ ...scenario, steps: [...scenario.steps, { id: `step-${scenario.steps.length + 1}`, draft }] });
-  if (candidateBytes > MAX_SCENARIO_ACCOUNTED_BYTES) {
-    return Object.freeze({ ok: false as const, reason: "Adding this Step would exceed the 8 MiB accounted Scenario boundary." });
-  }
   return Object.freeze({
     ok: true as const,
     scenario: freeze({
@@ -166,9 +168,6 @@ export function reviewScenario(
       relativeDelayMs: Math.max(0, step.draft.relativeDelayMs)
     });
   }
-  if (jsonBytes({ scenario, reviewed }) > MAX_SCENARIO_ACCOUNTED_BYTES) {
-    return Object.freeze({ ok: false as const, reason: "Review would exceed the 8 MiB accounted Scenario and immutable Run boundary." });
-  }
   return Object.freeze({
     ok: true as const,
     run: freeze({
@@ -187,9 +186,10 @@ export function reviewScenario(
 }
 
 export async function stepScenarioRun<T extends Readonly<{
-  outcome: Readonly<{ headline: string; disposition: string }>;
+  kind: "attempted";
+  outcome: LocalInjectionOutcome;
   evidence: Readonly<{ eventId: string }> | null;
-}>>(
+}> | Readonly<{ kind: "not-run"; reason: "REVIEW INVALIDATED"; timestamp: number; detail: string }>>(
   run: ScenarioRun,
   adapter: Readonly<{
     injectionId: string;
@@ -218,22 +218,45 @@ export async function stepScenarioRun<T extends Readonly<{
     document: step.document,
     sourceEventId: step.sourceEventId
   });
+  if (terminal.kind === "not-run") return freeze({
+    ...run,
+    status: "stopped" as const,
+    trace: [...run.trace, ...run.steps.slice(run.nextOrdinal - 1).map((remaining) => ({
+      stepId: remaining.id,
+      ordinal: remaining.ordinal,
+      kind: "not-run" as const,
+      reason: "RUN STOPPED" as const,
+      timestamp: terminal.timestamp,
+      detail: remaining.ordinal === step.ordinal ? terminal.detail : `RUN STOPPED before Step ${remaining.ordinal}; this Step was not attempted.`,
+      evidence: null
+    }))]
+  });
   const trace: ScenarioTraceEntry = {
     stepId: step.id,
     ordinal: step.ordinal,
+    kind: "attempted",
     injectionId: adapter.injectionId,
     outcome: terminal.outcome,
     evidence: terminal.evidence
   };
   const nextOrdinal = run.nextOrdinal + 1;
   const delivered = terminal.outcome.disposition === "delivered" && terminal.evidence !== null;
+  const stoppedRemainder: ScenarioTraceEntry[] = delivered ? [] : run.steps.slice(run.nextOrdinal).map((remaining) => ({
+    stepId: remaining.id,
+    ordinal: remaining.ordinal,
+    kind: "not-run" as const,
+    reason: "RUN STOPPED" as const,
+    timestamp: terminal.outcome.timestamp,
+    detail: `RUN STOPPED after Step ${step.ordinal}; this Step was not attempted.`,
+    evidence: null
+  }));
   return freeze({
     ...run,
     nextOrdinal: delivered ? nextOrdinal : run.nextOrdinal,
     status: delivered
       ? nextOrdinal > run.steps.length ? "complete" as const : "paused" as const
       : "stopped" as const,
-    trace: [...run.trace, trace]
+    trace: [...run.trace, trace, ...stoppedRemainder]
   });
 }
 
@@ -250,10 +273,6 @@ export function scenarioTargetIncompatibility(expected: ScenarioTarget, candidat
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function jsonBytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
 
 function freeze<T>(value: T): T {

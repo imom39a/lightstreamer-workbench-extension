@@ -11,6 +11,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 
 import { type LocalInjectionDiagnostic } from "../../../core/local-injection-document";
+import type { ScenarioEditorState } from "../../../core/local-injection-scenario";
 
 type LocalInjectionCodeEditorProps = Readonly<{
   draftId: string;
@@ -21,6 +22,8 @@ type LocalInjectionCodeEditorProps = Readonly<{
   tabIndents: boolean;
   readOnly: boolean;
   onChange(value: string): void;
+  presentation?: ScenarioEditorState;
+  onPresentationChange?(presentation: ScenarioEditorState): void;
   ariaLabel?: string;
 }>;
 
@@ -39,14 +42,6 @@ const workbenchJsonHighlightStyle = HighlightStyle.define([
   { tag: [tags.punctuation, tags.separator], color: "var(--wb-code-punctuation)" },
   { tag: [tags.invalid], color: "var(--wb-error)", textDecoration: "underline wavy" }
 ]);
-
-const editorStateByDraftId = new Map<string, Readonly<{
-  anchor: number;
-  head: number;
-  scrollTop: number;
-  scrollLeft: number;
-}>>();
-const MAX_RETAINED_EDITOR_PRESENTATIONS = 100;
 
 function editorDiagnostics(
   diagnostics: readonly LocalInjectionDiagnostic[],
@@ -98,12 +93,18 @@ export function LocalInjectionCodeEditor({
   tabIndents,
   readOnly,
   onChange,
+  presentation,
+  onPresentationChange,
   ariaLabel = "Local Injection JSON"
 }: LocalInjectionCodeEditorProps): JSX.Element {
   const host = useRef<HTMLDivElement | null>(null);
   const handle = useRef<EditorHandle | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onPresentationChangeRef = useRef(onPresentationChange);
+  onPresentationChangeRef.current = onPresentationChange;
+  const compareOpenRef = useRef(compareOpen);
+  compareOpenRef.current = compareOpen;
 
   useLayoutEffect(() => {
     const parent = host.current;
@@ -121,7 +122,7 @@ export function LocalInjectionCodeEditor({
     );
     const exposePresentation = EditorView.updateListener.of((update) => {
       if (!update.selectionSet && !update.docChanged) return;
-      exposeEditorPresentation(parent, update.view);
+      exposeEditorPresentation(parent, update.view, compareOpenRef.current, onPresentationChangeRef.current);
     });
     draftExtensions.push(exposePresentation);
     if (source !== null) {
@@ -141,7 +142,7 @@ export function LocalInjectionCodeEditor({
         },
         b: {
           doc: value,
-          selection: restoredSelection(draftId, value.length),
+          selection: restoredSelection(presentation, value.length),
           extensions: draftExtensions
         },
         parent,
@@ -153,38 +154,26 @@ export function LocalInjectionCodeEditor({
       handle.current = { draftId, merge, view: merge.b, diagnostics: diagnosticCompartment, tabs: tabCompartment };
     } else {
       const view = new EditorView({
-        state: EditorState.create({ doc: value, selection: restoredSelection(draftId, value.length), extensions: draftExtensions }),
+        state: EditorState.create({ doc: value, selection: restoredSelection(presentation, value.length), extensions: draftExtensions }),
         parent
       });
       handle.current = { draftId, merge: null, view, diagnostics: diagnosticCompartment, tabs: tabCompartment };
     }
     const currentView = handle.current.view;
-    const exposeScroll = () => exposeEditorPresentation(parent, currentView);
+    const exposeScroll = () => exposeEditorPresentation(parent, currentView, compareOpenRef.current, onPresentationChangeRef.current);
     currentView.scrollDOM.addEventListener("scroll", exposeScroll, { passive: true });
-    exposeEditorPresentation(parent, currentView);
-    const restored = editorStateByDraftId.get(draftId);
-    if (restored) queueMicrotask(() => {
+    exposeEditorPresentation(parent, currentView, compareOpenRef.current, onPresentationChangeRef.current);
+    if (presentation) queueMicrotask(() => {
       const current = handle.current;
       if (!current || current.draftId !== draftId) return;
-      current.view.scrollDOM.scrollTop = restored.scrollTop;
-      current.view.scrollDOM.scrollLeft = restored.scrollLeft;
+      current.view.scrollDOM.scrollTop = presentation.scrollTop;
+      current.view.scrollDOM.scrollLeft = presentation.scrollLeft;
     });
     return () => {
       const current = handle.current;
       if (current) {
         current.view.scrollDOM.removeEventListener("scroll", exposeScroll);
-        const selection = current.view.state.selection.main;
-        editorStateByDraftId.set(draftId, Object.freeze({
-          anchor: selection.anchor,
-          head: selection.head,
-          scrollTop: current.view.scrollDOM.scrollTop,
-          scrollLeft: current.view.scrollDOM.scrollLeft
-        }));
-        while (editorStateByDraftId.size > MAX_RETAINED_EDITOR_PRESENTATIONS) {
-          const oldest = editorStateByDraftId.keys().next().value;
-          if (oldest === undefined) break;
-          editorStateByDraftId.delete(oldest);
-        }
+        exposeEditorPresentation(parent, current.view, compareOpenRef.current, onPresentationChangeRef.current);
       }
       current?.merge?.destroy();
       if (!current?.merge) current?.view.destroy();
@@ -231,19 +220,31 @@ export function LocalInjectionCodeEditor({
   />;
 }
 
-function restoredSelection(draftId: string, documentLength: number): Readonly<{ anchor: number; head: number }> | undefined {
-  const saved = editorStateByDraftId.get(draftId);
+function restoredSelection(saved: ScenarioEditorState | undefined, documentLength: number): Readonly<{ anchor: number; head: number }> | undefined {
   if (!saved) return undefined;
   return {
-    anchor: Math.min(saved.anchor, documentLength),
-    head: Math.min(saved.head, documentLength)
+    anchor: Math.min(saved.cursor === saved.selectionFrom ? saved.selectionTo : saved.selectionFrom, documentLength),
+    head: Math.min(saved.cursor, documentLength)
   };
 }
 
-function exposeEditorPresentation(host: HTMLDivElement, view: EditorView): void {
+function exposeEditorPresentation(
+  host: HTMLDivElement,
+  view: EditorView,
+  compareOpen: boolean,
+  notify?: (presentation: ScenarioEditorState) => void
+): void {
   const selection = view.state.selection.main;
   host.dataset.selectionAnchor = String(selection.anchor);
   host.dataset.selectionHead = String(selection.head);
   host.dataset.scrollTop = String(Math.round(view.scrollDOM.scrollTop));
   host.dataset.scrollLeft = String(Math.round(view.scrollDOM.scrollLeft));
+  notify?.(Object.freeze({
+    cursor: selection.head,
+    selectionFrom: selection.from,
+    selectionTo: selection.to,
+    scrollTop: Math.round(view.scrollDOM.scrollTop),
+    scrollLeft: Math.round(view.scrollDOM.scrollLeft),
+    compareOpen
+  }));
 }

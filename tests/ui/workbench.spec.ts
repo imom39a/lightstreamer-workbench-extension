@@ -2231,7 +2231,8 @@ test("Draft conversion and Scenario Edit restore the exact editor selection and 
   await page.keyboard.press("ControlOrMeta+Home");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Home");
-  await page.keyboard.press("Shift+ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Shift+ArrowLeft");
   const originalPresentation = await editor.locator('xpath=ancestor::*[@data-editor-engine="codemirror-6"]').evaluate((host) => ({
     anchor: host.dataset.selectionAnchor,
     head: host.dataset.selectionHead,

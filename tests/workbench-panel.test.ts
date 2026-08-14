@@ -293,6 +293,7 @@ function activeLocalInjection(
       source: { kind: "captured-event", rawText },
       compareStatus: "unchanged",
       compareOpen: false,
+      editorPresentation: { cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, scrollLeft: 0, compareOpen: false },
       minimized: false,
       parked: false,
       open: true,

@@ -201,5 +201,13 @@
     "theme": "light",
     "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-complete", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-stopped-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-partial", "setup": "scenario" }
   }
 ]

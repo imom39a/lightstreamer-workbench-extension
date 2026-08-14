@@ -109,7 +109,9 @@ try {
   await writeFile(manifestPath, `${JSON.stringify({
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
-    command: "npm run test:ui:visual",
+    command: grep ? `npm run test:ui:visual -- --grep ${JSON.stringify(grep)}` : "npm run test:ui:visual",
+    platform: process.platform,
+    baselinePlatformSuffix: process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform,
     browser: await browser.version(),
     browserMode: "headless",
     evidenceMode: "non-interactive",
@@ -126,7 +128,7 @@ try {
         "Conversion preserves the Draft Source, raw JSON, validation, exact target, editor responsibility, and restoration origin; adding Evidence admits exactly one compatible chosen update.",
         "Both Steps retain stable independent identities and explicit order while Review freezes revision, payloads, delays, exact target fingerprint, and committed-Evidence seed.",
         "Step next dispatches one existing-coordinator Local Injection, waits for its Outcome and committed Evidence settlement, then returns Paused before the next Step.",
-        "Compact Light, normal Dark, and wide Light states preserve protected boundaries, keyboard focus/restoration, no serious or critical axe violations, and distinct Run/Injection/Evidence trace meaning."
+        "Compact Light, normal Dark, shallow forced-colors stopped, and wide Light states preserve protected boundaries, keyboard focus/restoration, no serious or critical axe violations, and distinct Run/Injection/Evidence trace meaning."
       ],
       browserResult: {
         scenarioCaptures: `${results.length}/${results.length} passed`,
@@ -137,7 +139,8 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: "Compact Edit opens the bounded Evidence picker by keyboard and restores focus to Add captured update; normal Review and wide Complete expose visible focus on Step next and Finish Scenario. The focused browser test also verifies exact picker restoration.",
-      baselineIntent: "Create three Scenario-only Darwin baselines for compact Edit in Light, normal Review in Dark, and wide completed Trace in Light; no existing baseline is changed."
+      matrixRationale: "This ticket is the bounded two-Step tracer slice. Shallow forced-colors stopped is its relevant degraded/failure state. The 100-Step, 8 MiB, virtualization, and high-volume matrix is explicitly deferred to scenario-impl-03 and is not claimed here.",
+      baselineIntent: "Maintain platform-specific Scenario baselines for Darwin and Linux; this filtered packet intentionally covers compact Edit, normal Review, shallow forced-colors stopped, and wide completed Trace without changing unrelated baselines."
     } : {
       classification: "Material UI",
       changedWorkflow: "The global diagnostics footer keeps mixed Warning, Error, and Information entries readable and discoverable without taking over the Evidence workspace.",
@@ -283,7 +286,8 @@ async function writeContactSheet(runningBrowser, results, views, relativePath) {
 async function capturePrototype(runningBrowser, scenario) {
   const context = await runningBrowser.newContext({
     viewport: { width: scenario.viewport.width + 20, height: scenario.viewport.height + 20 },
-    colorScheme: scenario.theme
+    colorScheme: scenario.theme,
+    forcedColors: scenario.forcedColors ? "active" : "none"
   });
   const page = await context.newPage();
   try {
@@ -389,7 +393,7 @@ async function assertPrototypeSetup(page, workbench, setup) {
 }
 
 async function captureProduction(runningBrowser, scenario) {
-  const context = await runningBrowser.newContext({ viewport: scenario.viewport, colorScheme: scenario.theme });
+  const context = await runningBrowser.newContext({ viewport: scenario.viewport, colorScheme: scenario.theme, forcedColors: scenario.forcedColors ? "active" : "none" });
   const page = await context.newPage();
   const browserDiagnostics = [];
   page.on("console", (message) => {

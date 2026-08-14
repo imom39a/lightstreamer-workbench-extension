@@ -1,5 +1,6 @@
 import type { EvidenceRef } from "../../core/event-history-authoritative";
 import type { LocalInjectionDocument } from "../../core/local-injection-document";
+import type { LocalInjectionOutcome } from "../../core/local-injection-outcome";
 import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
 import {
   validateDraftForExecutionTarget,
@@ -36,18 +37,7 @@ export type LocalInjectionExecutor = Readonly<{
   execute(request: LocalInjectionExecutionRequest): Promise<LocalInjectionExecutionResult>;
 }>;
 
-export type LocalInjectionOutcome = Readonly<{
-  disposition: "delivered" | "blocked" | "failed" | "partial" | "acknowledgement-unknown";
-  headline: "DELIVERED LOCALLY" | "NOT RUN" | "DELIVERY FAILED" | "PARTIALLY DELIVERED" | "DELIVERY UNKNOWN";
-  status: LocalInjectionExecutionResult["status"] | "review-blocked";
-  executionId: string;
-  requestId: string | null;
-  timestamp: number;
-  detail: string;
-  attemptedCount?: number;
-  deliveredCount?: number;
-  failedCount?: number;
-}>;
+export type { LocalInjectionOutcome } from "../../core/local-injection-outcome";
 
 export type LocalInjectionScenarioCorrelation = Readonly<{
   scenarioId?: string;

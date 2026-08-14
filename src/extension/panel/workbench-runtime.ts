@@ -144,6 +144,7 @@ import {
   scenarioTargetIncompatibility,
   type LocalInjectionScenario,
   type ScenarioDraftInput,
+  type ScenarioEditorState,
   type ScenarioRun
 } from "../../core/local-injection-scenario";
 
@@ -449,6 +450,7 @@ export type WorkbenchLocalInjectionSnapshot = Readonly<{
     source: Readonly<{ kind: "captured-event" | "authored"; rawText: string | null }>;
     compareStatus: "unchanged" | "changed" | "no-source";
     compareOpen: boolean;
+    editorPresentation: ScenarioEditorState;
     minimized: boolean;
     parked: boolean;
     open: boolean;
@@ -556,6 +558,7 @@ export type WorkbenchCommand =
   | { type: "begin-local-injection-from-selection" }
   | { type: "begin-local-injection-from-scope" }
   | { type: "set-local-injection-json"; text: string }
+  | { type: "set-local-injection-editor-presentation"; presentation: ScenarioEditorState }
   | { type: "review-local-injection" }
   | { type: "edit-local-injection" }
   | { type: "execute-local-injection" }
@@ -577,6 +580,7 @@ export type WorkbenchCommand =
   | { type: "finish-scenario" }
   | { type: "set-scenario-step-json"; stepId: string; text: string }
   | { type: "set-scenario-step-compare"; stepId: string; open: boolean }
+  | { type: "set-scenario-step-editor-presentation"; stepId: string; presentation: ScenarioEditorState }
   | { type: "select-evidence"; eventId: string | null }
   | { type: "focus-evidence"; eventId: string | null }
   | { type: "set-evidence-scroll"; scrollTop: number }
@@ -736,6 +740,7 @@ type LocalInjectionDraftState = {
   explicitConcreteFields: Set<string>;
   phase: "edit" | "review" | "pending" | "outcome";
   compareOpen: boolean;
+  editorPresentation: ScenarioEditorState;
   minimized: boolean;
   parked: boolean;
   open: boolean;
@@ -1491,6 +1496,10 @@ class Runtime implements WorkbenchRuntime {
       case "set-local-injection-json":
         this.setLocalInjectionJson(command.text);
         return;
+      case "set-local-injection-editor-presentation":
+        if (!this.localInjectionDraft) return;
+        this.localInjectionDraft.editorPresentation = Object.freeze({ ...command.presentation, compareOpen: this.localInjectionDraft.compareOpen });
+        return;
       case "review-local-injection":
         this.reviewLocalInjection();
         return;
@@ -1503,6 +1512,7 @@ class Runtime implements WorkbenchRuntime {
       case "set-local-injection-compare":
         if (!this.localInjectionDraft) return;
         this.localInjectionDraft.compareOpen = command.open;
+        this.localInjectionDraft.editorPresentation = Object.freeze({ ...this.localInjectionDraft.editorPresentation, compareOpen: command.open });
         this.publish();
         return;
       case "set-local-injection-minimized":
@@ -1570,6 +1580,9 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "set-scenario-step-compare":
         this.setScenarioStepCompare(command.stepId, command.open);
+        return;
+      case "set-scenario-step-editor-presentation":
+        this.setScenarioStepEditorPresentation(command.stepId, command.presentation);
         return;
       case "select-evidence":
         this.selectionEventId = command.eventId;
@@ -2954,6 +2967,7 @@ class Runtime implements WorkbenchRuntime {
       explicitConcreteFields: new Set<string>(),
       phase: "edit",
       compareOpen: false,
+      editorPresentation: emptyScenarioEditorState(false),
       minimized: false,
       parked: false,
       open: true,
@@ -3389,12 +3403,12 @@ class Runtime implements WorkbenchRuntime {
       execute: async () => {
         const execution = await this.localInjectionExecutionCoordinator.execute(correlatedReview, { executionId });
         if (execution.kind === "review-invalidated") {
-          return { outcome: { headline: "NOT RUN", disposition: "blocked" }, evidence: null };
+          return { kind: "not-run" as const, reason: "REVIEW INVALIDATED" as const, timestamp: Date.now(), detail: "Review invalidated before dispatch; no Injection was attempted." };
         }
         const evidence = execution.record.evidence.state === "committed"
           ? { eventId: execution.record.evidence.reference.eventId }
           : null;
-        return { outcome: { headline: execution.record.outcome.headline, disposition: execution.record.outcome.disposition }, evidence };
+        return { kind: "attempted" as const, outcome: execution.record.outcome, evidence };
       }
     }).then((nextRun) => {
       if (this.disposed || this.scenarioState !== state) return;
@@ -3446,9 +3460,27 @@ class Runtime implements WorkbenchRuntime {
     const draft = state.drafts[index];
     if (!draft || (open && draft.sourceRawText === null)) return;
     draft.compareOpen = open;
+    draft.editorPresentation = Object.freeze({ ...draft.editorPresentation, compareOpen: open });
     state.scenario = Object.freeze({
       ...state.scenario,
       revision: state.scenario.revision + 1,
+      steps: Object.freeze(state.scenario.steps.map((step, stepIndex) =>
+        stepIndex === index ? Object.freeze({ ...step, draft: this.scenarioDraftInput(draft) }) : step))
+    });
+    this.publish();
+  }
+
+  private setScenarioStepEditorPresentation(stepId: string, presentation: ScenarioEditorState): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
+    const draft = state.drafts[index];
+    if (!draft) return;
+    const next = Object.freeze({ ...presentation, compareOpen: draft.compareOpen });
+    if (sameScenarioEditorState(draft.editorPresentation, next)) return;
+    draft.editorPresentation = next;
+    state.scenario = Object.freeze({
+      ...state.scenario,
       steps: Object.freeze(state.scenario.steps.map((step, stepIndex) =>
         stepIndex === index ? Object.freeze({ ...step, draft: this.scenarioDraftInput(draft) }) : step))
     });
@@ -3493,7 +3525,7 @@ class Runtime implements WorkbenchRuntime {
         mode: draft.anchor.subscriptionMode,
         schemaFields: draft.anchor.fieldSchema
       }),
-      editor: Object.freeze({ cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, compareOpen: draft.compareOpen }),
+      editor: draft.editorPresentation,
       restorationOrigin: draft.restorationOrigin,
       relativeDelayMs: 0
     });
@@ -4189,6 +4221,7 @@ class Runtime implements WorkbenchRuntime {
                 : "changed" as const
               : "no-source" as const,
             compareOpen: draft.compareOpen,
+            editorPresentation: draft.editorPresentation,
             minimized: draft.minimized,
             parked: draft.parked,
             open: draft.open,
@@ -6157,6 +6190,19 @@ function sameEvidenceReadPoint(
     sameIdentity(left.committedEvidenceBoundary, right.committedEvidenceBoundary) &&
     sameIdentity(left.retainedRange?.first ?? null, right.retainedRange?.first ?? null) &&
     sameIdentity(left.retainedRange?.last ?? null, right.retainedRange?.last ?? null);
+}
+
+function emptyScenarioEditorState(compareOpen: boolean): ScenarioEditorState {
+  return Object.freeze({ cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, scrollLeft: 0, compareOpen });
+}
+
+function sameScenarioEditorState(left: ScenarioEditorState, right: ScenarioEditorState): boolean {
+  return left.cursor === right.cursor &&
+    left.selectionFrom === right.selectionFrom &&
+    left.selectionTo === right.selectionTo &&
+    left.scrollTop === right.scrollTop &&
+    left.scrollLeft === right.scrollLeft &&
+    left.compareOpen === right.compareOpen;
 }
 
 function browserScheduler(): WorkbenchRuntimeScheduler {
