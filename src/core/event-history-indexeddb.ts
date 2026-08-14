@@ -2803,7 +2803,7 @@ function readFindProjectionWindow(store: IDBObjectStore, intervalId: string, fir
   });
 }
 
-function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | undefined, intervalId: string, telemetry: QueryTelemetryMutable, bound: number, operation: "Around" | "Find"): Promise<QueryProjection[]> {
+function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | IDBValidKey | undefined, intervalId: string, telemetry: QueryTelemetryMutable, bound: number, operation: "Around" | "Find"): Promise<QueryProjection[]> {
   const result: QueryProjection[] = [];
   if (range === undefined) telemetry.fullRetainedScan = true;
   return new Promise((resolve, reject) => {
@@ -2823,9 +2823,9 @@ function readProjectionCursor(index: IDBIndex, range: IDBKeyRange | undefined, i
   });
 }
 
-function queryOnlyRange(value: IDBValidKey): IDBKeyRange | undefined {
+function queryOnlyRange(value: IDBValidKey): IDBKeyRange | IDBValidKey {
   const range = (globalThis as typeof globalThis & { IDBKeyRange?: typeof IDBKeyRange }).IDBKeyRange;
-  return range ? range.only(value) : undefined;
+  return range ? range.only(value) : value;
 }
 
 function queryBoundRange(lower: IDBValidKey, upper: IDBValidKey): IDBKeyRange | undefined {

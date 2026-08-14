@@ -18,6 +18,7 @@ import {
 } from "../../../core/evidence-filter-contract";
 import {
   createTypedFilterValue,
+  filterSummary,
   type Filter,
   type FilterMutation,
   type FilterPolarity,
@@ -265,18 +266,6 @@ function dispatch(runtime: WorkbenchRuntime, command: WorkbenchCommand): void {
 
 function uppercase(value: string | undefined, fallback: string): string {
   return (value ?? fallback).replaceAll("-", "_").toUpperCase();
-}
-
-function filterSummary(filter: WorkbenchSnapshot["evidence"]["investigation"]["filter"]): string {
-  const entries: string[] = [];
-  if (filter.text) entries.push(filter.text);
-  for (const [facet, criterion] of Object.entries(filter.criteria)) {
-    for (const value of criterion.include) entries.push(`${facet}: ${value.label}`);
-    for (const value of criterion.exclude) entries.push(`${facet} excluding ${value.label}`);
-  }
-  if (filter.around) entries.push(`Around ${filter.around.start}–${filter.around.end}`);
-  for (const unsupported of filter.unsupported) entries.push(`${unsupported.facet ?? "criterion"} unavailable`);
-  return entries.length ? entries.join(" · ") : "none";
 }
 
 type FilterComposerStep = "composer" | "facets" | "explorer";

@@ -117,6 +117,9 @@ const runtime = createWorkbenchRuntime({
   } : {}),
   captureStatus: scenario.captureStatus,
   capture: scenario.capture,
+  ...(scenario.activityProjectionFailure ? {
+    activityProjectionFactory: () => { throw new Error(scenario.activityProjectionFailure); }
+  } : {}),
   theme,
   ...(localInjectionExecutor ? { localInjectionExecutor } : {})
 });

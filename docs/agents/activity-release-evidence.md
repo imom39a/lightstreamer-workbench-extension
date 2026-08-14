@@ -49,4 +49,27 @@ The first independent Luna review correctly rejected the top-only packet as insu
 | `npm run release:package -- --skip-tests` | PASS | Typecheck, build, audits, and deterministic v2.0.1 ZIP packaging passed; artifact size 371,067 bytes. |
 | `npm run docs:check` | PASS | 4 documents and 10 maintained commands checked. |
 
-The repeated real-panel capture boundary and the serialized topology-contract failure remain release blockers for `activity-impl-12` and are recorded on `activity-followup-03`. Tracked visual baselines and explicit maintainer approval remain pending; no baseline was silently rewritten.
+At that checkpoint, the repeated real-panel capture boundary and serialized topology-contract failure remained release blockers for `activity-impl-12` and were recorded on `activity-followup-03`. Tracked visual baselines and explicit maintainer approval also remained pending; no baseline was silently rewritten.
+
+## Activity 11/12 completion pass — 2026-08-14
+
+The bounded completion pass added deterministic headless Chromium cases for empty matching Evidence, active Filter exclusions, aggregation failure, clock discontinuity, successful Clear, terminal History, a partial live bucket, rebucketing with selection, and shallow forced-colors/non-color meaning. A browser-discovered rebucketing defect was fixed: a stable bucket identity whose duration changed is no longer mistaken for the original selected absolute interval. Activity now renders the preserved interval overlay instead. The Activity truth boundary and selection context also use the canonical Filter summary, so a structured `kind: item-update` criterion is never reported as `Filter None`.
+
+Additional exactness evidence closes `activity-followup-04`: the Page-scope ranked Subscription drilldown was exercised through both memory and fake-IndexedDB investigation adapters. It applies one structural Subscription criterion, `ITEM-UPDATE`, `SERVER`, and the plotted half-open interval; applies no item criterion; waits for the current ready query; and returns both retained items.
+
+The prior serialized release-contract failure was a real IndexedDB fallback defect. When `globalThis.IDBKeyRange` was unavailable, the candidate-kind fast path supplied `undefined`, accidentally turning a checkpoint index count into an unbounded count. The implementation now supplies the IndexedDB-valid primitive key fallback. The authoritative Event History contract passes 18/18 for memory and fake IndexedDB.
+
+Updated verification:
+
+- `npx vitest run tests/filter-algebra.test.ts tests/activity-document.test.ts tests/activity-projection.test.ts tests/activity-runtime.test.ts tests/activity-followup-04-runtime-query.test.ts tests/authoritative-event-history-contract.test.ts --no-file-parallelism --maxWorkers=1`: 6 files, 90 tests passed.
+- `CI=1 npm run test:ui -- tests/ui/activity-impl-11.spec.ts tests/ui/activity-material.spec.ts`: 20 focused Activity tests passed headlessly.
+- `CI=1 npm run test:ui -- --grep-invert "visual baseline"`: 74/74 functional browser tests passed headlessly in 2.0 minutes.
+- `CI=1 npm run test:ui:visual`: 26/26 visual-evidence scenarios captured; the existing independent Luna Activity review remains **APPROVED**.
+- `npm run typecheck`, `npm run build`, and `npm run docs:check`: passed.
+- `npm run release:package -- --skip-tests`: passed; deterministic v2.0.1 ZIP size 371,174 bytes.
+
+The full serialized `npm run test:release` gate received one uninterrupted 15-minute timebox after two earlier bounded runs. Its single Vitest worker remained active at approximately 115% CPU and emitted no failure after its initial production-boundary progress, but still did not publish a summary; it was stopped once at the ceiling. This is now a measured release-suite performance blocker rather than the repaired topology-contract assertion.
+
+The shipped-extension boundary was retried headlessly through the four-attempt circuit breaker. Post-reload panel-target rebinding and explicit bridge/runtime readiness moved the failure later but did not make `cdp-same-tab-three` durable. All speculative harness changes were removed. The official-client fixture remains blocked at the same production Evidence capture boundary. Dedicated follow-up tickets retain both bounded blockers.
+
+Tracked platform visual baselines were not rewritten because the Material UI gate still requires explicit primary-maintainer approval. `activity-impl-12` and the parent remain In Progress until that approval and the two release blockers are closed.

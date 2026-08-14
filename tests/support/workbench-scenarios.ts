@@ -16,6 +16,11 @@ export const WORKBENCH_SCENARIO_IDS = [
   "frozen-high-volume",
   "activity-10k",
   "activity-graphical",
+  "activity-layers",
+  "activity-clock-discontinuity",
+  "activity-aggregation-failure",
+  "activity-terminal",
+  "activity-rebucket",
   "activity-ranking-pages",
   "live-high-scope",
   "filter-high-cardinality",
@@ -79,6 +84,7 @@ export type WorkbenchScenario = Readonly<{
   freezeBeforeLaterEvents?: boolean;
   storage?: Readonly<{ mode: "memory"; reason: string }>;
   historyCapacity?: HistoryCapacityOverrides;
+  activityProjectionFailure?: string;
   storageEstimate?: Readonly<{ usageBytes: number; quotaBytes: number }>;
   openRawEvidence?: boolean;
   filterQuery?: string;
@@ -162,6 +168,57 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         selectedEventId: highVolumeEventId(40),
         captureStatus: "capturing"
       };
+    case "activity-layers": {
+      const updates = highVolumeEvents(1, 8).map((event, index) => ({ ...event, logicalEventId: `activity-layers-logical-${index + 1}` }));
+      const source = updates[0];
+      if (!source) throw new Error("Activity layer scenario requires a source update.");
+      const client = { ...(source.client ?? {}), id: source.client?.id ?? "activity-layers-client" };
+      const clientStatus: LightstreamerEventEnvelope = { ...source, id: "activity-layers-client-status", kind: "client-status", client: { ...client, status: "DISCONNECTED" }, subscription: undefined, listener: undefined, item: undefined, update: undefined };
+      const lostUpdates: LightstreamerEventEnvelope = { ...source, id: "activity-layers-lost-updates", kind: "lost-updates", subscription: undefined, listener: undefined, item: undefined, update: { lostUpdates: 3 } };
+      const subscriptionError: LightstreamerEventEnvelope = { ...source, id: "activity-layers-subscription-error", kind: "subscription-error", subscription: { ...source.subscription, id: "activity-layers-subscription" }, listener: undefined, item: undefined, update: undefined, raw: { code: 500, message: "deterministic Activity layer error" } };
+      return {
+        id,
+        initialEvents: [
+          ...updates,
+          clientStatus,
+          lostUpdates,
+          subscriptionError
+        ],
+        selectedEventId: updates.at(-1)?.id,
+        captureStatus: "capturing"
+      };
+    }
+    case "activity-clock-discontinuity": {
+      const sourceEvents = highVolumeEvents(1, 8);
+      const anchor = sourceEvents[0]?.timestamp ?? 0;
+      const events = sourceEvents.map((event, index) => ({
+        ...event,
+        logicalEventId: `activity-clock-logical-${index + 1}`,
+        timestamp: anchor + (index < 4 ? index * 1_000 : -100_000 + (index - 4) * 1_000)
+      }));
+      return { id, initialEvents: events, selectedEventId: events.at(-1)?.id, captureStatus: "capturing" };
+    }
+    case "activity-aggregation-failure":
+      return { id, initialEvents: highVolumeEvents(1, 8), captureStatus: "capturing", activityProjectionFailure: "Synthetic Activity aggregation failure for browser verification." };
+    case "activity-terminal":
+      return {
+        id,
+        initialEvents: highVolumeEvents(1, 8),
+        selectedEventId: highVolumeEventId(4),
+        captureStatus: "capturing",
+        historyCapacity: { maxRetainedCount: 4, retainedWarningCount: 3 }
+      };
+    case "activity-rebucket": {
+      const initial = highVolumeEvents(1, 8).map((event, index) => ({ ...event, logicalEventId: `activity-rebucket-logical-${index + 1}` }));
+      const source = initial.at(-1);
+      if (!source) throw new Error("Activity rebucketing scenario requires a source update.");
+      return {
+        id,
+        initialEvents: initial,
+        deferredEvents: [{ ...source, id: highVolumeEventId(9), logicalEventId: "activity-rebucket-logical-9", timestamp: source.timestamp + 200_000 }],
+        captureStatus: "capturing"
+      };
+    }
     case "activity-ranking-pages":
       return {
         id,

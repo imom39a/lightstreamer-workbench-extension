@@ -6,6 +6,7 @@ import {
   createFilter,
   createTypedFilterValue,
   evaluateFilter,
+  filterSummary,
   filterEquals,
   serializeFilter,
   type FilterMutation
@@ -51,6 +52,14 @@ describe("canonical Filter algebra", () => {
     expect(evaluateFilter({ ...createFilter(), criteria: { missing: { include: [createTypedFilterValue("missing", "string", "x")], exclude: [] } } }, record()).matches).toBe(false);
     expect(() => createTypedFilterValue("value", "number", Number.NaN)).toThrow();
     expect(() => createTypedFilterValue("value", "string", true as never)).toThrow();
+  });
+
+  it("summarizes active typed criteria for shared UI truth boundaries", () => {
+    const filter = canonicalizeFilter({
+      ...createFilter(),
+      criteria: { kind: { include: [createTypedFilterValue("kind", "enum", "item-update")], exclude: [] } }
+    });
+    expect(filterSummary(filter)).toBe("kind: item-update");
   });
 
   it("canonicalizes, compares, and serializes independently of authoring order", () => {

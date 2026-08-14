@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type KeyboardEvent, type ReactElement } from "react";
 import { sortActivityRankings, type ActivityConnectionLane, type ActivityMarker, type ActivityRanking } from "../../../core/activity-projection";
-import { createTypedFilterValue, type FilterMutation } from "../../../core/filter-algebra";
+import { createTypedFilterValue, filterSummary, type FilterMutation } from "../../../core/filter-algebra";
 import type { ActivityDocumentState } from "../../../core/activity-document";
 import type { WorkbenchActivitySnapshot, WorkbenchRuntime } from "../workbench-runtime";
 
@@ -40,11 +40,16 @@ export function ObservedActivityDocument({ runtime, activity, scopeLabel }: { ru
   const projection = activity.projection;
   const document = activity.document;
   const selected = document?.selection ?? null;
-  const selectedBucket = selected?.kind === "bucket"
+  const sharedFilterSummary = filterSummary(activity.filter);
+  const activityFilterSummary = sharedFilterSummary === "none" ? "None" : sharedFilterSummary;
+  const selectedBucketRange = selected?.kind === "bucket" ? document?.selectionRange ?? null : null;
+  const selectedBucketCandidate = selected?.kind === "bucket"
     ? projection.buckets.find((bucket) => bucket.id === selected.id) ?? projection.buckets[Number(selected.id)] ?? null
     : null;
+  const selectedBucket = selectedBucketCandidate && (!selectedBucketRange || (selectedBucketCandidate.start === selectedBucketRange.start && selectedBucketCandidate.end === selectedBucketRange.end))
+    ? selectedBucketCandidate
+    : null;
   const selectedBucketIndex = selectedBucket ? projection.buckets.indexOf(selectedBucket) : -1;
-  const selectedBucketRange = selected?.kind === "bucket" ? document?.selectionRange ?? null : null;
   const selectedMarker = selected?.kind === "marker" ? projection.markers[Number(selected.id)] ?? null : null;
   const selectedRanking = selected?.kind === "ranking" ? projection.allRankings.find((ranking) => ranking.identity === selected.id) ?? null : null;
   const rankings = useMemo(() => sortActivityRankings(projection.allRankings, document?.rankingSort ?? "LOGICAL_UPDATES"), [document?.rankingSort, projection.allRankings]);
@@ -113,7 +118,7 @@ export function ObservedActivityDocument({ runtime, activity, scopeLabel }: { ru
     filterMutations
   });
   const selectionContext = (provenance: "SERVER" | "LOCAL") =>
-    `provenance ${provenance} · Scope ${activity.scope.kind} · Filter ${activity.filter.text || "None"} · Committed Boundary ${activity.readPoint.committedEvidenceBoundary?.sequence ?? "None"} · Observation Coverage ${activity.readPoint.coverage}`;
+    `provenance ${provenance} · Scope ${activity.scope.kind} · Filter ${activityFilterSummary} · Committed Boundary ${activity.readPoint.committedEvidenceBoundary?.sequence ?? "None"} · Observation Coverage ${activity.readPoint.coverage}`;
   const onTimelineKeyDown = (event: KeyboardEvent<HTMLTableElement>) => {
     if (!projection.buckets.length) return;
     const current = selectedBucketIndex >= 0
@@ -202,7 +207,7 @@ export function ObservedActivityDocument({ runtime, activity, scopeLabel }: { ru
           : (localTimeline ? selectedBucket.localLogicalUpdates : selectedBucket.logicalUpdates)
     : null;
   const selectionText = selectedBucket
-    ? `${selectedBucket.start} ≤ timestamp < ${selectedBucket.end} · ${selectedTimelineCount} ${timelineSeriesLabel} · segment ${selectedBucket.segment} · provenance ${timelineProvenance} · Scope ${activity.scope.kind} · Filter ${activity.filter.text || "None"} · Committed Boundary ${activity.readPoint.committedEvidenceBoundary?.sequence ?? "None"} · Observation Coverage ${activity.readPoint.coverage}`
+    ? `${selectedBucket.start} ≤ timestamp < ${selectedBucket.end} · ${selectedTimelineCount} ${timelineSeriesLabel} · segment ${selectedBucket.segment} · provenance ${timelineProvenance} · Scope ${activity.scope.kind} · Filter ${activityFilterSummary} · Committed Boundary ${activity.readPoint.committedEvidenceBoundary?.sequence ?? "None"} · Observation Coverage ${activity.readPoint.coverage}`
     : selected?.kind === "bucket" && selectedBucketRange
       ? `${selectedBucketRange.start} ≤ selected timestamp < ${selectedBucketRange.end} · preserved absolute interval overlay after rebucketing; select a current bucket to inspect its exact count · series ${timelineSeriesLabel} · ${selectionContext(timelineProvenance)}`
     : selectedMarker
@@ -228,7 +233,7 @@ export function ObservedActivityDocument({ runtime, activity, scopeLabel }: { ru
     </header>
     <div className="workbench-react__document-boundary" aria-label="Activity truth boundary">
       <span>Scope <strong>{activity.scope.kind}</strong></span>
-      <span>Filter <strong>{activity.filter.text || "None"}</strong></span>
+      <span>Filter <strong>{activityFilterSummary}</strong></span>
       <span>History Interval <strong>{activity.readPoint.intervalId}</strong></span>
       <span>Committed Boundary <strong>{activity.readPoint.committedEvidenceBoundary?.sequence ?? "None"}</strong></span>
       <span>Coverage <strong>{activity.readPoint.coverage}</strong></span>

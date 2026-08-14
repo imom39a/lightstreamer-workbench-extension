@@ -77,6 +77,18 @@ export type FilterMutation =
 
 export type FilterPolarity = "include" | "exclude";
 
+export function filterSummary(filter: Filter): string {
+  const entries: string[] = [];
+  if (filter.text) entries.push(filter.text);
+  for (const [facet, criterion] of Object.entries(filter.criteria)) {
+    for (const value of criterion.include) entries.push(`${facet}: ${value.label}`);
+    for (const value of criterion.exclude) entries.push(`${facet} excluding ${value.label}`);
+  }
+  if (filter.around) entries.push(`Around ${filter.around.start}–${filter.around.end}`);
+  for (const unsupported of filter.unsupported) entries.push(`${unsupported.facet ?? "criterion"} unavailable`);
+  return entries.length ? entries.join(" · ") : "none";
+}
+
 export type FilterMutationResult =
   | Readonly<{ ok: true; filter: Filter; changed: boolean }>
   | Readonly<{ ok: false; filter: Filter; problem: Readonly<{ code: "STALE_FILTER_REVISION" | "INVALID_FILTER_MUTATION"; message: string }> }>;
