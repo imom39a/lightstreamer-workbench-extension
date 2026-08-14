@@ -37,4 +37,17 @@ describe("promoted Activity document seam", () => {
     expect(updated.view).toBe("FROZEN");
     expect(updated.newerMatchingEvidence).toBe(3);
   });
+
+  it("preserves Local visibility and ranking sort while clearing stale aggregate selection", () => {
+    const { filter, readPoint, projection } = fixture();
+    const document = openActivityDocument(projection, { scope: { kind: "PAGE" }, filter, readPoint, evidenceSelectionId: null, evidenceScrollTop: 0, view: "FOLLOW LIVE", localDraftId: null });
+    const configured = reduceActivityDocument(document, { type: "set-local-series", enabled: true }).state;
+    const sorted = reduceActivityDocument(configured, { type: "set-ranking-sort", sort: "UPDATE_DELIVERIES" }).state;
+    const selected = reduceActivityDocument(sorted, { type: "select", selection: { kind: "ranking", id: "subscription-1" } }).state;
+    const changed = reduceActivityDocument(selected, { type: "scope-or-filter-changed", scope: { kind: "PAGE" }, filter, readPoint, projection }).state;
+
+    expect(changed.selection).toBeNull();
+    expect(changed.localSeries).toBe(true);
+    expect(changed.rankingSort).toBe("UPDATE_DELIVERIES");
+  });
 });
