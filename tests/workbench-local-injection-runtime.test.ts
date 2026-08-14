@@ -175,6 +175,67 @@ function scheduler(): WorkbenchRuntimeScheduler & { flush(): void } {
 }
 
 describe("WorkbenchRuntime Local Injection", () => {
+  it("converts a protected Draft, adds one same-target update, and steps the immutable Run one Injection at a time", async () => {
+    const history = createAuthoritativeHistory({
+      precommitted: [
+        commandEvent("journey-1", "client-created"),
+        commandEvent("journey-2", "client-status"),
+        commandEvent("journey-3", "subscription-created"),
+        commandEvent("journey-4", "subscription-started"),
+        commandEvent("journey-5", "listener-added"),
+        commandEvent("source-6", "item-update"),
+        commandEvent("source-7", "item-update", {
+          update: {
+            isSnapshot: false,
+            command: "UPDATE",
+            key: "order-1",
+            fields: { command: "UPDATE", key: "order-1", qty: 2 },
+            changedFields: { command: "UPDATE", qty: 2 }
+          }
+        })
+      ]
+    });
+    let request = 0;
+    const executor = { execute: vi.fn(async () => result("success", {
+      requestId: `scenario-request-${++request}`,
+      attemptedCount: 1,
+      deliveredCount: 1,
+      failedCount: 0
+    })) };
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: executor });
+    await flushAsync();
+    runtime.dispatch({ type: "select-evidence", eventId: "source-6" });
+    await flushAsync();
+    runtime.dispatch({ type: "begin-local-injection-from-selection" });
+    const original = runtime.getSnapshot().localInjection.draft;
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({
+      phase: "edit",
+      scenario: { revision: 1, steps: [{ draft: { id: original?.id, rawText: original?.rawText, sourceEventId: "source-6" } }] }
+    });
+
+    runtime.dispatch({ type: "open-scenario-evidence-picker" });
+    runtime.dispatch({ type: "select-evidence", eventId: "source-7" });
+    await flushAsync();
+    runtime.dispatch({ type: "add-selected-evidence-to-scenario" });
+    expect(runtime.getSnapshot().scenario?.scenario.steps.map(({ draft }) => draft.sourceEventId)).toEqual(["source-6", "source-7"]);
+
+    runtime.dispatch({ type: "review-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "review", run: { scenarioRevision: 2, nextOrdinal: 1, steps: [{ ordinal: 1 }, { ordinal: 2 }] } });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "paused", run: { nextOrdinal: 2, trace: [{ ordinal: 1, evidence: { eventId: "synthetic-scenario-request-1" } }] } });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    expect(executor.execute).toHaveBeenCalledTimes(2);
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "complete", run: { trace: [{ injectionId: expect.any(String) }, { injectionId: expect.any(String) }] } });
+    expect(runtime.getSnapshot().scenario?.run?.trace[0]?.injectionId).not.toBe(runtime.getSnapshot().scenario?.run?.trace[1]?.injectionId);
+    runtime.dispose();
+  });
+
   it("does not call a custom executor with an unchanged non-concrete Source field", async () => {
     const history = historyWithCommandTarget({
       update: {
