@@ -370,6 +370,7 @@ function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "pau
       activeOffsetMs: runnerPhase === "paused" ? 0 : 25,
       remainingDelayMs: runnerPhase === "paused" ? 50 : 25,
       pauseReason: runnerPhase === "paused" ? "USER" : null,
+      controlCapacityReached: false,
       visible: true
     }
   };
@@ -1724,14 +1725,28 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("waiting") })));
     expect(document.activeElement).toBe(find("Pause"));
     await act(async () => find("Pause")?.click());
+    const pausePending = reviewedScenario("in-flight");
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...pausePending, runner: { ...pausePending.runner!, phase: "pause-pending" } } })));
+    expect(document.activeElement).toBe(find("Stop"));
     const paused = reviewedScenario();
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...paused, phase: "paused", run: { ...paused.run!, controls: [{ sequence: 1, kind: "PAUSE", activeOffsetMs: 25, reason: "USER", detail: "Paused." }] }, runner: { ...paused.runner!, run: { ...paused.run!, controls: [{ sequence: 1, kind: "PAUSE", activeOffsetMs: 25, reason: "USER", detail: "Paused." }] } } } })));
+    expect(document.activeElement).toBe(find("Resume"));
+    await act(async () => find("Step next")?.click());
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("in-flight") })));
+    expect(document.activeElement).toBe(find("Stop"));
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...paused, phase: "paused" } })));
     expect(document.activeElement).toBe(find("Resume"));
 
     const drifted = { ...paused, phase: "paused" as const };
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...drifted, runner: { ...drifted.runner!, pauseReason: "DRIFT" } } })));
     expect(find("Resume")?.disabled).toBe(true);
     expect(find("Step next")?.disabled).toBe(true);
+
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...drifted, runner: { ...drifted.runner!, pauseReason: "USER", controlCapacityReached: true } } })));
+    expect(document.querySelector('[aria-label="Local Injection Scenario"]')?.textContent).toContain("CONTROL TRACE CAPACITY REACHED");
+    expect(find("Resume")?.disabled).toBe(true);
+    expect(find("Step next")?.disabled).toBe(true);
+    expect(find("Stop")?.disabled).toBe(false);
     await act(async () => root.unmount());
   });
 });

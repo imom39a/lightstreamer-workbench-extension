@@ -78,9 +78,8 @@ export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
 // complete canonical form (including generated correlation/Evidence identity)
 // rather than shortening an already-settled outcome after dispatch.
 const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 16 * 1024;
-export const SCENARIO_MAX_CONTROL_RECORDS = 32;
-export const SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD = 4 * 1024;
-const SCENARIO_MIN_CONTROL_RECORDS = 4;
+export const SCENARIO_MAX_CONTROL_RECORDS = 128;
+export const SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD = 512;
 
 export type ScenarioAdmissionContext = Readonly<{ retainedRunBytes?: number }>;
 
@@ -426,7 +425,8 @@ export function scenarioRunAdmission(
   const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, controlReservationBytes: _controlBytes, trace: _trace, controls: _controls, ...immutablePlan } = run;
   const baseAccountedBytes = scenario.accountedBytes + retainedRunBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes;
   const availableControlRecords = Math.floor((SCENARIO_MAX_ACCOUNTED_BYTES - baseAccountedBytes) / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
-  if (availableControlRecords < SCENARIO_MIN_CONTROL_RECORDS) {
+  const minimumControlRecords = run.steps.length + 2;
+  if (availableControlRecords < minimumControlRecords) {
     return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario Run would exceed 8 MiB after reserving its immutable plan and append-only Trace; no Run was created." });
   }
   const controlReservationBytes = Math.min(SCENARIO_MAX_CONTROL_RECORDS, availableControlRecords) * SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD;

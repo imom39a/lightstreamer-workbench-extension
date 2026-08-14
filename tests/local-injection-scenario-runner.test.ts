@@ -302,10 +302,32 @@ describe("Local Injection Scenario runner", () => {
     expect(beforeStop.phase).toBe("paused");
     expect(beforeStop.run.controls.length).toBeLessThan(1_000);
     expect(beforeStop.run.controlReservationBytes).toBeGreaterThan(0);
+    expect(beforeStop.controlCapacityReached).toBe(true);
     runner.stop();
     expect(runner.snapshot()).toMatchObject({ phase: "stopped" });
     expect(runner.snapshot().run.controls.at(-1)).toMatchObject({ kind: "STOP" });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("admits enough control Trace capacity to Step next through all 100 reviewed members", async () => {
+    const clock = new FakeClock();
+    const execute = vi.fn(async ({ ordinal }: { ordinal: number }) => delivered(ordinal));
+    const runner = createLocalInjectionScenarioRunner(reviewedRun(Array.from({ length: 100 }, () => 1_000)), {
+      clock,
+      allocateInjectionId: ({ ordinal }) => `injection-${ordinal}`,
+      execute
+    });
+    expect(runner.snapshot().run.controlReservationBytes).toBeGreaterThanOrEqual(102 * 512);
+    for (let ordinal = 1; ordinal <= 100; ordinal += 1) {
+      runner.stepNext();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(runner.snapshot().run.trace).toHaveLength(ordinal);
+    }
+    expect(runner.snapshot()).toMatchObject({ phase: "complete", run: { controls: expect.any(Array) } });
+    expect(runner.snapshot().run.controls).toHaveLength(100);
+    expect(execute).toHaveBeenCalledTimes(100);
   });
 
   it("allows post-settlement projection checks to pause before the next delay", async () => {

@@ -54,6 +54,7 @@ export type ScenarioRunnerSnapshot = Readonly<{
   activeOffsetMs: number;
   remainingDelayMs: number;
   pauseReason: ScenarioPauseReason | null;
+  controlCapacityReached: boolean;
   visible: boolean;
 }>;
 
@@ -131,9 +132,10 @@ export function createLocalInjectionScenarioRunner(
 
   function appendControl(kind: ScenarioControlRecord["kind"], reason: ScenarioControlRecord["reason"], detail: string): boolean {
     if (run.controls.length >= admittedControlRecords) return false;
+    const record = boundedControlRecord({ sequence: run.controls.length + 1, kind, activeOffsetMs: activeNow(), reason, detail });
     run = Object.freeze({
       ...run,
-      controls: Object.freeze([...run.controls, Object.freeze({ sequence: run.controls.length + 1, kind, activeOffsetMs: activeNow(), reason, detail: detail.slice(0, 512) })])
+      controls: Object.freeze([...run.controls, record])
     });
     return true;
   }
@@ -283,7 +285,7 @@ export function createLocalInjectionScenarioRunner(
   }
 
   function snapshot(): ScenarioRunnerSnapshot {
-    return Object.freeze({ phase, run, cursor: cursor(), nextOrdinal: run.nextOrdinal, activeOffsetMs: activeNow(), remainingDelayMs, pauseReason, visible });
+    return Object.freeze({ phase, run, cursor: cursor(), nextOrdinal: run.nextOrdinal, activeOffsetMs: activeNow(), remainingDelayMs, pauseReason, controlCapacityReached: run.controls.length >= admittedControlRecords - 2, visible });
   }
 
   return Object.freeze({
@@ -340,4 +342,14 @@ export function createLocalInjectionScenarioRunner(
 
 function scaledDelay(delayMs: number, speed: ScenarioRun["speed"]): number {
   return Math.ceil(Math.max(0, delayMs) / speed);
+}
+
+function boundedControlRecord(record: ScenarioControlRecord): ScenarioControlRecord {
+  let detail = record.detail.slice(0, SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
+  let candidate = Object.freeze({ ...record, detail });
+  while (new TextEncoder().encode(JSON.stringify(candidate)).byteLength > SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD && detail.length > 0) {
+    detail = detail.slice(0, Math.max(0, detail.length - 16));
+    candidate = Object.freeze({ ...record, detail });
+  }
+  return candidate;
 }
