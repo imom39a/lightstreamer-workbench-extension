@@ -50,6 +50,11 @@ export type ScenarioStep = Readonly<{
   draft: ScenarioDraftInput;
 }>;
 
+export type RemovedScenarioStep = Readonly<{
+  step: ScenarioStep;
+  index: number;
+}>;
+
 export type LocalInjectionScenario = Readonly<{
   id: string;
   revision: number;
@@ -57,6 +62,39 @@ export type LocalInjectionScenario = Readonly<{
   target: ScenarioTarget;
   steps: readonly ScenarioStep[];
   restorationOrigin: ScenarioRestorationOrigin;
+  nextStepSequence: number;
+  removedSteps: readonly RemovedScenarioStep[];
+  accountedBytes: number;
+}>;
+
+export const SCENARIO_MAX_STEPS = 100;
+export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
+
+export type ScenarioCapacityRefusal = Readonly<{
+  ok: false;
+  capacity: "steps" | "bytes";
+  reason: string;
+}>;
+
+type ScenarioMutation = Readonly<{ ok: true; scenario: LocalInjectionScenario }> | ScenarioCapacityRefusal | Readonly<{ ok: false; reason: string }>;
+
+export type ScenarioMembershipCandidate = Readonly<{
+  evidenceId: string;
+  retainedSequence: number;
+  draft: ScenarioDraftInput | null;
+  unavailableReason?: string;
+}>;
+
+export type ScenarioMembershipPreview = Readonly<{
+  scenarioId: string;
+  scenarioRevision: number;
+  members: readonly Readonly<{
+    evidenceId: string;
+    retainedSequence: number;
+    available: boolean;
+    reason: string | null;
+    draft: ScenarioDraftInput | null;
+  }>[];
 }>;
 
 export type ReviewedScenarioStep = Readonly<{
@@ -102,29 +140,121 @@ export function createScenarioFromDraft(
   draft: ScenarioDraftInput,
   options: Readonly<{ scenarioId: string }>
 ): LocalInjectionScenario {
-  return freeze({
+  const initial = {
     id: options.scenarioId,
     revision: 1,
     phase: "edit" as const,
     target: draft.target,
     steps: [{ id: "step-1", draft }],
-    restorationOrigin: draft.restorationOrigin
-  });
+    restorationOrigin: draft.restorationOrigin,
+    nextStepSequence: 2,
+    removedSteps: [] as readonly RemovedScenarioStep[],
+    accountedBytes: 0
+  };
+  const accountedBytes = scenarioDefinitionBytes(initial);
+  if (accountedBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
+    throw new RangeError("Scenario exceeds the 8 MiB canonical accounted-state limit.");
+  }
+  return freeze({ ...initial, accountedBytes });
 }
 
 export function addScenarioStep(
   scenario: LocalInjectionScenario,
   draft: ScenarioDraftInput
-): Readonly<{ ok: true; scenario: LocalInjectionScenario }> | Readonly<{ ok: false; reason: string }> {
+): ScenarioMutation {
   const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return Object.freeze({ ok: false as const, reason });
-  return Object.freeze({
-    ok: true as const,
-    scenario: freeze({
-      ...scenario,
-      revision: scenario.revision + 1,
-      steps: [...scenario.steps, { id: `step-${scenario.steps.length + 1}`, draft }]
+  return commitScenarioMutation(scenario, {
+    steps: [...scenario.steps, { id: `step-${scenario.nextStepSequence}`, draft }],
+    nextStepSequence: scenario.nextStepSequence + 1
+  });
+}
+
+export function previewScenarioMembership(
+  scenario: LocalInjectionScenario,
+  candidates: readonly ScenarioMembershipCandidate[]
+): ScenarioMembershipPreview {
+  return freeze({
+    scenarioId: scenario.id,
+    scenarioRevision: scenario.revision,
+    members: [...candidates].sort((left, right) => left.retainedSequence - right.retainedSequence).map((candidate) => {
+      const reason = candidate.unavailableReason
+        ?? (candidate.draft ? scenarioTargetIncompatibility(scenario.target, candidate.draft.target) : "Captured Item Update is unavailable for Scenario authoring.");
+      return {
+        evidenceId: candidate.evidenceId,
+        retainedSequence: candidate.retainedSequence,
+        available: reason === null || reason === undefined,
+        reason: reason ?? null,
+        draft: candidate.draft
+      };
     })
+  });
+}
+
+export function confirmScenarioMembershipPreview(
+  scenario: LocalInjectionScenario,
+  preview: ScenarioMembershipPreview
+): ScenarioMutation {
+  if (preview.scenarioId !== scenario.id || preview.scenarioRevision !== scenario.revision) {
+    return freeze({ ok: false as const, reason: "Scenario changed after this membership preview. Preview the retained Evidence again." });
+  }
+  const drafts = preview.members.filter((member) => member.available && member.draft !== null).map((member) => member.draft!);
+  const steps = drafts.map((draft, index) => ({ id: `step-${scenario.nextStepSequence + index}`, draft }));
+  return commitScenarioMutation(scenario, {
+    steps: [...scenario.steps, ...steps],
+    nextStepSequence: scenario.nextStepSequence + steps.length
+  });
+}
+
+export function moveScenarioStep(scenario: LocalInjectionScenario, stepId: string, direction: "earlier" | "later"): ScenarioMutation {
+  const from = scenario.steps.findIndex(({ id }) => id === stepId);
+  const to = direction === "earlier" ? from - 1 : from + 1;
+  if (from < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
+  if (to < 0 || to >= scenario.steps.length) return freeze({ ok: false as const, reason: `Scenario Step cannot move ${direction}.` });
+  const steps = [...scenario.steps];
+  [steps[from], steps[to]] = [steps[to]!, steps[from]!];
+  return commitScenarioMutation(scenario, { steps });
+}
+
+export function duplicateScenarioStep(scenario: LocalInjectionScenario, stepId: string): ScenarioMutation {
+  const index = scenario.steps.findIndex(({ id }) => id === stepId);
+  if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
+  const source = scenario.steps[index]!;
+  const duplicate: ScenarioStep = {
+    id: `step-${scenario.nextStepSequence}`,
+    draft: cloneScenarioDraft(source.draft, `${source.draft.id}-copy-${scenario.nextStepSequence}`)
+  };
+  const steps = [...scenario.steps];
+  steps.splice(index + 1, 0, duplicate);
+  return commitScenarioMutation(scenario, { steps, nextStepSequence: scenario.nextStepSequence + 1 });
+}
+
+export function removeScenarioStep(scenario: LocalInjectionScenario, stepId: string): ScenarioMutation {
+  const index = scenario.steps.findIndex(({ id }) => id === stepId);
+  if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
+  if (scenario.steps.length === 1) return freeze({ ok: false as const, reason: "A Scenario must retain at least one Step." });
+  const step = scenario.steps[index]!;
+  return commitScenarioMutation(scenario, {
+    steps: scenario.steps.filter(({ id }) => id !== stepId),
+    removedSteps: [...scenario.removedSteps, { step, index }]
+  });
+}
+
+export function undoScenarioStepRemoval(scenario: LocalInjectionScenario): ScenarioMutation {
+  const removed = scenario.removedSteps.at(-1);
+  if (!removed) return freeze({ ok: false as const, reason: "No removed Scenario Step is available to restore." });
+  const steps = [...scenario.steps];
+  steps.splice(Math.min(removed.index, steps.length), 0, removed.step);
+  return commitScenarioMutation(scenario, { steps, removedSteps: scenario.removedSteps.slice(0, -1) });
+}
+
+export function updateScenarioStepDraft(scenario: LocalInjectionScenario, stepId: string, draft: ScenarioDraftInput): ScenarioMutation {
+  const index = scenario.steps.findIndex(({ id }) => id === stepId);
+  if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
+  const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
+  if (reason) return freeze({ ok: false as const, reason });
+  return commitScenarioMutation(scenario, {
+    steps: scenario.steps.map((step, stepIndex) => stepIndex === index ? { ...step, draft } : step)
   });
 }
 
@@ -281,6 +411,57 @@ export function scenarioTargetIncompatibility(expected: ScenarioTarget, candidat
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function commitScenarioMutation(
+  scenario: LocalInjectionScenario,
+  change: Partial<Pick<LocalInjectionScenario, "steps" | "nextStepSequence" | "removedSteps">>
+): ScenarioMutation {
+  const steps = change.steps ?? scenario.steps;
+  if (steps.length > SCENARIO_MAX_STEPS) {
+    return freeze({ ok: false as const, capacity: "steps" as const, reason: `Scenario admits at most ${SCENARIO_MAX_STEPS} Steps; no membership changed.` });
+  }
+  const candidate = {
+    ...scenario,
+    ...change,
+    steps,
+    revision: scenario.revision + 1,
+    accountedBytes: 0
+  };
+  const accountedBytes = scenarioDefinitionBytes(candidate);
+  if (accountedBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
+    return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario would exceed 8 MiB of canonical accounted state; no membership changed." });
+  }
+  return freeze({ ok: true as const, scenario: freeze({ ...candidate, accountedBytes }) });
+}
+
+function scenarioDefinitionBytes(scenario: Omit<LocalInjectionScenario, "accountedBytes"> | LocalInjectionScenario): number {
+  const { accountedBytes: _ignored, ...accounted } = scenario as LocalInjectionScenario;
+  return new TextEncoder().encode(JSON.stringify(accounted)).byteLength;
+}
+
+function cloneScenarioDraft(draft: ScenarioDraftInput, id: string): ScenarioDraftInput {
+  return freeze({
+    ...draft,
+    id,
+    document: draft.document ? cloneJsonValue(draft.document) : null,
+    diagnostics: draft.diagnostics.map((diagnostic) => ({ ...diagnostic })),
+    target: { ...draft.target, schemaFields: [...draft.target.schemaFields] },
+    item: { ...draft.item },
+    editor: {
+      ...draft.editor,
+      serializedState: draft.editor.serializedState ? cloneJsonValue(draft.editor.serializedState) : null
+    },
+    restorationOrigin: { ...draft.restorationOrigin }
+  });
+}
+
+function cloneJsonValue<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((child) => cloneJsonValue(child)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, cloneJsonValue(child)])) as T;
+  }
+  return value;
 }
 
 function freeze<T>(value: T): T {

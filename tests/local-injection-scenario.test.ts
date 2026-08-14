@@ -1,10 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  SCENARIO_MAX_ACCOUNTED_BYTES,
+  SCENARIO_MAX_STEPS,
   addScenarioStep,
+  confirmScenarioMembershipPreview,
   createScenarioFromDraft,
+  duplicateScenarioStep,
+  moveScenarioStep,
+  previewScenarioMembership,
+  removeScenarioStep,
   reviewScenario,
   stepScenarioRun,
+  undoScenarioStepRemoval,
+  updateScenarioStepDraft,
   type ScenarioDraftInput
 } from "../src/core/local-injection-scenario";
 
@@ -66,6 +75,79 @@ describe("Local Injection Scenario", () => {
     });
     expect(incompatible).toEqual({ ok: false, reason: "Different Session: Scenario Steps must share the exact Local Injection Target." });
     expect(compatible.scenario.steps).toHaveLength(2);
+  });
+
+  it("previews retained Evidence in stable order and adds only confirmed compatible members atomically", () => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const preview = previewScenarioMembership(scenario, [
+      { evidenceId: "evidence-12", retainedSequence: 12, draft: { ...input("draft-12", "UPDATE", 12), sourceEventId: "evidence-12" } },
+      { evidenceId: "evidence-10", retainedSequence: 10, draft: { ...input("draft-10", "UPDATE", 10), sourceEventId: "evidence-10" } },
+      { evidenceId: "evidence-11", retainedSequence: 11, draft: { ...input("draft-11", "UPDATE", 11), sourceEventId: "evidence-11", target: { ...target, sessionId: "other" } } }
+    ]);
+
+    expect(preview.members.map(({ evidenceId, available }) => [evidenceId, available])).toEqual([
+      ["evidence-10", true], ["evidence-11", false], ["evidence-12", true]
+    ]);
+    expect(preview.members[1]?.reason).toContain("Different Session");
+    expect(scenario.steps).toHaveLength(1);
+
+    const confirmed = confirmScenarioMembershipPreview(scenario, preview);
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.scenario.steps.map(({ draft }) => draft.sourceEventId)).toEqual([
+      "source-draft-1", "evidence-10", "evidence-12"
+    ]);
+    expect(confirmed.scenario.revision).toBe(2);
+  });
+
+  it("moves, duplicates, removes, and undoes without changing surviving Step identities or editor state", () => {
+    const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const addition = addScenarioStep(first, input("draft-2", "UPDATE", 2));
+    if (!addition.ok) throw new Error(addition.reason);
+    const originalSecond = addition.scenario.steps[1]!;
+    const moved = moveScenarioStep(addition.scenario, originalSecond.id, "earlier");
+    expect(moved.ok).toBe(true);
+    if (!moved.ok) return;
+    expect(moved.scenario.steps.map(({ id }) => id)).toEqual(["step-2", "step-1"]);
+    expect(moved.scenario.steps[0]).toBe(originalSecond);
+
+    const duplicated = duplicateScenarioStep(moved.scenario, "step-2");
+    expect(duplicated.ok).toBe(true);
+    if (!duplicated.ok) return;
+    expect(duplicated.scenario.steps.map(({ id }) => id)).toEqual(["step-2", "step-3", "step-1"]);
+    expect(duplicated.scenario.steps[1]?.draft).not.toBe(originalSecond.draft);
+    expect(duplicated.scenario.steps[1]?.draft.editor).toEqual(originalSecond.draft.editor);
+
+    const removed = removeScenarioStep(duplicated.scenario, "step-2");
+    expect(removed.ok).toBe(true);
+    if (!removed.ok) return;
+    expect(removed.scenario.steps.map(({ id }) => id)).toEqual(["step-3", "step-1"]);
+    const restored = undoScenarioStepRemoval(removed.scenario);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.scenario.steps.map(({ id }) => id)).toEqual(["step-2", "step-3", "step-1"]);
+    expect(restored.scenario.steps[0]).toBe(originalSecond);
+  });
+
+  it("refuses the exact addition or edit that crosses a hard capacity without partial mutation", () => {
+    const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    let scenario = first;
+    for (let index = 2; index <= SCENARIO_MAX_STEPS; index += 1) {
+      const addition = addScenarioStep(scenario, input(`draft-${index}`, "UPDATE", index));
+      if (!addition.ok) throw new Error(addition.reason);
+      scenario = addition.scenario;
+    }
+    const overflow = addScenarioStep(scenario, input("draft-101", "UPDATE", 101));
+    expect(overflow).toMatchObject({ ok: false, capacity: "steps" });
+    expect(scenario.steps).toHaveLength(100);
+
+    const huge = { ...input("draft-huge", "ADD", 1), rawText: "x".repeat(SCENARIO_MAX_ACCOUNTED_BYTES) };
+    expect(() => createScenarioFromDraft(huge, { scenarioId: "too-large" })).toThrow(/8 MiB/);
+
+    const before = scenario.steps[0]!;
+    const edited = updateScenarioStepDraft(scenario, before.id, { ...before.draft, rawText: "x".repeat(SCENARIO_MAX_ACCOUNTED_BYTES) });
+    expect(edited).toMatchObject({ ok: false, capacity: "bytes" });
+    expect(scenario.steps[0]).toBe(before);
   });
 
   it("reviews an immutable ordered plan and validates UPDATE against a preceding planned ADD", () => {
