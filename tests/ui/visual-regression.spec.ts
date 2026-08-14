@@ -61,7 +61,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         await expect(steps.getByText("NOT RUN", { exact: true })).toBeVisible();
         await steps.evaluate((owner) => {
           const firstOutcome = owner.querySelector("article:first-child p");
-          if (firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
+          if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
         });
       }
       return;
