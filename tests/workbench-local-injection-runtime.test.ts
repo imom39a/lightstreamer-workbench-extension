@@ -472,6 +472,27 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("seeds a post-Clear Review from the new empty interval instead of the prior committed boundary", async () => {
+    const runtime = createWorkbenchRuntime({
+      history: historyWithCommandTarget(),
+      captureStatus: "capturing",
+      localInjectionExecutor: { execute: vi.fn(async () => result("wire-error", { error: "terminalize before Clear" })) }
+    });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "review-scenario" });
+    expect(runtime.getSnapshot().scenario?.run?.committedEvidenceSeed).not.toBeNull();
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await vi.waitFor(() => expect(runtime.getSnapshot().retention.clearState).toBe("idle"));
+    expect(runtime.getPerformanceDiagnostics?.().committedEvidenceBoundary).toBeNull();
+    runtime.dispose();
+  });
+
   it("rejects Clear for an active Run and later marks retained trace Evidence unavailable without erasing it", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", localInjectionExecutor: { execute: vi.fn(async () => result("success", { attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) } });
     await flushAsync();
