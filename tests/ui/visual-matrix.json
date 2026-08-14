@@ -208,7 +208,14 @@
     "theme": "dark",
     "forcedColors": true,
     "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
-    "production": { "scenario": "local-injection-scenario-partial", "setup": "scenario" }
+    "production": { "scenario": "local-injection-scenario-stop-in-flight", "setup": "scenario-inflight-stop" }
+  },
+  {
+    "id": "scenario-paused-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-review", "setup": "scenario-hidden-pause" }
   },
   {
     "id": "scenario-membership-preview-normal-dark",

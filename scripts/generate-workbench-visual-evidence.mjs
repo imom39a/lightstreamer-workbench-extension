@@ -445,7 +445,9 @@ async function captureProduction(runningBrowser, scenario) {
     }
     if (scenario.production.setup === "scenario") {
       const scenarioDocument = page.getByRole("region", { name: "Local Injection Scenario" });
-      const actionName = scenario.production.scenario.endsWith("edit")
+      const actionName = scenario.production.setup === "scenario-hidden-pause"
+        ? "Resume"
+        : scenario.production.scenario.endsWith("edit")
         ? "Add captured update"
         : scenario.production.scenario.endsWith("review")
           ? "Pause"
@@ -547,6 +549,21 @@ async function captureProduction(runningBrowser, scenario) {
 }
 
 async function prepareProductionState(page, setup) {
+  if (setup === "scenario-hidden-pause") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+    await page.evaluate(() => window.__setWorkbenchVisible(false));
+    await page.evaluate(() => window.__setWorkbenchVisible(true));
+    await scenario.getByRole("button", { name: "Resume" }).waitFor();
+    return;
+  }
+  if (setup === "scenario-inflight-stop") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+    await scenario.getByText(/IN FLIGHT/).waitFor();
+    await scenario.getByRole("button", { name: "Stop" }).click();
+    await scenario.getByText(/RUN STOPPED/).waitFor();
+    await scenario.getByText("NOT RUN", { exact: true }).waitFor();
+    return;
+  }
   if (setup === "scenario-membership-preview") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await scenario.getByRole("button", { name: "Add captured update" }).click();

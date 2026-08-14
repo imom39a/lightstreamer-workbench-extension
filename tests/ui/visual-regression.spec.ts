@@ -9,7 +9,7 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "scenario" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
+  production: { scenario: string; setup: "none" | "scenario" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -53,6 +53,21 @@ async function openScenario(page: Page, visual: VisualCase): Promise<void> {
 
 async function prepareProductionState(page: Page, visual: VisualCase): Promise<void> {
   switch (visual.production.setup) {
+    case "scenario-hidden-pause": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      await page.evaluate(() => (window as unknown as { __setWorkbenchVisible(visible: boolean): void }).__setWorkbenchVisible(false));
+      await page.evaluate(() => (window as unknown as { __setWorkbenchVisible(visible: boolean): void }).__setWorkbenchVisible(true));
+      await expect(scenario.getByRole("button", { name: "Resume" })).toBeVisible();
+      return;
+    }
+    case "scenario-inflight-stop": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      await expect(scenario).toContainText("IN FLIGHT");
+      await scenario.getByRole("button", { name: "Stop" }).click();
+      await expect(scenario).toContainText("RUN STOPPED");
+      await expect(scenario.getByText("NOT RUN", { exact: true })).toBeVisible();
+      return;
+    }
     case "scenario-membership-preview": {
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
       await scenario.getByRole("button", { name: "Add captured update" }).click();

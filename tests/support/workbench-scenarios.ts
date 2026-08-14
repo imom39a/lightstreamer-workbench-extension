@@ -62,6 +62,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   ,"local-injection-scenario-complete"
   ,"local-injection-scenario-partial"
   ,"local-injection-scenario-high-volume"
+  ,"local-injection-scenario-stop-in-flight"
 ] as const;
 
 export type WorkbenchScenarioId = (typeof WORKBENCH_SCENARIO_IDS)[number];
@@ -107,7 +108,7 @@ export type WorkbenchScenario = Readonly<{
     staleAfterReview?: boolean;
     execute?: boolean;
     secondEntry?: "selection" | "scope";
-    executorOutcome?: "pending" | "delivered" | "failed" | "partial" | "unknown";
+    executorOutcome?: "pending" | "delivered" | "delayed" | "failed" | "partial" | "unknown";
     terminalLimit?: boolean;
     scenario?: Readonly<{ addEventId?: string; authoredSteps?: number; review?: boolean; steps?: number; delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean }>;
   }>;
@@ -625,6 +626,8 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return localInjectionScenario(id, true, 1, "partial");
     case "local-injection-scenario-high-volume":
       return localInjectionHighVolumeScenario(id);
+    case "local-injection-scenario-stop-in-flight":
+      return localInjectionScenario(id, true, 0, "delayed", { play: true });
   }
 }
 
@@ -658,7 +661,7 @@ function localInjectionScenario(
   id: WorkbenchScenarioId,
   review: boolean,
   steps: number,
-  executorOutcome: "delivered" | "partial" = "delivered",
+  executorOutcome: "delivered" | "delayed" | "partial" = "delivered",
   controls: Readonly<{ delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean }> = {}
 ): WorkbenchScenario {
   const topology = getPanelScenario("topology-small");
