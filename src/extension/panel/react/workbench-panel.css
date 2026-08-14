@@ -744,7 +744,9 @@
 .workbench-react[data-geometry="compact"][data-compact-surface="scope"] .workbench-react__evidence,
 .workbench-react[data-geometry="compact"][data-compact-surface="context"] .workbench-react__evidence { display: none; }
 .workbench-react[data-geometry="compact"] .workbench-react__operating > strong,
-.workbench-react[data-geometry="compact"] .workbench-react__operating > span { min-width: 0; margin-right: 5px; overflow: hidden; padding-right: 6px; text-overflow: ellipsis; }
+.workbench-react[data-geometry="compact"] .workbench-react__operating > span { max-width: 80px; min-width: 0; flex: 0 1 80px; margin-right: 5px; overflow: hidden; padding-right: 6px; text-overflow: ellipsis; }
+.workbench-react[data-geometry="compact"] .workbench-react__operating-actions { gap: 2px; }
+.workbench-react[data-geometry="compact"] .workbench-react__operating-actions > button { padding-inline: 2px; }
 .workbench-react[data-geometry="compact"] .workbench-react__operating-actions > label[for="workbench-theme"],
 .workbench-react[data-geometry="compact"] .workbench-react__operating-actions > select#workbench-theme { display: none; }
 .workbench-react[data-geometry="compact"] .workbench-react__operating-actions > .workbench-react__find { position: absolute; z-index: 5; top: 32px; right: 0; display: flex; max-width: 100%; border: 1px solid var(--wb-border); background: var(--wb-raised); padding: 5px; }
