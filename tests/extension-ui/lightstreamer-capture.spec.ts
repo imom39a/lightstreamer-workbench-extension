@@ -35,11 +35,17 @@ const highVolumeFixtureUrl = new URL(
   "/?scenario=loading-evidence",
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
+const issue16FixtureUrl = new URL(
+  "/?scenario=issue-16",
+  process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
+).href;
+
+type OfficialClientScenario = "authored" | "high-volume-loading" | "issue-16";
 
 async function runOfficialClientPanelJourney(
   windowSize: string,
   viewport: Readonly<{ width: number; height: number }>,
-  scenario: "authored" | "high-volume-loading" = "authored"
+  scenario: OfficialClientScenario = "authored"
 ): Promise<void> {
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-playwright-extension-"));
   const chromeExecutable = await resolveChromeExecutable(rootDir);
@@ -93,7 +99,11 @@ async function runOfficialClientPanelJourney(
     await pageCdp.request("Page.enable");
     await pageCdp.request("Runtime.enable");
     await pageCdp.request("Page.navigate", {
-      url: scenario === "high-volume-loading" ? highVolumeFixtureUrl : authoredFixtureUrl
+      url: scenario === "high-volume-loading"
+        ? highVolumeFixtureUrl
+        : scenario === "issue-16"
+          ? issue16FixtureUrl
+          : authoredFixtureUrl
     });
     if (scenario === "high-volume-loading") {
       await waitForCondition(
@@ -101,6 +111,16 @@ async function runOfficialClientPanelJourney(
         `window.LSEW_CONTINUOUS_EVIDENCE_TARGET === 20001 &&
           document.querySelectorAll("#fixture-events li").length >= 100`,
         "the official client fixture to begin continuous high-volume COMMAND Capture"
+      );
+    } else if (scenario === "issue-16") {
+      await waitForCondition(
+        pageCdp,
+        `window.LSEW_FIXTURE?.subscriptions?.length === 15 &&
+          window.LSEW_ISSUE_16_GROUPS?.length === 17 &&
+          window.LSEW_ISSUE_16_TOTAL_EVENTS === 1692 &&
+          [...document.querySelectorAll("#fixture-events li")]
+            .filter((row) => !row.textContent?.startsWith("end-of-snapshot")).length === 1692`,
+        "the exact issue-16 fixture to deliver 1,692 updates across 15 subscriptions and 17 groups"
       );
     } else {
       await waitForCondition(
@@ -140,6 +160,81 @@ async function runOfficialClientPanelJourney(
       viewport,
       `${viewport.width}×${viewport.height}`
     );
+
+    if (scenario === "issue-16") {
+      await waitForCondition(
+        panelCdp,
+        `document.querySelector(".workbench-react__operating strong")?.textContent === "Capture RUNNING" &&
+          document.querySelector('[aria-label="Structural runtime scope"] [role="treeitem"][aria-level="1"]')
+            ?.textContent?.includes("15 subscriptions") &&
+          document.querySelector(".workbench-react__evidence-summary")?.textContent
+            ?.includes("Matching 1,692") &&
+          document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]').length > 0`,
+        "the actual issue-16 Evidence and 15-subscription Scope topology"
+      );
+
+      const retainedProof = await evaluateByValue<{
+        pageScope: string;
+        evidenceSummary: string;
+        retainedRows: number;
+        logicalScopeNodes: number;
+      }>(panelCdp, `(() => {
+        const rows = [...document.querySelectorAll(
+          '[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]'
+        )];
+        return {
+          pageScope: document.querySelector(
+            '[aria-label="Structural runtime scope"] [role="treeitem"][aria-level="1"]'
+          )?.textContent ?? "",
+          evidenceSummary: document.querySelector(".workbench-react__evidence-summary")?.textContent ?? "",
+          retainedRows: rows.length,
+          logicalScopeNodes: Number(
+            document.querySelector('[aria-label^="Runtime Scope tree"]')
+              ?.getAttribute("data-logical-node-count") ?? 0
+          )
+        };
+      })()`);
+      expect(retainedProof.pageScope).toContain("15 subscriptions");
+      expect(retainedProof.evidenceSummary).not.toContain("Shown 0");
+      expect(retainedProof.retainedRows).toBeGreaterThan(0);
+      expect(retainedProof.logicalScopeNodes).toBeGreaterThan(15);
+
+      const subscription = await focusScopeTreeLabel(panelCdp, "subscription-6");
+      expect(subscription).toMatchObject({ level: "4", setSize: "15" });
+      expect(subscription.text).toContain("50 real · 50 deliveries");
+      await pressScopeTreeItemEnter(panelCdp, subscription.id);
+      await waitForCondition(
+        panelCdp,
+        `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
+            .find((candidate) => candidate.getAttribute("data-scope-id") === ${JSON.stringify(subscription.id)})
+            ?.getAttribute("aria-selected") === "true" &&
+          document.querySelector(".workbench-react__evidence-summary")?.textContent?.includes("Matching 50") &&
+          [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+            .some((row) => row.textContent?.includes("store-nyc-001-invoice")) &&
+          [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+            .some((row) => row.textContent?.includes("store-nyc-001-expense"))`,
+        "the selected issue-16 subscription Scope to retain both expanded item-group positions"
+      );
+
+      const invoice = await focusScopeTreeLabel(panelCdp, "Item #1");
+      expect(invoice.level).toBe("5");
+      expect(invoice.text).toContain("30 updates");
+      await pressScopeTreeItemEnter(panelCdp, invoice.id);
+      await waitForCondition(
+        panelCdp,
+        `[...document.querySelectorAll('[aria-label="Structural runtime scope"] [role="treeitem"]')]
+            .find((candidate) => candidate.getAttribute("data-scope-id") === ${JSON.stringify(invoice.id)})
+            ?.getAttribute("aria-selected") === "true" &&
+          document.querySelector(".workbench-react__evidence-summary")?.textContent?.includes("Matching 30") &&
+          [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+            .some((row) => row.textContent?.includes("store-nyc-001-invoice")) &&
+          ![...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+            .some((row) => row.textContent?.includes("store-nyc-001-expense"))`,
+        "the selectable issue-16 invoice group Scope to constrain retained Evidence"
+      );
+      expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      return;
+    }
 
     if (scenario === "high-volume-loading") {
       await waitForCondition(
@@ -544,6 +639,71 @@ test("high-volume Capture does not leave shipped Evidence loading after repeated
     "high-volume-loading"
   );
 });
+
+test("issue-16 fixture retains Evidence and exposes its 15-subscription grouped Scope", async () => {
+  await runOfficialClientPanelJourney(
+    "2664,727",
+    { width: 900, height: 700 },
+    "issue-16"
+  );
+});
+
+async function focusScopeTreeLabel(
+  cdp: CdpClient,
+  label: string
+): Promise<{ id: string; level: string | null; setSize: string | null; text: string }> {
+  const found = await evaluateByValue<{
+    id: string;
+    level: string | null;
+    setSize: string | null;
+    text: string;
+  } | null>(cdp, `(async () => {
+    const tree = document.querySelector('[aria-label^="Runtime Scope tree"]');
+    if (!(tree instanceof HTMLElement)) throw new Error("Missing runtime Scope tree");
+    const find = () => [...tree.querySelectorAll('[role="treeitem"]')].find(
+      (candidate) => candidate.querySelector("span")?.textContent?.trim() === ${JSON.stringify(label)}
+    );
+    const initial = tree.querySelector('[role="treeitem"]');
+    if (!(initial instanceof HTMLElement)) throw new Error("Missing runtime Scope item");
+    initial.focus();
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    for (const key of ${JSON.stringify(label)}) {
+      initial.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    const candidate = find();
+    if (!(candidate instanceof HTMLElement)) return null;
+    candidate.scrollIntoView({ block: "center", inline: "nearest" });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const mountedCandidate = find();
+    if (!(mountedCandidate instanceof HTMLElement)) return null;
+    mountedCandidate.focus();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return {
+      id: mountedCandidate.getAttribute("data-scope-id") ?? "",
+      level: mountedCandidate.getAttribute("aria-level"),
+      setSize: mountedCandidate.getAttribute("aria-setsize"),
+      text: mountedCandidate.textContent ?? ""
+    };
+  })()`);
+  if (!found?.id) throw new Error(`Could not find Scope tree item ${label}.`);
+  return found;
+}
+
+async function pressScopeTreeItemEnter(cdp: CdpClient, scopeId: string): Promise<void> {
+  await evaluateByValue<void>(cdp, `(() => {
+    const expectedScopeId = ${JSON.stringify(scopeId)};
+    const item = [...document.querySelectorAll('[aria-label^="Runtime Scope tree"] [data-scope-id]')]
+      .find((candidate) => candidate.getAttribute("data-scope-id") === expectedScopeId);
+    if (!(item instanceof HTMLButtonElement)) throw new Error("Missing mounted Scope item " + expectedScopeId);
+    item.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      bubbles: true,
+      cancelable: true
+    }));
+  })()`);
+}
 
 async function clickPanelButton(cdp: CdpClient, label: string): Promise<void> {
   await clickVisiblePanelElement(
