@@ -537,7 +537,7 @@
 .workbench-react__activity th:first-child, .workbench-react__activity td:first-child { text-align: left; }
 .workbench-react__activity caption { padding: 0 0 6px; text-align: left; color: var(--wb-muted); }
 .workbench-react__activity button { font: inherit; }
-.workbench-react__activity-plot:focus-visible, .workbench-react__activity button:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
+.workbench-react__activity-plot table:focus-visible, .workbench-react__activity button:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
 .workbench-react__activity tr[aria-selected="true"] { background: var(--wb-selection); }
 .workbench-react__activity-markers { margin: 0; padding: 0; list-style: none; }
 .workbench-react__activity-markers li + li { margin-top: 4px; }
@@ -552,16 +552,16 @@
 .workbench-react__activity-bar > span { display: block; width: 100%; min-height: 1px; background: var(--wb-text); }
 .workbench-react__activity-bar[data-selected="true"] > span { background: var(--wb-focus); outline: 2px solid var(--wb-focus); outline-offset: 1px; }
 .workbench-react__activity-ranking-bars { display: grid; gap: 5px; margin-bottom: 10px; }
-.workbench-react__activity-ranking-bars > button { display: grid; grid-template-columns: minmax(120px, 220px) minmax(160px, 1fr) 70px; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--wb-text); padding: 2px 0; text-align: left; }
+.workbench-react__activity-ranking-bars > div { display: grid; grid-template-columns: minmax(120px, 220px) minmax(160px, 1fr) 70px; align-items: center; gap: 8px; padding: 2px 0; }
 .workbench-react__activity-ranking-track { display: block; height: 10px; border: 1px solid var(--wb-border-strong); background: var(--wb-control); }
 .workbench-react__activity-ranking-track > span { display: block; height: 100%; background: var(--wb-text); }
-.workbench-react__activity-ranking-bars > button[aria-pressed="true"] { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
+.workbench-react__activity-ranking-bars > div[data-selected="true"] { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
 .workbench-react__activity-ranking-bars > p { margin: 2px 0 0; color: var(--wb-muted); }
 @media (max-width: 700px) {
   .workbench-react__activity-scroll { padding: 8px; }
   .workbench-react__document-boundary span { min-width: 132px; }
   .workbench-react__activity-multiple { grid-template-columns: 132px minmax(220px, 1fr); }
-  .workbench-react__activity-ranking-bars > button { grid-template-columns: minmax(100px, 150px) minmax(130px, 1fr) 60px; }
+  .workbench-react__activity-ranking-bars > div { grid-template-columns: minmax(100px, 150px) minmax(130px, 1fr) 60px; }
 }
 @media (max-height: 380px) {
   .workbench-react__activity-scroll { padding: 6px; }

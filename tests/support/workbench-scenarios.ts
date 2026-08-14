@@ -153,7 +153,8 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         initialEvents: highVolumeEvents(1, 40).map((event, index) => ({
           ...event,
           logicalEventId: `activity-graphical-logical-${index + 1}`,
-          listener: { ...(event.listener ?? { id: `activity-graphical-listener-${index % 4}` }), metricOwner: true }
+          subscription: { ...event.subscription, id: `activity-graphical-subscription-${index % 12}` },
+          listener: index % 3 === 0 ? undefined : { ...(event.listener ?? { id: `activity-graphical-listener-${index % 4}` }), metricOwner: true }
         })),
         selectedEventId: highVolumeEventId(40),
         captureStatus: "capturing"
