@@ -1723,10 +1723,23 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       }
-      case "show-scenario-checkpoint-evidence":
-        if (!this.scenarioState) return;
+      case "show-scenario-checkpoint-evidence": {
+        const state = this.scenarioState;
+        if (!state) return;
+        const status = this.history.status();
+        const retained = status.interval.id === command.evidence.intervalId
+          && status.retainedRange !== null
+          && command.evidence.sequence >= status.retainedRange.first.sequence
+          && command.evidence.sequence <= status.retainedRange.last.sequence;
+        if (!retained) {
+          state.membershipError = `Evidence ${command.evidence.eventId} is unavailable after Clear or retention.`;
+          this.publish();
+          return;
+        }
+        state.membershipError = null;
         this.dispatch({ type: "select-evidence", eventId: command.evidence.eventId });
         return;
+      }
       case "move-scenario-step":
         this.moveCurrentScenarioStep(command.stepId, command.direction);
         return;
