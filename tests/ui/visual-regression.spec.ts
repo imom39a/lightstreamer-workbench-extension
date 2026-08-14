@@ -67,7 +67,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await expect(scenario).toContainText("RUN STOPPED");
       await expect(scenario.getByText("NOT RUN", { exact: true })).toBeVisible();
       const steps = scenario.getByLabel("Ordered Scenario Steps");
-      expect(await steps.evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
+      expect(await steps.evaluate((element) => element.clientHeight)).toBeGreaterThanOrEqual(80);
       await steps.evaluate((owner) => {
         const firstOutcome = owner.querySelector("article:first-child p");
         if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;

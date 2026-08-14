@@ -371,11 +371,13 @@
 .workbench-react__scenario .workbench-react__local-footer button:last-child { border-color: var(--wb-border-strong); }
 .workbench-react__scenario .workbench-react__local-footer .workbench-react__primary { border-color: var(--wb-info); background: var(--wb-info-soft); }
 @media (max-height: 420px) {
-  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary { display: flex; flex: 0 0 44px; overflow-x: auto; overflow-y: hidden; }
-  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary > div { min-width: max-content; flex: 0 0 auto; padding: 2px 7px; }
-  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary dd { margin-top: 1px; white-space: nowrap; }
+  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary { grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 0 0 auto; overflow: visible; }
+  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary > div { min-width: 0; padding: 2px 6px; }
+  .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary dd { margin-top: 1px; font-size: 9px; line-height: 1.15; }
   .workbench-react__scenario[data-phase="stopped"] .workbench-react__scenario-steps { gap: 4px; padding: 5px 9px; }
-  .workbench-react__scenario[data-phase="stopped"] .workbench-react__scenario-steps article { gap: 3px; padding: 4px 8px; }
+  .workbench-react__scenario[data-phase="stopped"] .workbench-react__scenario-steps article { gap: 2px; padding: 3px 8px; font-size: 9px; line-height: 1.1; }
+  .workbench-react__scenario[data-phase="stopped"] .workbench-react__scenario-timing,
+  .workbench-react__scenario[data-phase="stopped"] .workbench-react__scenario-steps article > header span { font-size: 9px; line-height: 1.1; }
 }
 .workbench-react__local-header {
   display: grid;
