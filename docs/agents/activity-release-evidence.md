@@ -73,3 +73,18 @@ The full serialized `npm run test:release` gate received one uninterrupted 15-mi
 The shipped-extension boundary was retried headlessly through the four-attempt circuit breaker. Post-reload panel-target rebinding and explicit bridge/runtime readiness moved the failure later but did not make `cdp-same-tab-three` durable. All speculative harness changes were removed. The official-client fixture remains blocked at the same production Evidence capture boundary. Dedicated follow-up tickets retain both bounded blockers.
 
 Tracked platform visual baselines were not rewritten because the Material UI gate still requires explicit primary-maintainer approval. `activity-impl-12` and the parent remain In Progress until that approval and the two release blockers are closed.
+
+### Independent final-review closure
+
+The final read-only Luna review found two concrete omissions. Commit follow-up work closes both:
+
+- Session-absence Evidence whose concrete Session identity exists only in captured topology now exposes a matching Session facet. A red-to-green projection regression proves the generated structural Session criterion returns that supporting Evidence without treating unknown or redacted topology values as concrete.
+- A deterministic seven-client browser scenario proves the five-lane bound plus **Other clients**, requested-versus-real bandwidth/frequency meaning, plot-versus-text behavior, composite keyboard focus/selection, and Enter supporting-Evidence drilldown.
+
+Final integrated evidence after this review:
+
+- Seven targeted unit/runtime files: 98/98 passed.
+- `npm run typecheck`, `npm run build`, and `git diff --check`: passed.
+- Focused headless Activity Playwright matrix: 21/21 passed.
+- Complete non-baseline headless Playwright suite: 75/75 passed in 2.1 minutes.
+- No headed browser was opened and no tracked visual baseline was rewritten.

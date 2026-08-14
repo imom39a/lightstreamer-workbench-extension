@@ -56,9 +56,20 @@ function extractClient(event: LightstreamerEventEnvelope, context: EvidenceFacet
 
 function extractSession(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): TypedFacetValue | undefined {
   const client = extractClient(event, context);
-  const sessionId = event.client?.sessionId;
+  const sessionId = event.client?.sessionId ?? topologyString(event.topology?.client, "sessionId");
   if (!client || !sessionId || !concrete(semanticState(event, "client", "sessionId"))) return undefined;
   return value("session", "session", qualified(["client", client.value, "session", sessionId]), sessionId);
+}
+
+function topologyString(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  if (!record) return undefined;
+  const candidate = record[key];
+  if (typeof candidate === "string") return candidate || undefined;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
+  const state = (candidate as { state?: unknown }).state;
+  if (state !== "requested" && state !== "real" && state !== "inferred") return undefined;
+  const value = (candidate as { value?: unknown }).value;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function extractSubscription(event: LightstreamerEventEnvelope, context: EvidenceFacetContext = {}): TypedFacetValue | undefined {

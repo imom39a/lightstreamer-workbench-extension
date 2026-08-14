@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalizeFilter, createFilter, createTypedFilterValue } from "../src/core/filter-algebra";
+import { applyFilterMutations, canonicalizeFilter, createFilter, createTypedFilterValue } from "../src/core/filter-algebra";
 import { extractEvidenceFacets } from "../src/core/evidence-facets";
 import {
   appendActivityEvidence,
@@ -187,6 +187,15 @@ describe("Observed Activity projection", () => {
 
     expect(projection.matchingEvidence).toBe(1);
     expect(projection.markers[0]).toMatchObject({ kind: "CLIENT_STATUS", clientId: "client-1", sessionId: "session-2", status: "DISCONNECTED" });
+
+    const sessionMutation = projection.markers[0]?.supportingFilterMutations?.find((mutation) =>
+      mutation.type === "add-criterion" && mutation.facet === "session"
+    );
+    expect(sessionMutation).toMatchObject({ value: { type: "structural-session", value: "session-2" } });
+    const filteredResult = applyFilterMutations(createFilter(1), 1, sessionMutation ? [sessionMutation] : []);
+    expect(filteredResult.ok).toBe(true);
+    const filtered = filteredResult.filter;
+    expect(matchesActivityEvidence(absence, filtered, { kind: "SESSION", clientId: "client-1", sessionId: "session-2" })).toBe(true);
   });
 
   it("keeps bounded Page client lanes separate and exposes overflow as Other", () => {

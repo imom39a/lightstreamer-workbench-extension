@@ -133,3 +133,32 @@ test("Activity remains textually meaningful and scroll-reachable at shallow forc
   await activity.getByRole("region", { name: "Activity selection detail" }).scrollIntoViewIfNeeded();
   await expect(activity.getByRole("region", { name: "Activity selection detail" })).toBeInViewport();
 });
+
+test("Activity keeps bounded connection lanes, contextual facts, and keyboard drilldown truthful", async ({ page }) => {
+  await openActivity(page, "activity-connection-lanes", "dark");
+  const activity = page.getByRole("main", { name: "Observed Activity" });
+  const lanes = activity.getByRole("grid", { name: "Connection activity lanes" });
+
+  await expect(lanes.getByRole("row")).toHaveCount(5);
+  await expect(activity).toContainText("Other clients");
+
+  const context = activity.getByRole("region", { name: "Activity contextual facts" });
+  await expect(context).toContainText("Requested max bandwidth");
+  await expect(context).toContainText("Real max bandwidth");
+  await expect(context).toContainText("Requested max frequency");
+  await expect(context).toContainText("Real max frequency");
+  await expect(context.locator('[data-contextual-plot="REAL_MAX_BANDWIDTH"]')).toBeVisible();
+  await expect(context.locator('[data-contextual-plot="REAL_MAX_FREQUENCY"]')).toBeVisible();
+  await expect(context.locator('[data-contextual-plot="REQUESTED_MAX_BANDWIDTH"]')).toHaveCount(0);
+  await expect(context.locator('[data-contextual-plot="REQUESTED_MAX_FREQUENCY"]')).toHaveCount(0);
+
+  await lanes.focus();
+  await expect(lanes).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(lanes.locator('[role="gridcell"][aria-selected="true"]')).toHaveCount(1);
+  await expect(lanes.locator('button[data-focused="true"]')).toHaveCount(1);
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByRole("region", { name: "Ordered Evidence" })).toBeVisible();
+  await expect(page.getByText(/Filter: /).first()).toBeVisible();
+});

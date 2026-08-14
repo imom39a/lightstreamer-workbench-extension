@@ -16,6 +16,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "frozen-high-volume",
   "activity-10k",
   "activity-graphical",
+  "activity-connection-lanes",
   "activity-layers",
   "activity-clock-discontinuity",
   "activity-aggregation-failure",
@@ -168,6 +169,43 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         selectedEventId: highVolumeEventId(40),
         captureStatus: "capturing"
       };
+    case "activity-connection-lanes": {
+      const sourceEvents = highVolumeEvents(1, 7);
+      return {
+        id,
+        initialEvents: sourceEvents.map((event, index) => ({
+          ...event,
+          id: `activity-connection-lanes-event-${index + 1}`,
+          logicalEventId: `activity-connection-lanes-logical-${index + 1}`,
+          timestamp: event.timestamp + index * 1_000,
+          client: {
+            ...(event.client ?? {}),
+            id: `activity-connection-lanes-client-${index + 1}`,
+            sessionId: `activity-connection-lanes-session-${index + 1}`,
+            requestedMaxBandwidth: 10,
+            realMaxBandwidth: index < 3 ? 5 : 7
+          },
+          subscription: {
+            ...(event.subscription ?? {}),
+            id: `activity-connection-lanes-subscription-${index + 1}`,
+            requestedMaxFrequency: 4,
+            realMaxFrequency: index < 3 ? 2 : 3
+          },
+          item: {
+            ...(event.item ?? {}),
+            name: `activity-connection-lanes-item-${index + 1}`,
+            position: index + 1
+          },
+          listener: {
+            ...(event.listener ?? { id: `activity-connection-lanes-listener-${index + 1}` }),
+            id: `activity-connection-lanes-listener-${index + 1}`,
+            metricOwner: true
+          }
+        })),
+        selectedEventId: "activity-connection-lanes-event-7",
+        captureStatus: "capturing"
+      };
+    }
     case "activity-layers": {
       const updates = highVolumeEvents(1, 8).map((event, index) => ({ ...event, logicalEventId: `activity-layers-logical-${index + 1}` }));
       const source = updates[0];
