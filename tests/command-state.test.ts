@@ -142,6 +142,13 @@ describe("COMMAND state reducer", () => {
     expect(projections.inspect("local-effective", { subscriptionId: "subscription-1", item: { name: "scenario.command", position: 1 }, key: "alpha", field: "missing" }))
       .toMatchObject({ state: "field-absent", provenance: { eventId: "server-null" } });
 
+    projections.apply(commandEvent("unchanged-null", {
+      command: "UPDATE", key: "alpha",
+      fields: { command: "UPDATE", key: "alpha", note: null, qty: "2" }, changedFields: { qty: "2" }
+    }));
+    expect(projections.inspect("local-effective", { subscriptionId: "subscription-1", item: { name: "scenario.command", position: 1 }, key: "alpha", field: "note" }))
+      .toMatchObject({ state: "ambiguous-server-null", provenance: { eventId: "server-null", source: "server" } });
+
     projections.apply(commandEvent("local-null", {
       command: "UPDATE", key: "alpha",
       fields: { command: "UPDATE", key: "alpha", note: null }, changedFields: { note: null },

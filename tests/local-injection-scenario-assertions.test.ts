@@ -81,6 +81,16 @@ describe("Scenario Checkpoints", () => {
     expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "diagnostic-presence" } as never]), {
       targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
     })).toEqual({ ok: false, assertionId: "a", reason: "Unsupported Scenario Assertion kind." });
+
+    expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "prior-injection-outcome", stepId: "step-1", expectedDisposition: "unknown" } as never]), {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "a", reason: "Injection Outcome expectation is unsupported." });
+    expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "listener-count", stepId: "step-1", count: "guessed", expected: 1 } as never]), {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "a", reason: "Listener count must select attempted or delivered." });
+    expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "command-key-exists", item: { name: "orders", position: 1 }, key: "order-1", expected: "maybe" } as never]), {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "a", reason: "COMMAND key expectation must select present or absent." });
   });
 
   it("compares JSON primitives by exact type and distinguishes own absence from concrete null", () => {
@@ -146,6 +156,20 @@ describe("Scenario Checkpoints", () => {
       assertions: [
         { assertionId: "first", status: "expired" },
         { assertionId: "second", status: "waiting" }
+      ]
+    });
+    const commonBoundaryMiss = evaluateScenarioCheckpoint(checkpoint([
+      { id: "short", kind: "correlated-local-evidence-exists", stepId: "step-1", withinActiveMs: 50 },
+      { id: "long", kind: "command-key-exists", item: { name: "orders", position: 1 }, key: "order-1", expected: "present", withinActiveMs: 100 }
+    ]), snapshot(), {
+      priorOutcomes: new Map(), correlatedLocalEvidence: new Map([["step-1", boundary]]),
+      inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: boundary })
+    }, 50, 0);
+    expect(commonBoundaryMiss).toMatchObject({
+      status: "expired",
+      assertions: [
+        { assertionId: "short", status: "expired" },
+        { assertionId: "long", status: "waiting" }
       ]
     });
   });

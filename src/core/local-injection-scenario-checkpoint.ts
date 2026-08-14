@@ -90,14 +90,23 @@ export function validateScenarioCheckpoint(
     if ("stepId" in assertion && (typeof assertion.stepId !== "string" || !context.earlierStepIds.includes(assertion.stepId))) {
       return frozen({ ok: false, assertionId, reason: "Checkpoint assertions may reference only an earlier Scenario Step." });
     }
+    if (assertion.kind === "prior-injection-outcome" && !["delivered", "partial", "failed", "acknowledgement-unknown", "blocked"].includes(assertion.expectedDisposition as string)) {
+      return frozen({ ok: false, assertionId, reason: "Injection Outcome expectation is unsupported." });
+    }
     if (assertion.kind === "listener-count" && context.deliveryPath === "wire") {
       return frozen({ ok: false, assertionId, reason: "Wire delivery does not expose listener counts; this assertion is unavailable." });
+    }
+    if (assertion.kind === "listener-count" && assertion.count !== "attempted" && assertion.count !== "delivered") {
+      return frozen({ ok: false, assertionId, reason: "Listener count must select attempted or delivered." });
     }
     if (assertion.kind === "listener-count" && (typeof assertion.expected !== "number" || !Number.isSafeInteger(assertion.expected) || assertion.expected < 0)) {
       return frozen({ ok: false, assertionId, reason: "Listener count expectation must be a non-negative safe integer." });
     }
     if ((assertion.kind === "command-key-exists" || assertion.kind === "command-field-equals") && context.targetMode !== "COMMAND") {
       return frozen({ ok: false, assertionId, reason: "COMMAND State assertions require a COMMAND Subscription target." });
+    }
+    if (assertion.kind === "command-key-exists" && assertion.expected !== "present" && assertion.expected !== "absent") {
+      return frozen({ ok: false, assertionId, reason: "COMMAND key expectation must select present or absent." });
     }
     if ((assertion.kind === "command-key-exists" || assertion.kind === "command-field-equals") && (typeof assertion.key !== "string" || assertion.key.length === 0)) {
       return frozen({ ok: false, assertionId, reason: "COMMAND key must not be empty." });
@@ -147,9 +156,17 @@ export function evaluateScenarioCheckpoint(
   // Eventual assertions are a conjunction at one boundary. A fact that was true
   // earlier is not banked while another assertion is still waiting.
   const assertions = waiting && !hasTerminalFailure
-    ? independentlyEvaluated.map((result) => result.status === "pass" ? frozen({ ...result, status: "waiting" as const }) : result)
+    ? independentlyEvaluated.map((result, index) => {
+      if (result.status !== "pass") return result;
+      const assertion = checkpoint.assertions[index];
+      const withinActiveMs = "withinActiveMs" in assertion ? assertion.withinActiveMs : undefined;
+      return withinActiveMs !== undefined && activeOffsetMs - startedActiveOffsetMs >= withinActiveMs
+        ? frozen({ ...result, status: "expired" as const })
+        : frozen({ ...result, status: "waiting" as const });
+    })
     : independentlyEvaluated;
-  const status: ScenarioAssertionStatus = hasTerminalFailure
+  const terminalAfterConjunction = assertions.some(({ status }) => status !== "pass" && status !== "waiting");
+  const status: ScenarioAssertionStatus = hasTerminalFailure || terminalAfterConjunction
     ? assertions.find(({ status: candidate }) => candidate !== "pass" && candidate !== "waiting")!.status
     : waiting ? "waiting" : "pass";
   return frozen({

@@ -2284,6 +2284,20 @@ test("Scenario Checkpoint authoring stays protected, keyboard reachable, and Rev
   const within = checkpoint.getByRole("spinbutton", { name: "Within active ms" });
   await within.fill("2000");
 
+  await checkpoint.getByRole("button", { name: "Add assertion" }).click();
+  await expect(checkpoint.locator(".workbench-react__scenario-assertion-authoring")).toHaveCount(2);
+  const assertionKinds = checkpoint.getByRole("combobox", { name: /Assertion .* kind/ });
+  await assertionKinds.nth(1).selectOption("prior-injection-outcome");
+  await expect(checkpoint.getByRole("combobox", { name: "Outcome" }).locator('option[value="acknowledgement-unknown"]')).toHaveCount(1);
+  await assertionKinds.nth(0).selectOption("command-key-exists");
+  const keyExpectation = checkpoint.getByRole("combobox", { name: "Expected" }).first();
+  await checkpoint.getByRole("textbox", { name: "Key" }).fill("order-1");
+  await checkpoint.getByRole("spinbutton", { name: "Within active ms" }).fill("100");
+  await keyExpectation.selectOption("absent");
+  await expect(checkpoint.getByRole("spinbutton", { name: "Within active ms" })).toHaveCount(0);
+  await checkpoint.getByRole("button", { name: /Remove assertion/ }).last().click();
+  await expect(checkpoint.locator(".workbench-react__scenario-assertion-authoring")).toHaveCount(1);
+
   const focusCheckpoint = checkpoint.getByRole("button", { name: /CHECKPOINT \d+/ });
   await focusCheckpoint.focus();
   await expect(focusCheckpoint).toBeFocused();

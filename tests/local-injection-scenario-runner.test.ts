@@ -103,6 +103,21 @@ function checkpointRun(withinActiveMs?: number) {
   return reviewed.run;
 }
 
+function conjunctionCheckpointRun() {
+  const initial = createScenarioFromDraft(input("draft-1", "ADD", 0), { scenarioId: "scenario-checkpoint-conjunction" });
+  const added = addScenarioCheckpoint(initial, {
+    id: "checkpoint-1", kind: "checkpoint", name: "Common boundary",
+    assertions: [
+      { id: "evidence", kind: "correlated-local-evidence-exists", stepId: "step-1", withinActiveMs: 50 },
+      { id: "key", kind: "command-key-exists", item: { name: "orders", position: 1 }, key: "order-7", expected: "present", withinActiveMs: 100 }
+    ]
+  });
+  if (!added.ok) throw new Error(added.reason);
+  const reviewed = reviewScenario(added.scenario, { runId: "run-conjunction", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+  if (!reviewed.ok) throw new Error(reviewed.reason);
+  return reviewed.run;
+}
+
 function delivered(stepOrdinal: number) {
   return {
     kind: "attempted" as const,
@@ -195,6 +210,30 @@ describe("Local Injection Scenario runner", () => {
     await vi.waitFor(() => expect(runner.snapshot().phase).toBe("checkpoint-waiting"));
     clock.advance(50);
     expect(runner.snapshot()).toMatchObject({ phase: "stopped", run: { trace: [{ kind: "attempted" }, { kind: "checkpoint", status: "expired" }] } });
+    expect(feed.size()).toBe(0);
+  });
+  it("expires a mixed-window conjunction at its first missed common boundary instead of waiting forever", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const evidence = { intervalId: "interval-1", sequence: 1, eventId: "local-1" };
+    const runner = createLocalInjectionScenarioRunner(conjunctionCheckpointRun(), {
+      clock, allocateInjectionId: () => "injection-1", execute: async () => delivered(1),
+      checkpoint: {
+        feed,
+        observations: (run) => ({
+          priorOutcomes: new Map(run.trace.flatMap((entry) => entry.kind === "attempted" ? [[entry.stepId, entry.outcome] as const] : [])),
+          correlatedLocalEvidence: new Map([["step-1", evidence]]),
+          inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence })
+        })
+      }
+    });
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().run.nextMemberIndex).toBe(1));
+    clock.advance(0);
+    expect(runner.snapshot().phase).toBe("checkpoint-waiting");
+    clock.advance(50);
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped", run: { trace: [{ kind: "attempted" }, { kind: "checkpoint", status: "expired" }] } });
+    expect(clock.pending()).toBe(0);
     expect(feed.size()).toBe(0);
   });
   it("resumes an unsatisfied Checkpoint with only its remaining active-time window", async () => {

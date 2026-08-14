@@ -418,8 +418,21 @@ function applyCommandEvent(
   }
 
   const provenance = Object.freeze(createProvenance(commandEvent));
-  const fieldValueStates = commandFieldStates(commandEvent);
-  const fieldProvenance = Object.fromEntries(Object.keys(commandEvent.update?.fields ?? {}).map((field) => [field, provenance]));
+  const currentFields = commandEvent.update?.fields ?? {};
+  const changedFieldNames = new Set(Object.keys(commandEvent.update?.changedFields ?? {}));
+  const incomingFieldStates = commandFieldStates(commandEvent);
+  const fieldValueStates = Object.fromEntries(Object.keys(currentFields).map((field) => [
+    field,
+    !existing || effectiveCommand === "ADD" || changedFieldNames.has(field)
+      ? incomingFieldStates[field]
+      : existing.fieldValueStates[field] ?? (currentFields[field] === null && (existing.fieldProvenance[field] ?? existing.latest).source === "server" ? "ambiguous-null" : "concrete")
+  ]));
+  const fieldProvenance = Object.fromEntries(Object.keys(currentFields).map((field) => [
+    field,
+    !existing || effectiveCommand === "ADD" || changedFieldNames.has(field)
+      ? provenance
+      : existing.fieldProvenance[field] ?? existing.latest
+  ]));
   const lifecycleEntry = Object.freeze({
     eventId: commandEvent.id,
     timestamp: commandEvent.timestamp,
