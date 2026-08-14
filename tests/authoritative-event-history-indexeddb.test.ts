@@ -372,6 +372,59 @@ describe("IndexedDB authoritative EventHistory", () => {
     await history.close();
   });
 
+  it("keeps an empty interval follower live for the first committed Evidence", async () => {
+    const history = await freshIndexedHistory("indexed-empty-follow-first-commit");
+    const publications: HistoryPublication[] = [];
+    const state: { firstReceipt: ReturnType<typeof history.offer> | null } = {
+      firstReceipt: null
+    };
+
+    const unsubscribe = history.follow({ from: "CURRENT_INTERVAL_START", chunkSize: 256 }, (publication) => {
+      publications.push(publication);
+      if (publication.type === "replay-complete" && state.firstReceipt === null) {
+        state.firstReceipt = history.offer(candidate("first-after-empty-replay"));
+      }
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(
+          publications.some((publication) =>
+            publication.type === "replay-complete" || publication.type === "replay-failed"
+          )
+        ).toBe(true);
+      });
+      if (state.firstReceipt) {
+        await state.firstReceipt.settled;
+        await vi.waitFor(() => {
+          expect(
+            publications.some((publication) =>
+              publication.type === "committed-evidence" &&
+              publication.evidence.some((entry) => entry.eventId === "first-after-empty-replay")
+            )
+          ).toBe(true);
+        });
+      }
+    } finally {
+      unsubscribe();
+      await history.close();
+    }
+
+    expect(state.firstReceipt).not.toBeNull();
+    if (state.firstReceipt) {
+      await expect(state.firstReceipt.settled).resolves.toMatchObject({
+        outcome: "BECAME_EVIDENCE",
+        evidence: { sequence: 1, eventId: "first-after-empty-replay" }
+      });
+    }
+    expect(publications.map((publication) => publication.type)).toEqual([
+      "status",
+      "replay-started",
+      "replay-complete",
+      "committed-evidence"
+    ]);
+  });
+
   it("round-trips JSON-native and special-tag values through fake IndexedDB", async () => {
     const history = await freshIndexedHistory("indexed-special-tag-replay");
     const specialObject = { __lsewReplayTag: "literal-key", nested: "value" };

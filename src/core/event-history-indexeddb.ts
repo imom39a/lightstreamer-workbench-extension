@@ -1181,7 +1181,7 @@ function createHistory(database: AuthoritativeEventDatabase, loaded: LoadedJourn
     const after = options.after ?? null;
     subscriber.cooperativeReplay = {
       interval: latch.interval,
-      nextSequence: after === null ? latch.retainedRange?.first.sequence ?? 0 : after.sequence + 1,
+      nextSequence: after === null ? latch.retainedRange?.first.sequence ?? 1 : after.sequence + 1,
       lastSequence: latch.retainedRange?.last.sequence ?? 0,
       chunkSize: replayChunkSize(options),
       after,

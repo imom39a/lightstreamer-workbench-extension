@@ -223,6 +223,13 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         `,
         "React Evidence to display the official-client COMMAND update"
       );
+      const serverEvidenceProof = await evaluateByValue<string>(
+        panelCdp,
+        `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+          .find((candidate) => candidate.textContent?.includes("scenario.mutate-reinject"))?.textContent ?? ""`
+      );
+      expect(serverEvidenceProof).toContain("SERVER");
+      expect(serverEvidenceProof).toContain("ADD");
       await clickVisiblePanelElement(
         panelCdp,
         `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
@@ -236,13 +243,11 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       );
       const reactProof = await evaluateByValue<{
         scope: string;
-        evidence: string;
         context: string;
         projectionSummaryPresent: boolean;
         projectionButtonPresent: boolean;
       }>(panelCdp, `({
         scope: document.querySelector('[aria-label="Structural runtime scope"]')?.textContent ?? "",
-        evidence: document.querySelector('[aria-label="Ordered Lightstreamer Evidence"]')?.textContent ?? "",
         context: document.querySelector('[aria-label="Context"]')?.textContent ?? "",
         projectionSummaryPresent: Boolean(document.querySelector('[aria-label="COMMAND projection summary"]')),
         projectionButtonPresent: [...document.querySelectorAll("button")].some(
@@ -250,8 +255,6 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
         )
       })`);
       expect(reactProof.scope).toContain("scenario.mutate-reinject");
-      expect(reactProof.evidence).toContain("SERVER");
-      expect(reactProof.evidence).toContain("ADD");
       expect(reactProof.context).toContain("fixture-message.TICKER");
       expect(reactProof.projectionSummaryPresent).toBe(false);
       expect(reactProof.projectionButtonPresent).toBe(false);
