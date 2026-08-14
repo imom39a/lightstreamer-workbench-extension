@@ -9,7 +9,7 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "scenario" | "scenario-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
+  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -53,6 +53,23 @@ async function openScenario(page: Page, visual: VisualCase): Promise<void> {
 
 async function prepareProductionState(page: Page, visual: VisualCase): Promise<void> {
   switch (visual.production.setup) {
+    case "activity-10k":
+    case "activity-graphical":
+    case "activity-limited":
+    case "activity-memory": {
+      const open = page.getByRole("button", { name: "Open Activity" });
+      await expectVisibleKeyboardTarget(page, open);
+      await page.keyboard.press("Enter");
+      const activity = page.getByRole("main", { name: "Observed Activity" });
+      await expect(activity).toBeVisible();
+      if (visual.production.setup === "activity-10k" || visual.production.setup === "activity-graphical") {
+        await expect(activity.getByRole("grid", { name: "Activity timeline buckets" })).toBeVisible();
+      }
+      if (visual.production.setup === "activity-10k") await expect(activity).toContainText("9,999 Logical Updates");
+      if (visual.production.setup === "activity-limited") await expect(activity).toContainText("Coverage LIMITED");
+      if (visual.production.setup === "activity-memory") await expect(activity).toContainText("Coverage USEFUL");
+      return;
+    }
     case "scenario-hidden-pause": {
       const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
       await page.evaluate(() => (window as unknown as { __setWorkbenchVisible(visible: boolean): void }).__setWorkbenchVisible(false));
@@ -319,6 +336,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       return;
     }
   }
+  throw new Error(`Unknown production visual setup: ${String(visual.production.setup)}`);
 }
 
 async function expectVisibleKeyboardTarget(page: Page, control: ReturnType<Page["getByRole"]>): Promise<void> {
