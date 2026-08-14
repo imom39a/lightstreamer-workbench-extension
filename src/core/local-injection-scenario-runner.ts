@@ -76,7 +76,9 @@ export function createLocalInjectionScenarioRunner(
     beforeDispatch?(input: Readonly<{ run: ScenarioRun; member: ReviewedScenarioMember; activeOffsetMs: number }>):
       | Readonly<{ allow: true }>
       | Readonly<{ allow: false; reason: "DRIFT"; detail: string }>;
-    afterSettlement?(input: Readonly<{ run: ScenarioRun; member: ReviewedScenarioMember; trace: ScenarioTraceEntry }>): Promise<void>;
+    afterSettlement?(input: Readonly<{ run: ScenarioRun; member: ReviewedScenarioMember; trace: ScenarioTraceEntry }>): Promise<
+      void | Readonly<{ continue: true }> | Readonly<{ continue: false; reason: "DRIFT"; detail: string }>
+    >;
     onChange?(snapshot: ScenarioRunnerSnapshot): void;
   }>
 ): ScenarioRunner {
@@ -201,7 +203,7 @@ export function createLocalInjectionScenarioRunner(
       if (lastAttemptedIndex >= 0) trace[lastAttemptedIndex] = Object.freeze({ ...trace[lastAttemptedIndex]!, timing });
       run = Object.freeze({ ...nextRun, controls: run.controls, trace: Object.freeze(trace) });
       const settledTrace = run.trace[lastAttemptedIndex] ?? run.trace.at(-1);
-      if (settledTrace) await adapter.afterSettlement?.({ run, member, trace: settledTrace });
+      const settlementGuard = settledTrace ? await adapter.afterSettlement?.({ run, member, trace: settledTrace }) : undefined;
       if (generation !== disposedGeneration) return;
       const pendingPhase = phase;
       const steppedManually = manualOverride;
@@ -223,6 +225,12 @@ export function createLocalInjectionScenarioRunner(
         freezeActive();
         phase = "paused";
         remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
+      } else if (settlementGuard && !settlementGuard.continue) {
+        freezeActive();
+        phase = "paused";
+        pauseReason = "DRIFT";
+        remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
+        appendControl("PAUSE", "DRIFT", settlementGuard.detail);
       } else if (steppedManually) {
         freezeActive();
         phase = "paused";

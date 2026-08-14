@@ -2339,7 +2339,7 @@ test("Scenario fails closed for incompatible membership, invalid Review, and par
   const stopped = page.getByRole("region", { name: "Local Injection Scenario" });
   await expect(stopped).toContainText("RUN STOPPED");
   await expect(stopped).toContainText("PARTIALLY DELIVERED");
-  await expect(stopped).toContainText("Remaining Steps were not run");
+  await expect(stopped).toContainText("remaining Steps were NOT RUN");
   const stoppedSteps = stopped.getByLabel("Ordered Scenario Steps");
   const partialTrace = stoppedSteps.getByText("PARTIALLY DELIVERED");
   const notRunTrace = stoppedSteps.getByText("NOT RUN", { exact: true });

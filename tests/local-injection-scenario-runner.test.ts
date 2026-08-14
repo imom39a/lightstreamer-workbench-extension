@@ -280,6 +280,23 @@ describe("Local Injection Scenario runner", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("allows post-settlement projection checks to pause before the next delay", async () => {
+    const clock = new FakeClock();
+    const execute = vi.fn(async ({ ordinal }: { ordinal: number }) => delivered(ordinal));
+    const runner = createLocalInjectionScenarioRunner(reviewedRun([0, 100]), {
+      clock,
+      allocateInjectionId: ({ ordinal }) => `injection-${ordinal}`,
+      execute,
+      afterSettlement: async () => ({ continue: false, reason: "DRIFT", detail: "Committed Server Evidence interleaved after settlement." })
+    });
+    runner.play();
+    clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "DRIFT", nextOrdinal: 2, remainingDelayMs: 100 }));
+    clock.advance(1_000);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(runner.snapshot().run.controls.at(-1)).toMatchObject({ kind: "PAUSE", reason: "DRIFT" });
+  });
+
   it("disposes timer and promise continuations without a later dispatch", async () => {
     const clock = new FakeClock();
     const execute = vi.fn(async ({ ordinal }: { ordinal: number }) => delivered(ordinal));
