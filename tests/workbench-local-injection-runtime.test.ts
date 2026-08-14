@@ -259,6 +259,76 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("previews filtered Evidence without mutation, then confirms compatible members in retained order", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [
+      commandEvent("journey-1", "client-created"),
+      commandEvent("journey-2", "client-status"),
+      commandEvent("journey-3", "subscription-created"),
+      commandEvent("journey-4", "subscription-started"),
+      commandEvent("journey-5", "listener-added"),
+      commandEvent("source-6", "item-update"),
+      commandEvent("source-7", "item-update", { update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 2 }, changedFields: { qty: 2 } } }),
+      commandEvent("source-8", "item-update", { update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 3 }, changedFields: { qty: 3 } } })
+    ] });
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "open-scenario-evidence-picker" });
+    runtime.dispatch({ type: "preview-visible-evidence-for-scenario" });
+
+    const preview = runtime.getSnapshot().scenario?.membershipPreview;
+    expect(runtime.getSnapshot().scenario?.scenario.steps).toHaveLength(1);
+    expect(preview?.members.filter(({ available }) => available).map(({ eventId }) => eventId)).toEqual(["source-7", "source-8"]);
+    expect(preview?.members.find(({ eventId }) => eventId === "source-6")?.reason).toContain("Already");
+
+    runtime.dispatch({ type: "confirm-scenario-membership-preview" });
+    expect(runtime.getSnapshot().scenario?.scenario.steps.map(({ draft }) => draft.sourceEventId)).toEqual(["source-6", "source-7", "source-8"]);
+    expect(runtime.getSnapshot().scenario?.scenario.revision).toBe(2);
+    runtime.dispose();
+  });
+
+  it("keys Draft ownership by stable Step identity through author, reorder, duplicate, remove, and Undo", async () => {
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    const firstId = runtime.getSnapshot().scenario!.scenario.steps[0]!.id;
+    runtime.dispatch({ type: "set-scenario-step-editor-presentation", stepId: firstId, presentation: {
+      cursor: 12, selectionFrom: 11, selectionTo: 14, scrollTop: 90, scrollLeft: 3, compareOpen: false,
+      serializedState: { undo: ["typed"], folds: [4] }
+    } });
+    runtime.dispatch({ type: "add-authored-scenario-step" });
+    const authored = runtime.getSnapshot().scenario!.scenario.steps[1]!;
+    expect(authored.draft.sourceEventId).toBeNull();
+    runtime.dispatch({ type: "move-scenario-step", stepId: authored.id, direction: "earlier" });
+    expect(runtime.getSnapshot().scenario!.scenario.steps.map(({ id }) => id)).toEqual([authored.id, firstId]);
+    runtime.dispatch({ type: "duplicate-scenario-step", stepId: firstId });
+    const duplicate = runtime.getSnapshot().scenario!.scenario.steps[2]!;
+    expect(duplicate.draft.editor).toMatchObject({ cursor: 12, scrollTop: 90, serializedState: { undo: ["typed"], folds: [4] } });
+    runtime.dispatch({ type: "remove-scenario-step", stepId: firstId });
+    expect(runtime.getSnapshot().scenario?.canUndoRemoval).toBe(true);
+    runtime.dispatch({ type: "undo-scenario-step-removal" });
+    expect(runtime.getSnapshot().scenario!.scenario.steps.map(({ id }) => id)).toEqual([authored.id, firstId, duplicate.id]);
+    expect(runtime.getSnapshot().scenario!.scenario.steps[1]!.draft.editor.serializedState).toEqual({ undo: ["typed"], folds: [4] });
+    runtime.dispose();
+  });
+
+  it("creates a new revision for timing and payload changes and rejects oversized edit growth atomically", async () => {
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    const step = runtime.getSnapshot().scenario!.scenario.steps[0]!;
+    runtime.dispatch({ type: "set-scenario-step-delay", stepId: step.id, delayMs: 250 });
+    expect(runtime.getSnapshot().scenario?.scenario).toMatchObject({ revision: 2, steps: [{ draft: { relativeDelayMs: 250 } }] });
+    const beforeText = runtime.getSnapshot().scenario!.scenario.steps[0]!.draft.rawText;
+    runtime.dispatch({ type: "set-scenario-step-json", stepId: step.id, text: "x".repeat(8 * 1024 * 1024) });
+    expect(runtime.getSnapshot().scenario!.scenario.steps[0]!.draft.rawText).toBe(beforeText);
+    expect(runtime.getSnapshot().scenario?.membershipError).toContain("8 MiB");
+    runtime.dispose();
+  });
+
   it("does not call a custom executor with an unchanged non-concrete Source field", async () => {
     const history = historyWithCommandTarget({
       update: {

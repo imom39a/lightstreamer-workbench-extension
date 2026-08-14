@@ -11,6 +11,7 @@ import {
   previewScenarioMembership,
   removeScenarioStep,
   reviewScenario,
+  scenarioRunAdmission,
   stepScenarioRun,
   undoScenarioStepRemoval,
   updateScenarioStepDraft,
@@ -148,6 +149,19 @@ describe("Local Injection Scenario", () => {
     const edited = updateScenarioStepDraft(scenario, before.id, { ...before.draft, rawText: "x".repeat(SCENARIO_MAX_ACCOUNTED_BYTES) });
     expect(edited).toMatchObject({ ok: false, capacity: "bytes" });
     expect(scenario.steps[0]).toBe(before);
+  });
+
+  it("uses one Run-admission seam for immutable plan and worst-case append-only trace reservation", () => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const reviewed = reviewScenario(scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+    expect(reviewed.ok).toBe(true);
+    if (!reviewed.ok) return;
+    const admission = scenarioRunAdmission(scenario, reviewed.run);
+    expect(admission).toMatchObject({ ok: true, stepCount: 1 });
+    if (admission.ok) {
+      expect(admission.traceReservationBytes).toBeGreaterThan(0);
+      expect(admission.accountedBytes).toBe(reviewed.run.accountedBytes);
+    }
   });
 
   it("reviews an immutable ordered plan and validates UPDATE against a preceding planned ADD", () => {

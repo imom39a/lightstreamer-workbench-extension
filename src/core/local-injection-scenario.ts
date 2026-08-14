@@ -69,6 +69,7 @@ export type LocalInjectionScenario = Readonly<{
 
 export const SCENARIO_MAX_STEPS = 100;
 export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
+export const SCENARIO_TRACE_RESERVATION_BYTES_PER_STEP = 8 * 1024;
 
 export type ScenarioCapacityRefusal = Readonly<{
   ok: false;
@@ -134,6 +135,8 @@ export type ScenarioRun = Readonly<{
   status: "paused" | "complete" | "stopped";
   nextOrdinal: number;
   trace: readonly ScenarioTraceEntry[];
+  accountedBytes: number;
+  traceReservationBytes: number;
 }>;
 
 export function createScenarioFromDraft(
@@ -302,9 +305,7 @@ export function reviewScenario(
       relativeDelayMs: Math.max(0, step.draft.relativeDelayMs)
     });
   }
-  return Object.freeze({
-    ok: true as const,
-    run: freeze({
+  const candidate = freeze({
       id: facts.runId,
       scenarioId: scenario.id,
       scenarioRevision: scenario.revision,
@@ -314,9 +315,30 @@ export function reviewScenario(
       steps: reviewed,
       status: "paused" as const,
       nextOrdinal: 1,
-      trace: []
-    })
+      trace: [],
+      accountedBytes: 0,
+      traceReservationBytes: 0
   });
+  const admission = scenarioRunAdmission(scenario, candidate);
+  if (!admission.ok) return Object.freeze({ ok: false as const, reason: admission.reason });
+  return Object.freeze({
+    ok: true as const,
+    run: freeze({ ...candidate, accountedBytes: admission.accountedBytes, traceReservationBytes: admission.traceReservationBytes })
+  });
+}
+
+export function scenarioRunAdmission(
+  scenario: LocalInjectionScenario,
+  run: ScenarioRun
+): Readonly<{ ok: true; accountedBytes: number; traceReservationBytes: number; stepCount: number }>
+  | Readonly<{ ok: false; capacity: "bytes"; reason: string }> {
+  const traceReservationBytes = run.steps.length * SCENARIO_TRACE_RESERVATION_BYTES_PER_STEP;
+  const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, trace: _trace, ...immutablePlan } = run;
+  const accountedBytes = scenario.accountedBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes;
+  if (accountedBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
+    return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario Run would exceed 8 MiB after reserving its immutable plan and append-only Trace; no Run was created." });
+  }
+  return freeze({ ok: true as const, accountedBytes, traceReservationBytes, stepCount: run.steps.length });
 }
 
 function itemKey(item: ScenarioDraftInput["item"]): string {
@@ -437,7 +459,11 @@ function commitScenarioMutation(
 
 function scenarioDefinitionBytes(scenario: Omit<LocalInjectionScenario, "accountedBytes"> | LocalInjectionScenario): number {
   const { accountedBytes: _ignored, ...accounted } = scenario as LocalInjectionScenario;
-  return new TextEncoder().encode(JSON.stringify(accounted)).byteLength;
+  return canonicalBytes(accounted);
+}
+
+function canonicalBytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
 
 function cloneScenarioDraft(draft: ScenarioDraftInput, id: string): ScenarioDraftInput {

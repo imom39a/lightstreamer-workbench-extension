@@ -139,13 +139,21 @@ import {
 } from "./local-injection-execution-coordinator";
 import {
   addScenarioStep,
+  confirmScenarioMembershipPreview,
   createScenarioFromDraft,
+  duplicateScenarioStep,
+  moveScenarioStep,
+  previewScenarioMembership,
+  removeScenarioStep,
   reviewScenario,
   stepScenarioRun,
   scenarioTargetIncompatibility,
+  undoScenarioStepRemoval,
+  updateScenarioStepDraft,
   type LocalInjectionScenario,
   type ScenarioDraftInput,
   type ScenarioEditorState,
+  type ScenarioMembershipPreview,
   type ScenarioRun
 } from "../../core/local-injection-scenario";
 
@@ -469,6 +477,12 @@ export type WorkbenchScenarioSnapshot = Readonly<{
   membershipError: string | null;
   pickerOpen: boolean;
   membership: readonly Readonly<{ eventId: string; available: boolean; reason: string | null }>[];
+  membershipPreview: Readonly<{
+    scenarioRevision: number;
+    members: readonly Readonly<{ eventId: string; retainedSequence: number; available: boolean; reason: string | null }>[];
+  }> | null;
+  focusedStepId: string;
+  canUndoRemoval: boolean;
 }> | null;
 
 /** The immutable, renderer-neutral investigation state for one panel session. */
@@ -575,6 +589,15 @@ export type WorkbenchCommand =
   | { type: "open-scenario-evidence-picker" }
   | { type: "close-scenario-evidence-picker" }
   | { type: "add-selected-evidence-to-scenario" }
+  | { type: "preview-visible-evidence-for-scenario" }
+  | { type: "confirm-scenario-membership-preview" }
+  | { type: "add-authored-scenario-step" }
+  | { type: "move-scenario-step"; stepId: string; direction: "earlier" | "later" }
+  | { type: "duplicate-scenario-step"; stepId: string }
+  | { type: "remove-scenario-step"; stepId: string }
+  | { type: "undo-scenario-step-removal" }
+  | { type: "focus-scenario-step"; stepId: string }
+  | { type: "set-scenario-step-delay"; stepId: string; delayMs: number }
   | { type: "review-scenario" }
   | { type: "edit-scenario" }
   | { type: "step-next-scenario" }
@@ -751,16 +774,20 @@ type LocalInjectionDraftState = {
   outcome: WorkbenchLocalInjectionOutcome | null;
   reviewedExecution: LocalInjectionReview | null;
   reviewRefusal: string | null;
+  relativeDelayMs: number;
 };
 
 type ScenarioState = {
   phase: "edit" | "review" | "running" | "paused" | "complete" | "stopped";
   scenario: LocalInjectionScenario;
-  drafts: LocalInjectionDraftState[];
+  drafts: Map<string, LocalInjectionDraftState>;
   run: ScenarioRun | null;
-  reviews: LocalInjectionReview[];
+  reviews: Map<string, LocalInjectionReview>;
   membershipError: string | null;
   pickerOpen: boolean;
+  membershipPreview: ScenarioMembershipPreview | null;
+  focusedStepId: string;
+  removedDrafts: readonly Readonly<{ stepId: string; draft: LocalInjectionDraftState }>[];
 };
 
 type InvestigationCheckpoint = Readonly<{
@@ -1035,10 +1062,12 @@ class Runtime implements WorkbenchRuntime {
       ),
       readExecutionFacts: (review) => {
         const draft = this.localInjectionDraft;
-        const scenarioIndex = this.scenarioState?.reviews.indexOf(review) ?? -1;
-        const scenarioDraft = scenarioIndex >= 0 ? this.scenarioState?.drafts[scenarioIndex] ?? null : null;
+        const scenarioStepId = this.scenarioState
+          ? [...this.scenarioState.reviews].find(([, candidate]) => candidate === review)?.[0] ?? null
+          : null;
+        const scenarioDraft = scenarioStepId ? this.scenarioState?.drafts.get(scenarioStepId) ?? null : null;
         const currentDraft = scenarioDraft ?? draft;
-        if (this.disposed || !currentDraft || (scenarioIndex < 0 && draft?.reviewedExecution !== review)) {
+        if (this.disposed || !currentDraft || (scenarioStepId === null && draft?.reviewedExecution !== review)) {
           return {
             fingerprint: "local-injection-target-unavailable",
             targetProblem: "The protected Local Injection execution is no longer current."
@@ -1052,7 +1081,7 @@ class Runtime implements WorkbenchRuntime {
       },
       canAcceptEvidence: (review) => {
         const draft = this.localInjectionDraft;
-        const scenarioOwnsReview = (this.scenarioState?.reviews.indexOf(review) ?? -1) >= 0;
+        const scenarioOwnsReview = this.scenarioState ? [...this.scenarioState.reviews.values()].includes(review) : false;
         return !this.disposed && (scenarioOwnsReview
           ? this.scenarioState?.phase === "running"
           : draft?.phase === "pending" && draft.reviewedExecution === review);
@@ -1560,6 +1589,35 @@ class Runtime implements WorkbenchRuntime {
       case "add-selected-evidence-to-scenario":
         this.addSelectedEvidenceToScenario();
         return;
+      case "preview-visible-evidence-for-scenario":
+        this.previewVisibleEvidenceForScenario();
+        return;
+      case "confirm-scenario-membership-preview":
+        this.confirmScenarioMembershipPreview();
+        return;
+      case "add-authored-scenario-step":
+        this.addAuthoredScenarioStep();
+        return;
+      case "move-scenario-step":
+        this.moveCurrentScenarioStep(command.stepId, command.direction);
+        return;
+      case "duplicate-scenario-step":
+        this.duplicateCurrentScenarioStep(command.stepId);
+        return;
+      case "remove-scenario-step":
+        this.removeCurrentScenarioStep(command.stepId);
+        return;
+      case "undo-scenario-step-removal":
+        this.undoCurrentScenarioStepRemoval();
+        return;
+      case "focus-scenario-step":
+        if (!this.scenarioState || !this.scenarioState.scenario.steps.some(({ id }) => id === command.stepId)) return;
+        this.scenarioState.focusedStepId = command.stepId;
+        this.publish();
+        return;
+      case "set-scenario-step-delay":
+        this.setScenarioStepDelay(command.stepId, command.delayMs);
+        return;
       case "review-scenario":
         this.reviewCurrentScenario();
         return;
@@ -1567,7 +1625,7 @@ class Runtime implements WorkbenchRuntime {
         if (!this.scenarioState || this.scenarioState.phase === "running") return;
         this.scenarioState.phase = "edit";
         this.scenarioState.run = null;
-        this.scenarioState.reviews = [];
+        this.scenarioState.reviews.clear();
         this.publish();
         return;
       case "step-next-scenario":
@@ -2982,7 +3040,8 @@ class Runtime implements WorkbenchRuntime {
       preflightFingerprint: null,
       outcome: null,
       reviewedExecution: null,
-      reviewRefusal: null
+      reviewRefusal: null,
+      relativeDelayMs: 0
     };
     this.refreshLocalInjectionValidation(state);
     return state;
@@ -3300,11 +3359,14 @@ class Runtime implements WorkbenchRuntime {
     this.scenarioState = {
       phase: "edit",
       scenario,
-      drafts: [draft],
+      drafts: new Map([[scenario.steps[0]!.id, draft]]),
       run: null,
-      reviews: [],
+      reviews: new Map(),
       membershipError: null,
-      pickerOpen: false
+      pickerOpen: false,
+      membershipPreview: null,
+      focusedStepId: scenario.steps[0]!.id,
+      removedDrafts: []
     };
     draft.open = false;
     draft.parked = false;
@@ -3327,10 +3389,176 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     state.scenario = addition.scenario;
-    state.drafts.push(candidate);
+    state.focusedStepId = addition.scenario.steps.at(-1)!.id;
+    state.drafts.set(state.focusedStepId, candidate);
+    state.membershipError = null;
+    state.pickerOpen = false;
+    state.membershipPreview = null;
+    this.localInjectionEntryError = null;
+    this.publish();
+  }
+
+  private previewVisibleEvidenceForScenario(): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit" || !state.pickerOpen) return;
+    const displayed = this.displayedEvidence();
+    const existing = new Set(state.scenario.steps.map(({ draft }) => draft.sourceEventId).filter(Boolean));
+    const candidates = displayed.events.map((event, index) => {
+      const record = displayed.records[index];
+      if (existing.has(event.id)) return {
+        evidenceId: event.id,
+        retainedSequence: record?.identity.sequence ?? index,
+        draft: null,
+        unavailableReason: "Already an explicit Scenario Step."
+      };
+      const availability = this.scenarioMembershipAvailability(event);
+      if (!availability.available) return {
+        evidenceId: event.id,
+        retainedSequence: record?.identity.sequence ?? index,
+        draft: null,
+        unavailableReason: availability.reason ?? "Compatibility could not be proven."
+      };
+      const candidate = this.createLocalInjectionCandidate({ kind: "selected-event", eventId: event.id });
+      return {
+        evidenceId: event.id,
+        retainedSequence: record?.identity.sequence ?? index,
+        draft: candidate ? this.scenarioDraftInput(candidate) : null,
+        ...(candidate ? {} : { unavailableReason: this.localInjectionEntryError ?? "Captured Item Update is unavailable for Scenario authoring." })
+      };
+    });
+    state.membershipPreview = previewScenarioMembership(state.scenario, candidates);
+    state.membershipError = null;
+    this.localInjectionEntryError = null;
+    this.publish();
+  }
+
+  private confirmScenarioMembershipPreview(): void {
+    const state = this.scenarioState;
+    const preview = state?.membershipPreview;
+    if (!state || state.phase !== "edit" || !preview) return;
+    const candidates = new Map<string, LocalInjectionDraftState>();
+    for (const member of preview.members) {
+      if (!member.available) continue;
+      const candidate = this.createLocalInjectionCandidate({ kind: "selected-event", eventId: member.evidenceId });
+      if (candidate) candidates.set(member.evidenceId, candidate);
+    }
+    const result = confirmScenarioMembershipPreview(state.scenario, preview);
+    if (!result.ok) {
+      state.membershipError = result.reason;
+      this.publish();
+      return;
+    }
+    const added = result.scenario.steps.slice(state.scenario.steps.length);
+    state.scenario = result.scenario;
+    for (const step of added) {
+      const draft = candidates.get(step.draft.sourceEventId ?? "");
+      if (draft) state.drafts.set(step.id, draft);
+    }
+    state.focusedStepId = added.at(-1)?.id ?? state.focusedStepId;
+    state.membershipPreview = null;
     state.membershipError = null;
     state.pickerOpen = false;
     this.localInjectionEntryError = null;
+    this.publish();
+  }
+
+  private addAuthoredScenarioStep(): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const reference = state.drafts.get(state.scenario.steps[0]!.id);
+    if (!reference) return;
+    const authored = cloneLocalInjectionDraftState(reference);
+    authored.id = `local-injection-draft-${++this.localInjectionSequence}`;
+    authored.anchor = Object.freeze({ ...authored.anchor, sourceKind: "authored", sourceEventId: null });
+    authored.sourceDocument = null;
+    authored.sourceRawText = null;
+    authored.compareOpen = false;
+    authored.editorPresentation = emptyScenarioEditorState(false);
+    authored.restorationOrigin = reference.restorationOrigin;
+    const addition = addScenarioStep(state.scenario, this.scenarioDraftInput(authored));
+    if (!addition.ok) {
+      state.membershipError = addition.reason;
+      this.publish();
+      return;
+    }
+    state.scenario = addition.scenario;
+    state.focusedStepId = addition.scenario.steps.at(-1)!.id;
+    state.drafts.set(state.focusedStepId, authored);
+    state.membershipError = null;
+    this.publish();
+  }
+
+  private moveCurrentScenarioStep(stepId: string, direction: "earlier" | "later"): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const result = moveScenarioStep(state.scenario, stepId, direction);
+    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    state.scenario = result.scenario;
+    state.focusedStepId = stepId;
+    state.membershipError = null;
+    this.publish();
+  }
+
+  private duplicateCurrentScenarioStep(stepId: string): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
+    const source = state.drafts.get(stepId);
+    if (!source) return;
+    const result = duplicateScenarioStep(state.scenario, stepId);
+    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    const duplicateStep = result.scenario.steps[index + 1]!;
+    const duplicate = cloneLocalInjectionDraftState(source);
+    duplicate.id = duplicateStep.draft.id;
+    state.scenario = result.scenario;
+    state.drafts.set(duplicateStep.id, duplicate);
+    state.focusedStepId = duplicateStep.id;
+    state.membershipError = null;
+    this.publish();
+  }
+
+  private removeCurrentScenarioStep(stepId: string): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
+    const draft = state.drafts.get(stepId);
+    if (!draft) return;
+    const result = removeScenarioStep(state.scenario, stepId);
+    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    state.scenario = result.scenario;
+    state.drafts.delete(stepId);
+    state.removedDrafts = [...state.removedDrafts, { stepId, draft }];
+    state.focusedStepId = result.scenario.steps[Math.min(index, result.scenario.steps.length - 1)]!.id;
+    state.membershipError = null;
+    this.publish();
+  }
+
+  private undoCurrentScenarioStepRemoval(): void {
+    const state = this.scenarioState;
+    const removed = state?.removedDrafts.at(-1);
+    if (!state || state.phase !== "edit" || !removed) return;
+    const result = undoScenarioStepRemoval(state.scenario);
+    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    const index = result.scenario.steps.findIndex(({ id }) => id === removed.stepId);
+    state.scenario = result.scenario;
+    state.drafts.set(removed.stepId, removed.draft);
+    state.removedDrafts = state.removedDrafts.slice(0, -1);
+    state.focusedStepId = removed.stepId;
+    state.membershipError = null;
+    this.publish();
+  }
+
+  private setScenarioStepDelay(stepId: string, delayMs: number): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const draft = state.drafts.get(stepId);
+    if (!draft) return;
+    const nextDelay = Math.max(0, Math.floor(delayMs));
+    const result = updateScenarioStepDraft(state.scenario, stepId, { ...this.scenarioDraftInput(draft), relativeDelayMs: nextDelay });
+    if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
+    draft.relativeDelayMs = nextDelay;
+    state.scenario = result.scenario;
+    state.membershipError = null;
     this.publish();
   }
 
@@ -3341,8 +3569,8 @@ class Runtime implements WorkbenchRuntime {
     const reviewed = reviewScenario(scenario, {
       runId: `local-injection-run-${++this.localInjectionSequence}`,
       committedEvidenceSeed: this.committedEvidenceBoundary,
-      targetFingerprint: this.scenarioTargetFingerprint(state.drafts[0]!),
-      activeCommandKeysByItem: state.drafts.map((draft) => ({
+      targetFingerprint: this.scenarioTargetFingerprint(state.drafts.get(state.scenario.steps[0]!.id)!),
+      activeCommandKeysByItem: state.scenario.steps.map(({ id }) => state.drafts.get(id)!).map((draft) => ({
         item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
         keys: this.activeCommandKeys(draft.anchor)
       }))
@@ -3352,13 +3580,14 @@ class Runtime implements WorkbenchRuntime {
       this.publish();
       return;
     }
-    const reviews = state.drafts.map((draft, index) => {
+    const reviews = new Map(state.scenario.steps.map((step, index) => {
+      const draft = state.drafts.get(step.id)!;
       const executionDraft = applyLocalInjectionDocumentToDraft(
         draft.baseDraft,
         reviewed.run.steps[index]!.document,
         draft.explicitConcreteFields
       );
-      return this.localInjectionExecutionCoordinator.review({
+      return [step.id, this.localInjectionExecutionCoordinator.review({
         fingerprint: this.localInjectionFingerprint(draft),
         executionTarget: draft.anchor.executionTarget,
         document: reviewed.run.steps[index]!.document,
@@ -3370,9 +3599,9 @@ class Runtime implements WorkbenchRuntime {
           ordinal: index + 1,
           targetId: draft.anchor.subscriptionId
         }
-      });
-    });
-    const refused = reviews.find((review) => review.kind === "refused");
+      })] as const;
+    }));
+    const refused = [...reviews.values()].find((review) => review.kind === "refused");
     if (refused?.kind === "refused") {
       state.membershipError = refused.reason;
       this.publish();
@@ -3391,7 +3620,8 @@ class Runtime implements WorkbenchRuntime {
     const run = state?.run;
     if (!state || !run || (state.phase !== "review" && state.phase !== "paused")) return;
     const index = run.nextOrdinal - 1;
-    const review = state.reviews[index];
+    const step = run.steps[index];
+    const review = step ? state.reviews.get(step.id) : null;
     if (!review || review.kind !== "reviewed") return;
     const injectionId = `local-injection-${++this.localInjectionSequence}`;
     const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
@@ -3399,7 +3629,7 @@ class Runtime implements WorkbenchRuntime {
       ...review,
       correlation: Object.freeze({ ...review.correlation, injectionId })
     });
-    state.reviews[index] = correlatedReview;
+    state.reviews.set(step!.id, correlatedReview);
     state.phase = "running";
     this.publish();
     void stepScenarioRun(run, {
@@ -3432,21 +3662,23 @@ class Runtime implements WorkbenchRuntime {
   private setScenarioStepJson(stepId: string, text: string): void {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
-    const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
-    const draft = state.drafts[index];
-    if (!draft) return;
+    const current = state.drafts.get(stepId);
+    if (!current) return;
+    const draft = cloneLocalInjectionDraftState(current);
     draft.rawText = text;
     draft.preflightFingerprint = null;
     draft.reviewedExecution = null;
     draft.reviewRefusal = null;
     draft.outcome = null;
     this.refreshLocalInjectionValidation(draft);
-    state.scenario = Object.freeze({
-      ...state.scenario,
-      revision: state.scenario.revision + 1,
-      steps: Object.freeze(state.scenario.steps.map((step, stepIndex) =>
-        stepIndex === index ? Object.freeze({ ...step, draft: this.scenarioDraftInput(draft) }) : step))
-    });
+    const result = updateScenarioStepDraft(state.scenario, stepId, this.scenarioDraftInput(draft));
+    if (!result.ok) {
+      state.membershipError = result.reason;
+      this.publish();
+      return;
+    }
+    state.drafts.set(stepId, draft);
+    state.scenario = result.scenario;
     state.membershipError = null;
     this.publish();
   }
@@ -3455,7 +3687,7 @@ class Runtime implements WorkbenchRuntime {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
     const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
-    const draft = state.drafts[index];
+    const draft = state.drafts.get(stepId);
     if (!draft || (open && draft.sourceRawText === null)) return;
     draft.compareOpen = open;
     draft.editorPresentation = Object.freeze({ ...draft.editorPresentation, compareOpen: open });
@@ -3472,7 +3704,7 @@ class Runtime implements WorkbenchRuntime {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
     const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
-    const draft = state.drafts[index];
+    const draft = state.drafts.get(stepId);
     if (!draft) return;
     const next = Object.freeze({ ...presentation, compareOpen: draft.compareOpen });
     if (sameScenarioEditorState(draft.editorPresentation, next)) return;
@@ -3496,7 +3728,7 @@ class Runtime implements WorkbenchRuntime {
     const fieldSchema = localInjectionFieldSchema(event.subscription?.fields, event.update?.fields);
     draft = { ...draft, sourceSubscription: { ...draft.sourceSubscription!, fields: [...fieldSchema] } };
     const anchor = anchorFromDraft(draft, "captured-event", event.topology?.pageEpoch ?? this.currentPageEpoch, fieldSchema);
-    const reference = state.drafts[0]!;
+    const reference = state.drafts.get(state.scenario.steps[0]!.id)!;
     const candidateTarget = this.scenarioDraftInput({ ...reference, anchor, baseDraft: draft }).target;
     const reason = scenarioTargetIncompatibility(state.scenario.target, candidateTarget)
       ?? this.validateLocalInjectionTarget(anchor)[0]?.message
@@ -3526,14 +3758,15 @@ class Runtime implements WorkbenchRuntime {
       item: Object.freeze({ name: draft.anchor.itemName, position: draft.anchor.itemPosition }),
       editor: draft.editorPresentation,
       restorationOrigin: draft.restorationOrigin,
-      relativeDelayMs: 0
+      relativeDelayMs: draft.relativeDelayMs
     });
   }
 
   private scenarioWithOrderedValidation(state: ScenarioState): LocalInjectionScenario {
-    const steps = state.drafts.map((draft, index) => {
+    const steps = state.scenario.steps.map((step) => {
+      const draft = state.drafts.get(step.id)!;
       this.refreshLocalInjectionValidation(draft);
-      return Object.freeze({ id: state.scenario.steps[index]!.id, draft: this.scenarioDraftInput(draft) });
+      return Object.freeze({ id: step.id, draft: this.scenarioDraftInput(draft) });
     });
     return Object.freeze({ ...state.scenario, steps: Object.freeze(steps) });
   }
@@ -4082,7 +4315,20 @@ class Runtime implements WorkbenchRuntime {
             run: this.scenarioState.run,
             membershipError: this.scenarioState.membershipError,
             pickerOpen: this.scenarioState.pickerOpen,
-            membership: Object.freeze(this.displayedEvidence().events.map((event) => this.scenarioMembershipAvailability(event)))
+            membership: Object.freeze(this.displayedEvidence().events.map((event) => this.scenarioMembershipAvailability(event))),
+            membershipPreview: this.scenarioState.membershipPreview
+              ? Object.freeze({
+                  scenarioRevision: this.scenarioState.membershipPreview.scenarioRevision,
+                  members: Object.freeze(this.scenarioState.membershipPreview.members.map((member) => Object.freeze({
+                    eventId: member.evidenceId,
+                    retainedSequence: member.retainedSequence,
+                    available: member.available,
+                    reason: member.reason
+                  })))
+                })
+              : null,
+            focusedStepId: this.scenarioState.focusedStepId,
+            canUndoRemoval: this.scenarioState.removedDrafts.length > 0
           })
         : null,
       evidence: Object.freeze({
@@ -5217,6 +5463,26 @@ function cloneReinjectionDraft(draft: ReinjectionDraft): ReinjectionDraft {
     changedFields: { ...draft.changedFields },
     originalChangedFields: { ...draft.originalChangedFields },
     provenance: { ...draft.provenance }
+  };
+}
+
+function cloneLocalInjectionDraftState(draft: LocalInjectionDraftState): LocalInjectionDraftState {
+  return {
+    ...draft,
+    baseDraft: cloneReinjectionDraft(draft.baseDraft),
+    anchor: Object.freeze({ ...draft.anchor, fieldSchema: Object.freeze([...draft.anchor.fieldSchema]) }),
+    document: draft.document ? freezeLocalInjectionDocument(draft.document) : null,
+    documentDiagnostics: Object.freeze(draft.documentDiagnostics.map((diagnostic) => Object.freeze({ ...diagnostic }))),
+    targetDiagnostics: Object.freeze(draft.targetDiagnostics.map((diagnostic) => Object.freeze({ ...diagnostic }))),
+    sourceDocument: draft.sourceDocument ? freezeLocalInjectionDocument(draft.sourceDocument) : null,
+    explicitConcreteFields: new Set(draft.explicitConcreteFields),
+    editorPresentation: Object.freeze({
+      ...draft.editorPresentation,
+      serializedState: draft.editorPresentation.serializedState
+        ? Object.freeze({ ...draft.editorPresentation.serializedState })
+        : null
+    }),
+    restorationOrigin: Object.freeze({ ...draft.restorationOrigin })
   };
 }
 
