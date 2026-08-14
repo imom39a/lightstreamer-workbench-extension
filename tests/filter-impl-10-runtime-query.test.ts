@@ -137,9 +137,13 @@ async function flushStorage(): Promise<void> {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
-async function waitForReady(runtime: ReturnType<typeof createWorkbenchRuntime>): Promise<void> {
+async function waitForReady(
+  runtime: ReturnType<typeof createWorkbenchRuntime>,
+  predicate: (investigation: InvestigationProjection) => boolean = () => true
+): Promise<void> {
   for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    if (projection(runtime).queryState === "ready" && !runtime.getPerformanceDiagnostics?.().evidenceQueryPending) return;
+    const investigation = projection(runtime);
+    if (investigation.queryState === "ready" && !runtime.getPerformanceDiagnostics?.().evidenceQueryPending && predicate(investigation)) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 1));
   }
   throw new Error("WorkbenchRuntime did not publish a ready investigation snapshot.");
@@ -365,7 +369,12 @@ describe("filter-impl-10 WorkbenchRuntime investigation query", () => {
     memoryRuntime.dispatch({ type: "set-find", value: "alpha" });
     durableRuntime.dispatch({ type: "set-find", value: "alpha" });
     await flushStorage();
-    await Promise.all([waitForReady(memoryRuntime), waitForReady(durableRuntime)]);
+    await Promise.all([
+      waitForReady(memoryRuntime, ({ find }) => find?.current !== null && find?.current !== undefined),
+      waitForReady(durableRuntime, ({ find }) => find?.current !== null && find?.current !== undefined)
+    ]);
+    expect(projection(memoryRuntime).find?.current).toMatchObject({ eventId: "alpha-1" });
+    expect(projection(durableRuntime).find?.current).toMatchObject({ eventId: "alpha-1" });
     expect(runtimeFacts(durableRuntime)).toEqual(runtimeFacts(memoryRuntime));
     expect(projection(durableRuntime).find?.total).toBe(2);
 
