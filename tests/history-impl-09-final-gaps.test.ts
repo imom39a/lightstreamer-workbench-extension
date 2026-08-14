@@ -1,10 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
-  createMemoryEventHistoryForTests,
-  type EventHistory,
-  type EvidenceRead
+  createMemoryEventHistoryForTests
 } from "../src/core/event-history-authoritative";
 import { createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
@@ -20,7 +18,7 @@ describe("history-impl-09 final audit gaps", () => {
         topologyEvent("export-client-b", "export-client-b")
       ],
       readControl(query, release) {
-        if (deferExportReads && query.candidateKind === undefined && query.order === "asc") {
+        if (deferExportReads && query.candidateKind === "lightstreamer" && query.order === "asc") {
           pendingReads.push(release);
           return;
         }
@@ -33,9 +31,10 @@ describe("history-impl-09 final audit gaps", () => {
 
     const assertDiscarded = async (mutation: () => void): Promise<void> => {
       runtime.dispatch({ type: "export-scope" });
-      expect(pendingReads).toHaveLength(1);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(pendingReads.length).toBeGreaterThan(0);
       mutation();
-      pendingReads.shift()?.();
+      pendingReads.splice(0).forEach((release) => release());
       await settle();
       expect(runtime.getSnapshot().export.document).toBeNull();
     };
@@ -52,49 +51,17 @@ describe("history-impl-09 final audit gaps", () => {
     await settle();
   });
 
-  it("builds Topology export from the typed boundary-qualified history read", async () => {
-    const baseHistory = createAuthoritativeHistory({
+  it("builds Topology export from the projection while Evidence uses the canonical query", async () => {
+    const history = createAuthoritativeHistory({
       precommitted: [topologyEvent("projection-event", "projection-client")]
     });
-    const originalRead = baseHistory.read.bind(baseHistory);
-    const read = vi.fn(async (query: Parameters<EventHistory["read"]>[0]) => {
-      const result = await originalRead(query);
-      if (query.candidateKind !== undefined || query.order !== "asc" || !result.ok) {
-        return result;
-      }
-      const candidate = topologyEvent("history-event", "history-client");
-      const evidence = Object.freeze({
-        intervalId: result.value.interval.id,
-        sequence: 7,
-        eventId: candidate.id,
-        candidate
-      });
-      const boundary = Object.freeze({
-        intervalId: result.value.interval.id,
-        sequence: evidence.sequence,
-        eventId: evidence.eventId
-      });
-      const value: EvidenceRead = Object.freeze({
-        ...result.value,
-        evidence: Object.freeze([evidence]),
-        total: 1,
-        committedEvidenceBoundary: boundary,
-        retainedRange: { first: boundary, last: boundary }
-      });
-      return { ok: true as const, value };
-    });
-    const history: EventHistory = { ...baseHistory, read };
-
     const runtime = createWorkbenchRuntime({ history });
     await settle();
     runtime.dispatch({ type: "export-scope" });
     await settle();
 
-    expect(read.mock.calls.some(([query]) =>
-      query.candidateKind === undefined && query.order === "asc"
-    )).toBe(true);
     expect(runtime.getSnapshot().export.document?.clients.map(({ id }) => id)).toEqual([
-      "history-client"
+      "projection-client"
     ]);
     runtime.dispose();
   });
@@ -188,22 +155,36 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 }
 
 async function settle(): Promise<void> {
+  await import("../src/extension/panel/evidence-history-operation");
   await Promise.resolve();
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function immediateScheduler(): WorkbenchRuntimeScheduler {
+  let nextId = 0;
+  const cancelled = new Set<number>();
+  const enqueue = (callback: () => void): number => {
+    const id = ++nextId;
+    queueMicrotask(() => {
+      if (cancelled.has(id)) return;
+      cancelled.delete(id);
+      callback();
+    });
+    return id;
+  };
   return {
     requestFrame(callback) {
-      queueMicrotask(callback);
-      return 1;
+      return enqueue(callback);
     },
-    cancelFrame() {},
+    cancelFrame(id) {
+      cancelled.add(id as number);
+    },
     setTimeout(callback) {
-      queueMicrotask(callback);
-      return 1;
+      return enqueue(callback);
     },
-    clearTimeout() {}
+    clearTimeout(id) {
+      cancelled.add(id as number);
+    },
   };
 }

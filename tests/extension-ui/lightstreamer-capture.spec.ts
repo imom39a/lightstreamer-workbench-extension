@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
+import { chromeTestArguments } from "../../scripts/chrome-test-policy.mjs";
 
 import {
   CdpClient,
@@ -54,22 +55,20 @@ async function runOfficialClientPanelJourney(
     await access(extensionDir, constants.R_OK);
     const extensionManifest = await readExtensionManifest(extensionDir);
     const chromeArguments = [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--use-mock-keychain",
-      "--auto-open-devtools-for-tabs",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profileDir}`,
-      `--disable-extensions-except=${extensionDir}`,
-      `--load-extension=${extensionDir}`,
-      `--window-size=${windowSize}`,
+      ...chromeTestArguments({
+        profile: profileDir,
+        headless: process.env.LSEW_BROWSER_HEADLESS !== "false",
+        disableNativeOcclusion: true,
+        additional: [
+          "--auto-open-devtools-for-tabs",
+          "--remote-debugging-port=0",
+          `--disable-extensions-except=${extensionDir}`,
+          `--load-extension=${extensionDir}`,
+          `--window-size=${windowSize}`
+        ]
+      }),
       "about:blank"
     ];
-    if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
-      chromeArguments.unshift("--headless=new");
-    }
     chrome = spawn(chromeExecutable, chromeArguments, {
       cwd: rootDir,
       env: process.env,
@@ -597,7 +596,7 @@ async function clearPanelEvidenceSelection(cdp: CdpClient): Promise<void> {
     "Filter Evidence input"
   );
   await cdp.request("Input.insertText", { text: "no-evidence-matches-this-query" });
-  await clickPanelButton(cdp, "Apply Filter");
+  await clickPanelButton(cdp, "Apply");
   await waitForCondition(
     cdp,
     `[...document.querySelectorAll("button")].some(
@@ -606,7 +605,7 @@ async function clearPanelEvidenceSelection(cdp: CdpClient): Promise<void> {
     "the filtered Evidence to offer clearing its hidden selection"
   );
   await clickPanelButton(cdp, "Clear selection");
-  await clickPanelButton(cdp, "Clear filters");
+  await clickPanelButton(cdp, "Reset Filter");
 }
 
 async function setPanelViewport(

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { chromeTestArguments } from "../scripts/chrome-test-policy.mjs";
 
 import {
   CdpClient,
@@ -51,18 +52,18 @@ async function runBrowserProof(): Promise<void> {
   const chromeExecutable = await resolveChromeExecutable(rootDir);
   const chromeLogs: string[] = [];
   const chrome = spawn(chromeExecutable, [
-    ...(process.env.LSEW_BROWSER_HEADLESS === "false" ? [] : ["--headless=new"]),
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--use-mock-keychain",
-    "--auto-open-devtools-for-tabs",
-    "--remote-debugging-port=0",
-    `--user-data-dir=${profileDir}`,
-    `--disable-extensions-except=${extensionDir}`,
-    `--load-extension=${extensionDir}`,
-    "--window-size=1280,900",
+    ...chromeTestArguments({
+      profile: profileDir,
+      headless: process.env.LSEW_BROWSER_HEADLESS !== "false",
+      disableNativeOcclusion: true,
+      additional: [
+        "--auto-open-devtools-for-tabs",
+        "--remote-debugging-port=0",
+        `--disable-extensions-except=${extensionDir}`,
+        `--load-extension=${extensionDir}`,
+        "--window-size=1280,900"
+      ]
+    }),
     "about:blank"
   ], {
     cwd: rootDir,

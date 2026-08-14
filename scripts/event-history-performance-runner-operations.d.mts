@@ -76,6 +76,7 @@ export type HeapSession = Readonly<{
 export type HeapGcSample = Readonly<{ usedSize: number; gcPasses: 3 }>;
 export type HeapGcRequestOptions = Readonly<{
   deadlineMs?: number;
+  deadlineAt?: number;
   requestCeilingMs?: number;
   now?: () => number;
 }>;
@@ -170,10 +171,17 @@ export type PerformanceMatrixShard = Readonly<{
   collectAfterFinal: boolean;
 }>;
 export type PerformanceScenarioShard = Readonly<{ id: "scenarios"; kind: "scenarios" }>;
-export type PerformanceShard = PerformanceMatrixShard | PerformanceScenarioShard;
-export function createPerformanceShardPlan(): PerformanceShard[];
-export function aggregatePerformanceShardResults(results: readonly Record<string, any>[]): Readonly<{
+export type PerformanceFilterImpl08Shard = Readonly<{ id: "filter-impl-08-query"; kind: "filter-impl-08" }>;
+export type PerformanceShard = PerformanceMatrixShard | PerformanceScenarioShard | PerformanceFilterImpl08Shard;
+export const PERFORMANCE_SELECTION_MODES: Readonly<{ FULL_RELEASE: "full-release"; FILTER_IMPL_08: "filter-impl-08" }>;
+export const FILTER_IMPL_08_PROOF_GATES: readonly string[];
+export const FILTER_IMPL_08_EXCLUDED_SCENARIOS: readonly string[];
+export function createPerformanceShardPlan(selectionMode?: "full-release" | "filter-impl-08"): PerformanceShard[];
+export function aggregatePerformanceShardResults(results: readonly Record<string, any>[], selectionMode?: "full-release" | "filter-impl-08"): Readonly<{
   schemaVersion: 2;
+  selectionMode?: "filter-impl-08";
+  proofMode?: string;
+  frameProof?: unknown;
   anchors: unknown;
   config: unknown;
   shapeFacts: unknown;
@@ -181,6 +189,7 @@ export function aggregatePerformanceShardResults(results: readonly Record<string
   cellCleanupGc: readonly any[];
   terminalScenarios: readonly any[];
   checkpointScenarios: readonly any[];
+  queryCells: readonly any[];
   shards: readonly any[];
 }>;
 
@@ -199,6 +208,8 @@ export function releaseHeapSessionWithCleanup(input: {
   removeRoot(): Promise<boolean>;
   yieldFrame(): Promise<boolean>;
   forceGc(): Promise<HeapGcSample>;
+  deadlineAt?: number;
+  now?: () => number;
 }): Promise<Readonly<{
   usedSize: number;
   gcPasses: 3;
@@ -212,12 +223,14 @@ export function runPageOperation(
   expression: string,
   options?: {
     deadlineMs?: number;
+    deadlineAt?: number;
     pollIntervalMs?: number;
     requestCeilingMs?: number;
     operationId?: string;
     now?: () => number;
     sleep?: (milliseconds: number) => Promise<void>;
-    onHeartbeat?: (status: PerformanceOperationStatus) => void;
+    onHeartbeat?: (status: PerformanceOperationStatus) => unknown | Promise<unknown>;
+    propagateHeartbeatErrors?: boolean;
   }
 ): Promise<unknown>;
 
@@ -225,16 +238,34 @@ export function runHeapMeasurementPlan(input: {
   adapters?: readonly HeapAdapter[];
   eventCounts: Readonly<{ indexeddb?: number; memory?: number }>;
   sampleCount?: number;
-  prepare(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: "warmup" | "sample"; sample: number | null }>): Promise<HeapSession>;
-  forceGc(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: string; sample: number | null }>): Promise<HeapGcSample>;
+  prepare(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: "warmup" | "sample"; sample: number | null; deadlineAt?: number }>): Promise<HeapSession>;
+  forceGc(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: string; sample: number | null; deadlineAt?: number }>): Promise<HeapGcSample>;
   record(input: Readonly<{ adapter: HeapAdapter; eventCount: number; sample: number; session: HeapSession; baseline: HeapGcSample; retained: HeapGcSample }>): Promise<HeapRecord> | HeapRecord;
   close(session: HeapSession): Promise<HeapCloseOutcome>;
   removeRoot(session: HeapSession): Promise<boolean>;
   yieldFrame(input: Readonly<{ adapter: HeapAdapter; eventCount: number; phase: string; sample: number | null }>): Promise<boolean>;
+  deadlineAt?: number;
+  now?: () => number;
 }): Promise<Readonly<{
   heapSamples: readonly HeapSample[];
   heapRuns: readonly HeapRun[];
 }>>;
+
+export function createSharedDeadlineTimeout(phase: string, deadlineAt: number, now?: () => number, operation?: PerformanceOperationStatus | null): PerformanceOperationTimeout;
+export function requestControlCdpWithDeadline(
+  cdp: { request(method: string, params?: Record<string, unknown>): Promise<unknown> },
+  method: string,
+  params: Record<string, unknown>,
+  options: Readonly<{
+    deadlineAt: number;
+    requestCeilingMs?: number;
+    now?: () => number;
+    startedAt?: number;
+    phase?: string;
+    allowAfterDeadline?: boolean;
+    operation?: PerformanceOperationStatus | null;
+  }>
+): Promise<unknown>;
 
 export function createTimeoutDiagnostic(input: {
   generatedAt: string;
@@ -244,4 +275,6 @@ export function createTimeoutDiagnostic(input: {
   referencePath: string;
   deadlineMs: number;
   operation: PerformanceOperationStatus;
+  identity?: unknown;
+  foregroundKeeper?: unknown;
 }): Readonly<Record<string, unknown>>;

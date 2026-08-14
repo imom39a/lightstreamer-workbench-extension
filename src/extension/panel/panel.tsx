@@ -20,6 +20,10 @@ import {
   type LocalInjectionExecutor,
   type WorkbenchRuntime
 } from "./workbench-runtime";
+import {
+  createStorageHeadroomSampler,
+  sampleStorageEstimate
+} from "./storage-headroom";
 
 export type WorkbenchPanelMountOptions = {
   createPanelSessionId?: () => PanelSessionId;
@@ -95,6 +99,18 @@ export function mountWorkbenchPanel(
       return;
     }
 
+    // Complete the one pre-Capture estimate before connecting the inspected
+    // page bridge. The sampler remains session-local and only permits the two
+    // coarse pressure-threshold samples documented by storage-headroom.ts.
+    const storageHeadroomSampler = createStorageHeadroomSampler(
+      async () => sampleStorageEstimate()
+    );
+    const storageEstimate = await storageHeadroomSampler.sample("BEFORE_CAPTURE");
+    if (disposed) {
+      closeHistory();
+      return;
+    }
+
     const localInjectionExecutor: LocalInjectionExecutor = {
       execute(request) {
         if (!bridge) {
@@ -115,7 +131,9 @@ export function mountWorkbenchPanel(
       visible,
       theme: themeManager.preference,
       localInjectionExecutor,
-      storage
+      storage,
+      storageEstimate,
+      storageHeadroomSampler
     });
     const presentationRuntime = bindRuntime(runtime, themeManager);
     reactRoot = createRoot(root);

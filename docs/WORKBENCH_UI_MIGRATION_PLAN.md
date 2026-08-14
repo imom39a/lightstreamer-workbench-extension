@@ -23,7 +23,7 @@ The current repository has one panel implementation and one production artifact.
 ## Current Event History outcome
 
 The production panel now gives each Panel Session exactly one temporary Event
-History. The normal IndexedDB journal allows 10,000 Evidence records or 64 MiB
+History. The normal IndexedDB journal allows 100,000 Evidence records or 256 MiB
 of retained serialized journal bytes; startup memory fallback allows 5,000
 records or 32 MiB. The adapter is selected before the first offer and is never
 switched during the session. Fallback changes History Capacity only, not Capture

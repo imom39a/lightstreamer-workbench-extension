@@ -9,6 +9,7 @@ declare global {
   interface Window {
     axe: typeof axe;
     __setWorkbenchStorageMode: (mode: "indexeddb" | "memory") => void;
+    __makeWorkbenchFilterStale: () => void;
   }
 }
 
@@ -47,9 +48,9 @@ async function openScenario(
 async function clearSelectedEvidence(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByLabel("Filter Evidence").fill("no-evidence-matches-this-query");
-  await page.getByRole("button", { name: "Apply Filter" }).click();
+  await page.getByRole("button", { name: "Apply" }).click();
   await page.getByRole("button", { name: "Clear selection" }).click();
-  await page.getByRole("button", { name: "Clear filters" }).click();
+  await page.getByRole("button", { name: "Reset Filter" }).click();
 }
 
 async function expectShellFits(page: Page): Promise<void> {
@@ -101,6 +102,8 @@ async function attachScenarioScreenshot(page: Page, testInfo: TestInfo): Promise
 }
 
 async function attachNamedScenarioScreenshot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  const path = testInfo.outputPath(`${name}.png`);
+  await page.screenshot({ path, fullPage: true });
   await testInfo.attach(`${name}.png`, {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png"
@@ -201,7 +204,7 @@ test("Workbench keeps COMMAND projection UI out of selected high-volume Evidence
   await openScenario(page, "frozen-high-volume", { width: 900, height: 700 }, "dark");
   await page.getByRole("button", { name: "Filter" }).click();
   await page.getByLabel("Filter Evidence").fill("retained-evidence-event");
-  await page.getByRole("button", { name: "Apply Filter" }).click();
+  await page.getByRole("button", { name: "Apply" }).click();
   await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
 
   const grid = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
@@ -483,7 +486,7 @@ test("Workbench keeps More actions compact and returns to the exact prior high-v
   const grid = page.getByRole("grid", { name: "Ordered Lightstreamer Evidence" });
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   await page.getByLabel("Filter Evidence").fill("retained-evidence-event");
-  await page.getByRole("button", { name: "Apply Filter" }).click();
+  await page.getByRole("button", { name: "Apply" }).click();
   await expect(page.getByText("Filter: retained-evidence-event", { exact: true })).toBeVisible();
   await grid.hover();
   await page.mouse.wheel(0, 260);
@@ -615,7 +618,8 @@ test("Workbench finds off-window matches across all retained Evidence without ch
   const shell = page.locator(".workbench-react");
   const operating = page.locator(".workbench-react__operating");
   const selectedIdentity = highVolumeEventId(3_970);
-  await expect(page.getByText(/60 shown \/ 4,000/)).toBeVisible();
+  await expect(page.getByText("Shown 60", { exact: true })).toBeVisible();
+  await expect(page.getByText("Matching 3,970", { exact: true })).toBeVisible();
   await expect(page.getByText(/View FROZEN .*30 newer/)).toBeVisible();
   await expect(operating.getByRole("button", { name: "Find", exact: true })).toBeVisible();
   await expect(operating.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
@@ -855,6 +859,45 @@ test("Workbench keeps Find reachable and restorable in compact geometry", async 
     await expect(page.getByRole("button", { name: "Find", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
   }
+
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench drafts free-text Filter, exposes exact counts, and keeps Find independent", async ({ page }, testInfo) => {
+  await openScenario(page, "filter-find", { width: 900, height: 700 }, "light");
+  const filter = page.getByRole("button", { name: "Filter", exact: true });
+  await filter.click();
+  await expect(page.getByRole("button", { name: "Add structured criterion" })).toBeEnabled();
+  await expect(page.getByText("Choose one of twelve Evidence facets to browse exact observed values.", { exact: true })).toBeVisible();
+  await page.getByLabel("Filter Evidence").fill("not-applied-yet");
+  await expect(page.getByText("Filter: scenario-event", { exact: true })).toBeVisible();
+  await page.evaluate(() => window.__makeWorkbenchFilterStale());
+  await expect(page.getByLabel("Filter Evidence")).toHaveValue("not-applied-yet");
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.locator(".workbench-react__filter-status")).toContainText("Filter revision is stale");
+  await expect(page.getByLabel("Filter Evidence")).toHaveValue("not-applied-yet");
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByText("Filter: not-applied-yet", { exact: true })).toBeVisible();
+  await expect(filter).toBeFocused();
+
+  await filter.click();
+  await page.getByLabel("Filter Evidence").fill("scenario-event-2");
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByText("Filter: scenario-event-2", { exact: true })).toBeVisible();
+  await expect(page.getByText("Shown 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("Matching 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("In Scope 1", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Find", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Find in ordered Evidence" })).toHaveValue("item update");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("Filter: scenario-event-2", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Reset Filter", exact: true }).click();
+  await expect(page.getByText("Filter: scenario-event-2", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Shown 6", { exact: true })).toBeVisible();
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
@@ -1158,6 +1201,43 @@ test("Workbench makes limited Capture actionable without hiding retained Evidenc
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
   await attachScenarioScreenshot(page, testInfo);
+});
+
+test("Workbench keeps low storage headroom advisory, global, and keyboard reachable", async ({
+  page
+}, testInfo) => {
+  const scenes = [
+    { width: 900, height: 700, theme: "dark" as const },
+    { width: 563, height: 700, theme: "light" as const },
+    { width: 900, height: 320, theme: "dark" as const },
+    { width: 1440, height: 900, theme: "light" as const }
+  ];
+
+  for (const scene of scenes) {
+    await openScenario(page, "storage-headroom-warning", scene, scene.theme);
+    const diagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+    await expect(diagnostics.getByText("Warning · Estimated storage headroom is low", { exact: true })).toHaveCount(1);
+    await expect(diagnostics.getByText("Affected: Extension origin", { exact: true })).toHaveCount(1);
+    await expect(diagnostics).toContainText("advisory only");
+    await expect(diagnostics).toContainText("QuotaExceededError");
+    await expect(diagnostics).toContainText("Free browser storage");
+    await expect(diagnostics.locator("[data-history-condition='true']")).toHaveCount(0);
+    await expect(page.getByText("Coverage USEFUL", { exact: true })).toBeVisible();
+    await diagnostics.focus();
+    await expect(diagnostics).toBeFocused();
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `storage-headroom-${scene.width}x${scene.height}-${scene.theme}`);
+  }
+
+  await page.emulateMedia({ forcedColors: "active" });
+  const forcedColorsDiagnostics = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(forcedColorsDiagnostics.getByText("Warning · Estimated storage headroom is low", { exact: true })).toHaveCount(1);
+  await expect(forcedColorsDiagnostics).toContainText("advisory only");
+  await expect(forcedColorsDiagnostics).toBeFocused();
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "storage-headroom-forced-colors");
 });
 
 test("Workbench retains ordered Evidence while a typed Session recovery is in progress", async ({

@@ -5,6 +5,7 @@ import { act, createElement } from "react";
 
 import { WorkbenchPanel } from "../src/extension/panel/react/workbench-panel";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import { createFilter } from "../src/core/filter-algebra";
 import {
   type WorkbenchCommand,
   type WorkbenchRuntime,
@@ -43,11 +44,11 @@ function createTestRuntime(snapshot: WorkbenchSnapshot): TestRuntime {
 }
 
 function withScopeContract(snapshot: WorkbenchSnapshot): WorkbenchSnapshot {
-  const possiblyLegacyScope = snapshot.scope as Partial<WorkbenchSnapshot["scope"]>;
+  const scopeCandidate = snapshot.scope as Partial<WorkbenchSnapshot["scope"]>;
   if (
-    possiblyLegacyScope.structure &&
-    typeof possiblyLegacyScope.resolveNode === "function" &&
-    possiblyLegacyScope.structure.length === snapshot.scope.nodes.length
+    scopeCandidate.structure &&
+    typeof scopeCandidate.resolveNode === "function" &&
+    scopeCandidate.structure.length === snapshot.scope.nodes.length
   ) {
     return snapshot;
   }
@@ -93,12 +94,32 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
       visibleEnd: 2,
       hasOlder: false,
       hasNewer: false,
-      filters: {},
       find: "",
       findState: { query: "", matchCount: 0, currentIndex: -1, currentEventId: null },
+      filterMutation: { state: "idle", revision: 1, changed: false, message: null, removedCriteria: 0 },
+      restoration: { canBack: false, canForward: false, barrier: 0, current: -1 },
+      filterRecoveryFocused: false,
       focusedEventId: "evt-2",
       selectedEventId: "evt-2",
       hiddenSelection: null,
+      investigation: {
+        scope: { kind: "PAGE" },
+        filter: createFilter(1),
+        readPoint: null,
+        historyInterval: null,
+        representedEvidenceBoundary: null,
+        retainedRange: null,
+        page: { evidence: [], nextCursor: null },
+        counts: { shown: 2, matching: 2, inScope: 2 },
+        discoveries: new Map(),
+        lookup: null,
+        find: null,
+        evaluation: null,
+        coverage: null,
+        storage: null,
+        queryState: "ready",
+        problem: null
+      },
       events: [
         {
           id: "evt-1",
@@ -816,6 +837,48 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps streaming progress, cancellation, and status reachable at the copy/export boundary", async () => {
+    const base = snapshot();
+    const progress = {
+      phase: "READING" as const,
+      completed: 1,
+      total: 4,
+      outputBytes: 128,
+      outputByteLimit: 1024,
+      interval: { id: "panel-test:interval-1", ordinal: 1 },
+      committedEvidenceBoundary: null,
+      excludedAfterLatch: 1
+    };
+    const runtime = createTestRuntime({
+      ...base,
+      contextId: "context:actions",
+      evidenceCopy: { state: "preparing", eventCount: 1, text: null, progress },
+      export: {
+        ...base.export,
+        operation: {
+          state: "preparing",
+          progress
+        }
+      }
+    });
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    expect(document.body.textContent).toContain("Reading Complete History: 1 of 4 Evidence");
+    expect(document.body.textContent).toContain("1 accepted after the latched boundary excluded");
+    expect(document.querySelector('[role="status"][aria-busy="true"]')).not.toBeNull();
+    const cancelCopy = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Cancel copy");
+    await act(async () => cancelCopy?.click());
+    expect(runtime.commands).toContainEqual({ type: "cancel-evidence-operation" });
+
+    await act(async () => runtime.setSnapshot({ ...runtime.getSnapshot(), contextId: "context:export" }));
+    expect(document.body.textContent).toContain("Preparing Complete History export: 1 of 4 Evidence");
+    const cancelExport = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Cancel export");
+    await act(async () => cancelExport?.click());
+    expect(runtime.commands.filter(({ type }) => type === "cancel-evidence-operation")).toHaveLength(2);
+    await act(async () => root.unmount());
+  });
+
   it("keeps Home and End local while routing modified bounds keys to retained Evidence", async () => {
     const animationFrames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
@@ -903,19 +966,72 @@ describe("React Workbench Diagnose panel", () => {
     const base = snapshot();
     const runtime = createTestRuntime({
       ...base,
-      evidence: { ...base.evidence, total: 20, filters: { query: "orders" } }
+      evidence: {
+        ...base.evidence,
+        total: 20,
+        investigation: {
+          ...base.evidence.investigation,
+          filter: { ...createFilter(2), text: "orders" },
+          counts: { shown: 2, matching: 2, inScope: 20 }
+        }
+      }
     });
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
 
     expect(rootElement.textContent).toContain("Filter: orders");
-    expect(rootElement.textContent).toContain("2 shown / 20");
+    expect(rootElement.textContent).toContain("Shown 2");
+    expect(rootElement.textContent).toContain("Matching 2");
+    expect(rootElement.textContent).toContain("In Scope 20");
     const clear = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent === "Clear filters"
+      (button) => button.textContent === "Reset Filter"
     );
     await act(async () => clear?.click());
 
-    expect(runtime.commands).toContainEqual({ type: "clear-filters" });
+    expect(runtime.commands).toContainEqual({ type: "reset-filter", expectedRevision: 2 });
+    await act(async () => root.unmount());
+  });
+
+  it("renders the canonical Filter summary and exact count labels with a revisioned Reset", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const appliedFilter = {
+      ...createFilter(3),
+      text: "orders",
+      criteria: {
+        provenance: {
+          include: [{ facet: "provenance", type: "enum", value: "LOCAL", label: "LOCAL", identity: '["v1","provenance","enum","LOCAL"]' }],
+          exclude: []
+        }
+      }
+    } as const;
+    const runtime = createTestRuntime({
+      ...base,
+      evidence: {
+        ...base.evidence,
+        find: "status",
+        findState: { query: "status", matchCount: 2, currentIndex: 0, currentEventId: "evt-1" },
+        investigation: {
+          ...base.evidence.investigation,
+          filter: appliedFilter,
+          counts: { shown: 1, matching: 4, inScope: 7 }
+        }
+      }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    expect(rootElement.textContent).toContain("Shown 1");
+    expect(rootElement.textContent).toContain("Matching 4");
+    expect(rootElement.textContent).toContain("In Scope 7");
+    expect(rootElement.textContent).toContain("Filter: orders · provenance: LOCAL");
+    const reset = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Reset Filter"
+    );
+    await act(async () => reset?.click());
+    expect(runtime.commands).toContainEqual({ type: "reset-filter", expectedRevision: 3 });
+
     await act(async () => root.unmount());
   });
 

@@ -39,9 +39,19 @@ afterAll(() => {
 bench(
   "filter a 3,001-event Evidence history",
   () => {
-    runtime.dispatch({ type: "set-filters", filters: { query: "hot-key" } });
+    const filter = runtime.getSnapshot().evidence.investigation.filter;
+    runtime.dispatch({
+      type: "apply-filter-mutations",
+      expectedRevision: filter.revision,
+      operations: [{ type: "set-text", text: "hot-key" }]
+    });
     runtime.getSnapshot();
-    runtime.dispatch({ type: "clear-filters" });
+    const cleared = runtime.getSnapshot().evidence.investigation.filter;
+    runtime.dispatch({
+      type: "apply-filter-mutations",
+      expectedRevision: cleared.revision,
+      operations: [{ type: "reset" }]
+    });
   },
   benchmarkOptions
 );

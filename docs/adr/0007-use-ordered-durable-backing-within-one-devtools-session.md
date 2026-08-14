@@ -32,7 +32,7 @@ The fallback changes History Capacity, not Observation Coverage. Workbench repor
 ## Current production outcome (2026-08-12)
 
 ADR 0011 is implemented. One Panel Session owns one temporary Event History with
-a normal IndexedDB limit of 10,000 Evidence records or 64 MiB and a startup
+a normal IndexedDB limit of 100,000 Evidence records or 256 MiB and a startup
 memory-fallback limit of 5,000 records or 32 MiB. The adapter is fixed before the
 first offer; fallback changes History Capacity, not Observation Coverage.
 

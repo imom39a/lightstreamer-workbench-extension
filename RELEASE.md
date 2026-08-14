@@ -65,7 +65,7 @@ Any future off-device product data path requires a new explicit design decision,
 
 ## Event History release contract
 
-The delivered Event History implementation has one temporary, Panel Session-owned journal. The normal IndexedDB tier supports 10,000 retained Evidence records or 64 MiB of canonical replay-complete journal bytes; the startup memory tier supports 5,000 records or 32 MiB. The first independent limit reached controls admission, and the selected adapter never changes during a Panel Session.
+The delivered Event History implementation has one temporary, Panel Session-owned journal. The normal IndexedDB tier supports 100,000 retained Evidence records or 256 MiB of canonical replay-complete journal bytes; the startup memory tier supports 5,000 records or 32 MiB. The first independent limit reached controls admission, and the selected adapter never changes during a Panel Session. Capacity messaging states both dimensions and does not promise 100,000 arbitrary-size payloads.
 
 Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary. Clear is an exact interval cut and cannot restart Capture after a terminal stop. A journal failure or capacity breach stops acceptance fail-closed at the trustworthy boundary; refused or failed candidates do not become Evidence or advance projections. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen state are separate, so startup memory fallback alone does not imply limited Coverage.
 

@@ -61,7 +61,7 @@ Key features:
 - Full-size raw JSON editing with validation, Review, and optional immutable Source/Draft comparison and diff.
 - Local-only delivery to the exact live Subscription through the inspected page, with delivered, failed, partial, unknown, and stale-target outcomes that state only what Workbench can prove.
 - WebSocket/TLCP fallback diagnostics when primary Web Client instrumentation is unavailable.
-- One temporary Event History per Panel Session, with normal 10,000-record/64 MiB and startup-memory 5,000-record/32 MiB History Capacity tiers; the selected adapter is fixed for the session and no backend service is required.
+- One temporary Event History per Panel Session, with normal 100,000-record/256 MiB and startup-memory 5,000-record/32 MiB History Capacity tiers; the selected adapter is fixed for the session and no backend service is required. Count and canonical bytes are independent limits; arbitrary-size payloads are not promised.
 - Complete History is limited to committed Evidence through the current History Interval's Committed Evidence Boundary. Clear makes an exact interval cut and cannot restart stopped Capture; journal or capacity failures stop acceptance fail-closed.
 - Controlled Close attempts erasure. Abnormal termination relies on a later ownership-safe sweep, so residual data may remain until Chrome next runs the extension; a new Panel Session starts empty and never replays stale Evidence. Storage fallback alone does not limit Observation Coverage.
 - No product analytics, tracking, advertising, account sign-in, remote error logging, or maintainer-operated backend.
@@ -122,7 +122,7 @@ Maintenance release for the 2.0 Scoped Evidence Workspace.
 ## Privacy Practices Draft
 
 ```text
-Lightstreamer Workbench processes inspected-page Lightstreamer event data locally inside one Panel Session. Each Panel Session owns one temporary Event History: normal IndexedDB capacity is 10,000 Evidence records or 64 MiB, and startup memory fallback capacity is 5,000 records or 32 MiB. The selected adapter is fixed for that session. Captured Evidence is not transmitted to the developer, this extension's authors, an analytics service, or any other external service by the extension.
+Lightstreamer Workbench processes inspected-page Lightstreamer event data locally inside one Panel Session. Each Panel Session owns one temporary Event History: normal IndexedDB capacity is 100,000 Evidence records or 256 MiB, and startup memory fallback capacity is 5,000 records or 32 MiB. The selected adapter is fixed for that session. Captured Evidence is not transmitted to the developer, this extension's authors, an analytics service, or any other external service by the extension.
 
 Complete History means committed Evidence through the current History Interval's Committed Evidence Boundary. Clear makes an exact interval cut and cannot restart Capture after a terminal stop. Controlled Close attempts erasure; abnormal termination may defer cleanup to a later ownership-safe sweep, so residual data can remain until Chrome next runs the extension. A new Panel Session starts empty and never replays stale Evidence. Capture Operation, Observation Coverage, History Capacity, and Live/Frozen state are independent, and storage fallback alone does not limit Coverage.
 

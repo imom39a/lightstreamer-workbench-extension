@@ -203,16 +203,12 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
       await history.close();
     });
 
-    it("keeps exact filters, partial Find, and recent paging equivalent", async () => {
+    it("keeps recent paging equivalent", async () => {
       const history = await createHistory();
       await history.offer(candidate("alpha")).settled;
       await history.offer(candidate("beta")).settled;
       await history.offer({ ...candidate("other"), subscription: { id: "other", mode: "MERGE" } }).settled;
 
-      await expect(history.read({ filters: { mode: "COMMAND" }, find: "LPH" })).resolves.toMatchObject({
-        ok: true,
-        value: { total: 1, evidence: [expect.objectContaining({ eventId: "alpha" })] }
-      });
       await expect(history.read({ offsetFromNewest: 1, limit: 1 })).resolves.toMatchObject({
         ok: true,
         value: { total: 3, evidence: [expect.objectContaining({ eventId: "beta" })] }
@@ -249,18 +245,7 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
         checkpoint: { pageEpoch: "epoch-command" }
       };
       await history.offer(checkpoint).settled;
-      await expect(history.read({ filters: { mode: "COMMAND" } })).resolves.toMatchObject({
-        ok: true,
-        value: { total: 2, evidence: [expect.objectContaining({ eventId: "alpha" }), expect.objectContaining({ eventId: "beta" })] }
-      });
-      await expect(history.read({ filters: { query: "epoch-command" } })).resolves.toMatchObject({
-        ok: true,
-        value: { total: 1, evidence: [expect.objectContaining({ eventId: "checkpoint-filtered" })] }
-      });
-      await expect(history.read({ filters: { query: "not-present" } })).resolves.toMatchObject({
-        ok: true,
-        value: { total: 0, evidence: [] }
-      });
+      await expect(history.read({ candidateKind: "lightstreamer" })).resolves.toMatchObject({ ok: true, value: { total: 3 } });
 
       const firstRead = await history.read({});
       const firstInterval = firstRead.ok ? firstRead.value.interval.id : "";
@@ -354,12 +339,9 @@ async function historyFactoryOfferAndReadCanonicalReplay(history: EventHistory):
     raw: { zulu: "LAST", alpha: "FIRST" }
   }).settled;
 
-  await expect(history.read({ find: '"ALPHA":"FIRST","ZULU":"LAST"' })).resolves.toMatchObject({
+  await expect(history.read({})).resolves.toMatchObject({
     ok: true,
-    value: {
-      total: 1,
-      evidence: [expect.objectContaining({ eventId: "canonical-order" })]
-    }
+    value: { total: 1, evidence: [expect.objectContaining({ eventId: "canonical-order" })] }
   });
   await history.close();
 }

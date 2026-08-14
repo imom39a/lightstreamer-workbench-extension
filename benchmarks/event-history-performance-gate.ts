@@ -30,6 +30,38 @@ export const CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS = 1_000;
 export const CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS = 250;
 export const TERMINAL_PENDING_BYTE_ACCEPTED_COUNT = 16;
 
+export const EVENT_HISTORY_PERFORMANCE_PROOF_MODES = Object.freeze({
+  HEADED_VISIBLE_FRAME: "headed-visible-frame",
+  NON_INTERACTIVE_LAYOUT_COMMIT: "non-interactive-layout-commit"
+} as const);
+export const EVENT_HISTORY_PERFORMANCE_SELECTION_MODES = Object.freeze({
+  FULL_RELEASE: "full-release",
+  FILTER_IMPL_08: "filter-impl-08"
+} as const);
+export const FILTER_IMPL_08_PROOF_GATES = Object.freeze([
+  "native-real-chrome-indexeddb-memory-query-matrix",
+  "bounded-hydration-index-telemetry",
+  "post-gc-heap-check",
+  "exact-query-and-heap-thresholds"
+] as const);
+export const FILTER_IMPL_08_EXCLUDED_SCENARIOS = Object.freeze([
+  "terminal-pressure",
+  "checkpoint-pressure",
+  "lifecycle"
+] as const);
+
+export type EventHistoryPerformanceProofMode =
+  typeof EVENT_HISTORY_PERFORMANCE_PROOF_MODES[keyof typeof EVENT_HISTORY_PERFORMANCE_PROOF_MODES];
+export type EventHistoryPerformanceSelectionMode =
+  typeof EVENT_HISTORY_PERFORMANCE_SELECTION_MODES[keyof typeof EVENT_HISTORY_PERFORMANCE_SELECTION_MODES];
+
+export type EventHistoryPerformanceFrameProof = Readonly<{
+  publicationBoundary: "visible-compositor-frame" | "react-layout-commit-dom-publication";
+  compositorFrameMeasured: boolean;
+  coherent: boolean;
+  missingBoundaryCount: number;
+}>;
+
 export type EventHistoryPerformanceAdapter = "indexeddb" | "memory";
 export type EventHistoryPerformanceWorkload = "sustained" | "burst";
 export type EventHistoryPerformanceShape =
@@ -136,6 +168,50 @@ export type EventHistoryPerformanceQuerySampleGc = Readonly<{
   phase: "BETWEEN_QUERY_SAMPLES";
 }>;
 
+export type EventHistoryPerformanceQueryCell = Readonly<{
+  adapter: EventHistoryPerformanceAdapter;
+  sample: number;
+  fixture: Readonly<{ eventCount: number; distinctCommandKeyCount: number }>;
+  latency: Readonly<{
+    recentSimplePage50P95Ms: number;
+    recentSimplePage100P95Ms: number;
+    structuredPage50P95Ms: number;
+    structuredPage100P95Ms: number;
+    findP95Ms: number;
+    lookupP95Ms: number;
+    aroundP95Ms: number;
+  }>;
+  correctness: Readonly<{
+    totalsExact: boolean;
+    orderExact: boolean;
+    collisionExact: boolean;
+    findIndependent: boolean;
+    lookupExact: boolean;
+    aroundExact: boolean;
+  }>;
+  telemetry: Readonly<{
+    operations: Readonly<Record<"recent50" | "recent100" | "structured50" | "structured100" | "find" | "lookup" | "around", Readonly<{ candidateBound: number; projectionReads: number; payloadHydrations: number; bounded: boolean; residualScan: boolean }>>>;
+  }>;
+  longTasks: readonly number[];
+  longTaskObserverSupported: boolean;
+  querySampleGc?: readonly EventHistoryPerformanceQuerySampleGc[];
+}>;
+
+type ExactQueryPageIdentity = Readonly<{ sequence: number; eventId: string }>;
+type ExactQueryPage = Readonly<{
+  evidence: readonly Readonly<{ identity: ExactQueryPageIdentity }>[];
+}>;
+
+export function isExactQueryPage(page: ExactQueryPage, expected: readonly ExactQueryPageIdentity[]): boolean {
+  return page.evidence.length === expected.length
+    && page.evidence.every((record, index) => {
+      const identity = expected[index];
+      return identity !== undefined
+        && record.identity.sequence === identity.sequence
+        && record.identity.eventId === identity.eventId;
+    });
+}
+
 export type EventHistoryPerformanceHeapSample = Readonly<{
   adapter: EventHistoryPerformanceAdapter;
   sample: number;
@@ -226,14 +302,25 @@ export type EventHistoryPerformanceEnvironment = Readonly<{
   chromeMajor: number;
   platformClass: string;
   architectureClass: string;
-  headless: false;
+  headless: boolean;
 }>;
 
 export type EventHistoryPerformanceReport = Readonly<{
   schemaVersion: typeof PERFORMANCE_GATE_SCHEMA_VERSION;
   source: Readonly<{ revision: string; dirty: false }>;
   environment: EventHistoryPerformanceEnvironment;
+  selectionMode?: EventHistoryPerformanceSelectionMode;
+  selection?: Readonly<{
+    mode: EventHistoryPerformanceSelectionMode;
+    proofSelection: string;
+    includedGates: readonly string[];
+    excludedScenarios: readonly string[];
+    disclaimer: string;
+  }>;
+  proofMode?: EventHistoryPerformanceProofMode;
+  frameProof?: EventHistoryPerformanceFrameProof;
   cells: readonly EventHistoryPerformanceCell[];
+  queryCells: readonly EventHistoryPerformanceQueryCell[];
   capabilities?: Readonly<{
     interCellGc?: "EXPOSED_THREE_PASS_V1";
     interQuerySampleGc?: "EXPOSED_THREE_PASS_V1";
@@ -261,11 +348,21 @@ export type EventHistoryPerformanceReference = Readonly<{
   referenceVersion: string;
   disposition: "ACCEPTED_INITIAL_CLEAN_REFERENCE";
   rationale: string;
-  environment: Pick<EventHistoryPerformanceEnvironment, "chromeMajor" | "platformClass" | "architectureClass">;
+  environment: Pick<EventHistoryPerformanceEnvironment, "chromeMajor" | "platformClass" | "architectureClass"> & Readonly<{ headless?: boolean }>;
+  selectionMode?: EventHistoryPerformanceSelectionMode;
+  proofMode?: EventHistoryPerformanceProofMode;
   cells: readonly EventHistoryPerformanceCell[];
+  queryCells: readonly EventHistoryPerformanceQueryCell[];
 }>;
 
-export type PerformanceGateVerdict = "PASS" | "REVIEW" | "FAIL";
+export type PerformanceGateMode =
+  | "ordinary"
+  | "capture-only"
+  | "non-interactive"
+  | "non-interactive-capture-only"
+  | "filter-impl-08"
+  | "filter-impl-08-capture-only";
+export type PerformanceGateVerdict = "PASS" | "REVIEW" | "FAIL" | "NOT_CLASSIFIED";
 
 export type PerformanceGateDecision = Readonly<{
   verdict: PerformanceGateVerdict;
@@ -285,7 +382,8 @@ const SHAPES: readonly EventHistoryPerformanceShape[] = [
 
 export function classifyEventHistoryPerformance(
   report: unknown,
-  reference?: unknown
+  reference?: unknown,
+  mode: PerformanceGateMode = "ordinary"
 ): PerformanceGateDecision {
   const failures: string[] = [];
   const reviewReasons: string[] = [];
@@ -300,17 +398,46 @@ export function classifyEventHistoryPerformance(
   if (failures.length > 0) return decision(failures, reviewReasons, 0, 0);
   const validReport = report as unknown as EventHistoryPerformanceReport;
   if (validReport.source.dirty !== false) failures.push("The performance report was not generated from a clean source revision.");
-  if (validReport.environment.headless !== false) {
+  const filterImpl08 = mode === "filter-impl-08" || mode === "filter-impl-08-capture-only";
+  const nonInteractive = filterImpl08
+    || mode === "non-interactive"
+    || mode === "non-interactive-capture-only";
+  if (filterImpl08 && validReport.selectionMode !== EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08) {
+    failures.push("The filter-impl-08 proof must report the explicit filter-impl-08 selection mode.");
+  }
+  if (nonInteractive) {
+    if (validReport.environment.headless !== true) {
+      failures.push("The non-interactive performance proof must explicitly report headless Chrome.");
+    }
+    if (validReport.proofMode !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT) {
+      failures.push("The non-interactive performance proof must report the layout-commit proof mode.");
+    }
+    const frameProof = validReport.frameProof;
+    if (
+      frameProof?.publicationBoundary !== "react-layout-commit-dom-publication"
+      || frameProof.compositorFrameMeasured !== false
+      || frameProof.coherent !== true
+      || frameProof.missingBoundaryCount !== 0
+    ) {
+      failures.push("The non-interactive performance proof must have coherent production React DOM publication boundaries and no compositor-frame claim.");
+    }
+  } else if (validReport.environment.headless !== false) {
     failures.push("The performance proof must run in visible Chrome.");
+  } else if (validReport.proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT) {
+    failures.push("A non-interactive layout-commit report cannot be classified as headed visible-frame proof.");
   }
   if (validReport.environment.chromeMajor !== 151) {
     failures.push(`The performance proof must use Chrome for Testing 151, got ${validReport.environment.chromeMajor}.`);
+  }
+  if (filterImpl08) {
+    return classifyFilterImpl08Report(validReport, reference, mode, failures, reviewReasons);
   }
   if (validReport.cells.length !== expectedKeys.size * SAMPLE_COUNT) {
     failures.push(
       `Expected ${expectedKeys.size * SAMPLE_COUNT} matrix samples, received ${validReport.cells.length}.`
     );
   }
+  if (validReport.queryCells !== undefined) validateQueryCells(validReport.queryCells, failures);
   const requiresInterCellGc = validReport.capabilities?.interCellGc === "EXPOSED_THREE_PASS_V1"
     || validReport.cellCleanupGc !== undefined;
   if (requiresInterCellGc) validateInterCellGc(validReport.cellCleanupGc ?? [], failures);
@@ -415,15 +542,93 @@ export function classifyEventHistoryPerformance(
     failures.push("Panel Session lifecycle samples show strict monotonic retained-heap growth.");
   }
 
+  if (mode === "capture-only" || mode === "non-interactive-capture-only") {
+    if (failures.length === 0) {
+      reviewReasons.push("Candidate capture is not classified until a maintainer adopts a separately pinned reference.");
+    }
+    return decision(failures, reviewReasons, expectedKeys.size, validReport.cells.length, "NOT_CLASSIFIED");
+  }
+
   if (reference === undefined) {
     failures.push("No separately pinned reference was supplied; a report cannot self-adopt as its reference.");
   } else if (!isPerformanceReference(reference)) {
     failures.push("Missing, malformed, empty, or pending pinned reference telemetry.");
+  } else if (nonInteractive && (
+    reference.proofMode !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT
+    || reference.environment.headless !== true
+  )) {
+    failures.push("The non-interactive proof requires a separately adopted non-interactive layout-commit reference.");
   } else if (failures.length === 0) {
     compareReference(validReport, reference, reviewReasons);
   }
 
   return decision(failures, reviewReasons, expectedKeys.size, validReport.cells.length);
+}
+
+function classifyFilterImpl08Report(
+  report: EventHistoryPerformanceReport,
+  reference: unknown,
+  mode: PerformanceGateMode,
+  failures: string[],
+  reviewReasons: string[]
+): PerformanceGateDecision {
+  const selection = report.selection;
+  if (!selection
+    || selection.mode !== EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08
+    || selection.proofSelection !== "filter-impl-08-noninteractive-layout-commit"
+    || JSON.stringify(selection.includedGates) !== JSON.stringify(FILTER_IMPL_08_PROOF_GATES)
+    || JSON.stringify(selection.excludedScenarios) !== JSON.stringify(FILTER_IMPL_08_EXCLUDED_SCENARIOS)
+    || !/does not prove foreground scheduling or compositor frames/u.test(selection.disclaimer)) {
+    failures.push("The filter-impl-08 artifact must declare its exact scoped gates and foreground/compositor disclaimer.");
+  }
+  if (report.cells.length !== 0) failures.push("The filter-impl-08 selection must not execute full-release matrix cells.");
+  if ((report.cellCleanupGc?.length ?? 0) !== 0) failures.push("The filter-impl-08 selection must not report full-release cell cleanup evidence.");
+  if (report.terminalScenarios.length !== 0) failures.push("The filter-impl-08 selection must exclude terminal-pressure scenarios.");
+  if (report.checkpointScenarios.length !== 0) failures.push("The filter-impl-08 selection must exclude checkpoint-pressure scenarios.");
+  if (report.lifecycle.retainedHeapBytes.length !== 0) failures.push("The filter-impl-08 selection must exclude lifecycle scenarios.");
+
+  validateQueryCells(report.queryCells, failures);
+
+  const heapByAdapter = new Map<EventHistoryPerformanceAdapter, EventHistoryPerformanceHeapSample[]>();
+  for (const sample of report.heapSamples) {
+    const entries = heapByAdapter.get(sample.adapter) ?? [];
+    entries.push(sample);
+    heapByAdapter.set(sample.adapter, entries);
+  }
+  for (const adapter of ADAPTERS) {
+    const entries = heapByAdapter.get(adapter) ?? [];
+    const limit = EVENT_HISTORY_PERFORMANCE_LIMITS[adapter];
+    if (entries.length !== SAMPLE_COUNT) failures.push(`Expected three ${adapter} post-GC heap samples in filter-impl-08 proof.`);
+    if (entries.map((entry) => entry.sample).sort((left, right) => left - right).join(",") !== "1,2,3") {
+      failures.push(`${adapter} post-GC heap samples must be independent samples 1, 2, and 3 in filter-impl-08 proof.`);
+    }
+    for (const sample of entries) {
+      if (sample.eventCount !== limit.heapEventCount) failures.push(`${adapter} heap sample must contain ${limit.heapEventCount} events.`);
+      if (sample.status !== "PASS") failures.push(`${adapter} heap sample ${sample.sample} failed: ${sample.failure?.code ?? "unknown"}.`);
+      if (sample.status === "PASS" && (sample.postGcHeapDeltaBytes === null || sample.postGcHeapDeltaBytes > limit.heapDeltaBytes)) {
+        failures.push(`${adapter} post-GC heap delta exceeds ${limit.heapDeltaBytes} bytes.`);
+      }
+    }
+  }
+  validateHeapRuns(report.heapRuns, report.heapSamples, failures);
+
+  if (mode === "filter-impl-08-capture-only") {
+    if (failures.length === 0) reviewReasons.push("Candidate capture is not classified until a maintainer adopts a separately pinned reference.");
+    return decision(failures, reviewReasons, 0, report.queryCells.length, "NOT_CLASSIFIED");
+  }
+
+  if (reference === undefined) {
+    failures.push("No separately pinned filter-impl-08 reference was supplied; a report cannot self-adopt as its reference.");
+  } else if (!isPerformanceReference(reference)) {
+    failures.push("Missing or malformed filter-impl-08 pinned reference telemetry.");
+  } else if (reference.selectionMode !== EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08
+    || reference.proofMode !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT
+    || reference.environment.headless !== true) {
+    failures.push("The filter-impl-08 proof requires a separately adopted non-interactive layout-commit reference.");
+  } else if (failures.length === 0) {
+    compareReference(report, reference, reviewReasons);
+  }
+  return decision(failures, reviewReasons, 0, report.queryCells.length);
 }
 
 export function validateEventHistoryPerformanceReference(value: unknown): value is EventHistoryPerformanceReference {
@@ -434,10 +639,11 @@ function decision(
   failures: readonly string[],
   reviewReasons: readonly string[],
   checkedCells: number,
-  checkedSamples: number
+  checkedSamples: number,
+  successfulVerdict?: PerformanceGateVerdict
 ): PerformanceGateDecision {
   return {
-    verdict: failures.length > 0 ? "FAIL" : reviewReasons.length > 0 ? "REVIEW" : "PASS",
+    verdict: failures.length > 0 ? "FAIL" : successfulVerdict ?? (reviewReasons.length > 0 ? "REVIEW" : "PASS"),
     failures: Object.freeze([...failures]),
     reviewReasons: Object.freeze([...reviewReasons]),
     checkedCells,
@@ -465,11 +671,16 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
   const source = value.source;
   const environment = value.environment;
   const lifecycle = value.lifecycle;
+  const scopedFilter = value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08;
   const valid = value.schemaVersion === PERFORMANCE_GATE_SCHEMA_VERSION
     && isRecord(source) && typeof source.revision === "string" && source.revision.length > 0 && isBoolean(source.dirty)
     && isRecord(environment) && environment.chromeMajor === 151 && typeof environment.platformClass === "string"
-    && typeof environment.architectureClass === "string" && environment.headless === false
+    && typeof environment.architectureClass === "string" && isBoolean(environment.headless)
+    && (value.selectionMode === undefined || value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FULL_RELEASE || scopedFilter)
+    && (value.proofMode === undefined || isPerformanceProofMode(value.proofMode))
+    && (value.frameProof === undefined || isPerformanceFrameProof(value.frameProof))
     && Array.isArray(value.cells) && value.cells.every(isPerformanceCell)
+    && Array.isArray(value.queryCells) && value.queryCells.length === 6 && value.queryCells.every(isQueryCell)
     && (value.capabilities === undefined || (
       isRecord(value.capabilities)
       && (value.capabilities.interCellGc === undefined || value.capabilities.interCellGc === "EXPOSED_THREE_PASS_V1")
@@ -482,9 +693,62 @@ function isPerformanceReport(value: Record<string, unknown>): value is EventHist
     && Array.isArray(value.heapSamples) && value.heapSamples.every(isHeapSample)
     && Array.isArray(value.heapRuns) && value.heapRuns.every(isHeapRun)
     && isRecord(lifecycle) && Array.isArray(lifecycle.retainedHeapBytes)
-    && lifecycle.retainedHeapBytes.length === SAMPLE_COUNT && lifecycle.retainedHeapBytes.every(isFiniteNumber)
+    && lifecycle.retainedHeapBytes.length === (scopedFilter ? 0 : SAMPLE_COUNT) && lifecycle.retainedHeapBytes.every(isFiniteNumber)
     && isBoolean(lifecycle.strictMonotonicGrowth);
   return valid;
+}
+
+function isQueryCell(value: unknown): value is EventHistoryPerformanceQueryCell {
+  if (!isRecord(value) || !ADAPTERS.includes(value.adapter as EventHistoryPerformanceAdapter)
+    || !Number.isSafeInteger(value.sample) || !isRecord(value.fixture) || !Number.isSafeInteger(value.fixture.eventCount)
+    || !Number.isSafeInteger(value.fixture.distinctCommandKeyCount) || !isRecord(value.latency)
+    || !isRecord(value.correctness) || !isRecord(value.telemetry) || !isRecord(value.telemetry.operations) || !Array.isArray(value.longTasks) || !isBoolean(value.longTaskObserverSupported)) return false;
+  return Object.values(value.latency).every(isFiniteNumber)
+    && Object.values(value.correctness).every(isBoolean)
+    && value.longTasks.every(isFiniteNumber)
+    && (["recent50", "recent100", "structured50", "structured100", "find", "lookup", "around"] as const).every((name) => {
+      const operation = (value.telemetry as { operations: Record<string, unknown> }).operations[name];
+      return isRecord(operation) && Number.isSafeInteger(operation.candidateBound) && Number.isSafeInteger(operation.projectionReads)
+        && Number.isSafeInteger(operation.payloadHydrations) && isBoolean(operation.bounded) && isBoolean(operation.residualScan);
+    })
+    && (value.querySampleGc === undefined || Array.isArray(value.querySampleGc));
+}
+
+function validateQueryCells(cells: readonly EventHistoryPerformanceQueryCell[], failures: string[]): void {
+  const expected = new Set(["indexeddb", "memory"].flatMap((adapter) => [1, 2, 3].map((sample) => `${adapter}/${sample}`)));
+  if (cells.length !== expected.size) failures.push(`Expected ${expected.size} filter query samples, received ${cells.length}.`);
+  const seen = new Set<string>();
+  for (const cell of cells) {
+    const label = `filter-query/${cell.adapter}/sample-${cell.sample}`;
+    const key = `${cell.adapter}/${cell.sample}`;
+    if (seen.has(key) || !expected.has(key)) failures.push(`${label} has an unexpected or duplicate identity.`);
+    seen.add(key);
+    const expectedCount = cell.adapter === "indexeddb" ? 10_000 : 5_000;
+    if (cell.fixture.eventCount !== expectedCount) failures.push(`${label} fixture count must be ${expectedCount}.`);
+    if (cell.fixture.distinctCommandKeyCount < 3_842) failures.push(`${label} must contain at least 3,842 distinct COMMAND keys.`);
+    for (const [name, value] of Object.entries(cell.latency)) {
+      const limit = name.startsWith("recentSimple") ? 50 : name.startsWith("structured") ? 100 : name === "findP95Ms" ? 500 : 100;
+      if (value > limit) failures.push(`${label} ${name} exceeds ${limit} ms.`);
+    }
+    for (const [name, value] of Object.entries(cell.correctness)) if (!value) failures.push(`${label} correctness field ${name} is false.`);
+    for (const [name, operation] of Object.entries(cell.telemetry.operations)) {
+      const bound = name.startsWith("recent") ? (name.endsWith("50") ? 50 : 100) : name.startsWith("structured") ? 3 : name === "around" ? 1_000 : name === "find" ? 3 : 1;
+      if (!operation.bounded || operation.projectionReads > Math.max(bound * 2, 8) || operation.candidateBound > cell.fixture.eventCount / 2) {
+        failures.push(`${label} ${name} does not prove meaningful bounded candidate/projection traversal.`);
+      }
+      if (operation.residualScan) failures.push(`${label} ${name} reports a discarded residual full scan.`);
+    }
+    if (cell.telemetry.operations.lookup.payloadHydrations !== 1) failures.push(`${label} selected lookup must hydrate exactly one payload.`);
+    if ((["recent50", "recent100", "structured50", "structured100", "find", "around"] as const).some((name) => cell.telemetry.operations[name].payloadHydrations !== 0)) failures.push(`${label} non-lookup operations must not hydrate payloads.`);
+    const gc = cell.querySampleGc ?? [];
+    if (gc.length !== 14 || gc.some((entry, index) => entry.gcPasses !== 3 || entry.phase !== "BETWEEN_QUERY_SAMPLES" || entry.afterSample !== (index % 2 === 0 ? 1 : 2))) {
+      failures.push(`${label} must include ordered three-pass GC evidence between every query operation sample.`);
+    }
+    if (cell.longTasks.some((duration) => duration > 50)) failures.push(`${label} has a query Long Task over 50 ms.`);
+    if (!cell.longTaskObserverSupported) failures.push(`${label} lacks supported PerformanceObserver Long Task telemetry.`);
+    if (cell.longTasks.some((duration) => duration > 125)) failures.push(`${label} has a query Long Task over 125 ms.`);
+  }
+  for (const key of expected) if (!seen.has(key)) failures.push(`Missing filter query sample ${key}.`);
 }
 
 function validateQuerySampleGc(cells: readonly EventHistoryPerformanceCell[], failures: string[]): void {
@@ -750,13 +1014,40 @@ function validateStorageTelemetry(cell: EventHistoryPerformanceCell, failures: s
 function isPerformanceReference(value: unknown): value is EventHistoryPerformanceReference {
   if (!isRecord(value)) return false;
   const environment = value.environment;
+  const queryCells = value.queryCells;
+  if (!Array.isArray(queryCells) || queryCells.length !== ADAPTERS.length * SAMPLE_COUNT || !queryCells.every(isQueryCell)) return false;
+  const queryFailures: string[] = [];
+  validateQueryCells(queryCells, queryFailures);
   return value.schemaVersion === PERFORMANCE_GATE_SCHEMA_VERSION
     && typeof value.referenceVersion === "string" && value.referenceVersion.length > 0
     && value.disposition === "ACCEPTED_INITIAL_CLEAN_REFERENCE"
     && typeof value.rationale === "string" && value.rationale.trim().length > 0
     && isRecord(environment) && environment.chromeMajor === 151
     && typeof environment.platformClass === "string" && typeof environment.architectureClass === "string"
-    && Array.isArray(value.cells) && hasIndependentMatrixSamples(value.cells);
+    && (environment.headless === undefined || isBoolean(environment.headless))
+    && (value.selectionMode === undefined
+      || value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FULL_RELEASE
+      || value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08)
+    && (value.proofMode === undefined || isPerformanceProofMode(value.proofMode))
+    && Array.isArray(value.cells)
+    && (value.selectionMode === EVENT_HISTORY_PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08
+      ? value.cells.length === 0
+      : hasIndependentMatrixSamples(value.cells))
+    && queryFailures.length === 0;
+}
+
+function isPerformanceProofMode(value: unknown): value is EventHistoryPerformanceProofMode {
+  return value === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+    || value === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT;
+}
+
+function isPerformanceFrameProof(value: unknown): value is EventHistoryPerformanceFrameProof {
+  return isRecord(value)
+    && (value.publicationBoundary === "visible-compositor-frame" || value.publicationBoundary === "react-layout-commit-dom-publication")
+    && isBoolean(value.compositorFrameMeasured)
+    && isBoolean(value.coherent)
+    && Number.isSafeInteger(value.missingBoundaryCount)
+    && (value.missingBoundaryCount as number) >= 0;
 }
 
 function isPerformanceCell(value: unknown): value is EventHistoryPerformanceCell {
@@ -1076,6 +1367,24 @@ function compareReference(
       const referenceMedian = median(referenceValues);
       if (referenceMedian > 0 && value > referenceMedian * (1 + EVENT_HISTORY_PERFORMANCE_LIMITS.query.relativeRegression)) {
         reviewReasons.push(`${cellLabel(current)} ${name} regressed more than 20% from the pinned median.`);
+      }
+    }
+  }
+  const referenceQueryByKey = new Map<string, EventHistoryPerformanceQueryCell>();
+  for (const cell of reference.queryCells) referenceQueryByKey.set(`${cell.adapter}/${cell.sample}`, cell);
+  for (const current of report.queryCells) {
+    if (current.sample !== 1) continue;
+    const matching = referenceQueryByKey.get(`${current.adapter}/${current.sample}`);
+    if (!matching) {
+      reviewReasons.push(`Pinned reference is missing comparable filter query sample ${current.adapter}.`);
+      continue;
+    }
+    const currentSamples = report.queryCells.filter((cell) => cell.adapter === current.adapter);
+    for (const [name, value] of Object.entries(current.latency)) {
+      const currentValue = median(currentSamples.map((cell) => cell.latency[name as keyof typeof current.latency]));
+      const referenceValue = matching.latency[name as keyof typeof matching.latency];
+      if (referenceValue > 0 && currentValue > referenceValue * (1 + EVENT_HISTORY_PERFORMANCE_LIMITS.query.relativeRegression)) {
+        reviewReasons.push(`${current.adapter} ${name} regressed more than 20% from the pinned query median.`);
       }
     }
   }

@@ -16,10 +16,10 @@ import type { LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
 const interval = { id: "panel:interval-1", ordinal: 1 } as const;
 const limits = {
-  maxRetainedCount: 10_000,
-  maxRetainedBytes: 64 * 1_048_576,
-  retainedWarningCount: 8_000,
-  retainedWarningBytes: 64 * 1_048_576 * 0.8,
+  maxRetainedCount: 100_000,
+  maxRetainedBytes: 256 * 1_048_576,
+  retainedWarningCount: 80_000,
+  retainedWarningBytes: 256 * 1_048_576 * 0.8,
   pendingWarningBytes: 16 * 1_048_576,
   pendingStopBytes: 32 * 1_048_576,
   pendingAgeWarningMs: 10_000,
@@ -99,8 +99,8 @@ describe("history-impl-10 footer condition", () => {
         state: "EXHAUSTED",
         limits,
         measurements: {
-          retainedCount: 8_000,
-          retainedBytes: 52_428_800,
+          retainedCount: 80_001,
+          retainedBytes: 214_748_365,
           pendingCount: 4,
           pendingBytes: 20_000_000,
           oldestPendingAgeMs: 30_000
@@ -127,8 +127,8 @@ describe("history-impl-10 footer condition", () => {
         rejected: { count: 2, bytes: 200 },
         discarded: { count: 3, bytes: 300 },
         triggerMeasurements: {
-          retainedCount: 8_000,
-          retainedBytes: 52_428_800,
+          retainedCount: 80_001,
+          retainedBytes: 214_748_365,
           pendingCount: 4,
           pendingBytes: 20_000_000,
           oldestPendingAgeMs: 30_000
@@ -188,7 +188,7 @@ describe("history-impl-10 footer condition", () => {
         state: "NEAR_LIMIT",
         limits,
         measurements: {
-          retainedCount: 8_001,
+          retainedCount: 80_001,
           retainedBytes: 50_000_000,
           pendingCount: 0,
           pendingBytes: 0,
@@ -197,7 +197,7 @@ describe("history-impl-10 footer condition", () => {
       }
     }));
     expect(retained).toMatchObject({ kind: "retained-pressure", title: "History near capacity" });
-    expect(retained?.detail).toContain("8,001 / 10,000 Evidence records");
+    expect(retained?.detail).toContain("80,001 / 100,000 Evidence records");
 
     const draining = historyConditionFor(input(
       {

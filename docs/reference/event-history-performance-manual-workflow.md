@@ -2,8 +2,10 @@
 
 This is a deliberate developer-run gate, not ordinary CI. It measures the
 authoritative `EventHistory.offer` → `follow` → `read` boundary through the
-production React `WorkbenchPanel` path in visible Chrome for Testing major
-151.
+production React `WorkbenchPanel` path in real Chrome for Testing major 151.
+The runner has two explicit proof modes: `headed-visible-frame` (the manual
+foreground/compositor gate) and `non-interactive-layout-commit` (automation
+under a locked console).
 
 ## Run
 
@@ -16,15 +18,70 @@ LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
 npm run measure:event-history
 ```
 
-The runner refuses headless mode, system-Chrome fallback, fake IndexedDB, and
-missing reference data. It runs three independent samples for every adapter,
+The headed mode refuses headless mode, system-Chrome fallback, fake IndexedDB,
+and missing reference data. It runs three independent samples for every adapter,
 workload, and payload-shape matrix cell, plus three post-GC heap samples for
 each checkpoint tier. It writes the machine report and concise interpretation
 to `test-results/event-history-performance.json` and `.md`.
 
+The headed file harness launches Chrome with the centralized unattended-test
+policy (`--use-mock-keychain`, `--password-store=basic`, `--disable-sync`,
+`--no-first-run`, `--no-default-browser-check`, and the supported password,
+sign-in, and profile-onboarding feature disables). It also uses
+`--disable-features=CalculateNativeWinOcclusion` and, on macOS,
+`--activate-on-launch`, in addition to its visible foreground gate
+(`Page.bringToFront` plus the bounded double-frame probe). The exact spawned
+Chrome PID is reactivated by the bounded native helper during the proof. These
+launch controls prevent credential prompts and reduce native occlusion and
+activation scheduling failures; the workload, long-task, and boundary
+semantics are unchanged.
+
 The pinned reference is [event-history-performance-reference.json](event-history-performance-reference.json).
 A report never replaces it automatically. A reference update requires an
 explicit maintainer rationale and disposition in the same focused change.
+
+### Locked-console closure mode
+
+When the macOS console is locked, use the separate non-interactive proof. It
+uses a fresh temporary profile, real native IndexedDB, real DOM/React, and the
+same 36-cell, query, scenario, heap, and absolute-threshold workloads. It does
+not activate windows, request focus, probe rAF, use screencasts, or claim a
+headed compositor result. The compositor-dependent publication confirmation is
+replaced only by the independently instrumented production React
+layout-effect/DOM publication boundary; query, storage, correctness, heap, and
+performance thresholds are unchanged.
+
+Capture a candidate without self-adoption:
+
+```sh
+LSEW_EVENT_HISTORY_PERF_MODE=non-interactive-layout-commit \
+LSEW_EVENT_HISTORY_PERF_CAPTURE=true \
+LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
+npm run measure:event-history
+```
+
+The JSON and Markdown artifacts explicitly report
+`proofMode=non-interactive-layout-commit`, `headless=true`, and
+`compositorFrameMeasured=false`. Adoption is a separate deliberate local
+operation, followed by a clean comparison run; a candidate never becomes its
+own reference.
+
+For the `filter-impl-08` closure, add the explicit scoped selection:
+
+```sh
+LSEW_EVENT_HISTORY_PERF_MODE=non-interactive-layout-commit \
+LSEW_EVENT_HISTORY_PERF_SELECTION=filter-impl-08 \
+LSEW_EVENT_HISTORY_PERF_CAPTURE=true \
+LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
+npm run measure:event-history
+```
+
+This selection runs the native IndexedDB/memory query matrix, bounded
+hydration/index telemetry, the existing exact-threshold query gates, and the
+post-GC heap check. It excludes terminal-pressure, checkpoint-pressure, and
+lifecycle scenarios. Its `filter-impl-08-noninteractive-layout-commit`
+metadata explicitly disclaims foreground scheduling and compositor proof.
+The ordinary full-release selection remains the default and is unchanged.
 
 ## Absolute decision
 
@@ -41,7 +98,7 @@ visible p95 ≤50 ms and burst final boundary ≤1 s; recent page ≤50 ms;
 structured/indexed ≤100 ms; Find/full ≤500 ms; no capture/commit/paint Long
 Task >50 ms; query phase allows at most one >50 ms Long Task only for one large
 JSON sample and no query Long Task >125 ms; post-GC heap ≤8 MiB for IndexedDB
-at 10,000 events and ≤32 MiB for memory at 5,000 events.
+at 100,000 events and ≤32 MiB for memory at 5,000 events.
 
 ## Artifact review
 

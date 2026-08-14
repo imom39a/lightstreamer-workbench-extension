@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { Browser, Cache } from "@puppeteer/browsers";
 import axe from "axe-core";
+import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactRoot = resolve(projectRoot, "test-results/workbench-visual-qa");
@@ -68,7 +69,11 @@ try {
     readyUrl: `http://127.0.0.1:${panelPort}/index.html`
   }));
 
-  browser = await chromium.launch({ executablePath: await resolveChromeExecutable(), headless: browserHeadless });
+  browser = await chromium.launch({
+    executablePath: await resolveChromeExecutable(),
+    headless: browserHeadless,
+    args: chromeTestArguments({ headless: browserHeadless, disableNativeOcclusion: true })
+  });
   const results = [];
   for (const scenario of scenarios) {
     const reference = await capturePrototype(browser, scenario);

@@ -9,8 +9,11 @@ import {
   createExportOpenScenario,
   createTimelineScenario,
   getExtensionPanelSmokeScenario,
-  getPanelScenario
+  getPanelScenario,
+  getEvidenceFilterPanelScenario
 } from "./support/panel-scenarios";
+import { EVIDENCE_FILTER_PANEL_SCENARIOS } from "./support/evidence-filter-fixture";
+import { EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS } from "./support/panel-scenarios";
 
 describe("deterministic panel scenarios", () => {
   it("creates repeatable store-listing state with fixed Capture identifiers and timestamps", () => {
@@ -176,5 +179,15 @@ describe("deterministic panel scenarios", () => {
     const payloads = live.stream?.messages.map((message) => JSON.stringify(message.payload)) ?? [];
     expect(payloads.some((payload) => payload.includes("timeline-match"))).toBe(true);
     expect(payloads.some((payload) => payload.includes("timeline-other"))).toBe(true);
+  });
+
+  it("integrates the maintained filter scenario manifest with the shared panel seam", () => {
+    expect(EVIDENCE_FILTER_PANEL_SCENARIO_DEFINITIONS.every((scenario) => scenario.forcedColors)).toBe(true);
+    for (const id of EVIDENCE_FILTER_PANEL_SCENARIOS) {
+      const scenario = getEvidenceFilterPanelScenario(id);
+      expect(scenario.id).toBe(id);
+      expect(scenario.setupActions).toEqual(expect.any(Array));
+    }
+    expect(getPanelScenario("high-volume-command-keys").id).toBe("high-volume-command-keys");
   });
 });

@@ -124,9 +124,9 @@ async function flushAsync(): Promise<void> {
 }
 
 async function syntheticEvidence(history: EventHistory) {
-  const result = await history.read({ filters: { synthetic: true } });
+  const result = await history.read({});
   if (!result.ok) throw new Error(result.problem.message);
-  return result.value.evidence;
+  return result.value.evidence.filter(({ candidate }) => candidate.kind !== "topology-checkpoint" && candidate.synthetic);
 }
 
 describe("history-impl-09 Local Injection committed Evidence boundary", () => {

@@ -18,6 +18,20 @@ import {
   type Outcome,
   type TopologyCheckpointEvidenceCandidate
 } from "../../src/core/event-history-authoritative";
+import {
+  type DeterministicEvidenceRecord,
+  type EvidenceFilter,
+  type EvidenceFilterReadProblem,
+  type EvidenceQueryRequest,
+  type EvidenceReadPoint,
+  type EvidenceSnapshot,
+  type FacetDiscoveryResult
+} from "../../src/core/evidence-filter-contract";
+import { canonicalEvidenceSearchText, extractEvidenceFacets } from "../../src/core/evidence-facets";
+import { typedFacetValue } from "../../src/core/evidence-filter-contract";
+import { discoverFacet } from "../../src/core/evidence-filter-discovery";
+import { findEvidence, isInAround, lookupEvidence, normalizeAround, type SelectionRecord } from "../../src/core/evidence-filter-selection";
+import { evaluateFilter, type FilterInput, type FilterRecord } from "../../src/core/filter-algebra";
 
 export type AuthoritativeHistoryOfferDecision = "commit" | "refuse";
 
@@ -66,6 +80,7 @@ export function createAuthoritativeHistory(
   let notAccepted = 0;
   let closed = false;
   let closeOutcome: Outcome<CloseResult> | null = null;
+  let historyObject: EventHistory;
 
   for (const candidate of options.precommitted ?? []) {
     appendCommitted(candidate);
@@ -79,7 +94,7 @@ export function createAuthoritativeHistory(
   }
 
   function currentBoundary(): EvidenceRef | null {
-    const last = allEvidence.at(-1);
+    const last = currentEvidence.at(-1);
     return last ? toRef(last) : null;
   }
 
@@ -233,6 +248,144 @@ export function createAuthoritativeHistory(
     });
   }
 
+  function queryReadPoint(): EvidenceReadPoint {
+    const identity = (reference: EvidenceRef): EvidenceReadPoint["committedEvidenceBoundary"] => Object.freeze({
+      intervalId: reference.intervalId,
+      pageId: interval.id,
+      ownerId: "memory-event-history",
+      sequence: reference.sequence,
+      eventId: reference.eventId
+    });
+    const boundary = currentBoundary();
+    const range = retainedRange();
+    return Object.freeze({
+      interval: Object.freeze({ ...interval }),
+      committedEvidenceBoundary: boundary ? identity(boundary) : null,
+      retainedRange: range
+        ? Object.freeze({ first: identity(range.first)!, last: identity(range.last)! })
+        : null
+    });
+  }
+
+  function query(request: EvidenceQueryRequest): Promise<Readonly<{ ok: true; value: EvidenceSnapshot }> | Readonly<{ ok: false; problem: EvidenceFilterReadProblem }>> {
+    if (closed) return Promise.resolve(queryFailure("HISTORY_INTERVAL_UNAVAILABLE", "Event History is closed."));
+    const compatibilityQuery: EvidenceQuery = {
+      candidateKind: "lightstreamer",
+      ...(request.page.order === "OLDEST_FIRST" && request.page.cursor === undefined
+        ? {}
+        : { limit: request.page.size }),
+      offsetFromNewest: request.page.cursor === undefined ? 0 : Number(request.page.cursor),
+      order: "asc"
+    };
+    const compatibilityRead = options.readControl ? historyObject.read(compatibilityQuery) : null;
+    if (!options.readControl) void historyObject.read(compatibilityQuery);
+    const gated = <T>(value: T): Promise<T> => compatibilityRead
+      ? compatibilityRead.then(() => value)
+      : Promise.resolve(value);
+    const readPoint = queryReadPoint();
+    if (request.at !== "LATEST_COMMITTED" && !sameReadPoint(request.at, readPoint)) {
+      return gated(queryFailure("READ_POINT_UNAVAILABLE", "The requested Evidence read point is unavailable."));
+    }
+    if (!Number.isSafeInteger(request.page.size) || request.page.size < 1 || request.page.size > 100) {
+      return gated(queryFailure("QUERY_FAILED", "The Evidence page size is outside the bounded contract."));
+    }
+
+    const records: SelectionRecord[] = currentEvidence.flatMap((entry) => {
+      if (entry.candidate.kind === "topology-checkpoint") return [];
+      const identity = Object.freeze({
+        intervalId: entry.intervalId,
+        pageId: interval.id,
+        ownerId: "memory-event-history",
+        sequence: entry.sequence,
+        eventId: entry.eventId
+      });
+      const event = entry.candidate;
+      const extracted = extractEvidenceFacets(event, {
+        identity,
+        pageId: identity.pageId,
+        listenerOwner: identity.ownerId,
+        summary: event.kind
+      });
+      const facets = { ...extracted.facets };
+      if (!facets.item && event.item && (event.item.name !== undefined || event.item.position !== undefined)) {
+        const label = event.item.name ?? String(event.item.position);
+        facets.item = typedFacetValue("item", "legacy-label", label, label);
+      }
+      return [Object.freeze({
+        identity,
+        timestamp: event.timestamp,
+        summary: event.kind,
+        searchText: canonicalEvidenceSearchText(event, {
+          identity,
+          pageId: identity.pageId,
+          listenerOwner: identity.ownerId,
+          summary: event.kind
+        }),
+        facets: Object.freeze(facets),
+        payload: copyCandidate(event)
+      })];
+    });
+    const around = normalizeAround(request.filter.around, readPoint.retainedRange);
+    const filter = around === request.filter.around
+      ? request.filter
+      : { ...request.filter, around };
+    const matching = records.filter((record) => evaluateFilter(
+      filter as unknown as FilterInput,
+      {
+        timestamp: record.timestamp,
+        intervalId: record.identity.intervalId,
+        searchText: record.searchText,
+        facets: record.facets as unknown as FilterRecord["facets"]
+      }
+    ).matches);
+    const inScope = matching.filter((record) => isInAround(record, around));
+    const ordered = request.page.order === "NEWEST_FIRST" ? [...inScope].reverse() : inScope;
+    let offset = 0;
+    if (request.page.cursor !== undefined) {
+      offset = Number(request.page.cursor);
+      if (!Number.isSafeInteger(offset) || offset < 0) {
+        return gated(queryFailure("QUERY_FAILED", "The Evidence page cursor is malformed."));
+      }
+    }
+    if (offset > ordered.length) return gated(queryFailure("READ_POINT_UNAVAILABLE", "The Evidence page cursor is unavailable."));
+    const page = ordered.slice(offset, offset + request.page.size);
+    const nextCursor = offset + page.length < ordered.length ? String(offset + page.length) : null;
+    const discoveries = new Map<string, FacetDiscoveryResult>();
+    for (const discovery of request.discover ?? []) {
+      try {
+        discoveries.set(discovery.facet, discoverFacet(records, filter, readPoint, discovery));
+      } catch {
+        discoveries.set(discovery.facet, {
+          state: "UNAVAILABLE",
+          facet: discovery.facet,
+          reason: "DISCOVERY_FAILED",
+          values: [],
+          distinctTotal: null,
+          nextCursor: null,
+          baseEvidenceCount: null
+        });
+      }
+    }
+    const lookup = request.lookup === undefined
+      ? null
+      : lookupEvidence(records, readPoint, request.lookup, filter, around);
+    const find = request.find === undefined ? null : findEvidence(request.find.scopeToFilter ? inScope : records, request.find);
+    return gated({
+      ok: true,
+      value: Object.freeze({
+        readPoint,
+        page: Object.freeze({ evidence: Object.freeze(page), nextCursor }),
+        totals: Object.freeze({ matching: matching.length, inScope: inScope.length }),
+        discoveries: new Map(discoveries),
+        lookup,
+        find,
+        evaluation: filter.unsupported.length > 0 ? "UNSUPPORTED_FILTER" : "COMPLETE",
+        coverage: "COMPLETE",
+        storage: "MEMORY_FALLBACK"
+      })
+    });
+  }
+
   function clear(): Promise<Outcome<{ previousInterval: HistoryInterval; interval: HistoryInterval }>> {
     if (closed) {
       return Promise.resolve({
@@ -295,7 +448,8 @@ export function createAuthoritativeHistory(
     return Promise.resolve(closeOutcome);
   }
 
-  return { storage: { mode: "memory" }, status, offer, read, clear, follow, close };
+  historyObject = { storage: { mode: "memory" }, status, offer, read, query, clear, follow, close };
+  return historyObject;
 }
 
 function toRef(evidence: CommittedEvidence): EvidenceRef {
@@ -304,4 +458,17 @@ function toRef(evidence: CommittedEvidence): EvidenceRef {
     sequence: evidence.sequence,
     eventId: evidence.eventId
   });
+}
+
+function sameReadPoint(left: EvidenceReadPoint, right: EvidenceReadPoint): boolean {
+  return left.interval.id === right.interval.id &&
+    left.committedEvidenceBoundary?.eventId === right.committedEvidenceBoundary?.eventId &&
+    left.committedEvidenceBoundary?.sequence === right.committedEvidenceBoundary?.sequence;
+}
+
+function queryFailure(
+  code: EvidenceFilterReadProblem["code"],
+  message: string
+): Readonly<{ ok: false; problem: EvidenceFilterReadProblem }> {
+  return { ok: false, problem: Object.freeze({ code, message }) };
 }

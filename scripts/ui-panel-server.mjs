@@ -105,6 +105,16 @@ const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
 const runtime = createWorkbenchRuntime({
   history,
   storage: history.storage,
+  ...(scenario.storageEstimate ? {
+    storageEstimate: {
+      source: "navigator.storage.estimate",
+      status: "AVAILABLE",
+      usageBytes: scenario.storageEstimate.usageBytes,
+      quotaBytes: scenario.storageEstimate.quotaBytes,
+      headroomBytes: scenario.storageEstimate.quotaBytes - scenario.storageEstimate.usageBytes,
+      failure: null
+    }
+  } : {}),
   captureStatus: scenario.captureStatus,
   capture: scenario.capture,
   theme,
@@ -131,7 +141,14 @@ if (scenario.selectedScope) {
   runtime.dispatch({ type: "set-scope-focus", scopeId: scope.id });
 }
 if (scenario.selectedEventId) runtime.dispatch({ type: "select-evidence", eventId: scenario.selectedEventId });
-if (scenario.filterQuery) runtime.dispatch({ type: "set-filters", filters: { query: scenario.filterQuery } });
+if (scenario.filterQuery) {
+  const filter = runtime.getSnapshot().evidence.investigation.filter;
+  runtime.dispatch({
+    type: "apply-filter-mutations",
+    expectedRevision: filter.revision,
+    operations: [{ type: "set-text", text: scenario.filterQuery }]
+  });
+}
 if (scenario.findQuery) runtime.dispatch({ type: "set-find", value: scenario.findQuery });
 if (scenario.freezeBeforeLaterEvents) runtime.dispatch({ type: "freeze-evidence" });
 await Promise.all((scenario.laterEvents ?? []).map((event) => history.offer(event).settled));
@@ -160,6 +177,15 @@ window.__setWorkbenchStorageMode = (mode) => runtime.dispatch({
     ? { mode: "memory", reason: "IndexedDB is unavailable" }
     : { mode: "indexeddb" }
 });
+window.__makeWorkbenchFilterStale = () => {
+  const revision = runtime.getSnapshot().evidence.investigation.filter.revision;
+  runtime.dispatch({
+    type: "apply-filter-mutations",
+    expectedRevision: revision,
+    operations: [{ type: "set-text", text: "external-change" }]
+  });
+};
+window.__getWorkbenchFilterDiscoveryCount = () => runtime.getSnapshot().evidence.investigation.discoveries.size;
 let deferredEventsReleased = false;
 window.__appendDeferredWorkbenchEvents = () => {
   if (deferredEventsReleased) return 0;

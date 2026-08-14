@@ -468,7 +468,7 @@ IndexedDB startup, ownership coordination, schema validation, or guarded cleanup
 cannot be confirmed, the panel uses `createInMemoryEventHistory()` for the
 remainder of that Panel Session. This is a storage fallback within the same
 interface, not a second event model or a mid-session migration. The normal
-IndexedDB tier is bounded at 10,000 Evidence records or 64 MiB of retained
+IndexedDB tier is bounded at 100,000 Evidence records or 256 MiB of retained
 serialized journal bytes; the startup memory tier is bounded at 5,000 records or
 32 MiB. Count and retained bytes are independent limits, and the first limit
 reached controls admission.
@@ -521,6 +521,18 @@ boundary cannot be proven. Clear never restarts a stopped history.
 ### History Status
 
 `EventHistory.status()` is the authoritative runtime status. It reports phase, capture operation, accepted and refused counts, retained range, and capacity pressure through `capacity.tier` and `capacity.state` (`AVAILABLE`, `NEAR_LIMIT`, or `EXHAUSTED`). The panel renders those fields directly and uses the same status publications to derive history diagnostics. There is no generic event-count warning threshold or parallel retained-count authority.
+
+The panel also makes one session-local `navigator.storage.estimate()` sample
+before it connects Capture, then permits at most one additional sample when the
+authoritative History Capacity state first reaches `NEAR_LIMIT` and one when it
+reaches `EXHAUSTED`. The estimate compares rough browser-reported free
+headroom with the shipped 100,000-Evidence/256 MiB normal contract only to produce an
+advisory in the global diagnostic footer. It is not a reservation, admission
+guarantee, adapter selector, Coverage input, or retained-history authority;
+missing, rejected, contradictory, or unstable readings are ignored. Canonical
+count/byte admission and an actual `QuotaExceededError` remain authoritative.
+The estimate is neither exported nor persisted, and the extension requests no
+`unlimitedStorage` permission.
 
 Complete History is a qualified claim: it means every accepted candidate in the
 current History Interval through its Committed Evidence Boundary, not every event
@@ -804,7 +816,12 @@ The runtime owns:
 - raw Evidence, scoped export, responsive-layout restoration identities, and session operations;
 - exactly one Local Injection Source/Draft/target/review/execution/outcome lifecycle.
 
-Storage mode and retained-history capacity are independent of Observation Coverage. If IndexedDB initialization fails, the mount selects the in-memory Event History and the runtime emits one storage diagnostic; it does not override Capture coverage.
+Storage mode, retained-history capacity, and advisory browser headroom are
+independent of Observation Coverage. If IndexedDB initialization fails, the
+mount selects the in-memory Event History and the runtime emits one storage
+diagnostic; it does not override Capture coverage. Headroom telemetry appears
+only in the global footer and never in Ordered Evidence, Context, exports, or
+application persistence.
 
 ### Scoped Evidence Workspace
 
@@ -916,10 +933,10 @@ Coverage is organized by architectural boundary:
 | `tests/bridge-message-validation.test.ts` | Capture and reinjection message validators plus stable ID allocation. |
 | `tests/instrumentation-lifecycle.test.ts` | Constructor hooks, namespace hooks, lifecycle wrappers, stable logical update IDs, listener registration/delivery metadata, connection details, WebSocket fallback, and page-side reinjection result behavior. |
 | `tests/event-normalizer.test.ts` | Capture-to-envelope normalization, COMMAND key/command preservation, current vs changed fields, snapshot status, and wire source mapping. |
-| `tests/event-filter.test.ts` | Event search text and structured filters. |
+| `tests/evidence-facets.test.ts` and `tests/filter-algebra.test.ts` | Canonical typed facet extraction, search text, evaluation, and mutation algebra. |
 | `tests/authoritative-event-history.test.ts` | In-memory Event History acceptance, ordered Evidence, Clear/Close lifecycle, failure boundaries, and checkpoint candidates. |
-| `tests/authoritative-event-history-indexeddb.test.ts` | IndexedDB journal startup, ordered batching, committed reads, exact-facet paging, capacity accounting, failure boundaries, and guarded cleanup. |
-| `tests/authoritative-event-history-contract.test.ts` | Shared memory/IndexedDB Event History contract parity for ordered Evidence, Clear, failure, filtering, and lifecycle behavior. |
+| `tests/authoritative-event-history-indexeddb.test.ts` | IndexedDB journal startup, ordered batching, bounded canonical query projections, capacity accounting, failure boundaries, and guarded cleanup. |
+| `tests/authoritative-event-history-contract.test.ts` | Shared memory/IndexedDB Event History contract parity for ordered Evidence, Clear, failure, canonical query, and lifecycle behavior. |
 | `tests/command-state.test.ts` | Full and incremental COMMAND reduction, grouping, metadata carry-forward, item identity, lifecycle, provenance, diagnostics, and draft validation against state. |
 | `tests/topology-state.test.ts` | Session authority and recovery epochs, waiting ownership, logical/delivery/synthetic counters, snapshots, compact five-session history, duplicate/overlap diagnostics, reset semantics, and unassigned subscriptions. |
 | `tests/reinjection-draft.test.ts` | Internal Injection Draft cloning, editing, changed-field derivation, validation, and JSON compatibility. |
@@ -963,14 +980,14 @@ Release packaging uses `scripts/package-extension.mjs`, which by default runs ty
 2. Emit it from instrumentation or fallback code.
 3. Update `LightstreamerEventEnvelope` only if the normalized model needs new top-level fields.
 4. Update `event-normalizer.ts` conversion logic.
-5. Update `event-filter.ts` or IndexedDB metadata if the kind needs search/filter support.
+5. Extend the canonical facet descriptors in `evidence-facets.ts` and the storage-neutral query projection only if the kind needs search/filter support; do not add renderer predicates or a second filter schema.
 6. Add tests for validator acceptance, normalization, storage/filtering, and panel rendering.
 
 ### Adding Normalized Event Fields
 
 1. Extend the relevant type in `src/core/event-envelope.ts`.
 2. Convert only validated JSON data in `src/core/event-normalizer.ts`.
-3. Include search text in `createEventSearchText()` if users should find it.
+3. Include the field in `canonicalEvidenceSearchText()` if users should find it.
 4. Add IndexedDB metadata/index support only when the field needs efficient structured filtering.
 5. Render it in panel detail or tables where useful.
 

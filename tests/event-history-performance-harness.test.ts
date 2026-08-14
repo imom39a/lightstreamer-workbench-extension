@@ -31,9 +31,12 @@ import {
   runCheckpointScenario,
   runCellThenCollectGarbage,
   runTerminalScenario,
+  validateHarnessSelection,
   waitForBoundedFrame,
+  waitForBoundedHygieneBoundary,
   withStageDeadline,
-  type HarnessProgressInput
+  type HarnessProgressInput,
+  type HarnessSelection
 } from "../benchmarks/event-history-performance-harness";
 import { createEventHistoryWorkloadEvent } from "../benchmarks/event-history-workloads";
 import * as eventHistoryAuthoritative from "../src/core/event-history-authoritative";
@@ -41,6 +44,50 @@ import type { EventHistory } from "../src/core/event-history-authoritative";
 import { TOPOLOGY_OBSERVATION_VERSION } from "../src/bridge/messages";
 
 describe("Event History performance checkpoint workload", () => {
+  it("bounds fresh matrix-page cell selection to one deterministic cell", () => {
+    const selection: HarnessSelection = {
+      id: "matrix-indexeddb-sustained",
+      kind: "matrix",
+      adapter: "indexeddb",
+      workload: "sustained",
+      firstCellIndex: 1,
+      collectAfterFinal: true,
+      pageToken: "cell-page",
+      cellOffset: 3
+    };
+
+    expect(validateHarnessSelection(selection)).toEqual(selection);
+    expect(() => validateHarnessSelection({ ...selection, cellOffset: 0 })).toThrow(/cell offset is invalid/u);
+    expect(() => validateHarnessSelection({ ...selection, cellOffset: 10 })).toThrow(/cell offset is invalid/u);
+  });
+
+  it("accepts per-cell cleanup for the memory-burst shard without changing shard identity", () => {
+    const shard = {
+      id: "matrix-memory-burst",
+      kind: "matrix" as const,
+      adapter: "memory" as const,
+      workload: "burst" as const,
+      firstCellIndex: 28,
+      collectAfterFinal: false,
+      pageToken: "memory-burst-page"
+    };
+
+    expect(validateHarnessSelection({ ...shard, cellOffset: 1, collectAfterFinal: true })).toMatchObject({ cellOffset: 1 });
+    expect(validateHarnessSelection({ ...shard, cellOffset: 9, collectAfterFinal: false })).toMatchObject({ cellOffset: 9 });
+    expect(() => validateHarnessSelection({ ...shard, cellOffset: 9, collectAfterFinal: true })).toThrow(/shard identity is invalid/u);
+  });
+
+  it("accepts the explicit filter-impl-08 query shard", () => {
+    const selection: HarnessSelection = {
+      id: "filter-impl-08-query",
+      kind: "filter-impl-08",
+      pageToken: "filter-impl-08-page"
+    };
+
+    expect(validateHarnessSelection(selection)).toEqual(selection);
+    expect(() => validateHarnessSelection({ ...selection, id: "scenarios" } as never)).toThrow(/query shard identity/u);
+  });
+
   it("releases caller-owned heap workload candidates before yielding the retained frame", async () => {
     const candidates = [
       createEventHistoryWorkloadEvent("large-json-rich", 0, "heap-release"),
@@ -593,6 +640,26 @@ describe("Event History performance checkpoint workload", () => {
       window.requestAnimationFrame = originalRequestAnimationFrame;
       if (previousOperation === undefined) delete globalRecord[key];
       else globalRecord[key] = previousOperation;
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses only a bounded macrotask for non-interactive hygiene, never as publication proof", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const requestAnimationFrame = vi.fn(() => 0);
+    window.requestAnimationFrame = requestAnimationFrame as typeof window.requestAnimationFrame;
+    try {
+      const pending = waitForBoundedHygieneBoundary(
+        "non-interactive-hygiene",
+        () => progress("hygiene"),
+        "non-interactive-layout-commit"
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(pending).resolves.toBeUndefined();
+      expect(requestAnimationFrame).not.toHaveBeenCalled();
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
       vi.useRealTimers();
     }
   });

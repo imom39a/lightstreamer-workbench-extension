@@ -4,11 +4,13 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser, Cache } from "@puppeteer/browsers";
 import { defineConfig } from "@playwright/test";
+import { createPlaywrightLaunchOptions } from "./scripts/chrome-launch-args.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const selectedTheme = parseTheme(process.env.LSEW_UI_THEME ?? "auto");
 const viewport = parseViewport(process.env.LSEW_UI_VIEWPORT ?? "1280x800");
 const chromeExecutable = resolveChromeExecutable();
+const headless = process.env.LSEW_UI_HEADLESS !== "false";
 
 export default defineConfig({
   testDir: "./tests/ui",
@@ -31,16 +33,15 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:4173",
     colorScheme: selectedTheme === "auto" ? null : selectedTheme,
-    headless: process.env.LSEW_UI_HEADLESS !== "false",
+    headless,
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
     video: "retain-on-failure",
     timezoneId: "America/New_York",
     deviceScaleFactor: 1,
     viewport,
-    ...(chromeExecutable
-      ? { launchOptions: { executablePath: chromeExecutable } }
-      : {})
+    // Playwright owns the fresh temporary profile when user-data-dir is omitted.
+    launchOptions: createPlaywrightLaunchOptions(chromeExecutable)
   },
   webServer: {
     command: "node scripts/ui-panel-server.mjs",

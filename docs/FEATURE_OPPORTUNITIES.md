@@ -44,7 +44,7 @@ The redesigned production panel now provides:
 
 - A React **Scoped Evidence Workspace** with structural Page → client → Session → Subscription → item → listener Scope.
 - Live and retired runtime structure, Session recovery epochs, bounded historical Sessions, subscription configuration, duplicate/overlap findings, snapshot phase, listener and delivery counts, and COMMAND generation summaries.
-- Accepted ordered Evidence through the current History Interval's Committed Evidence Boundary, backed by one Panel Session-owned Event History, with bounded query windows, high-volume navigation, and deliberate Clear. Normal capacity is 10,000 records/64 MiB; startup memory fallback is 5,000 records/32 MiB, and the adapter is fixed for the session.
+- Accepted ordered Evidence through the current History Interval's Committed Evidence Boundary, backed by one Panel Session-owned Event History, with bounded query windows, high-volume navigation, and deliberate Clear. Normal capacity is 100,000 records/256 MiB; startup memory fallback is 5,000 records/32 MiB, and the adapter is fixed for the session.
 - A committed Evidence boundary, History Intervals, exact Clear cuts, fail-closed terminal stops, fixed adapter selection, and ownership-safe abnormal cleanup now define the shipped history contract. New Panel Sessions start empty and never replay stale Evidence.
 - Independent Scope, text Filter, Find, Evidence selection, Context, and Live/Frozen state. Frozen Evidence continues Capture and reports newer matching Evidence.
 - Full committed-Evidence copy for the current interval plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in interval-bounded evidence, category redaction, and unconditional credential exclusion.
@@ -265,7 +265,7 @@ Explicitly deferred from this first release:
 - changed-field density, approximate payload-byte profiling, buffering/loss correlation, and deeper requested-versus-real QoS conclusions;
 - manual time-range editing or chart zoom, cross-capture comparison, and dashboard-specific import or export.
 
-This is a Material UI change. Delivery requires deterministic primary, empty, limited-Coverage, aggregation-failure, clock-discontinuity, Clear, terminal-history, and 10,000-record scenarios; compact, normal, shallow, and wide geometry; Dark, Light, forced-colors, keyboard, focus, chart/table parity, and accessibility evidence; base/current/diff artifacts; independent visual QA; extension and official-client fixture proof; and explicit maintainer approval.
+This is a Material UI change. Delivery requires deterministic primary, empty, limited-Coverage, aggregation-failure, clock-discontinuity, Clear, terminal-history, and 100,000-record scenarios; compact, normal, shallow, and wide geometry; Dark, Light, forced-colors, keyboard, focus, chart/table parity, and accessibility evidence; base/current/diff artifacts; independent visual QA; extension and official-client fixture proof; and explicit maintainer approval.
 
 ### Build 4 — Changed-Field, Delivery, Provenance, and Value-Semantics Inspection
 
@@ -705,7 +705,7 @@ Repository decisions and implementation:
 - [Production UI Migration Plan](WORKBENCH_UI_MIGRATION_PLAN.md)
 - [Architecture](ARCHITECTURE.md)
 - [Normalized Evidence envelope](../src/core/event-envelope.ts)
-- [Event filtering](../src/core/event-filter.ts)
+- [Canonical Evidence filtering](../src/core/filter-algebra.ts) and [facet discovery](../src/core/evidence-filter-discovery.ts)
 - [Topology state](../src/core/topology-state.ts)
 - [Raw-JSON Local Injection editor research](research/local-injection-json-editor-patterns.md)
 - [Event History workload facts](research/event-history-workload-facts.md)

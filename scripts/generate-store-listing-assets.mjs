@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const outputDir = resolve(projectRoot, "store-listing/screenshots");
@@ -468,19 +469,21 @@ async function runChromeScreenshot(url, outputPath) {
     await new Promise((resolveRun, rejectRun) => {
       let timedOut = false;
       const child = spawn(chromePath, [
-        "--headless=new",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--force-device-scale-factor=1",
-        "--run-all-compositor-stages-before-draw",
-        "--window-size=1280,800",
-        "--virtual-time-budget=2000",
-        `--user-data-dir=${profileDir}`,
-        `--screenshot=${outputPath}`,
+        ...chromeTestArguments({
+          profile: profileDir,
+          headless: true,
+          disableNativeOcclusion: true,
+          additional: [
+            "--disable-gpu",
+            "--force-device-scale-factor=1",
+            "--run-all-compositor-stages-before-draw",
+            "--window-size=1280,800",
+            "--virtual-time-budget=2000",
+            `--screenshot=${outputPath}`
+          ]
+        }),
         url
-      ], {
+      ]), {
         stdio: "pipe"
       });
 

@@ -74,7 +74,7 @@ Live Capture never steals focus, selection, scroll position, or detail context. 
 ### History and operating boundaries
 
 One Panel Session owns one temporary Event History. The normal IndexedDB journal
-supports 10,000 Evidence records or 64 MiB of retained serialized journal bytes;
+supports 100,000 Evidence records or 256 MiB of retained serialized journal bytes;
 the startup in-memory fallback supports 5,000 records or 32 MiB. The selected
 adapter is fixed before the first offer and never changes during the session.
 Fallback changes History Capacity only; Capture Operation, Observation Coverage,

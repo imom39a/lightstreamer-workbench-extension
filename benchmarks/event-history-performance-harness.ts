@@ -35,20 +35,26 @@ import {
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   classifyEventHistoryPerformance,
+  EVENT_HISTORY_PERFORMANCE_PROOF_MODES,
   CHECKPOINT_LIVE_CAPTURE_MAX_EVENT_GAP_MS,
   CHECKPOINT_LIVE_CAPTURE_MIN_EVENTS_PER_SECOND,
   CHECKPOINT_LIVE_CAPTURE_MIN_OVERLAP_MS,
   TERMINAL_PENDING_BYTE_EVENT_COUNT,
+  isExactQueryPage,
   type EventHistoryPerformanceCell,
+  type EventHistoryPerformanceFrameProof,
+  type EventHistoryPerformanceQueryCell,
   type EventHistoryPerformanceCheckpointScenario,
   type EventHistoryPerformanceHeapSample,
   type EventHistoryPerformanceStorageEstimate,
   type EventHistoryPerformanceReference,
   type EventHistoryPerformanceReport,
+  type EventHistoryPerformanceProofMode,
   type EventHistoryPerformanceShape,
   type EventHistoryPerformanceTerminalScenario,
   type EventHistoryPerformanceWorkload
 } from "./event-history-performance-gate";
+import { typedFacetValue, type EvidenceQueryRequest } from "../src/core/evidence-filter-contract";
 import { mountWorkbenchPanel } from "../src/extension/panel/panel";
 import {
   createWorkbenchRuntime,
@@ -140,9 +146,10 @@ async function yieldBurstOfferMacrotask(): Promise<void> {
   await delay(0);
 }
 
-type HarnessSelection = Readonly<
-  | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string }
+export type HarnessSelection = Readonly<
+  | { id: string; kind: "matrix"; adapter: "indexeddb" | "memory"; workload: "sustained" | "burst"; firstCellIndex: number; collectAfterFinal: boolean; pageToken: string; cellOffset?: number }
   | { id: "scenarios"; kind: "scenarios"; pageToken: string }
+  | { id: "filter-impl-08-query"; kind: "filter-impl-08"; pageToken: string }
 >;
 
 export type HarnessProgressInput = Readonly<{
@@ -604,6 +611,8 @@ export function createPendingTelemetryTracker(now: () => number = () => performa
 
 type HarnessResult = Readonly<{
   schemaVersion: 2;
+  proofMode: EventHistoryPerformanceProofMode;
+  frameProof: EventHistoryPerformanceFrameProof;
   anchors: { issue16TotalEvents: number };
   config: EventHistoryPerformanceConfig;
   shapeFacts: ReturnType<typeof representativeEventHistoryShapeFacts>;
@@ -923,12 +932,12 @@ export async function closeHeapSessionWithEvidence(input: Readonly<{
 declare global {
   interface Window {
     __LSEW_EVENT_HISTORY_PERFORMANCE__?: {
-      run(overrides?: Partial<EventHistoryPerformanceConfig>, selection?: HarnessSelection): Promise<HarnessResult & { selection: HarnessSelection | null }>;
+      run(overrides?: Partial<EventHistoryPerformanceConfig>, selection?: HarnessSelection, proofMode?: EventHistoryPerformanceProofMode): Promise<HarnessResult & { selection: HarnessSelection | null }>;
       classify(report: EventHistoryPerformanceReport, reference: EventHistoryPerformanceReference): ReturnType<typeof classifyEventHistoryPerformance>;
-      prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number, phase: "warmup" | "sample", sample: number | null): Promise<{ adapter: string; count: number; retained: number; sessionId: string; databaseName: string | null; phase: "warmup" | "sample"; sample: number | null }>;
+      prepareRetainedHeapSample(adapter: "indexeddb" | "memory", count: number, phase: "warmup" | "sample", sample: number | null, proofMode?: EventHistoryPerformanceProofMode): Promise<{ adapter: string; count: number; retained: number; sessionId: string; databaseName: string | null; phase: "warmup" | "sample"; sample: number | null }>;
       releaseRetainedHeapSample(): Promise<unknown>;
       removeRetainedHeapRoot(): Promise<boolean>;
-      yieldRetainedHeapFrame(): Promise<boolean>;
+      yieldRetainedHeapFrame(proofMode?: EventHistoryPerformanceProofMode): Promise<boolean>;
     };
   }
 }
@@ -943,7 +952,7 @@ const DEFAULT_CONFIG: EventHistoryPerformanceConfig = {
 let retainedHeapSession: RetainedHeapSession | null = null;
 let retainedHeapSequence = 0;
 
-function validateHarnessSelection(selection: HarnessSelection | undefined): HarnessSelection | null {
+export function validateHarnessSelection(selection: HarnessSelection | undefined): HarnessSelection | null {
   if (selection === undefined) return null;
   if (typeof selection.pageToken !== "string" || selection.pageToken.length === 0) {
     throw new Error("Performance shard requires a non-empty page token.");
@@ -952,28 +961,204 @@ function validateHarnessSelection(selection: HarnessSelection | undefined): Harn
     if (selection.id !== "scenarios") throw new Error("Performance scenario shard identity is invalid.");
     return selection;
   }
+  if (selection.kind === "filter-impl-08") {
+    if (selection.id !== "filter-impl-08-query") throw new Error("filter-impl-08 query shard identity is invalid.");
+    return selection;
+  }
   const expected = [
     ["matrix-indexeddb-sustained", "indexeddb", "sustained", 1, true],
     ["matrix-indexeddb-burst", "indexeddb", "burst", 10, true],
     ["matrix-memory-sustained", "memory", "sustained", 19, true],
     ["matrix-memory-burst", "memory", "burst", 28, false]
   ] as const;
-  if (!expected.some(([id, adapter, workload, firstCellIndex, collectAfterFinal]) =>
-    selection.id === id && selection.adapter === adapter && selection.workload === workload
-      && selection.firstCellIndex === firstCellIndex && selection.collectAfterFinal === collectAfterFinal
-  )) throw new Error("Performance matrix shard identity is invalid.");
+  if (selection.cellOffset !== undefined && (!Number.isSafeInteger(selection.cellOffset) || selection.cellOffset < 1 || selection.cellOffset > 9)) {
+    throw new Error("Performance matrix cell offset is invalid.");
+  }
+  if (!expected.some(([id, adapter, workload, firstCellIndex, collectAfterFinal]) => {
+    const selectedCellNeedsCleanup = selection.cellOffset !== undefined
+      && selection.cellOffset < 9
+      && collectAfterFinal === false;
+    return selection.id === id && selection.adapter === adapter && selection.workload === workload
+      && selection.firstCellIndex === firstCellIndex
+      && selection.collectAfterFinal === (selectedCellNeedsCleanup ? true : collectAfterFinal);
+  })) throw new Error("Performance matrix shard identity is invalid.");
   return selection;
 }
 
+function validatePerformanceProofMode(
+  proofMode: EventHistoryPerformanceProofMode | undefined
+): EventHistoryPerformanceProofMode {
+  const resolved = proofMode ?? EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME;
+  if (
+    resolved !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+    && resolved !== EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT
+  ) {
+    throw new Error(`Unsupported Event History performance proof mode: ${String(resolved)}.`);
+  }
+  return resolved;
+}
+
+async function runFilterQueryCell(
+  adapter: "indexeddb" | "memory",
+  sample: number,
+  operationId: string | null,
+  guard: HarnessStageGuard
+): Promise<EventHistoryPerformanceQueryCell> {
+  const count = adapter === "indexeddb" ? 10_000 : 5_000;
+  const runId = `filter-query-${adapter}-${sample}`;
+  const publishQueryProgress = (stage: string, substage: string, offered: number | null, settled: number | null, query: string | null = null): void => {
+    publishHarnessProgress({
+      operationId,
+      phase: "cells",
+      stage,
+      substage,
+      sample,
+      trigger: null,
+      scenario: null,
+      cellIndex: null,
+      cellTotal: 36,
+      adapter,
+      workload: null,
+      shape: null,
+      workloadPhase: "query",
+      offered,
+      settled,
+      query
+    });
+  };
+  publishQueryProgress("filter-query-fixture", "history-create", 0, 0);
+  const history = adapter === "indexeddb"
+    ? await createIndexedDbEventHistory({ panelSessionId: runId, capacityTier: "NORMAL" })
+    : createInMemoryEventHistory({ panelSessionId: runId, capacityTier: "LOWER" });
+  const events = Array.from({ length: count }, (_, index) => {
+    const sequence = index + 1;
+    const base = createEventHistoryWorkloadEvent("ordinary-item-update", index, runId) as LightstreamerEventEnvelope & { update?: { key?: string; fields?: Record<string, unknown> } };
+    const key = `order-${String(((sequence - 1) % 3_842) + 1).padStart(5, "0")}`;
+    return {
+      ...base,
+      id: `${runId}-event-${sequence}`,
+      timestamp: 1_700_000_000_000 + sequence,
+      update: base.update ? {
+        ...base.update,
+        key,
+        fields: { ...base.update.fields, key }
+      } : base.update
+    } as LightstreamerEventEnvelope;
+  });
+  try {
+    publishQueryProgress("filter-query-fixture", "offer", events.length, 0);
+    const receipts = events.map((event) => history.offer(event));
+    const heartbeat = setInterval(() => publishQueryProgress("filter-query-fixture", "receipt-settlement", events.length, null), 1_000);
+    try {
+      await Promise.all(receipts.map((receipt) => receipt.settled));
+    } finally {
+      clearInterval(heartbeat);
+    }
+    publishQueryProgress("filter-query-fixture", "receipts-settled", events.length, events.length);
+    if (!guard.isActive()) throw new Error("Filter query benchmark was cancelled.");
+    const firstRequest = (pageSize: number): EvidenceQueryRequest => ({
+      at: "LATEST_COMMITTED",
+      page: { order: "NEWEST_FIRST", size: pageSize },
+      filter: { revision: 1, text: "", criteria: {}, around: null, unsupported: [] }
+    });
+    const structuredValue = typedFacetValue("key", "string", "order-00001");
+    const structuredRequest = (pageSize: number): EvidenceQueryRequest => ({
+      at: "LATEST_COMMITTED",
+      page: { order: "OLDEST_FIRST", size: pageSize },
+      filter: { revision: 1, text: "", criteria: { key: { include: [structuredValue], exclude: [] } }, around: null, unsupported: [] }
+    });
+    let longTaskObserverSupported = true;
+    const timings = async (name: string, request: EvidenceQueryRequest): Promise<{ p95: number; result: any; telemetry: any; longTasks: number[]; gc: QuerySampleGcEvidence[] }> => {
+      const samples: number[] = [];
+      const gc: QuerySampleGcEvidence[] = [];
+      const operationTelemetry: any[] = [];
+      const longTasks: number[] = [];
+      let result: any;
+      for (let index = 0; index < 3; index += 1) {
+        publishQueryProgress(`filter-query-${name}`, `${name}-sample-${index + 1}`, events.length, events.length, name);
+        const entries: PerformanceEntry[] = [];
+        const supported = PerformanceObserver.supportedEntryTypes.includes("longtask");
+        longTaskObserverSupported = longTaskObserverSupported && supported;
+        const observer = supported ? new PerformanceObserver((list) => entries.push(...list.getEntries())) : null;
+        observer?.observe({ entryTypes: ["longtask"] });
+        const started = performance.now();
+        result = await history.query!(request);
+        publishQueryProgress(`filter-query-${name}`, `${name}-sample-${index + 1}-complete`, events.length, events.length, name);
+        samples.push(performance.now() - started);
+        await delay(0);
+        entries.push(...(observer?.takeRecords() ?? []));
+        observer?.disconnect();
+        longTasks.push(...entries.filter((entry) => entry.duration > 50).map((entry) => entry.duration));
+        operationTelemetry.push(result.ok ? result.value.telemetry : null);
+        if (index < 2) gc.push(await collectGarbageBetweenQuerySamples(name, (index + 1) as 1 | 2, guard));
+      }
+      return { p95: percentile(samples, 0.95), result, telemetry: operationTelemetry.at(-1), longTasks, gc };
+    };
+    const recent50 = await timings("recent50", firstRequest(50));
+    const recent100 = await timings("recent100", firstRequest(100));
+    const structured50 = await timings("structured50", structuredRequest(50));
+    const structured100 = await timings("structured100", structuredRequest(100));
+    if (!recent50.result.ok || !recent100.result.ok || !structured50.result.ok || !structured100.result.ok) throw new Error("Filter query benchmark base query failed.");
+    const recent = recent100.result.value;
+    const structured = structured100.result.value;
+    const selected = recent.page.evidence[0]?.identity;
+    if (!selected) throw new Error("Filter query benchmark did not return a selected identity.");
+    const findMeasurement = await timings("find", { ...firstRequest(50), filter: { ...firstRequest(50).filter, criteria: { key: { include: [typedFacetValue("key", "string", "does-not-exist")], exclude: [] } }, around: null }, find: { text: "order-00001" } });
+    const lookupMeasurement = await timings("lookup", { ...firstRequest(50), lookup: selected });
+    const aroundMeasurement = await timings("around", { ...firstRequest(50), filter: { ...firstRequest(50).filter, around: { intervalId: selected.intervalId, start: 1_700_000_001_000, end: 1_700_000_002_000 } } });
+    if (!findMeasurement.result.ok || !lookupMeasurement.result.ok || !aroundMeasurement.result.ok) throw new Error("Filter query benchmark optional probe failed.");
+    const operation = (measurement: any) => ({ candidateBound: measurement.telemetry?.candidateBound ?? 0, projectionReads: measurement.telemetry?.evidenceCursorReads ?? 0, payloadHydrations: measurement.telemetry?.payloadHydrations ?? 0, bounded: measurement.telemetry ? !measurement.telemetry.residualScan : false, residualScan: Boolean(measurement.telemetry?.residualScan) });
+    const exactPage = (measurement: any, size: number, expected: number[]) => measurement.result.value.page.evidence.length === Math.min(size, expected.length) && measurement.result.value.page.evidence.every((record: any, index: number) => record.identity.sequence === expected[index] && record.identity.eventId === `${runId}-event-${expected[index]}`);
+    const recentExpected = Array.from({ length: count }, (_, index) => count - index);
+    const structuredExpected = [1, 3843, 7685];
+    const aroundExpected = Array.from({ length: 1_000 }, (_, index) => {
+      const sequence = 1_999 - index;
+      return { sequence, eventId: `${runId}-event-${sequence}` };
+    });
+    return {
+      adapter,
+      sample,
+      fixture: { eventCount: count, distinctCommandKeyCount: 3_842 },
+      latency: {
+        recentSimplePage50P95Ms: recent50.p95,
+        recentSimplePage100P95Ms: recent100.p95,
+        structuredPage50P95Ms: structured50.p95,
+        structuredPage100P95Ms: structured100.p95,
+        findP95Ms: findMeasurement.p95,
+        lookupP95Ms: lookupMeasurement.p95,
+        aroundP95Ms: aroundMeasurement.p95
+      },
+      correctness: {
+        totalsExact: recent50.result.value.totals.matching === count && recent100.result.value.totals.matching === count && structured50.result.value.totals.matching === 3 && structured100.result.value.totals.matching === 3 && aroundMeasurement.result.value.totals.matching === count && aroundMeasurement.result.value.totals.inScope === 1_000,
+        orderExact: exactPage(recent50, 50, recentExpected) && exactPage(recent100, 100, recentExpected) && exactPage(structured50, 50, structuredExpected) && exactPage(structured100, 100, structuredExpected),
+        collisionExact: structured.page.evidence.length === 3 && structured.page.evidence.every((record: any, index: number) => record.identity.eventId === `${runId}-event-${structuredExpected[index]}`),
+        findIndependent: findMeasurement.result.value.find?.total === 3 && findMeasurement.result.value.find?.matches?.map((entry: any) => entry.identity.sequence).join(",") === "1,3843,7685" && findMeasurement.result.value.totals.matching === 0,
+        lookupExact: lookupMeasurement.result.value.lookup?.state === "RETAINED" && lookupMeasurement.result.value.lookup.evidence.payload !== undefined,
+        aroundExact: aroundMeasurement.result.value.totals.matching === count
+          && aroundMeasurement.result.value.totals.inScope === 1_000
+          && isExactQueryPage(aroundMeasurement.result.value.page, aroundExpected.slice(0, 50))
+      },
+      telemetry: { operations: { recent50: operation(recent50), recent100: operation(recent100), structured50: operation(structured50), structured100: operation(structured100), find: operation(findMeasurement), lookup: operation(lookupMeasurement), around: operation(aroundMeasurement) } },
+      longTasks: [...recent50.longTasks, ...recent100.longTasks, ...structured50.longTasks, ...structured100.longTasks, ...findMeasurement.longTasks, ...lookupMeasurement.longTasks, ...aroundMeasurement.longTasks],
+      longTaskObserverSupported,
+      querySampleGc: [...recent50.gc, ...recent100.gc, ...structured50.gc, ...structured100.gc, ...findMeasurement.gc, ...lookupMeasurement.gc, ...aroundMeasurement.gc]
+    };
+  } finally {
+    await history.close();
+  }
+}
+
 window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
-  async run(overrides = {}, requestedSelection) {
+  async run(overrides = {}, requestedSelection, requestedProofMode) {
     const operationId = currentHarnessOperationId();
     const runGuard = createHarnessStageGuard(operationId);
     const selection = validateHarnessSelection(requestedSelection);
+    const proofMode = validatePerformanceProofMode(requestedProofMode);
     const config = { ...DEFAULT_CONFIG, ...overrides };
     validateConfig(config);
     const cells: EventHistoryPerformanceCell[] = [];
     const cellCleanupGc: InterCellGcEvidence[] = [];
+    const selectedCellOffset = selection?.kind === "matrix" ? selection.cellOffset ?? null : null;
     let cellIndex = selection?.kind === "matrix" ? selection.firstCellIndex - 1 : 0;
     let shardCellCount = 0;
     const adapters = selection?.kind === "matrix" ? [selection.adapter] as const : ["indexeddb", "memory"] as const;
@@ -982,10 +1167,13 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       for (const workload of workloads) {
         for (const shape of EVENT_HISTORY_SHAPES) {
           for (const sample of [1, 2, 3] as const) {
-            if (selection?.kind === "scenarios") continue;
+            if (selection?.kind === "scenarios" || selection?.kind === "filter-impl-08") continue;
             if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
-            cellIndex += 1;
             shardCellCount += 1;
+            if (selectedCellOffset !== null && shardCellCount !== selectedCellOffset) continue;
+            cellIndex = selection?.kind === "matrix"
+              ? selection.firstCellIndex + shardCellCount - 1
+              : cellIndex + 1;
             publishHarnessProgress({
               operationId,
               phase: "cells",
@@ -1004,15 +1192,17 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
               settled: 0,
               query: null
             });
-            const collectAfterCell = selection?.kind === "matrix"
-              ? shardCellCount < 9 || selection.collectAfterFinal
-              : cellIndex < 36;
+            const collectAfterCell = selection?.kind !== "matrix"
+              ? cellIndex < 36
+              : selectedCellOffset !== null
+                ? selection.collectAfterFinal
+                : shardCellCount < 9 || selection.collectAfterFinal;
             if (!collectAfterCell) {
-              cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard));
+              cells.push(await runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard, proofMode));
               continue;
             }
             const completed = await runCellThenCollectGarbage(
-              () => runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard),
+              () => runCell(adapter, workload, shape, sample, config, cellIndex, operationId, runGuard, proofMode),
               cellIndex,
               runGuard,
               async (afterCellIndex, guard) => {
@@ -1044,7 +1234,8 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       }
     }
     const terminalScenarios: EventHistoryPerformanceTerminalScenario[] = [];
-    if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
+    const runsScenarioShard = selection === undefined || selection?.kind === "scenarios";
+    if (runsScenarioShard) for (const adapter of ["indexeddb", "memory"] as const) {
       for (const trigger of ["PENDING_BYTES", "PENDING_AGE"] as const) {
         if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
         publishHarnessProgress({
@@ -1069,7 +1260,15 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       }
     }
     const checkpointScenarios: EventHistoryPerformanceCheckpointScenario[] = [];
-    if (selection?.kind !== "matrix") for (const adapter of ["indexeddb", "memory"] as const) {
+    const queryCells: EventHistoryPerformanceQueryCell[] = [];
+    if (runsScenarioShard || selection?.kind === "filter-impl-08") {
+      for (const adapter of ["indexeddb", "memory"] as const) {
+        for (const sample of [1, 2, 3] as const) {
+          queryCells.push(await runFilterQueryCell(adapter, sample, operationId, runGuard));
+        }
+      }
+    }
+    if (runsScenarioShard) for (const adapter of ["indexeddb", "memory"] as const) {
       for (const name of ["representative", "maximum-2MiB"] as const) {
         if (!runGuard.isActive()) throw new Error("Performance harness run was cancelled.");
         publishHarnessProgress({
@@ -1095,11 +1294,26 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     }
     return {
       schemaVersion: 2,
+      proofMode,
+      frameProof: proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT
+        ? {
+            publicationBoundary: "react-layout-commit-dom-publication",
+            compositorFrameMeasured: false,
+            coherent: true,
+            missingBoundaryCount: 0
+          }
+        : {
+            publicationBoundary: "visible-compositor-frame",
+            compositorFrameMeasured: true,
+            coherent: true,
+            missingBoundaryCount: 0
+          },
       selection,
       anchors: { issue16TotalEvents: ISSUE_16_TOTAL_EVENTS },
       config,
       shapeFacts: representativeEventHistoryShapeFacts(),
       cells,
+      queryCells,
       cellCleanupGc,
       terminalScenarios,
       checkpointScenarios
@@ -1118,7 +1332,8 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       };
     }
   },
-  async prepareRetainedHeapSample(adapter, count, phase, sample) {
+  async prepareRetainedHeapSample(adapter, count, phase, sample, requestedProofMode) {
+    const proofMode = validatePerformanceProofMode(requestedProofMode);
     if (retainedHeapSession) throw new Error("A retained heap session is already active; cleanup must complete before the next sample.");
     const runId = `heap-${adapter}-${phase}-${sample ?? "warmup"}-${retainedHeapSequence += 1}`;
     const operationId = currentHarnessOperationId();
@@ -1176,7 +1391,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       );
       const retained = await releaseHeapWorkloadCandidates(
         events,
-        () => waitForBoundedFrame(`${phase}-frame`, heapProgress, heapGuard)
+        () => waitForBoundedHygieneBoundary(`${phase}-frame`, heapProgress, proofMode, heapGuard)
       );
       if (!heapGuard.isActive()) throw new Error("Heap preparation was cancelled.");
       retainedHeapSession = { operationId, adapter, count, retained, sessionId: runId, root: panel.root, disposePanel: panel.disposePanel, runtime: panel.runtime, history, databaseName };
@@ -1194,7 +1409,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
         disposePanel: () => panel?.disposePanel(),
         closeHistory: () => history ? history.close() : Promise.resolve(null),
         removeRoot: () => root.remove(),
-        yieldFrame: () => waitForBoundedFrame(`${phase}-cleanup-frame`, () => ({
+        yieldFrame: () => waitForBoundedHygieneBoundary(`${phase}-cleanup-frame`, () => ({
           operationId,
           phase: "heap",
           stage: `${phase}-cleanup-frame`,
@@ -1211,7 +1426,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
           offered: count,
           settled: null,
           query: null
-        })),
+        }), proofMode),
         progress: () => ({
           operationId,
           phase: "heap",
@@ -1251,9 +1466,10 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
     retainedHeapSession = null;
     return !session.root.isConnected;
   },
-  async yieldRetainedHeapFrame() {
+  async yieldRetainedHeapFrame(requestedProofMode) {
+    const proofMode = validatePerformanceProofMode(requestedProofMode);
     const operationId = currentHarnessOperationId();
-    await waitForBoundedFrame("heap-retained-frame", () => ({
+    await waitForBoundedHygieneBoundary("heap-retained-frame", () => ({
       operationId,
       phase: "heap",
       stage: "retained-frame",
@@ -1270,7 +1486,7 @@ window.__LSEW_EVENT_HISTORY_PERFORMANCE__ = {
       offered: null,
       settled: null,
       query: null
-    }));
+    }), proofMode);
     return true;
   }
 };
@@ -1309,7 +1525,8 @@ async function runCell(
   config: EventHistoryPerformanceConfig,
   cellIndex: number,
   operationId: string | null,
-  runGuard: HarnessStageGuard
+  runGuard: HarnessStageGuard,
+  proofMode: EventHistoryPerformanceProofMode = EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
 ): Promise<EventHistoryPerformanceCell> {
   const runId = `${adapter}-${workload}-${shape}-sample-${sample}`;
   const cancellationProgress = (): HarnessProgressInput => ({
@@ -1350,8 +1567,11 @@ async function runCell(
   const pending = createPendingTelemetryTracker();
   const publicationLatencies: number[] = [];
   const visibleLatencies: number[] = [];
+  const layoutCommitLatencies: number[] = [];
   const committedBoundaryAt = new Map<string, number>();
   const committedBoundaryVisibleLatencies: number[] = [];
+  const committedBoundaryLayoutCommitLatencies: number[] = [];
+  const layoutCommittedEventIds = new Set<string>();
   const publishedIds: string[] = [];
   const phaseIntervals: PhaseInterval[] = [];
   const longTaskEntries: PerformanceEntry[] = [];
@@ -1362,6 +1582,7 @@ async function runCell(
   const expectedCount = workload === "sustained" ? config.sustainedCount : config.burstCount;
   const expectedFinalId = `${runId}-${shape}-${expectedCount - 1}`;
   let panel: Awaited<ReturnType<typeof mountProductionPanel>> | null = null;
+  let layoutCommitCoherent = true;
   const runtimeDiagnostics = (): HarnessRuntimeDiagnostics | undefined => {
     const diagnostics = panel?.runtime.getPerformanceDiagnostics?.();
     return diagnostics ? { expectedFinalId, ...diagnostics } : undefined;
@@ -1384,7 +1605,7 @@ async function runCell(
     settled: settledCount,
     query,
     ...(() => {
-      if (stage !== "visible-frame" && query !== "final-read") return {};
+      if (stage !== "visible-frame" && stage !== "layout-commit" && query !== "final-read") return {};
       const diagnostics = runtimeDiagnostics();
       return diagnostics ? { runtimeDiagnostics: diagnostics } : {};
     })()
@@ -1413,9 +1634,9 @@ async function runCell(
     phaseStartedAt = now;
   };
 
-  let resolveFinalVisible!: () => void;
-  let finalVisibleAt: number | null = null;
-  const finalVisible = new Promise<void>((resolve) => { resolveFinalVisible = resolve; });
+  let resolveFinalPublication!: () => void;
+  let finalPublicationAt: number | null = null;
+  const finalPublication = new Promise<void>((resolve) => { resolveFinalPublication = resolve; });
   const cleanupSetupFailure = async (error: unknown): Promise<never> => {
     const failure = error instanceof Error ? error : new Error(String(error));
     Object.assign(failure, {
@@ -1437,25 +1658,46 @@ async function runCell(
     throw failure;
   };
   try {
-    panel = await mountProductionPanel(history, {
+    const performanceHooks: WorkbenchRuntimePerformanceHooks = {
       onCommittedEvidenceBoundary(boundary, timestampMs) {
         if (!runGuard.isActive()) return;
         committedBoundaryAt.set(boundary.eventId, timestampMs);
       },
-      onVisibleFrame(_boundary, timestampMs, coveredBoundaries) {
-        if (!runGuard.isActive()) return;
-        for (const coveredBoundary of coveredBoundaries) {
-          const offeredAt = offerTimes.get(coveredBoundary.eventId);
-          if (offeredAt !== undefined) visibleLatencies.push(Math.max(0, timestampMs - offeredAt));
-          const committedAt = committedBoundaryAt.get(coveredBoundary.eventId);
-          if (committedAt !== undefined) committedBoundaryVisibleLatencies.push(Math.max(0, timestampMs - committedAt));
-          if (coveredBoundary.eventId === expectedFinalId) {
-            finalVisibleAt = timestampMs;
-            resolveFinalVisible();
+      ...(proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+        ? {
+            onVisibleFrame(_boundary: any, timestampMs: number, coveredBoundaries: readonly any[]) {
+              if (!runGuard.isActive()) return;
+              for (const coveredBoundary of coveredBoundaries) {
+                const offeredAt = offerTimes.get(coveredBoundary.eventId);
+                if (offeredAt !== undefined) visibleLatencies.push(Math.max(0, timestampMs - offeredAt));
+                const committedAt = committedBoundaryAt.get(coveredBoundary.eventId);
+                if (committedAt !== undefined) committedBoundaryVisibleLatencies.push(Math.max(0, timestampMs - committedAt));
+                if (coveredBoundary.eventId === expectedFinalId) {
+                  finalPublicationAt = timestampMs;
+                  resolveFinalPublication();
+                }
+              }
+            }
           }
-        }
-      }
-    }, root);
+        : {
+            onLayoutCommit(_boundary: any, timestampMs: number, coveredBoundaries: readonly any[]) {
+              if (!runGuard.isActive()) return;
+              if (!root.isConnected || !root.querySelector(".workbench-react")) layoutCommitCoherent = false;
+              for (const coveredBoundary of coveredBoundaries) {
+                layoutCommittedEventIds.add(coveredBoundary.eventId);
+                const offeredAt = offerTimes.get(coveredBoundary.eventId);
+                if (offeredAt !== undefined) layoutCommitLatencies.push(Math.max(0, timestampMs - offeredAt));
+                const committedAt = committedBoundaryAt.get(coveredBoundary.eventId);
+                if (committedAt !== undefined) committedBoundaryLayoutCommitLatencies.push(Math.max(0, timestampMs - committedAt));
+                if (coveredBoundary.eventId === expectedFinalId) {
+                  finalPublicationAt = timestampMs;
+                  resolveFinalPublication();
+                }
+              }
+            }
+          })
+    };
+    panel = await mountProductionPanel(history, performanceHooks, root);
   } catch (error) {
     await cleanupSetupFailure(error);
   }
@@ -1539,22 +1781,34 @@ async function runCell(
     );
     const commitSettledAt = performance.now();
     enterPhase("paint");
-    updateProgress("visible-frame", "paint");
+    const publicationStage = proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+      ? "visible-frame"
+      : "layout-commit";
+    updateProgress(publicationStage, "paint");
     await withStageDeadline(
-      finalVisible,
-      `cell-${cellIndex}-visible-frame`,
+      finalPublication,
+      `cell-${cellIndex}-${publicationStage}`,
       STAGE_DEADLINES_MS.visibleFrame,
-      () => progress("visible-frame", "paint"),
+      () => progress(publicationStage, "paint"),
       undefined,
       runGuard
     );
+    if (proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.NON_INTERACTIVE_LAYOUT_COMMIT) {
+      if (!layoutCommitCoherent || layoutCommitLatencies.length === 0 || layoutCommittedEventIds.size !== expectedCount) {
+        throw new Error(
+          `Cell ${cellIndex} did not produce coherent production React DOM publication for every committed boundary `
+          + `(coherent=${layoutCommitCoherent}, boundaries=${layoutCommittedEventIds.size}/${expectedCount}).`
+        );
+      }
+    }
     // The journal owns immutable deserialized Evidence after settlement. Drop
     // the caller-owned large workload payloads before repeated queries so the
     // final memory cell measures the journal rather than two complete copies.
     events.length = 0;
-    await waitForBoundedFrame(
+    await waitForBoundedHygieneBoundary(
       `cell-${cellIndex}-frame`,
       () => progress("frame", "paint"),
+      proofMode,
       runGuard
     );
     const readStartedAt = performance.now();
@@ -1562,8 +1816,37 @@ async function runCell(
     const querySampleGc: QuerySampleGcEvidence[] = [];
     const queryMeasurements = await withStageDeadline((async () => {
       const recentPageP95Ms = await measureQuery(history, () => history.read({ limit: 100, order: "desc" }), "recent-page", () => progress("query", "query", "recent-page"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
-      const structuredIndexedP95Ms = await measureQuery(history, () => history.read({ filters: { subscriptionId: "portfolio-command" }, limit: 100, order: "asc" }), "structured-indexed", () => progress("query", "query", "structured-indexed"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
-      const findP95Ms = await measureQuery(history, () => history.read({ find: shape === "small-lifecycle" ? "stream-sensing" : "order", order: "asc" }), "find", () => progress("query", "query", "find"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
+      const emptyFilter = {
+        revision: 1,
+        text: "",
+        criteria: {},
+        around: null,
+        unsupported: []
+      };
+      const structuredFilter = {
+        ...emptyFilter,
+        criteria: { mode: { include: [typedFacetValue("mode", "enum", "COMMAND")], exclude: [] } }
+      };
+      const structuredIndexedP95Ms = await measureQuery(
+        history,
+        () => history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 100 }, filter: structuredFilter }),
+        "structured-indexed",
+        () => progress("query", "query", "structured-indexed"),
+        runGuard,
+        querySampleGc,
+        collectGarbageBetweenQuerySamples,
+        enterPhase
+      );
+      const findP95Ms = await measureQuery(
+        history,
+        () => history.query!({ at: "LATEST_COMMITTED", page: { order: "OLDEST_FIRST", size: 100 }, filter: emptyFilter, find: { text: shape === "small-lifecycle" ? "stream-sensing" : "order", scopeToFilter: true } }),
+        "find",
+        () => progress("query", "query", "find"),
+        runGuard,
+        querySampleGc,
+        collectGarbageBetweenQuerySamples,
+        enterPhase
+      );
       const full = await measureAuthoritativeFullQuery(history, () => progress("query", "query", "full"), runGuard, querySampleGc, collectGarbageBetweenQuerySamples, enterPhase);
       return { recentPageP95Ms, structuredIndexedP95Ms, findP95Ms, fullP95Ms: full.p95Ms, read: full.read };
     })(), `cell-${cellIndex}-query`, STAGE_DEADLINES_MS.queryTotal, () => progress("query", "query", "all"), undefined, runGuard);
@@ -1614,11 +1897,21 @@ async function runCell(
       querySampleGc,
       latency: {
         offerToPublicationP95Ms: percentile(publicationLatencies, 0.95),
-        offerToVisibleFrameP95Ms: percentile(visibleLatencies, 0.95),
-        committedBoundaryToVisibleFrameP95Ms: percentile(committedBoundaryVisibleLatencies, 0.95),
-        finalBoundaryVisibleMs: finalVisibleAt === null
+        offerToVisibleFrameP95Ms: percentile(
+          proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+            ? visibleLatencies
+            : layoutCommitLatencies,
+          0.95
+        ),
+        committedBoundaryToVisibleFrameP95Ms: percentile(
+          proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME
+            ? committedBoundaryVisibleLatencies
+            : committedBoundaryLayoutCommitLatencies,
+          0.95
+        ),
+        finalBoundaryVisibleMs: finalPublicationAt === null
           ? null
-          : Math.max(0, finalVisibleAt - (offerTimes.get(expectedFinalId) ?? startedAt)),
+          : Math.max(0, finalPublicationAt - (offerTimes.get(expectedFinalId) ?? startedAt)),
         behindBacklogMs: Math.max(0, commitSettledAt - (startedAt + enqueueElapsedMs)),
         recentPageP95Ms,
         structuredIndexedP95Ms,
@@ -2882,6 +3175,31 @@ export function waitForBoundedFrame(
   publishStageProgress(progress(), guard);
   return withStageDeadline(
     waitForFrame(),
+    stage,
+    STAGE_DEADLINES_MS.frame,
+    progress,
+    undefined,
+    guard
+  );
+}
+
+/**
+ * Yield for post-publication query/heap hygiene. This is not a publication
+ * proof: headed mode keeps the historical rAF yield, while the locked-console
+ * proof uses a bounded macrotask because headless Chrome may suppress rAF.
+ */
+export function waitForBoundedHygieneBoundary(
+  stage: string,
+  progress: () => HarnessProgressInput,
+  proofMode: EventHistoryPerformanceProofMode = EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME,
+  guard: HarnessStageGuard | undefined = undefined
+): Promise<void> {
+  if (proofMode === EVENT_HISTORY_PERFORMANCE_PROOF_MODES.HEADED_VISIBLE_FRAME) {
+    return waitForBoundedFrame(stage, progress, guard);
+  }
+  publishStageProgress(progress(), guard);
+  return withStageDeadline(
+    new Promise<void>((resolve) => window.setTimeout(resolve, 0)),
     stage,
     STAGE_DEADLINES_MS.frame,
     progress,
