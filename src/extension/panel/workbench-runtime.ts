@@ -3353,9 +3353,16 @@ class Runtime implements WorkbenchRuntime {
     const draft = this.localInjectionDraft;
     if (!draft || draft.phase === "pending" || this.scenarioState) return;
     if (draft.phase !== "edit") this.editLocalInjection();
-    const scenario = createScenarioFromDraft(this.scenarioDraftInput(draft), {
-      scenarioId: `local-injection-scenario-${++this.localInjectionSequence}`
-    });
+    let scenario: LocalInjectionScenario;
+    try {
+      scenario = createScenarioFromDraft(this.scenarioDraftInput(draft), {
+        scenarioId: `local-injection-scenario-${++this.localInjectionSequence}`
+      });
+    } catch (error) {
+      this.localInjectionEntryError = error instanceof Error ? error.message : "Scenario capacity could not be established.";
+      this.publish();
+      return;
+    }
     this.scenarioState = {
       phase: "edit",
       scenario,
@@ -3766,7 +3773,7 @@ class Runtime implements WorkbenchRuntime {
     const steps = state.scenario.steps.map((step) => {
       const draft = state.drafts.get(step.id)!;
       this.refreshLocalInjectionValidation(draft);
-      return Object.freeze({ id: step.id, draft: this.scenarioDraftInput(draft) });
+      return Object.freeze({ kind: "step" as const, id: step.id, draft: this.scenarioDraftInput(draft) });
     });
     return Object.freeze({ ...state.scenario, steps: Object.freeze(steps) });
   }
@@ -4998,7 +5005,7 @@ export function settleScenarioCoordinatorExecution(execution: LocalInjectionCoor
     return { kind: "not-run" as const, reason: "TARGET NOT RUN" as const, timestamp: execution.record.outcome.timestamp, detail: execution.record.outcome.detail };
   }
   const evidence = execution.record.evidence.state === "committed"
-    ? { eventId: execution.record.evidence.reference.eventId }
+    ? execution.record.evidence.reference
     : null;
   return { kind: "attempted" as const, outcome: execution.record.outcome, evidence };
 }

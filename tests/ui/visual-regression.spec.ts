@@ -9,7 +9,7 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "scenario" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
+  production: { scenario: string; setup: "none" | "scenario" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -53,6 +53,29 @@ async function openScenario(page: Page, visual: VisualCase): Promise<void> {
 
 async function prepareProductionState(page: Page, visual: VisualCase): Promise<void> {
   switch (visual.production.setup) {
+    case "scenario-membership-preview": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      await scenario.getByRole("button", { name: "Add captured update" }).click();
+      const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
+      await picker.getByRole("button", { name: "Preview visible set" }).click();
+      await expect(picker).toContainText("Will add after confirmation");
+      await expect(picker).toContainText("Unavailable");
+      return;
+    }
+    case "scenario-authored-undo": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      await scenario.getByRole("button", { name: "Add authored update" }).click();
+      await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).click();
+      await expect(scenario.getByRole("button", { name: "Undo removal" })).toBeVisible();
+      await expect(scenario.getByText("None · newly authored")).toBeVisible();
+      return;
+    }
+    case "scenario-capacity-refusal": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      await scenario.getByRole("button", { name: "Add authored update" }).click();
+      await expect(scenario.getByRole("alert")).toContainText("at most 100 Steps");
+      return;
+    }
     case "scenario":
       await expect(page.getByRole("region", { name: "Local Injection Scenario" })).toBeVisible();
       if (visual.production.scenario === "local-injection-scenario-partial") {

@@ -329,6 +329,18 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("refuses oversized first-Draft conversion without closing or broadening the standalone Draft", async () => {
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "set-local-injection-json", text: "x".repeat(8 * 1024 * 1024) });
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    expect(runtime.getSnapshot().scenario).toBeNull();
+    expect(runtime.getSnapshot().localInjection.draft).toMatchObject({ open: true, rawText: expect.stringMatching(/^x+$/) });
+    expect(runtime.getSnapshot().localInjection.entryError).toContain("8 MiB");
+    runtime.dispose();
+  });
+
   it("does not call a custom executor with an unchanged non-concrete Source field", async () => {
     const history = historyWithCommandTarget({
       update: {

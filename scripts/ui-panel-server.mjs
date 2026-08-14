@@ -177,6 +177,9 @@ if (scenario.localInjection) {
       await new Promise((resolve) => setTimeout(resolve, 48));
       runtime.dispatch({ type: "add-selected-evidence-to-scenario" });
     }
+    for (let index = 0; index < (scenario.localInjection.scenario.authoredSteps ?? 0); index += 1) {
+      runtime.dispatch({ type: "add-authored-scenario-step" });
+    }
     if (scenario.localInjection.scenario.review) runtime.dispatch({ type: "review-scenario" });
     for (let index = 0; index < (scenario.localInjection.scenario.steps ?? 0); index += 1) {
       runtime.dispatch({ type: "step-next-scenario" });

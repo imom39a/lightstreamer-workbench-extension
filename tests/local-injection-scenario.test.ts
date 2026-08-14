@@ -164,6 +164,31 @@ describe("Local Injection Scenario", () => {
     }
   });
 
+  it("keeps 100 independent representative 500-field Steps within the bounded document", () => {
+    const fields = Object.fromEntries(Array.from({ length: 500 }, (_, index) => [`field_${index}`, `value-${index}`]));
+    const large = (id: string): ScenarioDraftInput => ({
+      ...input(id, "ADD", 1),
+      rawText: JSON.stringify({ command: "ADD", key: id, isSnapshot: false, fields }),
+      document: { command: "ADD", key: id, isSnapshot: false, fields },
+      editor: { ...input(id, "ADD", 1).editor, cursor: Number(id.replace("draft-", "")), serializedState: { undo: [id], folds: [10] } }
+    });
+    let scenario = createScenarioFromDraft(large("draft-1"), { scenarioId: "scenario-high-volume" });
+    for (let index = 2; index <= 100; index += 1) {
+      const addition = addScenarioStep(scenario, large(`draft-${index}`));
+      if (!addition.ok) throw new Error(addition.reason);
+      scenario = addition.scenario;
+    }
+    expect(scenario.steps).toHaveLength(100);
+    expect(new Set(scenario.steps.map(({ id }) => id)).size).toBe(100);
+    expect(new Set(scenario.steps.map(({ draft }) => draft)).size).toBe(100);
+    expect(scenario.accountedBytes).toBeLessThan(SCENARIO_MAX_ACCOUNTED_BYTES);
+    const moved = moveScenarioStep(scenario, "step-100", "earlier");
+    expect(moved.ok).toBe(true);
+    if (moved.ok) {
+      expect(moved.scenario.steps[98]).toMatchObject({ id: "step-100", draft: { editor: { cursor: 100, serializedState: { undo: ["draft-100"] } } } });
+    }
+  });
+
   it("reviews an immutable ordered plan and validates UPDATE against a preceding planned ADD", () => {
     const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
     const added = addScenarioStep(first, input("draft-2", "UPDATE", 2));
@@ -245,24 +270,24 @@ describe("Local Injection Scenario", () => {
       runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fingerprint-1", activeCommandKeysByItem: []
     });
     if (!reviewed.ok) throw new Error(reviewed.reason);
-    let settle!: (value: { kind: "attempted"; outcome: ReturnType<typeof outcome>; evidence: { eventId: string } }) => void;
+    let settle!: (value: { kind: "attempted"; outcome: ReturnType<typeof outcome>; evidence: { intervalId: string; sequence: number; eventId: string } }) => void;
     const execute = vi.fn(() => new Promise<{
       kind: "attempted";
       outcome: ReturnType<typeof outcome>;
-      evidence: { eventId: string };
+      evidence: { intervalId: string; sequence: number; eventId: string };
     }>((resolve) => { settle = resolve; }));
     const pending = stepScenarioRun(reviewed.run, { execute, injectionId: "injection-1" });
     await Promise.resolve();
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ stepId: "step-1", ordinal: 1, injectionId: "injection-1" }));
-    settle({ kind: "attempted", outcome: outcome("DELIVERED LOCALLY", "delivered"), evidence: { eventId: "local-1" } });
+    settle({ kind: "attempted", outcome: outcome("DELIVERED LOCALLY", "delivered"), evidence: { intervalId: "interval-1", sequence: 42, eventId: "local-1" } });
     const next = await pending;
     expect(next).toMatchObject({ status: "paused", nextOrdinal: 2, trace: [{ stepId: "step-1", injectionId: "injection-1", evidence: { eventId: "local-1" } }] });
     expect(next.trace).toHaveLength(1);
   });
 
   it.each([
-    ["partial delivery", "PARTIALLY DELIVERED", "partial", { eventId: "unexpected" }],
+    ["partial delivery", "PARTIALLY DELIVERED", "partial", { intervalId: "interval-1", sequence: 99, eventId: "unexpected" }],
     ["unknown delivery", "DELIVERY UNKNOWN", "acknowledgement-unknown", null],
     ["review invalidation", "NOT RUN", "blocked", null],
     ["delivery without retained Evidence", "DELIVERED LOCALLY", "delivered", null]

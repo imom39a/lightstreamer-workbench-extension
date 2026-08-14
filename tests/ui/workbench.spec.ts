@@ -2189,6 +2189,69 @@ test("reviewed same-target Scenario steps exactly one Injection and retains its 
   }
 });
 
+test("Scenario authoring confirms explicit membership and keeps only the focused large editor mounted", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-scenario-edit", { width: 900, height: 700 }, "dark");
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
+  await expect(scenario.getByRole("textbox", { name: "Step 2 Local Injection JSON" })).toBeVisible();
+
+  const ordered = scenario.getByLabel("Ordered Scenario Steps");
+  await ordered.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(scenario.getByRole("textbox", { name: "Step 1 Local Injection JSON" })).toBeVisible();
+  await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
+
+  await scenario.getByRole("button", { name: "Step 2", exact: true }).click();
+  await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Move earlier" }).click();
+  await expect(scenario.getByRole("article").first()).toContainText("step-2");
+  await scenario.getByLabel("Step 1 actions").getByRole("button", { name: "Duplicate Step" }).click();
+  await expect(scenario.getByRole("article")).toHaveCount(3);
+  await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).click();
+  await expect(scenario.getByRole("article")).toHaveCount(2);
+  await scenario.getByRole("button", { name: "Undo removal" }).click();
+  await expect(scenario.getByRole("article")).toHaveCount(3);
+
+  await scenario.getByRole("button", { name: "Add captured update" }).click();
+  const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
+  await picker.getByRole("button", { name: "Preview visible set" }).click();
+  await expect(picker).toContainText("retained sequence");
+  await expect(picker).toContainText("Already an explicit Scenario Step");
+  await expect(picker).toContainText("Will add after confirmation");
+  await picker.getByRole("button", { name: "Confirm compatible Steps" }).click();
+  await expect(picker).toBeHidden();
+  await expect(scenario).toContainText("scenario-compatible-bulk-update");
+
+  await scenario.getByRole("button", { name: "Add authored update" }).click();
+  await expect(scenario.getByText("None · newly authored")).toBeVisible();
+  await expect(scenario).toContainText(/\/100 explicit Steps/);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await attachMatrixScreenshot(page, testInfo, "scenario-membership-normal-dark");
+});
+
+test("Scenario high-volume document mounts one of 100 representative large editors and keeps keyboard reorder usable", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-scenario-high-volume", { width: 563, height: 700 }, "light");
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  const ordered = scenario.getByLabel("Ordered Scenario Steps");
+  await expect(scenario.getByRole("article")).toHaveCount(100);
+  await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
+  await expect(scenario.getByText("Collapsed Draft · BLOCKED", { exact: false })).toHaveCount(99);
+  await expect(scenario).toContainText("100/100 explicit Steps");
+  await scenario.getByRole("button", { name: "Add authored update" }).click();
+  await expect(scenario.getByRole("alert")).toContainText("at most 100 Steps");
+  await expect(scenario.getByRole("article")).toHaveCount(100);
+  await ordered.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect(scenario.getByRole("textbox", { name: "Step 99 Local Injection JSON" })).toBeVisible();
+  await scenario.getByLabel("Step 99 actions").getByRole("button", { name: "Move later" }).click();
+  await expect(scenario.getByRole("article").last()).toContainText("step-99");
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachMatrixScreenshot(page, testInfo, "scenario-high-volume-compact-light");
+});
+
 test("Scenario fails closed for incompatible membership, invalid Review, and partial delivery", async ({ page }, testInfo) => {
   await openScenario(page, "local-injection-scenario-edit", { width: 900, height: 700 }, "dark");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });

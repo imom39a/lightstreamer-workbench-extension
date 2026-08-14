@@ -113,8 +113,8 @@ try {
     platform: process.platform,
     baselinePlatformSuffix: process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform,
     platformBaselineCommands: [
-      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-\"", result: "4/4 passed" },
-      { platform: "linux", update: "docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci --ignore-scripts && npm run test:ui:update -- --grep \"visual baseline: scenario-\"'", comparison: "docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci --ignore-scripts && npm run test:ui -- --grep \"visual baseline: scenario-\"'", result: "4/4 passed" }
+      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-\"", result: "7/7 passed" },
+      { platform: "linux", update: "docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci --ignore-scripts && npm run test:ui:update -- --grep \"visual baseline: scenario-\"'", comparison: "docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci --ignore-scripts && npm run test:ui -- --grep \"visual baseline: scenario-\"'", result: "7/7 passed" }
     ],
     browser: await browser.version(),
     browserMode: "headless",
@@ -127,12 +127,12 @@ try {
     contactSheets,
     review: grep?.startsWith("scenario") ? {
       classification: "Material UI",
-      changedWorkflow: "A protected standalone Local Injection Draft becomes an explicit two-Step, same-target Scenario that is reviewed into one immutable Run and stepped one ordinary Injection at a time.",
+      changedWorkflow: "A developer deliberately authors and manages up to 100 independent, same-target Scenario Steps without turning visible or filtered Evidence into implicit membership.",
       acceptanceCriteria: [
-        "Conversion preserves the Draft Source, raw JSON, validation, exact target, editor responsibility, and restoration origin; adding Evidence admits exactly one compatible chosen update.",
-        "Both Steps retain stable independent identities and explicit order while Review freezes revision, payloads, delays, exact target fingerprint, and committed-Evidence seed.",
-        "Step next dispatches one existing-coordinator Local Injection, waits for its Outcome and committed Evidence settlement, then returns Paused before the next Step.",
-        "Compact Light, normal Dark, shallow forced-colors stopped, and wide Light states preserve protected boundaries, keyboard focus/restoration, no serious or critical axe violations, and distinct Run/Injection/Evidence trace meaning."
+        "Individual add and a confirmed multi-add preview retain exact Evidence identities in retained order and explain incompatible or already-member candidates before mutation.",
+        "Authored, reordered, duplicated, removed, and restored Steps retain stable identities and independent Draft/editor presentation while every semantic mutation advances Scenario revision.",
+        "The document refuses the exact 101st Step or 8 MiB crossing atomically and reserves immutable Run plus append-only Trace bytes through one admission seam.",
+        "Compact, normal, shallow forced-colors, and wide states mount only the focused large editor, preserve protected boundaries, and have no serious or critical axe violations."
       ],
       browserResult: {
         scenarioCaptures: `${results.length}/${results.length} passed`,
@@ -142,9 +142,9 @@ try {
         checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "Compact Edit opens the bounded Evidence picker by keyboard and restores focus to Add captured update; normal Review and wide Complete expose visible focus on Step next and Finish Scenario. The focused browser test also verifies exact picker restoration.",
-      matrixRationale: "This ticket is the bounded two-Step tracer slice. Shallow forced-colors stopped is its relevant degraded/failure state. The 100-Step, 8 MiB, virtualization, and high-volume matrix is explicitly deferred to scenario-impl-03 and is not claimed here.",
-      baselineIntent: "Maintain platform-specific Scenario baselines for Darwin and Linux; this filtered packet intentionally covers compact Edit, normal Review, shallow forced-colors stopped, and wide completed Trace without changing unrelated baselines."
+      keyboardAndFocus: "The ordered document uses Arrow Up/Down to change the focused Step, labelled Move earlier/later controls provide keyboard reordering, Escape restores the captured-update trigger, and only the focused Step mounts CodeMirror.",
+      matrixRationale: "Seven Scenario states cover compact Edit, normal Review, wide Complete, shallow forced-colors stopped, bulk preview with incompatible reasons, authored removal with Undo, and the 100-Step capacity refusal.",
+      baselineIntent: "Maintain platform-specific Scenario baselines for Darwin and Linux for all seven membership and execution states changed or relied on by this Material UI slice."
     } : {
       classification: "Material UI",
       changedWorkflow: "The global diagnostics footer keeps mixed Warning, Error, and Information entries readable and discoverable without taking over the Evidence workspace.",
@@ -430,7 +430,7 @@ async function captureProduction(runningBrowser, scenario) {
     let helpResources = null;
     let focusEvidence = null;
     let memoryEvidence = null;
-    if (["scenario", "more-actions-help", "clear-confirmation", "memory-operations", "diagnostics", "activity-10k", "activity-graphical", "activity-limited", "activity-memory"].includes(scenario.production.setup)) {
+    if (scenario.production.setup.startsWith("scenario") || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics", "activity-10k", "activity-graphical", "activity-limited", "activity-memory"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -547,6 +547,27 @@ async function captureProduction(runningBrowser, scenario) {
 }
 
 async function prepareProductionState(page, setup) {
+  if (setup === "scenario-membership-preview") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+    await scenario.getByRole("button", { name: "Add captured update" }).click();
+    const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
+    await picker.getByRole("button", { name: "Preview visible set" }).click();
+    await picker.getByText("Will add after confirmation").waitFor();
+    return;
+  }
+  if (setup === "scenario-authored-undo") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+    await scenario.getByRole("button", { name: "Add authored update" }).click();
+    await scenario.getByLabel("Step 2 actions").getByRole("button", { name: "Remove Step" }).click();
+    await scenario.getByRole("button", { name: "Undo removal" }).waitFor();
+    return;
+  }
+  if (setup === "scenario-capacity-refusal") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+    await scenario.getByRole("button", { name: "Add authored update" }).click();
+    await scenario.getByRole("alert").waitFor();
+    return;
+  }
   if (setup === "scenario") {
     await page.getByRole("region", { name: "Local Injection Scenario" }).waitFor({ state: "visible" });
     return;

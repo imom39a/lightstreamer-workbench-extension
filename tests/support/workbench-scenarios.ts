@@ -61,6 +61,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   ,"local-injection-scenario-review"
   ,"local-injection-scenario-complete"
   ,"local-injection-scenario-partial"
+  ,"local-injection-scenario-high-volume"
 ] as const;
 
 export type WorkbenchScenarioId = (typeof WORKBENCH_SCENARIO_IDS)[number];
@@ -107,7 +108,7 @@ export type WorkbenchScenario = Readonly<{
     execute?: boolean;
     secondEntry?: "selection" | "scope";
     executorOutcome?: "pending" | "delivered" | "failed" | "partial" | "unknown";
-    scenario?: Readonly<{ addEventId?: string; review?: boolean; steps?: number }>;
+    scenario?: Readonly<{ addEventId?: string; authoredSteps?: number; review?: boolean; steps?: number }>;
   }>;
 }>;
 
@@ -621,7 +622,22 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return localInjectionScenario(id, true, 2);
     case "local-injection-scenario-partial":
       return localInjectionScenario(id, true, 1, "partial");
+    case "local-injection-scenario-high-volume":
+      return localInjectionHighVolumeScenario(id);
   }
+}
+
+function localInjectionHighVolumeScenario(id: WorkbenchScenarioId): WorkbenchScenario {
+  const base = localInjectionCapturedScenario(id);
+  const fields = Object.fromEntries(Array.from({ length: 500 }, (_, index) => [`field_${String(index + 1).padStart(3, "0")}`, `value-${index + 1}`]));
+  return {
+    ...base,
+    localInjection: {
+      entry: "selection",
+      rawText: JSON.stringify({ command: "ADD", key: "high-volume", isSnapshot: false, fields }, null, 2),
+      scenario: { authoredSteps: 99 }
+    }
+  };
 }
 
 function localInjectionScenario(
@@ -644,9 +660,19 @@ function localInjectionScenario(
       changedFields: { command: "UPDATE", value: "2" }
     }
   };
+  const bulk: LightstreamerEventEnvelope = {
+    ...second,
+    id: "scenario-compatible-bulk-update",
+    timestamp: second.timestamp + 1,
+    update: {
+      ...second.update,
+      fields: { ...second.update!.fields, value: "3" },
+      changedFields: { command: "UPDATE", value: "3" }
+    }
+  };
   return {
     id,
-    initialEvents: [...topology.capturedEvents, second],
+    initialEvents: [...topology.capturedEvents, second, bulk],
     topologySyncFrames: topology.topologySyncFrames,
     selectedEventId: source.id,
     captureStatus: "capturing",

@@ -209,5 +209,27 @@
     "forcedColors": true,
     "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-partial", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-membership-preview-normal-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-membership-preview" }
+  },
+  {
+    "id": "scenario-authored-undo-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario-authored-undo" }
+  },
+  {
+    "id": "scenario-capacity-refusal-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-high-volume", "setup": "scenario-capacity-refusal" }
   }
 ]

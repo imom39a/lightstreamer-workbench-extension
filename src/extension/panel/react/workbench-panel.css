@@ -343,6 +343,7 @@
 .workbench-react__scenario-problem { flex: 0 0 auto; margin: 0; border-bottom: 1px solid var(--wb-error); background: var(--wb-error-soft); color: var(--wb-text); padding: 7px 9px; }
 .workbench-react__scenario-picker { position: absolute; z-index: 12; inset: 58px 10px 48px; display: flex; min-height: 0; flex-direction: column; border: 1px solid var(--wb-border-strong); background: var(--wb-raised); box-shadow: 0 8px 24px color-mix(in srgb, #000 35%, transparent); padding: 9px; }
 .workbench-react__scenario-picker header { display: grid; gap: 3px; border-bottom: 1px solid var(--wb-border); padding-bottom: 7px; }
+.workbench-react__scenario-picker-actions { display: flex; align-items: center; gap: 7px; padding-top: 7px; }
 .workbench-react__scenario-picker header span, .workbench-react__scenario-picker small { color: var(--wb-muted); }
 .workbench-react__scenario-picker ul { display: grid; min-height: 0; flex: 1 1 auto; gap: 3px; margin: 7px 0; overflow: auto; padding: 0; list-style: none; }
 .workbench-react__scenario-picker li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; border-bottom: 1px solid var(--wb-border); padding: 6px; }
@@ -351,8 +352,14 @@
 .workbench-react__scenario-steps article { display: grid; gap: 7px; border: 1px solid var(--wb-border); border-left: 3px solid var(--wb-border-strong); background: var(--wb-surface); padding: 8px; }
 .workbench-react__scenario-steps article[data-step-state="next"] { border-left-color: var(--wb-info); }
 .workbench-react__scenario-steps article[data-step-state="complete"] { border-left-color: var(--wb-accent); }
+.workbench-react__scenario-steps article[data-step-focused="true"] { outline: 1px solid var(--wb-focus); outline-offset: -2px; }
 .workbench-react__scenario-steps article > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .workbench-react__scenario-steps article > header span { color: var(--wb-muted); font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__scenario-step-focus { border: 0; background: transparent; padding: 2px; color: var(--wb-text); font-weight: 700; }
+.workbench-react__scenario-step-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.workbench-react__scenario-step-actions label { display: inline-flex; align-items: center; gap: 4px; color: var(--wb-muted); }
+.workbench-react__scenario-step-actions input { width: 72px; }
+.workbench-react__scenario-collapsed { width: 100%; border: 1px solid var(--wb-border); background: var(--wb-bg); padding: 7px; color: var(--wb-muted); text-align: left; }
 .workbench-react__scenario-steps dl { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
 .workbench-react__scenario-steps dl > div { min-width: 0; }
 .workbench-react__scenario-steps dt { color: var(--wb-muted); font-size: 10px; text-transform: uppercase; }

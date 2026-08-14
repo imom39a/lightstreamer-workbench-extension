@@ -46,6 +46,7 @@ export type ScenarioDraftInput = Readonly<{
 }>;
 
 export type ScenarioStep = Readonly<{
+  kind: "step";
   id: string;
   draft: ScenarioDraftInput;
 }>;
@@ -69,7 +70,7 @@ export type LocalInjectionScenario = Readonly<{
 
 export const SCENARIO_MAX_STEPS = 100;
 export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
-export const SCENARIO_TRACE_RESERVATION_BYTES_PER_STEP = 8 * 1024;
+const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 8 * 1024;
 
 export type ScenarioCapacityRefusal = Readonly<{
   ok: false;
@@ -99,6 +100,7 @@ export type ScenarioMembershipPreview = Readonly<{
 }>;
 
 export type ReviewedScenarioStep = Readonly<{
+  kind: "step";
   id: string;
   ordinal: number;
   sourceEventId: string | null;
@@ -113,7 +115,7 @@ export type ScenarioTraceEntry = Readonly<{
   kind: "attempted";
   injectionId: string;
   outcome: LocalInjectionOutcome;
-  evidence: Readonly<{ eventId: string }> | null;
+  evidence: EvidenceRef | null;
 }> | Readonly<{
   stepId: string;
   ordinal: number;
@@ -148,7 +150,7 @@ export function createScenarioFromDraft(
     revision: 1,
     phase: "edit" as const,
     target: draft.target,
-    steps: [{ id: "step-1", draft }],
+    steps: [{ kind: "step" as const, id: "step-1", draft }],
     restorationOrigin: draft.restorationOrigin,
     nextStepSequence: 2,
     removedSteps: [] as readonly RemovedScenarioStep[],
@@ -168,7 +170,7 @@ export function addScenarioStep(
   const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return Object.freeze({ ok: false as const, reason });
   return commitScenarioMutation(scenario, {
-    steps: [...scenario.steps, { id: `step-${scenario.nextStepSequence}`, draft }],
+    steps: [...scenario.steps, { kind: "step", id: `step-${scenario.nextStepSequence}`, draft }],
     nextStepSequence: scenario.nextStepSequence + 1
   });
 }
@@ -202,7 +204,7 @@ export function confirmScenarioMembershipPreview(
     return freeze({ ok: false as const, reason: "Scenario changed after this membership preview. Preview the retained Evidence again." });
   }
   const drafts = preview.members.filter((member) => member.available && member.draft !== null).map((member) => member.draft!);
-  const steps = drafts.map((draft, index) => ({ id: `step-${scenario.nextStepSequence + index}`, draft }));
+  const steps = drafts.map((draft, index) => ({ kind: "step" as const, id: `step-${scenario.nextStepSequence + index}`, draft }));
   return commitScenarioMutation(scenario, {
     steps: [...scenario.steps, ...steps],
     nextStepSequence: scenario.nextStepSequence + steps.length
@@ -224,6 +226,7 @@ export function duplicateScenarioStep(scenario: LocalInjectionScenario, stepId: 
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
   const source = scenario.steps[index]!;
   const duplicate: ScenarioStep = {
+    kind: "step",
     id: `step-${scenario.nextStepSequence}`,
     draft: cloneScenarioDraft(source.draft, `${source.draft.id}-copy-${scenario.nextStepSequence}`)
   };
@@ -297,6 +300,7 @@ export function reviewScenario(
       if (command === "DELETE") keys.delete(key);
     }
     reviewed.push({
+      kind: "step",
       id: step.id,
       ordinal: index + 1,
       sourceEventId: step.draft.sourceEventId,
@@ -332,13 +336,20 @@ export function scenarioRunAdmission(
   run: ScenarioRun
 ): Readonly<{ ok: true; accountedBytes: number; traceReservationBytes: number; stepCount: number }>
   | Readonly<{ ok: false; capacity: "bytes"; reason: string }> {
-  const traceReservationBytes = run.steps.length * SCENARIO_TRACE_RESERVATION_BYTES_PER_STEP;
+  const traceReservationBytes = run.steps.reduce((bytes, member) => bytes + scenarioMemberTraceReservationBytes(member), 0);
   const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, trace: _trace, ...immutablePlan } = run;
   const accountedBytes = scenario.accountedBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes;
   if (accountedBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
     return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario Run would exceed 8 MiB after reserving its immutable plan and append-only Trace; no Run was created." });
   }
   return freeze({ ok: true as const, accountedBytes, traceReservationBytes, stepCount: run.steps.length });
+}
+
+function scenarioMemberTraceReservationBytes(member: ReviewedScenarioStep): number {
+  switch (member.kind) {
+    case "step":
+      return SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER;
+  }
 }
 
 function itemKey(item: ScenarioDraftInput["item"]): string {
@@ -348,7 +359,7 @@ function itemKey(item: ScenarioDraftInput["item"]): string {
 export async function stepScenarioRun<T extends Readonly<{
   kind: "attempted";
   outcome: LocalInjectionOutcome;
-  evidence: Readonly<{ eventId: string }> | null;
+  evidence: EvidenceRef | null;
 }> | Readonly<{ kind: "not-run"; reason: "REVIEW INVALIDATED" | "TARGET NOT RUN"; timestamp: number; detail: string }>>(
   run: ScenarioRun,
   adapter: Readonly<{
