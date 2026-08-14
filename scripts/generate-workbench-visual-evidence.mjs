@@ -539,7 +539,9 @@ async function captureProduction(runningBrowser, scenario) {
     if (scenario.production.setup === "scenario-checkpoint" || scenario.production.setup === "scenario-checkpoint-high-volume") {
       const scenarioDocument = page.getByRole("region", { name: "Local Injection Scenario" });
       const checkpoint = scenarioDocument.locator(".workbench-react__scenario-checkpoint").last();
-      const action = scenario.production.scenario.endsWith("wire-unavailable")
+      const action = scenario.production.scenario.endsWith("checkpoint-authoring")
+        ? checkpoint.getByRole("button", { name: "Add assertion" })
+        : scenario.production.scenario.endsWith("wire-unavailable")
         ? checkpoint.getByRole("combobox", { name: /Assertion/ })
         : checkpoint.getByRole("button", { name: /CHECKPOINT \d+/ });
       await action.scrollIntoViewIfNeeded();

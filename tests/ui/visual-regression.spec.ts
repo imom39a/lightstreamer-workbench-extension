@@ -124,7 +124,15 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       const checkpoint = scenario.locator(".workbench-react__scenario-checkpoint");
       await expect(checkpoint).toHaveCount(1);
       await expect(checkpoint).toContainText("Zero Injections");
-      if (visual.production.scenario.endsWith("authoring")) await expect(checkpoint).toHaveAttribute("data-checkpoint-state", "authoring");
+      if (visual.production.scenario.endsWith("authoring")) {
+        await expect(checkpoint).toHaveAttribute("data-checkpoint-state", "authoring");
+        await expect(checkpoint.getByRole("button", { name: "Remove assertion 1" })).toBeDisabled();
+        const addAssertion = checkpoint.getByRole("button", { name: "Add assertion" });
+        await addAssertion.scrollIntoViewIfNeeded();
+        await addAssertion.focus();
+        await expect(addAssertion).toBeFocused();
+        await expect(addAssertion).toBeInViewport();
+      }
       if (visual.production.scenario.endsWith("review")) await expect(checkpoint).toContainText("REVIEWED");
       if (visual.production.scenario.endsWith("waiting")) await expect(checkpoint).toContainText("WAITING");
       if (visual.production.scenario.endsWith("pass")) await expect(checkpoint).toContainText("PASS");
