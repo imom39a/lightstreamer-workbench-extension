@@ -2326,10 +2326,10 @@ test("Scenario Trace explicitly reports bounded executor-controlled terminal val
   await page.goto("/?scenario=local-injection-scenario-partial&theme=light&terminalLimit=1");
   await expect(page.locator("html")).toHaveAttribute("data-react-scene-ready", "true");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
-  await expect(scenario.getByRole("note")).toHaveCount(2);
+  await expect(scenario.getByRole("note")).toHaveCount(1);
   await expect(scenario.getByRole("note").first()).toContainText("TRACE VALUE LIMITED");
   await expect(scenario.getByRole("note").first()).toContainText("Delivery semantics are unchanged");
-  await expect(scenario.getByRole("note").last()).toContainText("inspect the page's own diagnostics");
+  await expect(scenario.getByRole("note")).toContainText("inspect the page's own diagnostics");
 });
 
 test("Draft conversion and Scenario Edit restore the exact editor selection and workflow origin", async ({ page }) => {

@@ -108,6 +108,7 @@ export type WorkbenchScenario = Readonly<{
     execute?: boolean;
     secondEntry?: "selection" | "scope";
     executorOutcome?: "pending" | "delivered" | "failed" | "partial" | "unknown";
+    terminalLimit?: boolean;
     scenario?: Readonly<{ addEventId?: string; authoredSteps?: number; review?: boolean; steps?: number }>;
   }>;
 }>;
@@ -692,6 +693,7 @@ function localInjectionScenario(
     localInjection: {
       entry: "selection",
       executorOutcome,
+      terminalLimit: executorOutcome === "partial",
       scenario: { addEventId: second.id, review, steps }
     }
   };
