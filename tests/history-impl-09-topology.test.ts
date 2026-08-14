@@ -486,20 +486,31 @@ async function settle(): Promise<void> {
 }
 
 function immediateScheduler(): WorkbenchRuntimeScheduler {
+  let nextHandle = 0;
+  const cancelled = new Set<number>();
+  const schedule = (callback: () => void): number => {
+    const handle = ++nextHandle;
+    queueMicrotask(() => {
+      if (cancelled.delete(handle)) return;
+      callback();
+    });
+    return handle;
+  };
+  const cancel = (handle: unknown): void => {
+    if (typeof handle === "number") cancelled.add(handle);
+  };
   return {
     requestFrame(callback) {
-      queueMicrotask(callback);
-      return 1;
+      return schedule(callback);
     },
-    cancelFrame() {
-      return;
+    cancelFrame(handle) {
+      cancel(handle);
     },
     setTimeout(callback) {
-      queueMicrotask(callback);
-      return 1;
+      return schedule(callback);
     },
-    clearTimeout() {
-      return;
+    clearTimeout(handle) {
+      cancel(handle);
     }
   };
 }
