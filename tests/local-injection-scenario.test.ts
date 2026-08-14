@@ -4,6 +4,7 @@ import {
   SCENARIO_MAX_ACCOUNTED_BYTES,
   SCENARIO_MAX_STEPS,
   addScenarioStep,
+  admitScenarioValidation,
   confirmScenarioMembershipPreview,
   createScenarioFromDraft,
   duplicateScenarioStep,
@@ -369,6 +370,16 @@ describe("Local Injection Scenario", () => {
     const result = duplicateScenarioStep(scenario, "step-1", { retainedRunBytes });
     expect(result).toMatchObject({ ok: false, capacity: "bytes" });
     expect(scenario.steps).toHaveLength(1);
+  });
+
+  it("reaccounts refreshed Review diagnostics without advancing revision", () => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const step = scenario.steps[0]!;
+    const refreshed = [{ ...step, draft: { ...step.draft, diagnostics: [{ category: "schema" as const, severity: "error" as const, code: "review-growth", message: "x".repeat(8 * 1024 * 1024) }] } }];
+    const result = admitScenarioValidation(scenario, refreshed);
+    expect(result).toMatchObject({ ok: false, capacity: "bytes" });
+    expect(scenario.revision).toBe(1);
+    expect(scenario.steps[0]!.draft.diagnostics).not.toEqual(refreshed[0]!.draft.diagnostics);
   });
 
   it("terminalizes an abandoned paused Run with exact NOT RUN remainder", async () => {

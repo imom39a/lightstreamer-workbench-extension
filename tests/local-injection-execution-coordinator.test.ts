@@ -72,6 +72,23 @@ function success(overrides: Partial<LocalInjectionExecutionResult> = {}): LocalI
 }
 
 describe("Local Injection execution coordinator", () => {
+  it("bounds every executor-controlled Trace string before settling the immutable outcome", async () => {
+    const coordinator = createLocalInjectionExecutionCoordinator({
+      execute: vi.fn(async () => success({ ok: false, status: "listener-error", requestId: "r".repeat(20_000), error: "e".repeat(20_000), attemptedCount: 1, deliveredCount: 0, failedCount: 1 })),
+      admitEvidence: vi.fn()
+    });
+    const review = coordinator.review({ fingerprint: "fp", executionTarget: "captured-listener", document, draft: draft(), correlation: {} });
+    if (review.kind !== "reviewed") throw new Error(review.reason);
+    const settled = await coordinator.execute(review, { executionId: "execution-bounded" });
+    if (settled.kind !== "terminal") throw new Error("Expected a terminal outcome.");
+    expect(settled.record.outcome.requestId).toHaveLength(1_024);
+    expect(new TextEncoder().encode(settled.record.outcome.detail).byteLength).toBeLessThanOrEqual(8 * 1024);
+    expect(settled.record.outcome.limitations).toEqual([
+      { field: "requestId", originalBytes: 20_000, retainedBytes: 1_024 },
+      { field: "detail", originalBytes: 20_000, retainedBytes: 8 * 1024 }
+    ]);
+  });
+
   it("executes one reviewed concrete source and settles committed Evidence before completing", async () => {
     let settleEvidence!: (value: { retained: true; evidence: { intervalId: string; sequence: number; eventId: string } }) => void;
     const evidence = new Promise<{ retained: true; evidence: { intervalId: string; sequence: number; eventId: string } }>((resolve) => {

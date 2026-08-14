@@ -139,6 +139,7 @@ import {
 } from "./local-injection-execution-coordinator";
 import {
   addScenarioStep,
+  admitScenarioValidation,
   confirmScenarioMembershipPreview,
   createScenarioFromDraft,
   duplicateScenarioStep,
@@ -3597,7 +3598,13 @@ class Runtime implements WorkbenchRuntime {
   private reviewCurrentScenario(): void {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
-    const scenario = this.scenarioWithOrderedValidation(state);
+    const validated = this.scenarioWithOrderedValidation(state);
+    if (!validated.ok) {
+      state.membershipError = validated.reason;
+      this.publish();
+      return;
+    }
+    const scenario = validated.scenario;
     const reviewed = reviewScenario(scenario, {
       runId: `local-injection-run-${++this.localInjectionSequence}`,
       committedEvidenceSeed: this.committedEvidenceBoundary,
@@ -3799,13 +3806,13 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  private scenarioWithOrderedValidation(state: ScenarioState): LocalInjectionScenario {
+  private scenarioWithOrderedValidation(state: ScenarioState): ReturnType<typeof admitScenarioValidation> {
     const steps = state.scenario.steps.map((step) => {
       const draft = state.drafts.get(step.id)!;
       this.refreshLocalInjectionValidation(draft);
       return Object.freeze({ kind: "step" as const, id: step.id, draft: this.scenarioDraftInput(draft) });
     });
-    return Object.freeze({ ...state.scenario, steps: Object.freeze(steps) });
+    return admitScenarioValidation(state.scenario, Object.freeze(steps), { retainedRunBytes: state.retainedRunBytes });
   }
 
   private activeCommandKeys(anchor: WorkbenchLocalInjectionAnchor): readonly string[] {

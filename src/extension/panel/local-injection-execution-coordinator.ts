@@ -223,7 +223,9 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
           error: errorMessage(error)
         };
       }
-      const outcome = outcomeFromResult(facts.executionId, executionResult);
+      const boundedTerminal = boundExternalResult(executionResult);
+      executionResult = boundedTerminal.result;
+      const outcome = outcomeFromResult(facts.executionId, executionResult, boundedTerminal.limitations);
       if (outcome.disposition !== "delivered") {
         return finish(terminal(review, facts.executionId, outcome, { state: "not-created" }, executionResult));
       }
@@ -237,7 +239,7 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
         return finish(terminal(
           review,
           facts.executionId,
-          deliveredOutcome(facts.executionId, executionResult, "Delivered locally, but the synthetic Evidence could not be retained in session history."),
+          Object.freeze({ ...outcome, detail: "Delivered locally, but the synthetic Evidence could not be retained in session history." }),
           { state: "delivered-unretained" },
           executionResult
         ));
@@ -259,7 +261,7 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
         return finish(terminal(
           review,
           facts.executionId,
-          deliveredOutcome(facts.executionId, executionResult, "Delivered locally, but the synthetic Evidence could not be retained in session history."),
+          Object.freeze({ ...outcome, detail: "Delivered locally, but the synthetic Evidence could not be retained in session history." }),
           { state: "delivered-unretained" },
           executionResult
         ));
@@ -363,22 +365,46 @@ function reviewBlockedOutcome(executionId: string, detail: string, timestamp: nu
   return Object.freeze({ disposition: "blocked", headline: "NOT RUN", status: "review-blocked", executionId, requestId: null, timestamp, detail: `BLOCKED · ${detail}` });
 }
 
-function outcomeFromResult(executionId: string, result: LocalInjectionExecutionResult): LocalInjectionOutcome {
-  if (confirmsFullDelivery(result)) return deliveredOutcome(executionId, result);
+function outcomeFromResult(executionId: string, result: LocalInjectionExecutionResult, boundedLimitations: NonNullable<LocalInjectionOutcome["limitations"]> = []): LocalInjectionOutcome {
+  const limitations = boundedLimitations.length > 0 ? { limitations: boundedLimitations } : {};
+  if (confirmsFullDelivery(result)) return Object.freeze({ ...deliveredOutcome(executionId, result), ...limitations });
   const deliveryCounts = counts(result);
   if (result.status === "success") {
-    return Object.freeze({ disposition: "failed", headline: "DELIVERY FAILED", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "The reported success result did not confirm any listener delivery and was rejected as invalid.", ...deliveryCounts });
+    return Object.freeze({ disposition: "failed", headline: "DELIVERY FAILED", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "The reported success result did not confirm any listener delivery and was rejected as invalid.", ...deliveryCounts, ...limitations });
   }
   if (result.status === "stale-target") {
-    return Object.freeze({ disposition: "blocked", headline: "NOT RUN", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: `BLOCKED · ${result.error ?? "The protected target is stale."}`, ...deliveryCounts });
+    return Object.freeze({ disposition: "blocked", headline: "NOT RUN", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: `BLOCKED · ${result.error ?? "The protected target is stale."}`, ...deliveryCounts, ...limitations });
   }
   if (result.status === "acknowledgement-unknown") {
-    return Object.freeze({ disposition: "acknowledgement-unknown", headline: "DELIVERY UNKNOWN", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "The page may have executed the request, but Workbench did not receive a trustworthy acknowledgement. No retry was attempted." });
+    return Object.freeze({ disposition: "acknowledgement-unknown", headline: "DELIVERY UNKNOWN", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "The page may have executed the request, but Workbench did not receive a trustworthy acknowledgement. No retry was attempted.", ...limitations });
   }
   if (result.status === "listener-error" && (result.deliveredCount ?? 0) > 0) {
-    return Object.freeze({ disposition: "partial", headline: "PARTIALLY DELIVERED", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "Some captured listeners received the update and at least one listener failed.", ...deliveryCounts });
+    return Object.freeze({ disposition: "partial", headline: "PARTIALLY DELIVERED", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "Some captured listeners received the update and at least one listener failed.", ...deliveryCounts, ...limitations });
   }
-  return Object.freeze({ disposition: "failed", headline: "DELIVERY FAILED", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "The local delivery target rejected the update.", ...deliveryCounts });
+  return Object.freeze({ disposition: "failed", headline: "DELIVERY FAILED", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "The local delivery target rejected the update.", ...deliveryCounts, ...limitations });
+}
+
+function boundExternalResult(result: LocalInjectionExecutionResult): Readonly<{ result: LocalInjectionExecutionResult; limitations: NonNullable<LocalInjectionOutcome["limitations"]> }> {
+  const limitations: NonNullable<LocalInjectionOutcome["limitations"]>[number][] = [];
+  const requestId = boundedExternalText(result.requestId, 1_024, "requestId", limitations);
+  const error = result.error === undefined ? undefined : boundedExternalText(result.error, 8 * 1024, "detail", limitations);
+  return Object.freeze({ result: Object.freeze({ ...result, requestId, ...(error === undefined ? {} : { error }) }), limitations: Object.freeze(limitations) });
+}
+
+function boundedExternalText(value: string, maxBytes: number, field: "requestId" | "detail", limitations: NonNullable<LocalInjectionOutcome["limitations"]>[number][]): string {
+  const encoder = new TextEncoder();
+  const originalBytes = encoder.encode(value).byteLength;
+  if (originalBytes <= maxBytes) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (encoder.encode(value.slice(0, middle)).byteLength <= maxBytes) low = middle;
+    else high = middle - 1;
+  }
+  const retained = value.slice(0, low);
+  limitations.push(Object.freeze({ field, originalBytes, retainedBytes: encoder.encode(retained).byteLength }));
+  return retained;
 }
 
 function errorMessage(error: unknown): string {

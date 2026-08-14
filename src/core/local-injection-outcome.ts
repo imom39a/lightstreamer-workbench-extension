@@ -9,4 +9,5 @@ export type LocalInjectionOutcome = Readonly<{
   attemptedCount?: number;
   deliveredCount?: number;
   failedCount?: number;
+  limitations?: ReadonlyArray<Readonly<{ field: "requestId" | "detail"; originalBytes: number; retainedBytes: number }>>;
 }>;

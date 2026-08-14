@@ -289,6 +289,17 @@ export function updateScenarioStepPresentation(
   }, false, admission.retainedRunBytes ?? 0);
 }
 
+export function admitScenarioValidation(
+  scenario: LocalInjectionScenario,
+  steps: readonly ScenarioStep[],
+  admission: ScenarioAdmissionContext = {}
+): ScenarioMutation {
+  if (steps.length !== scenario.steps.length || steps.some((step, index) => step.id !== scenario.steps[index]?.id)) {
+    return freeze({ ok: false as const, reason: "Scenario validation must preserve the exact ordered Step identities." });
+  }
+  return commitScenarioMutation(scenario, { steps }, false, admission.retainedRunBytes ?? 0);
+}
+
 export function reviewScenario(
   scenario: LocalInjectionScenario,
   facts: Readonly<{
