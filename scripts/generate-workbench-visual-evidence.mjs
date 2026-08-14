@@ -448,7 +448,7 @@ async function captureProduction(runningBrowser, scenario) {
       const actionName = scenario.production.scenario.endsWith("edit")
         ? "Add captured update"
         : scenario.production.scenario.endsWith("review")
-          ? "Step next"
+          ? "Pause"
           : "Finish Scenario";
       const action = scenarioDocument.getByRole("button", { name: actionName });
       if (actionName === "Add captured update") {

@@ -109,7 +109,7 @@ export type WorkbenchScenario = Readonly<{
     secondEntry?: "selection" | "scope";
     executorOutcome?: "pending" | "delivered" | "failed" | "partial" | "unknown";
     terminalLimit?: boolean;
-    scenario?: Readonly<{ addEventId?: string; authoredSteps?: number; review?: boolean; steps?: number }>;
+    scenario?: Readonly<{ addEventId?: string; authoredSteps?: number; review?: boolean; steps?: number; delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean }>;
   }>;
 }>;
 
@@ -618,7 +618,7 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
     case "local-injection-scenario-edit":
       return localInjectionScenario(id, false, 0);
     case "local-injection-scenario-review":
-      return localInjectionScenario(id, true, 0);
+      return localInjectionScenario(id, true, 0, "delivered", { delayMs: 60_000, speed: 2, play: true });
     case "local-injection-scenario-complete":
       return localInjectionScenario(id, true, 2);
     case "local-injection-scenario-partial":
@@ -658,7 +658,8 @@ function localInjectionScenario(
   id: WorkbenchScenarioId,
   review: boolean,
   steps: number,
-  executorOutcome: "delivered" | "partial" = "delivered"
+  executorOutcome: "delivered" | "partial" = "delivered",
+  controls: Readonly<{ delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean }> = {}
 ): WorkbenchScenario {
   const topology = getPanelScenario("topology-small");
   const source = topology.capturedEvents.find(({ id: eventId }) => eventId === "event-5") ?? topology.capturedEvents.at(-1);
@@ -694,7 +695,7 @@ function localInjectionScenario(
       entry: "selection",
       executorOutcome,
       terminalLimit: executorOutcome === "partial",
-      scenario: { addEventId: second.id, review, steps }
+      scenario: { addEventId: second.id, review, steps, ...controls }
     }
   };
 }

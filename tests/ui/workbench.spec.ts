@@ -2178,8 +2178,9 @@ test("reviewed same-target Scenario steps exactly one Injection and retains its 
       await expect(add).toBeFocused();
     }
     if (scene.scenario === "local-injection-scenario-review") {
-      await expect(document.getByRole("button", { name: "Step next" })).toBeVisible();
-      await expect(document).toContainText("Scenario revision 2");
+      await expect(document.getByRole("button", { name: "Pause" })).toBeVisible();
+      await expect(document).toContainText("WAITING · Step 1 dispatch is scheduled on active time");
+      await expect(document).toContainText("Scenario revision 4");
     }
     if (scene.scenario === "local-injection-scenario-complete") {
       await expect(document).toContainText("RUN COMPLETE · 2 independently traced Injections");
@@ -2187,6 +2188,36 @@ test("reviewed same-target Scenario steps exactly one Injection and retains its 
     }
     await attachNamedScenarioScreenshot(page, testInfo, `${scene.scenario}-${scene.width}x${scene.height}-${scene.theme}`);
   }
+});
+
+test("Scenario clock controls preserve focus, hidden pause, manual stepping, and stopped remainder", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-scenario-review", { width: 563, height: 700 }, "light");
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  const reviewedJson = scenario.getByLabel("Step 1 reviewed JSON");
+  await reviewedJson.focus();
+  await page.waitForTimeout(40);
+  await expect(reviewedJson).toBeFocused();
+
+  await page.evaluate(() => (window as unknown as { __setWorkbenchVisible(visible: boolean): void }).__setWorkbenchVisible(false));
+  await expect(scenario).toContainText("PAUSED — PANEL HIDDEN · explicit Resume required");
+  await page.evaluate(() => (window as unknown as { __setWorkbenchVisible(visible: boolean): void }).__setWorkbenchVisible(true));
+  const resume = scenario.getByRole("button", { name: "Resume" });
+  await expect(resume).toBeEnabled();
+  await resume.click();
+  await expect(scenario.getByRole("button", { name: "Pause" })).toBeVisible();
+  await scenario.getByRole("button", { name: "Pause" }).click();
+  await expect(scenario.getByRole("button", { name: "Step next" })).toBeVisible();
+  await scenario.getByRole("button", { name: "Step next" }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(1);
+  await expect(scenario).toContainText("STEP NEXT bypassed");
+  await expect(scenario.getByRole("button", { name: "Resume" })).toBeVisible();
+  await scenario.getByRole("button", { name: "Stop" }).click();
+  await expect(scenario).toContainText("RUN STOPPED");
+  await expect(scenario.getByText("NOT RUN", { exact: true })).toBeVisible();
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await attachMatrixScreenshot(page, testInfo, "scenario-clock-compact-light-stopped");
 });
 
 test("Scenario authoring confirms explicit membership and keeps only the focused large editor mounted", async ({ page }, testInfo) => {

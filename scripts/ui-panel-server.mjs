@@ -91,6 +91,17 @@ const history = createInMemoryEventHistory({
 });
 await Promise.all(scenario.initialEvents.map((event) => history.offer(event).settled));
 let localInjectionExecutionCount = 0;
+let scenarioClockNow = 0;
+const scenarioClock = {
+  now: () => scenarioClockNow,
+  setTimer(callback, delayMs) {
+    return setTimeout(() => {
+      scenarioClockNow += Math.max(0, delayMs);
+      callback();
+    }, Math.max(0, delayMs));
+  },
+  clearTimer(handle) { clearTimeout(handle); }
+};
 const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
   execute(request) {
     localInjectionExecutionCount += 1;
@@ -104,6 +115,7 @@ const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
 } : undefined;
 const runtime = createWorkbenchRuntime({
   history,
+  scenarioClock,
   storage: history.storage,
   ...(scenario.storageEstimate ? {
     storageEstimate: {
@@ -180,7 +192,13 @@ if (scenario.localInjection) {
     for (let index = 0; index < (scenario.localInjection.scenario.authoredSteps ?? 0); index += 1) {
       runtime.dispatch({ type: "add-authored-scenario-step" });
     }
+    if (scenario.localInjection.scenario.delayMs !== undefined) {
+      const stepId = runtime.getSnapshot().scenario?.scenario.steps[0]?.id;
+      if (stepId) runtime.dispatch({ type: "set-scenario-step-delay", stepId, delayMs: scenario.localInjection.scenario.delayMs });
+    }
+    if (scenario.localInjection.scenario.speed !== undefined) runtime.dispatch({ type: "set-scenario-speed", speed: scenario.localInjection.scenario.speed });
     if (scenario.localInjection.scenario.review) runtime.dispatch({ type: "review-scenario" });
+    if (scenario.localInjection.scenario.play) runtime.dispatch({ type: "play-scenario" });
     for (let index = 0; index < (scenario.localInjection.scenario.steps ?? 0); index += 1) {
       runtime.dispatch({ type: "step-next-scenario" });
       await new Promise((resolve) => setTimeout(resolve, 48));
@@ -191,6 +209,7 @@ await new Promise((resolve) => setTimeout(resolve, 48));
 document.documentElement.dataset.reactScenario = scenarioId;
 document.documentElement.dataset.reactSceneReady = "true";
 window.__localInjectionExecutionCount = () => localInjectionExecutionCount;
+window.__setWorkbenchVisible = (visible) => runtime.dispatch({ type: "set-visible", visible });
 window.__setWorkbenchStorageMode = (mode) => runtime.dispatch({
   type: "set-storage-state",
   storage: mode === "memory"
