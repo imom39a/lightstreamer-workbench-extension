@@ -147,18 +147,25 @@ import {
   previewScenarioMembership,
   removeScenarioStep,
   reviewScenario,
-  stepScenarioRun,
   terminalizeScenarioRun,
   scenarioTargetIncompatibility,
   undoScenarioStepRemoval,
   updateScenarioStepDraft,
   updateScenarioStepPresentation,
+  updateScenarioSpeed,
   type LocalInjectionScenario,
   type ScenarioDraftInput,
   type ScenarioEditorState,
   type ScenarioMembershipPreview,
-  type ScenarioRun
+  type ScenarioRun,
+  type ScenarioSpeed
 } from "../../core/local-injection-scenario";
+import {
+  createLocalInjectionScenarioRunner,
+  type ScenarioClock,
+  type ScenarioRunner,
+  type ScenarioRunnerSnapshot
+} from "../../core/local-injection-scenario-runner";
 
 export type {
   LocalInjectionExecutionRequest,
@@ -488,6 +495,7 @@ export type WorkbenchScenarioSnapshot = Readonly<{
   canUndoRemoval: boolean;
   priorRuns: readonly ScenarioRun[];
   retainedRunBytes: number;
+  runner: ScenarioRunnerSnapshot | null;
 }> | null;
 
 /** The immutable, renderer-neutral investigation state for one panel session. */
@@ -603,9 +611,14 @@ export type WorkbenchCommand =
   | { type: "undo-scenario-step-removal" }
   | { type: "focus-scenario-step"; stepId: string }
   | { type: "set-scenario-step-delay"; stepId: string; delayMs: number }
+  | { type: "set-scenario-speed"; speed: ScenarioSpeed }
   | { type: "review-scenario" }
   | { type: "edit-scenario" }
+  | { type: "play-scenario" }
+  | { type: "pause-scenario" }
+  | { type: "stop-scenario" }
   | { type: "step-next-scenario" }
+  | { type: "run-scenario-again" }
   | { type: "finish-scenario" }
   | { type: "set-scenario-step-json"; stepId: string; text: string }
   | { type: "set-scenario-step-compare"; stepId: string; open: boolean }
@@ -733,6 +746,7 @@ export type WorkbenchRuntimeOptions = {
   normalizer?: EventNormalizer;
   windowSize?: number;
   scheduler?: WorkbenchRuntimeScheduler;
+  scenarioClock?: ScenarioClock;
   localInjectionExecutor?: LocalInjectionExecutor;
   performanceHooks?: WorkbenchRuntimePerformanceHooks;
   evidenceQuery?: EvidenceInvestigationQuery;
@@ -795,6 +809,8 @@ type ScenarioState = {
   removedDrafts: Map<string, LocalInjectionDraftState>;
   priorRuns: ScenarioRun[];
   retainedRunBytes: number;
+  runner: ScenarioRunner | null;
+  runnerSnapshot: ScenarioRunnerSnapshot | null;
 };
 
 type InvestigationCheckpoint = Readonly<{
@@ -846,6 +862,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly history: EventHistory;
   private readonly evidencePipeline: CommittedEvidencePipeline;
   private readonly scheduler: WorkbenchRuntimeScheduler;
+  private readonly scenarioClock: ScenarioClock;
   private readonly windowSize: number;
   private readonly outputByteLimit: number;
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
@@ -997,6 +1014,7 @@ class Runtime implements WorkbenchRuntime {
   private localInjectionDiscardConfirmation = false;
   private localInjectionEntryError: string | null = null;
   private localInjectionSequence = 0;
+  private scenarioVisibilityTransition = false;
   private currentPageEpoch: string | null = null;
   private scopeStructureCache: {
     revision: number;
@@ -1026,6 +1044,11 @@ class Runtime implements WorkbenchRuntime {
     this.history = options.history ?? createInMemoryEventHistory();
     this.historyStatus = this.history.status();
     this.scheduler = options.scheduler ?? browserScheduler();
+    this.scenarioClock = options.scenarioClock ?? {
+      now: () => performance.now(),
+      setTimer: (callback, delayMs) => this.scheduler.setTimeout(callback, delayMs),
+      clearTimer: (handle) => this.scheduler.clearTimeout(handle)
+    };
     this.windowSize = normalizeWindowSize(options.windowSize);
     this.outputByteLimit = normalizeOutputByteLimit(options.outputByteLimit);
     this.visible = options.visible ?? true;
@@ -1625,19 +1648,37 @@ class Runtime implements WorkbenchRuntime {
       case "set-scenario-step-delay":
         this.setScenarioStepDelay(command.stepId, command.delayMs);
         return;
+      case "set-scenario-speed":
+        this.setScenarioSpeed(command.speed);
+        return;
       case "review-scenario":
         this.reviewCurrentScenario();
         return;
       case "edit-scenario":
         if (!this.scenarioState || this.scenarioState.phase === "running") return;
         this.archiveCurrentScenarioRun(this.scenarioState);
+        this.scenarioState.runner?.dispose();
         this.scenarioState.phase = "edit";
         this.scenarioState.run = null;
+        this.scenarioState.runner = null;
+        this.scenarioState.runnerSnapshot = null;
         this.scenarioState.reviews.clear();
         this.publish();
         return;
+      case "play-scenario":
+        this.scenarioState?.runner?.play();
+        return;
+      case "pause-scenario":
+        this.scenarioState?.runner?.pause();
+        return;
+      case "stop-scenario":
+        this.scenarioState?.runner?.stop();
+        return;
       case "step-next-scenario":
         this.stepNextScenario();
+        return;
+      case "run-scenario-again":
+        this.runScenarioAgain();
         return;
       case "finish-scenario":
         this.finishScenario();
@@ -1939,6 +1980,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.disposed = true;
+    this.scenarioState?.runner?.dispose();
     this.cancelPassivePublication();
     this.cancelActivityPublication();
     this.evidenceQueryAbortController?.abort();
@@ -2344,7 +2386,10 @@ class Runtime implements WorkbenchRuntime {
     if (this.visible === visible) {
       return;
     }
+    this.scenarioVisibilityTransition = true;
+    this.scenarioState?.runner?.setVisible(visible);
     this.visible = visible;
+    this.scenarioVisibilityTransition = false;
     if (!visible) {
       this.cancelPassivePublication();
       this.cancelActivityPublication();
@@ -3383,7 +3428,9 @@ class Runtime implements WorkbenchRuntime {
       focusedStepId: scenario.steps[0]!.id,
       removedDrafts: new Map(),
       priorRuns: [],
-      retainedRunBytes: 0
+      retainedRunBytes: 0,
+      runner: null,
+      runnerSnapshot: null
     };
     draft.open = false;
     draft.parked = false;
@@ -3595,6 +3642,20 @@ class Runtime implements WorkbenchRuntime {
     this.publish();
   }
 
+  private setScenarioSpeed(speed: ScenarioSpeed): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const result = updateScenarioSpeed(state.scenario, speed, { retainedRunBytes: state.retainedRunBytes });
+    if (!result.ok) {
+      state.membershipError = result.reason;
+      this.publish();
+      return;
+    }
+    state.scenario = result.scenario;
+    state.membershipError = null;
+    this.publish();
+  }
+
   private reviewCurrentScenario(): void {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
@@ -3652,11 +3713,48 @@ class Runtime implements WorkbenchRuntime {
     state.reviews = reviews;
     state.phase = "review";
     state.membershipError = null;
+    state.runner = this.createScenarioRunner(state, reviewed.run);
+    state.runnerSnapshot = state.runner.snapshot();
     this.publish();
   }
 
+  private createScenarioRunner(state: ScenarioState, run: ScenarioRun): ScenarioRunner {
+    return createLocalInjectionScenarioRunner(run, {
+      clock: this.scenarioClock,
+      allocateInjectionId: () => `local-injection-${++this.localInjectionSequence}`,
+      execute: async (input) => {
+        const review = state.reviews.get(input.stepId);
+        if (!review || review.kind !== "reviewed") {
+          return { kind: "not-run" as const, reason: "REVIEW INVALIDATED" as const, timestamp: this.scenarioClock.now(), detail: "Scenario Review is unavailable before dispatch." };
+        }
+        const correlatedReview = Object.freeze({
+          ...review,
+          correlation: Object.freeze({ ...review.correlation, injectionId: input.injectionId })
+        });
+        state.reviews.set(input.stepId, correlatedReview);
+        const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
+        const execution = await this.localInjectionExecutionCoordinator.execute(correlatedReview, { executionId });
+        return settleScenarioCoordinatorExecution(execution, Date.now());
+      },
+      onChange: (runnerSnapshot) => {
+        if (this.disposed || this.scenarioState !== state) return;
+        state.runnerSnapshot = runnerSnapshot;
+        state.run = runnerSnapshot.run;
+        state.phase = runnerSnapshot.phase === "complete"
+          ? "complete"
+          : runnerSnapshot.phase === "stopped"
+            ? "stopped"
+            : runnerSnapshot.phase === "paused"
+              ? state.run.trace.length === 0 && state.run.controls.length === 0 ? "review" : "paused"
+              : "running";
+        if (!this.scenarioVisibilityTransition) this.publish();
+      }
+    });
+  }
+
   private archiveCurrentScenarioRun(state: ScenarioState): void {
-    const run = state.run ? terminalizeScenarioRun(state.run, Date.now()) : null;
+    state.runner?.stop("Scenario returned to Edit before this Step was attempted.");
+    const run = state.run ? terminalizeScenarioRun(state.run, this.scenarioClock.now()) : null;
     if (!run) return;
     state.priorRuns.push(run);
     state.retainedRunBytes = run.accountedBytes - state.scenario.accountedBytes;
@@ -3664,33 +3762,21 @@ class Runtime implements WorkbenchRuntime {
 
   private stepNextScenario(): void {
     const state = this.scenarioState;
-    const run = state?.run;
-    if (!state || !run || (state.phase !== "review" && state.phase !== "paused")) return;
-    const index = run.nextOrdinal - 1;
-    const step = run.steps[index];
-    const review = step ? state.reviews.get(step.id) : null;
-    if (!review || review.kind !== "reviewed") return;
-    const injectionId = `local-injection-${++this.localInjectionSequence}`;
-    const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
-    const correlatedReview = Object.freeze({
-      ...review,
-      correlation: Object.freeze({ ...review.correlation, injectionId })
-    });
-    state.reviews.set(step!.id, correlatedReview);
-    state.phase = "running";
-    this.publish();
-    void stepScenarioRun(run, {
-      injectionId,
-      execute: async () => {
-        const execution = await this.localInjectionExecutionCoordinator.execute(correlatedReview, { executionId });
-        return settleScenarioCoordinatorExecution(execution, Date.now());
-      }
-    }).then((nextRun) => {
-      if (this.disposed || this.scenarioState !== state) return;
-      state.run = nextRun;
-      state.phase = nextRun.status === "complete" ? "complete" : nextRun.status === "stopped" ? "stopped" : "paused";
-      this.publish();
-    });
+    if (!state || (state.phase !== "review" && state.phase !== "paused")) return;
+    state.runner?.stepNext();
+  }
+
+  private runScenarioAgain(): void {
+    const state = this.scenarioState;
+    if (!state || (state.phase !== "complete" && state.phase !== "stopped")) return;
+    this.archiveCurrentScenarioRun(state);
+    state.runner?.dispose();
+    state.runner = null;
+    state.runnerSnapshot = null;
+    state.run = null;
+    state.reviews.clear();
+    state.phase = "edit";
+    this.reviewCurrentScenario();
   }
 
   private finishScenario(): void {
@@ -4375,7 +4461,8 @@ class Runtime implements WorkbenchRuntime {
             focusedStepId: this.scenarioState.focusedStepId,
             canUndoRemoval: this.scenarioState.scenario.removedSteps.length > 0,
             priorRuns: Object.freeze([...this.scenarioState.priorRuns]),
-            retainedRunBytes: this.scenarioState.retainedRunBytes
+            retainedRunBytes: this.scenarioState.retainedRunBytes,
+            runner: this.scenarioState.runnerSnapshot
           })
         : null,
       evidence: Object.freeze({

@@ -311,6 +311,70 @@ function activeLocalInjection(
   };
 }
 
+function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "paused"): NonNullable<WorkbenchSnapshot["scenario"]> {
+  const local = activeLocalInjection().draft!;
+  const target = {
+    pageEpoch: local.anchor.pageEpoch,
+    clientId: local.anchor.clientId,
+    sessionId: local.anchor.sessionId,
+    subscriptionId: local.anchor.subscriptionId,
+    deliveryPath: "listener" as const,
+    listenerId: local.anchor.listenerId,
+    mode: local.anchor.subscriptionMode,
+    schemaFields: local.anchor.fieldSchema
+  };
+  const step = {
+    kind: "step" as const,
+    id: "step-1",
+    draft: {
+      id: local.id,
+      sourceEventId: local.anchor.sourceEventId,
+      sourceRawText: local.source.rawText,
+      rawText: local.rawText,
+      document: local.document,
+      ready: local.ready,
+      diagnostics: local.diagnostics,
+      target,
+      item: { name: local.anchor.itemName, position: local.anchor.itemPosition },
+      editor: local.editorPresentation,
+      restorationOrigin: local.restorationOrigin,
+      relativeDelayMs: 100
+    }
+  };
+  const scenario = {
+    id: "scenario-1", revision: 2, phase: "edit" as const, target, steps: [step], restorationOrigin: local.restorationOrigin,
+    nextStepSequence: 2, removedSteps: [], accountedBytes: 2048, speed: 2 as const
+  };
+  const reviewedStep = { kind: "step" as const, id: "step-1", ordinal: 1, sourceEventId: local.anchor.sourceEventId, rawText: local.rawText, document: local.document!, relativeDelayMs: 100 };
+  const run = {
+    id: "run-1", scenarioId: scenario.id, scenarioRevision: scenario.revision, target, targetFingerprint: "fp-1", committedEvidenceSeed: null,
+    steps: [reviewedStep], status: "paused" as const, nextOrdinal: 1, trace: [], accountedBytes: 4096, traceReservationBytes: 1024, speed: 2 as const, controls: []
+  };
+  return {
+    phase: runnerPhase === "paused" ? "review" : "running",
+    scenario,
+    run,
+    membershipError: null,
+    pickerOpen: false,
+    membership: [],
+    membershipPreview: null,
+    focusedStepId: "step-1",
+    canUndoRemoval: false,
+    priorRuns: [],
+    retainedRunBytes: 0,
+    runner: {
+      phase: runnerPhase,
+      run,
+      cursor: { members: [reviewedStep], index: 0 },
+      nextOrdinal: 1,
+      activeOffsetMs: runnerPhase === "paused" ? 0 : 25,
+      remainingDelayMs: runnerPhase === "paused" ? 50 : 25,
+      pauseReason: runnerPhase === "paused" ? "USER" : null,
+      visible: true
+    }
+  };
+}
+
 describe("React Workbench Diagnose panel", () => {
   beforeEach(() => {
     document.body.innerHTML = '<main id="app"></main>';
@@ -1606,6 +1670,47 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => resume?.click());
     expect(runtime.commands).toContainEqual({ type: "resume-local-injection" });
 
+    await act(async () => root.unmount());
+  });
+
+  it("exposes only valid Scenario clock controls and keeps Stop separate from the primary action", async () => {
+    const runtime = createTestRuntime(snapshot({ scenario: reviewedScenario() }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Local Injection Scenario"]')).toBeTruthy());
+    const region = document.querySelector<HTMLElement>('[aria-label="Local Injection Scenario"]')!;
+    const button = (name: string) => Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((candidate) => candidate.textContent === name);
+    expect(button("Play")).toBeTruthy();
+    expect(button("Step next")).toBeTruthy();
+    expect(button("Stop")).toBeTruthy();
+    expect(button("Pause")).toBeFalsy();
+    expect(button("Play")?.classList.contains("workbench-react__primary")).toBe(true);
+    expect(button("Stop")?.classList.contains("workbench-react__primary")).toBe(false);
+    await act(async () => button("Play")?.click());
+    expect(runtime.commands).toContainEqual({ type: "play-scenario" });
+
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("in-flight") })));
+    expect(button("Pause")).toBeTruthy();
+    expect(button("Stop")).toBeTruthy();
+    expect(button("Play")).toBeFalsy();
+    expect(button("Step next")).toBeFalsy();
+    expect(button("Edit Scenario")).toBeFalsy();
+    await act(async () => root.unmount());
+  });
+
+  it("does not move document focus for passive clock and in-flight phase publication", async () => {
+    const runtime = createTestRuntime(snapshot({ scenario: reviewedScenario() }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Step 1 reviewed JSON"]')).toBeTruthy());
+    const reviewedJson = document.querySelector<HTMLElement>('[aria-label="Step 1 reviewed JSON"]')!;
+    reviewedJson.focus();
+    expect(document.activeElement).toBe(reviewedJson);
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("waiting") })));
+    expect(document.activeElement).toBe(reviewedJson);
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("in-flight") })));
+    expect(document.activeElement).toBe(reviewedJson);
+    expect(Array.from(document.querySelectorAll('[role="status"]')).every((node) => !node.textContent?.includes("WAITING"))).toBe(true);
     await act(async () => root.unmount());
   });
 });

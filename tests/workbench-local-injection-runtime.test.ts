@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
+import type { ScenarioClock } from "../src/core/local-injection-scenario-runner";
 import {
   createWorkbenchRuntime,
   settleScenarioCoordinatorExecution,
@@ -175,6 +176,25 @@ function scheduler(): WorkbenchRuntimeScheduler & { flush(): void } {
   };
 }
 
+class ScenarioTestClock implements ScenarioClock {
+  private current = 0;
+  private sequence = 0;
+  private readonly timers = new Map<number, { due: number; callback: () => void }>();
+  now(): number { return this.current; }
+  setTimer(callback: () => void, delayMs: number): number {
+    const id = ++this.sequence;
+    this.timers.set(id, { due: this.current + delayMs, callback });
+    return id;
+  }
+  clearTimer(handle: unknown): void { this.timers.delete(Number(handle)); }
+  advance(ms: number): void {
+    this.current += ms;
+    for (const [id, timer] of [...this.timers].filter(([, value]) => value.due <= this.current).sort((left, right) => left[1].due - right[1].due)) {
+      if (this.timers.delete(id)) timer.callback();
+    }
+  }
+}
+
 describe("WorkbenchRuntime Local Injection", () => {
   it("maps a pre-dispatch stale target to not-run without any Injection identity", () => {
     const settlement = settleScenarioCoordinatorExecution({
@@ -256,6 +276,80 @@ describe("WorkbenchRuntime Local Injection", () => {
     expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "complete", run: { trace: [{ injectionId: expect.any(String) }, { injectionId: expect.any(String) }] } });
     const attempted = runtime.getSnapshot().scenario?.run?.trace.filter((entry) => entry.kind === "attempted") ?? [];
     expect(attempted[0]?.injectionId).not.toBe(attempted[1]?.injectionId);
+    runtime.dispose();
+  });
+
+  it("plays on the injected Scenario Clock, pauses while hidden, and requires explicit Resume", async () => {
+    const clock = new ScenarioTestClock();
+    const executor = { execute: vi.fn(async () => result("success", {
+      requestId: "timed-runtime",
+      attemptedCount: 1,
+      deliveredCount: 1,
+      failedCount: 0
+    })) };
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", localInjectionExecutor: executor, scenarioClock: clock });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    const stepId = runtime.getSnapshot().scenario!.scenario.steps[0]!.id;
+    runtime.dispatch({ type: "set-scenario-step-delay", stepId, delayMs: 100 });
+    runtime.dispatch({ type: "set-scenario-speed", speed: 2 });
+    runtime.dispatch({ type: "review-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "review", run: { speed: 2 }, runner: { phase: "paused", remainingDelayMs: 50 } });
+
+    runtime.dispatch({ type: "play-scenario" });
+    clock.advance(20);
+    runtime.dispatch({ type: "set-visible", visible: false });
+    expect(runtime.getSnapshot().scenario?.runner).toMatchObject({ phase: "paused", pauseReason: "HIDDEN", remainingDelayMs: 30 });
+    clock.advance(1_000);
+    runtime.dispatch({ type: "set-visible", visible: true });
+    clock.advance(1_000);
+    expect(executor.execute).not.toHaveBeenCalled();
+
+    runtime.dispatch({ type: "play-scenario" });
+    clock.advance(29);
+    expect(executor.execute).not.toHaveBeenCalled();
+    clock.advance(1);
+    await flushAsync();
+    await flushAsync();
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "complete", run: { trace: [{ timing: {
+      originalDelayMs: 100,
+      scaledDelayMs: 50,
+      plannedDispatchActiveOffsetMs: 50,
+      actualDispatchActiveOffsetMs: 50,
+      latenessMs: 0
+    } }] } });
+    runtime.dispose();
+  });
+
+  it("Run again performs a fresh Review and allocates new Run and Injection identities", async () => {
+    const clock = new ScenarioTestClock();
+    let request = 0;
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", scenarioClock: clock, localInjectionExecutor: {
+      execute: vi.fn(async () => result("success", { requestId: `run-again-${++request}`, attemptedCount: 1, deliveredCount: 1, failedCount: 0 }))
+    } });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "review-scenario" });
+    const firstRunId = runtime.getSnapshot().scenario!.run!.id;
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    const firstInjectionId = runtime.getSnapshot().scenario!.run!.trace[0]!;
+    runtime.dispatch({ type: "run-scenario-again" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "review", priorRuns: [{ id: firstRunId }] });
+    const secondRunId = runtime.getSnapshot().scenario!.run!.id;
+    expect(secondRunId).not.toBe(firstRunId);
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    const secondInjection = runtime.getSnapshot().scenario!.run!.trace[0]!;
+    expect(firstInjectionId).toMatchObject({ kind: "attempted" });
+    expect(secondInjection).toMatchObject({ kind: "attempted" });
+    if (firstInjectionId.kind === "attempted" && secondInjection.kind === "attempted") {
+      expect(secondInjection.injectionId).not.toBe(firstInjectionId.injectionId);
+    }
     runtime.dispose();
   });
 
