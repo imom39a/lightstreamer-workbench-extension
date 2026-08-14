@@ -560,8 +560,12 @@ async function prepareProductionState(page, setup) {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await scenario.getByText(/IN FLIGHT/).waitFor();
     await scenario.getByRole("button", { name: "Stop" }).click();
-    await scenario.getByText(/RUN STOPPED/).waitFor();
+    await scenario.getByText(/^RUN STOPPED · remaining Steps/).waitFor();
     await scenario.getByText("NOT RUN", { exact: true }).waitFor();
+    await scenario.getByLabel("Ordered Scenario Steps").evaluate((owner) => {
+      const firstOutcome = owner.querySelector("article:first-child p");
+      if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
+    });
     return;
   }
   if (setup === "scenario-membership-preview") {
