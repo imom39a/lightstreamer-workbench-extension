@@ -117,6 +117,11 @@ import {
   type ActivityScope,
   type ActivityReadPoint
 } from "../../core/activity-projection";
+import {
+  openActivityDocument,
+  reduceActivityDocument,
+  type ActivityDocumentState
+} from "../../core/activity-document";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 export const DEFAULT_EVIDENCE_OUTPUT_BYTE_LIMIT = 32 * 1024 * 1024;
@@ -361,6 +366,7 @@ export type WorkbenchActivitySnapshot = Readonly<{
   scope: ActivityScope;
   filter: Filter;
   readPoint: ActivityReadPoint;
+  document: ActivityDocumentState | null;
 }>;
 
 export type LocalInjectionExecutionResult = Readonly<{
@@ -570,6 +576,12 @@ export type WorkbenchCommand =
   | { type: "open-activity" }
   | { type: "close-activity" }
   | { type: "show-activity-supporting-evidence"; start: number; end: number }
+  | { type: "select-activity"; selection: ActivityDocumentState["selection"] }
+  | { type: "set-activity-local-series"; enabled: boolean }
+  | { type: "set-activity-ranking-sort"; sort: ActivityDocumentState["rankingSort"] }
+  | { type: "set-activity-scroll"; documentTop?: number; plotLeft?: number }
+  | { type: "freeze-activity" }
+  | { type: "follow-activity" }
   | { type: "freeze-evidence" }
   | { type: "follow-live" }
   | { type: "back-investigation" }
@@ -775,6 +787,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
   private readonly activityEvidence: ActivityEvidence[] = [];
   private activityOpen = false;
+  private activityDocumentState: ActivityDocumentState | null = null;
   private topologyProjection: TopologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
@@ -1509,6 +1522,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "close-activity":
         this.activityOpen = false;
+        if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
         this.publish();
         return;
       case "show-activity-supporting-evidence": {
@@ -1516,11 +1530,46 @@ class Runtime implements WorkbenchRuntime {
         if (result.ok) {
           this.canonicalFilter = result.filter;
           this.activityOpen = false;
+          if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
           this.recordInvestigationCheckpoint();
           this.refreshEvidence("filter");
         }
         return;
       }
+      case "select-activity":
+      case "set-activity-local-series":
+      case "set-activity-ranking-sort":
+      case "set-activity-scroll": {
+        const document = this.activityDocumentState ?? this.activitySnapshot(this.scopeSnapshot()).document;
+        if (!document) return;
+        const command = command.type === "select-activity"
+          ? { type: "select" as const, selection: command.selection }
+          : command.type === "set-activity-local-series"
+            ? { type: "set-local-series" as const, enabled: command.enabled }
+            : command.type === "set-activity-ranking-sort"
+              ? { type: "set-ranking-sort" as const, sort: command.sort }
+              : { type: "set-scroll" as const, documentTop: command.documentTop, plotLeft: command.plotLeft };
+        this.activityDocumentState = reduceActivityDocument(document, command).state;
+        this.publish();
+        return;
+      }
+      case "freeze-activity":
+        this.mode = "frozen";
+        this.restorationReadPoint = null;
+        this.frozenEvidence = this.liveEvidence;
+        this.frozenInvestigation = this.liveInvestigation;
+        this.frozenInvestigationContract = this.liveInvestigationContract;
+        if (this.activityDocumentState) this.activityDocumentState = reduceActivityDocument(this.activityDocumentState, { type: "freeze" }).state;
+        this.refreshEvidence("command");
+        return;
+      case "follow-activity":
+        this.mode = "live";
+        this.restorationReadPoint = null;
+        this.frozenEvidence = null;
+        this.frozenInvestigation = null;
+        this.frozenInvestigationContract = null;
+        this.refreshEvidence("command");
+        return;
       case "freeze-evidence":
         this.mode = "frozen";
         this.restorationReadPoint = null;
