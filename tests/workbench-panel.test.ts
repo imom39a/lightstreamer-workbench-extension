@@ -342,13 +342,13 @@ function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "pau
     }
   };
   const scenario = {
-    id: "scenario-1", revision: 2, phase: "edit" as const, target, steps: [step], restorationOrigin: local.restorationOrigin,
+    id: "scenario-1", revision: 2, phase: "edit" as const, target, steps: [step], members: [step], restorationOrigin: local.restorationOrigin,
     nextStepSequence: 2, removedSteps: [], accountedBytes: 2048, speed: 2 as const
   };
   const reviewedStep = { kind: "step" as const, id: "step-1", ordinal: 1, sourceEventId: local.anchor.sourceEventId, rawText: local.rawText, document: local.document!, relativeDelayMs: 100 };
   const run = {
     id: "run-1", scenarioId: scenario.id, scenarioRevision: scenario.revision, target, targetFingerprint: "fp-1", committedEvidenceSeed: null,
-    steps: [reviewedStep], status: "paused" as const, nextOrdinal: 1, trace: [], accountedBytes: 4096, traceReservationBytes: 1024, controlReservationBytes: 1024, speed: 2 as const, controls: [], authorizations: [], drifts: []
+    steps: [reviewedStep], members: [reviewedStep], status: "paused" as const, nextOrdinal: 1, nextMemberIndex: 0, trace: [], accountedBytes: 4096, traceReservationBytes: 1024, controlReservationBytes: 1024, speed: 2 as const, controls: [], authorizations: [], drifts: []
   };
   return {
     phase: runnerPhase === "paused" ? "review" : "running",
@@ -358,6 +358,7 @@ function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "pau
     pickerOpen: false,
     membership: [],
     membershipPreview: null,
+    focusedMemberId: "step-1",
     focusedStepId: "step-1",
     canUndoRemoval: false,
     priorRuns: [],
@@ -371,7 +372,8 @@ function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "pau
       remainingDelayMs: runnerPhase === "paused" ? 50 : 25,
       pauseReason: runnerPhase === "paused" ? "USER" : null,
       controlCapacityReached: false,
-      visible: true
+      visible: true,
+      activeCheckpoint: null
     }
   };
 }
@@ -1809,6 +1811,161 @@ describe("React Workbench Diagnose panel", () => {
     reviewedJson.focus();
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...completed, phase: "complete", run: { ...completed.run!, status: "complete", nextOrdinal: 2 }, runner: { ...completed.runner!, phase: "complete", nextOrdinal: 2, run: { ...completed.run!, status: "complete", nextOrdinal: 2 } } } })));
     expect(document.activeElement).toBe(reviewedJson);
+    await act(async () => root.unmount());
+  });
+
+  it("authors a protected zero-Injection Scenario Checkpoint outside Item Update JSON", async () => {
+    const reviewed = reviewedScenario();
+    const checkpoint = {
+      id: "checkpoint-1",
+      kind: "checkpoint" as const,
+      name: "Portfolio row is locally settled",
+      assertions: [{
+        id: "assertion-1",
+        kind: "correlated-local-evidence-exists" as const,
+        stepId: "step-1",
+        withinActiveMs: 2_000
+      }]
+    };
+    const scenario = {
+      ...reviewed.scenario,
+      phase: "edit" as const,
+      members: [reviewed.scenario.steps[0], checkpoint]
+    };
+    const runtime = createTestRuntime(snapshot({
+      scenario: {
+        ...reviewed,
+        phase: "edit",
+        scenario,
+        run: null,
+        runner: null,
+        focusedMemberId: "checkpoint-1",
+        focusedStepId: "step-1"
+      }
+    }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Scenario Checkpoint Portfolio row is locally settled"]')).toBeTruthy());
+
+    const region = document.querySelector<HTMLElement>('[aria-label="Local Injection Scenario"]')!;
+    const checkpointRegion = document.querySelector<HTMLElement>('[aria-label="Scenario Checkpoint Portfolio row is locally settled"]')!;
+    expect(checkpointRegion.textContent).toContain("CHECKPOINT 1");
+    expect(checkpointRegion.textContent).toContain("Zero Injections");
+    expect(checkpointRegion.textContent).toContain("Correlated committed Local Evidence exists after Step 1");
+    expect(checkpointRegion.textContent).toContain("within 2000 ms active time");
+    expect(checkpointRegion.querySelector("textarea, [contenteditable='true'], .cm-editor")).toBeNull();
+    const assertionKinds = checkpointRegion.querySelector<HTMLSelectElement>('[aria-label="Assertion assertion-1 kind"]')!;
+    expect(Array.from(assertionKinds.options).map(({ value }) => value)).toEqual([
+      "prior-injection-outcome",
+      "listener-count",
+      "correlated-local-evidence-exists",
+      "command-key-exists",
+      "command-field-equals"
+    ]);
+    expect(Array.from(assertionKinds.options).some(({ textContent }) => textContent?.toLowerCase().includes("diagnostic"))).toBe(false);
+    const name = checkpointRegion.querySelector<HTMLInputElement>('[aria-label="Checkpoint 1 name"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(name, "Local row is stable");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(runtime.commands).toContainEqual({ type: "update-scenario-checkpoint", checkpoint: { ...checkpoint, name: "Local row is stable" } });
+
+    const addCheckpoint = Array.from(region.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Add checkpoint");
+    expect(addCheckpoint).toBeTruthy();
+    await act(async () => addCheckpoint?.click());
+    expect(runtime.commands).toContainEqual({ type: "add-scenario-checkpoint" });
+    expect(region.textContent).not.toContain("diagnostic assertion");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a high-volume Checkpoint Scenario collapsed with no JSON editor cost", async () => {
+    const reviewed = reviewedScenario();
+    const checkpoints = Array.from({ length: 99 }, (_, index) => ({
+      id: `checkpoint-${index + 1}`,
+      kind: "checkpoint" as const,
+      name: `Boundary ${index + 1}`,
+      assertions: [{ id: `assertion-${index + 1}`, kind: "correlated-local-evidence-exists" as const, stepId: "step-1" }]
+    }));
+    const scenario = { ...reviewed.scenario, phase: "edit" as const, members: [reviewed.scenario.steps[0], ...checkpoints] };
+    const runtime = createTestRuntime(snapshot({ scenario: { ...reviewed, phase: "edit", scenario, run: null, runner: null, focusedMemberId: "checkpoint-1" } }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelectorAll(".workbench-react__scenario-checkpoint")).toHaveLength(99));
+
+    expect(document.querySelectorAll(".workbench-react__scenario-assertions")).toHaveLength(1);
+    expect(document.querySelectorAll(".workbench-react__scenario-checkpoint .cm-editor")).toHaveLength(0);
+    expect(document.querySelectorAll(".workbench-react__scenario-checkpoint .workbench-react__scenario-collapsed")).toHaveLength(98);
+    expect(document.querySelectorAll('[data-step-focused="true"]')).toHaveLength(1);
+
+    await act(async () => root.unmount());
+  });
+
+  it("presents persistent Checkpoint outcomes and an exact related Evidence route", async () => {
+    const reviewed = reviewedScenario();
+    const checkpoint = {
+      id: "checkpoint-1",
+      kind: "checkpoint" as const,
+      name: "Portfolio row is locally settled",
+      assertions: [{ id: "assertion-1", kind: "command-field-equals" as const, item: { name: "portfolio", position: 1 }, key: "order-1042", field: "qty", expected: 18 }]
+    };
+    const reviewedCheckpoint = { ...checkpoint, memberOrdinal: 2 };
+    const checkpointTrace = {
+      checkpointId: checkpoint.id,
+      checkpointName: checkpoint.name,
+      memberOrdinal: 2,
+      kind: "checkpoint" as const,
+      status: "pass" as const,
+      startedActiveOffsetMs: 75,
+      settledActiveOffsetMs: 80,
+      startedBoundary: { intervalId: "interval-1", sequence: 7, eventId: "evidence-7" },
+      resultBoundary: { intervalId: "interval-1", sequence: 8, eventId: "evidence-8" },
+      assertions: [{
+        assertionId: "assertion-1",
+        kind: "command-field-equals" as const,
+        status: "pass" as const,
+        expected: { primitive: 18 },
+        observed: { state: "concrete", value: 18, certainty: "certain" as const, provenance: "local-effective" as const, evidence: { intervalId: "interval-1", sequence: 8, eventId: "evidence-8" } },
+        relatedEvidence: [{ intervalId: "interval-1", sequence: 8, eventId: "evidence-8" }]
+      }]
+    };
+    const scenario = { ...reviewed.scenario, members: [reviewed.scenario.steps[0], checkpoint] };
+    const run = { ...reviewed.run!, members: [reviewed.run!.steps[0], reviewedCheckpoint], trace: [checkpointTrace] };
+    const waitingRun = { ...run, trace: [] };
+    const waitingAssertion = { ...checkpointTrace.assertions[0], status: "waiting" as const, observed: { ...checkpointTrace.assertions[0].observed, state: "absent", value: undefined } };
+    const runtime = createTestRuntime(snapshot({ scenario: { ...reviewed, phase: "running", scenario, run: waitingRun, focusedMemberId: "checkpoint-1", runner: { ...reviewed.runner!, run: waitingRun, phase: "waiting", activeCheckpoint: { checkpointId: "checkpoint-1", checkpointName: checkpoint.name, startedActiveOffsetMs: 75, deadlineActiveOffsetMs: 2_075, boundary: { intervalId: "interval-1", sequence: 7, eventId: "evidence-7" }, status: "waiting", assertions: [waitingAssertion] } } } }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Scenario Checkpoint Portfolio row is locally settled"]')).toBeTruthy());
+
+    const checkpointRegion = document.querySelector<HTMLElement>('[aria-label="Scenario Checkpoint Portfolio row is locally settled"]')!;
+    expect(checkpointRegion.dataset.checkpointState).toBe("waiting");
+    expect(checkpointRegion.textContent).toContain("WAITING");
+    expect(checkpointRegion.textContent).toContain("deadline 2075 ms");
+    expect(checkpointRegion.querySelector('[role="status"][aria-live="polite"]')).toBeTruthy();
+
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run, focusedMemberId: "checkpoint-1", runner: { ...reviewed.runner!, run, phase: "complete", activeCheckpoint: null } } })));
+    expect(checkpointRegion.dataset.checkpointState).toBe("pass");
+    expect(checkpointRegion.textContent).toContain("PASS");
+    expect(checkpointRegion.textContent).toContain("Evidence boundary evidence-8 · sequence 8");
+    expect(checkpointRegion.textContent).toContain("observed concrete 18 · certain · local-effective");
+    const inspectEvidence = Array.from(checkpointRegion.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Inspect Evidence evidence-8");
+    expect(inspectEvidence).toBeTruthy();
+    await act(async () => inspectEvidence?.click());
+    expect(runtime.commands).toContainEqual({ type: "show-scenario-checkpoint-evidence", evidence: { intervalId: "interval-1", sequence: 8, eventId: "evidence-8" } });
+
+    for (const status of ["fail", "expired", "unavailable", "not-evaluable"] as const) {
+      const trace = { ...checkpointTrace, status, assertions: [{ ...checkpointTrace.assertions[0], status }] };
+      const changedRun = { ...run, trace: [trace] };
+      await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "stopped", scenario, run: changedRun, focusedMemberId: "checkpoint-1", runner: { ...reviewed.runner!, run: changedRun, phase: "stopped" } } })));
+      expect(checkpointRegion.dataset.checkpointState).toBe(status);
+      expect(checkpointRegion.textContent).toContain(status.toUpperCase());
+      expect(checkpointRegion.querySelector('[role="alert"]')).toBeTruthy();
+    }
+    expect(checkpointRegion.textContent?.toLowerCase()).not.toContain("authoritative command state is true");
+
     await act(async () => root.unmount());
   });
 });

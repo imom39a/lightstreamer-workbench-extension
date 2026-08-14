@@ -360,6 +360,21 @@
 .workbench-react__scenario-steps article[data-step-state="next"] { border-left-color: var(--wb-info); }
 .workbench-react__scenario-steps article[data-step-state="complete"] { border-left-color: var(--wb-accent); }
 .workbench-react__scenario-steps article[data-step-focused="true"] { outline: 1px solid var(--wb-focus); outline-offset: -2px; }
+.workbench-react__scenario-steps .workbench-react__scenario-checkpoint { border-left-style: double; border-left-width: 4px; background: var(--wb-raised); }
+.workbench-react__scenario-checkpoint[data-checkpoint-state="waiting"] { border-left-color: var(--wb-info); }
+.workbench-react__scenario-checkpoint[data-checkpoint-state="pass"] { border-left-color: var(--wb-accent); }
+.workbench-react__scenario-checkpoint[data-checkpoint-state="fail"],
+.workbench-react__scenario-checkpoint[data-checkpoint-state="expired"],
+.workbench-react__scenario-checkpoint[data-checkpoint-state="invalid"],
+.workbench-react__scenario-checkpoint[data-checkpoint-state="unavailable"],
+.workbench-react__scenario-checkpoint[data-checkpoint-state="not-evaluable"] { border-left-color: var(--wb-error); }
+.workbench-react__scenario-assertions { display: grid; gap: 4px; margin: 0; padding-left: 20px; }
+.workbench-react__scenario-assertions li { overflow-wrap: anywhere; }
+.workbench-react__scenario-assertions span { color: var(--wb-muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__scenario-assertion-authoring { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
+.workbench-react__scenario-assertion-authoring > span { flex: 1 0 100%; }
+.workbench-react__scenario-assertion-authoring label { display: inline-flex; align-items: center; gap: 4px; color: var(--wb-muted); }
+.workbench-react__scenario-assertion-authoring input { max-width: 160px; }
 .workbench-react__scenario-steps article > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .workbench-react__scenario-steps article > header span { color: var(--wb-muted); font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__scenario-step-focus { border: 0; background: transparent; padding: 2px; color: var(--wb-text); font-weight: 700; }
@@ -377,6 +392,15 @@
 .workbench-react__scenario .workbench-react__local-footer > label { display: inline-flex; align-items: center; gap: 4px; color: var(--wb-muted); }
 .workbench-react__scenario .workbench-react__local-footer button:last-child { border-color: var(--wb-border-strong); }
 .workbench-react__scenario .workbench-react__local-footer .workbench-react__primary { border-color: var(--wb-info); background: var(--wb-info-soft); }
+@media (forced-colors: active) {
+  .workbench-react__scenario-checkpoint[data-checkpoint-state="waiting"] { border-left-color: Highlight; }
+  .workbench-react__scenario-checkpoint[data-checkpoint-state="pass"] { border-left-color: CanvasText; }
+  .workbench-react__scenario-checkpoint[data-checkpoint-state="fail"],
+  .workbench-react__scenario-checkpoint[data-checkpoint-state="expired"],
+  .workbench-react__scenario-checkpoint[data-checkpoint-state="invalid"],
+  .workbench-react__scenario-checkpoint[data-checkpoint-state="unavailable"],
+  .workbench-react__scenario-checkpoint[data-checkpoint-state="not-evaluable"] { border-left-color: Mark; }
+}
 @media (max-height: 420px) {
   .workbench-react[data-geometry="shallow"] .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary { grid-template-columns: repeat(6, minmax(0, 1fr)); flex: 0 0 auto; overflow: visible; }
   .workbench-react__scenario[data-phase="stopped"] > .workbench-react__local-boundary > div { min-width: 0; padding: 2px 6px; }

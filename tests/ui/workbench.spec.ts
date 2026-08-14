@@ -2259,6 +2259,45 @@ test("Scenario authoring confirms explicit membership and keeps only the focused
   await attachMatrixScreenshot(page, testInfo, "scenario-membership-normal-dark");
 });
 
+test("Scenario Checkpoint authoring stays protected, keyboard reachable, and Reviewable without an Injection editor", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-scenario-edit", { width: 900, height: 700 }, "dark");
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  const addCheckpoint = scenario.getByRole("button", { name: "Add checkpoint" });
+  await addCheckpoint.focus();
+  await expect(addCheckpoint).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  const checkpoint = scenario.locator(".workbench-react__scenario-checkpoint").last();
+  await expect(checkpoint).toBeVisible();
+  await expect(checkpoint).toContainText("Zero Injections");
+  await expect(checkpoint.getByLabel("Protected Checkpoint authoring")).toContainText("Exact committed Evidence boundary at evaluation");
+  await expect(checkpoint.locator(".cm-editor")).toHaveCount(0);
+  const name = checkpoint.getByRole("textbox", { name: /Checkpoint \d+ name/ });
+  await name.fill("Portfolio row is locally settled");
+  await expect(name).toHaveValue("Portfolio row is locally settled");
+  await expect(checkpoint).toHaveAttribute("aria-label", "Scenario Checkpoint Portfolio row is locally settled");
+  const assertionKind = checkpoint.getByRole("combobox", { name: /Assertion .* kind/ });
+  await expect(assertionKind.locator("option")).toHaveCount(5);
+  await expect(assertionKind.locator("option").filter({ hasText: /diagnostic/i })).toHaveCount(0);
+  await assertionKind.selectOption("correlated-local-evidence-exists");
+  await expect(checkpoint).toContainText("Correlated committed Local Evidence exists after Step");
+  const within = checkpoint.getByRole("spinbutton", { name: "Within active ms" });
+  await within.fill("2000");
+
+  const focusCheckpoint = checkpoint.getByRole("button", { name: /CHECKPOINT \d+/ });
+  await focusCheckpoint.focus();
+  await expect(focusCheckpoint).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(name).toBeFocused();
+  await scenario.getByRole("button", { name: "Review Scenario" }).click();
+  await expect(checkpoint).toContainText("REVIEWED");
+  await expect(checkpoint).toContainText("zero Injections dispatched");
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await attachMatrixScreenshot(page, testInfo, "scenario-checkpoint-authoring-normal-dark");
+});
+
 test("Scenario high-volume document mounts one of 100 representative large editors and keeps keyboard reorder usable", async ({ page }, testInfo) => {
   await openScenario(page, "live-selected", { width: 563, height: 700 }, "light");
   expect(await page.locator('[data-editor-engine="codemirror-6"]').count()).toBe(0);
