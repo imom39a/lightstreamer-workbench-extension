@@ -14,6 +14,7 @@ import { chromeTestArguments } from "./chrome-test-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactRoot = resolve(projectRoot, "test-results/workbench-visual-qa");
+const scenarioHaltReferenceCommit = process.env.LSEW_SCENARIO_HALT_REFERENCE_COMMIT ?? "b750a93";
 const prototypePort = Number(process.env.LSEW_VISUAL_PROTOTYPE_PORT ?? 4191);
 const panelPort = Number(process.env.LSEW_VISUAL_PANEL_PORT ?? 4192);
 const allScenarios = JSON.parse(
@@ -83,11 +84,10 @@ try {
   const results = [];
   for (const scenario of scenarios) {
     const reference = scenario.prototype.setup === "scenario-halt"
-      ? await readFile(resolve(
-          projectRoot,
-          "tests/ui/visual-regression.spec.ts-snapshots",
-          `${scenario.id}-${process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform}.png`
-        ))
+      ? await readGitBlob(
+          scenarioHaltReferenceCommit,
+          `tests/ui/visual-regression.spec.ts-snapshots/${scenario.id}-${process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform}.png`
+        )
       : await capturePrototype(browser, scenario);
     const current = await captureProduction(browser, scenario);
     const comparison = await createDiff(browser, reference, current.png, scenario.viewport);
@@ -127,7 +127,7 @@ try {
     evidenceMode: "non-interactive",
     source: {
       reference: scenarios.every(({ prototype }) => prototype.setup === "scenario-halt")
-        ? "accepted platform-specific Scenario visual baselines"
+        ? `initial Scenario 05 production baselines at ${scenarioHaltReferenceCommit}; the surface is absent at implementation base e74d4ca, so these are explicit new-baseline references`
         : "accepted prototypes/workbench-ui-10",
       current: "production Workbench scenario harness using shipped panel root document",
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
@@ -190,6 +190,20 @@ try {
 
 function publicMatrix() {
   return { artifactRoot: "test-results/workbench-visual-qa", scenarios };
+}
+
+function readGitBlob(commit, path) {
+  return new Promise((resolveBlob, rejectBlob) => {
+    const child = spawn("git", ["show", `${commit}:${path}`], { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"] });
+    const chunks = [];
+    let error = "";
+    child.stdout.on("data", (chunk) => chunks.push(chunk));
+    child.stderr.on("data", (chunk) => { error += chunk.toString(); });
+    child.once("error", rejectBlob);
+    child.once("exit", (code) => code === 0
+      ? resolveBlob(Buffer.concat(chunks))
+      : rejectBlob(new Error(`Could not read visual reference ${commit}:${path}: ${error.trim()}`)));
+  });
 }
 
 async function createContactSheets(runningBrowser, results) {
