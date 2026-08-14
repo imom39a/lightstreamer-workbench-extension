@@ -69,7 +69,7 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       const steps = scenario.getByLabel("Ordered Scenario Steps");
       expect(await steps.evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
       await steps.evaluate((owner) => {
-        const firstOutcome = owner.querySelector("article:first-child p");
+        const firstOutcome = owner.querySelector("article p");
         if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
       });
       return;
@@ -99,12 +99,22 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     }
     case "scenario":
       await expect(page.getByRole("region", { name: "Local Injection Scenario" })).toBeVisible();
-      if (visual.production.scenario === "local-injection-scenario-partial") {
+      if ([
+        "local-injection-scenario-partial",
+        "local-injection-scenario-unknown",
+        "local-injection-scenario-unretained",
+        "local-injection-scenario-cleared"
+      ].includes(visual.production.scenario)) {
         const steps = page.getByLabel("Ordered Scenario Steps");
-        await expect(steps.getByText("PARTIALLY DELIVERED")).toBeVisible();
-        await expect(steps.getByText("NOT RUN", { exact: true })).toBeVisible();
+        if (visual.production.scenario === "local-injection-scenario-partial") {
+          await expect(steps.getByText("PARTIALLY DELIVERED")).toBeVisible();
+          await expect(steps.getByText("NOT RUN", { exact: true })).toBeVisible();
+        }
+        if (visual.production.scenario === "local-injection-scenario-cleared") {
+          await expect(steps).toContainText("UNAVAILABLE_AFTER_CLEAR");
+        }
         await steps.evaluate((owner) => {
-          const firstOutcome = owner.querySelector("article:first-child p");
+          const firstOutcome = owner.querySelector("article p");
           if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
         });
       }

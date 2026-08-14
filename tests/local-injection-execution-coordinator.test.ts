@@ -492,4 +492,25 @@ describe("Local Injection execution coordinator", () => {
       record: { outcome: { status: "wire-error", disposition: "failed" } }
     });
   });
+
+  it("preserves Scenario correlations when the captured-wire boundary fails without Evidence", async () => {
+    const execute = vi.fn(async () => ({ ...success(), status: "wire-error" as const, ok: false, error: "captured wire rejected" }));
+    const coordinator = createLocalInjectionExecutionCoordinator({ execute, admitEvidence: vi.fn() });
+    const wireDraft = { ...draft(), captureSource: "wire" as const, target: { subscriptionId: "sub-1", listenerId: null } };
+    const review = coordinator.review({
+      fingerprint: "wire-scenario", executionTarget: "captured-wire", document, draft: wireDraft,
+      correlation: { scenarioId: "scenario-wire", runId: "run-wire", stepId: "step-1", ordinal: 1, injectionId: "injection-wire", targetId: "sub-1" }
+    });
+    if (review.kind !== "reviewed") throw new Error(`expected captured-wire Scenario review: ${review.reason}`);
+
+    await expect(coordinator.execute(review, { executionId: "execution-wire" })).resolves.toMatchObject({
+      kind: "terminal",
+      record: {
+        outcome: { status: "wire-error", disposition: "failed", headline: "DELIVERY FAILED" },
+        evidence: { state: "not-created" },
+        correlation: { scenarioId: "scenario-wire", runId: "run-wire", stepId: "step-1", ordinal: 1, injectionId: "injection-wire", executionId: "execution-wire" }
+      }
+    });
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: "captured-wire" }));
+  });
 });

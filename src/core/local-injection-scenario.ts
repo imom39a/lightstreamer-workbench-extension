@@ -478,14 +478,15 @@ export function scenarioRunAdmission(
   const traceReservationBytes = run.steps.reduce((bytes, member) => bytes + scenarioMemberTraceReservationBytes(member), 0);
   const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, controlReservationBytes: _controlBytes, trace: _trace, controls: _controls, ...immutablePlan } = run;
   const ledgerReservationBytes = SCENARIO_MAX_LEDGER_RECORDS * SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD;
-  const baseAccountedBytes = scenario.accountedBytes + retainedRunBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes + ledgerReservationBytes;
-  const availableControlRecords = Math.floor((SCENARIO_MAX_ACCOUNTED_BYTES - baseAccountedBytes) / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
+  const currentRunBaseBytes = scenario.accountedBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes + ledgerReservationBytes;
+  const totalBaseAccountedBytes = retainedRunBytes + currentRunBaseBytes;
+  const availableControlRecords = Math.floor((SCENARIO_MAX_ACCOUNTED_BYTES - totalBaseAccountedBytes) / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
   const minimumControlRecords = run.steps.length + 2;
   if (availableControlRecords < minimumControlRecords) {
     return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario Run would exceed 8 MiB after reserving its immutable plan and append-only Trace; no Run was created." });
   }
   const controlReservationBytes = Math.min(SCENARIO_MAX_CONTROL_RECORDS, availableControlRecords) * SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD;
-  const accountedBytes = baseAccountedBytes + controlReservationBytes;
+  const accountedBytes = currentRunBaseBytes + controlReservationBytes;
   return freeze({ ok: true as const, accountedBytes, traceReservationBytes, controlReservationBytes, stepCount: run.steps.length });
 }
 

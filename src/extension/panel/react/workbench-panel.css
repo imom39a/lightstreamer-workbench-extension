@@ -372,7 +372,7 @@
 .workbench-react__scenario-steps dt { color: var(--wb-muted); font-size: 10px; text-transform: uppercase; }
 .workbench-react__scenario-steps dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .workbench-react__scenario-steps pre { max-height: 220px; margin: 0; overflow: auto; border: 1px solid var(--wb-border); background: var(--wb-bg); padding: 8px; color: var(--wb-text); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.workbench-react__scenario-steps p { margin: 0; }
+.workbench-react__scenario-steps p { min-width: 0; margin: 0; overflow-wrap: anywhere; word-break: break-word; }
 .workbench-react__scenario-timing { color: var(--wb-muted); font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__scenario .workbench-react__local-footer > label { display: inline-flex; align-items: center; gap: 4px; color: var(--wb-muted); }
 .workbench-react__scenario .workbench-react__local-footer button:last-child { border-color: var(--wb-border-strong); }

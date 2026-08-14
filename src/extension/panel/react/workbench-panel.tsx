@@ -1851,7 +1851,11 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
           </section>)}
         </div> : null}
-        <div className="workbench-react__status-line"><span>{limited ? "Observation requires care; retained Evidence remains readable." : "Evidence is retained for this Panel Session."}</span><button type="button" onClick={() => dispatch(runtime, { type: evidenceMode === "FROZEN" ? "follow-live" : "freeze-evidence" })}>{evidenceMode === "FROZEN" ? "Follow Live" : "Freeze Evidence"}</button></div>
+        <div className="workbench-react__status-line"><span>{limited
+          ? "Observation requires care; retained Evidence remains readable."
+          : snapshot.evidence.total === 0
+            ? "No Evidence is retained in the current History Interval."
+            : "Evidence is retained for this Panel Session."}</span><button type="button" onClick={() => dispatch(runtime, { type: evidenceMode === "FROZEN" ? "follow-live" : "freeze-evidence" })}>{evidenceMode === "FROZEN" ? "Follow Live" : "Freeze Evidence"}</button></div>
       </footer>
     </section>
   );

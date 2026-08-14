@@ -723,7 +723,7 @@ function localInjectionScenario(
     localInjection: {
       entry: "selection",
       executorOutcome,
-      terminalLimit: executorOutcome === "partial",
+      terminalLimit: false,
       scenario: { addEventId: second.id, review, steps, ...(controls.delayMs !== undefined ? { delayMs: controls.delayMs } : {}), ...(controls.speed !== undefined ? { speed: controls.speed } : {}), ...(controls.play !== undefined ? { play: controls.play } : {}), ...(driftEvent ? { driftEvent } : {}), ...(driftFrames ? { driftFrames } : {}), ...(controls.clearAfterRun ? { clearAfterRun: true } : {}) }
     }
   };

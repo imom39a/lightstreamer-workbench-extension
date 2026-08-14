@@ -82,7 +82,13 @@ try {
   });
   const results = [];
   for (const scenario of scenarios) {
-    const reference = await capturePrototype(browser, scenario);
+    const reference = scenario.prototype.setup === "scenario-halt"
+      ? await readFile(resolve(
+          projectRoot,
+          "tests/ui/visual-regression.spec.ts-snapshots",
+          `${scenario.id}-${process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform}.png`
+        ))
+      : await capturePrototype(browser, scenario);
     const current = await captureProduction(browser, scenario);
     const comparison = await createDiff(browser, reference, current.png, scenario.viewport);
     const paths = {
@@ -120,7 +126,9 @@ try {
     browserMode: "headless",
     evidenceMode: "non-interactive",
     source: {
-      reference: "accepted prototypes/workbench-ui-10",
+      reference: scenarios.every(({ prototype }) => prototype.setup === "scenario-halt")
+        ? "accepted platform-specific Scenario visual baselines"
+        : "accepted prototypes/workbench-ui-10",
       current: "production Workbench scenario harness using shipped panel root document",
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
@@ -460,12 +468,22 @@ async function captureProduction(runningBrowser, scenario) {
       } else {
         await action.focus();
       }
-      if (scenario.production.scenario === "local-injection-scenario-partial") {
+      if ([
+        "local-injection-scenario-partial",
+        "local-injection-scenario-unknown",
+        "local-injection-scenario-unretained",
+        "local-injection-scenario-cleared"
+      ].includes(scenario.production.scenario)) {
         const steps = page.getByLabel("Ordered Scenario Steps");
-        await steps.getByText("PARTIALLY DELIVERED").waitFor();
-        await steps.getByText("NOT RUN", { exact: true }).waitFor();
+        if (scenario.production.scenario === "local-injection-scenario-partial") {
+          await steps.getByText("PARTIALLY DELIVERED").waitFor();
+          await steps.getByText("NOT RUN", { exact: true }).waitFor();
+        }
+        if (scenario.production.scenario === "local-injection-scenario-cleared") {
+          await steps.getByText(/UNAVAILABLE_AFTER_CLEAR/).first().waitFor();
+        }
         await steps.evaluate((owner) => {
-          const firstOutcome = owner.querySelector("article:first-child p");
+          const firstOutcome = owner.querySelector("article p");
           if (firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
         });
       }
@@ -562,7 +580,7 @@ async function prepareProductionState(page, setup) {
     await scenario.getByText(/^RUN STOPPED · remaining Steps/).waitFor();
     await scenario.getByText("NOT RUN", { exact: true }).waitFor();
     await scenario.getByLabel("Ordered Scenario Steps").evaluate((owner) => {
-      const firstOutcome = owner.querySelector("article:first-child p");
+      const firstOutcome = owner.querySelector("article p");
       if (owner instanceof HTMLElement && firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
     });
     return;

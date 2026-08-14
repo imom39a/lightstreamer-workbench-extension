@@ -55,6 +55,15 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   };
   if (!state) return null;
   const run = state.run;
+  const ledgerChronology = run ? [
+    ...run.authorizations.map((entry) => ({ kind: "authorization" as const, entry })),
+    ...run.drifts.map((entry) => ({ kind: "drift" as const, entry }))
+  ].sort((left, right) => {
+    const activeOffset = left.entry.activeOffsetMs - right.entry.activeOffsetMs;
+    if (activeOffset !== 0) return activeOffset;
+    const rank = (record: typeof left): number => record.kind === "drift" ? 1 : record.entry.kind === "INITIAL_REVIEW" ? 0 : 2;
+    return rank(left) - rank(right);
+  }) : [];
   const next = run?.steps[run.nextOrdinal - 1] ?? null;
   return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase} onFocusCapture={(event) => {
     const control = (event.target as HTMLElement).dataset.scenarioControl;
@@ -103,8 +112,9 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       {run ? <section className="workbench-react__scenario-ledger" aria-label="Scenario Run ledger">
         <header><strong>Persistent Run ledger</strong><span>Panel Session-local · append-only authorization, drift, outcome, retention, assertion, and Evidence correlations</span></header>
         <ol>
-          {run.authorizations.map((authorization) => <li key={authorization.id}><strong>{authorization.kind === "INITIAL_REVIEW" ? "AUTHORIZED" : "RE-AUTHORIZED"}</strong>{` · ${authorization.id} · remaining from Step ${authorization.authorizedRemainingFromOrdinal} · target ${authorization.targetFingerprint} · listeners ${authorization.listenerIds.join(", ") || "none"} · Evidence boundary ${authorization.committedEvidenceBoundary?.eventId ?? "empty"}`}</li>)}
-          {run.drifts.map((drift) => <li key={drift.id}><strong>DRIFT</strong>{` · ${drift.kind} before Step ${drift.detectedBeforeOrdinal} · added ${drift.addedListenerIds.join(", ") || "none"} · removed ${drift.removedListenerIds.join(", ") || "none"} · Evidence ${drift.evidence?.eventId ?? "none"} · ${drift.detail}`}</li>)}
+          {ledgerChronology.map((record) => record.kind === "authorization"
+            ? <li key={record.entry.id}><strong>{record.entry.kind === "INITIAL_REVIEW" ? "AUTHORIZED" : "RE-AUTHORIZED"}</strong>{` · ${record.entry.id} · remaining from Step ${record.entry.authorizedRemainingFromOrdinal} · target ${record.entry.targetFingerprint} · listeners ${record.entry.listenerIds.join(", ") || "none"} · Evidence boundary ${record.entry.committedEvidenceBoundary?.eventId ?? "empty"}`}</li>
+            : <li key={record.entry.id}><strong>DRIFT</strong>{` · ${record.entry.kind} before Step ${record.entry.detectedBeforeOrdinal} · added ${record.entry.addedListenerIds.join(", ") || "none"} · removed ${record.entry.removedListenerIds.join(", ") || "none"} · Evidence ${record.entry.evidence?.eventId ?? "none"} · ${record.entry.detail}`}</li>)}
         </ol>
       </section> : null}
       {state.priorRuns.length > 0 ? <section className="workbench-react__scenario-ledger" aria-label="Prior Scenario Run ledgers">

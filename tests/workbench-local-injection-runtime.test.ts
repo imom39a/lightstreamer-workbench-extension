@@ -408,6 +408,36 @@ describe("WorkbenchRuntime Local Injection", () => {
     await flushAsync();
     runtime.dispatch({ type: "step-next-scenario" });
     expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "paused", runner: { pauseReason: "DRIFT_REVIEW_REQUIRED" }, run: { drifts: [{ kind: "SERVER_ITEM_UPDATE", evidence: { eventId: "server-interleave-7", sequence: 7 } }] } });
+    expect(runtime.getSnapshot().scenario?.run?.authorizations[0]?.committedEvidenceBoundary).not.toHaveProperty("candidate");
+    runtime.dispose();
+  });
+
+  it("detects Server drift for every exact item represented by the immutable Scenario members", async () => {
+    const history = historyWithCommandTarget();
+    await history.offer(commandEvent("source-other-item", "item-update", {
+      item: { name: "other", position: 2 },
+      update: { isSnapshot: false, command: "ADD", key: "other-1", fields: { command: "ADD", key: "other-1", qty: 1 }, changedFields: { command: "ADD", key: "other-1", qty: 1 } }
+    })).settled;
+    const executor = { execute: vi.fn(async () => result("success", { attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) };
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: executor });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "open-scenario-evidence-picker" });
+    runtime.dispatch({ type: "select-evidence", eventId: "source-other-item" });
+    await flushAsync();
+    runtime.dispatch({ type: "add-selected-evidence-to-scenario" });
+    runtime.dispatch({ type: "review-scenario" });
+    await history.offer(commandEvent("server-other-item", "item-update", {
+      item: { name: "other", position: 2 },
+      update: { isSnapshot: false, command: "UPDATE", key: "other-1", fields: { command: "UPDATE", key: "other-1", qty: 2 }, changedFields: { qty: 2 } }
+    })).settled;
+    runtime.dispatch({ type: "step-next-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({
+      phase: "paused", runner: { pauseReason: "DRIFT_REVIEW_REQUIRED" },
+      run: { trace: [], drifts: [{ kind: "SERVER_ITEM_UPDATE", evidence: { eventId: "server-other-item" } }] }
+    });
+    expect(executor.execute).not.toHaveBeenCalled();
     runtime.dispose();
   });
 
@@ -490,6 +520,13 @@ describe("WorkbenchRuntime Local Injection", () => {
     if (firstInjectionId.kind === "attempted" && secondInjection.kind === "attempted") {
       expect(secondInjection.injectionId).not.toBe(firstInjectionId.injectionId);
     }
+    runtime.dispatch({ type: "run-scenario-again" });
+    const repeated = runtime.getSnapshot().scenario!;
+    expect(repeated.priorRuns).toHaveLength(2);
+    expect(repeated.retainedRunBytes).toBe(repeated.priorRuns.reduce(
+      (bytes, run) => bytes + run.accountedBytes - repeated.scenario.accountedBytes,
+      0
+    ));
     runtime.dispose();
   });
 

@@ -1737,12 +1737,18 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...paused, phase: "paused" } })));
     expect(document.activeElement).toBe(find("Resume"));
 
-    const driftRun = { ...paused.run!, authorizations: [{ id: "auth-1", kind: "INITIAL_REVIEW" as const, targetFingerprint: "fp-1", listenerIds: ["listener-1"], committedEvidenceBoundary: { intervalId: "interval-1", sequence: 6, eventId: "source-6" }, authorizedRemainingFromOrdinal: 1, activeOffsetMs: 0 }], drifts: [{ id: "drift-1", kind: "LISTENER_SET" as const, detectedBeforeOrdinal: 1, activeOffsetMs: 25, addedListenerIds: ["listener-2"], removedListenerIds: [], evidence: null, detail: "Listener set changed." }] };
+    const driftRun = { ...paused.run!, authorizations: [
+      { id: "auth-1", kind: "INITIAL_REVIEW" as const, targetFingerprint: "fp-1", listenerIds: ["listener-1"], committedEvidenceBoundary: { intervalId: "interval-1", sequence: 6, eventId: "source-6" }, authorizedRemainingFromOrdinal: 1, activeOffsetMs: 0 },
+      { id: "auth-2", kind: "DRIFT_REVIEW" as const, targetFingerprint: "fp-2", listenerIds: ["listener-1", "listener-2"], committedEvidenceBoundary: { intervalId: "interval-1", sequence: 7, eventId: "source-7" }, authorizedRemainingFromOrdinal: 1, activeOffsetMs: 25 }
+    ], drifts: [{ id: "drift-1", kind: "LISTENER_SET" as const, detectedBeforeOrdinal: 1, activeOffsetMs: 25, addedListenerIds: ["listener-2"], removedListenerIds: [], evidence: null, detail: "Listener set changed." }] };
     const drifted = { ...paused, phase: "paused" as const, run: driftRun, runner: { ...paused.runner!, run: driftRun } };
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...drifted, runner: { ...drifted.runner!, pauseReason: "DRIFT_REVIEW_REQUIRED" } } })));
     expect(find("Re-review immutable plan")?.disabled).toBe(false);
     expect(find("Step next")).toBeUndefined();
-    expect(document.querySelector('[aria-label="Scenario Run ledger"]')?.textContent).toContain("listener-2");
+    const ledgerText = document.querySelector('[aria-label="Scenario Run ledger"]')?.textContent ?? "";
+    expect(ledgerText).toContain("listener-2");
+    expect(ledgerText.indexOf("AUTHORIZED")).toBeLessThan(ledgerText.indexOf("DRIFT"));
+    expect(ledgerText.indexOf("DRIFT")).toBeLessThan(ledgerText.indexOf("RE-AUTHORIZED"));
     await act(async () => find("Re-review immutable plan")?.click());
     expect(runtime.commands).toContainEqual({ type: "re-review-scenario" });
 

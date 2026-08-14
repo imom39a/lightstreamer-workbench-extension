@@ -2426,7 +2426,11 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     this.historyStatus = this.history.status();
-    this.committedEvidenceBoundary = entry;
+    this.committedEvidenceBoundary = Object.freeze({
+      intervalId: entry.intervalId,
+      sequence: entry.sequence,
+      eventId: entry.eventId
+    });
     if (this.performanceHooks?.onVisibleFrame) {
       this.pendingVisibleBoundaries.push(Object.freeze({
         intervalId: entry.intervalId,
@@ -2462,14 +2466,15 @@ class Runtime implements WorkbenchRuntime {
     }
     const event = entry.candidate;
     const scenario = this.scenarioState;
-    const scenarioDraft = scenario ? scenario.drafts.get(scenario.scenario.steps[0]!.id) : null;
+    const scenarioDraft = scenario ? [...scenario.drafts.values()].find((draft) =>
+      event.client?.id === draft.anchor.clientId &&
+      event.client?.sessionId === draft.anchor.sessionId &&
+      event.subscription?.id === draft.anchor.subscriptionId &&
+      ((draft.anchor.itemName !== null && event.item?.name === draft.anchor.itemName) ||
+        (draft.anchor.itemPosition !== null && event.item?.position === draft.anchor.itemPosition))) : null;
     if (
       scenario && scenarioDraft && scenario.run && !event.synthetic && event.kind === "item-update" &&
-      event.client?.id === scenarioDraft.anchor.clientId &&
-      event.client?.sessionId === scenarioDraft.anchor.sessionId &&
-      event.subscription?.id === scenarioDraft.anchor.subscriptionId &&
-      ((scenarioDraft.anchor.itemName !== null && event.item?.name === scenarioDraft.anchor.itemName) ||
-        (scenarioDraft.anchor.itemPosition !== null && event.item?.position === scenarioDraft.anchor.itemPosition))
+      event.subscription?.id === scenarioDraft.anchor.subscriptionId
     ) {
       if (scenario.serverInterleaves.length === 0) {
         scenario.serverInterleaves = [Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId })];
