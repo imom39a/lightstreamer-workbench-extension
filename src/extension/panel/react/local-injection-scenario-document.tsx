@@ -148,8 +148,8 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
           <header><button type="button" className="workbench-react__scenario-step-focus" aria-pressed={focused} onClick={() => runtime.dispatch({ type: "focus-scenario-step", stepId: step.id })}>Step {stepOrdinal}</button><span>{step.id} · stable identity · delay {step.draft.relativeDelayMs} ms</span></header>
           {state.phase !== "stopped" ? <dl><div><dt>Source</dt><dd>{step.draft.sourceEventId ?? "None · newly authored"}</dd></div><div><dt>Validation</dt><dd>{step.draft.ready ? "READY" : "BLOCKED"}</dd></div></dl> : null}
           {state.phase === "edit" ? <div className="workbench-react__scenario-step-actions" aria-label={`Step ${stepOrdinal} actions`}>
-            <button type="button" disabled={stepOrdinal === 1} onClick={() => runtime.dispatch({ type: "move-scenario-step", stepId: step.id, direction: "earlier" })}>Move earlier</button>
-            <button type="button" disabled={stepOrdinal === state.scenario.steps.length} onClick={() => runtime.dispatch({ type: "move-scenario-step", stepId: step.id, direction: "later" })}>Move later</button>
+            <button type="button" disabled={index === 0} onClick={() => runtime.dispatch({ type: "move-scenario-step", stepId: step.id, direction: "earlier" })}>Move earlier</button>
+            <button type="button" disabled={index === scenarioMembers.length - 1} onClick={() => runtime.dispatch({ type: "move-scenario-step", stepId: step.id, direction: "later" })}>Move later</button>
             <button type="button" onClick={() => runtime.dispatch({ type: "duplicate-scenario-step", stepId: step.id })}>Duplicate Step</button>
             <button type="button" disabled={state.scenario.steps.length === 1} onClick={() => runtime.dispatch({ type: "remove-scenario-step", stepId: step.id })}>Remove Step</button>
             <label>Delay ms <input type="number" min={0} value={step.draft.relativeDelayMs} onChange={(event) => runtime.dispatch({ type: "set-scenario-step-delay", stepId: step.id, delayMs: Number(event.currentTarget.value) })} /></label>

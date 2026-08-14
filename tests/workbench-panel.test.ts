@@ -1832,11 +1832,12 @@ describe("React Workbench Diagnose panel", () => {
       id: "step-2",
       draft: { ...reviewed.scenario.steps[0].draft, id: "draft-2" }
     };
+    const laterCheckpoint = { ...checkpoint, id: "checkpoint-2", name: "Later boundary", assertions: [{ ...checkpoint.assertions[0], id: "assertion-2", stepId: "step-2" }] };
     const scenario = {
       ...reviewed.scenario,
       phase: "edit" as const,
       steps: [reviewed.scenario.steps[0], secondStep],
-      members: [reviewed.scenario.steps[0], checkpoint, secondStep]
+      members: [checkpoint, reviewed.scenario.steps[0], secondStep, laterCheckpoint]
     };
     const runtime = createTestRuntime(snapshot({
       scenario: {
@@ -1869,10 +1870,12 @@ describe("React Workbench Diagnose panel", () => {
       "command-field-equals"
     ]);
     expect(Array.from(assertionKinds.options).some(({ textContent }) => textContent?.toLowerCase().includes("diagnostic"))).toBe(false);
+    const firstStepActions = region.querySelector<HTMLElement>('[aria-label="Step 1 actions"]')!;
+    expect(Array.from(firstStepActions.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Move earlier")?.disabled).toBe(false);
     const secondStepButton = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Step 2")!;
     expect(secondStepButton).toBeTruthy();
     const secondStepActions = region.querySelector<HTMLElement>('[aria-label="Step 2 actions"]')!;
-    expect(Array.from(secondStepActions.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Move later")?.disabled).toBe(true);
+    expect(Array.from(secondStepActions.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Move later")?.disabled).toBe(false);
     const name = checkpointRegion.querySelector<HTMLInputElement>('[aria-label="Checkpoint 1 name"]')!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
