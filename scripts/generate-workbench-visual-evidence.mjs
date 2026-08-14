@@ -142,7 +142,7 @@ try {
         checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "The ordered document uses Arrow Up/Down to change the focused Step, labelled Move earlier/later controls provide keyboard reordering, Escape restores the captured-update trigger, and only the focused Step mounts CodeMirror.",
+      keyboardAndFocus: "Native Tab order reaches each Step trigger and its labelled Move earlier/later controls; Enter performs keyboard reordering, Escape restores the captured-update trigger, nested input arrows retain native behavior, and only the focused Step mounts CodeMirror.",
       matrixRationale: "Seven Scenario states cover compact Edit, normal Review, wide Complete, shallow forced-colors stopped, bulk preview with incompatible reasons, authored removal with Undo, and the 100-Step capacity refusal.",
       baselineIntent: "Maintain platform-specific Scenario baselines for Darwin and Linux for all seven membership and execution states changed or relied on by this Material UI slice."
     } : {
