@@ -24,6 +24,8 @@ export function ObservedActivityDocument({ runtime, activity, scopeLabel }: { ru
   const selectedRanking = selected?.kind === "ranking" ? projection.allRankings.find((ranking) => ranking.identity === selected.id) ?? null : null;
   const rankings = useMemo(() => sortActivityRankings(projection.allRankings, document?.rankingSort ?? "LOGICAL_UPDATES"), [document?.rankingSort, projection.allRankings]);
   const selectBucket = (index: number) => runtime.dispatch({ type: "select-activity", selection: { kind: "bucket", id: String(index) } });
+  const selectionContext = (provenance: "SERVER" | "LOCAL") =>
+    `provenance ${provenance} · Scope ${activity.scope.kind} · Filter ${activity.filter.text || "None"} · Committed Boundary ${activity.readPoint.committedEvidenceBoundary?.sequence ?? "None"} · Observation Coverage ${activity.readPoint.coverage}`;
   const onTimelineKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!projection.buckets.length) return;
     const current = selected?.kind === "bucket" ? Number(selected.id) : 0;
@@ -36,11 +38,11 @@ export function ObservedActivityDocument({ runtime, activity, scopeLabel }: { ru
     }
   };
   const selectionText = selectedBucket
-    ? `${selectedBucket.start} ≤ timestamp < ${selectedBucket.end} · ${selectedBucket.logicalUpdates} Server Logical Updates · ${selectedBucket.updateDeliveries} Update Deliveries · segment ${selectedBucket.segment}`
+    ? `${selectedBucket.start} ≤ timestamp < ${selectedBucket.end} · ${selectedBucket.logicalUpdates} Server Logical Updates · ${selectedBucket.updateDeliveries} Update Deliveries · segment ${selectedBucket.segment} · ${selectionContext("SERVER")}`
     : selectedMarker
-      ? `${selectedMarker.timestamp} · ${selectedMarker.label} · ${selectedMarker.clientId ?? "client unknown"} · ${selectedMarker.sessionId ?? "Session unknown"} · ${selectedMarker.subscriptionId ?? "Subscription unknown"} · ${selectedMarker.reportedCount === null ? "reported count unavailable" : `reported ${selectedMarker.reportedCount}`} · ${selectedMarker.errorCode === null ? "error code unavailable" : `error ${selectedMarker.errorCode}`} · ${selectedMarker.errorMessage ?? "error message unavailable"} · ${selectedMarker.consequenceLimit} · Evidence ${selectedMarker.eventId}`
+      ? `${selectedMarker.timestamp} · ${selectedMarker.label} · ${selectedMarker.clientId ?? "client unknown"} · ${selectedMarker.sessionId ?? "Session unknown"} · ${selectedMarker.subscriptionId ?? "Subscription unknown"} · ${selectedMarker.reportedCount === null ? "reported count unavailable" : `reported ${selectedMarker.reportedCount}`} · ${selectedMarker.errorCode === null ? "error code unavailable" : `error ${selectedMarker.errorCode}`} · ${selectedMarker.errorMessage ?? "error message unavailable"} · ${selectedMarker.consequenceLimit} · Evidence ${selectedMarker.eventId} · ${selectionContext(selectedMarker.provenance)}`
       : selectedRanking
-        ? `${selectedRanking.label} · ${selectedRanking.logicalUpdates} Logical Updates · ${selectedRanking.updateDeliveries} Update Deliveries`
+        ? `${selectedRanking.label} · ${selectedRanking.logicalUpdates} Logical Updates · ${selectedRanking.updateDeliveries} Update Deliveries · ${selectionContext("SERVER")}`
         : null;
   const selectedMarkerBucket = selectedMarker
     ? projection.buckets.find((bucket) => selectedMarker.timestamp >= bucket.start && selectedMarker.timestamp < bucket.end) ?? null

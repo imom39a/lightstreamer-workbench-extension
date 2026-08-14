@@ -186,10 +186,13 @@ function project(input: ActivityProjectionInput): ActivityProjection {
   const localLogical = uniqueLogical(local);
   const segments = clockSegments([...serverLogical, ...localLogical].sort((a, b) => a.sequence - b.sequence));
   const range = readPoint.retainedRange;
-  const duration = segments.length
-    ? Math.max(...segments.map((segment) => chooseDuration(segment.endTimestamp - segment.startTimestamp)))
+  const retainedSpan = range
+    ? Math.max(0, range.last.timestamp - range.first.timestamp)
     : null;
-  const buckets = duration === null ? [] : makeBuckets(serverLogical, localLogical, matching, duration, segments);
+  const duration = segments.length
+    ? chooseDuration(retainedSpan ?? Math.max(...segments.map((segment) => segment.endTimestamp - segment.startTimestamp)))
+    : null;
+  const buckets = duration === null ? [] : makeBuckets(serverLogical, localLogical, matching, duration, segments, range, readPoint.terminal);
   const state: ActivityState = readPoint.coverage === "UNAVAILABLE" ? "UNAVAILABLE" : matching.length === 0 ? "EMPTY_MATCH" : serverLogical.length === 0 ? "EMPTY_MATCH" : readPoint.coverage === "LIMITED" || readPoint.terminal ? "LIMITED" : "AVAILABLE";
   const reason = state === "UNAVAILABLE"
     ? "Observation Coverage is unavailable."
@@ -291,20 +294,27 @@ function makeBuckets(
   local: readonly ActivityEvidence[],
   matching: readonly ActivityEvidence[],
   duration: number,
-  segments: readonly { index: number; startSequence: number; endSequence: number | null; startTimestamp: number; endTimestamp: number }[]
+  segments: readonly { index: number; startSequence: number; endSequence: number | null; startTimestamp: number; endTimestamp: number }[],
+  retainedRange: ActivityReadPoint["retainedRange"],
+  terminal: boolean
 ): ActivityBucket[] {
   const inSegment = (entry: ActivityEvidence, segment: typeof segments[number]) => entry.sequence >= segment.startSequence && (segment.endSequence === null || entry.sequence <= segment.endSequence);
   return segments.flatMap((segment, segmentIndex) => {
     const segmentEntries = [...server, ...local].filter((entry) => inSegment(entry, segment));
     if (!segmentEntries.length) return [];
-    const firstTimestamp = Math.min(...segmentEntries.map(({ event }) => event.timestamp));
-    const lastTimestamp = Math.max(...segmentEntries.map(({ event }) => event.timestamp));
+    const observedFirst = Math.min(...segmentEntries.map(({ event }) => event.timestamp));
+    const observedLast = Math.max(...segmentEntries.map(({ event }) => event.timestamp));
+    const retainedFirst = retainedRange ? Math.min(retainedRange.first.timestamp, retainedRange.last.timestamp) : observedFirst;
+    const retainedLast = retainedRange ? Math.max(retainedRange.first.timestamp, retainedRange.last.timestamp) : observedLast;
+    const firstTimestamp = Math.min(observedFirst, retainedFirst);
+    const lastTimestamp = Math.max(observedLast, retainedLast);
     const first = Math.floor(firstTimestamp / duration) * duration;
     const count = Math.max(1, Math.ceil((lastTimestamp - first + 1) / duration));
     return Array.from({ length: count }, (_, index) => {
       const start = first + index * duration; const end = start + duration;
       const inBucket = (entry: ActivityEvidence) => inSegment(entry, segment) && entry.event.timestamp >= start && entry.event.timestamp < end;
-      const finalPartial = lastTimestamp < end;
+      const firstPartial = firstTimestamp > start;
+      const finalPartial = lastTimestamp + 1 < end;
       return Object.freeze({
         start, end,
         logicalUpdates: server.filter(inBucket).length,
@@ -313,8 +323,8 @@ function makeBuckets(
         updateDeliveries: matching.filter((entry) => inBucket(entry) && isServerUpdate(entry.event) && Boolean(entry.event.listener)).length,
         localLogicalUpdates: local.filter(inBucket).length,
         localUpdateDeliveries: matching.filter((entry) => inBucket(entry) && isLocalUpdate(entry.event) && Boolean(entry.event.listener)).length,
-        firstPartial: start < firstTimestamp,
-        currentPartial: segmentIndex === segments.length - 1 && finalPartial,
+        firstPartial,
+        currentPartial: !terminal && segmentIndex === segments.length - 1 && finalPartial,
         finalPartial,
         segment: segment.index
       });

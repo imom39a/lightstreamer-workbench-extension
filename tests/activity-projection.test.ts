@@ -56,6 +56,25 @@ describe("Observed Activity projection", () => {
     expect(projection.buckets[0]).toMatchObject({ firstPartial: false });
   });
 
+  it("chooses duration and empty leading/trailing buckets from the retained span", () => {
+    const entries = [evidence(1, 10_000), evidence(2, 11_000)];
+    const projection = rebuildActivityProjection({
+      evidence: entries,
+      scope: { kind: "PAGE" },
+      filter: createFilter(1),
+      readPoint: {
+        ...readPoint(entries),
+        retainedRange: { first: { timestamp: 2_500, sequence: 0 }, last: { timestamp: 260_000, sequence: 99 } }
+      }
+    });
+
+    expect(projection.bucketDuration).toBe(5_000);
+    expect(projection.buckets.length).toBe(53);
+    expect(projection.buckets[0]).toMatchObject({ logicalUpdates: 0, firstPartial: true });
+    expect(projection.buckets.some((bucket) => bucket.logicalUpdates === 2)).toBe(true);
+    expect(projection.buckets.at(-1)).toMatchObject({ logicalUpdates: 0, finalPartial: true, currentPartial: true });
+  });
+
   it("keeps rebuild and incremental acceptance externally equivalent", () => {
     const first = evidence(1, 1_000);
     const second = evidence(2, 65_000);
