@@ -3722,6 +3722,22 @@ class Runtime implements WorkbenchRuntime {
     return createLocalInjectionScenarioRunner(run, {
       clock: this.scenarioClock,
       allocateInjectionId: () => `local-injection-${++this.localInjectionSequence}`,
+      beforeDispatch: ({ member }) => {
+        const review = state.reviews.get(member.id);
+        if (!review || review.kind !== "reviewed") {
+          return { allow: false as const, reason: "DRIFT" as const, detail: "Scenario Review is unavailable; return to Edit and Review again." };
+        }
+        const current = this.localInjectionExecutionCoordinator.revalidateReview(review);
+        return current.kind === "current"
+          ? { allow: true as const }
+          : {
+              allow: false as const,
+              reason: "DRIFT" as const,
+              detail: current.kind === "stale-target"
+                ? `${current.reason} Return to Edit and Review again.`
+                : "Scenario Review was invalidated; return to Edit and Review again."
+            };
+      },
       execute: async (input) => {
         const review = state.reviews.get(input.stepId);
         if (!review || review.kind !== "reviewed") {

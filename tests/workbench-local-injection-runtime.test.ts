@@ -322,6 +322,37 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("revalidates a Scenario target before allocating Injection or execution identities", async () => {
+    const history = historyWithCommandTarget();
+    const clock = new ScenarioTestClock();
+    const executor = { execute: vi.fn(async () => result("success", { requestId: "authorized-after-rereview" })) };
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: executor, scenarioClock: clock });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "review-scenario" });
+    history.offer(commandEvent("scenario-listener-race", "listener-added", {
+      listener: { id: "orders-listener-2", callbacks: ["onItemUpdate"] }
+    }));
+    runtime.dispatch({ type: "step-next-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "paused", runner: { pauseReason: "DRIFT" }, run: { trace: [] } });
+    expect(executor.execute).not.toHaveBeenCalled();
+
+    runtime.dispatch({ type: "edit-scenario" });
+    runtime.dispatch({ type: "review-scenario" });
+    const rereviewedRunId = runtime.getSnapshot().scenario!.run!.id;
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    const trace = runtime.getSnapshot().scenario!.run!.trace[0]!;
+    expect(trace).toMatchObject({ kind: "attempted" });
+    if (trace.kind === "attempted") {
+      expect(Number(trace.injectionId.split("-").at(-1))).toBe(Number(rereviewedRunId.split("-").at(-1)) + 1);
+    }
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    runtime.dispose();
+  });
+
   it("Run again performs a fresh Review and allocates new Run and Injection identities", async () => {
     const clock = new ScenarioTestClock();
     let request = 0;

@@ -348,7 +348,7 @@ function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "pau
   const reviewedStep = { kind: "step" as const, id: "step-1", ordinal: 1, sourceEventId: local.anchor.sourceEventId, rawText: local.rawText, document: local.document!, relativeDelayMs: 100 };
   const run = {
     id: "run-1", scenarioId: scenario.id, scenarioRevision: scenario.revision, target, targetFingerprint: "fp-1", committedEvidenceSeed: null,
-    steps: [reviewedStep], status: "paused" as const, nextOrdinal: 1, trace: [], accountedBytes: 4096, traceReservationBytes: 1024, speed: 2 as const, controls: []
+    steps: [reviewedStep], status: "paused" as const, nextOrdinal: 1, trace: [], accountedBytes: 4096, traceReservationBytes: 1024, controlReservationBytes: 1024, speed: 2 as const, controls: []
   };
   return {
     phase: runnerPhase === "paused" ? "review" : "running",
@@ -1711,6 +1711,27 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("in-flight") })));
     expect(document.activeElement).toBe(reviewedJson);
     expect(Array.from(document.querySelectorAll('[role="status"]')).every((node) => !node.textContent?.includes("WAITING"))).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+  it("restores deliberate Scenario control focus to its semantic successor and closes drift controls", async () => {
+    const runtime = createTestRuntime(snapshot({ scenario: reviewedScenario() }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Local Injection Scenario"]')).toBeTruthy());
+    const find = (name: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('[aria-label="Local Injection Scenario"] button')).find((button) => button.textContent === name);
+    await act(async () => find("Play")?.click());
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("waiting") })));
+    expect(document.activeElement).toBe(find("Pause"));
+    await act(async () => find("Pause")?.click());
+    const paused = reviewedScenario();
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...paused, phase: "paused", run: { ...paused.run!, controls: [{ sequence: 1, kind: "PAUSE", activeOffsetMs: 25, reason: "USER", detail: "Paused." }] }, runner: { ...paused.runner!, run: { ...paused.run!, controls: [{ sequence: 1, kind: "PAUSE", activeOffsetMs: 25, reason: "USER", detail: "Paused." }] } } } })));
+    expect(document.activeElement).toBe(find("Resume"));
+
+    const drifted = { ...paused, phase: "paused" as const };
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...drifted, runner: { ...drifted.runner!, pauseReason: "DRIFT" } } })));
+    expect(find("Resume")?.disabled).toBe(true);
+    expect(find("Step next")?.disabled).toBe(true);
     await act(async () => root.unmount());
   });
 });

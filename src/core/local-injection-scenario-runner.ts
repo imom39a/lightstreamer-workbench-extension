@@ -1,6 +1,8 @@
 import {
   stepScenarioRun,
   terminalizeScenarioRun,
+  SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD,
+  SCENARIO_MAX_CONTROL_RECORDS,
   type ReviewedScenarioStep,
   type ScenarioControlRecord,
   type ScenarioRun,
@@ -94,6 +96,7 @@ export function createLocalInjectionScenarioRunner(
   let plannedDispatchActiveOffsetMs = 0;
   let remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
   let manualOverride = false;
+  const admittedControlRecords = Math.min(SCENARIO_MAX_CONTROL_RECORDS, Math.floor(run.controlReservationBytes / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD));
 
   function cursor(): ReviewedScenarioMemberCursor {
     return Object.freeze({ members: run.steps, index: Math.max(0, run.nextOrdinal - 1) });
@@ -126,11 +129,13 @@ export function createLocalInjectionScenarioRunner(
     adapter.onChange?.(snapshot());
   }
 
-  function appendControl(kind: ScenarioControlRecord["kind"], reason: ScenarioControlRecord["reason"], detail: string): void {
+  function appendControl(kind: ScenarioControlRecord["kind"], reason: ScenarioControlRecord["reason"], detail: string): boolean {
+    if (run.controls.length >= admittedControlRecords) return false;
     run = Object.freeze({
       ...run,
-      controls: Object.freeze([...run.controls, Object.freeze({ sequence: run.controls.length + 1, kind, activeOffsetMs: activeNow(), reason, detail })])
+      controls: Object.freeze([...run.controls, Object.freeze({ sequence: run.controls.length + 1, kind, activeOffsetMs: activeNow(), reason, detail: detail.slice(0, 512) })])
     });
+    return true;
   }
 
   function schedule(delayMs: number): void {
@@ -161,6 +166,7 @@ export function createLocalInjectionScenarioRunner(
   function dispatch(member: ReviewedScenarioMember): void {
     const guard = adapter.beforeDispatch?.({ run, member, activeOffsetMs: activeNow() }) ?? { allow: true as const };
     if (!guard.allow) {
+      manualOverride = false;
       freezeActive();
       phase = "paused";
       pauseReason = "DRIFT";
@@ -283,15 +289,17 @@ export function createLocalInjectionScenarioRunner(
   return Object.freeze({
     snapshot,
     play() {
-      if (phase !== "paused" || !visible || run.status !== "paused") return;
-      appendControl(run.controls.some(({ kind }) => kind === "PLAY") ? "RESUME" : "PLAY", null, run.controls.length === 0 ? "Timed Scenario execution started." : "Timed Scenario execution resumed.");
+      if (phase !== "paused" || !visible || run.status !== "paused" || pauseReason === "DRIFT") return;
+      if (run.controls.length >= admittedControlRecords - 2) return;
+      if (!appendControl(run.controls.some(({ kind }) => kind === "PLAY") ? "RESUME" : "PLAY", null, run.controls.length === 0 ? "Timed Scenario execution started." : "Timed Scenario execution resumed.")) return;
       schedule(remainingDelayMs);
     },
     pause,
     stepNext() {
       const member = nextMember();
-      if (phase !== "paused" || !member || !visible || run.status !== "paused") return;
-      appendControl("STEP NEXT", pauseReason, `Step ${member.ordinal} dispatched immediately; its remaining delay was bypassed.`);
+      if (phase !== "paused" || !member || !visible || run.status !== "paused" || pauseReason === "DRIFT") return;
+      if (run.controls.length >= admittedControlRecords - 2) return;
+      if (!appendControl("STEP NEXT", pauseReason, `Step ${member.ordinal} dispatched immediately; its remaining delay was bypassed.`)) return;
       manualOverride = true;
       startActive();
       plannedDispatchActiveOffsetMs = activeNow();

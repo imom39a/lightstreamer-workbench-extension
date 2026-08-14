@@ -278,6 +278,34 @@ describe("Local Injection Scenario runner", () => {
     expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "DRIFT" });
     expect(allocateInjectionId).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
+    runner.play();
+    runner.stepNext();
+    clock.advance(1_000);
+    expect(allocateInjectionId).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(runner.snapshot().run.controls.map(({ kind }) => kind)).toEqual(["PLAY", "PAUSE"]);
+  });
+
+  it("bounds admitted control history and preserves reserved Pause and Stop capacity", () => {
+    const clock = new FakeClock();
+    const execute = vi.fn(async ({ ordinal }: { ordinal: number }) => delivered(ordinal));
+    const runner = createLocalInjectionScenarioRunner(reviewedRun([10_000]), {
+      clock,
+      allocateInjectionId: () => "injection-1",
+      execute
+    });
+    for (let index = 0; index < 1_000; index += 1) {
+      runner.play();
+      runner.pause();
+    }
+    const beforeStop = runner.snapshot();
+    expect(beforeStop.phase).toBe("paused");
+    expect(beforeStop.run.controls.length).toBeLessThan(1_000);
+    expect(beforeStop.run.controlReservationBytes).toBeGreaterThan(0);
+    runner.stop();
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped" });
+    expect(runner.snapshot().run.controls.at(-1)).toMatchObject({ kind: "STOP" });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("allows post-settlement projection checks to pause before the next delay", async () => {

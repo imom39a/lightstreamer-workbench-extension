@@ -78,6 +78,9 @@ export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
 // complete canonical form (including generated correlation/Evidence identity)
 // rather than shortening an already-settled outcome after dispatch.
 const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 16 * 1024;
+export const SCENARIO_MAX_CONTROL_RECORDS = 32;
+export const SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD = 4 * 1024;
+const SCENARIO_MIN_CONTROL_RECORDS = 4;
 
 export type ScenarioAdmissionContext = Readonly<{ retainedRunBytes?: number }>;
 
@@ -170,6 +173,7 @@ export type ScenarioRun = Readonly<{
   trace: readonly ScenarioTraceEntry[];
   accountedBytes: number;
   traceReservationBytes: number;
+  controlReservationBytes: number;
   speed: ScenarioSpeed;
   controls: readonly ScenarioControlRecord[];
 }>;
@@ -386,6 +390,7 @@ export function reviewScenario(
       trace: [],
       accountedBytes: 0,
       traceReservationBytes: 0,
+      controlReservationBytes: 0,
       speed: scenario.speed,
       controls: []
   });
@@ -393,7 +398,7 @@ export function reviewScenario(
   if (!admission.ok) return Object.freeze({ ok: false as const, reason: admission.reason });
   return Object.freeze({
     ok: true as const,
-    run: freeze({ ...candidate, accountedBytes: admission.accountedBytes, traceReservationBytes: admission.traceReservationBytes })
+    run: freeze({ ...candidate, accountedBytes: admission.accountedBytes, traceReservationBytes: admission.traceReservationBytes, controlReservationBytes: admission.controlReservationBytes })
   });
 }
 
@@ -415,15 +420,18 @@ export function scenarioRunAdmission(
   scenario: LocalInjectionScenario,
   run: ScenarioRun,
   retainedRunBytes = 0
-): Readonly<{ ok: true; accountedBytes: number; traceReservationBytes: number; stepCount: number }>
+): Readonly<{ ok: true; accountedBytes: number; traceReservationBytes: number; controlReservationBytes: number; stepCount: number }>
   | Readonly<{ ok: false; capacity: "bytes"; reason: string }> {
   const traceReservationBytes = run.steps.reduce((bytes, member) => bytes + scenarioMemberTraceReservationBytes(member), 0);
-  const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, trace: _trace, ...immutablePlan } = run;
-  const accountedBytes = scenario.accountedBytes + retainedRunBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes;
-  if (accountedBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
+  const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, controlReservationBytes: _controlBytes, trace: _trace, controls: _controls, ...immutablePlan } = run;
+  const baseAccountedBytes = scenario.accountedBytes + retainedRunBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes;
+  const availableControlRecords = Math.floor((SCENARIO_MAX_ACCOUNTED_BYTES - baseAccountedBytes) / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
+  if (availableControlRecords < SCENARIO_MIN_CONTROL_RECORDS) {
     return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario Run would exceed 8 MiB after reserving its immutable plan and append-only Trace; no Run was created." });
   }
-  return freeze({ ok: true as const, accountedBytes, traceReservationBytes, stepCount: run.steps.length });
+  const controlReservationBytes = Math.min(SCENARIO_MAX_CONTROL_RECORDS, availableControlRecords) * SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD;
+  const accountedBytes = baseAccountedBytes + controlReservationBytes;
+  return freeze({ ok: true as const, accountedBytes, traceReservationBytes, controlReservationBytes, stepCount: run.steps.length });
 }
 
 function scenarioMemberTraceReservationBytes(member: ReviewedScenarioStep): number {
