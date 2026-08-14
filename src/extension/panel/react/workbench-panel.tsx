@@ -29,13 +29,16 @@ import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
 import { ObservedActivityDocument } from "./observed-activity-document";
-import { LocalInjectionScenarioDocument } from "./local-injection-scenario-document";
 
 import "./workbench-panel.css";
 
 const LazyLocalInjectionDocument = lazy(async () => {
   const module = await import("./local-injection-document");
   return { default: module.LocalInjectionDocument };
+});
+const LazyLocalInjectionScenarioDocument = lazy(async () => {
+  const module = await import("./local-injection-scenario-document");
+  return { default: module.LocalInjectionScenarioDocument };
 });
 
 export type WorkbenchPanelProps = { runtime: WorkbenchRuntime };
@@ -1661,7 +1664,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         {snapshot.activity ? <button ref={activityTrigger} type="button" onClick={() => dispatch(runtime, { type: "open-activity" })}>Open Activity</button> : null}
       </nav>
       {localInjection.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Local Injection unavailable</strong><span>{localInjection.entryError}</span></div> : null}
-      {snapshot.scenario ? <LocalInjectionScenarioDocument runtime={runtime} snapshot={snapshot} /> : null}
+      {snapshot.scenario ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection Scenario…</div>}><LazyLocalInjectionScenarioDocument runtime={runtime} snapshot={snapshot} /></Suspense> : null}
       {localInjectionDraft && !snapshot.scenario ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection editor…</div>}><LazyLocalInjectionDocument
         runtime={runtime}
         localInjection={localInjection}
