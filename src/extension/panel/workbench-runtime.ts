@@ -2360,7 +2360,7 @@ class Runtime implements WorkbenchRuntime {
     this.commandStateProjections.clear();
     this.retainedLocalEvidenceIds.clear();
     this.topologyProjection.clear();
-    this.committedEvidenceBoundary = this.history.status().committedEvidenceBoundary;
+    this.committedEvidenceBoundary = this.history.status().retainedRange?.last ?? null;
     this.invalidateEvidenceCopy();
     this.pendingVisibleBoundaries = [];
     this.pendingLayoutCommitBoundaries = [];

@@ -302,7 +302,10 @@ describe("IndexedDB authoritative EventHistory", () => {
     expect(receipt.intake).toBe("QUEUED");
     await expect(receipt.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { eventId: "scenario-local-indexeddb" } });
     await expect(history.clear()).resolves.toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
-    await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { total: 0 } });
+    await expect(history.read({})).resolves.toMatchObject({
+      ok: true,
+      value: { total: 0, committedEvidenceBoundary: { eventId: "scenario-local-indexeddb" }, retainedRange: null }
+    });
     await expect(history.close()).resolves.toMatchObject({ ok: true });
   });
 
