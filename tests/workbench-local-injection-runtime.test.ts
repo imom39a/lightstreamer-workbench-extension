@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import {
   createWorkbenchRuntime,
+  settleScenarioCoordinatorExecution,
   type LocalInjectionExecutionResult,
   type WorkbenchRuntimeScheduler
 } from "../src/extension/panel/workbench-runtime";
@@ -175,6 +176,22 @@ function scheduler(): WorkbenchRuntimeScheduler & { flush(): void } {
 }
 
 describe("WorkbenchRuntime Local Injection", () => {
+  it("maps a pre-dispatch stale target to not-run without any Injection identity", () => {
+    const settlement = settleScenarioCoordinatorExecution({
+      kind: "terminal",
+      record: {
+        outcome: {
+          disposition: "blocked", headline: "NOT RUN", status: "stale-target", executionId: "reserved-execution",
+          requestId: null, timestamp: 41, detail: "Subscription retired before dispatch."
+        },
+        evidence: { state: "not-created" },
+        correlation: { executionId: "reserved-execution", requestId: null, sourceEventId: "source-6" },
+        executionResult: null
+      }
+    }, 99);
+    expect(settlement).toEqual({ kind: "not-run", reason: "TARGET NOT RUN", timestamp: 41, detail: "Subscription retired before dispatch." });
+    expect(settlement).not.toHaveProperty("injectionId");
+  });
   it("converts a protected Draft, adds one same-target update, and steps the immutable Run one Injection at a time", async () => {
     const history = createAuthoritativeHistory({
       precommitted: [

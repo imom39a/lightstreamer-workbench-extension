@@ -130,6 +130,7 @@ import {
 import {
   createLocalInjectionExecutionCoordinator,
   type LocalInjectionExecutionCoordinator,
+  type LocalInjectionCoordinatorExecution,
   type LocalInjectionExecutionRequest,
   type LocalInjectionExecutionResult,
   type LocalInjectionExecutor,
@@ -3341,7 +3342,10 @@ class Runtime implements WorkbenchRuntime {
       runId: `local-injection-run-${++this.localInjectionSequence}`,
       committedEvidenceSeed: this.committedEvidenceBoundary,
       targetFingerprint: this.scenarioTargetFingerprint(state.drafts[0]!),
-      activeCommandKeys: this.activeCommandKeys(state.drafts[0]!.anchor)
+      activeCommandKeysByItem: state.drafts.map((draft) => ({
+        item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
+        keys: this.activeCommandKeys(draft.anchor)
+      }))
     });
     if (!reviewed.ok) {
       state.membershipError = `${reviewed.stepId ? `${reviewed.stepId}: ` : ""}${reviewed.reason}`;
@@ -3402,13 +3406,7 @@ class Runtime implements WorkbenchRuntime {
       injectionId,
       execute: async () => {
         const execution = await this.localInjectionExecutionCoordinator.execute(correlatedReview, { executionId });
-        if (execution.kind === "review-invalidated") {
-          return { kind: "not-run" as const, reason: "REVIEW INVALIDATED" as const, timestamp: Date.now(), detail: "Review invalidated before dispatch; no Injection was attempted." };
-        }
-        const evidence = execution.record.evidence.state === "committed"
-          ? { eventId: execution.record.evidence.reference.eventId }
-          : null;
-        return { kind: "attempted" as const, outcome: execution.record.outcome, evidence };
+        return settleScenarioCoordinatorExecution(execution, Date.now());
       }
     }).then((nextRun) => {
       if (this.disposed || this.scenarioState !== state) return;
@@ -3525,6 +3523,7 @@ class Runtime implements WorkbenchRuntime {
         mode: draft.anchor.subscriptionMode,
         schemaFields: draft.anchor.fieldSchema
       }),
+      item: Object.freeze({ name: draft.anchor.itemName, position: draft.anchor.itemPosition }),
       editor: draft.editorPresentation,
       restorationOrigin: draft.restorationOrigin,
       relativeDelayMs: 0
@@ -4743,6 +4742,19 @@ class Runtime implements WorkbenchRuntime {
     }
     return Object.freeze(diagnostics.map((diagnostic) => Object.freeze(diagnostic)));
   }
+}
+
+export function settleScenarioCoordinatorExecution(execution: LocalInjectionCoordinatorExecution, now: number) {
+  if (execution.kind === "review-invalidated") {
+    return { kind: "not-run" as const, reason: "REVIEW INVALIDATED" as const, timestamp: now, detail: "Review invalidated before dispatch; no Injection was attempted." };
+  }
+  if (execution.record.executionResult === null && execution.record.outcome.requestId === null) {
+    return { kind: "not-run" as const, reason: "TARGET NOT RUN" as const, timestamp: execution.record.outcome.timestamp, detail: execution.record.outcome.detail };
+  }
+  const evidence = execution.record.evidence.state === "committed"
+    ? { eventId: execution.record.evidence.reference.eventId }
+    : null;
+  return { kind: "attempted" as const, outcome: execution.record.outcome, evidence };
 }
 
 function runtimeObjectDossier(
@@ -6193,7 +6205,7 @@ function sameEvidenceReadPoint(
 }
 
 function emptyScenarioEditorState(compareOpen: boolean): ScenarioEditorState {
-  return Object.freeze({ cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, scrollLeft: 0, compareOpen });
+  return Object.freeze({ cursor: 0, selectionFrom: 0, selectionTo: 0, scrollTop: 0, scrollLeft: 0, compareOpen, serializedState: null });
 }
 
 function sameScenarioEditorState(left: ScenarioEditorState, right: ScenarioEditorState): boolean {
@@ -6202,7 +6214,7 @@ function sameScenarioEditorState(left: ScenarioEditorState, right: ScenarioEdito
     left.selectionTo === right.selectionTo &&
     left.scrollTop === right.scrollTop &&
     left.scrollLeft === right.scrollLeft &&
-    left.compareOpen === right.compareOpen;
+    left.compareOpen === right.compareOpen && JSON.stringify(left.serializedState) === JSON.stringify(right.serializedState);
 }
 
 function browserScheduler(): WorkbenchRuntimeScheduler {

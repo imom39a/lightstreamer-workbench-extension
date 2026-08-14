@@ -20,6 +20,7 @@ export type ScenarioEditorState = Readonly<{
   scrollTop: number;
   scrollLeft: number;
   compareOpen: boolean;
+  serializedState: Readonly<Record<string, unknown>> | null;
 }>;
 
 export type ScenarioRestorationOrigin = Readonly<{
@@ -38,6 +39,7 @@ export type ScenarioDraftInput = Readonly<{
   ready: boolean;
   diagnostics: readonly LocalInjectionDiagnostic[];
   target: ScenarioTarget;
+  item: Readonly<{ name: string | null; position: number | null }>;
   editor: ScenarioEditorState;
   restorationOrigin: ScenarioRestorationOrigin;
   relativeDelayMs: number;
@@ -132,14 +134,16 @@ export function reviewScenario(
     runId: string;
     committedEvidenceSeed: EvidenceRef | null;
     targetFingerprint: string;
-    activeCommandKeys: readonly string[];
+    activeCommandKeysByItem: readonly Readonly<{ item: ScenarioDraftInput["item"]; keys: readonly string[] }>[];
   }>
 ): Readonly<{ ok: true; run: ScenarioRun }> | Readonly<{ ok: false; reason: string; stepId?: string }> {
   if (scenario.steps.length === 0) return Object.freeze({ ok: false as const, reason: "Add at least one Scenario Step before Review." });
-  const keys = new Set(facts.activeCommandKeys);
+  const keysByItem = new Map(facts.activeCommandKeysByItem.map(({ item, keys }) => [itemKey(item), new Set(keys)]));
   const reviewed: ReviewedScenarioStep[] = [];
   for (let index = 0; index < scenario.steps.length; index += 1) {
     const step = scenario.steps[index]!;
+    const keys = keysByItem.get(itemKey(step.draft.item)) ?? new Set<string>();
+    keysByItem.set(itemKey(step.draft.item), keys);
     const plannedUpdateBecomesValid = step.draft.document?.command === "UPDATE"
       && typeof step.draft.document.key === "string"
       && keys.has(step.draft.document.key)
@@ -185,11 +189,15 @@ export function reviewScenario(
   });
 }
 
+function itemKey(item: ScenarioDraftInput["item"]): string {
+  return item.name !== null ? `name:${item.name}` : `position:${item.position ?? "unknown"}`;
+}
+
 export async function stepScenarioRun<T extends Readonly<{
   kind: "attempted";
   outcome: LocalInjectionOutcome;
   evidence: Readonly<{ eventId: string }> | null;
-}> | Readonly<{ kind: "not-run"; reason: "REVIEW INVALIDATED"; timestamp: number; detail: string }>>(
+}> | Readonly<{ kind: "not-run"; reason: "REVIEW INVALIDATED" | "TARGET NOT RUN"; timestamp: number; detail: string }>>(
   run: ScenarioRun,
   adapter: Readonly<{
     injectionId: string;

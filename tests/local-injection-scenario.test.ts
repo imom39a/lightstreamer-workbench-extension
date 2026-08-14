@@ -29,7 +29,8 @@ function input(id: string, command: "ADD" | "UPDATE", qty: number): ScenarioDraf
     ready: true,
     diagnostics: [],
     target,
-    editor: { cursor: 19, selectionFrom: 19, selectionTo: 22, scrollTop: 31, scrollLeft: 0, compareOpen: true },
+    item: { name: "orders", position: 1 },
+    editor: { cursor: 19, selectionFrom: 19, selectionTo: 22, scrollTop: 31, scrollLeft: 0, compareOpen: true, serializedState: null },
     restorationOrigin: { scopeId: "sub:1", selectionEventId: `source-${id}`, focusedEventId: `source-${id}`, contextId: `context:source-${id}` },
     relativeDelayMs: 0
   };
@@ -75,7 +76,7 @@ describe("Local Injection Scenario", () => {
       runId: "run-1",
       committedEvidenceSeed: { intervalId: "interval-1", sequence: 41, eventId: "server-41" },
       targetFingerprint: "fingerprint-1",
-      activeCommandKeys: []
+      activeCommandKeysByItem: []
     });
 
     expect(reviewed.ok).toBe(true);
@@ -103,7 +104,25 @@ describe("Local Injection Scenario", () => {
     };
     const added = addScenarioStep(first, unknownUpdate);
     if (!added.ok) throw new Error(added.reason);
-    expect(reviewScenario(added.scenario, { runId: "run-ordered", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeys: [] })).toMatchObject({ ok: true });
+    expect(reviewScenario(added.scenario, { runId: "run-ordered", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] })).toMatchObject({ ok: true });
+  });
+
+  it("does not let a planned ADD on one item validate an UPDATE on another item", () => {
+    const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const crossItem = {
+      ...input("draft-2", "UPDATE", 2),
+      item: { name: "other-orders", position: 2 },
+      ready: false,
+      diagnostics: [{ category: "semantic" as const, severity: "error" as const, code: "unknown-key-update", message: "Unknown key on this item." }]
+    };
+    const added = addScenarioStep(first, crossItem);
+    if (!added.ok) throw new Error(added.reason);
+    expect(reviewScenario(added.scenario, {
+      runId: "run-cross-item",
+      committedEvidenceSeed: null,
+      targetFingerprint: "fp",
+      activeCommandKeysByItem: []
+    })).toMatchObject({ ok: false, stepId: "step-2", reason: "Unknown key on this item." });
   });
 
   it("dispatches one Step, waits for Evidence settlement, then pauses with a correlated trace", async () => {
@@ -111,7 +130,7 @@ describe("Local Injection Scenario", () => {
     const added = addScenarioStep(first, input("draft-2", "UPDATE", 2));
     if (!added.ok) throw new Error(added.reason);
     const reviewed = reviewScenario(added.scenario, {
-      runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fingerprint-1", activeCommandKeys: []
+      runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fingerprint-1", activeCommandKeysByItem: []
     });
     if (!reviewed.ok) throw new Error(reviewed.reason);
     let settle!: (value: { kind: "attempted"; outcome: ReturnType<typeof outcome>; evidence: { eventId: string } }) => void;
@@ -139,7 +158,7 @@ describe("Local Injection Scenario", () => {
     const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
     const added = addScenarioStep(scenario, input("draft-2", "UPDATE", 2));
     if (!added.ok) throw new Error(added.reason);
-    const reviewed = reviewScenario(added.scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeys: [] });
+    const reviewed = reviewScenario(added.scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
     if (!reviewed.ok) throw new Error(reviewed.reason);
     const stopped = await stepScenarioRun(reviewed.run, {
       injectionId: "injection-failed",
@@ -155,7 +174,7 @@ describe("Local Injection Scenario", () => {
     const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
     const added = addScenarioStep(first, input("draft-2", "UPDATE", 2));
     if (!added.ok) throw new Error(added.reason);
-    const reviewed = reviewScenario(added.scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeys: [] });
+    const reviewed = reviewScenario(added.scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
     if (!reviewed.ok) throw new Error(reviewed.reason);
     const stopped = await stepScenarioRun(reviewed.run, {
       injectionId: "reserved-but-not-attempted",

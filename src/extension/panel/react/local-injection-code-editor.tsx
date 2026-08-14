@@ -1,12 +1,12 @@
 import { useLayoutEffect, useRef, type JSX } from "react";
 
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { defaultKeymap, history, historyField, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { json } from "@codemirror/lang-json";
-import { bracketMatching, foldGutter, foldKeymap, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, foldGutter, foldKeymap, foldState, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { linter, lintGutter, lintKeymap, type Diagnostic as CodeMirrorDiagnostic } from "@codemirror/lint";
 import { MergeView } from "@codemirror/merge";
 import { searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 
@@ -120,8 +120,9 @@ export function LocalInjectionCodeEditor({
       readOnly,
       (next) => onChangeRef.current(next)
     );
+    draftExtensions.push(...restoredStateExtensions(presentation, value, draftExtensions));
     const exposePresentation = EditorView.updateListener.of((update) => {
-      if (!update.selectionSet && !update.docChanged) return;
+      if (!update.transactions.length) return;
       exposeEditorPresentation(parent, update.view, compareOpenRef.current, onPresentationChangeRef.current);
     });
     draftExtensions.push(exposePresentation);
@@ -245,6 +246,28 @@ function exposeEditorPresentation(
     selectionTo: selection.to,
     scrollTop: Math.round(view.scrollDOM.scrollTop),
     scrollLeft: Math.round(view.scrollDOM.scrollLeft),
-    compareOpen
+    compareOpen,
+    serializedState: serializeCodeMirrorState(view.state)
   }));
+}
+
+export function serializeCodeMirrorState(state: EditorState): Readonly<Record<string, unknown>> {
+  return state.toJSON({ history: historyField, fold: foldState });
+}
+
+export function restoredStateExtensions(
+  presentation: ScenarioEditorState | undefined,
+  value: string,
+  extensions: readonly Extension[]
+): Extension[] {
+  if (!presentation?.serializedState) return [];
+  const restored = EditorState.fromJSON(
+    presentation.serializedState,
+    { doc: value, extensions },
+    { history: historyField, fold: foldState }
+  );
+  return [
+    historyField.init(() => restored.field(historyField)),
+    foldState.init(() => restored.field(foldState))
+  ];
 }

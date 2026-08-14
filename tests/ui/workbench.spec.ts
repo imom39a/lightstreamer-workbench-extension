@@ -2270,6 +2270,26 @@ test("Draft conversion and Scenario Edit restore the exact editor selection and 
   await expect(page.locator('[role="treeitem"][aria-current="true"]')).toHaveAttribute("data-scope-id", originScopeId ?? "");
 });
 
+test("Draft conversion preserves CodeMirror undo history", async ({ page }) => {
+  await openScenario(page, "local-injection-captured", { width: 900, height: 700 }, "dark");
+  const openContext = page.getByRole("button", { name: "Open selected Context" });
+  if (await openContext.isVisible()) await openContext.click();
+  await page.getByRole("button", { name: "Create Local Injection Draft" }).click();
+  const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
+  const original = await editor.textContent();
+  await editor.fill(`${original} `);
+  await page.getByRole("button", { name: "Convert to Scenario" }).click();
+  const converted = page.getByRole("textbox", { name: "Step 1 Local Injection JSON" });
+  await converted.focus();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect.poll(() => converted.textContent()).toBe(original);
+  await page.getByRole("button", { name: "Review Scenario" }).click();
+  await page.getByRole("button", { name: "Edit Scenario" }).click();
+  await converted.focus();
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  await expect.poll(() => converted.textContent()).toBe(`${original} `);
+});
+
 async function expectProtectedBoundaryValues(draft: ReturnType<Page["getByRole"]>): Promise<void> {
   const values = await draft.locator(".workbench-react__local-boundary > div").evaluateAll((boundaries) =>
     boundaries.map((boundary) => {
