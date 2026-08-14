@@ -124,6 +124,7 @@ import {
 import {
   closeActivityDocument,
   openActivityDocument,
+  reconcileActivityDocumentProjection,
   reduceActivityDocument,
   type ActivityDocumentState
 } from "../../core/activity-document";
@@ -275,7 +276,7 @@ export type WorkbenchDiagnostic = Readonly<{
   affected: string;
   detail: string;
   recovery?: string;
-  category?: "history" | "capture" | "session" | "retention" | "storage";
+  category?: "activity" | "history" | "capture" | "session" | "retention" | "storage";
 }>;
 
 export type WorkbenchEvidenceSnapshot = Readonly<{
@@ -695,6 +696,8 @@ export type WorkbenchRuntimeOptions = {
   evidenceQuery?: EvidenceInvestigationQuery;
   /** Test seam for proving Activity projection failures stay renderer-local. */
   activityProjectionFactory?: (input: ActivityProjectionInput) => ActivityProjection;
+  /** Delay for visible Activity projection publication; production uses approximately one second. */
+  activityPublicationDelayMs?: number;
   investigationDiscoveries?: readonly FacetDiscoveryRequest[];
   /** Safety ceiling for any complete Evidence copy or export artifact. */
   outputByteLimit?: number;
@@ -787,6 +790,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
   private readonly activityProjectionFactory: (input: ActivityProjectionInput) => ActivityProjection;
+  private readonly activityPublicationDelayMs: number;
   private readonly evidenceQuery: EvidenceInvestigationQuery;
   private readonly investigationDiscoveries: readonly FacetDiscoveryRequest[];
   private filterDiscovery: FacetDiscoveryRequest | null = null;
@@ -801,6 +805,10 @@ class Runtime implements WorkbenchRuntime {
   private activityDocumentState: ActivityDocumentState | null = null;
   private activityHydrationPromise: Promise<void> | null = null;
   private activityHydrated = false;
+  private activityPublicationHandle: unknown | null = null;
+  private activityPublicationPending = false;
+  private activityPublishedProjection: ActivityProjection | null = null;
+  private activityOriginCheckpoint: InvestigationCheckpoint | null = null;
   private topologyProjection: TopologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
@@ -962,6 +970,7 @@ class Runtime implements WorkbenchRuntime {
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
     this.performanceHooks = options.performanceHooks ?? null;
     this.activityProjectionFactory = options.activityProjectionFactory ?? createActivityProjection;
+    this.activityPublicationDelayMs = Math.max(0, options.activityPublicationDelayMs ?? 1_000);
     this.investigationDiscoveries = Object.freeze([...(options.investigationDiscoveries ?? [])]);
     this.storage = options.storage ?? { mode: "indexeddb" };
     this.storageEstimate = options.storageEstimate ?? null;
@@ -1536,6 +1545,18 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       case "open-activity":
+        if (!this.activityOpen) {
+          const checkpoint = this.restorationCheckpoints[this.restorationIndex] ?? null;
+          this.activityOriginCheckpoint = checkpoint
+            ? Object.freeze({
+              ...checkpoint,
+              selectionEventId: this.selectionEventId,
+              focusedEventId: this.focusedEventId,
+              mode: this.mode,
+              offset: this.displayedEvidence().offset
+            })
+            : null;
+        }
         this.activityOpen = true;
         if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: true });
         if (!this.activityHydrated && this.activityHydrationPromise === null) {
@@ -1551,9 +1572,37 @@ class Runtime implements WorkbenchRuntime {
           this.selectionEventId = origin.evidenceSelectionId;
           this.focusedEventId = origin.evidenceFocusId ?? origin.evidenceSelectionId;
           this.evidenceScrollTop = Math.max(0, origin.evidenceScrollTop);
+          this.activityDocumentState = Object.freeze({
+            ...this.activityDocumentState,
+            scope: origin.scope,
+            filter: origin.filter,
+            readPoint: origin.readPoint,
+            view: origin.view
+          });
         }
         this.activityOpen = false;
+        this.cancelActivityPublication();
         if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
+        const activityOrigin = this.activityOriginCheckpoint;
+        this.activityOriginCheckpoint = null;
+        if (activityOrigin) {
+          this.scopeId = activityOrigin.scopeId;
+          this.canonicalFilter = activityOrigin.filter;
+          this.find = activityOrigin.find;
+          this.findCurrentEventId = activityOrigin.findCurrentEventId;
+          this.selectionEventId = activityOrigin.selectionEventId;
+          this.focusedEventId = activityOrigin.focusedEventId;
+          this.contextId = activityOrigin.contextId;
+          this.mode = activityOrigin.mode;
+          this.restorationReadPoint = activityOrigin.readPoint;
+          if (activityOrigin.mode === "live") {
+            this.frozenEvidence = null;
+            this.frozenInvestigation = null;
+            this.frozenInvestigationContract = null;
+          }
+          this.refreshEvidence("navigation", activityOrigin.offset);
+          return;
+        }
         this.publish();
         return;
       case "show-activity-supporting-evidence": {
@@ -1597,6 +1646,7 @@ class Runtime implements WorkbenchRuntime {
         this.refreshEvidence("command");
         return;
       case "follow-activity":
+        this.flushActivityPublication();
         this.mode = "live";
         this.restorationReadPoint = null;
         this.frozenEvidence = null;
@@ -1680,6 +1730,7 @@ class Runtime implements WorkbenchRuntime {
     }
     this.disposed = true;
     this.cancelPassivePublication();
+    this.cancelActivityPublication();
     this.evidenceQueryAbortController?.abort();
     this.evidenceQueryAbortController = null;
     this.evidenceCopyGeneration += 1;
@@ -1920,6 +1971,7 @@ class Runtime implements WorkbenchRuntime {
     this.investigationProblem = null;
     this.lastEvidenceQueryError = null;
     this.cancelPassivePublication();
+    this.cancelActivityPublication();
     this.passiveRefreshPending = false;
     this.projectionRecovery = null;
     this.commandStateProjections.clear();
@@ -2085,6 +2137,7 @@ class Runtime implements WorkbenchRuntime {
     this.visible = visible;
     if (!visible) {
       this.cancelPassivePublication();
+      this.cancelActivityPublication();
       this.publish(true);
       return;
     }
@@ -2160,6 +2213,7 @@ class Runtime implements WorkbenchRuntime {
       this.hiddenDirty = true;
       return;
     }
+    this.scheduleActivityPublication();
     this.schedulePassivePublication();
   }
 
@@ -2350,6 +2404,33 @@ class Runtime implements WorkbenchRuntime {
       this.scheduler.clearTimeout(this.fallbackHandle);
       this.fallbackHandle = null;
     }
+  }
+
+  private scheduleActivityPublication(): void {
+    if (!this.activityOpen || !this.visible || this.activityPublicationHandle !== null) {
+      if (this.activityOpen && this.visible) this.activityPublicationPending = true;
+      return;
+    }
+    this.activityPublicationPending = true;
+    this.activityPublicationHandle = this.scheduler.setTimeout(() => {
+      this.activityPublicationHandle = null;
+      this.activityPublicationPending = false;
+      this.activityPublishedProjection = null;
+      if (!this.disposed && this.visible && this.activityOpen) this.publish();
+    }, this.activityPublicationDelayMs);
+  }
+
+  private cancelActivityPublication(): void {
+    if (this.activityPublicationHandle !== null) {
+      this.scheduler.clearTimeout(this.activityPublicationHandle);
+      this.activityPublicationHandle = null;
+    }
+    this.activityPublicationPending = false;
+    this.activityPublishedProjection = null;
+  }
+
+  private flushActivityPublication(): void {
+    this.cancelActivityPublication();
   }
 
   private navigateEvidenceWindow(
@@ -3607,7 +3688,7 @@ class Runtime implements WorkbenchRuntime {
       contextId: this.contextId,
       context: this.contextSnapshot(evidence.events, scope, activity.projection),
       commandProjections: this.commandProjectionSnapshot(),
-      diagnostics: this.diagnosticSnapshot(scope),
+      diagnostics: this.diagnosticSnapshot(scope, activity.projection),
       historyCondition: this.historyCondition,
       historyAnnouncement: this.historyAnnouncement,
       storage: Object.freeze({ ...this.storage }),
@@ -3946,8 +4027,11 @@ class Runtime implements WorkbenchRuntime {
         error instanceof Error ? error.message : "Activity aggregation failed."
       );
     }
+    const coalesced = this.activityOpen && this.activityPublicationPending && this.activityPublishedProjection !== null;
+    let presentedProjection = coalesced ? this.activityPublishedProjection! : projection;
+    if (this.activityOpen && !coalesced) this.activityPublishedProjection = projection;
     if (this.activityOpen && !this.activityDocumentState) {
-      this.activityDocumentState = openActivityDocument(projection, {
+      this.activityDocumentState = openActivityDocument(presentedProjection, {
         scope: activityScope,
         filter: this.canonicalFilter,
         readPoint,
@@ -3964,19 +4048,26 @@ class Runtime implements WorkbenchRuntime {
       const filterChanged = document.filter.revision !== this.canonicalFilter.revision;
       const intervalChanged = document.readPoint.intervalId !== readPoint.intervalId;
       if (scopeChanged || filterChanged || intervalChanged) {
+        this.flushActivityPublication();
+        presentedProjection = projection;
+        this.activityPublishedProjection = projection;
         this.activityDocumentState = reduceActivityDocument(document, {
           type: "scope-or-filter-changed",
           scope: activityScope,
           filter: this.canonicalFilter,
           readPoint,
-          projection
+          projection: presentedProjection
         }).state;
       } else if (document.view === "FROZEN") {
         const frozenSequence = document.readPoint.committedEvidenceBoundary?.sequence ?? 0;
         const newer = entries.filter((entry) => entry.sequence > frozenSequence && matchesActivityEvidence(entry, document.filter, document.scope)).length;
         this.activityDocumentState = Object.freeze({ ...document, newerMatchingEvidence: newer });
-      } else {
-        this.activityDocumentState = Object.freeze({ ...document, scope: activityScope, filter: this.canonicalFilter, readPoint, projection, newerMatchingEvidence: 0 });
+      } else if (!coalesced) {
+        this.activityDocumentState = reconcileActivityDocumentProjection(
+          Object.freeze({ ...document, scope: activityScope, filter: this.canonicalFilter, newerMatchingEvidence: 0 }),
+          readPoint,
+          projection
+        );
       }
     }
     const document = this.activityDocumentState;
@@ -3984,8 +4075,8 @@ class Runtime implements WorkbenchRuntime {
       open: this.activityOpen,
       scope: activityScope,
       filter: this.canonicalFilter,
-      readPoint,
-      projection: document?.view === "FROZEN" ? document.projection : projection,
+      readPoint: presentedProjection.readPoint,
+      projection: document?.view === "FROZEN" ? document.projection : presentedProjection,
       document
     });
   }
@@ -4149,9 +4240,19 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  private diagnosticSnapshot(scope: WorkbenchSnapshot["scope"]): readonly WorkbenchDiagnostic[] {
+  private diagnosticSnapshot(scope: WorkbenchSnapshot["scope"], activityProjection?: ActivityProjection): readonly WorkbenchDiagnostic[] {
     const capture = this.captureSnapshot();
     const diagnostics: WorkbenchDiagnostic[] = [];
+    if (activityProjection?.state === "AGGREGATION_FAILED") {
+      diagnostics.push({
+        category: "activity",
+        severity: "Error",
+        title: "Activity aggregation unavailable",
+        affected: "Activity",
+        detail: activityProjection.reason ?? "Activity could not aggregate retained Evidence.",
+        recovery: "Retry Activity aggregation; Capture, History, and Evidence remain available"
+      });
+    }
     if (this.historyCondition) {
       diagnostics.push({
         category: "history",

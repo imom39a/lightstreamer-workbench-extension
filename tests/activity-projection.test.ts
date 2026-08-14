@@ -86,6 +86,32 @@ describe("Observed Activity projection", () => {
     );
   });
 
+  it("keeps the current bucket identity stable while its count grows", () => {
+    const first = evidence(1, 1_000);
+    const grown = evidence(2, 1_500);
+    const initial = rebuildActivityProjection({ evidence: [first], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([first]) });
+    const afterGrowth = rebuildActivityProjection({ evidence: [first, grown], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([first, grown]) });
+
+    expect(afterGrowth.buckets.find((bucket) => bucket.id === initial.buckets[0].id)).toMatchObject({
+      start: initial.buckets[0].start,
+      end: initial.buckets[0].end,
+      logicalUpdates: 2
+    });
+  });
+
+  it("rebuckets deterministically while retaining the selected absolute interval as an overlay", () => {
+    const first = evidence(1, 1_000);
+    const second = evidence(2, 2_000);
+    const far = evidence(3, 200_000);
+    const initial = rebuildActivityProjection({ evidence: [first, second], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([first, second]) });
+    const rebucketed = rebuildActivityProjection({ evidence: [first, second, far], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([first, second, far]) });
+
+    expect(initial.bucketDuration).toBe(1_000);
+    expect(rebucketed.bucketDuration).toBe(2_000);
+    expect(rebucketed.buckets[0]).toMatchObject({ start: 0, end: 2_000, logicalUpdates: 1 });
+    expect(rebucketed.buckets.at(-1)).toMatchObject({ start: 200_000, end: 202_000, logicalUpdates: 1 });
+  });
+
   it("applies structural scope and canonical filter before aggregation", () => {
     const filter = createFilter(2);
     const localOnly = createTypedFilterValue("provenance", "enum", "LOCAL");

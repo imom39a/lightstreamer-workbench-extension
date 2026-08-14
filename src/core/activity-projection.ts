@@ -49,6 +49,7 @@ export type ActivityMarker = Readonly<{
 }>;
 
 export type ActivityBucket = Readonly<{
+  id: string;
   start: number;
   end: number;
   logicalUpdates: number;
@@ -329,6 +330,7 @@ function makeBuckets(
       const firstPartial = firstTimestamp > start;
       const finalPartial = lastTimestamp + 1 < end;
       return Object.freeze({
+        id: `${segment.index}:${start}`,
         start, end,
         logicalUpdates: server.filter(inBucket).length,
         snapshotLogicalUpdates: server.filter((entry) => inBucket(entry) && entry.event.update?.isSnapshot === true).length,

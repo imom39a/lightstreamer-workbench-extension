@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFilter } from "../src/core/filter-algebra";
-import { openActivityDocument, reduceActivityDocument, closeActivityDocument } from "../src/core/activity-document";
+import { openActivityDocument, reduceActivityDocument, closeActivityDocument, reconcileActivityDocumentProjection } from "../src/core/activity-document";
 import { rebuildActivityProjection, type ActivityEvidence } from "../src/core/activity-projection";
 
 function fixture() {
@@ -27,6 +27,22 @@ describe("promoted Activity document seam", () => {
     const changed = reduceActivityDocument(selected, { type: "scope-or-filter-changed", scope: { kind: "CLIENT", clientId: "client-1" }, filter, readPoint, projection }).state;
     expect(changed.selection).toBeNull();
     expect(changed.rankingSort).toBe("LOGICAL_UPDATES");
+  });
+
+  it("keeps a selected bucket's absolute range when projection duration rebuckets", () => {
+    const { filter, readPoint } = fixture();
+    const first: ActivityEvidence = { intervalId: "interval-1", sequence: 1, event: { id: "event-1", timestamp: 1_000, direction: "inbound", source: "server", synthetic: false, kind: "item-update", logicalEventId: "logical-1", client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "subscription-1" }, update: {} } };
+    const second = { ...first, sequence: 2, event: { ...first.event, id: "event-2", logicalEventId: "logical-2", timestamp: 2_000 } };
+    const far = { ...first, sequence: 3, event: { ...first.event, id: "event-3", logicalEventId: "logical-3", timestamp: 200_000 } };
+    const initialReadPoint = { ...readPoint, committedEvidenceBoundary: { ...readPoint.committedEvidenceBoundary!, sequence: 2, eventId: "event-2" }, retainedRange: { first: { timestamp: 1_000, sequence: 1 }, last: { timestamp: 2_000, sequence: 2 } } };
+    const initial = rebuildActivityProjection({ evidence: [first, second], scope: { kind: "PAGE" }, filter, readPoint: initialReadPoint });
+    const document = openActivityDocument(initial, { scope: { kind: "PAGE" }, filter, readPoint: initialReadPoint, evidenceSelectionId: null, evidenceScrollTop: 0, view: "FOLLOW LIVE", localDraftId: null });
+    const selected = reduceActivityDocument(document, { type: "select", selection: { kind: "bucket", id: "0" } }).state;
+    const rebucketed = rebuildActivityProjection({ evidence: [first, second, far], scope: { kind: "PAGE" }, filter, readPoint: { ...readPoint, committedEvidenceBoundary: { ...readPoint.committedEvidenceBoundary!, sequence: 3, eventId: "event-3" }, retainedRange: { first: { timestamp: 1_000, sequence: 1 }, last: { timestamp: 200_000, sequence: 3 } } } });
+
+    const updated = reconcileActivityDocumentProjection(selected, rebucketed.readPoint, rebucketed);
+    expect(updated.selectionRange).toEqual({ start: 1_000, end: 2_000 });
+    expect(updated.selection).toEqual({ kind: "bucket", id: "0" });
   });
 
   it("does not invent a private pause and reports newer matching Evidence while frozen", () => {

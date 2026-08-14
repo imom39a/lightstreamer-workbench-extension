@@ -1,12 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { activityScopeFor, createWorkbenchRuntime } from "../src/extension/panel/workbench-runtime";
+import { activityScopeFor, createWorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
+import { createActivityProjection } from "../src/core/activity-projection";
 import { createTypedFilterValue } from "../src/core/filter-algebra";
+import { type EventHistory } from "../src/core/event-history-authoritative";
 import { type TopologySelectionTarget } from "../src/extension/panel/topology-view-model";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
 function update(id: string, timestamp: number): LightstreamerEventEnvelope {
   return { id, timestamp, direction: "inbound", source: "server", synthetic: false, kind: "item-update", logicalEventId: id, client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "subscription-1", mode: "MERGE" }, item: { name: "item-1", position: 1 }, update: { isSnapshot: false } };
+}
+
+function scheduler() {
+  const frames: Array<() => void> = [];
+  const timers: Array<{ delay: number; callback: () => void }> = [];
+  const value: WorkbenchRuntimeScheduler & { flushFrame(): void; flushTimers(): void; delays: number[] } = {
+    requestFrame(callback) { frames.push(callback); return callback; },
+    cancelFrame(handle) { const index = frames.indexOf(handle as () => void); if (index >= 0) frames.splice(index, 1); },
+    setTimeout(callback, delayMs) { timers.push({ delay: delayMs, callback }); return callback; },
+    clearTimeout(handle) { const index = timers.findIndex((timer) => timer.callback === handle); if (index >= 0) timers.splice(index, 1); },
+    flushFrame() { const callbacks = frames.splice(0); callbacks.forEach((callback) => callback()); },
+    flushTimers() { const callbacks = timers.splice(0); callbacks.forEach(({ callback }) => callback()); },
+    delays: []
+  };
+  const originalSetTimeout = value.setTimeout;
+  value.setTimeout = (callback, delayMs) => { value.delays.push(delayMs); return originalSetTimeout(callback, delayMs); };
+  return value;
 }
 
 describe("Activity runtime seam", () => {
@@ -137,6 +156,106 @@ describe("Activity runtime seam", () => {
 
     expect(runtime.getSnapshot().context.kind).toBe("runtime");
     expect(runtime.getSnapshot().context.fields).toContainEqual(["Activity", expect.stringContaining("2 Logical Updates")]);
+    runtime.dispose();
+  });
+
+  it("coalesces visible Activity graphical publication for approximately one second", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
+    const runtimeScheduler = scheduler();
+    const runtime = createWorkbenchRuntime({ history, scheduler: runtimeScheduler });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    runtime.dispatch({ type: "open-activity" });
+    const before = runtime.getSnapshot().activity?.projection.logicalUpdateTotal;
+    history.offer(update("event-2", 2_000));
+    history.offer(update("event-3", 3_000));
+    runtimeScheduler.flushFrame();
+
+    expect(runtime.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(before);
+    expect(runtimeScheduler.delays).toContain(1_000);
+    runtimeScheduler.flushTimers();
+    expect(runtime.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(3);
+    runtime.dispose();
+  });
+
+  it("restores the exact Evidence Scope, Filter, position, and view on Back", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
+    const runtime = createWorkbenchRuntime({ history });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    const originalFilter = runtime.getSnapshot().evidence.investigation.filter;
+    runtime.dispatch({ type: "select-evidence", eventId: "event-1" });
+    runtime.dispatch({ type: "focus-evidence", eventId: "event-1" });
+    runtime.dispatch({ type: "set-evidence-scroll", scrollTop: 84 });
+    runtime.dispatch({ type: "open-activity" });
+    runtime.dispatch({ type: "apply-filter-mutations", expectedRevision: originalFilter.revision, operations: [{ type: "set-text", text: "changed-in-activity" }] });
+    runtime.dispatch({ type: "freeze-activity" });
+    runtime.dispatch({ type: "set-evidence-scroll", scrollTop: 999 });
+    runtime.dispatch({ type: "close-activity" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.evidence.investigation.filter).toEqual(originalFilter);
+    expect(snapshot.evidence.investigation.scope.kind).toBe("PAGE");
+    expect(snapshot.evidence.mode).toBe("live");
+    expect(snapshot.selectionEventId).toBe("event-1");
+    expect(snapshot.evidence.focusedEventId).toBe("event-1");
+    expect(snapshot.evidence.scrollTop).toBe(84);
+    runtime.dispose();
+  });
+
+  it("invalidates Activity and terminal history on successful Clear", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
+    const runtime = createWorkbenchRuntime({ history });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    runtime.dispatch({ type: "open-activity" });
+    runtime.dispatch({ type: "select-activity", selection: { kind: "bucket", id: "0" } });
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    expect(runtime.getSnapshot().retention.clearState).toBe("idle");
+    expect(runtime.getSnapshot().retention.historyStatus.interval.ordinal).toBe(2);
+    expect(runtime.getSnapshot().activity?.projection.state).toBe("EMPTY_INTERVAL");
+    expect(runtime.getSnapshot().activity?.projection.committedEvidenceBoundary).toBeNull();
+    expect(runtime.getSnapshot().activity?.document?.selection).toBeNull();
+    runtime.dispose();
+  });
+
+  it("leaves Activity and History intact after a failed Clear", async () => {
+    const base = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
+    const history = Object.freeze({
+      ...base,
+      clear: () => Promise.resolve({ ok: false as const, problem: { code: "CLEAR_FAILED" as const, message: "journal refused clear" } })
+    }) as unknown as EventHistory;
+    const runtime = createWorkbenchRuntime({ history });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    runtime.dispatch({ type: "open-activity" });
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    expect(runtime.getSnapshot().retention.clearState).toBe("error");
+    expect(runtime.getSnapshot().retention.historyStatus.retained).toBe(1);
+    expect(runtime.getSnapshot().activity?.projection.logicalUpdateTotal).toBe(1);
+    expect(runtime.getSnapshot().diagnostics).toContainEqual(expect.objectContaining({ title: "History could not be cleared" }));
+    runtime.dispose();
+  });
+
+  it("publishes one Activity diagnostic for aggregation failure and recovers from retained Evidence", async () => {
+    let failed = true;
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000)] });
+    const runtime = createWorkbenchRuntime({ history, activityProjectionFactory: (input) => {
+      if (failed) throw new Error("aggregation unavailable");
+      return createActivityProjection(input);
+    } });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    expect(runtime.getSnapshot().activity?.projection.state).toBe("AGGREGATION_FAILED");
+    expect(runtime.getSnapshot().diagnostics).toContainEqual(expect.objectContaining({ category: "activity", title: "Activity aggregation unavailable" }));
+    failed = false;
+    runtime.dispatch({ type: "refresh-evidence" });
+    expect(runtime.getSnapshot().activity?.projection.state).toBe("AVAILABLE");
+    expect(runtime.getSnapshot().diagnostics.some(({ category }) => category === "activity")).toBe(false);
+    expect(runtime.getSnapshot().retention.historyStatus.retained).toBe(1);
     runtime.dispose();
   });
 });
