@@ -2229,11 +2229,14 @@ test("Scenario authoring confirms explicit membership and keeps only the focused
 });
 
 test("Scenario high-volume document mounts one of 100 representative large editors and keeps keyboard reorder usable", async ({ page }, testInfo) => {
+  await openScenario(page, "live-selected", { width: 563, height: 700 }, "light");
+  expect(await page.locator('[data-editor-engine="codemirror-6"]').count()).toBe(0);
+  expect(await page.evaluate(() => performance.getEntriesByType("resource").some(({ name }) => name.includes("local-injection-document.js")))).toBe(false);
   await openScenario(page, "local-injection-scenario-high-volume", { width: 563, height: 700 }, "light");
   const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
   await expect(scenario.getByRole("article")).toHaveCount(100);
   await expect(scenario.getByRole("textbox", { name: /Step \d+ Local Injection JSON/ })).toHaveCount(1);
-  await expect(scenario.getByText("Collapsed Draft · BLOCKED", { exact: false })).toHaveCount(99);
+  await expect(scenario.getByText("Collapsed Draft · Open editor", { exact: false })).toHaveCount(99);
   await expect(scenario).toContainText("100/100 explicit Steps");
   await scenario.getByRole("button", { name: "Add authored update" }).click();
   await expect(scenario.getByRole("alert")).toContainText("at most 100 Steps");
@@ -2255,6 +2258,14 @@ test("Scenario high-volume document mounts one of 100 representative large edito
   await expect(scenario.getByRole("textbox", { name: "Step 99 Local Injection JSON" })).toBeVisible();
   await scenario.getByRole("button", { name: "Step 100", exact: true }).click();
   await expect(step100Editor).toBeVisible();
+  await expect.poll(() => step100Host.evaluate((host) => ({
+    anchor: host.getAttribute("data-selection-anchor"), head: host.getAttribute("data-selection-head"), scrollTop: host.getAttribute("data-scroll-top")
+  }))).toEqual(beforePresentation);
+  await scenario.getByRole("button", { name: "Review Scenario" }).click();
+  await expect(scenario.getByRole("button", { name: "Edit Scenario" })).toBeVisible();
+  await scenario.getByRole("button", { name: "Edit Scenario" }).click();
+  await expect(scenario.getByRole("article")).toHaveCount(100);
+  await expect(scenario.getByRole("textbox", { name: "Step 100 Local Injection JSON" })).toBeVisible();
   await expect.poll(() => step100Host.evaluate((host) => ({
     anchor: host.getAttribute("data-selection-anchor"), head: host.getAttribute("data-selection-head"), scrollTop: host.getAttribute("data-scroll-top")
   }))).toEqual(beforePresentation);

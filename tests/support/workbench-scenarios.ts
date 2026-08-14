@@ -629,9 +629,22 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
 
 function localInjectionHighVolumeScenario(id: WorkbenchScenarioId): WorkbenchScenario {
   const base = localInjectionCapturedScenario(id);
-  const fields = Object.fromEntries(Array.from({ length: 500 }, (_, index) => [`field_${String(index + 1).padStart(3, "0")}`, `value-${index + 1}`]));
+  const representativeFields = Object.fromEntries(Array.from({ length: 500 }, (_, index) => [`field_${String(index + 1).padStart(3, "0")}`, `value-${index + 1}`]));
+  const fields = { command: "ADD", key: "high-volume", value: "representative", ...representativeFields };
+  const schemaFields = Object.keys(fields);
   return {
     ...base,
+    topologySyncFrames: base.topologySyncFrames?.map((frame) => frame.type === "lsew:topology-sync-chunk"
+      ? {
+          ...frame,
+          records: frame.records.map((record) => record.kind === "subscription" && record.values?.subscription
+            ? { ...record, values: { ...record.values, subscription: { ...(record.values.subscription as Record<string, unknown>), fields: schemaFields } } }
+            : record)
+        }
+      : frame),
+    captureMessages: base.captureMessages?.map((message) => message.payload.subscription
+      ? { ...message, payload: { ...message.payload, subscription: { ...(message.payload.subscription as Record<string, unknown>), fields: schemaFields } } }
+      : message),
     localInjection: {
       entry: "selection",
       rawText: JSON.stringify({ command: "ADD", key: "high-volume", isSnapshot: false, fields }, null, 2),

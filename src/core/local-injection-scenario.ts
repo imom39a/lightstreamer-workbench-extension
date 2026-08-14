@@ -70,7 +70,12 @@ export type LocalInjectionScenario = Readonly<{
 
 export const SCENARIO_MAX_STEPS = 100;
 export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
-const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 8 * 1024;
+// Coordinator outcomes are bounded before they reach this module. Reserve their
+// complete canonical form (including generated correlation/Evidence identity)
+// rather than shortening an already-settled outcome after dispatch.
+const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 16 * 1024;
+
+export type ScenarioAdmissionContext = Readonly<{ retainedRunBytes?: number }>;
 
 export type ScenarioCapacityRefusal = Readonly<{
   ok: false;
@@ -167,14 +172,15 @@ export function createScenarioFromDraft(
 
 export function addScenarioStep(
   scenario: LocalInjectionScenario,
-  draft: ScenarioDraftInput
+  draft: ScenarioDraftInput,
+  admission: ScenarioAdmissionContext = {}
 ): ScenarioMutation {
   const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return Object.freeze({ ok: false as const, reason });
   return commitScenarioMutation(scenario, {
     steps: [...scenario.steps, { kind: "step", id: `step-${scenario.nextStepSequence}`, draft }],
     nextStepSequence: scenario.nextStepSequence + 1
-  });
+  }, true, admission.retainedRunBytes ?? 0);
 }
 
 export function previewScenarioMembership(
@@ -201,7 +207,8 @@ export function previewScenarioMembership(
 
 export function confirmScenarioMembershipPreview(
   scenario: LocalInjectionScenario,
-  preview: ScenarioMembershipPreview
+  preview: ScenarioMembershipPreview,
+  admission: ScenarioAdmissionContext = {}
 ): ScenarioMutation {
   if (preview.scenarioId !== scenario.id || preview.scenarioRevision !== scenario.revision) {
     return freeze({ ok: false as const, reason: "Scenario changed after this membership preview. Preview the retained Evidence again." });
@@ -211,20 +218,20 @@ export function confirmScenarioMembershipPreview(
   return commitScenarioMutation(scenario, {
     steps: [...scenario.steps, ...steps],
     nextStepSequence: scenario.nextStepSequence + steps.length
-  });
+  }, true, admission.retainedRunBytes ?? 0);
 }
 
-export function moveScenarioStep(scenario: LocalInjectionScenario, stepId: string, direction: "earlier" | "later"): ScenarioMutation {
+export function moveScenarioStep(scenario: LocalInjectionScenario, stepId: string, direction: "earlier" | "later", admission: ScenarioAdmissionContext = {}): ScenarioMutation {
   const from = scenario.steps.findIndex(({ id }) => id === stepId);
   const to = direction === "earlier" ? from - 1 : from + 1;
   if (from < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
   if (to < 0 || to >= scenario.steps.length) return freeze({ ok: false as const, reason: `Scenario Step cannot move ${direction}.` });
   const steps = [...scenario.steps];
   [steps[from], steps[to]] = [steps[to]!, steps[from]!];
-  return commitScenarioMutation(scenario, { steps });
+  return commitScenarioMutation(scenario, { steps }, true, admission.retainedRunBytes ?? 0);
 }
 
-export function duplicateScenarioStep(scenario: LocalInjectionScenario, stepId: string): ScenarioMutation {
+export function duplicateScenarioStep(scenario: LocalInjectionScenario, stepId: string, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
   const index = scenario.steps.findIndex(({ id }) => id === stepId);
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
   const source = scenario.steps[index]!;
@@ -235,10 +242,10 @@ export function duplicateScenarioStep(scenario: LocalInjectionScenario, stepId: 
   };
   const steps = [...scenario.steps];
   steps.splice(index + 1, 0, duplicate);
-  return commitScenarioMutation(scenario, { steps, nextStepSequence: scenario.nextStepSequence + 1 });
+  return commitScenarioMutation(scenario, { steps, nextStepSequence: scenario.nextStepSequence + 1 }, true, admission.retainedRunBytes ?? 0);
 }
 
-export function removeScenarioStep(scenario: LocalInjectionScenario, stepId: string): ScenarioMutation {
+export function removeScenarioStep(scenario: LocalInjectionScenario, stepId: string, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
   const index = scenario.steps.findIndex(({ id }) => id === stepId);
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
   if (scenario.steps.length === 1) return freeze({ ok: false as const, reason: "A Scenario must retain at least one Step." });
@@ -246,31 +253,32 @@ export function removeScenarioStep(scenario: LocalInjectionScenario, stepId: str
   return commitScenarioMutation(scenario, {
     steps: scenario.steps.filter(({ id }) => id !== stepId),
     removedSteps: [...scenario.removedSteps, { step, index }]
-  });
+  }, true, admission.retainedRunBytes ?? 0);
 }
 
-export function undoScenarioStepRemoval(scenario: LocalInjectionScenario): ScenarioMutation {
+export function undoScenarioStepRemoval(scenario: LocalInjectionScenario, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
   const removed = scenario.removedSteps.at(-1);
   if (!removed) return freeze({ ok: false as const, reason: "No removed Scenario Step is available to restore." });
   const steps = [...scenario.steps];
   steps.splice(Math.min(removed.index, steps.length), 0, removed.step);
-  return commitScenarioMutation(scenario, { steps, removedSteps: scenario.removedSteps.slice(0, -1) });
+  return commitScenarioMutation(scenario, { steps, removedSteps: scenario.removedSteps.slice(0, -1) }, true, admission.retainedRunBytes ?? 0);
 }
 
-export function updateScenarioStepDraft(scenario: LocalInjectionScenario, stepId: string, draft: ScenarioDraftInput): ScenarioMutation {
+export function updateScenarioStepDraft(scenario: LocalInjectionScenario, stepId: string, draft: ScenarioDraftInput, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
   const index = scenario.steps.findIndex(({ id }) => id === stepId);
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
   const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return freeze({ ok: false as const, reason });
   return commitScenarioMutation(scenario, {
     steps: scenario.steps.map((step, stepIndex) => stepIndex === index ? { ...step, draft } : step)
-  });
+  }, true, admission.retainedRunBytes ?? 0);
 }
 
 export function updateScenarioStepPresentation(
   scenario: LocalInjectionScenario,
   stepId: string,
-  editor: ScenarioEditorState
+  editor: ScenarioEditorState,
+  admission: ScenarioAdmissionContext = {}
 ): ScenarioMutation {
   const index = scenario.steps.findIndex(({ id }) => id === stepId);
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
@@ -278,7 +286,7 @@ export function updateScenarioStepPresentation(
     steps: scenario.steps.map((step, stepIndex) => stepIndex === index
       ? { ...step, draft: { ...step.draft, editor } }
       : step)
-  }, false);
+  }, false, admission.retainedRunBytes ?? 0);
 }
 
 export function reviewScenario(
@@ -367,7 +375,7 @@ export function scenarioRunAdmission(
 function scenarioMemberTraceReservationBytes(member: ReviewedScenarioStep): number {
   switch (member.kind) {
     case "step":
-      return SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER;
+      return SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER + canonicalBytes({ stepId: member.id, ordinal: member.ordinal });
   }
 }
 
@@ -411,7 +419,7 @@ export async function stepScenarioRun<T extends Readonly<{
   if (terminal.kind === "not-run") return freeze({
     ...run,
     status: "stopped" as const,
-    trace: [...run.trace, ...run.steps.slice(run.nextOrdinal - 1).map((remaining) => fitScenarioTraceEntry({
+    trace: [...run.trace, ...run.steps.slice(run.nextOrdinal - 1).map((remaining) => freeze({
       stepId: remaining.id,
       ordinal: remaining.ordinal,
       kind: "not-run" as const,
@@ -421,17 +429,17 @@ export async function stepScenarioRun<T extends Readonly<{
       evidence: null
     }))]
   });
-  const trace = fitScenarioTraceEntry({
+  const trace: ScenarioTraceEntry = freeze({
     stepId: step.id,
     ordinal: step.ordinal,
-    kind: "attempted",
+    kind: "attempted" as const,
     injectionId: adapter.injectionId,
     outcome: terminal.outcome,
     evidence: terminal.evidence
   });
   const nextOrdinal = run.nextOrdinal + 1;
   const delivered = terminal.outcome.disposition === "delivered" && terminal.evidence !== null;
-  const stoppedRemainder: ScenarioTraceEntry[] = delivered ? [] : run.steps.slice(run.nextOrdinal).map((remaining) => fitScenarioTraceEntry({
+  const stoppedRemainder: ScenarioTraceEntry[] = delivered ? [] : run.steps.slice(run.nextOrdinal).map((remaining) => freeze({
     stepId: remaining.id,
     ordinal: remaining.ordinal,
     kind: "not-run" as const,
@@ -447,6 +455,23 @@ export async function stepScenarioRun<T extends Readonly<{
       ? nextOrdinal > run.steps.length ? "complete" as const : "paused" as const
       : "stopped" as const,
     trace: [...run.trace, trace, ...stoppedRemainder]
+  });
+}
+
+export function terminalizeScenarioRun(run: ScenarioRun, timestamp: number, detail = "Scenario returned to Edit before this Step was attempted."): ScenarioRun {
+  if (run.status !== "paused") return run;
+  return freeze({
+    ...run,
+    status: "stopped" as const,
+    trace: [...run.trace, ...run.steps.slice(run.nextOrdinal - 1).map((remaining) => freeze({
+      stepId: remaining.id,
+      ordinal: remaining.ordinal,
+      kind: "not-run" as const,
+      reason: "RUN STOPPED" as const,
+      timestamp,
+      detail,
+      evidence: null
+    }))]
   });
 }
 
@@ -468,7 +493,8 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 function commitScenarioMutation(
   scenario: LocalInjectionScenario,
   change: Partial<Pick<LocalInjectionScenario, "steps" | "nextStepSequence" | "removedSteps">>,
-  advanceRevision = true
+  advanceRevision = true,
+  retainedRunBytes = 0
 ): ScenarioMutation {
   const steps = change.steps ?? scenario.steps;
   if (steps.length > SCENARIO_MAX_STEPS) {
@@ -482,8 +508,8 @@ function commitScenarioMutation(
     accountedBytes: 0
   };
   const accountedBytes = scenarioDefinitionBytes(candidate);
-  if (accountedBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
-    return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario would exceed 8 MiB of canonical accounted state; no membership changed." });
+  if (accountedBytes + retainedRunBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
+    return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario and retained Runs would exceed 8 MiB of canonical accounted state; no membership changed." });
   }
   return freeze({ ok: true as const, scenario: freeze({ ...candidate, accountedBytes }) });
 }
@@ -503,40 +529,6 @@ function canonicalize(value: unknown): unknown {
     return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, canonicalize((value as Record<string, unknown>)[key])]));
   }
   return value;
-}
-
-function fitScenarioTraceEntry(entry: ScenarioTraceEntry): ScenarioTraceEntry {
-  if (canonicalBytes(entry) <= SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER) return freeze(entry);
-  const original = entry.kind === "attempted" ? entry.outcome.detail : entry.detail;
-  const originalBytes = canonicalBytes(original);
-  const retained = limitUtf8Text(original, 4 * 1024);
-  const limited = entry.kind === "attempted"
-    ? {
-        ...entry,
-        outcome: { ...entry.outcome, detail: `${retained}\n[Scenario Trace detail limited from ${originalBytes} canonical bytes.]` },
-        detailLimited: { originalBytes, retainedBytes: canonicalBytes(retained) }
-      }
-    : {
-        ...entry,
-        detail: `${retained}\n[Scenario Trace detail limited from ${originalBytes} canonical bytes.]`,
-        detailLimited: { originalBytes, retainedBytes: canonicalBytes(retained) }
-      };
-  if (canonicalBytes(limited) > SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER) {
-    throw new RangeError("Scenario Trace identity fields exceed the admitted per-member reservation.");
-  }
-  return freeze(limited);
-}
-
-function limitUtf8Text(value: string, byteLimit: number): string {
-  if (new TextEncoder().encode(value).byteLength <= byteLimit) return value;
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (new TextEncoder().encode(value.slice(0, middle)).byteLength <= byteLimit) low = middle;
-    else high = middle - 1;
-  }
-  return value.slice(0, low);
 }
 
 function cloneScenarioDraft(draft: ScenarioDraftInput, id: string): ScenarioDraftInput {

@@ -147,6 +147,7 @@ import {
   removeScenarioStep,
   reviewScenario,
   stepScenarioRun,
+  terminalizeScenarioRun,
   scenarioTargetIncompatibility,
   undoScenarioStepRemoval,
   updateScenarioStepDraft,
@@ -3397,7 +3398,7 @@ class Runtime implements WorkbenchRuntime {
       this.publish();
       return;
     }
-    const addition = addScenarioStep(state.scenario, this.scenarioDraftInput(candidate));
+    const addition = addScenarioStep(state.scenario, this.scenarioDraftInput(candidate), { retainedRunBytes: state.retainedRunBytes });
     if (!addition.ok) {
       state.membershipError = addition.reason;
       this.publish();
@@ -3473,7 +3474,7 @@ class Runtime implements WorkbenchRuntime {
       }
       candidates.set(member.evidenceId, candidate);
     }
-    const result = confirmScenarioMembershipPreview(state.scenario, preview);
+    const result = confirmScenarioMembershipPreview(state.scenario, preview, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) {
       state.membershipError = result.reason;
       this.publish();
@@ -3506,7 +3507,7 @@ class Runtime implements WorkbenchRuntime {
     authored.compareOpen = false;
     authored.editorPresentation = emptyScenarioEditorState(false);
     authored.restorationOrigin = reference.restorationOrigin;
-    const addition = addScenarioStep(state.scenario, this.scenarioDraftInput(authored));
+    const addition = addScenarioStep(state.scenario, this.scenarioDraftInput(authored), { retainedRunBytes: state.retainedRunBytes });
     if (!addition.ok) {
       state.membershipError = addition.reason;
       this.publish();
@@ -3522,7 +3523,7 @@ class Runtime implements WorkbenchRuntime {
   private moveCurrentScenarioStep(stepId: string, direction: "earlier" | "later"): void {
     const state = this.scenarioState;
     if (!state || state.phase !== "edit") return;
-    const result = moveScenarioStep(state.scenario, stepId, direction);
+    const result = moveScenarioStep(state.scenario, stepId, direction, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     state.scenario = result.scenario;
     state.focusedStepId = stepId;
@@ -3536,7 +3537,7 @@ class Runtime implements WorkbenchRuntime {
     const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
     const source = state.drafts.get(stepId);
     if (!source) return;
-    const result = duplicateScenarioStep(state.scenario, stepId);
+    const result = duplicateScenarioStep(state.scenario, stepId, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     const duplicateStep = result.scenario.steps[index + 1]!;
     const duplicate = cloneLocalInjectionDraftState(source);
@@ -3554,7 +3555,7 @@ class Runtime implements WorkbenchRuntime {
     const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
     const draft = state.drafts.get(stepId);
     if (!draft) return;
-    const result = removeScenarioStep(state.scenario, stepId);
+    const result = removeScenarioStep(state.scenario, stepId, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     state.scenario = result.scenario;
     state.drafts.delete(stepId);
@@ -3569,7 +3570,7 @@ class Runtime implements WorkbenchRuntime {
     const removedStep = state?.scenario.removedSteps.at(-1)?.step;
     const removed = removedStep ? state?.removedDrafts.get(removedStep.id) : null;
     if (!state || state.phase !== "edit" || !removedStep || !removed) return;
-    const result = undoScenarioStepRemoval(state.scenario);
+    const result = undoScenarioStepRemoval(state.scenario, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     state.scenario = result.scenario;
     state.drafts.set(removedStep.id, removed);
@@ -3585,7 +3586,7 @@ class Runtime implements WorkbenchRuntime {
     const draft = state.drafts.get(stepId);
     if (!draft) return;
     const nextDelay = Math.max(0, Math.floor(delayMs));
-    const result = updateScenarioStepDraft(state.scenario, stepId, { ...this.scenarioDraftInput(draft), relativeDelayMs: nextDelay });
+    const result = updateScenarioStepDraft(state.scenario, stepId, { ...this.scenarioDraftInput(draft), relativeDelayMs: nextDelay }, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     draft.relativeDelayMs = nextDelay;
     state.scenario = result.scenario;
@@ -3648,10 +3649,10 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private archiveCurrentScenarioRun(state: ScenarioState): void {
-    const run = state.run;
+    const run = state.run ? terminalizeScenarioRun(state.run, Date.now()) : null;
     if (!run) return;
     state.priorRuns.push(run);
-    state.retainedRunBytes = Math.max(state.retainedRunBytes, run.accountedBytes - state.scenario.accountedBytes);
+    state.retainedRunBytes = run.accountedBytes - state.scenario.accountedBytes;
   }
 
   private stepNextScenario(): void {
@@ -3710,7 +3711,7 @@ class Runtime implements WorkbenchRuntime {
     draft.reviewRefusal = null;
     draft.outcome = null;
     this.refreshLocalInjectionValidation(draft);
-    const result = updateScenarioStepDraft(state.scenario, stepId, this.scenarioDraftInput(draft));
+    const result = updateScenarioStepDraft(state.scenario, stepId, this.scenarioDraftInput(draft), { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) {
       state.membershipError = result.reason;
       this.publish();
@@ -3728,7 +3729,7 @@ class Runtime implements WorkbenchRuntime {
     const draft = state.drafts.get(stepId);
     if (!draft || (open && draft.sourceRawText === null)) return;
     const presentation = Object.freeze({ ...draft.editorPresentation, compareOpen: open });
-    const result = updateScenarioStepPresentation(state.scenario, stepId, presentation);
+    const result = updateScenarioStepPresentation(state.scenario, stepId, presentation, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     draft.compareOpen = open;
     draft.editorPresentation = presentation;
@@ -3745,7 +3746,7 @@ class Runtime implements WorkbenchRuntime {
     if (!draft) return;
     const next = Object.freeze({ ...presentation, compareOpen: draft.compareOpen });
     if (sameScenarioEditorState(draft.editorPresentation, next)) return;
-    const result = updateScenarioStepPresentation(state.scenario, stepId, next);
+    const result = updateScenarioStepPresentation(state.scenario, stepId, next, { retainedRunBytes: state.retainedRunBytes });
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     draft.editorPresentation = next;
     state.scenario = result.scenario;

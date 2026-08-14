@@ -13,6 +13,7 @@ import {
   reviewScenario,
   scenarioRunAdmission,
   stepScenarioRun,
+  terminalizeScenarioRun,
   undoScenarioStepRemoval,
   updateScenarioStepDraft,
   type ScenarioDraftInput
@@ -346,7 +347,7 @@ describe("Local Injection Scenario", () => {
     expect(stopped.trace.every((entry) => !("injectionId" in entry))).toBe(true);
   });
 
-  it("keeps every actual Trace entry inside its admitted reservation with an explicit detail limitation", async () => {
+  it("retains the complete settled outcome inside its admitted Trace reservation", async () => {
     const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
     const reviewed = reviewScenario(scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
     if (!reviewed.ok) throw new Error(reviewed.reason);
@@ -354,16 +355,38 @@ describe("Local Injection Scenario", () => {
       injectionId: "injection-1",
       execute: async () => ({
         kind: "attempted" as const,
-        outcome: { ...outcome("DELIVERED LOCALLY", "delivered"), detail: "external-detail".repeat(10_000) },
+        outcome: { ...outcome("DELIVERED LOCALLY", "delivered"), detail: "external-detail".repeat(800) },
         evidence: { intervalId: "interval-1", sequence: 1, eventId: "local-1" }
       })
     });
-    expect(run.trace[0]).toMatchObject({
-      kind: "attempted",
-      outcome: { detail: expect.stringContaining("detail limited") },
-      detailLimited: { originalBytes: expect.any(Number), retainedBytes: expect.any(Number) }
-    });
+    expect(run.trace[0]).toMatchObject({ kind: "attempted", outcome: { detail: "external-detail".repeat(800) } });
     expect(new TextEncoder().encode(JSON.stringify(run.trace[0])).byteLength).toBeLessThanOrEqual(run.traceReservationBytes);
+  });
+
+  it("atomically refuses a definition mutation against retained Run bytes", () => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const retainedRunBytes = SCENARIO_MAX_ACCOUNTED_BYTES - scenario.accountedBytes - 1;
+    const result = duplicateScenarioStep(scenario, "step-1", { retainedRunBytes });
+    expect(result).toMatchObject({ ok: false, capacity: "bytes" });
+    expect(scenario.steps).toHaveLength(1);
+  });
+
+  it("terminalizes an abandoned paused Run with exact NOT RUN remainder", async () => {
+    const initial = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const added = addScenarioStep(initial, input("draft-2", "ADD", 2));
+    if (!added.ok) throw new Error(added.reason);
+    const reviewed = reviewScenario(added.scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    const paused = await stepScenarioRun(reviewed.run, {
+      injectionId: "injection-1",
+      execute: async () => ({ kind: "attempted" as const, outcome: outcome("DELIVERED LOCALLY", "delivered"), evidence: { intervalId: "i", sequence: 1, eventId: "e" } })
+    });
+    const archived = terminalizeScenarioRun(paused, 9);
+    expect(archived.status).toBe("stopped");
+    expect(archived.trace).toEqual([
+      expect.objectContaining({ kind: "attempted", stepId: "step-1" }),
+      expect.objectContaining({ kind: "not-run", stepId: "step-2", timestamp: 9, evidence: null })
+    ]);
   });
 });
 

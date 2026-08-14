@@ -391,6 +391,27 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("terminalizes the exact unattempted remainder before archiving a paused Run", async () => {
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", localInjectionExecutor: {
+      execute: vi.fn(async () => result("success", { requestId: "partial-archive", attemptedCount: 1, deliveredCount: 1, failedCount: 0 }))
+    } });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "add-authored-scenario-step" });
+    runtime.dispatch({ type: "review-scenario" });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    expect(runtime.getSnapshot().scenario?.run).toMatchObject({ status: "paused", trace: [{ kind: "attempted" }] });
+    runtime.dispatch({ type: "edit-scenario" });
+    expect(runtime.getSnapshot().scenario?.priorRuns[0]).toMatchObject({
+      status: "stopped",
+      trace: [{ kind: "attempted", stepId: "step-1" }, { kind: "not-run", stepId: "step-2", evidence: null }]
+    });
+    runtime.dispose();
+  });
+
   it("refuses oversized first-Draft conversion without closing or broadening the standalone Draft", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     await flushAsync();
