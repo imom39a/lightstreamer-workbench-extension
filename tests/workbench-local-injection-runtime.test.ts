@@ -1143,4 +1143,39 @@ describe("WorkbenchRuntime Local Injection", () => {
     expect(read.ok && read.value.evidence.some(({ eventId }) => eventId === "synthetic-prior-7")).toBe(true);
     runtime.dispose();
   });
+
+  it("does not offer Local Evidence when the runtime is disposed while delivery is pending", async () => {
+    let syntheticOffers = 0;
+    const history = createAuthoritativeHistory({
+      precommitted: [
+        commandEvent("journey-1", "client-created"),
+        commandEvent("journey-2", "client-status"),
+        commandEvent("journey-3", "subscription-created"),
+        commandEvent("journey-4", "subscription-started"),
+        commandEvent("journey-5", "listener-added"),
+        commandEvent("source-6", "item-update")
+      ],
+      decideOffer(candidate) {
+        if (candidate.kind !== "topology-checkpoint" && candidate.synthetic) syntheticOffers += 1;
+        return "commit";
+      }
+    });
+    let resolveExecution!: (value: LocalInjectionExecutionResult) => void;
+    const pending = new Promise<LocalInjectionExecutionResult>((resolve) => { resolveExecution = resolve; });
+    const runtime = createWorkbenchRuntime({
+      history,
+      captureStatus: "capturing",
+      localInjectionExecutor: { execute: vi.fn(() => pending) }
+    });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "review-local-injection" });
+    runtime.dispatch({ type: "execute-local-injection" });
+
+    runtime.dispose();
+    resolveExecution(result("success", { attemptedCount: 1, deliveredCount: 1, failedCount: 0 }));
+    await flushAsync();
+
+    expect(syntheticOffers).toBe(0);
+  });
 });

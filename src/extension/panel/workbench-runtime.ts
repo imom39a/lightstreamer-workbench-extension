@@ -49,11 +49,9 @@ import {
 import {
   createDraftFromEvent,
   createNewCommandDraftFromContext,
-  validateDraftForExecutionTarget,
   type ReinjectionDraft,
   type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
-import { createSyntheticEventFromDraft } from "../../core/synthetic-event";
 import { createTopologyProjection, type TopologyProjection } from "./topology-projection";
 import {
   selectedUpdateSnapshot,
@@ -129,6 +127,21 @@ import {
   reduceActivityDocument,
   type ActivityDocumentState
 } from "../../core/activity-document";
+import {
+  createLocalInjectionExecutionCoordinator,
+  type LocalInjectionExecutionCoordinator,
+  type LocalInjectionExecutionRequest,
+  type LocalInjectionExecutionResult,
+  type LocalInjectionExecutor,
+  type LocalInjectionOutcome,
+  type LocalInjectionReviewedExecution
+} from "./local-injection-execution-coordinator";
+
+export type {
+  LocalInjectionExecutionRequest,
+  LocalInjectionExecutionResult,
+  LocalInjectionExecutor
+} from "./local-injection-execution-coordinator";
 
 export const DEFAULT_EVIDENCE_WINDOW_SIZE = 60;
 export const DEFAULT_EVIDENCE_OUTPUT_BYTE_LIMIT = 32 * 1024 * 1024;
@@ -381,35 +394,6 @@ export type WorkbenchActivitySnapshot = Readonly<{
   document: ActivityDocumentState | null;
 }>;
 
-export type LocalInjectionExecutionResult = Readonly<{
-  requestId: string;
-  ok: boolean;
-  status:
-    | "success"
-    | "stale-target"
-    | "listener-error"
-    | "wire-error"
-    | "bridge-error"
-    | "acknowledgement-unknown";
-  timestamp: number;
-  error?: string;
-  attemptedCount?: number;
-  deliveredCount?: number;
-  failedCount?: number;
-}>;
-
-export type LocalInjectionExecutionRequest = Readonly<{
-  executionId: string;
-  preflightFingerprint: string;
-  executionTarget: ReinjectionExecutionTarget;
-  document: Readonly<LocalInjectionDocument>;
-  draft: ReinjectionDraft;
-}>;
-
-export type LocalInjectionExecutor = Readonly<{
-  execute(request: LocalInjectionExecutionRequest): Promise<LocalInjectionExecutionResult>;
-}>;
-
 export type WorkbenchLocalInjectionAnchor = Readonly<{
   sourceKind: "captured-event" | "authored";
   sourceEventId: string | null;
@@ -426,18 +410,7 @@ export type WorkbenchLocalInjectionAnchor = Readonly<{
   fieldSchema: readonly string[];
 }>;
 
-export type WorkbenchLocalInjectionOutcome = Readonly<{
-  disposition: "delivered" | "blocked" | "failed" | "partial" | "acknowledgement-unknown";
-  headline: "DELIVERED LOCALLY" | "NOT RUN" | "DELIVERY FAILED" | "PARTIALLY DELIVERED" | "DELIVERY UNKNOWN";
-  status: LocalInjectionExecutionResult["status"];
-  executionId: string;
-  requestId: string | null;
-  timestamp: number;
-  detail: string;
-  attemptedCount?: number;
-  deliveredCount?: number;
-  failedCount?: number;
-}>;
+export type WorkbenchLocalInjectionOutcome = LocalInjectionOutcome;
 
 export type WorkbenchLocalInjectionRestorationOrigin = Readonly<{
   scopeId: string | null;
@@ -740,6 +713,8 @@ type LocalInjectionDraftState = {
   executionId: string | null;
   preflightFingerprint: string | null;
   outcome: WorkbenchLocalInjectionOutcome | null;
+  reviewedExecution: LocalInjectionReviewedExecution | null;
+  reviewRefusal: string | null;
 };
 
 type InvestigationCheckpoint = Readonly<{
@@ -796,6 +771,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
   private readonly normalizer: EventNormalizer;
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
+  private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
   private readonly activityProjectionFactory: (input: ActivityProjectionInput) => ActivityProjection;
   private readonly activityPublicationDelayMs: number;
@@ -993,6 +969,43 @@ class Runtime implements WorkbenchRuntime {
       onCommittedEvidence: (entry) => this.handleCommittedEvidence(entry),
       onHistoryPublication: (publication) => this.handleHistoryPublication(publication),
       onFollowerState: (state) => this.handleFollowerState(state)
+    });
+    this.localInjectionExecutionCoordinator = createLocalInjectionExecutionCoordinator({
+      execute: (request) => this.localInjectionExecutor
+        ? this.localInjectionExecutor.execute(request)
+        : Promise.resolve({
+            requestId: request.executionId,
+            ok: false,
+            status: "bridge-error",
+            timestamp: Date.now(),
+            error: "Local Injection executor is unavailable."
+          }),
+      admitEvidence: (event) => this.evidencePipeline.offer(event).settled.then(
+        (settled) => settled.outcome === "BECAME_EVIDENCE"
+          ? { retained: true as const, evidence: settled.evidence }
+          : { retained: false as const },
+        () => ({ retained: false as const })
+      ),
+      readExecutionFacts: (review) => {
+        const draft = this.localInjectionDraft;
+        if (this.disposed || !draft || draft.reviewedExecution !== review) {
+          return {
+            fingerprint: "local-injection-target-unavailable",
+            targetProblem: "The protected Local Injection execution is no longer current."
+          };
+        }
+        const targetProblem = this.validateLocalInjectionTarget(draft.anchor)[0]?.message;
+        return {
+          fingerprint: this.localInjectionFingerprint(draft),
+          ...(targetProblem ? { targetProblem } : {})
+        };
+      },
+      canAcceptEvidence: (review) => {
+        const draft = this.localInjectionDraft;
+        return !this.disposed &&
+          draft?.phase === "pending" &&
+          draft.reviewedExecution === review;
+      }
     });
     this.evidenceQuery = options.evidenceQuery ?? createEvidenceInvestigationQuery({
       query: (request) => this.evidencePipeline.query(request)
@@ -2764,6 +2777,8 @@ class Runtime implements WorkbenchRuntime {
     if (pending.rawText !== null) {
       draft.rawText = pending.rawText;
       draft.preflightFingerprint = null;
+      draft.reviewedExecution = null;
+      draft.reviewRefusal = null;
       draft.outcome = null;
       this.refreshLocalInjectionValidation(draft);
     }
@@ -2866,7 +2881,9 @@ class Runtime implements WorkbenchRuntime {
       }),
       executionId: null,
       preflightFingerprint: null,
-      outcome: null
+      outcome: null,
+      reviewedExecution: null,
+      reviewRefusal: null
     };
     this.refreshLocalInjectionValidation(state);
     return state;
@@ -2881,6 +2898,8 @@ class Runtime implements WorkbenchRuntime {
     if (draft.phase !== "edit") return;
     draft.rawText = text;
     draft.preflightFingerprint = null;
+    draft.reviewedExecution = null;
+    draft.reviewRefusal = null;
     draft.outcome = null;
     this.refreshLocalInjectionValidation(draft);
     this.publish();
@@ -2895,8 +2914,30 @@ class Runtime implements WorkbenchRuntime {
     if (draft.phase !== "edit") return;
     this.refreshLocalInjectionValidation(draft);
     if (localInjectionReady(draft)) {
-      draft.phase = "review";
-      draft.preflightFingerprint = this.localInjectionFingerprint(draft);
+      const fingerprint = this.localInjectionFingerprint(draft);
+      const executionDraft = applyLocalInjectionDocumentToDraft(
+        draft.baseDraft,
+        draft.document!,
+        draft.explicitConcreteFields
+      );
+      const reviewed = this.localInjectionExecutionCoordinator.review({
+        fingerprint,
+        executionTarget: draft.anchor.executionTarget,
+        document: freezeLocalInjectionDocument(draft.document!),
+        draft: cloneReinjectionDraft(executionDraft),
+        correlation: {}
+      });
+      if (reviewed.kind === "reviewed") {
+        draft.phase = "review";
+        draft.preflightFingerprint = fingerprint;
+        draft.reviewedExecution = reviewed;
+        draft.reviewRefusal = null;
+      } else {
+        draft.phase = "review";
+        draft.preflightFingerprint = fingerprint;
+        draft.reviewedExecution = null;
+        draft.reviewRefusal = reviewed.reason;
+      }
     }
     this.publish();
   }
@@ -2906,6 +2947,8 @@ class Runtime implements WorkbenchRuntime {
     if (!draft || draft.phase !== "review") return;
     draft.phase = "edit";
     draft.preflightFingerprint = null;
+    draft.reviewedExecution = null;
+    draft.reviewRefusal = null;
     this.publish();
   }
 
@@ -2915,143 +2958,65 @@ class Runtime implements WorkbenchRuntime {
       if (this.pendingLocalInjectionEntry) this.pendingLocalInjectionEntry.execute = true;
       return;
     }
-    if (draft.phase !== "review" || !draft.document || !draft.preflightFingerprint) return;
+    if (
+      draft.phase !== "review" ||
+      !draft.document ||
+      !draft.preflightFingerprint ||
+      (!draft.reviewedExecution && !draft.reviewRefusal)
+    ) return;
     this.refreshLocalInjectionValidation(draft);
     const currentFingerprint = this.localInjectionFingerprint(draft);
-    if (!localInjectionReady(draft)) {
+    if (draft.reviewRefusal) {
+      if (currentFingerprint !== draft.preflightFingerprint) {
+        draft.phase = "edit";
+        draft.preflightFingerprint = null;
+        draft.reviewRefusal = null;
+        this.publish();
+        return;
+      }
       const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
       draft.executionId = executionId;
       draft.phase = "outcome";
-      draft.outcome = blockedLocalInjectionOutcome(
+      draft.outcome = this.localInjectionExecutionCoordinator.refusedOutcome(
         executionId,
-        draft.targetDiagnostics[0]?.message ?? "The protected Local Injection target changed after Review."
+        draft.targetDiagnostics[0]?.message ?? draft.reviewRefusal
       );
       this.publish();
       return;
     }
-    if (currentFingerprint !== draft.preflightFingerprint) {
+    const reviewedExecution = draft.reviewedExecution!;
+    const executionCheck = this.localInjectionExecutionCoordinator.check(reviewedExecution);
+    if (executionCheck.kind === "review-invalidated") {
       draft.phase = "edit";
       draft.preflightFingerprint = null;
+      draft.reviewedExecution = null;
+      draft.reviewRefusal = null;
       this.publish();
       return;
     }
 
     const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
-    const executionDraft = applyLocalInjectionDocumentToDraft(
-      draft.baseDraft,
-      draft.document,
-      draft.explicitConcreteFields
-    );
-    const executionValidation = validateDraftForExecutionTarget(
-      executionDraft,
-      draft.anchor.executionTarget
-    );
-    if (!executionValidation.valid) {
-      draft.executionId = executionId;
-      draft.phase = "outcome";
-      draft.outcome = blockedLocalInjectionOutcome(
-        executionId,
-        executionValidation.errors[0] ?? "The Local Injection Draft is not executable."
-      );
-      this.publish();
-      return;
-    }
-    const request: LocalInjectionExecutionRequest = Object.freeze({
-      executionId,
-      preflightFingerprint: draft.preflightFingerprint,
-      executionTarget: draft.anchor.executionTarget,
-      document: freezeLocalInjectionDocument(draft.document),
-      draft: cloneReinjectionDraft(executionDraft)
-    });
     draft.executionId = executionId;
     draft.phase = "pending";
     this.publish();
 
-    let result: Promise<LocalInjectionExecutionResult>;
-    try {
-      result = this.localInjectionExecutor
-        ? this.localInjectionExecutor.execute(request)
-        : Promise.resolve({
-            requestId: executionId,
-            ok: false,
-            status: "bridge-error",
-            timestamp: Date.now(),
-            error: "Local Injection executor is unavailable."
-          });
-    } catch (error) {
-      result = Promise.resolve({
-        requestId: executionId,
-        ok: false,
-        status: "bridge-error",
-        timestamp: Date.now(),
-        error: errorMessage(error)
-      });
-    }
-    void result.then(
-      (outcome) => this.completeLocalInjection(executionId, executionDraft, outcome),
-      (error) => this.completeLocalInjection(executionId, executionDraft, {
-        requestId: executionId,
-        ok: false,
-        status: "acknowledgement-unknown",
-        timestamp: Date.now(),
-        error: errorMessage(error)
-      })
-    );
-  }
-
-  private completeLocalInjection(
-    executionId: string,
-    executionDraft: ReinjectionDraft,
-    result: LocalInjectionExecutionResult
-  ): void {
-    const draft = this.localInjectionDraft;
-    if (
-      this.disposed ||
-      !draft ||
-      draft.phase !== "pending" ||
-      draft.executionId !== executionId ||
-      draft.outcome
-    ) return;
-
-    if (localInjectionResultConfirmsDelivery(result)) {
-      const synthetic = createSyntheticEventFromDraft(
-        executionDraft,
-        {
-          requestId: result.requestId,
-          ok: true,
-          status: "success",
-          timestamp: result.timestamp
-        },
-        draft.anchor.executionTarget
-      );
-      const receipt = this.evidencePipeline.offer(synthetic);
-      void receipt.settled.then(
-        (settled) => {
-          if (settled.outcome === "BECAME_EVIDENCE") {
-            this.setLocalInjectionOutcome(executionId, deliveredLocalInjectionOutcome(executionId, result));
-          } else {
-            this.setLocalInjectionOutcome(
-              executionId,
-              deliveredLocalInjectionOutcome(
-                executionId,
-                result,
-                "Delivered locally, but the synthetic Evidence could not be retained in session history."
-              )
-            );
-          }
-        },
-        () => this.setLocalInjectionOutcome(
-          executionId,
-          deliveredLocalInjectionOutcome(
-            executionId,
-            result,
-            "Delivered locally, but the synthetic Evidence could not be retained in session history."
-          )
-        )
-      );
-      return;
-    }
-    this.setLocalInjectionOutcome(executionId, localInjectionOutcomeFromResult(executionId, result));
+    void this.localInjectionExecutionCoordinator.execute(reviewedExecution, {
+      executionId,
+      onTerminal: (record) => {
+        if (!this.disposed) this.setLocalInjectionOutcome(executionId, record.outcome);
+      }
+    }).then((result) => {
+      if (result.kind === "review-invalidated") {
+        const current = this.localInjectionDraft;
+        if (!current || current.phase !== "pending" || current.executionId !== executionId) return;
+        current.phase = "edit";
+        current.preflightFingerprint = null;
+        current.reviewedExecution = null;
+        current.reviewRefusal = null;
+        this.publish();
+        return;
+      }
+    });
   }
 
   private setLocalInjectionOutcome(
@@ -3692,6 +3657,8 @@ class Runtime implements WorkbenchRuntime {
       ) {
         localInjectionDraft.phase = "edit";
         localInjectionDraft.preflightFingerprint = null;
+        localInjectionDraft.reviewedExecution = null;
+        localInjectionDraft.reviewRefusal = null;
       }
     }
     this.version += 1;
@@ -4895,131 +4862,6 @@ function stableJson(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
-}
-
-function blockedLocalInjectionOutcome(
-  executionId: string,
-  detail: string
-): WorkbenchLocalInjectionOutcome {
-  return Object.freeze({
-    disposition: "blocked",
-    headline: "NOT RUN",
-    status: "stale-target",
-    executionId,
-    requestId: null,
-    timestamp: Date.now(),
-    detail: `BLOCKED · ${detail}`
-  });
-}
-
-function deliveredLocalInjectionOutcome(
-  executionId: string,
-  result: LocalInjectionExecutionResult,
-  detail = "The update was delivered through the protected local page target. No server was contacted."
-): WorkbenchLocalInjectionOutcome {
-  return Object.freeze({
-    disposition: "delivered",
-    headline: "DELIVERED LOCALLY",
-    status: "success",
-    executionId,
-    requestId: result.requestId,
-    timestamp: result.timestamp,
-    detail,
-    ...localInjectionDeliveryCounts(result)
-  });
-}
-
-function localInjectionOutcomeFromResult(
-  executionId: string,
-  result: LocalInjectionExecutionResult
-): WorkbenchLocalInjectionOutcome {
-  const counts = localInjectionDeliveryCounts(result);
-  if (result.status === "success") {
-    return Object.freeze({
-      disposition: "failed",
-      headline: "DELIVERY FAILED",
-      status: result.status,
-      executionId,
-      requestId: result.requestId,
-      timestamp: result.timestamp,
-      detail: result.error ?? "The reported success result did not confirm any listener delivery and was rejected as invalid.",
-      ...counts
-    });
-  }
-  if (result.status === "stale-target") {
-    return Object.freeze({
-      disposition: "blocked",
-      headline: "NOT RUN",
-      status: result.status,
-      executionId,
-      requestId: result.requestId,
-      timestamp: result.timestamp,
-      detail: `BLOCKED · ${result.error ?? "The protected target is stale."}`,
-      ...counts
-    });
-  }
-  if (result.status === "acknowledgement-unknown") {
-    return Object.freeze({
-      disposition: "acknowledgement-unknown",
-      headline: "DELIVERY UNKNOWN",
-      status: result.status,
-      executionId,
-      requestId: result.requestId,
-      timestamp: result.timestamp,
-      detail: result.error ?? "The page may have executed the request, but Workbench did not receive a trustworthy acknowledgement. No retry was attempted."
-    });
-  }
-  if (result.status === "listener-error" && (result.deliveredCount ?? 0) > 0) {
-    return Object.freeze({
-      disposition: "partial",
-      headline: "PARTIALLY DELIVERED",
-      status: result.status,
-      executionId,
-      requestId: result.requestId,
-      timestamp: result.timestamp,
-      detail: result.error ?? "Some captured listeners received the update and at least one listener failed.",
-      ...counts
-    });
-  }
-  return Object.freeze({
-    disposition: "failed",
-    headline: "DELIVERY FAILED",
-    status: result.status,
-    executionId,
-    requestId: result.requestId,
-    timestamp: result.timestamp,
-    detail: result.error ?? "The local delivery target rejected the update.",
-    ...counts
-  });
-}
-
-function localInjectionResultConfirmsDelivery(
-  result: LocalInjectionExecutionResult
-): boolean {
-  if (result.status !== "success" || !result.ok) return false;
-  const hasAnyCount =
-    result.attemptedCount !== undefined ||
-    result.deliveredCount !== undefined ||
-    result.failedCount !== undefined;
-  if (!hasAnyCount) return true;
-  return (
-    Number.isSafeInteger(result.attemptedCount) &&
-    Number.isSafeInteger(result.deliveredCount) &&
-    Number.isSafeInteger(result.failedCount) &&
-    result.attemptedCount! > 0 &&
-    result.deliveredCount === result.attemptedCount &&
-    result.failedCount === 0
-  );
-}
-
-function localInjectionDeliveryCounts(
-  result: LocalInjectionExecutionResult
-): Pick<WorkbenchLocalInjectionOutcome, "attemptedCount" | "deliveredCount" | "failedCount"> {
-  return {
-    ...(result.attemptedCount !== undefined ? { attemptedCount: result.attemptedCount } : {}),
-    ...(result.deliveredCount !== undefined ? { deliveredCount: result.deliveredCount } : {}),
-    ...(result.failedCount !== undefined ? { failedCount: result.failedCount } : {})
-  };
 }
 
 function createScopeNodeDescriptors(state: TopologyState): ScopeNodeDescriptor[] {
