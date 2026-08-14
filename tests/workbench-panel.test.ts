@@ -1738,6 +1738,8 @@ describe("React Workbench Diagnose panel", () => {
     expect(document.activeElement).toBe(find("Stop"));
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...paused, phase: "paused" } })));
     expect(document.activeElement).toBe(find("Resume"));
+    await act(async () => runtime.setSnapshot(snapshot({ visible: false, scenario: { ...paused, phase: "paused", runner: { ...paused.runner!, pauseReason: "HIDDEN", visible: false } } })));
+    expect(document.querySelector('[aria-label="Local Injection Scenario"]')?.textContent).toContain("PAUSED — PANEL HIDDEN · explicit Resume required");
 
     const driftRun = { ...paused.run!, authorizations: [
       { id: "auth-1", kind: "INITIAL_REVIEW" as const, targetFingerprint: "fp-1", listenerIds: ["listener-1"], committedEvidenceBoundary: { intervalId: "interval-1", sequence: 6, eventId: "source-6" }, authorizedRemainingFromOrdinal: 1, activeOffsetMs: 0 },

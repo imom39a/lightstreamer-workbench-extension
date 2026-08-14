@@ -118,6 +118,20 @@ function conjunctionCheckpointRun() {
   return reviewed.run;
 }
 
+function checkpointThenStepRun() {
+  const initial = createScenarioFromDraft(input("draft-1", "ADD", 0), { scenarioId: "scenario-checkpoint-next-step" });
+  const checkpoint = addScenarioCheckpoint(initial, {
+    id: "checkpoint-1", kind: "checkpoint", name: "Captured while hidden",
+    assertions: [{ id: "evidence", kind: "correlated-local-evidence-exists", stepId: "step-1", withinActiveMs: 100 }]
+  });
+  if (!checkpoint.ok) throw new Error(checkpoint.reason);
+  const next = addScenarioStep(checkpoint.scenario, input("draft-2", "UPDATE", 25));
+  if (!next.ok) throw new Error(next.reason);
+  const reviewed = reviewScenario(next.scenario, { runId: "run-hidden-checkpoint", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+  if (!reviewed.ok) throw new Error(reviewed.reason);
+  return reviewed.run;
+}
+
 function delivered(stepOrdinal: number) {
   return {
     kind: "attempted" as const,
@@ -192,6 +206,31 @@ describe("Local Injection Scenario runner", () => {
     feed.publish({ boundary: evidence, intervalId: "interval-1", retainedRange: { first: evidence, last: evidence }, history: "accepting", projection: "live" });
     expect(runner.snapshot()).toMatchObject({ phase: "complete", run: { trace: [{ kind: "attempted" }, { kind: "checkpoint", status: "pass" }] } });
     expect(feed.size()).toBe(0);
+  });
+  it("preserves the hidden auto-pause reason when Capture satisfies a Checkpoint before Resume", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    let evidence: { intervalId: string; sequence: number; eventId: string } | null = null;
+    const runner = createLocalInjectionScenarioRunner(checkpointThenStepRun(), {
+      clock, allocateInjectionId: ({ ordinal }) => `injection-${ordinal}`, execute: async ({ ordinal }) => delivered(ordinal),
+      checkpoint: {
+        feed,
+        observations: (run) => ({
+          priorOutcomes: new Map(run.trace.flatMap((entry) => entry.kind === "attempted" ? [[entry.stepId, entry.outcome] as const] : [])),
+          correlatedLocalEvidence: new Map(evidence ? [["step-1", evidence]] : []),
+          inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence })
+        })
+      }
+    });
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().run.nextMemberIndex).toBe(1));
+    clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().phase).toBe("checkpoint-waiting"));
+    runner.setVisible(false);
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "HIDDEN" });
+    evidence = { intervalId: "interval-1", sequence: 2, eventId: "local-2" };
+    feed.publish({ boundary: evidence, intervalId: "interval-1", retainedRange: { first: evidence, last: evidence }, history: "accepting", projection: "live" });
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "HIDDEN", run: { nextMemberIndex: 2 } });
   });
 
   it("expires at the final active boundary and unsubscribes on Stop", async () => {

@@ -301,9 +301,10 @@ export function createLocalInjectionScenarioRunner(
         phase = "complete";
         remainingDelayMs = 0;
       } else if (phase === "paused" || !checkpointWasPlaying || !visible) {
+        const preservedPauseReason = phase === "paused" ? pauseReason : !visible ? "HIDDEN" as const : "USER" as const;
         freezeActive();
         phase = "paused";
-        pauseReason = "USER";
+        pauseReason = preservedPauseReason ?? "USER";
         remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
       } else {
         remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);

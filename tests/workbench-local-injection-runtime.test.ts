@@ -678,25 +678,33 @@ describe("WorkbenchRuntime Local Injection", () => {
       ...checkpoint,
       assertions: [{ id: "assertion-qty", kind: "command-field-equals", item: { name: identity.itemName, position: 1 }, key: "order-1", field: "qty", expected: 9, withinActiveMs: 100 }]
     } });
+    runtime.dispatch({ type: "add-authored-scenario-step" });
     runtime.dispatch({ type: "review-scenario" });
     runtime.dispatch({ type: "step-next-scenario" });
     await flushAsync();
     await flushAsync();
     runtime.dispatch({ type: "step-next-scenario" });
     expect(runtime.getSnapshot().scenario?.runner?.activeCheckpoint).toMatchObject({ checkpointId: checkpoint.id, status: "waiting" });
+    runtime.dispatch({ type: "set-visible", visible: false });
+    expect(runtime.getSnapshot().scenario?.runner).toMatchObject({ phase: "paused", pauseReason: "HIDDEN" });
 
     const server = commandEvent("server-9", "item-update", {
       update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 9 }, changedFields: { qty: 9 } }
     });
     await history.offer(server).settled;
     await flushAsync();
+    await flushAsync();
+    runtime.dispatch({ type: "set-visible", visible: true });
+    await flushAsync();
+    await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace).toHaveLength(2));
     expect(runtime.getSnapshot().scenario?.run).toMatchObject({
-      status: "complete",
+      status: "paused",
       trace: [
         { kind: "attempted", stepId: "step-1" },
         { kind: "checkpoint", checkpointId: checkpoint.id, status: "pass", resultBoundary: { eventId: "server-9" }, assertions: [{ assertionId: "assertion-qty", status: "pass", observed: { value: 9, provenance: "server" } }] }
       ]
     });
+    expect(runtime.getSnapshot().scenario?.runner).toMatchObject({ phase: "paused", pauseReason: "HIDDEN" });
     runtime.dispose();
   });
 
