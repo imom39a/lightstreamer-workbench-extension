@@ -151,7 +151,7 @@ This is the execution order for incremental delivery. Do not start an opportunit
 | 6 | Connection, transport, recovery, and Session-epoch lens | 1, 5 | B |
 | 7 | Snapshot bootstrap and resubscription correctness lens | 1, 4, 5 | B |
 | 8 | Captured Client Messages and deliberate Server Injection | 1, 5, existing one-Draft contract, accepted Server Injection ADRs | C |
-| 9 | Deterministic multi-event Local Injection scenarios | 1, 2, accepted Scenario domain and interaction model; diagnostic-presence assertion extension also requires the normalized diagnostic contract from 5 | D |
+| 9 | Deterministic multi-event Local Injection scenarios | 1, 2, accepted Scenario domain and interaction model, narrow Item Update replayability/value-semantics contract; diagnostic-presence assertion extension also requires the normalized diagnostic contract from 5 | D |
 | 10 | Deep Delivery QoS and Loss Profiler | 1, 3, 4, 5, 6 | E |
 | 11 | Watch rules and conditional listener breakpoints | 1, 2, 5 | E |
 | 12 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 1, 4, 7 | E |
@@ -441,7 +441,7 @@ Guardrails:
 
 Accepted decision: [ADR 0012 — Run Local Injection Scenarios as immutable single-target plans](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md).
 
-Dependency boundary: full Build 4 is not required to construct, execute, or trace a Scenario because the retained Item Update payload and current Local Injection contracts already carry the needed Source, Draft, target, provenance, outcome counts, and Evidence settlement. Build 9 itself must add the narrow headless replayability check that prevents sanitized, unavailable, or unresolved source fields from becoming executable values without explicit replacement; it does not wait for Build 4's inspection UI. Build 5's additional callback capture, explanations, and lint rules are likewise not execution gates. The first Scenario release deliberately omits diagnostic-presence assertions; that assertion family follows the narrow normalized diagnostic observation contract rather than blocking the rest of Build 9.
+Dependency boundary: full Build 4 is not required to construct, execute, or trace a Scenario because the retained Item Update payload and current Local Injection contracts already carry the needed Source, Draft, target, provenance, outcome counts, and Evidence settlement. The only shared prerequisite is a narrow headless replayability/value-semantics contract that prevents sanitized, unavailable, or unresolved source fields from becoming executable values without explicit replacement; it serves Scenario Review and the later Build 4 inspector without requiring that inspector UI. Build 5's additional callback capture, explanations, and lint rules are likewise not execution gates. The first Scenario release deliberately omits diagnostic-presence assertions; that assertion family follows the narrow normalized diagnostic observation contract rather than blocking the rest of Build 9.
 
 ## P1 Opportunity Details
 
