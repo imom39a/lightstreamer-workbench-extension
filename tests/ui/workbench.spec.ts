@@ -246,6 +246,34 @@ test("Observed Activity preserves exact 10,000-record orientation and keyboard s
   await attachNamedScenarioScreenshot(page, testInfo, "activity-10k-normal-light");
 });
 
+// activity-followup-02: ranking sort currently drops the synchronized ranking table.
+test.fixme("Observed Activity keeps graphical small multiples and ranking tables in one accessible selection model", async ({ page }, testInfo) => {
+  await openScenario(page, "activity-graphical", { width: 900, height: 700 }, "dark");
+  await page.getByRole("button", { name: "Open Activity" }).click();
+  const activity = page.getByRole("main", { name: "Observed Activity" });
+  const chart = activity.getByRole("group", { name: "Server activity small multiples" });
+  await expect(chart).toBeVisible();
+  await expect(chart.getByRole("img", { name: /Server Logical Updates/ })).toBeVisible();
+  await expect(chart.getByRole("img", { name: /Update Deliveries/ })).toBeVisible();
+  await expect(chart).toContainText("zero-based linear scale");
+  await expect(activity.getByRole("table", { name: "Server Logical Updates and Update Deliveries" })).toBeVisible();
+
+  const timeline = activity.getByRole("grid", { name: "Activity timeline buckets" });
+  await timeline.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(activity.locator("[aria-selected='true']")).toHaveCount(1);
+  await expect(activity.getByRole("region", { name: "Activity selection detail" })).toContainText("Logical Updates");
+
+  const deliverySort = activity.getByRole("button", { name: "Update Deliveries", exact: true });
+  await deliverySort.click();
+  await expect(deliverySort).toHaveAttribute("aria-pressed", "true");
+  await expect(activity.getByRole("table", { name: /complete Server ranking/ })).toBeVisible();
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await page.setViewportSize({ width: 563, height: 700 });
+  await expect(activity.getByRole("button", { name: "Back to Evidence" })).toBeVisible();
+  await expectShellFits(page);
+});
+
 test("Workbench explains Local-only COMMAND projection differences without changing the observed projection", async ({ page }, testInfo) => {
   await openScenario(page, "command-projection-local-difference", { width: 1440, height: 900 }, "dark");
   const draft = page.getByRole("region", { name: "Local Injection Draft" });

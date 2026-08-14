@@ -15,6 +15,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "selected-local-evidence",
   "frozen-high-volume",
   "activity-10k",
+  "activity-graphical",
   "live-high-scope",
   "filter-high-cardinality",
   "filter-active-zero",
@@ -144,6 +145,17 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
           listener: { ...(event.listener ?? { id: `activity-listener-${index % 4}` }), metricOwner: true }
         })),
         selectedEventId: highVolumeEventId(10_000),
+        captureStatus: "capturing"
+      };
+    case "activity-graphical":
+      return {
+        id,
+        initialEvents: highVolumeEvents(1, 40).map((event, index) => ({
+          ...event,
+          logicalEventId: `activity-graphical-logical-${index + 1}`,
+          listener: { ...(event.listener ?? { id: `activity-graphical-listener-${index % 4}` }), metricOwner: true }
+        })),
+        selectedEventId: highVolumeEventId(40),
         captureStatus: "capturing"
       };
     case "live-high-scope":
