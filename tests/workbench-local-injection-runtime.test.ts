@@ -729,6 +729,47 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("lets a zero-Injection Checkpoint observe Server drift and gates the following Injection", async () => {
+    const history = historyWithCommandTarget();
+    const executor = { execute: vi.fn(async () => result("success", { attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) };
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: executor });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "add-scenario-checkpoint" });
+    const checkpoint = runtime.getSnapshot().scenario!.scenario.members.find((member) => member.kind === "checkpoint")!;
+    runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: {
+      ...checkpoint,
+      assertions: [{ id: "server-qty", kind: "command-field-equals", item: { name: identity.itemName, position: 1 }, key: "order-1", field: "qty", expected: 9 }]
+    } });
+    runtime.dispatch({ type: "add-authored-scenario-step" });
+    runtime.dispatch({ type: "review-scenario" });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+
+    const server = commandEvent("server-before-checkpoint-9", "item-update", {
+      update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 9 }, changedFields: { qty: 9 } }
+    });
+    await history.offer(server).settled;
+    await flushAsync();
+    runtime.dispatch({ type: "step-next-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({
+      phase: "paused",
+      run: { nextMemberIndex: 2, trace: [{ kind: "attempted" }, { kind: "checkpoint", status: "pass", resultBoundary: { eventId: "server-before-checkpoint-9" }, assertions: [{ observed: { value: 9, provenance: "server" } }] }] }
+    });
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+
+    runtime.dispatch({ type: "step-next-scenario" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({
+      phase: "paused",
+      runner: { pauseReason: "DRIFT_REVIEW_REQUIRED" },
+      run: { nextMemberIndex: 2, drifts: [{ kind: "SERVER_ITEM_UPDATE", evidence: { eventId: "server-before-checkpoint-9" } }] }
+    });
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    runtime.dispose();
+  });
+
   it("terminalizes the exact unattempted remainder before archiving a paused Run", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", localInjectionExecutor: {
       execute: vi.fn(async () => result("success", { requestId: "partial-archive", attemptedCount: 1, deliveredCount: 1, failedCount: 0 }))

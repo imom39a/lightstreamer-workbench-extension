@@ -121,6 +121,8 @@ export type ScenarioSpeed = typeof SCENARIO_SPEEDS[number];
 
 export const SCENARIO_MAX_STEPS = 100;
 export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
+export const SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES = 1_024;
+export const SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES = 4_096;
 // Coordinator outcomes are bounded before they reach this module. Reserve their
 // complete canonical form (including generated correlation/Evidence identity)
 // rather than shortening an already-settled outcome after dispatch.
@@ -652,7 +654,9 @@ function scenarioMemberTraceReservationBytes(member: ReviewedScenarioMember): nu
     case "step":
       return SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER + canonicalBytes({ stepId: member.id, ordinal: member.ordinal });
     case "checkpoint":
-      return 1_024 + canonicalBytes(member) + member.assertions.length * 768;
+      // The immutable member accounts for the expected values copied into the
+      // result. Runtime observations are capped before they enter the Trace.
+      return 1_024 + canonicalBytes(member) + member.assertions.length * SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES;
   }
 }
 

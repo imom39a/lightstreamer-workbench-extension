@@ -14,6 +14,8 @@ import {
   moveScenarioMember,
   removeScenarioCheckpoint,
   reviewScenario,
+  SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES,
+  SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES,
   type ScenarioDraftInput
 } from "../src/core/local-injection-scenario";
 
@@ -153,6 +155,34 @@ describe("Scenario Checkpoints", () => {
       ...common,
       inspectCommand: () => ({ state: "concrete", value: null, certainty: "certain", provenance: "correlated-local", evidence: boundary })
     }, 0).assertions[0]?.status).toBe("pass");
+  });
+
+  it("bounds a near-limit observed primitive in the persistent Trace without changing comparison truth", () => {
+    const observedValue = "🧭".repeat(3 * 1024 * 1024);
+    const evaluation = evaluateScenarioCheckpoint(checkpoint([
+      { id: "large", kind: "command-field-equals", item: { name: "orders", position: 1 }, key: "order-1", field: "payload", expected: "different" }
+    ]), snapshot(), {
+      priorOutcomes: new Map(),
+      correlatedLocalEvidence: new Map(),
+      inspectCommand: () => ({ state: "concrete", value: observedValue, certainty: "certain", provenance: "local-effective", evidence: boundary })
+    }, 0);
+
+    expect(evaluation.status).toBe("fail");
+    expect(evaluation.assertions[0]?.observed.valueLimited).toMatchObject({
+      originalBytes: new TextEncoder().encode(observedValue).byteLength,
+      retainedBytes: SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES,
+      comparison: "different"
+    });
+    expect(new TextEncoder().encode(String(evaluation.assertions[0]?.observed.value)).byteLength).toBeLessThanOrEqual(SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES);
+    expect(new TextEncoder().encode(JSON.stringify(evaluation)).byteLength).toBeLessThan(SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES);
+
+    const equal = evaluateScenarioCheckpoint(checkpoint([
+      { id: "large-equal", kind: "command-field-equals", item: { name: "orders", position: 1 }, key: "order-1", field: "payload", expected: observedValue }
+    ]), snapshot(), {
+      priorOutcomes: new Map(), correlatedLocalEvidence: new Map(),
+      inspectCommand: () => ({ state: "concrete", value: observedValue, certainty: "certain", provenance: "local-effective", evidence: boundary })
+    }, 0);
+    expect(equal.assertions[0]).toMatchObject({ status: "pass", observed: { valueLimited: { comparison: "equal" } } });
   });
 
   it("keeps eventual assertions waiting as a conjunction until one common committed boundary satisfies all", () => {

@@ -3934,6 +3934,10 @@ class Runtime implements WorkbenchRuntime {
         if (!draft) return { allow: false as const, reason: "TARGET_RETIRED" as const, detail: "Scenario Step target is unavailable." };
         const targetProblem = this.validateLocalInjectionTarget(draft.anchor)[0];
         if (targetProblem) return { allow: false as const, reason: "TARGET_RETIRED" as const, detail: targetProblem.message };
+        // A Checkpoint is a zero-Injection committed read boundary. It may
+        // intentionally observe the Server Evidence that created drift; retain
+        // that drift so the next Injection Step still requires re-review.
+        if (member.kind === "checkpoint") return { allow: true as const };
         const authorization = state.run?.authorizations.at(-1);
         const currentListeners = this.scenarioCurrentListenerIds(draft);
         const authorizedListeners = authorization?.listenerIds ?? [];
@@ -3955,7 +3959,6 @@ class Runtime implements WorkbenchRuntime {
             }
           };
         }
-        if (member.kind === "checkpoint") return { allow: true as const };
         const review = state.reviews.get(member.id);
         if (!review || review.kind !== "reviewed") {
           return { allow: false as const, reason: "DRIFT" as const, detail: "Scenario Review is unavailable; return to Edit and Review again." };

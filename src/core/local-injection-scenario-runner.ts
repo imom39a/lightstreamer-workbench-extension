@@ -385,6 +385,7 @@ export function createLocalInjectionScenarioRunner(
       return;
     }
     if (member.kind === "checkpoint") {
+      manualOverride = false;
       dispatchCheckpoint(member);
       return;
     }
@@ -482,7 +483,9 @@ export function createLocalInjectionScenarioRunner(
 
   function pause(requestedReason: "USER" | "DRIFT" = "USER", detail = "Scenario timing paused by the developer."): void {
     if (phase === "waiting" || phase === "checkpoint-waiting") {
-      remainingDelayMs = Math.max(0, plannedDispatchActiveOffsetMs - activeNow());
+      remainingDelayMs = phase === "checkpoint-waiting" && activeCheckpoint
+        ? Math.max(0, activeCheckpoint.deadlineActiveOffsetMs - activeNow())
+        : Math.max(0, plannedDispatchActiveOffsetMs - activeNow());
       clearScheduledTimer();
       freezeActive();
       phase = "paused";
@@ -533,7 +536,7 @@ export function createLocalInjectionScenarioRunner(
     pause,
     stepNext() {
       const member = nextMember();
-      if (phase !== "paused" || !member || !visible || run.status !== "paused" || pauseReason === "DRIFT" || pauseReason === "DRIFT_REVIEW_REQUIRED") return;
+      if (phase !== "paused" || !member || activeCheckpoint || !visible || run.status !== "paused" || pauseReason === "DRIFT" || pauseReason === "DRIFT_REVIEW_REQUIRED") return;
       if (run.controls.length >= admittedControlRecords - 2) return;
       if (!appendControl("STEP NEXT", pauseReason, `${member.kind === "step" ? `Step ${member.ordinal}` : `Checkpoint “${member.name}”`} started immediately; its remaining member delay was bypassed.`)) return;
       manualOverride = true;
@@ -548,7 +551,9 @@ export function createLocalInjectionScenarioRunner(
       if (!visible && (phase === "waiting" || phase === "checkpoint-waiting" || phase === "in-flight")) {
         const priorPhase = phase;
         if (priorPhase === "waiting" || priorPhase === "checkpoint-waiting") {
-          remainingDelayMs = Math.max(0, plannedDispatchActiveOffsetMs - activeNow());
+          remainingDelayMs = priorPhase === "checkpoint-waiting" && activeCheckpoint
+            ? Math.max(0, activeCheckpoint.deadlineActiveOffsetMs - activeNow())
+            : Math.max(0, plannedDispatchActiveOffsetMs - activeNow());
           clearScheduledTimer();
           freezeActive();
           phase = "paused";

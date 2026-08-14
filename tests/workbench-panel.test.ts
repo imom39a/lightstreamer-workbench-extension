@@ -1990,6 +1990,48 @@ describe("React Workbench Diagnose panel", () => {
     }
     expect(checkpointRegion.textContent?.toLowerCase()).not.toContain("authoritative command state is true");
 
+    const limitedTrace = {
+      ...checkpointTrace,
+      assertions: [{
+        ...checkpointTrace.assertions[0],
+        observed: {
+          ...checkpointTrace.assertions[0].observed,
+          value: "preview",
+          valueLimited: { originalBytes: 12_582_912, retainedBytes: 1_024, comparison: "different" as const }
+        }
+      }]
+    };
+    const limitedRun = { ...run, trace: [limitedTrace] };
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "stopped", scenario, run: limitedRun, focusedMemberId: "checkpoint-1", runner: { ...reviewed.runner!, run: limitedRun, phase: "stopped" } } })));
+    expect(checkpointRegion.textContent).toContain("TRACE VALUE LIMITED: observed preview retained 1024 of 12582912 UTF-8 bytes; full value different");
+
+    await act(async () => root.unmount());
+  });
+
+  it("presents and protects a paused Checkpoint active assertion window", async () => {
+    const reviewed = reviewedScenario();
+    const checkpoint = {
+      id: "checkpoint-1", kind: "checkpoint" as const, name: "Portfolio row settles",
+      assertions: [{ id: "assertion-1", kind: "correlated-local-evidence-exists" as const, stepId: "step-1", withinActiveMs: 100 }]
+    };
+    const reviewedCheckpoint = { ...checkpoint, memberOrdinal: 2 };
+    const scenario = { ...reviewed.scenario, members: [reviewed.scenario.steps[0], checkpoint] };
+    const run = { ...reviewed.run!, members: [reviewed.run!.steps[0], reviewedCheckpoint], nextMemberIndex: 1, status: "paused" as const };
+    const activeCheckpoint = {
+      checkpointId: checkpoint.id, checkpointName: checkpoint.name, startedActiveOffsetMs: 0,
+      deadlineActiveOffsetMs: 100, boundary: null, status: "waiting" as const, assertions: []
+    };
+    const runtime = createTestRuntime(snapshot({ scenario: {
+      ...reviewed, phase: "paused", scenario, run, focusedMemberId: checkpoint.id,
+      runner: { ...reviewed.runner!, run, cursor: { members: run.members, index: 1 }, phase: "paused", activeOffsetMs: 40, remainingDelayMs: 60, pauseReason: "HIDDEN", visible: true, activeCheckpoint }
+    } }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Local Injection Scenario"]')).toBeTruthy());
+    const region = document.querySelector<HTMLElement>('[aria-label="Local Injection Scenario"]')!;
+    expect(region.textContent).toContain("60 ms active assertion window remains for Checkpoint Portfolio row settles · explicit Resume required");
+    const stepNext = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Step next");
+    expect(stepNext?.disabled).toBe(true);
     await act(async () => root.unmount());
   });
 });

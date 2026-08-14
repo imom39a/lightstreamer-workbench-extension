@@ -286,11 +286,63 @@ describe("Local Injection Scenario runner", () => {
     await vi.waitFor(() => expect(runner.snapshot().run.nextMemberIndex).toBe(1));
     clock.advance(0);
     expect(runner.snapshot().phase).toBe("checkpoint-waiting");
-    clock.advance(20); runner.pause(); clock.advance(500);
+    clock.advance(20); runner.pause();
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 20, remainingDelayMs: 30, activeCheckpoint: { deadlineActiveOffsetMs: 50 } });
+    clock.advance(500);
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 20, remainingDelayMs: 30 });
     runner.play(); clock.advance(29);
     expect(runner.snapshot().phase).toBe("checkpoint-waiting");
     clock.advance(1);
     expect(runner.snapshot()).toMatchObject({ phase: "stopped", activeOffsetMs: 50, run: { trace: [{ kind: "attempted" }, { kind: "checkpoint", status: "expired" }] } });
+  });
+
+  it("reports the frozen assertion window when hidden and does not restart a paused Checkpoint with Step next", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const runner = createLocalInjectionScenarioRunner(checkpointRun(100), {
+      clock, allocateInjectionId: () => "injection-1", execute: async () => delivered(1),
+      checkpoint: { feed, observations: (run) => ({ priorOutcomes: new Map(run.trace.flatMap((entry) => entry.kind === "attempted" ? [[entry.stepId, entry.outcome] as const] : [])), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }) }
+    });
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().run.nextMemberIndex).toBe(1));
+    clock.advance(0); clock.advance(40); runner.setVisible(false);
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", visible: false, pauseReason: "HIDDEN", activeOffsetMs: 40, remainingDelayMs: 60, activeCheckpoint: { deadlineActiveOffsetMs: 100 } });
+    expect(feed.size()).toBe(1);
+    runner.setVisible(true);
+    runner.stepNext();
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 40, remainingDelayMs: 60, activeCheckpoint: { deadlineActiveOffsetMs: 100 } });
+    expect(feed.size()).toBe(1);
+  });
+
+  it("consumes Step next at a Checkpoint without corrupting the next timed Injection", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const evidence = { intervalId: "interval-1", sequence: 1, eventId: "local-1" };
+    const execute = vi.fn(async ({ ordinal }: { ordinal: number }) => delivered(ordinal));
+    const runner = createLocalInjectionScenarioRunner(checkpointThenStepRun(), {
+      clock, allocateInjectionId: ({ ordinal }) => `injection-${ordinal}`, execute,
+      checkpoint: {
+        feed,
+        observations: (run) => ({
+          priorOutcomes: new Map(run.trace.flatMap((entry) => entry.kind === "attempted" ? [[entry.stepId, entry.outcome] as const] : [])),
+          correlatedLocalEvidence: new Map([["step-1", evidence]]),
+          inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence })
+        })
+      }
+    });
+    runner.stepNext();
+    await vi.waitFor(() => expect(runner.snapshot()).toMatchObject({ phase: "paused", run: { nextMemberIndex: 1 } }));
+    runner.stepNext();
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", run: { nextMemberIndex: 2 }, remainingDelayMs: 25 });
+    runner.play(); clock.advance(24);
+    expect(execute).toHaveBeenCalledTimes(1);
+    clock.advance(1);
+    await vi.waitFor(() => expect(runner.snapshot().phase).toBe("complete"));
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(runner.snapshot().run.trace[2]).toMatchObject({
+      kind: "attempted",
+      timing: { manualOverride: false, bypassedDelayMs: 0, plannedDispatchActiveOffsetMs: 25, actualDispatchActiveOffsetMs: 25 }
+    });
   });
   it("halts a retired target before allocating identity and terminalizes every due Step", () => {
     const clock = new FakeClock();

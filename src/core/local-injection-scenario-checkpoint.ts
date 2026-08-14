@@ -1,11 +1,13 @@
 import type { EvidenceRef } from "./event-history-authoritative";
-import type {
-  ScenarioAssertion,
-  ScenarioCheckpoint,
-  ScenarioPrimitive
+import {
+  SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES,
+  type ScenarioAssertion,
+  type ScenarioCheckpoint,
+  type ScenarioPrimitive
 } from "./local-injection-scenario";
-export const SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT = 16;
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
+
+export const SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT = 16;
 
 export type ScenarioAssertionStatus = "pass" | "fail" | "waiting" | "expired" | "invalid" | "unavailable" | "not-evaluable";
 export type ScenarioObservationCertainty = "certain" | "ambiguous" | "unavailable";
@@ -48,6 +50,11 @@ export type ScenarioAssertionObserved = Readonly<{
   certainty: ScenarioObservationCertainty;
   provenance: ScenarioObservationProvenance;
   evidence: EvidenceRef | null;
+  valueLimited?: Readonly<{
+    originalBytes: number;
+    retainedBytes: number;
+    comparison: "equal" | "different" | "not-compared";
+  }>;
 }>;
 
 export type ScenarioAssertionResult = Readonly<{
@@ -247,7 +254,43 @@ function result(
   observed: ScenarioAssertionObserved,
   relatedEvidence: readonly EvidenceRef[]
 ): ScenarioAssertionResult {
-  return frozen({ assertionId: assertion.id, kind: assertion.kind, status, expected: expectedFor(assertion), observed, relatedEvidence: [...relatedEvidence] });
+  return frozen({ assertionId: assertion.id, kind: assertion.kind, status, expected: expectedFor(assertion), observed: boundedObserved(assertion, status, observed), relatedEvidence: [...relatedEvidence] });
+}
+
+function boundedObserved(assertion: ScenarioAssertion, status: ScenarioAssertionStatus, observed: ScenarioAssertionObserved): ScenarioAssertionObserved {
+  if (typeof observed.value !== "string") return observed;
+  const originalBytes = utf8Bytes(observed.value);
+  if (originalBytes <= SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES) return observed;
+  const value = utf8Prefix(observed.value, SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES);
+  return {
+    ...observed,
+    value,
+    valueLimited: {
+      originalBytes,
+      retainedBytes: utf8Bytes(value),
+      comparison: assertion.kind === "command-field-equals" ? status === "pass" ? "equal" : "different" : "not-compared"
+    }
+  };
+}
+
+function utf8Prefix(value: string, maximumBytes: number): string {
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (utf8Bytes(value.slice(0, middle)) <= maximumBytes) low = middle;
+    else high = middle - 1;
+  }
+  let end = low;
+  if (end > 0) {
+    const code = value.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  }
+  return value.slice(0, end);
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function expectedFor(assertion: ScenarioAssertion): Readonly<Record<string, unknown>> {
