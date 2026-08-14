@@ -1518,6 +1518,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "open-activity":
         this.activityOpen = true;
+        void this.hydrateActivityEvidence();
         this.publish();
         return;
       case "close-activity":
@@ -1542,14 +1543,14 @@ class Runtime implements WorkbenchRuntime {
       case "set-activity-scroll": {
         const document = this.activityDocumentState ?? this.activitySnapshot(this.scopeSnapshot()).document;
         if (!document) return;
-        const command = command.type === "select-activity"
+        const documentCommand = command.type === "select-activity"
           ? { type: "select" as const, selection: command.selection }
           : command.type === "set-activity-local-series"
             ? { type: "set-local-series" as const, enabled: command.enabled }
             : command.type === "set-activity-ranking-sort"
               ? { type: "set-ranking-sort" as const, sort: command.sort }
               : { type: "set-scroll" as const, documentTop: command.documentTop, plotLeft: command.plotLeft };
-        this.activityDocumentState = reduceActivityDocument(document, command).state;
+        this.activityDocumentState = reduceActivityDocument(document, documentCommand).state;
         this.publish();
         return;
       }
@@ -3886,13 +3887,53 @@ class Runtime implements WorkbenchRuntime {
       coverage: this.captureSnapshot().coverage,
       terminal: this.historyStatus.phase === "STOPPED" || Boolean(this.historyStatus.terminal)
     };
+    const projection = createActivityProjection({ evidence: entries, scope: activityScope, filter: this.canonicalFilter, readPoint });
+    if (this.activityOpen && !this.activityDocumentState) {
+      this.activityDocumentState = openActivityDocument(projection, {
+        scope: activityScope,
+        filter: this.canonicalFilter,
+        readPoint,
+        evidenceSelectionId: this.selectionEventId,
+        evidenceScrollTop: 0,
+        view: this.mode === "frozen" ? "FROZEN" : "FOLLOW LIVE",
+        localDraftId: this.localInjectionDraft?.id ?? null
+      });
+    }
+    const document = this.activityDocumentState;
     return Object.freeze({
       open: this.activityOpen,
       scope: activityScope,
       filter: this.canonicalFilter,
       readPoint,
-      projection: createActivityProjection({ evidence: entries, scope: activityScope, filter: this.canonicalFilter, readPoint })
+      projection: document?.view === "FROZEN" ? document.projection : projection,
+      document
     });
+  }
+
+  private async hydrateActivityEvidence(): Promise<void> {
+    let cursor: string | undefined;
+    const hydrated: ActivityEvidence[] = [];
+    do {
+      const result = await this.evidenceQuery.query({
+        at: "LATEST_COMMITTED",
+        scope: { kind: "PAGE" },
+        filter: createFilter(1),
+        page: { order: "OLDEST_FIRST", size: 100, ...(cursor ? { cursor } : {}) },
+        discover: [],
+        includePayload: true
+      });
+      if (!result.ok) return;
+      for (const record of result.value.page.evidence) {
+        hydrated.push({ intervalId: record.identity.intervalId, sequence: record.identity.sequence, event: this.eventForRecord(record) });
+      }
+      cursor = result.value.page.nextCursor ?? undefined;
+    } while (cursor);
+    if (this.disposed) return;
+    const bySequence = new Map<number, ActivityEvidence>();
+    for (const entry of this.activityEvidence) bySequence.set(entry.sequence, entry);
+    for (const entry of hydrated) bySequence.set(entry.sequence, entry);
+    this.activityEvidence.splice(0, this.activityEvidence.length, ...[...bySequence.values()].sort((left, right) => left.sequence - right.sequence));
+    if (this.activityOpen) this.publish();
   }
 
   private exportSnapshot(): WorkbenchExportSnapshot {

@@ -227,6 +227,25 @@ test("Workbench keeps COMMAND projection UI out of selected high-volume Evidence
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
+test("Observed Activity preserves exact 10,000-record orientation and keyboard selection", async ({ page }, testInfo) => {
+  await openScenario(page, "activity-10k", { width: 900, height: 700 }, "light");
+  await expect(page.getByRole("button", { name: "Open Activity" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Activity" }).click();
+  const activity = page.getByRole("main", { name: "Observed Activity" });
+  await expect(activity).toBeVisible();
+  await expect(activity).toContainText("10,000 Logical Updates");
+  await expect(activity).toContainText("10,000 Update Deliveries");
+  await expect(activity.getByRole("grid", { name: "Activity timeline buckets" })).toBeVisible();
+  const grid = activity.getByRole("grid", { name: "Activity timeline buckets" });
+  await grid.focus();
+  await page.keyboard.press("End");
+  await expect(activity.locator("tr[aria-selected='true']")).toHaveCount(1);
+  await expect(activity.getByRole("button", { name: "Show supporting Evidence" })).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await expect(page.getByText(/Filter: /)).toBeVisible();
+  await attachNamedScenarioScreenshot(page, testInfo, "activity-10k-normal-light");
+});
+
 test("Workbench explains Local-only COMMAND projection differences without changing the observed projection", async ({ page }, testInfo) => {
   await openScenario(page, "command-projection-local-difference", { width: 1440, height: 900 }, "dark");
   const draft = page.getByRole("region", { name: "Local Injection Draft" });
@@ -318,12 +337,16 @@ test("Workbench exposes structural Scope as a roving tree at wide geometry", asy
   await expect(page.locator(":focus")).toHaveRole("treeitem");
   const scopeItems = page.getByRole("treeitem");
   expect(await scopeItems.count()).toBeGreaterThan(1);
+  await expect(page.getByLabel("Structural runtime scope")).not.toContainText("0 clients · 0 subscriptions");
+  const evidenceRows = page.locator('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]');
+  expect(await evidenceRows.count()).toBeGreaterThan(0);
   await expect(scopeItems.first()).toContainText("Active");
   await scopeItems.first().focus();
   await page.keyboard.press("ArrowDown");
   await expect(page.locator(":focus")).toHaveRole("treeitem");
   await page.keyboard.press("Enter");
   await expect(page.locator(":focus")).toHaveAttribute("aria-selected", "true");
+  expect(await evidenceRows.count()).toBeGreaterThan(0);
 
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);

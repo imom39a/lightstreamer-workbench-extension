@@ -525,6 +525,33 @@
 .workbench-react__document-status:not(:empty) { min-height: 27px; border-bottom: 1px solid var(--wb-border); padding: 6px 10px; }
 .workbench-react__document pre { min-height: 0; flex: 1 1 auto; margin: 0; overflow: auto; background: var(--wb-bg); color: var(--wb-text); padding: 12px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2; }
 
+.workbench-react__activity { background: var(--wb-bg); }
+.workbench-react__activity-scroll { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 12px; }
+.workbench-react__activity-summary, .workbench-react__activity-section { border: 1px solid var(--wb-border); background: var(--wb-raised); padding: 10px; margin: 0 0 10px; }
+.workbench-react__activity-section h2, .workbench-react__activity-summary h2 { margin: 0 0 6px; font-size: 12px; }
+.workbench-react__activity-summary p, .workbench-react__activity-section p { margin: 5px 0; color: var(--wb-muted); }
+.workbench-react__activity-actions, .workbench-react__activity-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.workbench-react__activity-plot { overflow-x: auto; max-width: 100%; }
+.workbench-react__activity table { width: 100%; min-width: 540px; border-collapse: collapse; font-size: 11px; }
+.workbench-react__activity th, .workbench-react__activity td { border-bottom: 1px solid var(--wb-border); padding: 5px 7px; text-align: right; white-space: nowrap; }
+.workbench-react__activity th:first-child, .workbench-react__activity td:first-child { text-align: left; }
+.workbench-react__activity caption { padding: 0 0 6px; text-align: left; color: var(--wb-muted); }
+.workbench-react__activity button { font: inherit; }
+.workbench-react__activity-plot:focus-visible, .workbench-react__activity button:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
+.workbench-react__activity tr[aria-selected="true"] { background: var(--wb-selection); }
+.workbench-react__activity-markers { margin: 0; padding: 0; list-style: none; }
+.workbench-react__activity-markers li + li { margin-top: 4px; }
+.workbench-react__activity-markers button { width: 100%; border: 0; background: transparent; color: var(--wb-text); padding: 4px; text-align: left; }
+.workbench-react__activity-markers button[aria-pressed="true"] { background: var(--wb-selection); }
+@media (max-width: 700px) {
+  .workbench-react__activity-scroll { padding: 8px; }
+  .workbench-react__document-boundary span { min-width: 132px; }
+}
+@media (max-height: 380px) {
+  .workbench-react__activity-scroll { padding: 6px; }
+  .workbench-react__activity-summary, .workbench-react__activity-section { padding: 7px; margin-bottom: 6px; }
+}
+
 .workbench-react[data-geometry="normal"] .workbench-react__workspace { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 1fr) 6px minmax(210px, var(--wb-context-size, 260px)); }
 .workbench-react[data-geometry="normal"] .workbench-react__scope,
 .workbench-react[data-geometry="normal"] .workbench-react__splitter--scope { display: none; }
