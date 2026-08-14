@@ -89,6 +89,16 @@ describe("Local Injection Scenario", () => {
     expect(Object.isFrozen(scenario.steps[0]?.draft)).toBe(true);
   });
 
+  it("cannot become an empty implicit execution queue", () => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+
+    expect(removeScenarioStep(scenario, "step-1")).toEqual({
+      ok: false,
+      reason: "A Scenario must retain at least one Step."
+    });
+    expect(scenario.steps.map(({ id }) => id)).toEqual(["step-1"]);
+  });
+
   it("adds exactly one compatible captured update and reports a specific incompatibility", () => {
     const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
     const compatible = addScenarioStep(scenario, input("draft-2", "UPDATE", 2));
