@@ -786,8 +786,11 @@ class Runtime implements WorkbenchRuntime {
   private readonly retainedLocalEvidenceIds = new Set<string>();
   private readonly offeredTopologyCheckpointSyncIds = new Set<string>();
   private readonly activityEvidence: ActivityEvidence[] = [];
+  private readonly activityEvidenceKeys = new Set<string>();
   private activityOpen = false;
   private activityDocumentState: ActivityDocumentState | null = null;
+  private activityHydrationPromise: Promise<void> | null = null;
+  private activityHydrated = false;
   private topologyProjection: TopologyProjection = createTopologyProjection();
   private readonly evidencePresentationCache = new WeakMap<LightstreamerEventEnvelope, WorkbenchEvidence>();
   private readonly evidenceEventCache = new Map<string, LightstreamerEventEnvelope>();
@@ -1518,7 +1521,11 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "open-activity":
         this.activityOpen = true;
-        void this.hydrateActivityEvidence();
+        if (!this.activityHydrated && this.activityHydrationPromise === null) {
+          this.activityHydrationPromise = this.hydrateActivityEvidence().finally(() => {
+            this.activityHydrationPromise = null;
+          });
+        }
         this.publish();
         return;
       case "close-activity":
@@ -1874,6 +1881,9 @@ class Runtime implements WorkbenchRuntime {
 
   private resetCoherentStateAfterClear(): void {
     this.activityEvidence.splice(0, this.activityEvidence.length);
+    this.activityEvidenceKeys.clear();
+    this.activityHydrationPromise = null;
+    this.activityHydrated = false;
     this.queryGeneration += 1;
     this.evidenceQueryAbortController?.abort();
     this.evidenceQueryAbortController = null;
@@ -2095,7 +2105,11 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     const event = entry.candidate;
-    this.activityEvidence.push(Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, event }));
+    const activityKey = `${entry.intervalId}\u0000${entry.sequence}`;
+    if (!this.activityEvidenceKeys.has(activityKey)) {
+      this.activityEvidenceKeys.add(activityKey);
+      this.activityEvidence.push(Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, event }));
+    }
     // The canonical page projection is intentionally payload-light. Retain
     // the already-observed immutable envelope as a presentation cache so
     // fields that are legitimately unavailable to the facet catalog (for
@@ -3887,7 +3901,12 @@ class Runtime implements WorkbenchRuntime {
       coverage: this.captureSnapshot().coverage,
       terminal: this.historyStatus.phase === "STOPPED" || Boolean(this.historyStatus.terminal)
     };
-    const projection = createActivityProjection({ evidence: entries, scope: activityScope, filter: this.canonicalFilter, readPoint });
+    const projection = createActivityProjection({
+      evidence: this.activityOpen || entries.length <= 1_000 ? entries : [],
+      scope: activityScope,
+      filter: this.canonicalFilter,
+      readPoint
+    });
     if (this.activityOpen && !this.activityDocumentState) {
       this.activityDocumentState = openActivityDocument(projection, {
         scope: activityScope,
@@ -3929,10 +3948,19 @@ class Runtime implements WorkbenchRuntime {
       cursor = result.value.page.nextCursor ?? undefined;
     } while (cursor);
     if (this.disposed) return;
-    const bySequence = new Map<number, ActivityEvidence>();
-    for (const entry of this.activityEvidence) bySequence.set(entry.sequence, entry);
-    for (const entry of hydrated) bySequence.set(entry.sequence, entry);
-    this.activityEvidence.splice(0, this.activityEvidence.length, ...[...bySequence.values()].sort((left, right) => left.sequence - right.sequence));
+    const latchedIntervalId = hydrated[0]?.intervalId ?? this.historyStatus.interval.id;
+    const latchedBoundary = hydrated.reduce((highest, entry) => Math.max(highest, entry.sequence), 0);
+    const retainedAfterLatch = this.activityEvidence.filter((entry) =>
+      entry.intervalId !== latchedIntervalId || entry.sequence > latchedBoundary
+    );
+    const byKey = new Map<string, ActivityEvidence>();
+    for (const entry of hydrated) byKey.set(`${entry.intervalId}\u0000${entry.sequence}`, entry);
+    for (const entry of retainedAfterLatch) byKey.set(`${entry.intervalId}\u0000${entry.sequence}`, entry);
+    const rebuilt = [...byKey.values()].sort((left, right) => left.sequence - right.sequence);
+    this.activityEvidence.splice(0, this.activityEvidence.length, ...rebuilt);
+    this.activityEvidenceKeys.clear();
+    for (const entry of rebuilt) this.activityEvidenceKeys.add(`${entry.intervalId}\u0000${entry.sequence}`);
+    this.activityHydrated = true;
     if (this.activityOpen) this.publish();
   }
 

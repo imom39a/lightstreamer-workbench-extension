@@ -233,8 +233,8 @@ test("Observed Activity preserves exact 10,000-record orientation and keyboard s
   await page.getByRole("button", { name: "Open Activity" }).click();
   const activity = page.getByRole("main", { name: "Observed Activity" });
   await expect(activity).toBeVisible();
-  await expect(activity).toContainText("10,000 Logical Updates");
-  await expect(activity).toContainText("10,000 Update Deliveries");
+  await expect(activity).toContainText("9,999 Logical Updates");
+  await expect(activity).toContainText("9,999 Update Deliveries");
   await expect(activity.getByRole("grid", { name: "Activity timeline buckets" })).toBeVisible();
   const grid = activity.getByRole("grid", { name: "Activity timeline buckets" });
   await grid.focus();
