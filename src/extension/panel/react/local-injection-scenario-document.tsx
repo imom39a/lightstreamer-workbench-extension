@@ -74,13 +74,6 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       <div><dt>Scenario Clock</dt><dd>{state.scenario.speed}× speed · monotonic active time · hidden and paused time excluded</dd></div>
       {run ? <><div><dt>Reviewed Run</dt><dd>{run.id} · Scenario revision {run.scenarioRevision} · target fingerprint {run.targetFingerprint}</dd></div><div><dt>Evidence seed</dt><dd>{run.committedEvidenceSeed ? `${run.committedEvidenceSeed.intervalId} · sequence ${run.committedEvidenceSeed.sequence}` : "Empty committed Evidence boundary"}</dd></div></> : null}
     </dl>
-    {run ? <section className="workbench-react__scenario-ledger" aria-label="Scenario Run ledger">
-      <header><strong>Persistent Run ledger</strong><span>Panel Session-local · append-only authorization, drift, outcome, retention, assertion, and Evidence correlations</span></header>
-      <ol>
-        {run.authorizations.map((authorization) => <li key={authorization.id}><strong>{authorization.kind === "INITIAL_REVIEW" ? "AUTHORIZED" : "RE-AUTHORIZED"}</strong>{` · ${authorization.id} · remaining from Step ${authorization.authorizedRemainingFromOrdinal} · target ${authorization.targetFingerprint} · listeners ${authorization.listenerIds.join(", ") || "none"} · Evidence boundary ${authorization.committedEvidenceBoundary?.eventId ?? "empty"}`}</li>)}
-        {run.drifts.map((drift) => <li key={drift.id}><strong>DRIFT</strong>{` · ${drift.kind} before Step ${drift.detectedBeforeOrdinal} · added ${drift.addedListenerIds.join(", ") || "none"} · removed ${drift.removedListenerIds.join(", ") || "none"} · Evidence ${drift.evidence?.eventId ?? "none"} · ${drift.detail}`}</li>)}
-      </ol>
-    </section> : null}
     {state.membershipError ? <p className="workbench-react__scenario-problem" role="alert"><strong>BLOCKED.</strong> {state.membershipError} No Injection was attempted.</p> : null}
     {state.pickerOpen ? <section className="workbench-react__scenario-picker" aria-label="Scenario Evidence picker" onKeyDown={(event) => {
       if (event.key !== "Escape") return;
@@ -107,6 +100,13 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       <button type="button" onClick={() => runtime.dispatch({ type: "close-scenario-evidence-picker" })}>Cancel</button>
     </section> : null}
     <div className="workbench-react__scenario-steps" aria-label="Ordered Scenario Steps">
+      {run ? <section className="workbench-react__scenario-ledger" aria-label="Scenario Run ledger">
+        <header><strong>Persistent Run ledger</strong><span>Panel Session-local · append-only authorization, drift, outcome, retention, assertion, and Evidence correlations</span></header>
+        <ol>
+          {run.authorizations.map((authorization) => <li key={authorization.id}><strong>{authorization.kind === "INITIAL_REVIEW" ? "AUTHORIZED" : "RE-AUTHORIZED"}</strong>{` · ${authorization.id} · remaining from Step ${authorization.authorizedRemainingFromOrdinal} · target ${authorization.targetFingerprint} · listeners ${authorization.listenerIds.join(", ") || "none"} · Evidence boundary ${authorization.committedEvidenceBoundary?.eventId ?? "empty"}`}</li>)}
+          {run.drifts.map((drift) => <li key={drift.id}><strong>DRIFT</strong>{` · ${drift.kind} before Step ${drift.detectedBeforeOrdinal} · added ${drift.addedListenerIds.join(", ") || "none"} · removed ${drift.removedListenerIds.join(", ") || "none"} · Evidence ${drift.evidence?.eventId ?? "none"} · ${drift.detail}`}</li>)}
+        </ol>
+      </section> : null}
       {state.scenario.steps.map((step, index) => {
         const trace = run?.trace.find((entry) => entry.stepId === step.id);
         const focused = state.focusedStepId === step.id;

@@ -113,8 +113,8 @@ try {
     platform: process.platform,
     baselinePlatformSuffix: process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform,
     platformBaselineCommands: [
-      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-\"", result: "8/8 passed" },
-      { platform: "linux", update: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -v /tmp/lsw-scenario04-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui:update -- --grep \"visual baseline: scenario-\"'", comparison: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -v /tmp/lsw-scenario04-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui -- --grep \"visual baseline: scenario-\"'", result: "8/8 passed" }
+      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-\"", result: "14/14 passed" },
+      { platform: "linux", update: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -v /tmp/lsw-scenario04-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui:update -- --grep \"visual baseline: scenario-\"'", comparison: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -v /tmp/lsw-scenario04-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui -- --grep \"visual baseline: scenario-\"'", result: "14/14 passed" }
     ],
     browser: await browser.version(),
     browserMode: "headless",
@@ -127,12 +127,12 @@ try {
     contactSheets,
     review: results.some(({ id }) => id.startsWith("scenario-")) ? {
       classification: "Material UI",
-      changedWorkflow: "A developer plays, pauses, steps, hides, resumes, and stops a reviewed same-target Scenario on deterministic active time while every real Outcome and Evidence settlement remains truthful.",
+      changedWorkflow: "A reviewed same-target Scenario halts before unsafe work, records exact target/listener/Server-Evidence drift, and preserves truthful partial, unknown, delivered-unretained, and post-Clear Evidence outcomes.",
       acceptanceCriteria: [
-        "The monotonic Scenario Clock starts each relative delay only at Play or the prior committed settlement, excludes paused/hidden time, and dispatches at most one Injection without catch-up bursts.",
-        "Pause, hidden auto-pause, Step next, and Stop preserve real in-flight Outcome/Evidence, prevent future dispatch correctly, and record bounded append-only timing/control Trace evidence.",
-        "Speed is immutable in the reviewed Run; the wide completed ledger shows planned, actual, settlement, and lateness offsets plus a fresh Run again action.",
-        "Compact, normal, shallow forced-colors, and wide states expose only valid controls, preserve the exact protected target/boundary, retain visible focus, and have no serious or critical axe violations."
+        "Every due Step checks the exact target and immutable Review before allocating an Injection identity; retirement terminalizes and listener or exact Server Evidence drift requires explicit re-review.",
+        "The append-only Panel Session ledger preserves target fingerprints, listener deltas, full Evidence references, per-Step correlations, exact counts, retention, and Evidence availability.",
+        "Partial, failed, unknown, and full delivered-but-unretained outcomes stop without retry, skip, fabricated Evidence, projection advance, or rollback implication.",
+        "Compact, normal, shallow forced-colors, and wide states expose only truthful controls in one content scroll, retain visible focus, and have no serious or critical axe violations."
       ],
       browserResult: {
         scenarioCaptures: `${results.filter(({ id }) => id.startsWith("scenario-")).length}/${results.filter(({ id }) => id.startsWith("scenario-")).length} passed`,
@@ -142,9 +142,9 @@ try {
         checkedScenarios: results.filter((result) => result.id.startsWith("scenario-") && result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.filter(({ id }) => id.startsWith("scenario-")).reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "Deliberate Play/Pause/Step next/Stop transitions move focus to the valid semantic successor, in-flight transitions keep Stop reachable, passive timer publications do not steal stable document focus, and terminal settlement moves focus only when the disappearing timed control owned it.",
-      matrixRationale: "Eight Scenario states cover compact Edit and paused controls, normal Review, wide Complete timing ledger, shallow forced-colors truthful stopped Trace, bulk preview with incompatible reasons, authored removal with Undo, and the 100-Step capacity refusal.",
-      baselineIntent: "Maintain platform-specific Scenario baselines for Darwin and Linux for all eight membership and execution states changed or relied on by this Material UI slice."
+      keyboardAndFocus: "Drift exposes Re-review immutable plan as the sole primary control with visible physical-keyboard focus; Stop remains reachable, terminal controls recover semantically, and passive evidence cannot steal focus.",
+      matrixRationale: "Fourteen Scenario states retain the eight authoring/clock baselines and add compact partial counts, normal listener drift, shallow forced-colors unknown, wide Server Evidence drift, normal delivered-unretained, and compact post-Clear unavailable Evidence.",
+      baselineIntent: "Maintain platform-specific Darwin and Linux baselines for all fourteen Scenario membership, timing, halt, retention, and Evidence-availability states."
     } : {
       classification: "Material UI",
       changedWorkflow: "The global diagnostics footer keeps mixed Warning, Error, and Information entries readable and discoverable without taking over the Evidence workspace.",
@@ -442,7 +442,9 @@ async function captureProduction(runningBrowser, scenario) {
     }
     if (scenario.production.setup === "scenario") {
       const scenarioDocument = page.getByRole("region", { name: "Local Injection Scenario" });
-      const actionName = scenario.production.setup === "scenario-hidden-pause"
+      const actionName = scenario.production.scenario.endsWith("listener-drift") || scenario.production.scenario.endsWith("server-drift")
+        ? "Re-review immutable plan"
+        : scenario.production.setup === "scenario-hidden-pause"
         ? "Resume"
         : scenario.production.scenario.endsWith("edit")
         ? "Add captured update"
