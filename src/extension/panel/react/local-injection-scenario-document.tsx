@@ -15,6 +15,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   const previousPicker = useRef(false);
   const openedScenarioId = useRef<string | null>(null);
   const focusIntent = useRef<"play" | "pause" | "resume" | "resume-or-run-again" | "stop-or-run-again" | "edit" | null>(null);
+  const recoverTerminalFocus = useRef(false);
   useLayoutEffect(() => {
     if (!state) return;
     if (!previousPicker.current && state.pickerOpen) {
@@ -40,8 +41,14 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
     const target = keys.map((key) => document.querySelector<HTMLButtonElement>(`[aria-label="Local Injection Scenario"] [data-scenario-control="${key}"]:not(:disabled)`)).find(Boolean);
     if (!target) return;
     target.focus();
+    recoverTerminalFocus.current = target.dataset.scenarioControl === "pause" || target.dataset.scenarioControl === "stop";
     if (target.dataset.scenarioControl !== "stop") focusIntent.current = null;
   }, [state?.phase, state?.runner?.phase, state?.runner?.pauseReason, state?.runner?.controlCapacityReached]);
+  useLayoutEffect(() => {
+    if (!state || (state.phase !== "complete" && state.phase !== "stopped") || !recoverTerminalFocus.current) return;
+    document.querySelector<HTMLButtonElement>('[aria-label="Local Injection Scenario"] [data-scenario-control="run-again"]')?.focus();
+    recoverTerminalFocus.current = false;
+  }, [state?.phase]);
   const dispatchWithFocus = (intent: NonNullable<typeof focusIntent.current>, command: Parameters<WorkbenchRuntime["dispatch"]>[0]): void => {
     focusIntent.current = intent;
     runtime.dispatch(command);
@@ -49,7 +56,13 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   if (!state) return null;
   const run = state.run;
   const next = run?.steps[run.nextOrdinal - 1] ?? null;
-  return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase}>
+  return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase} onFocusCapture={(event) => {
+    const control = (event.target as HTMLElement).dataset.scenarioControl;
+    recoverTerminalFocus.current = control === "pause" || control === "stop";
+  }} onBlurCapture={(event) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    recoverTerminalFocus.current = false;
+  }}>
     <header className="workbench-react__scenario-header">
       <div><span className="workbench-react__eyebrow">Temporary promoted document</span><h1 tabIndex={-1} ref={heading}>Local Injection Scenario</h1><span>{state.scenario.id} · revision {state.scenario.revision}</span></div>
       <strong>{(state.runner?.phase ?? state.phase).toUpperCase()}</strong>

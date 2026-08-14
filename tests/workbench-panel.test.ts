@@ -1749,4 +1749,26 @@ describe("React Workbench Diagnose panel", () => {
     expect(find("Stop")?.disabled).toBe(false);
     await act(async () => root.unmount());
   });
+
+  it("moves focus from a disappearing timed control only when that control still owns focus", async () => {
+    const initial = reviewedScenario();
+    const runtime = createTestRuntime(snapshot({ scenario: initial }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Local Injection Scenario"]')).toBeTruthy());
+    const find = (name: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('[aria-label="Local Injection Scenario"] button')).find((button) => button.textContent === name);
+    await act(async () => find("Play")?.click());
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("waiting") })));
+    expect(document.activeElement).toBe(find("Pause"));
+    const completed = reviewedScenario();
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...completed, phase: "complete", run: { ...completed.run!, status: "complete", nextOrdinal: 2 }, runner: { ...completed.runner!, phase: "complete", nextOrdinal: 2, run: { ...completed.run!, status: "complete", nextOrdinal: 2 } } } })));
+    expect(document.activeElement).toBe(find("Run again"));
+
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: reviewedScenario("waiting") })));
+    const reviewedJson = document.querySelector<HTMLElement>('[aria-label="Step 1 reviewed JSON"]')!;
+    reviewedJson.focus();
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...completed, phase: "complete", run: { ...completed.run!, status: "complete", nextOrdinal: 2 }, runner: { ...completed.runner!, phase: "complete", nextOrdinal: 2, run: { ...completed.run!, status: "complete", nextOrdinal: 2 } } } })));
+    expect(document.activeElement).toBe(reviewedJson);
+    await act(async () => root.unmount());
+  });
 });

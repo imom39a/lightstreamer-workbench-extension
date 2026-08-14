@@ -157,6 +157,7 @@ export type ScenarioControlRecord = Readonly<{
   activeOffsetMs: number;
   reason: "USER" | "HIDDEN" | "DRIFT" | null;
   detail: string;
+  detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
 }>;
 
 export type ScenarioRun = Readonly<{

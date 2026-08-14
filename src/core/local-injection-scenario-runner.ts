@@ -345,11 +345,19 @@ function scaledDelay(delayMs: number, speed: ScenarioRun["speed"]): number {
 }
 
 function boundedControlRecord(record: ScenarioControlRecord): ScenarioControlRecord {
+  const encoder = new TextEncoder();
+  const originalBytes = encoder.encode(record.detail).byteLength;
   let detail = record.detail.slice(0, SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
   let candidate = Object.freeze({ ...record, detail });
-  while (new TextEncoder().encode(JSON.stringify(candidate)).byteLength > SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD && detail.length > 0) {
+  while (encoder.encode(JSON.stringify(candidate)).byteLength > SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD && detail.length > 0) {
     detail = detail.slice(0, Math.max(0, detail.length - 16));
-    candidate = Object.freeze({ ...record, detail });
+    candidate = Object.freeze({
+      ...record,
+      detail,
+      ...(encoder.encode(detail).byteLength < originalBytes
+        ? { detailLimited: Object.freeze({ originalBytes, retainedBytes: encoder.encode(detail).byteLength }) }
+        : {})
+    });
   }
   return candidate;
 }

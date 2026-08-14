@@ -309,6 +309,21 @@ describe("Local Injection Scenario runner", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("marks bounded control details with truthful original and retained byte counts", () => {
+    const clock = new FakeClock();
+    const runner = createLocalInjectionScenarioRunner(reviewedRun([100]), {
+      clock,
+      allocateInjectionId: () => "injection-1",
+      execute: async () => delivered(1)
+    });
+    runner.play();
+    runner.pause("USER", "🧭".repeat(1_000));
+    const control = runner.snapshot().run.controls.at(-1)!;
+    expect(control.detailLimited).toMatchObject({ originalBytes: 4_000, retainedBytes: expect.any(Number) });
+    expect(control.detailLimited!.retainedBytes).toBeLessThan(control.detailLimited!.originalBytes);
+    expect(new TextEncoder().encode(JSON.stringify(control)).byteLength).toBeLessThanOrEqual(512);
+  });
+
   it("admits enough control Trace capacity to Step next through all 100 reviewed members", async () => {
     const clock = new FakeClock();
     const execute = vi.fn(async ({ ordinal }: { ordinal: number }) => delivered(ordinal));
