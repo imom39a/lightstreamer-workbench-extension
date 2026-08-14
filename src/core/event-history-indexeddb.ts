@@ -56,6 +56,9 @@ import {
   copyCandidate,
   freezeCandidate,
   matchesEvidenceQuery,
+  assertBoundedPanelSessionId,
+  isBoundedEvidenceRef,
+  isBoundedEvidenceRefComponent,
   type HistoryTerminalDiagnostic
 } from "./event-history-authoritative";
 import { extractEvidenceFacets, canonicalEvidenceSearchText, canonicalEvidenceSearchTextWithExtraction, normalizeEvidenceSearchText, type EvidenceFacetExtraction } from "./evidence-facets";
@@ -201,6 +204,7 @@ export async function createIndexedDbEventHistory(
   options: IndexedDbEventHistoryOptions = {}
 ): Promise<EventHistory> {
   const panelSessionId = options.panelSessionId ?? `session-${Math.random().toString(36).slice(2)}`;
+  assertBoundedPanelSessionId(panelSessionId);
   const runtime = authoritativeEventDatabaseRuntime(options.runtime);
   const databaseName = authoritativeEventDatabaseName(panelSessionId);
   const canonicalPanelSessionId = parseAuthoritativeEventDatabaseName(databaseName)?.panelSessionId ?? panelSessionId;
@@ -3761,7 +3765,7 @@ function assertExactKeys(value: object, keys: readonly string[]): void {
 }
 
 function isInterval(value: unknown): value is HistoryInterval {
-  return Boolean(value && typeof value === "object" && Object.keys(value).sort().join(",") === "id,ordinal" && typeof (value as HistoryInterval).id === "string" && Number.isSafeInteger((value as HistoryInterval).ordinal) && (value as HistoryInterval).ordinal > 0);
+  return Boolean(value && typeof value === "object" && Object.keys(value).sort().join(",") === "id,ordinal" && isBoundedEvidenceRefComponent((value as HistoryInterval).id) && Number.isSafeInteger((value as HistoryInterval).ordinal) && (value as HistoryInterval).ordinal > 0);
 }
 
 function intervalOrdinal(panelSessionId: string, intervalId: string): number | null {
@@ -3772,7 +3776,7 @@ function intervalOrdinal(panelSessionId: string, intervalId: string): number | n
 }
 
 function assertRef(value: EvidenceRef): void {
-  if (!value || Object.keys(value).sort().join(",") !== "eventId,intervalId,sequence" || typeof value.intervalId !== "string" || !Number.isSafeInteger(value.sequence) || value.sequence < 1 || typeof value.eventId !== "string" || value.eventId.length === 0) throw new Error("An Evidence reference is incoherent.");
+  if (!value || Object.keys(value).sort().join(",") !== "eventId,intervalId,sequence" || !isBoundedEvidenceRef(value)) throw new Error("An Evidence reference is incoherent.");
 }
 
 function validateTerminalDiagnostic(panelSessionId: string, terminal: HistoryTerminalDiagnostic): void {

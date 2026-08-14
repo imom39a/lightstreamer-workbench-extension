@@ -1,4 +1,4 @@
-import type { EvidenceRef } from "./event-history-authoritative";
+import { isBoundedEvidenceRef, type EvidenceRef } from "./event-history-authoritative";
 import {
   SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES,
   type ScenarioAssertion,
@@ -168,6 +168,10 @@ export function evaluateScenarioCheckpoint(
   activeOffsetMs: number,
   startedActiveOffsetMs = activeOffsetMs
 ): ScenarioCheckpointEvaluation {
+  if ((boundary.boundary !== null && !isBoundedEvidenceRef(boundary.boundary))
+    || (boundary.retainedRange !== null && (!isBoundedEvidenceRef(boundary.retainedRange.first) || !isBoundedEvidenceRef(boundary.retainedRange.last)))) {
+    return unavailableEvaluation(checkpoint, null, activeOffsetMs);
+  }
   if (boundary.history !== "accepting" || boundary.projection !== "live") {
     return unavailableEvaluation(checkpoint, boundary.boundary, activeOffsetMs);
   }
@@ -254,6 +258,16 @@ function result(
   observed: ScenarioAssertionObserved,
   relatedEvidence: readonly EvidenceRef[]
 ): ScenarioAssertionResult {
+  if ((observed.evidence !== null && !isBoundedEvidenceRef(observed.evidence)) || relatedEvidence.some((evidence) => !isBoundedEvidenceRef(evidence))) {
+    return frozen({
+      assertionId: assertion.id,
+      kind: assertion.kind,
+      status: "unavailable",
+      expected: expectedFor(assertion),
+      observed: { state: "evidence-reference-unavailable", certainty: "unavailable", provenance: observed.provenance, evidence: null },
+      relatedEvidence: []
+    });
+  }
   return frozen({ assertionId: assertion.id, kind: assertion.kind, status, expected: expectedFor(assertion), observed: boundedObserved(assertion, status, observed), relatedEvidence: [...relatedEvidence] });
 }
 

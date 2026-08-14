@@ -20,7 +20,7 @@ import {
   type ScenarioCheckpointEvaluation,
   type ScenarioCommittedBoundaryFeed
 } from "./local-injection-scenario-checkpoint";
-import type { EvidenceRef } from "./event-history-authoritative";
+import { isBoundedEvidenceRef, type EvidenceRef } from "./event-history-authoritative";
 import type { LocalInjectionDocument } from "./local-injection-document";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
 
@@ -318,7 +318,7 @@ export function createLocalInjectionScenarioRunner(
     // the initial boundary and the live subscription.
     checkpointUnsubscribe = checkpointAdapter.feed.subscribe(null, (snapshot) => evaluate(snapshot));
     const initialBoundary = checkpointAdapter.feed.snapshot();
-    startedBoundary = initialBoundary.boundary;
+    startedBoundary = isBoundedEvidenceRef(initialBoundary.boundary) ? initialBoundary.boundary : null;
     const initial = evaluateScenarioCheckpoint(member, initialBoundary, checkpointAdapter.observations(run), activeNow(), startedActiveOffsetMs);
     if (initial.status === "waiting" && withinDurations.length > 0) {
       phase = "checkpoint-waiting";

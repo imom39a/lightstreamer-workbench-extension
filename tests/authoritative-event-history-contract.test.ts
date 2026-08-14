@@ -203,6 +203,16 @@ function sharedContract(name: string, createHistory: HistoryFactory): void {
       await history.close();
     });
 
+    it("rejects an Evidence identity that cannot fit the bounded reference contract", async () => {
+      const history = await createHistory();
+      await expect(history.offer(candidate("e".repeat(257))).settled).resolves.toMatchObject({
+        outcome: "NOT_EVIDENCE",
+        problem: { code: "INVALID_CANDIDATE" }
+      });
+      expect(history.status().committedEvidenceBoundary).toBeNull();
+      await history.close();
+    });
+
     it("keeps recent paging equivalent", async () => {
       const history = await createHistory();
       await history.offer(candidate("alpha")).settled;

@@ -3974,9 +3974,10 @@ class Runtime implements WorkbenchRuntime {
                 : "Scenario Review was invalidated; return to Edit and Review again."
             };
       },
-      afterSettlement: async () => {
-        const currentRun = state.run;
-        const authorization = currentRun?.authorizations.at(-1);
+      afterSettlement: async ({ run: settledRun }) => {
+        const nextMember = settledRun.members[settledRun.nextMemberIndex];
+        if (nextMember?.kind === "checkpoint") return { continue: true as const };
+        const authorization = settledRun.authorizations.at(-1);
         const serverEvidence = this.scenarioPendingServerInterleave(state, authorization?.committedEvidenceBoundary ?? null);
         return serverEvidence
           ? { continue: false as const, reason: "DRIFT" as const, detail: `Committed Server Item Update ${serverEvidence.eventId} interleaved on the exact Scenario target.`, drift: { kind: "SERVER_ITEM_UPDATE" as const, addedListenerIds: [], removedListenerIds: [], evidence: serverEvidence } }

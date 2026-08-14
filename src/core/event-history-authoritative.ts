@@ -69,6 +69,28 @@ export type EvidenceRef = Readonly<{
   eventId: string;
 }>;
 
+export const MAX_EVIDENCE_REF_COMPONENT_UTF8_BYTES = 256;
+export const MAX_PANEL_SESSION_ID_UTF8_BYTES = 192;
+
+export function isBoundedEvidenceRefComponent(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && new TextEncoder().encode(value).byteLength <= MAX_EVIDENCE_REF_COMPONENT_UTF8_BYTES;
+}
+
+export function isBoundedEvidenceRef(value: unknown): value is EvidenceRef {
+  if (!value || typeof value !== "object") return false;
+  if (Object.keys(value).sort().join(",") !== "eventId,intervalId,sequence") return false;
+  const reference = value as Partial<EvidenceRef>;
+  return isBoundedEvidenceRefComponent(reference.intervalId)
+    && Number.isSafeInteger(reference.sequence) && Number(reference.sequence) >= 1
+    && isBoundedEvidenceRefComponent(reference.eventId);
+}
+
+export function assertBoundedPanelSessionId(value: string): void {
+  if (typeof value !== "string" || value.length === 0 || new TextEncoder().encode(value).byteLength > MAX_PANEL_SESSION_ID_UTF8_BYTES) {
+    throw new Error(`Panel Session identity must contain 1 to ${MAX_PANEL_SESSION_ID_UTF8_BYTES} UTF-8 bytes.`);
+  }
+}
+
 export type CommittedEvidence = EvidenceRef & Readonly<{
   candidate: EvidenceCandidate;
 }>;
@@ -380,6 +402,7 @@ export function createInMemoryEventHistory(
 
 function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHistory {
   const sessionId = options.panelSessionId ?? `session-${nextId()}`;
+  assertBoundedPanelSessionId(sessionId);
   const journal: HistoryJournal = {
     async commitBatch(batch) {
       await options.failure?.commitBatch?.(batch);
@@ -1509,7 +1532,9 @@ function createMemoryHistory(options: MemoryEventHistoryOptions): MemoryEventHis
 }
 
 function createInterval(sessionId: string, ordinal: number): HistoryInterval {
-  return deepFreeze({ id: `${sessionId}:interval-${ordinal}`, ordinal });
+  const id = `${sessionId}:interval-${ordinal}`;
+  if (!isBoundedEvidenceRefComponent(id)) throw new Error("History Interval identity exceeds the bounded Evidence reference contract.");
+  return deepFreeze({ id, ordinal });
 }
 
 function candidateId(candidate: EvidenceCandidate): string {
@@ -1691,8 +1716,8 @@ export function assertCandidate(candidate: unknown): asserts candidate is Eviden
     }
     return;
   }
-  if (typeof value.id !== "string" || value.id.length === 0) {
-    throw new Error("Capture candidate must have a stable event ID.");
+  if (!isBoundedEvidenceRefComponent(value.id)) {
+    throw new Error(`Capture candidate event ID must contain 1 to ${MAX_EVIDENCE_REF_COMPONENT_UTF8_BYTES} UTF-8 bytes.`);
   }
 }
 
@@ -1712,8 +1737,7 @@ function isTopologyCheckpointEvidenceCandidate(candidate: unknown): candidate is
   };
   return (
     checkpointCandidate.kind === "topology-checkpoint" &&
-    typeof checkpointCandidate.id === "string" &&
-    checkpointCandidate.id.length > 0 &&
+    isBoundedEvidenceRefComponent(checkpointCandidate.id) &&
     isPlainRecord(checkpointCandidate.checkpoint)
   );
 }

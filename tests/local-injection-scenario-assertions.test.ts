@@ -235,6 +235,17 @@ describe("Scenario Checkpoints", () => {
     expect(evaluateScenarioCheckpoint(assertion, snapshot({ projection: "recovering" }), observations, 0).status).toBe("unavailable");
   });
 
+  it("never copies an oversized Evidence identity into a persistent Checkpoint result", () => {
+    const oversized = { intervalId: "interval-1", sequence: 13, eventId: "e".repeat(257) };
+    const assertion = checkpoint([{ id: "evidence", kind: "correlated-local-evidence-exists", stepId: "step-1" }]);
+    const evaluation = evaluateScenarioCheckpoint(assertion, snapshot({ boundary: oversized }), {
+      priorOutcomes: new Map(), correlatedLocalEvidence: new Map([["step-1", oversized]]),
+      inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: oversized })
+    }, 0);
+    expect(evaluation).toMatchObject({ status: "unavailable", boundary: null, assertions: [{ status: "unavailable", observed: { evidence: null }, relatedEvidence: [] }] });
+    expect(JSON.stringify(evaluation)).not.toContain("e".repeat(257));
+  });
+
   it("reviews 100 independent Steps and 100 collapsed Checkpoints within the bounded document", () => {
     const target = { pageEpoch: "page", clientId: "client", sessionId: "session", subscriptionId: "sub", deliveryPath: "listener" as const, listenerId: "listener", mode: "COMMAND", schemaFields: ["command", "key", "qty"] };
     const makeDraft = (index: number): ScenarioDraftInput => {
