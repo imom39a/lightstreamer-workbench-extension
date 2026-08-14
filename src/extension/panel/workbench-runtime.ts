@@ -583,9 +583,10 @@ export type WorkbenchCommand =
   | { type: "close-actions" }
   | { type: "open-activity" }
   | { type: "close-activity" }
-  | { type: "show-activity-supporting-evidence"; start: number; end: number }
+  | { type: "show-activity-supporting-evidence"; start?: number; end?: number; filterMutations?: readonly FilterMutation[] }
   | { type: "select-activity"; selection: ActivityDocumentState["selection"] }
   | { type: "set-activity-local-series"; enabled: boolean }
+  | { type: "set-activity-timeline-series"; series: ActivityDocumentState["timelineSeries"] }
   | { type: "set-activity-ranking-sort"; sort: ActivityDocumentState["rankingSort"] }
   | { type: "set-activity-scroll"; documentTop?: number; plotLeft?: number }
   | { type: "freeze-activity" }
@@ -1607,9 +1608,14 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "show-activity-supporting-evidence": {
         const retained = this.activitySnapshot(this.scopeSnapshot()).readPoint.retainedRange;
-        const clipped = clipActivityTimeRange({ start: command.start, end: command.end }, retained);
-        if (!clipped) return;
-        const result = applyFilterMutations(this.canonicalFilter, this.canonicalFilter.revision, [{ type: "set-around", around: { intervalId: this.historyStatus.interval.id, ...clipped } }]);
+        const clipped = command.start !== undefined && command.end !== undefined
+          ? clipActivityTimeRange({ start: command.start, end: command.end }, retained)
+          : null;
+        if (command.start !== undefined && command.end !== undefined && !clipped) return;
+        const result = applyFilterMutations(this.canonicalFilter, this.canonicalFilter.revision, [
+          ...(command.filterMutations ?? []),
+          ...(clipped ? [{ type: "set-around" as const, around: { intervalId: this.historyStatus.interval.id, ...clipped } }] : [])
+        ]);
         if (result.ok) {
           this.canonicalFilter = result.filter;
           this.activityOpen = false;
@@ -1621,6 +1627,7 @@ class Runtime implements WorkbenchRuntime {
       }
       case "select-activity":
       case "set-activity-local-series":
+      case "set-activity-timeline-series":
       case "set-activity-ranking-sort":
       case "set-activity-scroll": {
         const document = this.activityDocumentState ?? this.activitySnapshot(this.scopeSnapshot()).document;
@@ -1629,6 +1636,8 @@ class Runtime implements WorkbenchRuntime {
           ? { type: "select" as const, selection: command.selection }
           : command.type === "set-activity-local-series"
             ? { type: "set-local-series" as const, enabled: command.enabled }
+            : command.type === "set-activity-timeline-series"
+              ? { type: "set-timeline-series" as const, series: command.series }
             : command.type === "set-activity-ranking-sort"
               ? { type: "set-ranking-sort" as const, sort: command.sort }
               : { type: "set-scroll" as const, documentTop: command.documentTop, plotLeft: command.plotLeft };
@@ -3999,8 +4008,8 @@ class Runtime implements WorkbenchRuntime {
     const target = findTopologySelection(this.topologyProjection.snapshot(), this.scopeId ?? "page");
     const activityScope = activityScopeFor(target);
     const entries = this.activityEvidence.filter((entry) => entry.intervalId === this.historyStatus.interval.id);
-    const first = entries.reduce<ActivityEvidence | undefined>((current, entry) => !current || entry.event.timestamp < current.event.timestamp || (entry.event.timestamp === current.event.timestamp && entry.sequence < current.sequence) ? entry : current, undefined);
-    const last = entries.reduce<ActivityEvidence | undefined>((current, entry) => !current || entry.event.timestamp > current.event.timestamp || (entry.event.timestamp === current.event.timestamp && entry.sequence > current.sequence) ? entry : current, undefined);
+    const first = entries.reduce<ActivityEvidence | undefined>((current, entry) => !current || entry.sequence < current.sequence ? entry : current, undefined);
+    const last = entries.reduce<ActivityEvidence | undefined>((current, entry) => !current || entry.sequence > current.sequence ? entry : current, undefined);
     const retained = first && last
       ? { first: { timestamp: first.event.timestamp, sequence: first.sequence }, last: { timestamp: last.event.timestamp, sequence: last.sequence } }
       : null;

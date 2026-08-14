@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createFilter, createTypedFilterValue } from "../src/core/filter-algebra";
+import { canonicalizeFilter, createFilter, createTypedFilterValue } from "../src/core/filter-algebra";
+import { extractEvidenceFacets } from "../src/core/evidence-facets";
 import {
   appendActivityEvidence,
   matchesActivityEvidence,
@@ -180,6 +181,24 @@ describe("Observed Activity projection", () => {
     expect(projection.buckets.filter((bucket) => bucket.segment === 1).reduce((n, bucket) => n + bucket.logicalUpdates, 0)).toBe(2);
   });
 
+  it("does not calculate bucket intervals across a backward clock discontinuity", () => {
+    const entries = [evidence(1, 100_000), evidence(2, 101_000), evidence(3, 1_000), evidence(4, 2_000)];
+    const projection = rebuildActivityProjection({
+      evidence: entries,
+      scope: { kind: "PAGE" },
+      filter: createFilter(1),
+      readPoint: {
+        ...readPoint(entries),
+        retainedRange: { first: { timestamp: 100_000, sequence: 1 }, last: { timestamp: 2_000, sequence: 4 } }
+      }
+    });
+
+    expect(projection.buckets.filter((bucket) => bucket.segment === 0).map(({ start, end }) => [start, end])).toEqual([[100_000, 101_000], [101_000, 102_000]]);
+    expect(projection.buckets.filter((bucket) => bucket.segment === 1).map(({ start, end }) => [start, end])).toEqual([[1_000, 2_000], [2_000, 3_000]]);
+    expect(projection.allRankings[0].range).toBeNull();
+    expect(projection.allRankings[0].rangeReason).toContain("clock discontinuity");
+  });
+
   it("separates logical identity, metric-owner fallback, deliveries, phase, and provenance", () => {
     const first = evidence(1, 1_000, { logicalEventId: "same", update: { isSnapshot: true } });
     const callback = evidence(2, 1_000, { logicalEventId: "same", listener: { id: "listener-1" } });
@@ -216,6 +235,39 @@ describe("Observed Activity projection", () => {
     expect(projection.buckets.length).toBeLessThanOrEqual(120);
     expect(projection.rankings.length).toBeLessThanOrEqual(10);
     expect(projection.rankingOther).toMatchObject({ label: "Other" });
+  });
+
+  it("uses one clipped plotted interval for every ranked identity, including sparse identities", () => {
+    const first = evidence(1, 1_000, { subscription: { id: "subscription-a" } });
+    const sparse = evidence(2, 50_000, { subscription: { id: "subscription-b" } });
+    const projection = rebuildActivityProjection({ evidence: [first, sparse], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: { ...readPoint([first, sparse]), retainedRange: { first: { timestamp: 1_000, sequence: 1 }, last: { timestamp: 100_000, sequence: 2 } } } });
+
+    expect(projection.allRankings.map((ranking) => ranking.range)).toEqual([
+      projection.allRankings[0].range,
+      projection.allRankings[0].range
+    ]);
+    expect(projection.allRankings[0].range).toEqual({ start: 1_000, end: 100_001 });
+  });
+
+  it("distinguishes Filter-removed Evidence from an ordinary empty matching result", () => {
+    const event = evidence(1, 1_000, {
+      client: { id: "client-1", sessionId: "session-1", semanticValueStates: { id: { state: "requested" }, sessionId: { state: "requested" } } },
+      subscription: { id: "subscription-excluded", semanticValueStates: { id: { state: "requested" } } }
+    });
+    const subscriptionFacet = extractEvidenceFacets(event.event, { identity: { intervalId: event.intervalId, pageId: event.intervalId, ownerId: "client-1", sequence: event.sequence, eventId: event.event.id } }).facets.subscription;
+    expect(subscriptionFacet).toBeDefined();
+    const filter = canonicalizeFilter({
+      ...createFilter(1),
+      criteria: {
+        subscription: { include: [], exclude: [subscriptionFacet!] }
+      }
+    });
+    const projection = rebuildActivityProjection({ evidence: [event], scope: { kind: "PAGE" }, filter, readPoint: readPoint([event]) });
+    const ordinary = rebuildActivityProjection({ evidence: [], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([]) });
+
+    expect(projection.emptyMatchCause).toBe("FILTER_EXCLUSION");
+    expect(projection.reason).toContain("Filter exclusion");
+    expect(ordinary.emptyMatchCause).toBeNull();
   });
 
   it("keeps degraded coverage distinct from an empty matching result and preserves marker identity", () => {

@@ -16,6 +16,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "frozen-high-volume",
   "activity-10k",
   "activity-graphical",
+  "activity-ranking-pages",
   "live-high-scope",
   "filter-high-cardinality",
   "filter-active-zero",
@@ -154,9 +155,22 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
           ...event,
           logicalEventId: `activity-graphical-logical-${index + 1}`,
           subscription: { ...event.subscription, id: `activity-graphical-subscription-${index % 12}` },
+          ...(index === 0 ? { source: "synthetic" as const, synthetic: true } : {}),
           listener: index % 3 === 0 ? undefined : { ...(event.listener ?? { id: `activity-graphical-listener-${index % 4}` }), metricOwner: true }
         })),
         selectedEventId: highVolumeEventId(40),
+        captureStatus: "capturing"
+      };
+    case "activity-ranking-pages":
+      return {
+        id,
+        initialEvents: highVolumeEvents(1, 120).map((event, index) => ({
+          ...event,
+          logicalEventId: `activity-ranking-page-logical-${index + 1}`,
+          subscription: { ...event.subscription, id: `activity-ranking-page-subscription-${index}` },
+          listener: { ...(event.listener ?? { id: `activity-ranking-page-listener-${index % 4}` }), metricOwner: true }
+        })),
+        selectedEventId: highVolumeEventId(120),
         captureStatus: "capturing"
       };
     case "live-high-scope":

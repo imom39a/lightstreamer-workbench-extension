@@ -22,6 +22,7 @@ export type ActivityDocumentState = Readonly<{
   projection: ActivityProjection;
   selection: Readonly<{ kind: "bucket" | "marker" | "ranking"; id: string }> | null;
   selectionRange: ActivityTimeRange | null;
+  timelineSeries: "SERVER_LOGICAL_UPDATES" | "UPDATE_DELIVERIES" | "SERVER_SNAPSHOT" | "SERVER_LIVE" | "LOCAL_LOGICAL_UPDATES" | "LOCAL_UPDATE_DELIVERIES";
   localSeries: boolean;
   rankingSort: "LOGICAL_UPDATES" | "UPDATE_DELIVERIES";
   documentScrollTop: number;
@@ -32,6 +33,7 @@ export type ActivityDocumentState = Readonly<{
 export type ActivityDocumentCommand =
   | { type: "select"; selection: ActivityDocumentState["selection"] }
   | { type: "set-local-series"; enabled: boolean }
+  | { type: "set-timeline-series"; series: ActivityDocumentState["timelineSeries"] }
   | { type: "set-ranking-sort"; sort: ActivityDocumentState["rankingSort"] }
   | { type: "set-scroll"; documentTop?: number; plotLeft?: number }
   | { type: "freeze" }
@@ -49,7 +51,7 @@ export function openActivityDocument(
   projection: ActivityProjection,
   context: Omit<ActivityDocumentOrigin, "scope" | "filter" | "readPoint"> & Pick<ActivityDocumentOrigin, "scope" | "filter" | "readPoint">
 ): ActivityDocumentState {
-  return Object.freeze({ open: true, origin: Object.freeze({ ...context }), scope: context.scope, filter: context.filter, readPoint: context.readPoint, view: context.view, projection, selection: null, selectionRange: null, localSeries: false, rankingSort: "LOGICAL_UPDATES", documentScrollTop: 0, plotScrollLeft: 0, newerMatchingEvidence: 0 });
+  return Object.freeze({ open: true, origin: Object.freeze({ ...context }), scope: context.scope, filter: context.filter, readPoint: context.readPoint, view: context.view, projection, selection: null, selectionRange: null, timelineSeries: "SERVER_LOGICAL_UPDATES", localSeries: false, rankingSort: "LOGICAL_UPDATES", documentScrollTop: 0, plotScrollLeft: 0, newerMatchingEvidence: 0 });
 }
 
 function bucketForSelection(projection: ActivityProjection, selection: ActivityDocumentState["selection"]): ActivityProjection["buckets"][number] | null {
@@ -110,6 +112,7 @@ export function reduceActivityDocument(state: ActivityDocumentState, command: Ac
       return { state: Object.freeze({ ...state, selection: command.selection, selectionRange: bucket ? { start: bucket.start, end: bucket.end } : null }), supportingEvidence: null };
     }
     case "set-local-series": return { state: Object.freeze({ ...state, localSeries: command.enabled }), supportingEvidence: null };
+    case "set-timeline-series": return { state: Object.freeze({ ...state, timelineSeries: command.series }), supportingEvidence: null };
     case "set-ranking-sort": return { state: Object.freeze({ ...state, rankingSort: command.sort }), supportingEvidence: null };
     case "set-scroll": return { state: Object.freeze({ ...state, documentScrollTop: command.documentTop ?? state.documentScrollTop, plotScrollLeft: command.plotLeft ?? state.plotScrollLeft }), supportingEvidence: null };
     case "freeze": return { state: Object.freeze({ ...state, view: "FROZEN" }), supportingEvidence: null };

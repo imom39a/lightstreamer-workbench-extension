@@ -250,7 +250,7 @@ test("Observed Activity keeps graphical small multiples and ranking tables in on
   await openScenario(page, "activity-graphical", { width: 900, height: 700 }, "dark");
   await page.getByRole("button", { name: "Open Activity" }).click();
   const activity = page.getByRole("main", { name: "Observed Activity" });
-  const chart = activity.getByRole("group", { name: "Server activity small multiples" });
+  const chart = activity.getByRole("group", { name: "Activity small multiples" });
   await expect(chart).toBeVisible();
   await expect(chart.getByRole("img", { name: /Server Logical Updates/ })).toBeVisible();
   await expect(chart.getByRole("img", { name: /Update Deliveries/ })).toBeVisible();
@@ -265,11 +265,11 @@ test("Observed Activity keeps graphical small multiples and ranking tables in on
 
   const deliverySort = activity.getByRole("button", { name: "Update Deliveries", exact: true });
   const ranking = activity.getByRole("region", { name: "Activity ranking" });
-  const rankingChart = ranking.getByRole("group", { name: "Busiest ranking bars" });
+  const rankingChart = ranking.getByRole("grid", { name: "Busiest ranking graph" });
   const rankingTable = ranking.getByRole("table", { name: /Complete synchronized Server ranking/ });
   await expect(rankingTable.locator("tbody tr")).toHaveCount(12);
-  await expect(rankingChart.locator("[data-ranking-identity]")).toHaveCount(10);
-  await expect(rankingChart.locator("[data-ranking-identity]").first()).toHaveAttribute("aria-hidden", "true");
+  await expect(rankingChart.locator("[data-ranking-identity]")).toHaveCount(11);
+  await expect(rankingChart).toHaveAttribute("tabindex", "0");
   const selectedRankingRow = rankingTable.locator("tbody tr").filter({ hasText: "activity-graphical-subscription-1" }).first();
   const selectedRankingIdentity = await selectedRankingRow.getByRole("button").innerText();
   await selectedRankingRow.getByRole("button").click();

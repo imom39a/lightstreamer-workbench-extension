@@ -525,8 +525,8 @@
 .workbench-react__document-status:not(:empty) { min-height: 27px; border-bottom: 1px solid var(--wb-border); padding: 6px 10px; }
 .workbench-react__document pre { min-height: 0; flex: 1 1 auto; margin: 0; overflow: auto; background: var(--wb-bg); color: var(--wb-text); padding: 12px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2; }
 
-.workbench-react__activity { background: var(--wb-bg); }
-.workbench-react__activity-scroll { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 12px; }
+.workbench-react__activity { min-height: 0; background: var(--wb-bg); }
+.workbench-react__activity-scroll { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 12px 12px 32px; scroll-padding-bottom: 32px; }
 .workbench-react__activity-summary, .workbench-react__activity-section { border: 1px solid var(--wb-border); background: var(--wb-raised); padding: 10px; margin: 0 0 10px; }
 .workbench-react__activity-section h2, .workbench-react__activity-summary h2 { margin: 0 0 6px; font-size: 12px; }
 .workbench-react__activity-summary p, .workbench-react__activity-section p { margin: 5px 0; color: var(--wb-muted); }
@@ -552,16 +552,25 @@
 .workbench-react__activity-bar > span { display: block; width: 100%; min-height: 1px; background: var(--wb-text); }
 .workbench-react__activity-bar[data-selected="true"] > span { background: var(--wb-focus); outline: 2px solid var(--wb-focus); outline-offset: 1px; }
 .workbench-react__activity-ranking-bars { display: grid; gap: 5px; margin-bottom: 10px; }
-.workbench-react__activity-ranking-bars > div { display: grid; grid-template-columns: minmax(120px, 220px) minmax(160px, 1fr) 70px; align-items: center; gap: 8px; padding: 2px 0; }
+.workbench-react__activity-ranking-bars:focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
+.workbench-react__activity-ranking-bars > [role="row"] { display: block; }
+.workbench-react__activity-ranking-bars > [role="row"] > [role="gridcell"] { display: grid; grid-template-columns: minmax(120px, 220px) minmax(160px, 1fr) 70px; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
 .workbench-react__activity-ranking-track { display: block; height: 10px; border: 1px solid var(--wb-border-strong); background: var(--wb-control); }
 .workbench-react__activity-ranking-track > span { display: block; height: 100%; background: var(--wb-text); }
-.workbench-react__activity-ranking-bars > div[data-selected="true"] { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
+.workbench-react__activity-ranking-bars > [role="row"] > [role="gridcell"][data-selected="true"] { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
+.workbench-react__activity-ranking-table-scroll { max-height: min(320px, 42vh); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+.workbench-react__activity-ranking-table-scroll table { min-width: 0; table-layout: fixed; }
+.workbench-react__activity-ranking-table-scroll th, .workbench-react__activity-ranking-table-scroll td { white-space: normal; overflow-wrap: anywhere; }
+.workbench-react__activity-ranking-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--wb-muted); font-size: 11px; }
+.workbench-react__status { position: relative; z-index: 2; flex-shrink: 0; }
 .workbench-react__activity-ranking-bars > p { margin: 2px 0 0; color: var(--wb-muted); }
 @media (max-width: 700px) {
-  .workbench-react__activity-scroll { padding: 8px; }
+  .workbench-react__activity-scroll { padding: 8px 8px 28px; scroll-padding-bottom: 28px; }
   .workbench-react__document-boundary span { min-width: 132px; }
   .workbench-react__activity-multiple { grid-template-columns: 132px minmax(220px, 1fr); }
-  .workbench-react__activity-ranking-bars > div { grid-template-columns: minmax(100px, 150px) minmax(130px, 1fr) 60px; }
+  .workbench-react__activity-ranking-bars > [role="row"] > [role="gridcell"] { grid-template-columns: minmax(100px, 150px) minmax(130px, 1fr) 60px; }
+  .workbench-react__activity-ranking-table-scroll { max-height: min(260px, 35vh); }
+  .workbench-react__activity-ranking-table-scroll th, .workbench-react__activity-ranking-table-scroll td { padding: 4px 3px; }
 }
 @media (max-height: 380px) {
   .workbench-react__activity-scroll { padding: 6px; }

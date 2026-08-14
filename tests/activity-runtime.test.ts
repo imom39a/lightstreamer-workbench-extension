@@ -8,7 +8,7 @@ import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 
 function update(id: string, timestamp: number): LightstreamerEventEnvelope {
-  return { id, timestamp, direction: "inbound", source: "server", synthetic: false, kind: "item-update", logicalEventId: id, client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "subscription-1", mode: "MERGE" }, item: { name: "item-1", position: 1 }, update: { isSnapshot: false } };
+  return { id, timestamp, direction: "inbound", source: "server", synthetic: false, kind: "item-update", logicalEventId: id, client: { id: "client-1", sessionId: "session-1", semanticValueStates: { id: { state: "requested" }, sessionId: { state: "requested" } } }, subscription: { id: "subscription-1", mode: "MERGE", semanticValueStates: { id: { state: "requested" } } }, item: { name: "item-1", position: 1 }, update: { isSnapshot: false } };
 }
 
 function scheduler() {
@@ -67,6 +67,28 @@ describe("Activity runtime seam", () => {
     for (let index = 0; index < 20; index += 1) await Promise.resolve();
 
     expect(runtime.getSnapshot().evidence.investigation.filter.around).toEqual({ intervalId: expect.any(String), start: 1_000, end: 2_001 });
+    runtime.dispose();
+  });
+
+  it("drills ranking identity, item-update type, Server provenance, and plotted interval into Evidence", async () => {
+    const history = createAuthoritativeHistory({ precommitted: [update("event-1", 1_000), update("event-2", 2_000)] });
+    const runtime = createWorkbenchRuntime({ history });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    runtime.dispatch({ type: "open-activity" });
+    const ranking = runtime.getSnapshot().activity?.projection.allRankings[0];
+    expect(ranking?.supportingFilterMutations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "add-criterion", facet: "subscription", polarity: "include" }),
+      expect.objectContaining({ type: "add-criterion", facet: "kind", polarity: "include" }),
+      expect.objectContaining({ type: "add-criterion", facet: "provenance", polarity: "include" })
+    ]));
+    runtime.dispatch({ type: "show-activity-supporting-evidence", ...(ranking?.range ? { start: ranking.range.start, end: ranking.range.end } : {}), filterMutations: ranking?.supportingFilterMutations ?? [] });
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    const investigation = runtime.getSnapshot().evidence.investigation;
+    expect(investigation.filter.around).toEqual({ intervalId: expect.any(String), start: 1_000, end: 2_001 });
+    expect(investigation.filter.criteria.subscription.include).toHaveLength(1);
+    expect(investigation.filter.criteria.kind.include[0].value).toBe("ITEM-UPDATE");
+    expect(investigation.filter.criteria.provenance.include[0].value).toBe("SERVER");
     runtime.dispose();
   });
 

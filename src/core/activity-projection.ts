@@ -1,6 +1,6 @@
 import { type LightstreamerEventEnvelope } from "./event-envelope";
 import { extractEvidenceFacets } from "./evidence-facets";
-import { type Filter, evaluateFilter, type FilterRecord } from "./filter-algebra";
+import { createTypedFilterValue, type Filter, type FilterMutation, evaluateFilter, type FilterRecord } from "./filter-algebra";
 
 export type ActivityScope = Readonly<{
   kind: "PAGE" | "CLIENT" | "SESSION" | "SUBSCRIPTION" | "ITEM" | "LISTENER";
@@ -46,6 +46,7 @@ export type ActivityMarker = Readonly<{
   errorMessage: string | null;
   provenance: "SERVER" | "LOCAL";
   consequenceLimit: string;
+  supportingFilterMutations?: readonly FilterMutation[];
 }>;
 
 export type ActivityBucket = Readonly<{
@@ -69,6 +70,12 @@ export type ActivityRanking = Readonly<{
   label: string;
   logicalUpdates: number;
   updateDeliveries: number;
+  range?: ActivityTimeRange | null;
+  rangeReason?: string | null;
+  subscriptionId?: string | null;
+  itemName?: string | null;
+  itemPosition?: number | null;
+  supportingFilterMutations?: readonly FilterMutation[];
 }>;
 
 export type ActivityProjection = Readonly<{
@@ -89,10 +96,12 @@ export type ActivityProjection = Readonly<{
   localLogicalUpdateTotal: number;
   localUpdateDeliveryTotal: number;
   matchingEvidence: number;
+  emptyMatchCause: "FILTER_EXCLUSION" | "NO_MATCHING_EVIDENCE" | null;
   markers: readonly ActivityMarker[];
   rankings: readonly ActivityRanking[];
   allRankings: readonly ActivityRanking[];
   rankingOther: ActivityRanking | null;
+  rankingRangeReason: string | null;
   clockSegments: readonly Readonly<{ index: number; startSequence: number; endSequence: number | null; startTimestamp: number; endTimestamp: number }>[];
 }>;
 
@@ -199,9 +208,11 @@ function project(input: ActivityProjectionInput): ActivityProjection {
   const localLogical = uniqueLogical(local);
   const segments = clockSegments([...serverLogical, ...localLogical].sort((a, b) => a.sequence - b.sequence));
   const range = readPoint.retainedRange;
-  const retainedSpan = range
+  const retainedSpan = segments.length === 1 && range
     ? Math.max(0, range.last.timestamp - range.first.timestamp)
-    : null;
+    : segments.length
+      ? Math.max(...segments.map((segment) => Math.max(0, segment.endTimestamp - segment.startTimestamp)))
+      : null;
   const duration = segments.length
     ? chooseDuration(retainedSpan ?? Math.max(...segments.map((segment) => segment.endTimestamp - segment.startTimestamp)))
     : null;
@@ -216,11 +227,24 @@ function project(input: ActivityProjectionInput): ActivityProjection {
           : state === "LIMITED"
             ? (readPoint.terminal ? "Activity is complete through the terminal Committed Evidence Boundary." : "Observation Coverage is limited.")
             : null;
-  const allRankings = rankings(serverLogical, server, scope);
+  const plottedRange = buckets.length
+    ? new Set(buckets.map((bucket) => bucket.segment)).size === 1
+      ? clipActivityTimeRange({ start: buckets[0].start, end: buckets[buckets.length - 1].end }, range)
+      : null
+    : null;
+  const rankingRangeReason = segments.length > 1 ? "Supporting Evidence interval unavailable across a clock discontinuity; identity Filter remains available." : null;
+  const allRankings = rankings(serverLogical, server, scope, plottedRange, rankingRangeReason);
+  const filterRemovedScopedEvidence = matching.length === 0 && ordered.some((entry) => scopeMatches(entry.event, scope)) && (
+    input.filter.text.length > 0 || input.filter.around !== null || input.filter.unsupported.length > 0 || Object.keys(input.filter.criteria).length > 0
+  );
+  const emptyMatchCause = state === "EMPTY_MATCH"
+    ? filterRemovedScopedEvidence ? "FILTER_EXCLUSION" : "NO_MATCHING_EVIDENCE"
+    : null;
+  const emptyMatchReason = emptyMatchCause === "FILTER_EXCLUSION" ? "No matching accepted Evidence after Filter exclusion." : null;
   return Object.freeze({
     ...base,
     state,
-    reason,
+    reason: emptyMatchReason ?? reason,
     retainedRange: range,
     logicalUpdateTotal: serverLogical.length,
     snapshotLogicalUpdateTotal: serverLogical.filter(({ event }) => event.update?.isSnapshot === true).length,
@@ -229,18 +253,20 @@ function project(input: ActivityProjectionInput): ActivityProjection {
     localLogicalUpdateTotal: localLogical.length,
     localUpdateDeliveryTotal: deliveries(local),
     matchingEvidence: matching.length,
+    emptyMatchCause,
     bucketDuration: duration,
     buckets: Object.freeze(buckets),
     markers: Object.freeze(markers(matching)),
     rankings: Object.freeze(allRankings.slice(0, 10)),
     allRankings: Object.freeze(allRankings),
     rankingOther: otherRanking(allRankings),
+    rankingRangeReason,
     clockSegments: Object.freeze(segments)
   });
 }
 
 function emptyProjection(scope: ActivityScope, revision: number, readPoint: ActivityReadPoint): ActivityProjection {
-  return Object.freeze({ state: "EMPTY_INTERVAL", reason: null, scope, filterRevision: revision, readPoint, intervalId: readPoint.intervalId, retainedRange: readPoint.retainedRange, committedEvidenceBoundary: readPoint.committedEvidenceBoundary, bucketDuration: null, buckets: Object.freeze([]), logicalUpdateTotal: 0, snapshotLogicalUpdateTotal: 0, liveLogicalUpdateTotal: 0, updateDeliveryTotal: 0, localLogicalUpdateTotal: 0, localUpdateDeliveryTotal: 0, matchingEvidence: 0, markers: Object.freeze([]), rankings: Object.freeze([]), allRankings: Object.freeze([]), rankingOther: null, clockSegments: Object.freeze([]) });
+  return Object.freeze({ state: "EMPTY_INTERVAL", reason: null, scope, filterRevision: revision, readPoint, intervalId: readPoint.intervalId, retainedRange: readPoint.retainedRange, committedEvidenceBoundary: readPoint.committedEvidenceBoundary, bucketDuration: null, buckets: Object.freeze([]), logicalUpdateTotal: 0, snapshotLogicalUpdateTotal: 0, liveLogicalUpdateTotal: 0, updateDeliveryTotal: 0, localLogicalUpdateTotal: 0, localUpdateDeliveryTotal: 0, matchingEvidence: 0, emptyMatchCause: null, markers: Object.freeze([]), rankings: Object.freeze([]), allRankings: Object.freeze([]), rankingOther: null, rankingRangeReason: null, clockSegments: Object.freeze([]) });
 }
 
 function isServerUpdate(event: LightstreamerEventEnvelope): boolean { return event.kind === "item-update" && event.source === "server" && !event.synthetic; }
@@ -267,7 +293,7 @@ function metricOwnerIdentity(entry: ActivityEvidence): string | null {
 export function matchesActivityEvidence(entry: ActivityEvidence, filter: Filter, scope: ActivityScope): boolean {
   const event = entry.event;
   if (!scopeMatches(event, scope)) return false;
-  const facets = extractEvidenceFacets(event, { identity: { intervalId: entry.intervalId, pageId: "activity", ownerId: event.subscription?.id ?? event.client?.id ?? "page", sequence: entry.sequence, eventId: event.id } });
+  const facets = extractEvidenceFacets(event, { identity: { intervalId: entry.intervalId, pageId: entry.intervalId, ownerId: event.subscription?.id ?? event.client?.id ?? "page", sequence: entry.sequence, eventId: event.id } });
   const record: FilterRecord = { timestamp: event.timestamp, intervalId: entry.intervalId, searchText: `${event.id} ${event.kind} ${event.source}`, facets: facets.facets };
   return evaluateFilter(filter, record).matches;
 }
@@ -318,8 +344,10 @@ function makeBuckets(
     if (!segmentEntries.length) return [];
     const observedFirst = Math.min(...segmentEntries.map(({ event }) => event.timestamp));
     const observedLast = Math.max(...segmentEntries.map(({ event }) => event.timestamp));
-    const retainedFirst = retainedRange ? Math.min(retainedRange.first.timestamp, retainedRange.last.timestamp) : observedFirst;
-    const retainedLast = retainedRange ? Math.max(retainedRange.first.timestamp, retainedRange.last.timestamp) : observedLast;
+    const includesSequence = (sequence: number): boolean => sequence >= segment.startSequence && (segment.endSequence === null || sequence <= segment.endSequence!);
+    const usesRetainedRange = segments.length === 1 || (retainedRange !== null && (includesSequence(retainedRange.first.sequence) || includesSequence(retainedRange.last.sequence)));
+    const retainedFirst = retainedRange && usesRetainedRange && (segments.length === 1 || includesSequence(retainedRange.first.sequence)) ? retainedRange.first.timestamp : observedFirst;
+    const retainedLast = retainedRange && usesRetainedRange && (segments.length === 1 || includesSequence(retainedRange.last.sequence)) ? retainedRange.last.timestamp : observedLast;
     const firstTimestamp = Math.min(observedFirst, retainedFirst);
     const lastTimestamp = Math.max(observedLast, retainedLast);
     const first = Math.floor(firstTimestamp / duration) * duration;
@@ -351,7 +379,8 @@ function markers(entries: readonly ActivityEvidence[]): ActivityMarker[] {
   return entries
     .filter(({ event }) => event.kind === "client-status" || event.kind === "subscription-error" || event.kind === "lost-updates" || event.topology?.kind === "session-established" || event.topology?.kind === "session-absent")
     .sort((a, b) => a.event.timestamp - b.event.timestamp || a.sequence - b.sequence)
-    .map(({ event, sequence }) => {
+    .map((entry) => {
+      const { event, sequence } = entry;
       const kind = event.kind === "client-status" ? "CLIENT_STATUS" as const : event.kind === "subscription-error" ? "SUBSCRIPTION_ERROR" as const : event.kind === "lost-updates" ? "LOST_UPDATES" as const : "SESSION_TRANSITION" as const;
       const raw = event.raw ?? {};
       const rawString = (key: string): string | null => typeof raw[key] === "string" ? raw[key] as string : null;
@@ -372,19 +401,47 @@ function markers(entries: readonly ActivityEvidence[]): ActivityMarker[] {
         errorCode: kind === "SUBSCRIPTION_ERROR" ? rawScalar("code") : null,
         errorMessage: kind === "SUBSCRIPTION_ERROR" ? rawString("message") : null,
         provenance: event.synthetic || event.source === "synthetic" ? "LOCAL" as const : "SERVER" as const,
-        consequenceLimit: kind === "LOST_UPDATES" ? "The reported loss does not establish its server-side cause." : kind === "SUBSCRIPTION_ERROR" ? "The captured error does not establish downstream application effect." : "This is a captured observation, not a continuous state interval."
+        consequenceLimit: kind === "LOST_UPDATES" ? "The reported loss does not establish its server-side cause." : kind === "SUBSCRIPTION_ERROR" ? "The captured error does not establish downstream application effect." : "This is a captured observation, not a continuous state interval.",
+        supportingFilterMutations: evidenceFilterMutations(entry)
       });
     });
 }
 
-function rankings(entries: readonly ActivityEvidence[], deliveriesFor: readonly ActivityEvidence[], scope: ActivityScope): ActivityRanking[] {
-  const by = new Map<string, { label: string; logical: number; deliveries: number }>();
+function rankings(entries: readonly ActivityEvidence[], deliveriesFor: readonly ActivityEvidence[], scope: ActivityScope, plottedRange: ActivityTimeRange | null, rangeReason: string | null): ActivityRanking[] {
+  const by = new Map<string, { label: string; logical: number; deliveries: number; entries: ActivityEvidence[] }>();
   for (const entry of entries) {
-    const identity = scope.kind === "SUBSCRIPTION" ? `${entry.event.item?.name ?? "<unknown-item>"}:${entry.event.item?.position ?? ""}` : entry.event.subscription?.id ?? "<unknown-subscription>";
-    const current = by.get(identity) ?? { label: identity, logical: 0, deliveries: 0 }; current.logical += 1; by.set(identity, current);
+    const identity = rankingIdentity(entry, scope);
+    const current = by.get(identity) ?? { label: identity, logical: 0, deliveries: 0, entries: [] }; current.logical += 1; current.entries.push(entry); by.set(identity, current);
   }
-  for (const entry of deliveriesFor) if (entry.event.listener) { const identity = scope.kind === "SUBSCRIPTION" ? `${entry.event.item?.name ?? "<unknown-item>"}:${entry.event.item?.position ?? ""}` : entry.event.subscription?.id ?? "<unknown-subscription>"; const current = by.get(identity); if (current) current.deliveries += 1; }
-  return [...by.entries()].map(([identity, value]) => Object.freeze({ identity, label: value.label, logicalUpdates: value.logical, updateDeliveries: value.deliveries })).sort((a, b) => b.logicalUpdates - a.logicalUpdates || a.identity.localeCompare(b.identity));
+  for (const entry of deliveriesFor) if (entry.event.listener) { const identity = rankingIdentity(entry, scope); const current = by.get(identity); if (current) { current.deliveries += 1; current.entries.push(entry); } }
+  return [...by.entries()].map(([identity, value]) => {
+    const first = value.entries[0];
+    const facets = first ? extractEvidenceFacets(first.event, { identity: { intervalId: first.intervalId, pageId: first.intervalId, ownerId: first.event.subscription?.id ?? first.event.client?.id ?? "page", sequence: first.sequence, eventId: first.event.id } }).facets : {};
+    const supportingFacet = scope.kind === "SUBSCRIPTION" ? facets.item : facets.subscription;
+    const supportingFilterMutations = evidenceFilterMutations(first, supportingFacet ? [supportingFacet] : []);
+    return Object.freeze({
+      identity,
+      label: value.label,
+      logicalUpdates: value.logical,
+      updateDeliveries: value.deliveries,
+      range: plottedRange,
+      rangeReason,
+      subscriptionId: first?.event.subscription?.id ?? null,
+      itemName: first?.event.item?.name ?? null,
+      itemPosition: first?.event.item?.position ?? null,
+      supportingFilterMutations: Object.freeze(supportingFilterMutations)
+    });
+  }).sort((a, b) => b.logicalUpdates - a.logicalUpdates || a.identity.localeCompare(b.identity));
+}
+
+function evidenceFilterMutations(entry: ActivityEvidence, additional: readonly { facet: string; type: string; value: string | number | boolean | null; label: string }[] = []): readonly FilterMutation[] {
+  const facets = extractEvidenceFacets(entry.event, { identity: { intervalId: entry.intervalId, pageId: entry.intervalId, ownerId: entry.event.subscription?.id ?? entry.event.client?.id ?? "page", sequence: entry.sequence, eventId: entry.event.id } }).facets;
+  const selected = [facets.kind, facets.provenance, ...additional].filter((facet): facet is { facet: string; type: string; value: string | number | boolean | null; label: string } => Boolean(facet));
+  return Object.freeze(selected.map((facet) => ({ type: "add-criterion" as const, facet: facet.facet, value: createTypedFilterValue(facet.facet, facet.type, facet.value, facet.label), polarity: "include" as const })));
+}
+
+function rankingIdentity(entry: ActivityEvidence, scope: ActivityScope): string {
+  return scope.kind === "SUBSCRIPTION" ? `${entry.event.item?.name ?? "<unknown-item>"}:${entry.event.item?.position ?? ""}` : entry.event.subscription?.id ?? "<unknown-subscription>";
 }
 
 function otherRanking(all: readonly ActivityRanking[]): ActivityRanking | null {
