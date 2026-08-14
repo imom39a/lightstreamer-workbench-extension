@@ -112,6 +112,7 @@ import {
 } from "./storage-headroom";
 import {
   createActivityProjection,
+  clipActivityTimeRange,
   type ActivityEvidence,
   type ActivityProjection,
   type ActivityScope,
@@ -1521,6 +1522,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "open-activity":
         this.activityOpen = true;
+        if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: true });
         if (!this.activityHydrated && this.activityHydrationPromise === null) {
           this.activityHydrationPromise = this.hydrateActivityEvidence().finally(() => {
             this.activityHydrationPromise = null;
@@ -1534,7 +1536,10 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       case "show-activity-supporting-evidence": {
-        const result = applyFilterMutations(this.canonicalFilter, this.canonicalFilter.revision, [{ type: "set-around", around: { intervalId: this.historyStatus.interval.id, start: command.start, end: command.end } }]);
+        const retained = this.activitySnapshot(this.scopeSnapshot()).readPoint.retainedRange;
+        const clipped = clipActivityTimeRange({ start: command.start, end: command.end }, retained);
+        if (!clipped) return;
+        const result = applyFilterMutations(this.canonicalFilter, this.canonicalFilter.revision, [{ type: "set-around", around: { intervalId: this.historyStatus.interval.id, ...clipped } }]);
         if (result.ok) {
           this.canonicalFilter = result.filter;
           this.activityOpen = false;
@@ -1576,6 +1581,7 @@ class Runtime implements WorkbenchRuntime {
         this.frozenEvidence = null;
         this.frozenInvestigation = null;
         this.frozenInvestigationContract = null;
+        if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, view: "FOLLOW LIVE", newerMatchingEvidence: 0 });
         this.refreshEvidence("command");
         return;
       case "freeze-evidence":
@@ -3888,8 +3894,8 @@ class Runtime implements WorkbenchRuntime {
     const target = findTopologySelection(this.topologyProjection.snapshot(), this.scopeId ?? "page");
     const activityScope = activityScopeFor(target);
     const entries = this.activityEvidence.filter((entry) => entry.intervalId === this.historyStatus.interval.id);
-    const first = entries[0];
-    const last = entries.at(-1);
+    const first = entries.reduce<ActivityEvidence | undefined>((current, entry) => !current || entry.event.timestamp < current.event.timestamp || (entry.event.timestamp === current.event.timestamp && entry.sequence < current.sequence) ? entry : current, undefined);
+    const last = entries.reduce<ActivityEvidence | undefined>((current, entry) => !current || entry.event.timestamp > current.event.timestamp || (entry.event.timestamp === current.event.timestamp && entry.sequence > current.sequence) ? entry : current, undefined);
     const retained = first && last
       ? { first: { timestamp: first.event.timestamp, sequence: first.sequence }, last: { timestamp: last.event.timestamp, sequence: last.sequence } }
       : null;
@@ -3917,6 +3923,27 @@ class Runtime implements WorkbenchRuntime {
         view: this.mode === "frozen" ? "FROZEN" : "FOLLOW LIVE",
         localDraftId: this.localInjectionDraft?.id ?? null
       });
+    }
+    if (this.activityDocumentState) {
+      const document = this.activityDocumentState;
+      const scopeChanged = JSON.stringify(document.scope) !== JSON.stringify(activityScope);
+      const filterChanged = document.filter.revision !== this.canonicalFilter.revision;
+      const intervalChanged = document.readPoint.intervalId !== readPoint.intervalId;
+      if (scopeChanged || filterChanged || intervalChanged) {
+        this.activityDocumentState = reduceActivityDocument(document, {
+          type: "scope-or-filter-changed",
+          scope: activityScope,
+          filter: this.canonicalFilter,
+          readPoint,
+          projection
+        }).state;
+      } else if (document.view === "FROZEN") {
+        const frozenSequence = document.readPoint.committedEvidenceBoundary?.sequence ?? 0;
+        const newer = entries.filter((entry) => entry.sequence > frozenSequence).length;
+        this.activityDocumentState = Object.freeze({ ...document, newerMatchingEvidence: newer });
+      } else {
+        this.activityDocumentState = Object.freeze({ ...document, scope: activityScope, filter: this.canonicalFilter, readPoint, projection, newerMatchingEvidence: 0 });
+      }
     }
     const document = this.activityDocumentState;
     return Object.freeze({
@@ -5332,7 +5359,7 @@ function structuralEvidenceScope(target: TopologySelectionTarget | null): Struct
   }
 }
 
-function activityScopeFor(target: TopologySelectionTarget | null): ActivityScope {
+export function activityScopeFor(target: TopologySelectionTarget | null): ActivityScope {
   if (!target || target.kind === "page") return { kind: "PAGE" };
   if (target.kind === "client") return { kind: "CLIENT", clientId: target.client.id };
   if (target.kind === "session") return { kind: "SESSION", clientId: target.client.id, sessionId: target.session.id };
@@ -5340,9 +5367,9 @@ function activityScopeFor(target: TopologySelectionTarget | null): ActivityScope
     return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
   }
   if (target.kind === "item") {
-    return { kind: "ITEM", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id, item: target.item.name, itemPosition: target.item.position };
+    return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
   }
-  return { kind: "LISTENER", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id, listenerId: target.listener.id };
+  return { kind: "SUBSCRIPTION", clientId: target.client?.id, sessionId: target.session?.id, subscriptionId: target.subscription.id };
 }
 
 function eventFromDeterministicRecord(record: DeterministicEvidenceRecord): LightstreamerEventEnvelope {
