@@ -55,6 +55,15 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
   switch (visual.production.setup) {
     case "scenario":
       await expect(page.getByRole("region", { name: "Local Injection Scenario" })).toBeVisible();
+      if (visual.production.scenario === "local-injection-scenario-partial") {
+        const steps = page.getByLabel("Ordered Scenario Steps");
+        await expect(steps.getByText("PARTIALLY DELIVERED")).toBeVisible();
+        await expect(steps.getByText("NOT RUN", { exact: true })).toBeVisible();
+        await steps.evaluate((owner) => {
+          const firstOutcome = owner.querySelector("article:first-child p");
+          if (firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
+        });
+      }
       return;
     case "none":
       await expect(page.locator(".workbench-react__evidence-summary")).toHaveCSS("display", "flex");

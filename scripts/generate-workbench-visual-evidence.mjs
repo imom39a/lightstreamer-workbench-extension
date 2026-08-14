@@ -112,6 +112,10 @@ try {
     command: grep ? `npm run test:ui:visual -- --grep ${JSON.stringify(grep)}` : "npm run test:ui:visual",
     platform: process.platform,
     baselinePlatformSuffix: process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform,
+    platformBaselineCommands: [
+      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-\"", result: "4/4 passed" },
+      { platform: "linux", update: "docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci --ignore-scripts && npm run test:ui:update -- --grep \"visual baseline: scenario-\"'", comparison: "docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci --ignore-scripts && npm run test:ui -- --grep \"visual baseline: scenario-\"'", result: "4/4 passed" }
+    ],
     browser: await browser.version(),
     browserMode: "headless",
     evidenceMode: "non-interactive",
@@ -451,9 +455,18 @@ async function captureProduction(runningBrowser, scenario) {
         await action.focus();
         await page.keyboard.press("Enter");
         await page.getByRole("region", { name: "Scenario Evidence picker" }).waitFor();
-        await page.getByRole("button", { name: "Cancel" }).click();
+        await page.keyboard.press("Escape");
       } else {
         await action.focus();
+      }
+      if (scenario.production.scenario === "local-injection-scenario-partial") {
+        const steps = page.getByLabel("Ordered Scenario Steps");
+        await steps.getByText("PARTIALLY DELIVERED").waitFor();
+        await steps.getByText("NOT RUN", { exact: true }).waitFor();
+        await steps.evaluate((owner) => {
+          const firstOutcome = owner.querySelector("article:first-child p");
+          if (firstOutcome instanceof HTMLElement) owner.scrollTop = firstOutcome.offsetTop - owner.offsetTop;
+        });
       }
       focusEvidence = await action.evaluate((element) => {
         const style = getComputedStyle(element);

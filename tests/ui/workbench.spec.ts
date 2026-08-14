@@ -2215,6 +2215,13 @@ test("Scenario fails closed for incompatible membership, invalid Review, and par
   await expect(stopped).toContainText("RUN STOPPED");
   await expect(stopped).toContainText("PARTIALLY DELIVERED");
   await expect(stopped).toContainText("Remaining Steps were not run");
+  const stoppedSteps = stopped.getByLabel("Ordered Scenario Steps");
+  const partialTrace = stoppedSteps.getByText("PARTIALLY DELIVERED");
+  const notRunTrace = stoppedSteps.getByText("NOT RUN", { exact: true });
+  await partialTrace.scrollIntoViewIfNeeded();
+  await expect(partialTrace).toBeVisible();
+  await notRunTrace.scrollIntoViewIfNeeded();
+  await expect(notRunTrace).toBeVisible();
   await expect(stopped.getByText(/Injection local-injection-/)).toHaveCount(1);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(1);
   await expectNoSeriousAxeViolations(page, testInfo);

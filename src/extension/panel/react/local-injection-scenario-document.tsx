@@ -27,7 +27,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   if (!state) return null;
   const run = state.run;
   const next = run?.steps[run.nextOrdinal - 1] ?? null;
-  return <section className="workbench-react__scenario" aria-label="Local Injection Scenario">
+  return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase}>
     <header className="workbench-react__scenario-header">
       <div><span className="workbench-react__eyebrow">Temporary promoted document</span><h1 tabIndex={-1} ref={heading}>Local Injection Scenario</h1><span>{state.scenario.id} · revision {state.scenario.revision}</span></div>
       <strong>{state.phase.toUpperCase()}</strong>
@@ -58,12 +58,12 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       {snapshot.evidence.events.length === 0 ? <p>No retained Evidence is available to add.</p> : null}
       <button type="button" onClick={() => runtime.dispatch({ type: "close-scenario-evidence-picker" })}>Cancel</button>
     </section> : null}
-    <div className="workbench-react__scenario-steps" aria-label="Ordered Scenario Steps">
+    <div className="workbench-react__scenario-steps" aria-label="Ordered Scenario Steps" tabIndex={0}>
       {state.scenario.steps.map((step, index) => {
         const trace = run?.trace.find((entry) => entry.stepId === step.id);
         return <article key={step.id} data-step-state={trace ? "complete" : run?.nextOrdinal === index + 1 ? "next" : "waiting"}>
           <header><strong>Step {index + 1}</strong><span>{step.id} · stable identity · delay {step.draft.relativeDelayMs} ms</span></header>
-          <dl><div><dt>Source</dt><dd>{step.draft.sourceEventId ?? "None · newly authored"}</dd></div><div><dt>Validation</dt><dd>{step.draft.ready ? "READY" : "BLOCKED"}</dd></div></dl>
+          {state.phase !== "complete" && state.phase !== "stopped" ? <dl><div><dt>Source</dt><dd>{step.draft.sourceEventId ?? "None · newly authored"}</dd></div><div><dt>Validation</dt><dd>{step.draft.ready ? "READY" : "BLOCKED"}</dd></div></dl> : null}
           <section className="workbench-react__scenario-editor" aria-label={`Step ${index + 1} Injection Draft`} hidden={state.phase !== "edit"}>
             <button type="button" disabled={step.draft.sourceRawText === null} aria-pressed={step.draft.editor.compareOpen} onClick={() => runtime.dispatch({ type: "set-scenario-step-compare", stepId: step.id, open: !step.draft.editor.compareOpen })}>Compare Source</button>
             <LocalInjectionCodeEditor
@@ -80,7 +80,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
               onPresentationChange={(presentation) => runtime.dispatch({ type: "set-scenario-step-editor-presentation", stepId: step.id, presentation })}
             />
           </section>
-          {state.phase !== "edit" ? <pre tabIndex={0} aria-label={`Step ${index + 1} reviewed JSON`}>{step.draft.rawText}</pre> : null}
+          {state.phase !== "edit" && state.phase !== "complete" && state.phase !== "stopped" ? <pre tabIndex={0} aria-label={`Step ${index + 1} reviewed JSON`}>{step.draft.rawText}</pre> : null}
           {trace ? trace.kind === "attempted" ? <p><strong>{trace.outcome.headline}</strong>{` · Injection ${trace.injectionId}`}{trace.outcome.attemptedCount !== undefined ? ` · listeners ${trace.outcome.deliveredCount ?? 0}/${trace.outcome.attemptedCount} delivered${trace.outcome.failedCount ? `, ${trace.outcome.failedCount} failed` : ""}` : ""} · {trace.outcome.detail}{trace.evidence ? ` · Local Evidence ${trace.evidence.eventId}` : " · no committed Local Evidence"}</p> : <p><strong>NOT RUN</strong> · {trace.reason} · no Injection attempted · {trace.detail}</p> : null}
         </article>;
       })}
