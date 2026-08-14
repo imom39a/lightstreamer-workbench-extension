@@ -63,7 +63,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
         const trace = run?.trace.find((entry) => entry.stepId === step.id);
         return <article key={step.id} data-step-state={trace ? "complete" : run?.nextOrdinal === index + 1 ? "next" : "waiting"}>
           <header><strong>Step {index + 1}</strong><span>{step.id} · stable identity · delay {step.draft.relativeDelayMs} ms</span></header>
-          {state.phase !== "complete" && state.phase !== "stopped" ? <dl><div><dt>Source</dt><dd>{step.draft.sourceEventId ?? "None · newly authored"}</dd></div><div><dt>Validation</dt><dd>{step.draft.ready ? "READY" : "BLOCKED"}</dd></div></dl> : null}
+          {state.phase !== "stopped" ? <dl><div><dt>Source</dt><dd>{step.draft.sourceEventId ?? "None · newly authored"}</dd></div><div><dt>Validation</dt><dd>{step.draft.ready ? "READY" : "BLOCKED"}</dd></div></dl> : null}
           <section className="workbench-react__scenario-editor" aria-label={`Step ${index + 1} Injection Draft`} hidden={state.phase !== "edit"}>
             <button type="button" disabled={step.draft.sourceRawText === null} aria-pressed={step.draft.editor.compareOpen} onClick={() => runtime.dispatch({ type: "set-scenario-step-compare", stepId: step.id, open: !step.draft.editor.compareOpen })}>Compare Source</button>
             <LocalInjectionCodeEditor
@@ -80,7 +80,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
               onPresentationChange={(presentation) => runtime.dispatch({ type: "set-scenario-step-editor-presentation", stepId: step.id, presentation })}
             />
           </section>
-          {state.phase !== "edit" && state.phase !== "complete" && state.phase !== "stopped" ? <pre tabIndex={0} aria-label={`Step ${index + 1} reviewed JSON`}>{step.draft.rawText}</pre> : null}
+          {state.phase !== "edit" && state.phase !== "stopped" ? <pre tabIndex={0} aria-label={`Step ${index + 1} reviewed JSON`}>{step.draft.rawText}</pre> : null}
           {trace ? trace.kind === "attempted" ? <p><strong>{trace.outcome.headline}</strong>{` · Injection ${trace.injectionId}`}{trace.outcome.attemptedCount !== undefined ? ` · listeners ${trace.outcome.deliveredCount ?? 0}/${trace.outcome.attemptedCount} delivered${trace.outcome.failedCount ? `, ${trace.outcome.failedCount} failed` : ""}` : ""} · {trace.outcome.detail}{trace.evidence ? ` · Local Evidence ${trace.evidence.eventId}` : " · no committed Local Evidence"}</p> : <p><strong>NOT RUN</strong> · {trace.reason} · no Injection attempted · {trace.detail}</p> : null}
         </article>;
       })}
