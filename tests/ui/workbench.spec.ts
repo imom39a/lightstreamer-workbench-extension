@@ -2352,6 +2352,45 @@ test("Scenario fails closed for incompatible membership, invalid Review, and par
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
+test("Scenario halt ledger exposes drift authorization, unknown, unretained, and cleared Evidence truth", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-scenario-listener-drift", { width: 900, height: 700 }, "dark");
+  let scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await expect(scenario).toContainText("DRIFT REVIEW REQUIRED");
+  await expect(scenario.getByLabel("Scenario Run ledger")).toContainText("LISTENER_SET");
+  await expect(scenario.getByLabel("Scenario Run ledger")).toContainText("scenario-listener-2");
+  const rereview = scenario.getByRole("button", { name: "Re-review immutable plan" });
+  await rereview.focus();
+  await expect(rereview).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(scenario.getByLabel("Scenario Run ledger")).toContainText("RE-AUTHORIZED");
+  await expect(scenario.getByRole("button", { name: "Resume" })).toBeVisible();
+
+  await openScenario(page, "local-injection-scenario-server-drift", { width: 1440, height: 900 }, "light");
+  scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await expect(scenario.getByLabel("Scenario Run ledger")).toContainText("SERVER_ITEM_UPDATE");
+  await expect(scenario.getByLabel("Scenario Run ledger")).toContainText("scenario-server-interleave");
+
+  await openScenario(page, "local-injection-scenario-unknown", { width: 900, height: 320 }, "dark");
+  scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await expect(scenario).toContainText("DELIVERY UNKNOWN");
+  await expect(scenario).toContainText("retention NOT_CREATED");
+  await expect(scenario.getByText("NOT RUN", { exact: true })).toBeVisible();
+
+  await openScenario(page, "local-injection-scenario-unretained", { width: 900, height: 700 }, "light");
+  scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await expect(scenario).toContainText("DELIVERED LOCALLY");
+  await expect(scenario).toContainText("DELIVERED_UNRETAINED");
+  await expect(scenario).toContainText("no committed Local Evidence");
+
+  await openScenario(page, "local-injection-scenario-cleared", { width: 563, height: 700 }, "dark");
+  scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await expect(scenario).toContainText("UNAVAILABLE_AFTER_CLEAR");
+  await expect(scenario).toContainText("Local Evidence");
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
 test("Scenario Trace explicitly reports bounded executor-controlled terminal values", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
   await page.goto("/?scenario=local-injection-scenario-partial&theme=light&terminalLimit=1");

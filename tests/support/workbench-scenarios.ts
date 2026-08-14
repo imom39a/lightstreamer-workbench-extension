@@ -63,6 +63,11 @@ export const WORKBENCH_SCENARIO_IDS = [
   ,"local-injection-scenario-partial"
   ,"local-injection-scenario-high-volume"
   ,"local-injection-scenario-stop-in-flight"
+  ,"local-injection-scenario-listener-drift"
+  ,"local-injection-scenario-server-drift"
+  ,"local-injection-scenario-unknown"
+  ,"local-injection-scenario-unretained"
+  ,"local-injection-scenario-cleared"
 ] as const;
 
 export type WorkbenchScenarioId = (typeof WORKBENCH_SCENARIO_IDS)[number];
@@ -110,7 +115,7 @@ export type WorkbenchScenario = Readonly<{
     secondEntry?: "selection" | "scope";
     executorOutcome?: "pending" | "delivered" | "delayed" | "failed" | "partial" | "unknown";
     terminalLimit?: boolean;
-    scenario?: Readonly<{ addEventId?: string; authoredSteps?: number; review?: boolean; steps?: number; delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean }>;
+    scenario?: Readonly<{ addEventId?: string; authoredSteps?: number; review?: boolean; steps?: number; delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean; driftEvent?: LightstreamerEventEnvelope; driftFrames?: readonly TopologySyncFrame[]; clearAfterRun?: boolean }>;
   }>;
 }>;
 
@@ -628,6 +633,16 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return localInjectionHighVolumeScenario(id);
     case "local-injection-scenario-stop-in-flight":
       return localInjectionScenario(id, true, 0, "delayed", { play: true });
+    case "local-injection-scenario-listener-drift":
+      return localInjectionScenario(id, true, 0, "delivered", { driftEventKind: "listener" });
+    case "local-injection-scenario-server-drift":
+      return localInjectionScenario(id, true, 0, "delivered", { driftEventKind: "server" });
+    case "local-injection-scenario-unknown":
+      return localInjectionScenario(id, true, 1, "unknown");
+    case "local-injection-scenario-unretained":
+      return { ...localInjectionScenario(id, true, 1, "delivered"), failLocalEvidenceRetention: true };
+    case "local-injection-scenario-cleared":
+      return localInjectionScenario(id, true, 2, "delivered", { clearAfterRun: true });
   }
 }
 
@@ -661,8 +676,8 @@ function localInjectionScenario(
   id: WorkbenchScenarioId,
   review: boolean,
   steps: number,
-  executorOutcome: "delivered" | "delayed" | "partial" = "delivered",
-  controls: Readonly<{ delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean }> = {}
+  executorOutcome: "delivered" | "delayed" | "partial" | "unknown" = "delivered",
+  controls: Readonly<{ delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean; driftEventKind?: "listener" | "server"; clearAfterRun?: boolean }> = {}
 ): WorkbenchScenario {
   const topology = getPanelScenario("topology-small");
   const source = topology.capturedEvents.find(({ id: eventId }) => eventId === "event-5") ?? topology.capturedEvents.at(-1);
@@ -688,6 +703,17 @@ function localInjectionScenario(
       changedFields: { command: "UPDATE", value: "3" }
     }
   };
+  const driftEvent: LightstreamerEventEnvelope | undefined = controls.driftEventKind === "listener"
+    ? undefined
+    : controls.driftEventKind === "server"
+      ? { ...second, id: "scenario-server-interleave", timestamp: source.timestamp + 2 }
+      : undefined;
+  const driftFrames = controls.driftEventKind === "listener" ? topology.topologySyncFrames?.map((frame) => {
+    const common = { ...frame, syncId: "topology-small-listener-drift-sync", cutoffCaptureSequence: 7, recordCount: 7 };
+    return frame.type === "lsew:topology-sync-chunk"
+      ? { ...common, records: [...frame.records, { kind: "listener-attachment" as const, id: "topology-small-listener-2-attachment", parentId: "topology-small-subscription", subscriptionId: "topology-small-subscription", pageEpoch: "topology-small-page", captureSequence: 7, values: { clientId: "topology-small-client", sessionId: "topology-small-session", listenerId: "scenario-listener-2", callbacks: ["onItemUpdate"], registrationCount: 1, active: true } }] }
+      : common;
+  }) : undefined;
   return {
     id,
     initialEvents: [...topology.capturedEvents, second, bulk],
@@ -698,7 +724,7 @@ function localInjectionScenario(
       entry: "selection",
       executorOutcome,
       terminalLimit: executorOutcome === "partial",
-      scenario: { addEventId: second.id, review, steps, ...controls }
+      scenario: { addEventId: second.id, review, steps, ...(controls.delayMs !== undefined ? { delayMs: controls.delayMs } : {}), ...(controls.speed !== undefined ? { speed: controls.speed } : {}), ...(controls.play !== undefined ? { play: controls.play } : {}), ...(driftEvent ? { driftEvent } : {}), ...(driftFrames ? { driftFrames } : {}), ...(controls.clearAfterRun ? { clearAfterRun: true } : {}) }
     }
   };
 }

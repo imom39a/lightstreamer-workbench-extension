@@ -238,5 +238,48 @@
     "forcedColors": true,
     "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-high-volume", "setup": "scenario-capacity-refusal" }
+  },
+  {
+    "id": "scenario-halt-partial-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "stopped", "frame": "compact", "setup": "scenario-halt" },
+    "production": { "scenario": "local-injection-scenario-partial", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-halt-listener-drift-normal-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "drift", "frame": "normal", "setup": "scenario-halt" },
+    "production": { "scenario": "local-injection-scenario-listener-drift", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-halt-unknown-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": { "variant": "A", "state": "unknown", "frame": "shallow", "setup": "scenario-halt" },
+    "production": { "scenario": "local-injection-scenario-unknown", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-halt-server-drift-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "drift", "frame": "wide", "setup": "scenario-halt" },
+    "production": { "scenario": "local-injection-scenario-server-drift", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-halt-unretained-normal-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "unretained", "frame": "normal", "setup": "scenario-halt" },
+    "production": { "scenario": "local-injection-scenario-unretained", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-halt-cleared-compact-dark",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "cleared", "frame": "compact", "setup": "scenario-halt" },
+    "production": { "scenario": "local-injection-scenario-cleared", "setup": "scenario" }
   }
 ]

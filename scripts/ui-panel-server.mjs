@@ -199,9 +199,25 @@ if (scenario.localInjection) {
     }
     if (scenario.localInjection.scenario.speed !== undefined) runtime.dispatch({ type: "set-scenario-speed", speed: scenario.localInjection.scenario.speed });
     if (scenario.localInjection.scenario.review) runtime.dispatch({ type: "review-scenario" });
+    for (const frame of scenario.localInjection.scenario.driftFrames ?? []) runtime.dispatch({ type: "apply-topology-sync-frame", frame });
+    if (scenario.localInjection.scenario.driftFrames) {
+      await new Promise((resolve) => setTimeout(resolve, 48));
+      runtime.dispatch({ type: "step-next-scenario" });
+      await new Promise((resolve) => setTimeout(resolve, 48));
+    }
+    if (scenario.localInjection.scenario.driftEvent) {
+      await history.offer(scenario.localInjection.scenario.driftEvent).settled;
+      runtime.dispatch({ type: "step-next-scenario" });
+      await new Promise((resolve) => setTimeout(resolve, 48));
+    }
     if (scenario.localInjection.scenario.play) runtime.dispatch({ type: "play-scenario" });
     for (let index = 0; index < (scenario.localInjection.scenario.steps ?? 0); index += 1) {
       runtime.dispatch({ type: "step-next-scenario" });
+      await new Promise((resolve) => setTimeout(resolve, 48));
+    }
+    if (scenario.localInjection.scenario.clearAfterRun) {
+      runtime.dispatch({ type: "request-clear-history" });
+      runtime.dispatch({ type: "confirm-clear-history" });
       await new Promise((resolve) => setTimeout(resolve, 48));
     }
   }
