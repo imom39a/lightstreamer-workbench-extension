@@ -1083,18 +1083,17 @@ describe("Event History performance startup fail-closed seams", () => {
       const { finalizePerformanceRun } = await import(${JSON.stringify(scriptUrl)});
       const primary = new Error("primary timeout");
       let received;
-      const started = Date.now();
       const result = await finalizePerformanceRun({
         primaryError: primary,
         terminateChrome: ({ deadlineAt }) => {
-          received = { deadlineAt };
+          received = { deadlineAt, receivedAt: Date.now() };
           return new Promise((resolve) => setTimeout(resolve, 10));
         },
         timeoutMs: 25
       });
       assert.strictEqual(result, primary);
-      assert.ok(received.deadlineAt >= started + 9);
-      assert.ok(received.deadlineAt <= started + 25);
+      assert.ok(received.deadlineAt > received.receivedAt);
+      assert.ok(received.deadlineAt <= received.receivedAt + 25);
       assert.equal(primary.outerDiagnostics, undefined);
     `);
   });

@@ -84,7 +84,14 @@ try {
     console.log(JSON.stringify(plan));
     process.exit(0);
   }
-  const ordinaryStatus = runPhase("parallel ordinary suite", plan.ordinary, forwardedArgs);
+  // Keep ordinary tests parallel without letting host-wide worker fan-out starve
+  // their intentionally bounded browserless build and publication checks.
+  const ordinaryStatus = runPhase(
+    "parallel ordinary suite",
+    plan.ordinary,
+    forwardedArgs,
+    ["--maxWorkers=2"]
+  );
   if (ordinaryStatus !== 0) process.exit(ordinaryStatus);
   const isolatedStatus = runPhase(
     "serialized IndexedDB suite",

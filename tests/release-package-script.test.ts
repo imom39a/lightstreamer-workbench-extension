@@ -48,6 +48,7 @@ describe("release packaging verification gate", () => {
     expect(testRunner).toContain('"tests/filter-impl-09-indexeddb-parity.test.ts"');
     expect(testRunner).toContain('"tests/filter-impl-09-indexeddb-workload.test.ts"');
     expect(testRunner).toContain('"tests/history-impl-09-lifecycle-blockers.test.ts"');
+    expect(testRunner).toContain('["--maxWorkers=2"]');
     expect(testRunner).toContain('"--no-file-parallelism", "--maxWorkers=1"');
     expect(testRunner).toContain("if (ordinaryStatus !== 0) process.exit(ordinaryStatus);");
     expect(testRunner).toContain("process.exit(isolatedStatus);");
