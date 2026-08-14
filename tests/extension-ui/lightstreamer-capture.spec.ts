@@ -40,7 +40,7 @@ const issue16FixtureUrl = new URL(
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
 
-type OfficialClientScenario = "authored" | "high-volume-loading" | "issue-16";
+type OfficialClientScenario = "authored" | "scenario" | "high-volume-loading" | "issue-16";
 
 async function runOfficialClientPanelJourney(
   windowSize: string,
@@ -160,6 +160,12 @@ async function runOfficialClientPanelJourney(
       viewport,
       `${viewport.width}×${viewport.height}`
     );
+
+    if (scenario === "scenario") {
+      await runOfficialClientScenarioJourney(pageCdp, panelCdp);
+      expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      return;
+    }
 
     if (scenario === "issue-16") {
       await waitForCondition(
@@ -632,6 +638,274 @@ test("official-client authored COMMAND Local Injection works through visible com
   await runOfficialClientPanelJourney("1653,727", { width: 563, height: 700 });
 });
 
+async function runOfficialClientScenarioJourney(
+  pageCdp: CdpClient,
+  panelCdp: CdpClient
+): Promise<void> {
+  const scenarioKey = "fixture-scenario.TICKER";
+  await waitForCondition(
+    pageCdp,
+    `globalThis.__LSEW_REINJECTION_BRIDGE__?.version === 2 &&
+      typeof globalThis.__LSEW_REINJECTION_BRIDGE__.reinject === "function"`,
+    "the ordinary page reinjection bridge before Scenario authoring"
+  );
+  await evaluateByValue<boolean>(pageCdp, `(() => {
+    const bridge = globalThis.__LSEW_REINJECTION_BRIDGE__;
+    const original = bridge.reinject;
+    globalThis.__LSEW_SCENARIO_BRIDGE_CALLS__ = [];
+    bridge.reinject = function(requestId, panelSessionId, draft) {
+      const result = original.call(bridge, requestId, panelSessionId, draft);
+      globalThis.__LSEW_SCENARIO_BRIDGE_CALLS__.push({
+        requestId,
+        panelSessionId,
+        draft: structuredClone(draft),
+        result: structuredClone(result)
+      });
+      return result;
+    };
+    return true;
+  })()`);
+
+  await clickVisiblePanelElement(
+    panelCdp,
+    `[...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [data-evidence-id]')]
+      .find((candidate) => candidate.textContent?.includes("scenario.mutate-reinject"))`,
+    "the deterministic Server ADD used to anchor the Scenario target"
+  );
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Create Local Injection Draft" && !button.disabled
+    )`,
+    "the captured Server ADD to offer a protected Draft"
+  );
+  if (!await isPanelElementVisible(panelCdp, `[...document.querySelectorAll("button")]
+    .find((button) => button.textContent?.trim() === "Create Local Injection Draft" && !button.disabled)`)) {
+    await clickPanelButton(panelCdp, "Open selected Context");
+  }
+  await pressVisiblePanelButton(panelCdp, "Create Local Injection Draft");
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]')`,
+    "the captured Draft editor"
+  );
+  await clickPanelButton(panelCdp, "Convert to Scenario");
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Local Injection Scenario"]') &&
+      document.querySelector('[aria-label="Step 1 Local Injection JSON"][contenteditable="true"]')`,
+    "the temporary Scenario document"
+  );
+
+  const documents = [
+    {
+      command: "ADD",
+      key: scenarioKey,
+      isSnapshot: false,
+      fields: {
+        key: scenarioKey,
+        command: "ADD",
+        modelId: "MESSENGER",
+        modelValues: {
+          messageId: "fixture-scenario",
+          messageText: "Scenario ADD",
+          messageType: "TICKER"
+        }
+      }
+    },
+    {
+      command: "UPDATE",
+      key: scenarioKey,
+      isSnapshot: false,
+      fields: {
+        key: scenarioKey,
+        command: "UPDATE",
+        modelId: "MESSENGER",
+        modelValues: {
+          messageId: "fixture-scenario",
+          messageText: "Scenario UPDATE",
+          messageType: "TICKER"
+        }
+      }
+    },
+    {
+      command: "DELETE",
+      key: scenarioKey,
+      isSnapshot: false,
+      fields: {
+        key: scenarioKey,
+        command: "DELETE",
+        modelId: "MESSENGER",
+        modelValues: {
+          messageId: "fixture-scenario",
+          messageText: "Scenario DELETE",
+          messageType: "TICKER"
+        }
+      }
+    }
+  ] as const;
+
+  await replaceScenarioStepJson(panelCdp, 1, documents[0]);
+  for (const [index, document] of documents.slice(1).entries()) {
+    await clickPanelButton(panelCdp, "Add authored update");
+    await replaceScenarioStepJson(panelCdp, index + 2, document);
+  }
+  await clickPanelButton(panelCdp, "Review Scenario");
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Play") ||
+      document.querySelector('[aria-label="Local Injection Scenario"] [role="alert"]')`,
+    "the immutable reviewed three-Step Run or a truthful Review refusal"
+  );
+  const reviewProof = await evaluateByValue<{ text: string; playable: boolean }>(panelCdp, `({
+    text: document.querySelector('[aria-label="Local Injection Scenario"]')?.textContent ?? "",
+    playable: [...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Play")
+  })`);
+  expect(reviewProof.playable, reviewProof.text).toBe(true);
+
+  await clickPanelButton(panelCdp, "Play");
+  await waitForScenarioRun(pageCdp, panelCdp, { expectedBridgeCalls: 3, expectedUpdateCount: 4 });
+  const firstRun = await readScenarioProof(pageCdp, panelCdp, scenarioKey);
+  expect(firstRun.commands).toEqual(["ADD", "UPDATE", "DELETE"]);
+  expect(new Set(firstRun.requestIds).size).toBe(3);
+  expect(new Set(firstRun.injectionIds).size, JSON.stringify(firstRun)).toBe(3);
+  expect(new Set(firstRun.stepIds).size, JSON.stringify(firstRun)).toBe(3);
+  expect(new Set(firstRun.evidenceIds).size, JSON.stringify(firstRun)).toBe(3);
+  expect(firstRun.runIds).toHaveLength(1);
+  expect(firstRun.scenarioIds).toHaveLength(1);
+  expect(firstRun.applicationEvents).toEqual([
+    `live | scenario.mutate-reinject | ADD | ${scenarioKey} | Scenario ADD`,
+    `live | scenario.mutate-reinject | UPDATE | ${scenarioKey} | Scenario UPDATE`,
+    `live | scenario.mutate-reinject | DELETE | ${scenarioKey} | Scenario DELETE`
+  ]);
+
+  await clickPanelButton(panelCdp, "Run again");
+  await waitForCondition(
+    panelCdp,
+    `[...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Play") &&
+      document.querySelector('[aria-label="Local Injection Scenario"]')?.textContent?.includes("local-injection-run-")`,
+    "Run again to create a fresh reviewed Run"
+  );
+  await clickPanelButton(panelCdp, "Play");
+  await waitForScenarioRun(pageCdp, panelCdp, { expectedBridgeCalls: 6, expectedUpdateCount: 7 });
+  const allRuns = await readScenarioProof(pageCdp, panelCdp, scenarioKey);
+  expect(allRuns.commands).toEqual(["ADD", "UPDATE", "DELETE", "ADD", "UPDATE", "DELETE"]);
+  expect(new Set(allRuns.requestIds).size).toBe(6);
+  expect(new Set(allRuns.injectionIds).size).toBe(6);
+  expect(new Set(allRuns.runIds).size).toBe(2);
+  expect(new Set(allRuns.scenarioIds).size).toBe(1);
+  expect(allRuns.requestIds.slice(3)).not.toEqual(firstRun.requestIds);
+  expect(allRuns.injectionIds.slice(3)).not.toEqual(firstRun.injectionIds);
+
+  await clickPanelButton(panelCdp, "Finish Scenario");
+  await clearPanelEvidenceSelection(panelCdp);
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="COMMAND projection summary"]')`,
+    "the runtime Scope to restore after the Scenario"
+  );
+  await pressVisiblePanelButton(panelCdp, "Compare COMMAND projections");
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Observed Server COMMAND State"]') &&
+      document.querySelector('[aria-label="Local Effective COMMAND State"]')`,
+    "the final Observed Server and Local Effective projections"
+  );
+  const projections = await evaluateByValue<{ observed: string; localEffective: string }>(panelCdp, `({
+    observed: document.querySelector('[aria-label="Observed Server COMMAND State"]')?.textContent ?? "",
+    localEffective: document.querySelector('[aria-label="Local Effective COMMAND State"]')?.textContent ?? ""
+  })`);
+  expect(projections.observed).toContain("fixture-message.TICKER");
+  expect(projections.observed).toContain("Attention - real Lightstreamer client.");
+  expect(projections.observed).not.toContain(scenarioKey);
+  expect(projections.localEffective).toContain("fixture-message.TICKER");
+  expect(projections.localEffective).not.toContain(scenarioKey);
+}
+
+async function replaceScenarioStepJson(
+  panelCdp: CdpClient,
+  step: number,
+  document: unknown
+): Promise<void> {
+  await clickPanelButton(panelCdp, `Step ${step}`);
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Step ${step} Local Injection JSON"][contenteditable="true"]')`,
+    `Scenario Step ${step} editor`
+  );
+  await replaceLocalInjectionJson(panelCdp, JSON.stringify(document, null, 2), `Step ${step} Local Injection JSON`);
+}
+
+async function waitForScenarioRun(
+  pageCdp: CdpClient,
+  panelCdp: CdpClient,
+  expected: Readonly<{ expectedBridgeCalls: number; expectedUpdateCount: number }>
+): Promise<void> {
+  await waitForCondition(
+    pageCdp,
+    `globalThis.__LSEW_SCENARIO_BRIDGE_CALLS__?.length === ${expected.expectedBridgeCalls} &&
+      Number(document.querySelector("#update-count")?.textContent) === ${expected.expectedUpdateCount}`,
+    `${expected.expectedBridgeCalls} ordinary Scenario requests and exactly-once application callbacks`
+  );
+  await waitForCondition(
+    panelCdp,
+    `document.querySelector('[aria-label="Local Injection Scenario"]')?.textContent?.includes("RUN COMPLETE")`,
+    "the Scenario Run to settle through committed Local Evidence"
+  );
+}
+
+async function readScenarioProof(
+  pageCdp: CdpClient,
+  panelCdp: CdpClient,
+  scenarioKey: string
+): Promise<{
+  commands: string[];
+  requestIds: string[];
+  applicationEvents: string[];
+  scenarioIds: string[];
+  runIds: string[];
+  stepIds: string[];
+  injectionIds: string[];
+  evidenceIds: string[];
+}> {
+  const page = await evaluateByValue<{
+    commands: string[];
+    requestIds: string[];
+    applicationEvents: string[];
+  }>(pageCdp, `(() => {
+    const calls = globalThis.__LSEW_SCENARIO_BRIDGE_CALLS__ ?? [];
+    return {
+      commands: calls.map(({ draft }) => draft.command),
+      requestIds: calls.map(({ requestId }) => requestId),
+      applicationEvents: [...document.querySelectorAll("#application-events li")]
+        .map((row) => row.textContent ?? "")
+        .filter((text) => text.includes(${JSON.stringify(scenarioKey)}))
+        .reverse()
+    };
+  })()`);
+  const ledger = await evaluateByValue<string>(
+    panelCdp,
+    `document.querySelector('[aria-label="Local Injection Scenario"]')?.textContent ?? ""`
+  );
+  const matches = (pattern: RegExp): string[] => [...ledger.matchAll(pattern)].map((match) => match[1]!);
+  return {
+    ...page,
+    scenarioIds: [...new Set(matches(/(local-injection-scenario-\d+)/g))],
+    runIds: [...new Set(matches(/(local-injection-run-\d+)/g))],
+    stepIds: matches(/(step-\d+)/g),
+    injectionIds: matches(/Injection (local-injection-\d+)/g),
+    evidenceIds: matches(/(?:Local Evidence|Evidence) (synthetic-[^\s]+)/g)
+  };
+}
+
+test("official-client three-Step Scenario delivers ADD UPDATE DELETE once and can run again with fresh identities", async () => {
+  await runOfficialClientPanelJourney(
+    "2664,727",
+    { width: 900, height: 700 },
+    "scenario"
+  );
+});
+
 test("high-volume Capture does not leave shipped Evidence loading after repeated Scope choices", async () => {
   await runOfficialClientPanelJourney(
     "2664,927",
@@ -865,18 +1139,23 @@ async function isPanelElementVisible(cdp: CdpClient, targetExpression: string): 
   })()`);
 }
 
-async function replaceLocalInjectionJson(cdp: CdpClient, text: string): Promise<void> {
+async function replaceLocalInjectionJson(
+  cdp: CdpClient,
+  text: string,
+  ariaLabel = "Local Injection JSON"
+): Promise<void> {
+  const selector = `[aria-label=${JSON.stringify(ariaLabel)}][contenteditable="true"]`;
   await clickVisiblePanelElement(
     cdp,
-    `document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]')`,
-    "Local Injection JSON editor"
+    `document.querySelector(${JSON.stringify(selector)})`,
+    `${ariaLabel} editor`
   );
   await selectAllInFocusedEditor(cdp);
   await cdp.request("Input.insertText", { text });
   await waitForCondition(
     cdp,
     `(() => {
-      const editor = document.querySelector('[aria-label="Local Injection JSON"][contenteditable="true"]');
+      const editor = document.querySelector(${JSON.stringify(selector)});
       return editor instanceof HTMLElement &&
         [...editor.querySelectorAll(".cm-line")].map((line) => line.textContent ?? "").join("\\n") === ${JSON.stringify(text)};
     })()`,
