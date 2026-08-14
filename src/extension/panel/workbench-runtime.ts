@@ -141,6 +141,7 @@ import {
   createScenarioFromDraft,
   reviewScenario,
   stepScenarioRun,
+  scenarioTargetIncompatibility,
   type LocalInjectionScenario,
   type ScenarioDraftInput,
   type ScenarioRun
@@ -459,11 +460,12 @@ export type WorkbenchLocalInjectionSnapshot = Readonly<{
 }>;
 
 export type WorkbenchScenarioSnapshot = Readonly<{
-  phase: "edit" | "review" | "running" | "paused" | "complete";
+  phase: "edit" | "review" | "running" | "paused" | "complete" | "stopped";
   scenario: LocalInjectionScenario;
   run: ScenarioRun | null;
   membershipError: string | null;
   pickerOpen: boolean;
+  membership: readonly Readonly<{ eventId: string; available: boolean; reason: string | null }>[];
 }> | null;
 
 /** The immutable, renderer-neutral investigation state for one panel session. */
@@ -573,6 +575,8 @@ export type WorkbenchCommand =
   | { type: "edit-scenario" }
   | { type: "step-next-scenario" }
   | { type: "finish-scenario" }
+  | { type: "set-scenario-step-json"; stepId: string; text: string }
+  | { type: "set-scenario-step-compare"; stepId: string; open: boolean }
   | { type: "select-evidence"; eventId: string | null }
   | { type: "focus-evidence"; eventId: string | null }
   | { type: "set-evidence-scroll"; scrollTop: number }
@@ -744,7 +748,7 @@ type LocalInjectionDraftState = {
 };
 
 type ScenarioState = {
-  phase: "edit" | "review" | "running" | "paused" | "complete";
+  phase: "edit" | "review" | "running" | "paused" | "complete" | "stopped";
   scenario: LocalInjectionScenario;
   drafts: LocalInjectionDraftState[];
   run: ScenarioRun | null;
@@ -1560,6 +1564,12 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "finish-scenario":
         this.finishScenario();
+        return;
+      case "set-scenario-step-json":
+        this.setScenarioStepJson(command.stepId, command.text);
+        return;
+      case "set-scenario-step-compare":
+        this.setScenarioStepCompare(command.stepId, command.open);
         return;
       case "select-evidence":
         this.selectionEventId = command.eventId;
@@ -3364,27 +3374,32 @@ class Runtime implements WorkbenchRuntime {
     if (!state || !run || (state.phase !== "review" && state.phase !== "paused")) return;
     const index = run.nextOrdinal - 1;
     const review = state.reviews[index];
-    if (!review) return;
+    if (!review || review.kind !== "reviewed") return;
     const injectionId = `local-injection-${++this.localInjectionSequence}`;
     const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
+    const correlatedReview = Object.freeze({
+      ...review,
+      correlation: Object.freeze({ ...review.correlation, injectionId })
+    });
+    state.reviews[index] = correlatedReview;
     state.phase = "running";
     this.publish();
     void stepScenarioRun(run, {
       injectionId,
       execute: async () => {
-        const execution = await this.localInjectionExecutionCoordinator.execute(review, { executionId });
+        const execution = await this.localInjectionExecutionCoordinator.execute(correlatedReview, { executionId });
         if (execution.kind === "review-invalidated") {
-          return { outcome: { headline: "NOT RUN" }, evidence: null };
+          return { outcome: { headline: "NOT RUN", disposition: "blocked" }, evidence: null };
         }
         const evidence = execution.record.evidence.state === "committed"
           ? { eventId: execution.record.evidence.reference.eventId }
           : null;
-        return { outcome: { headline: execution.record.outcome.headline }, evidence };
+        return { outcome: { headline: execution.record.outcome.headline, disposition: execution.record.outcome.disposition }, evidence };
       }
     }).then((nextRun) => {
       if (this.disposed || this.scenarioState !== state) return;
       state.run = nextRun;
-      state.phase = nextRun.status === "complete" ? "complete" : "paused";
+      state.phase = nextRun.status === "complete" ? "complete" : nextRun.status === "stopped" ? "stopped" : "paused";
       this.publish();
     });
   }
@@ -3400,6 +3415,63 @@ class Runtime implements WorkbenchRuntime {
     this.focusedEventId = origin.focusedEventId;
     this.contextId = origin.contextId;
     this.publish();
+  }
+
+  private setScenarioStepJson(stepId: string, text: string): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
+    const draft = state.drafts[index];
+    if (!draft) return;
+    draft.rawText = text;
+    draft.preflightFingerprint = null;
+    draft.reviewedExecution = null;
+    draft.reviewRefusal = null;
+    draft.outcome = null;
+    this.refreshLocalInjectionValidation(draft);
+    state.scenario = Object.freeze({
+      ...state.scenario,
+      revision: state.scenario.revision + 1,
+      steps: Object.freeze(state.scenario.steps.map((step, stepIndex) =>
+        stepIndex === index ? Object.freeze({ ...step, draft: this.scenarioDraftInput(draft) }) : step))
+    });
+    state.membershipError = null;
+    this.publish();
+  }
+
+  private setScenarioStepCompare(stepId: string, open: boolean): void {
+    const state = this.scenarioState;
+    if (!state || state.phase !== "edit") return;
+    const index = state.scenario.steps.findIndex(({ id }) => id === stepId);
+    const draft = state.drafts[index];
+    if (!draft || (open && draft.sourceRawText === null)) return;
+    draft.compareOpen = open;
+    state.scenario = Object.freeze({
+      ...state.scenario,
+      revision: state.scenario.revision + 1,
+      steps: Object.freeze(state.scenario.steps.map((step, stepIndex) =>
+        stepIndex === index ? Object.freeze({ ...step, draft: this.scenarioDraftInput(draft) }) : step))
+    });
+    this.publish();
+  }
+
+  private scenarioMembershipAvailability(event: LightstreamerEventEnvelope): Readonly<{ eventId: string; available: boolean; reason: string | null }> {
+    const state = this.scenarioState;
+    if (!state) return Object.freeze({ eventId: event.id, available: false, reason: "No Scenario is being edited." });
+    if (!isCompatibleLocalInjectionSource(event)) {
+      return Object.freeze({ eventId: event.id, available: false, reason: "Not a captured Item Update with a live Local Injection delivery target." });
+    }
+    let draft = createDraftFromEvent(event);
+    if (!draft) return Object.freeze({ eventId: event.id, available: false, reason: "Captured Item Update fields are unavailable for a Draft." });
+    const fieldSchema = localInjectionFieldSchema(event.subscription?.fields, event.update?.fields);
+    draft = { ...draft, sourceSubscription: { ...draft.sourceSubscription!, fields: [...fieldSchema] } };
+    const anchor = anchorFromDraft(draft, "captured-event", event.topology?.pageEpoch ?? this.currentPageEpoch, fieldSchema);
+    const reference = state.drafts[0]!;
+    const candidateTarget = this.scenarioDraftInput({ ...reference, anchor, baseDraft: draft }).target;
+    const reason = scenarioTargetIncompatibility(state.scenario.target, candidateTarget)
+      ?? this.validateLocalInjectionTarget(anchor)[0]?.message
+      ?? null;
+    return Object.freeze({ eventId: event.id, available: reason === null, reason });
   }
 
   private scenarioDraftInput(draft: LocalInjectionDraftState, ready = localInjectionReady(draft)): ScenarioDraftInput {
@@ -3428,19 +3500,9 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private scenarioWithOrderedValidation(state: ScenarioState): LocalInjectionScenario {
-    const keys = new Set(this.activeCommandKeys(state.drafts[0]!.anchor));
     const steps = state.drafts.map((draft, index) => {
       this.refreshLocalInjectionValidation(draft);
-      const document = draft.document;
-      let ready = localInjectionReady(draft);
-      if (document && draft.anchor.subscriptionMode === "COMMAND" && typeof document.key === "string") {
-        if (document.command === "ADD") keys.add(document.key);
-        if (document.command === "UPDATE" && keys.has(document.key)) {
-          ready = draft.targetDiagnostics.length === 0 && draft.documentDiagnostics.every(({ code }) => code === "unknown-key-update");
-        }
-        if (document.command === "DELETE") keys.delete(document.key);
-      }
-      return Object.freeze({ id: state.scenario.steps[index]!.id, draft: this.scenarioDraftInput(draft, ready) });
+      return Object.freeze({ id: state.scenario.steps[index]!.id, draft: this.scenarioDraftInput(draft) });
     });
     return Object.freeze({ ...state.scenario, steps: Object.freeze(steps) });
   }
@@ -3988,7 +4050,8 @@ class Runtime implements WorkbenchRuntime {
             scenario: this.scenarioState.scenario,
             run: this.scenarioState.run,
             membershipError: this.scenarioState.membershipError,
-            pickerOpen: this.scenarioState.pickerOpen
+            pickerOpen: this.scenarioState.pickerOpen,
+            membership: Object.freeze(this.displayedEvidence().events.map((event) => this.scenarioMembershipAvailability(event)))
           })
         : null,
       evidence: Object.freeze({

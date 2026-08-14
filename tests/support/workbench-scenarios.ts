@@ -60,6 +60,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   ,"local-injection-scenario-edit"
   ,"local-injection-scenario-review"
   ,"local-injection-scenario-complete"
+  ,"local-injection-scenario-partial"
 ] as const;
 
 export type WorkbenchScenarioId = (typeof WORKBENCH_SCENARIO_IDS)[number];
@@ -618,13 +619,16 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return localInjectionScenario(id, true, 0);
     case "local-injection-scenario-complete":
       return localInjectionScenario(id, true, 2);
+    case "local-injection-scenario-partial":
+      return localInjectionScenario(id, true, 1, "partial");
   }
 }
 
 function localInjectionScenario(
   id: WorkbenchScenarioId,
   review: boolean,
-  steps: number
+  steps: number,
+  executorOutcome: "delivered" | "partial" = "delivered"
 ): WorkbenchScenario {
   const topology = getPanelScenario("topology-small");
   const source = topology.capturedEvents.find(({ id: eventId }) => eventId === "event-5") ?? topology.capturedEvents.at(-1);
@@ -648,7 +652,7 @@ function localInjectionScenario(
     captureStatus: "capturing",
     localInjection: {
       entry: "selection",
-      executorOutcome: "delivered",
+      executorOutcome,
       scenario: { addEventId: second.id, review, steps }
     }
   };

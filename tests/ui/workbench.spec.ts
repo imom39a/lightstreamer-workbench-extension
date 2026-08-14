@@ -2189,6 +2189,86 @@ test("reviewed same-target Scenario steps exactly one Injection and retains its 
   }
 });
 
+test("Scenario fails closed for incompatible membership, invalid Review, and partial delivery", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-scenario-edit", { width: 900, height: 700 }, "dark");
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  const add = scenario.getByRole("button", { name: "Add captured update" });
+  await add.click();
+  const picker = page.getByRole("region", { name: "Scenario Evidence picker" });
+  const unavailable = picker.getByRole("button", { name: "Add this update", disabled: true });
+  await expect(unavailable.first()).toBeDisabled();
+  await expect(picker.getByText(/Unavailable ·/).first()).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(picker).toBeHidden();
+  await expect(add).toBeFocused();
+
+  const secondEditor = scenario.getByRole("textbox", { name: "Step 2 Local Injection JSON" });
+  await secondEditor.fill('{"command":"UPDATE"}');
+  await scenario.getByRole("button", { name: "Review Scenario" }).click();
+  await expect(scenario.getByRole("alert")).toContainText("step-2");
+  await expect(scenario).toContainText("No Injection was attempted");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(0);
+  await expectNoSeriousAxeViolations(page, testInfo);
+
+  await openScenario(page, "local-injection-scenario-partial", { width: 900, height: 700 }, "light");
+  const stopped = page.getByRole("region", { name: "Local Injection Scenario" });
+  await expect(stopped).toContainText("RUN STOPPED");
+  await expect(stopped).toContainText("PARTIALLY DELIVERED");
+  await expect(stopped).toContainText("Remaining Steps were not run");
+  await expect(stopped.getByText(/Injection local-injection-/)).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __localInjectionExecutionCount(): number }).__localInjectionExecutionCount())).toBe(1);
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
+test("Draft conversion and Scenario Edit restore the exact editor selection and workflow origin", async ({ page }) => {
+  await openScenario(page, "local-injection-captured", { width: 900, height: 700 }, "dark");
+  const openContext = page.getByRole("button", { name: "Open selected Context" });
+  if (await openContext.isVisible()) await openContext.click();
+  const originScopeId = await page.locator('[role="treeitem"][aria-current="true"]').getAttribute("data-scope-id");
+  await page.getByRole("button", { name: "Create Local Injection Draft" }).click();
+  const editor = page.getByRole("textbox", { name: "Local Injection JSON", exact: true });
+  await editor.focus();
+  await page.keyboard.press("ControlOrMeta+Home");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+ArrowRight");
+  const originalPresentation = await editor.locator('xpath=ancestor::*[@data-editor-engine="codemirror-6"]').evaluate((host) => ({
+    anchor: host.dataset.selectionAnchor,
+    head: host.dataset.selectionHead,
+    scrollTop: host.dataset.scrollTop,
+    scrollLeft: host.dataset.scrollLeft
+  }));
+  expect(originalPresentation.anchor).not.toBe(originalPresentation.head);
+  await page.getByRole("button", { name: "Convert to Scenario" }).click();
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  const converted = scenario.getByRole("textbox", { name: "Step 1 Local Injection JSON" });
+  await converted.focus();
+  await expect.poll(() => converted.locator('xpath=ancestor::*[@data-editor-engine="codemirror-6"]').evaluate((host) => ({
+    anchor: host.dataset.selectionAnchor,
+    head: host.dataset.selectionHead,
+    scrollTop: host.dataset.scrollTop,
+    scrollLeft: host.dataset.scrollLeft
+  }))).toEqual(originalPresentation);
+  await scenario.getByRole("button", { name: "Review Scenario" }).click();
+  await scenario.getByRole("button", { name: "Edit Scenario" }).click();
+  const restored = scenario.getByRole("textbox", { name: "Step 1 Local Injection JSON" });
+  await restored.focus();
+  await expect.poll(() => restored.locator('xpath=ancestor::*[@data-editor-engine="codemirror-6"]').evaluate((host) => ({
+    anchor: host.dataset.selectionAnchor,
+    head: host.dataset.selectionHead,
+    scrollTop: host.dataset.scrollTop,
+    scrollLeft: host.dataset.scrollLeft
+  }))).toEqual(originalPresentation);
+  await scenario.getByRole("button", { name: "Review Scenario" }).click();
+  await scenario.getByRole("button", { name: "Step next" }).click();
+  await expect(scenario).toContainText("RUN STOPPED");
+  await scenario.getByRole("button", { name: "Finish Scenario" }).click();
+  await expect(scenario).toHaveCount(0);
+  await expect(page.locator('[data-evidence-id="event-5"]')).toBeFocused();
+  await expect(page.getByRole("heading", { name: "event-5 · Item Update" })).toBeVisible();
+  await expect(page.locator('[role="treeitem"][aria-current="true"]')).toHaveAttribute("data-scope-id", originScopeId ?? "");
+});
+
 async function expectProtectedBoundaryValues(draft: ReturnType<Page["getByRole"]>): Promise<void> {
   const values = await draft.locator(".workbench-react__local-boundary > div").evaluateAll((boundaries) =>
     boundaries.map((boundary) => {

@@ -1,6 +1,8 @@
 import type { EvidenceRef } from "./event-history-authoritative";
 import type { LocalInjectionDiagnostic, LocalInjectionDocument } from "./local-injection-document";
 
+export const MAX_SCENARIO_ACCOUNTED_BYTES = 8 * 1024 * 1024;
+
 export type ScenarioTarget = Readonly<{
   pageEpoch: string | null;
   clientId: string | null;
@@ -68,7 +70,7 @@ export type ScenarioTraceEntry = Readonly<{
   stepId: string;
   ordinal: number;
   injectionId: string;
-  outcome: Readonly<{ headline: string }>;
+  outcome: Readonly<{ headline: string; disposition: string }>;
   evidence: Readonly<{ eventId: string }> | null;
 }>;
 
@@ -103,10 +105,14 @@ export function addScenarioStep(
   scenario: LocalInjectionScenario,
   draft: ScenarioDraftInput
 ): Readonly<{ ok: true; scenario: LocalInjectionScenario }> | Readonly<{ ok: false; reason: string }> {
-  const reason = targetIncompatibility(scenario.target, draft.target);
+  const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return Object.freeze({ ok: false as const, reason });
   if (scenario.steps.length >= 100) {
     return Object.freeze({ ok: false as const, reason: "Scenario already contains the maximum 100 Steps." });
+  }
+  const candidateBytes = jsonBytes({ ...scenario, steps: [...scenario.steps, { id: `step-${scenario.steps.length + 1}`, draft }] });
+  if (candidateBytes > MAX_SCENARIO_ACCOUNTED_BYTES) {
+    return Object.freeze({ ok: false as const, reason: "Adding this Step would exceed the 8 MiB accounted Scenario boundary." });
   }
   return Object.freeze({
     ok: true as const,
@@ -132,7 +138,12 @@ export function reviewScenario(
   const reviewed: ReviewedScenarioStep[] = [];
   for (let index = 0; index < scenario.steps.length; index += 1) {
     const step = scenario.steps[index]!;
-    if (!step.draft.ready || !step.draft.document) {
+    const plannedUpdateBecomesValid = step.draft.document?.command === "UPDATE"
+      && typeof step.draft.document.key === "string"
+      && keys.has(step.draft.document.key)
+      && step.draft.diagnostics.length > 0
+      && step.draft.diagnostics.every(({ code }) => code === "unknown-key-update");
+    if ((!step.draft.ready && !plannedUpdateBecomesValid) || !step.draft.document) {
       return Object.freeze({ ok: false as const, reason: step.draft.diagnostics[0]?.message ?? "Step is not ready for Review.", stepId: step.id });
     }
     const { command, key } = step.draft.document;
@@ -155,6 +166,9 @@ export function reviewScenario(
       relativeDelayMs: Math.max(0, step.draft.relativeDelayMs)
     });
   }
+  if (jsonBytes({ scenario, reviewed }) > MAX_SCENARIO_ACCOUNTED_BYTES) {
+    return Object.freeze({ ok: false as const, reason: "Review would exceed the 8 MiB accounted Scenario and immutable Run boundary." });
+  }
   return Object.freeze({
     ok: true as const,
     run: freeze({
@@ -173,7 +187,7 @@ export function reviewScenario(
 }
 
 export async function stepScenarioRun<T extends Readonly<{
-  outcome: Readonly<{ headline: string }>;
+  outcome: Readonly<{ headline: string; disposition: string }>;
   evidence: Readonly<{ eventId: string }> | null;
 }>>(
   run: ScenarioRun,
@@ -212,15 +226,18 @@ export async function stepScenarioRun<T extends Readonly<{
     evidence: terminal.evidence
   };
   const nextOrdinal = run.nextOrdinal + 1;
+  const delivered = terminal.outcome.disposition === "delivered" && terminal.evidence !== null;
   return freeze({
     ...run,
-    nextOrdinal,
-    status: nextOrdinal > run.steps.length ? "complete" as const : "paused" as const,
+    nextOrdinal: delivered ? nextOrdinal : run.nextOrdinal,
+    status: delivered
+      ? nextOrdinal > run.steps.length ? "complete" as const : "paused" as const
+      : "stopped" as const,
     trace: [...run.trace, trace]
   });
 }
 
-function targetIncompatibility(expected: ScenarioTarget, candidate: ScenarioTarget): string | null {
+export function scenarioTargetIncompatibility(expected: ScenarioTarget, candidate: ScenarioTarget): string | null {
   if (candidate.pageEpoch !== expected.pageEpoch) return "Different page: Scenario Steps must share the exact Local Injection Target.";
   if (candidate.clientId !== expected.clientId) return "Different Lightstreamer Client: Scenario Steps must share the exact Local Injection Target.";
   if (candidate.sessionId !== expected.sessionId) return "Different Session: Scenario Steps must share the exact Local Injection Target.";
@@ -233,6 +250,10 @@ function targetIncompatibility(expected: ScenarioTarget, candidate: ScenarioTarg
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function jsonBytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
 
 function freeze<T>(value: T): T {

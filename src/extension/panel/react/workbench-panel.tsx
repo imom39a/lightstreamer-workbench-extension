@@ -533,6 +533,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const parkedDiscardDialog = useRef<HTMLElement | null>(null);
   const restoreParkedDiscardFocus = useRef(false);
   const previousLocalInjectionDraft = useRef<WorkbenchSnapshot["localInjection"]["draft"]>(null);
+  const previousScenario = useRef<WorkbenchSnapshot["scenario"]>(null);
   const previousParkedDiscardConfirmation = useRef(false);
   const scopeCollapse = useRef<HTMLButtonElement | null>(null);
   const contextCollapse = useRef<HTMLButtonElement | null>(null);
@@ -1538,6 +1539,22 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     }
     previousLocalInjectionDraft.current = current;
   }, [geometry, localInjectionDraft]);
+
+  useLayoutEffect(() => {
+    const previous = previousScenario.current;
+    const current = snapshot.scenario;
+    if (previous && !current) {
+      const origin = previous.scenario.restorationOrigin;
+      const eventId = origin.focusedEventId ?? origin.selectionEventId;
+      window.requestAnimationFrame(() => {
+        const target = eventId ? evidenceRows.current.get(eventId) : null;
+        if (target?.isConnected) target.focus({ preventScroll: true });
+        else if (origin.contextId) contextLens.current?.focus({ preventScroll: true });
+        else scopeTrigger.current?.focus({ preventScroll: true });
+      });
+    }
+    previousScenario.current = current;
+  }, [snapshot.scenario]);
 
   useLayoutEffect(() => {
     const confirmation = !!localInjectionDraft?.parked && localInjection.discardConfirmation;

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, type JSX } from "react";
 
 import type { WorkbenchRuntime, WorkbenchSnapshot } from "../workbench-runtime";
+import { LocalInjectionCodeEditor } from "./local-injection-code-editor";
 
 type Props = Readonly<{
   runtime: WorkbenchRuntime;
@@ -38,11 +39,18 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       {run ? <><div><dt>Reviewed Run</dt><dd>{run.id} · Scenario revision {run.scenarioRevision} · target fingerprint {run.targetFingerprint}</dd></div><div><dt>Evidence seed</dt><dd>{run.committedEvidenceSeed ? `${run.committedEvidenceSeed.intervalId} · sequence ${run.committedEvidenceSeed.sequence}` : "Empty committed Evidence boundary"}</dd></div></> : null}
     </dl>
     {state.membershipError ? <p className="workbench-react__scenario-problem" role="alert"><strong>BLOCKED.</strong> {state.membershipError} No Injection was attempted.</p> : null}
-    {state.pickerOpen ? <section className="workbench-react__scenario-picker" aria-label="Scenario Evidence picker">
+    {state.pickerOpen ? <section className="workbench-react__scenario-picker" aria-label="Scenario Evidence picker" onKeyDown={(event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      runtime.dispatch({ type: "close-scenario-evidence-picker" });
+    }}>
       <header><strong>Add one captured update</strong><span>Visible Evidence is offered for deliberate choice; it is not Scenario membership.</span></header>
       <ul>{snapshot.evidence.events.map((event) => {
-        const compatible = event.kind === "item-update" && event.source === "SERVER";
-        return <li key={event.id}><div><strong>{event.id}</strong><span>{event.object} · {event.command ?? event.kind}</span>{!compatible ? <small>Unavailable · not a compatible captured Server Item Update.</small> : null}</div><button type="button" disabled={!compatible} onClick={() => {
+        const membership = state.membership.find(({ eventId }) => eventId === event.id);
+        const compatible = membership?.available ?? false;
+        const reasonId = `scenario-membership-${event.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+        return <li key={event.id}><div><strong>{event.id}</strong><span>{event.object} · {event.command ?? event.kind}</span>{!compatible ? <small id={reasonId}>Unavailable · {membership?.reason ?? "compatibility could not be proven."}</small> : null}</div><button type="button" disabled={!compatible} aria-describedby={!compatible ? reasonId : undefined} onClick={() => {
           runtime.dispatch({ type: "select-evidence", eventId: event.id });
           runtime.dispatch({ type: "add-selected-evidence-to-scenario" });
         }}>Add this update</button></li>;
@@ -56,7 +64,20 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
         return <article key={step.id} data-step-state={trace ? "complete" : run?.nextOrdinal === index + 1 ? "next" : "waiting"}>
           <header><strong>Step {index + 1}</strong><span>{step.id} · stable identity · delay {step.draft.relativeDelayMs} ms</span></header>
           <dl><div><dt>Source</dt><dd>{step.draft.sourceEventId ?? "None · newly authored"}</dd></div><div><dt>Validation</dt><dd>{step.draft.ready ? "READY" : "BLOCKED"}</dd></div></dl>
-          <pre tabIndex={0} aria-label={`Step ${index + 1} reviewed JSON`}>{step.draft.rawText}</pre>
+          {state.phase === "edit" ? <section className="workbench-react__scenario-editor" aria-label={`Step ${index + 1} Injection Draft`}>
+            <button type="button" disabled={step.draft.sourceRawText === null} aria-pressed={step.draft.editor.compareOpen} onClick={() => runtime.dispatch({ type: "set-scenario-step-compare", stepId: step.id, open: !step.draft.editor.compareOpen })}>Compare Source</button>
+            <LocalInjectionCodeEditor
+              draftId={step.draft.id}
+              value={step.draft.rawText}
+              source={step.draft.sourceRawText}
+              compareOpen={step.draft.editor.compareOpen}
+              diagnostics={step.draft.diagnostics}
+              tabIndents={false}
+              readOnly={false}
+              ariaLabel={`Step ${index + 1} Local Injection JSON`}
+              onChange={(text) => runtime.dispatch({ type: "set-scenario-step-json", stepId: step.id, text })}
+            />
+          </section> : <pre tabIndex={0} aria-label={`Step ${index + 1} reviewed JSON`}>{step.draft.rawText}</pre>}
           {trace ? <p><strong>{trace.outcome.headline}</strong> · Injection {trace.injectionId}{trace.evidence ? ` · Local Evidence ${trace.evidence.eventId}` : " · no committed Local Evidence"}</p> : null}
         </article>;
       })}
@@ -66,6 +87,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       {state.phase === "review" || state.phase === "paused" ? <><button type="button" onClick={() => runtime.dispatch({ type: "edit-scenario" })}>Edit Scenario</button><span>{next ? `Next: Step ${next.ordinal} · dispatches one Injection then pauses` : "All Steps settled"}</span><button type="button" disabled={!next} onClick={() => runtime.dispatch({ type: "step-next-scenario" })}>Step next</button></> : null}
       {state.phase === "running" ? <span role="status">STEP RUNNING · waiting for its Injection Outcome and committed Evidence settlement.</span> : null}
       {state.phase === "complete" ? <><span>RUN COMPLETE · {run?.trace.length ?? 0} independently traced Injections.</span><button type="button" onClick={() => runtime.dispatch({ type: "finish-scenario" })}>Finish Scenario</button></> : null}
+      {state.phase === "stopped" ? <><span>RUN STOPPED · the last Step did not produce retained committed Local Evidence. Remaining Steps were not run.</span><button type="button" onClick={() => runtime.dispatch({ type: "finish-scenario" })}>Finish Scenario</button></> : null}
     </footer>
   </section>;
 }

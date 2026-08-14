@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   addScenarioStep,
   createScenarioFromDraft,
+  MAX_SCENARIO_ACCOUNTED_BYTES,
   reviewScenario,
   stepScenarioRun,
   type ScenarioDraftInput
@@ -94,6 +95,30 @@ describe("Local Injection Scenario", () => {
     expect(Object.isFrozen(reviewed.run.steps[0]?.document)).toBe(true);
   });
 
+  it("uses ordered planned COMMAND state as the sole authority for an otherwise unknown UPDATE", () => {
+    const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const unknownUpdate = {
+      ...input("draft-2", "UPDATE", 2),
+      ready: false,
+      diagnostics: [{ category: "semantic" as const, severity: "error" as const, code: "unknown-key-update", message: "Unknown key." }]
+    };
+    const added = addScenarioStep(first, unknownUpdate);
+    if (!added.ok) throw new Error(added.reason);
+    expect(reviewScenario(added.scenario, { runId: "run-ordered", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeys: [] })).toMatchObject({ ok: true });
+  });
+
+  it("fails closed when a candidate crosses the 8 MiB accounted Scenario boundary", () => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const oversized = {
+      ...input("draft-2", "UPDATE", 2),
+      rawText: "x".repeat(MAX_SCENARIO_ACCOUNTED_BYTES + 1)
+    };
+    expect(addScenarioStep(scenario, oversized)).toEqual({
+      ok: false,
+      reason: "Adding this Step would exceed the 8 MiB accounted Scenario boundary."
+    });
+  });
+
   it("dispatches one Step, waits for Evidence settlement, then pauses with a correlated trace", async () => {
     const first = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
     const added = addScenarioStep(first, input("draft-2", "UPDATE", 2));
@@ -102,18 +127,36 @@ describe("Local Injection Scenario", () => {
       runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fingerprint-1", activeCommandKeys: []
     });
     if (!reviewed.ok) throw new Error(reviewed.reason);
-    let settle!: (value: { outcome: { headline: "DELIVERED LOCALLY" }; evidence: { eventId: string } }) => void;
+    let settle!: (value: { outcome: { headline: "DELIVERED LOCALLY"; disposition: "delivered" }; evidence: { eventId: string } }) => void;
     const execute = vi.fn(() => new Promise<{
-      outcome: { headline: "DELIVERED LOCALLY" };
+      outcome: { headline: "DELIVERED LOCALLY"; disposition: "delivered" };
       evidence: { eventId: string };
     }>((resolve) => { settle = resolve; }));
     const pending = stepScenarioRun(reviewed.run, { execute, injectionId: "injection-1" });
     await Promise.resolve();
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ stepId: "step-1", ordinal: 1, injectionId: "injection-1" }));
-    settle({ outcome: { headline: "DELIVERED LOCALLY" }, evidence: { eventId: "local-1" } });
+    settle({ outcome: { headline: "DELIVERED LOCALLY", disposition: "delivered" }, evidence: { eventId: "local-1" } });
     const next = await pending;
     expect(next).toMatchObject({ status: "paused", nextOrdinal: 2, trace: [{ stepId: "step-1", injectionId: "injection-1", evidence: { eventId: "local-1" } }] });
     expect(next.trace).toHaveLength(1);
+  });
+
+  it.each([
+    ["partial delivery", "PARTIALLY DELIVERED", "partial", { eventId: "unexpected" }],
+    ["unknown delivery", "DELIVERY UNKNOWN", "acknowledgement-unknown", null],
+    ["review invalidation", "NOT RUN", "blocked", null],
+    ["delivery without retained Evidence", "DELIVERED LOCALLY", "delivered", null]
+  ] as const)("stops at the same ordinal after %s instead of advancing", async (_case, headline, disposition, evidence) => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    const added = addScenarioStep(scenario, input("draft-2", "UPDATE", 2));
+    if (!added.ok) throw new Error(added.reason);
+    const reviewed = reviewScenario(added.scenario, { runId: "run-1", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeys: [] });
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    const stopped = await stepScenarioRun(reviewed.run, {
+      injectionId: "injection-failed",
+      execute: async () => ({ outcome: { headline, disposition }, evidence })
+    });
+    expect(stopped).toMatchObject({ status: "stopped", nextOrdinal: 1, trace: [{ outcome: { headline, disposition } }] });
   });
 });
