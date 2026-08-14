@@ -125,24 +125,24 @@ try {
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
     contactSheets,
-    review: grep?.startsWith("scenario") ? {
+    review: results.some(({ id }) => id.startsWith("scenario-")) ? {
       classification: "Material UI",
-      changedWorkflow: "A developer deliberately authors and manages up to 100 independent, same-target Scenario Steps without turning visible or filtered Evidence into implicit membership.",
+      changedWorkflow: "A developer plays, pauses, steps, hides, resumes, and stops a reviewed same-target Scenario on deterministic active time while every real Outcome and Evidence settlement remains truthful.",
       acceptanceCriteria: [
-        "Individual add and a confirmed multi-add preview retain exact Evidence identities in retained order and explain incompatible or already-member candidates before mutation.",
-        "Authored, reordered, duplicated, removed, and restored Steps retain stable identities and independent Draft/editor presentation while every semantic mutation advances Scenario revision.",
-        "The document refuses the exact 101st Step or 8 MiB crossing atomically and reserves immutable Run plus append-only Trace bytes through one admission seam.",
-        "Compact, normal, shallow forced-colors, and wide states mount only the focused large editor, preserve protected boundaries, and have no serious or critical axe violations."
+        "The monotonic Scenario Clock starts each relative delay only at Play or the prior committed settlement, excludes paused/hidden time, and dispatches at most one Injection without catch-up bursts.",
+        "Pause, hidden auto-pause, Step next, and Stop preserve real in-flight Outcome/Evidence, prevent future dispatch correctly, and record bounded append-only timing/control Trace evidence.",
+        "Speed is immutable in the reviewed Run; the wide completed ledger shows planned, actual, settlement, and lateness offsets plus a fresh Run again action.",
+        "Compact, normal, shallow forced-colors, and wide states expose only valid controls, preserve the exact protected target/boundary, retain visible focus, and have no serious or critical axe violations."
       ],
       browserResult: {
-        scenarioCaptures: `${results.length}/${results.length} passed`,
-        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0)
+        scenarioCaptures: `${results.filter(({ id }) => id.startsWith("scenario-")).length}/${results.filter(({ id }) => id.startsWith("scenario-")).length} passed`,
+        browserDiagnostics: results.filter(({ id }) => id.startsWith("scenario-")).reduce((count, result) => count + result.checks.browserDiagnostics.length, 0)
       },
       accessibilityResult: {
-        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
-        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+        checkedScenarios: results.filter((result) => result.id.startsWith("scenario-") && result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.filter(({ id }) => id.startsWith("scenario-")).reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "Native Tab order reaches each Step trigger and its labelled Move earlier/later controls; Enter performs keyboard reordering, Escape restores the captured-update trigger, nested input arrows retain native behavior, and only the focused Step mounts CodeMirror.",
+      keyboardAndFocus: "Deliberate Play/Pause/Step next/Stop transitions move focus to the valid semantic successor, in-flight transitions keep Stop reachable, passive timer publications do not steal stable document focus, and terminal settlement moves focus only when the disappearing timed control owned it.",
       matrixRationale: "Eight Scenario states cover compact Edit and paused controls, normal Review, wide Complete timing ledger, shallow forced-colors truthful stopped Trace, bulk preview with incompatible reasons, authored removal with Undo, and the 100-Step capacity refusal.",
       baselineIntent: "Maintain platform-specific Scenario baselines for Darwin and Linux for all eight membership and execution states changed or relied on by this Material UI slice."
     } : {
@@ -185,12 +185,9 @@ function publicMatrix() {
 }
 
 async function createContactSheets(runningBrowser, results) {
-  const affectedIds = grep ? results.map(({ id }) => id) : [
-    "wide-diagnostics-stress-light",
-    "normal-diagnostics-stress-dark",
-    "shallow-diagnostics-stress-light",
-    "compact-diagnostics-stress-dark"
-  ];
+  const affectedIds = grep
+    ? results.map(({ id }) => id)
+    : results.filter(({ id }) => id.startsWith("scenario-")).map(({ id }) => id);
   const affected = affectedIds.map((id) => results.find((result) => result.id === id)).filter(Boolean);
   if (affected.length !== affectedIds.length) {
     throw new Error(`Contact-sheet scenarios are incomplete: ${affectedIds.join(", ")}`);
