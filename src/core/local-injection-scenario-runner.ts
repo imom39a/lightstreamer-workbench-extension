@@ -6,12 +6,20 @@ import {
   SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD,
   SCENARIO_MAX_CONTROL_RECORDS,
   type ReviewedScenarioStep,
+  type ReviewedScenarioMember,
+  type ReviewedScenarioCheckpoint,
   type ScenarioControlRecord,
   type ScenarioRun,
   type ScenarioTraceEntry,
   type ScenarioTraceTiming,
   type ScenarioDriftRecord
 } from "./local-injection-scenario";
+import {
+  evaluateScenarioCheckpoint,
+  type ScenarioAssertionObservation,
+  type ScenarioCheckpointEvaluation,
+  type ScenarioCommittedBoundaryFeed
+} from "./local-injection-scenario-checkpoint";
 import type { EvidenceRef } from "./event-history-authoritative";
 import type { LocalInjectionDocument } from "./local-injection-document";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
@@ -23,8 +31,7 @@ export interface ScenarioClock {
 }
 
 export type ScenarioPauseReason = "USER" | "HIDDEN" | "DRIFT" | "DRIFT_REVIEW_REQUIRED";
-export type ScenarioRunnerPhase = "paused" | "waiting" | "in-flight" | "pause-pending" | "stop-pending" | "complete" | "stopped" | "disposed";
-export type ReviewedScenarioMember = ReviewedScenarioStep;
+export type ScenarioRunnerPhase = "paused" | "waiting" | "checkpoint-waiting" | "in-flight" | "pause-pending" | "stop-pending" | "complete" | "stopped" | "disposed";
 export type ReviewedScenarioMemberCursor = Readonly<{ members: readonly ReviewedScenarioMember[]; index: number }>;
 
 type ExecutionTerminal = Readonly<{
@@ -59,6 +66,15 @@ export type ScenarioRunnerSnapshot = Readonly<{
   pauseReason: ScenarioPauseReason | null;
   controlCapacityReached: boolean;
   visible: boolean;
+  activeCheckpoint: Readonly<{
+    checkpointId: string;
+    checkpointName: string;
+    startedActiveOffsetMs: number;
+    deadlineActiveOffsetMs: number;
+    boundary: EvidenceRef | null;
+    status: "waiting";
+    assertions: ScenarioCheckpointEvaluation["assertions"];
+  }> | null;
 }>;
 
 export type ScenarioRunner = Readonly<{
@@ -89,7 +105,7 @@ export function createLocalInjectionScenarioRunner(
   initialRun: ScenarioRun,
   adapter: Readonly<{
     clock: ScenarioClock;
-    allocateInjectionId(member: ReviewedScenarioMember): string;
+    allocateInjectionId(member: ReviewedScenarioStep): string;
     execute(input: ScenarioDispatchInput): Promise<ExecutionTerminal>;
     beforeDispatch?(input: Readonly<{ run: ScenarioRun; member: ReviewedScenarioMember; activeOffsetMs: number }>):
       | Readonly<{ allow: true }>
@@ -99,6 +115,10 @@ export function createLocalInjectionScenarioRunner(
       void | Readonly<{ continue: true }> | Readonly<{ continue: false; reason: "DRIFT"; detail: string; drift?: ScenarioDriftInput }>
     >;
     onChange?(snapshot: ScenarioRunnerSnapshot): void;
+    checkpoint?: Readonly<{
+      feed: ScenarioCommittedBoundaryFeed;
+      observations(run: ScenarioRun): ScenarioAssertionObservation;
+    }>;
   }>
 ): ScenarioRunner {
   let run = initialRun;
@@ -111,12 +131,16 @@ export function createLocalInjectionScenarioRunner(
   let scheduleGeneration = 0;
   let disposedGeneration = 0;
   let plannedDispatchActiveOffsetMs = 0;
-  let remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
+  let remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
   let manualOverride = false;
+  let checkpointUnsubscribe: (() => void) | null = null;
+  let activeCheckpoint: ScenarioRunnerSnapshot["activeCheckpoint"] = null;
+  let checkpointWasPlaying = false;
+  let resumeCheckpoint: (() => void) | null = null;
   const admittedControlRecords = Math.min(SCENARIO_MAX_CONTROL_RECORDS, Math.floor(run.controlReservationBytes / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD));
 
   function cursor(): ReviewedScenarioMemberCursor {
-    return Object.freeze({ members: run.steps, index: Math.max(0, run.nextOrdinal - 1) });
+    return Object.freeze({ members: run.members, index: Math.max(0, run.nextMemberIndex) });
   }
 
   function nextMember(): ReviewedScenarioMember | undefined {
@@ -181,6 +205,148 @@ export function createLocalInjectionScenarioRunner(
     publish();
   }
 
+  function stopCheckpointObservation(): void {
+    checkpointUnsubscribe?.();
+    checkpointUnsubscribe = null;
+    if (timer !== null) adapter.clock.clearTimer(timer);
+    timer = null;
+    resumeCheckpoint = null;
+  }
+
+  function checkpointTrace(
+    member: ReviewedScenarioCheckpoint,
+    evaluation: ScenarioCheckpointEvaluation,
+    startedActiveOffsetMs: number,
+    startedBoundary: EvidenceRef | null
+  ): ScenarioTraceEntry {
+    return Object.freeze({
+      checkpointId: member.id,
+      checkpointName: member.name,
+      memberOrdinal: member.memberOrdinal,
+      kind: "checkpoint" as const,
+      status: evaluation.status as Exclude<ScenarioCheckpointEvaluation["status"], "waiting">,
+      startedActiveOffsetMs,
+      settledActiveOffsetMs: evaluation.activeOffsetMs,
+      startedBoundary,
+      resultBoundary: evaluation.boundary,
+      evidenceAvailability: evaluation.boundary ? "RETAINED" as const : "NOT_APPLICABLE" as const,
+      assertions: evaluation.assertions
+    });
+  }
+
+  function stopAfterCheckpoint(trace: ScenarioTraceEntry, detail: string): void {
+    const remainingSteps = run.members.slice(run.nextMemberIndex + 1).filter((member): member is ReviewedScenarioStep => member.kind === "step");
+    run = Object.freeze({
+      ...run,
+      status: "stopped" as const,
+      trace: Object.freeze([...run.trace, trace, ...remainingSteps.map((step) => Object.freeze({
+        stepId: step.id,
+        ordinal: step.ordinal,
+        kind: "not-run" as const,
+        reason: "RUN STOPPED" as const,
+        timestamp: adapter.clock.now(),
+        detail,
+        evidence: null,
+        assertion: "NOT_EVALUATED" as const
+      }))])
+    });
+    freezeActive();
+    phase = "stopped";
+    remainingDelayMs = 0;
+  }
+
+  function dispatchCheckpoint(member: ReviewedScenarioCheckpoint): void {
+    const checkpointAdapter = adapter.checkpoint;
+    const startedActiveOffsetMs = activeNow();
+    if (!checkpointAdapter) {
+      const unavailable = evaluateScenarioCheckpoint(member, {
+        boundary: null, intervalId: null, retainedRange: null, history: "unavailable", projection: "failed"
+      }, { priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "unavailable", certainty: "unavailable", provenance: "history", evidence: null }) }, startedActiveOffsetMs);
+      stopAfterCheckpoint(checkpointTrace(member, unavailable, startedActiveOffsetMs, null), "RUN STOPPED because Checkpoint evaluation is unavailable; this Step was not attempted.");
+      publish();
+      return;
+    }
+    checkpointWasPlaying = phase === "waiting";
+    const withinDurations = member.assertions.flatMap((assertion) => "withinActiveMs" in assertion && assertion.withinActiveMs !== undefined ? [assertion.withinActiveMs] : []);
+    const deadlineActiveOffsetMs = startedActiveOffsetMs + Math.max(0, ...withinDurations);
+    let startedBoundary: EvidenceRef | null = null;
+    let settled = false;
+
+    const evaluate = (snapshot: ReturnType<ScenarioCommittedBoundaryFeed["snapshot"]>, expired = false): void => {
+      if (settled || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
+      const evaluation = evaluateScenarioCheckpoint(member, snapshot, checkpointAdapter.observations(run), activeNow(), expired);
+      if (evaluation.status === "waiting") {
+        activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: evaluation.boundary, status: "waiting", assertions: evaluation.assertions });
+        if (phase !== "paused") phase = "checkpoint-waiting";
+        publish();
+        return;
+      }
+      settled = true;
+      stopCheckpointObservation();
+      activeCheckpoint = null;
+      const trace = checkpointTrace(member, evaluation, startedActiveOffsetMs, startedBoundary);
+      if (evaluation.status !== "pass") {
+        stopAfterCheckpoint(trace, `RUN STOPPED after Checkpoint “${member.name}” ${evaluation.status}; this Step was not attempted.`);
+        publish();
+        return;
+      }
+      run = Object.freeze({
+        ...run,
+        nextMemberIndex: run.nextMemberIndex + 1,
+        status: run.nextMemberIndex + 1 >= run.members.length ? "complete" as const : "paused" as const,
+        trace: Object.freeze([...run.trace, trace])
+      });
+      if (run.status === "complete") {
+        freezeActive();
+        phase = "complete";
+        remainingDelayMs = 0;
+      } else if (phase === "paused" || !checkpointWasPlaying || !visible) {
+        freezeActive();
+        phase = "paused";
+        pauseReason = "USER";
+        remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
+      } else {
+        remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
+        schedule(remainingDelayMs);
+        return;
+      }
+      publish();
+    };
+
+    // Subscribe first, then read a snapshot, so a commit cannot be lost between
+    // the initial boundary and the live subscription.
+    checkpointUnsubscribe = checkpointAdapter.feed.subscribe(null, (snapshot) => evaluate(snapshot));
+    const initialBoundary = checkpointAdapter.feed.snapshot();
+    startedBoundary = initialBoundary.boundary;
+    const initial = evaluateScenarioCheckpoint(member, initialBoundary, checkpointAdapter.observations(run), activeNow());
+    if (initial.status === "waiting" && withinDurations.length > 0) {
+      phase = "checkpoint-waiting";
+      activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: initial.boundary, status: "waiting", assertions: initial.assertions });
+      const generation = ++scheduleGeneration;
+      timer = adapter.clock.setTimer(() => {
+        if (generation !== scheduleGeneration || settled) return;
+        timer = null;
+        evaluate(checkpointAdapter.feed.snapshot(), true);
+      }, Math.max(0, deadlineActiveOffsetMs - activeNow()));
+      resumeCheckpoint = () => {
+        checkpointWasPlaying = true;
+        startActive();
+        phase = "checkpoint-waiting";
+        evaluate(checkpointAdapter.feed.snapshot());
+        if (settled || phase !== "checkpoint-waiting") return;
+        const generation = ++scheduleGeneration;
+        timer = adapter.clock.setTimer(() => {
+          if (generation !== scheduleGeneration || settled) return;
+          timer = null;
+          evaluate(checkpointAdapter.feed.snapshot(), true);
+        }, Math.max(0, deadlineActiveOffsetMs - activeNow()));
+      };
+      publish();
+      return;
+    }
+    evaluate(initialBoundary);
+  }
+
   function dispatch(member: ReviewedScenarioMember): void {
     const guard = adapter.beforeDispatch?.({ run, member, activeOffsetMs: activeNow() }) ?? { allow: true as const };
     if (!guard.allow) {
@@ -215,6 +381,10 @@ export function createLocalInjectionScenarioRunner(
       run = driftedRun;
       appendControl("PAUSE", "DRIFT", guard.detail);
       publish();
+      return;
+    }
+    if (member.kind === "checkpoint") {
+      dispatchCheckpoint(member);
       return;
     }
     const actualDispatchActiveOffsetMs = activeNow();
@@ -272,12 +442,12 @@ export function createLocalInjectionScenarioRunner(
       } else if (pendingPhase === "pause-pending") {
         freezeActive();
         phase = "paused";
-        remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
+        remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
       } else if (settlementGuard && !settlementGuard.continue) {
         freezeActive();
         phase = "paused";
         pauseReason = "DRIFT_REVIEW_REQUIRED";
-        remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
+        remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
         const driftedRun = appendScenarioDrift(run, {
           kind: settlementGuard.drift?.kind ?? "MIXED",
           activeOffsetMs: activeNow(),
@@ -299,9 +469,9 @@ export function createLocalInjectionScenarioRunner(
         freezeActive();
         phase = "paused";
         pauseReason = "USER";
-        remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
+        remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
       } else if (pendingPhase === "in-flight") {
-        remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
+        remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
         schedule(remainingDelayMs);
         return;
       }
@@ -310,7 +480,7 @@ export function createLocalInjectionScenarioRunner(
   }
 
   function pause(requestedReason: "USER" | "DRIFT" = "USER", detail = "Scenario timing paused by the developer."): void {
-    if (phase === "waiting") {
+    if (phase === "waiting" || phase === "checkpoint-waiting") {
       remainingDelayMs = Math.max(0, plannedDispatchActiveOffsetMs - activeNow());
       clearScheduledTimer();
       freezeActive();
@@ -325,8 +495,10 @@ export function createLocalInjectionScenarioRunner(
   }
 
   function stop(detail = "Scenario stopped by the developer."): void {
-    if (phase === "waiting" || phase === "paused") {
+    if (phase === "waiting" || phase === "checkpoint-waiting" || phase === "paused") {
       clearScheduledTimer();
+      stopCheckpointObservation();
+      activeCheckpoint = null;
       freezeActive();
       appendControl("STOP", null, detail);
       run = terminalizeScenarioRun(run, activeNow(), detail);
@@ -341,7 +513,7 @@ export function createLocalInjectionScenarioRunner(
   }
 
   function snapshot(): ScenarioRunnerSnapshot {
-    return Object.freeze({ phase, run, cursor: cursor(), nextOrdinal: run.nextOrdinal, activeOffsetMs: activeNow(), remainingDelayMs, pauseReason, controlCapacityReached: run.controls.length >= admittedControlRecords - 2, visible });
+    return Object.freeze({ phase, run, cursor: cursor(), nextOrdinal: run.nextOrdinal, activeOffsetMs: activeNow(), remainingDelayMs, pauseReason, controlCapacityReached: run.controls.length >= admittedControlRecords - 2, visible, activeCheckpoint });
   }
 
   return Object.freeze({
@@ -350,6 +522,11 @@ export function createLocalInjectionScenarioRunner(
       if (phase !== "paused" || !visible || run.status !== "paused" || pauseReason === "DRIFT" || pauseReason === "DRIFT_REVIEW_REQUIRED") return;
       if (run.controls.length >= admittedControlRecords - 2) return;
       if (!appendControl(run.controls.some(({ kind }) => kind === "PLAY") ? "RESUME" : "PLAY", null, run.controls.length === 0 ? "Timed Scenario execution started." : "Timed Scenario execution resumed.")) return;
+      if (activeCheckpoint && resumeCheckpoint) {
+        resumeCheckpoint();
+        publish();
+        return;
+      }
       schedule(remainingDelayMs);
     },
     pause,
@@ -357,7 +534,7 @@ export function createLocalInjectionScenarioRunner(
       const member = nextMember();
       if (phase !== "paused" || !member || !visible || run.status !== "paused" || pauseReason === "DRIFT" || pauseReason === "DRIFT_REVIEW_REQUIRED") return;
       if (run.controls.length >= admittedControlRecords - 2) return;
-      if (!appendControl("STEP NEXT", pauseReason, `Step ${member.ordinal} dispatched immediately; its remaining delay was bypassed.`)) return;
+      if (!appendControl("STEP NEXT", pauseReason, `${member.kind === "step" ? `Step ${member.ordinal}` : `Checkpoint “${member.name}”`} started immediately; its remaining member delay was bypassed.`)) return;
       manualOverride = true;
       startActive();
       plannedDispatchActiveOffsetMs = activeNow();
@@ -367,9 +544,9 @@ export function createLocalInjectionScenarioRunner(
     setVisible(nextVisible: boolean) {
       if (visible === nextVisible) return;
       visible = nextVisible;
-      if (!visible && (phase === "waiting" || phase === "in-flight")) {
+      if (!visible && (phase === "waiting" || phase === "checkpoint-waiting" || phase === "in-flight")) {
         const priorPhase = phase;
-        if (priorPhase === "waiting") {
+        if (priorPhase === "waiting" || priorPhase === "checkpoint-waiting") {
           remainingDelayMs = Math.max(0, plannedDispatchActiveOffsetMs - activeNow());
           clearScheduledTimer();
           freezeActive();
@@ -402,6 +579,8 @@ export function createLocalInjectionScenarioRunner(
     dispose() {
       if (phase === "disposed") return;
       clearScheduledTimer();
+      stopCheckpointObservation();
+      activeCheckpoint = null;
       freezeActive();
       disposedGeneration += 1;
       phase = "disposed";
@@ -412,6 +591,10 @@ export function createLocalInjectionScenarioRunner(
 
 function scaledDelay(delayMs: number, speed: ScenarioRun["speed"]): number {
   return Math.ceil(Math.max(0, delayMs) / speed);
+}
+
+function memberDelay(member: ReviewedScenarioMember | undefined): number {
+  return member?.kind === "step" ? member.relativeDelayMs : 0;
 }
 
 function boundedControlRecord(record: ScenarioControlRecord): ScenarioControlRecord {

@@ -130,6 +130,31 @@ describe("COMMAND state reducer", () => {
     expect(projections.snapshot("local-effective").subscriptions).toEqual([]);
   });
 
+  it("inspects exact key and field state with provenance without coercing ambiguous Server null", () => {
+    const projections = createCommandStateProjections();
+    projections.apply(commandEvent("server-null", {
+      key: "alpha",
+      fields: { command: "ADD", key: "alpha", note: null },
+      changedFields: { command: "ADD", key: "alpha", note: null }
+    }));
+    expect(projections.inspect("local-effective", { subscriptionId: "subscription-1", item: { name: "scenario.command", position: 1 }, key: "alpha", field: "note" }))
+      .toMatchObject({ state: "ambiguous-server-null", provenance: { eventId: "server-null", source: "server" } });
+    expect(projections.inspect("local-effective", { subscriptionId: "subscription-1", item: { name: "scenario.command", position: 1 }, key: "alpha", field: "missing" }))
+      .toMatchObject({ state: "field-absent", provenance: { eventId: "server-null" } });
+
+    projections.apply(commandEvent("local-null", {
+      command: "UPDATE", key: "alpha",
+      fields: { command: "UPDATE", key: "alpha", note: null }, changedFields: { note: null },
+      source: "synthetic", synthetic: true
+    }));
+    expect(projections.inspect("local-effective", { subscriptionId: "subscription-1", item: { name: "scenario.command", position: 1 }, key: "alpha", field: "note" }))
+      .toMatchObject({ state: "concrete", value: null, provenance: { eventId: "local-null", source: "synthetic" } });
+    expect(projections.inspect("observed-server", { subscriptionId: "subscription-1", item: { name: "scenario.command", position: 1 }, key: "alpha" }))
+      .toMatchObject({ state: "key-present" });
+    expect(projections.inspect("local-effective", { subscriptionId: "subscription-1", item: { name: "scenario.command", position: 1 }, key: "missing" }))
+      .toMatchObject({ state: "key-absent" });
+  });
+
   it("deduplicates a successfully projected Local Injection when retained history echoes it", () => {
     const projections = createCommandStateProjections();
     const server = commandEvent("event-dedupe-server", {

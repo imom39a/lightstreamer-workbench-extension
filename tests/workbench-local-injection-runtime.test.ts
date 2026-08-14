@@ -662,6 +662,44 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("evaluates a Checkpoint only after the committed batch advances Local Effective COMMAND State", async () => {
+    const history = historyWithCommandTarget();
+    const clock = new ScenarioTestClock();
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", scenarioClock: clock, localInjectionExecutor: {
+      execute: vi.fn(async () => result("success", { requestId: "checkpoint-step", attemptedCount: 1, deliveredCount: 1, failedCount: 0 }))
+    } });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "add-scenario-checkpoint" });
+    const scenario = runtime.getSnapshot().scenario!.scenario;
+    const checkpoint = scenario.members.find((member) => member.kind === "checkpoint")!;
+    runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: {
+      ...checkpoint,
+      assertions: [{ id: "assertion-qty", kind: "command-field-equals", item: { name: identity.itemName, position: 1 }, key: "order-1", field: "qty", expected: 9, withinActiveMs: 100 }]
+    } });
+    runtime.dispatch({ type: "review-scenario" });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    runtime.dispatch({ type: "step-next-scenario" });
+    expect(runtime.getSnapshot().scenario?.runner?.activeCheckpoint).toMatchObject({ checkpointId: checkpoint.id, status: "waiting" });
+
+    const server = commandEvent("server-9", "item-update", {
+      update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 9 }, changedFields: { qty: 9 } }
+    });
+    await history.offer(server).settled;
+    await flushAsync();
+    expect(runtime.getSnapshot().scenario?.run).toMatchObject({
+      status: "complete",
+      trace: [
+        { kind: "attempted", stepId: "step-1" },
+        { kind: "checkpoint", checkpointId: checkpoint.id, status: "pass", resultBoundary: { eventId: "server-9" }, assertions: [{ assertionId: "assertion-qty", status: "pass", observed: { value: 9, provenance: "server" } }] }
+      ]
+    });
+    runtime.dispose();
+  });
+
   it("terminalizes the exact unattempted remainder before archiving a paused Run", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", localInjectionExecutor: {
       execute: vi.fn(async () => result("success", { requestId: "partial-archive", attemptedCount: 1, deliveredCount: 1, failedCount: 0 }))

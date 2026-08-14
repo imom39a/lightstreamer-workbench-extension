@@ -1,4 +1,4 @@
-import { type EventItem, type EventSubscription, type LightstreamerEventEnvelope } from "./event-envelope";
+import { type EventItem, type EventSubscription, type ItemUpdateFieldValueState, type LightstreamerEventEnvelope } from "./event-envelope";
 
 export type CommandFieldValue = string | number | boolean | null;
 export type CommandFields = Record<string, CommandFieldValue>;
@@ -67,6 +67,8 @@ export type CommandRow = {
   key: string;
   status: "active";
   fields: CommandFields;
+  fieldValueStates: Record<string, ItemUpdateFieldValueState>;
+  fieldProvenance: Record<string, CommandProvenance>;
   origin: CommandProvenance;
   latest: CommandProvenance;
   lifecycle: CommandLifecycleEntry[];
@@ -198,7 +200,21 @@ export type CommandStateProjections = {
   apply(event: LightstreamerEventEnvelope): void;
   clear(): void;
   snapshot(projection: CommandStateProjection): CommandState;
+  inspect(projection: CommandStateProjection, input: CommandStateInspectionInput): CommandStateInspection;
 };
+
+export type CommandStateInspectionInput = Readonly<{
+  subscriptionId: string;
+  item: Readonly<{ name: string | null; position: number | null }>;
+  key: string;
+  field?: string;
+}>;
+
+export type CommandStateInspection = Readonly<{
+  state: "key-present" | "key-absent" | "field-absent" | "concrete" | "ambiguous-server-null" | "redacted" | "unavailable" | "unresolved-wire";
+  value?: CommandFieldValue;
+  provenance: CommandProvenance | null;
+}>;
 
 const SUPPORTED_COMMANDS = new Set<CommandLifecycleCommand>(["ADD", "UPDATE", "DELETE"]);
 const APPLIED_PROJECTION_EVENT_DEDUP_LIMIT = 4_096;
@@ -273,6 +289,11 @@ export function createCommandStateProjections(): CommandStateProjections {
       return projection === "observed-server"
         ? observedServer.index.snapshot()
         : localEffective.index.snapshot();
+    },
+
+    inspect(projection, input) {
+      const state = projection === "observed-server" ? observedServer.index.snapshot() : localEffective.index.snapshot();
+      return inspectCommandState(state, input);
     }
   };
 }
@@ -397,6 +418,8 @@ function applyCommandEvent(
   }
 
   const provenance = Object.freeze(createProvenance(commandEvent));
+  const fieldValueStates = commandFieldStates(commandEvent);
+  const fieldProvenance = Object.fromEntries(Object.keys(commandEvent.update?.fields ?? {}).map((field) => [field, provenance]));
   const lifecycleEntry = Object.freeze({
     eventId: commandEvent.id,
     timestamp: commandEvent.timestamp,
@@ -437,6 +460,8 @@ function applyCommandEvent(
       key,
       status: "active",
       fields: cloneFields(commandEvent.update?.fields),
+      fieldValueStates,
+      fieldProvenance,
       origin,
       latest: provenance,
       lifecycle: lifecycleEntries(keyLifecycle),
@@ -447,6 +472,34 @@ function applyCommandEvent(
   }
 
   recordDiagnostics(accumulator.diagnostics, subscriptionAccumulator, item, eventDiagnostics);
+}
+
+export function inspectCommandState(state: CommandState, input: CommandStateInspectionInput): CommandStateInspection {
+  const subscription = state.subscriptions.find(({ subscriptionId }) => subscriptionId === input.subscriptionId);
+  const item = subscription?.items.find((candidate) => candidate.itemName !== null && input.item.name !== null
+    ? candidate.itemName === input.item.name
+    : candidate.itemPosition === input.item.position);
+  const row = item?.activeRows.find(({ key }) => key === input.key);
+  if (!row) return Object.freeze({ state: "key-absent", provenance: null });
+  if (input.field === undefined) return Object.freeze({ state: "key-present", provenance: row.latest });
+  if (!Object.prototype.hasOwnProperty.call(row.fields, input.field)) {
+    return Object.freeze({ state: "field-absent", provenance: row.latest });
+  }
+  const value = row.fields[input.field];
+  const provenance = row.fieldProvenance[input.field] ?? row.latest;
+  const semantic = row.fieldValueStates[input.field] ?? (value === null && provenance.source === "server" ? "ambiguous-null" : "concrete");
+  if (semantic === "ambiguous-null") return Object.freeze({ state: "ambiguous-server-null", provenance });
+  if (semantic === "redacted") return Object.freeze({ state: "redacted", provenance });
+  if (semantic === "unavailable") return Object.freeze({ state: "unavailable", provenance });
+  if (semantic === "unresolved-wire-difference") return Object.freeze({ state: "unresolved-wire", provenance });
+  return Object.freeze({ state: "concrete", value, provenance });
+}
+
+function commandFieldStates(event: LightstreamerEventEnvelope): Record<string, ItemUpdateFieldValueState> {
+  return Object.fromEntries(Object.entries(event.update?.fields ?? {}).map(([field, value]) => [
+    field,
+    event.update?.fieldValueStates?.[field] ?? (value === null && !event.synthetic ? "ambiguous-null" : "concrete")
+  ]));
 }
 
 export function validateCommandDraftAgainstState(
@@ -643,6 +696,8 @@ function toItemGroup(item: ItemAccumulator): CommandItemGroup {
     activeRows: Array.from(item.activeRows.values()).map((row) => ({
       ...row,
       fields: { ...row.fields },
+      fieldValueStates: { ...row.fieldValueStates },
+      fieldProvenance: { ...row.fieldProvenance },
       lifecycle: row.lifecycle.map(cloneLifecycleEntry)
     })),
     deletedKeys: Array.from(item.deletedKeys.values()).map((deleted) => ({

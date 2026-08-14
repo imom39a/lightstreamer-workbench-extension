@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLocalInjectionScenarioRunner, type ScenarioClock } from "../src/core/local-injection-scenario-runner";
-import { addScenarioStep, createScenarioFromDraft, reviewScenario, updateScenarioSpeed, type ScenarioDraftInput } from "../src/core/local-injection-scenario";
+import { addScenarioCheckpoint, addScenarioStep, createScenarioFromDraft, reviewScenario, updateScenarioSpeed, type ScenarioDraftInput } from "../src/core/local-injection-scenario";
+import type { ScenarioCommittedBoundaryFeed, ScenarioCommittedBoundarySnapshot } from "../src/core/local-injection-scenario-checkpoint";
 
 const target = Object.freeze({
   pageEpoch: "page-1",
@@ -75,6 +76,33 @@ class FakeClock implements ScenarioClock {
   pending(): number { return this.timers.size; }
 }
 
+class FakeBoundaryFeed implements ScenarioCommittedBoundaryFeed {
+  private current: ScenarioCommittedBoundarySnapshot = Object.freeze({ boundary: null, intervalId: "interval-1", retainedRange: null, history: "accepting", projection: "live" });
+  private readonly listeners = new Set<(snapshot: ScenarioCommittedBoundarySnapshot) => void>();
+  snapshot() { return this.current; }
+  subscribe(_after: ScenarioCommittedBoundarySnapshot["boundary"], listener: (snapshot: ScenarioCommittedBoundarySnapshot) => void) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  publish(snapshot: ScenarioCommittedBoundarySnapshot) {
+    this.current = snapshot;
+    for (const listener of this.listeners) listener(snapshot);
+  }
+  size() { return this.listeners.size; }
+}
+
+function checkpointRun(withinActiveMs?: number) {
+  const initial = createScenarioFromDraft(input("draft-1", "ADD", 0), { scenarioId: "scenario-checkpoint" });
+  const added = addScenarioCheckpoint(initial, {
+    id: "checkpoint-1", kind: "checkpoint", name: "Local Evidence committed",
+    assertions: [{ id: "assertion-1", kind: "correlated-local-evidence-exists", stepId: "step-1", ...(withinActiveMs === undefined ? {} : { withinActiveMs }) }]
+  });
+  if (!added.ok) throw new Error(added.reason);
+  const reviewed = reviewScenario(added.scenario, { runId: "run-checkpoint", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+  if (!reviewed.ok) throw new Error(reviewed.reason);
+  return reviewed.run;
+}
+
 function delivered(stepOrdinal: number) {
   return {
     kind: "attempted" as const,
@@ -95,6 +123,97 @@ function delivered(stepOrdinal: number) {
 }
 
 describe("Local Injection Scenario runner", () => {
+  it("evaluates a zero-Injection Checkpoint without allocating an Injection identity", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const allocateInjectionId = vi.fn(({ ordinal }) => `injection-${ordinal}`);
+    const evidence = { intervalId: "interval-1", sequence: 1, eventId: "local-1" };
+    const runner = createLocalInjectionScenarioRunner(checkpointRun(), {
+      clock, allocateInjectionId, execute: async () => delivered(1),
+      checkpoint: {
+        feed,
+        observations: (run) => ({
+          priorOutcomes: new Map(run.trace.flatMap((entry) => entry.kind === "attempted" ? [[entry.stepId, entry.outcome] as const] : [])),
+          correlatedLocalEvidence: new Map([["step-1", evidence]]),
+          inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence })
+        })
+      }
+    });
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().run.nextMemberIndex).toBe(1));
+    clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().phase).toBe("complete"));
+    expect(allocateInjectionId).toHaveBeenCalledTimes(1);
+    expect(runner.snapshot().run.trace).toMatchObject([
+      { kind: "attempted", stepId: "step-1" },
+      { kind: "checkpoint", checkpointId: "checkpoint-1", status: "pass", resultBoundary: null }
+    ]);
+    expect(feed.size()).toBe(0);
+  });
+
+  it("waits on post-batch committed boundaries, freezes expiry while paused, and satisfies while Capture continues", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    let evidence: { intervalId: string; sequence: number; eventId: string } | null = null;
+    const runner = createLocalInjectionScenarioRunner(checkpointRun(100), {
+      clock, allocateInjectionId: () => "injection-1", execute: async () => delivered(1),
+      checkpoint: {
+        feed,
+        observations: (run) => ({
+          priorOutcomes: new Map(run.trace.flatMap((entry) => entry.kind === "attempted" ? [[entry.stepId, entry.outcome] as const] : [])),
+          correlatedLocalEvidence: new Map(evidence ? [["step-1", evidence]] : []),
+          inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence })
+        })
+      }
+    });
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().run.nextMemberIndex).toBe(1));
+    clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().phase).toBe("checkpoint-waiting"));
+    expect(runner.snapshot().activeCheckpoint).toMatchObject({ checkpointId: "checkpoint-1", deadlineActiveOffsetMs: 100, status: "waiting" });
+    clock.advance(40); runner.pause(); clock.advance(500);
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 40 });
+    evidence = { intervalId: "interval-1", sequence: 2, eventId: "local-2" };
+    feed.publish({ boundary: evidence, intervalId: "interval-1", retainedRange: { first: evidence, last: evidence }, history: "accepting", projection: "live" });
+    expect(runner.snapshot()).toMatchObject({ phase: "complete", run: { trace: [{ kind: "attempted" }, { kind: "checkpoint", status: "pass" }] } });
+    expect(feed.size()).toBe(0);
+  });
+
+  it("expires at the final active boundary and unsubscribes on Stop", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const runner = createLocalInjectionScenarioRunner(checkpointRun(50), {
+      clock, allocateInjectionId: () => "injection-1", execute: async () => delivered(1),
+      checkpoint: {
+        feed,
+        observations: (run) => ({ priorOutcomes: new Map(run.trace.flatMap((entry) => entry.kind === "attempted" ? [[entry.stepId, entry.outcome] as const] : [])), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) })
+      }
+    });
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().run.nextMemberIndex).toBe(1));
+    clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().phase).toBe("checkpoint-waiting"));
+    clock.advance(50);
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped", run: { trace: [{ kind: "attempted" }, { kind: "checkpoint", status: "expired" }] } });
+    expect(feed.size()).toBe(0);
+  });
+  it("resumes an unsatisfied Checkpoint with only its remaining active-time window", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const runner = createLocalInjectionScenarioRunner(checkpointRun(50), {
+      clock, allocateInjectionId: () => "injection-1", execute: async () => delivered(1),
+      checkpoint: { feed, observations: (run) => ({ priorOutcomes: new Map(run.trace.flatMap((entry) => entry.kind === "attempted" ? [[entry.stepId, entry.outcome] as const] : [])), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }) }
+    });
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().run.nextMemberIndex).toBe(1));
+    clock.advance(0);
+    expect(runner.snapshot().phase).toBe("checkpoint-waiting");
+    clock.advance(20); runner.pause(); clock.advance(500);
+    runner.play(); clock.advance(29);
+    expect(runner.snapshot().phase).toBe("checkpoint-waiting");
+    clock.advance(1);
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped", activeOffsetMs: 50, run: { trace: [{ kind: "attempted" }, { kind: "checkpoint", status: "expired" }] } });
+  });
   it("halts a retired target before allocating identity and terminalizes every due Step", () => {
     const clock = new FakeClock();
     const allocateInjectionId = vi.fn(() => "must-not-exist");

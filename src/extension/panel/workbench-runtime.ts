@@ -1,5 +1,10 @@
 import { type CaptureMessage, type CaptureStatus, type TopologySyncFrame } from "../../bridge/messages";
 import { createCommandStateProjections, type CommandState, type CommandStateProjections } from "../../core/command-state";
+import type {
+  ScenarioAssertionObservation,
+  ScenarioCommittedBoundaryFeed,
+  ScenarioCommittedBoundarySnapshot
+} from "../../core/local-injection-scenario-checkpoint";
 import {
   toPersistableEventEnvelope,
   type LightstreamerEventEnvelope
@@ -138,24 +143,29 @@ import {
   type LocalInjectionReview
 } from "./local-injection-execution-coordinator";
 import {
+  addScenarioCheckpoint,
   addScenarioStep,
   admitScenarioValidation,
   confirmScenarioMembershipPreview,
   createScenarioFromDraft,
   duplicateScenarioStep,
+  moveScenarioMember,
   moveScenarioStep,
   previewScenarioMembership,
   removeScenarioStep,
+  removeScenarioCheckpoint,
   reviewScenario,
   markScenarioEvidenceUnavailableAfterClear,
   terminalizeScenarioRun,
   scenarioTargetIncompatibility,
   undoScenarioStepRemoval,
+  updateScenarioCheckpoint,
   updateScenarioStepDraft,
   updateScenarioStepPresentation,
   updateScenarioSpeed,
   type LocalInjectionScenario,
   type ScenarioDraftInput,
+  type ScenarioCheckpoint,
   type ScenarioEditorState,
   type ScenarioMembershipPreview,
   type ScenarioRun,
@@ -492,6 +502,7 @@ export type WorkbenchScenarioSnapshot = Readonly<{
     scenarioRevision: number;
     members: readonly Readonly<{ eventId: string; intervalId: string; retainedSequence: number; available: boolean; reason: string | null }>[];
   }> | null;
+  focusedMemberId: string;
   focusedStepId: string;
   canUndoRemoval: boolean;
   priorRuns: readonly ScenarioRun[];
@@ -606,10 +617,16 @@ export type WorkbenchCommand =
   | { type: "preview-visible-evidence-for-scenario" }
   | { type: "confirm-scenario-membership-preview" }
   | { type: "add-authored-scenario-step" }
+  | { type: "add-scenario-checkpoint" }
+  | { type: "update-scenario-checkpoint"; checkpoint: ScenarioCheckpoint }
+  | { type: "move-scenario-member"; memberId: string; direction: "earlier" | "later" }
+  | { type: "remove-scenario-checkpoint"; checkpointId: string }
+  | { type: "show-scenario-checkpoint-evidence"; evidence: EvidenceRef }
   | { type: "move-scenario-step"; stepId: string; direction: "earlier" | "later" }
   | { type: "duplicate-scenario-step"; stepId: string }
   | { type: "remove-scenario-step"; stepId: string }
   | { type: "undo-scenario-step-removal" }
+  | { type: "focus-scenario-member"; memberId: string }
   | { type: "focus-scenario-step"; stepId: string }
   | { type: "set-scenario-step-delay"; stepId: string; delayMs: number }
   | { type: "set-scenario-speed"; speed: ScenarioSpeed }
@@ -807,6 +824,7 @@ type ScenarioState = {
   membershipError: string | null;
   pickerOpen: boolean;
   membershipPreview: ScenarioMembershipPreview | null;
+  focusedMemberId: string;
   focusedStepId: string;
   removedDrafts: Map<string, LocalInjectionDraftState>;
   priorRuns: ScenarioRun[];
@@ -962,6 +980,9 @@ class Runtime implements WorkbenchRuntime {
   private hiddenDirty = false;
   private captureBoundary: WorkbenchCaptureSnapshot | null = null;
   private committedEvidenceBoundary: EvidenceRef | null = null;
+  private scenarioFollowerPhase: CommittedEvidencePipelineFollowerState["progress"]["phase"] = "IDLE";
+  private readonly scenarioBoundaryListeners = new Set<(snapshot: ScenarioCommittedBoundarySnapshot) => void>();
+  private scenarioBoundaryPublicationPending = false;
   private renderedEvidenceBoundary: EvidenceRef | null = null;
   private pendingVisibleBoundaries: EvidenceRef[] = [];
   private pendingLayoutCommitBoundaries: EvidenceRef[] = [];
@@ -1637,6 +1658,75 @@ class Runtime implements WorkbenchRuntime {
       case "add-authored-scenario-step":
         this.addAuthoredScenarioStep();
         return;
+      case "add-scenario-checkpoint": {
+        const state = this.scenarioState;
+        if (!state || state.phase !== "edit") return;
+        const earlierStep = state.scenario.members.filter((member) => member.kind === "step").at(-1);
+        if (!earlierStep) return;
+        const nextSequence = state.scenario.members.reduce((highest, member) => {
+          const match = /^checkpoint-(\d+)$/.exec(member.id);
+          return match ? Math.max(highest, Number(match[1])) : highest;
+        }, 0) + 1;
+        const checkpoint: ScenarioCheckpoint = Object.freeze({
+          id: `checkpoint-${nextSequence}`,
+          kind: "checkpoint",
+          name: `Checkpoint ${nextSequence}`,
+          assertions: Object.freeze([{ id: `checkpoint-${nextSequence}-assertion-1`, kind: "correlated-local-evidence-exists" as const, stepId: earlierStep.id }])
+        });
+        const addition = addScenarioCheckpoint(state.scenario, checkpoint, { retainedRunBytes: state.retainedRunBytes });
+        if (!addition.ok) state.membershipError = addition.reason;
+        else {
+          state.scenario = addition.scenario;
+          state.focusedMemberId = checkpoint.id;
+          state.membershipError = null;
+        }
+        this.publish();
+        return;
+      }
+      case "update-scenario-checkpoint": {
+        const state = this.scenarioState;
+        if (!state || state.phase !== "edit") return;
+        const update = updateScenarioCheckpoint(state.scenario, command.checkpoint, { retainedRunBytes: state.retainedRunBytes });
+        if (!update.ok) {
+          state.membershipError = update.reason;
+        } else {
+          state.scenario = update.scenario;
+          state.membershipError = null;
+        }
+        this.publish();
+        return;
+      }
+      case "move-scenario-member": {
+        const state = this.scenarioState;
+        if (!state || state.phase !== "edit") return;
+        const moved = moveScenarioMember(state.scenario, command.memberId, command.direction, { retainedRunBytes: state.retainedRunBytes });
+        if (!moved.ok) state.membershipError = moved.reason;
+        else {
+          state.scenario = moved.scenario;
+          state.focusedMemberId = command.memberId;
+          state.membershipError = null;
+        }
+        this.publish();
+        return;
+      }
+      case "remove-scenario-checkpoint": {
+        const state = this.scenarioState;
+        if (!state || state.phase !== "edit") return;
+        const index = state.scenario.members.findIndex(({ id }) => id === command.checkpointId);
+        const removal = removeScenarioCheckpoint(state.scenario, command.checkpointId, { retainedRunBytes: state.retainedRunBytes });
+        if (!removal.ok) state.membershipError = removal.reason;
+        else {
+          state.scenario = removal.scenario;
+          state.focusedMemberId = removal.scenario.members[Math.min(index, removal.scenario.members.length - 1)]?.id ?? state.focusedStepId;
+          state.membershipError = null;
+        }
+        this.publish();
+        return;
+      }
+      case "show-scenario-checkpoint-evidence":
+        if (!this.scenarioState) return;
+        this.dispatch({ type: "select-evidence", eventId: command.evidence.eventId });
+        return;
       case "move-scenario-step":
         this.moveCurrentScenarioStep(command.stepId, command.direction);
         return;
@@ -1649,8 +1739,15 @@ class Runtime implements WorkbenchRuntime {
       case "undo-scenario-step-removal":
         this.undoCurrentScenarioStepRemoval();
         return;
+      case "focus-scenario-member":
+        if (!this.scenarioState || !this.scenarioState.scenario.members.some(({ id }) => id === command.memberId)) return;
+        this.scenarioState.focusedMemberId = command.memberId;
+        if (this.scenarioState.scenario.steps.some(({ id }) => id === command.memberId)) this.scenarioState.focusedStepId = command.memberId;
+        this.publish();
+        return;
       case "focus-scenario-step":
         if (!this.scenarioState || !this.scenarioState.scenario.steps.some(({ id }) => id === command.stepId)) return;
+        this.scenarioState.focusedMemberId = command.stepId;
         this.scenarioState.focusedStepId = command.stepId;
         this.publish();
         return;
@@ -1993,6 +2090,7 @@ class Runtime implements WorkbenchRuntime {
     }
     this.disposed = true;
     this.scenarioState?.runner?.dispose();
+    this.scenarioBoundaryListeners.clear();
     this.cancelPassivePublication();
     this.cancelActivityPublication();
     this.evidenceQueryAbortController?.abort();
@@ -2460,6 +2558,7 @@ class Runtime implements WorkbenchRuntime {
         else this.topologyCoverage = "LIMITED";
       }
       this.invalidatePreparedExport(false);
+      this.scheduleScenarioBoundaryPublication();
       if (this.visible) this.schedulePassivePublication();
       else this.hiddenDirty = true;
       return;
@@ -2502,6 +2601,7 @@ class Runtime implements WorkbenchRuntime {
     }
     commandStateProjections.apply(event);
     if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
+    this.scheduleScenarioBoundaryPublication();
     this.invalidatePreparedExport(false);
     if (!this.visible) {
       this.hiddenDirty = true;
@@ -2513,6 +2613,8 @@ class Runtime implements WorkbenchRuntime {
 
   private handleFollowerState(state: CommittedEvidencePipelineFollowerState): void {
     if (this.disposed) return;
+    this.scenarioFollowerPhase = state.progress.phase;
+    this.scheduleScenarioBoundaryPublication();
     if (state.progress.phase === "RECOVERING") {
       const intervalId = state.interval?.id ?? state.progress.intervalId;
       if (
@@ -2559,15 +2661,51 @@ class Runtime implements WorkbenchRuntime {
     }
   }
 
+  private scenarioBoundarySnapshot(): ScenarioCommittedBoundarySnapshot {
+    const status = this.history.status();
+    return Object.freeze({
+      boundary: this.committedEvidenceBoundary,
+      intervalId: status.interval.id,
+      retainedRange: status.retainedRange,
+      history: status.phase === "RUNNING" ? "accepting" as const : status.phase === "CLOSED" ? "closed" as const : "unavailable" as const,
+      projection: this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null
+        ? "live" as const
+        : this.scenarioFollowerPhase === "FAILED" ? "failed" as const : "recovering" as const
+    });
+  }
+
+  private scheduleScenarioBoundaryPublication(): void {
+    if (this.scenarioBoundaryPublicationPending) return;
+    this.scenarioBoundaryPublicationPending = true;
+    queueMicrotask(() => {
+      this.scenarioBoundaryPublicationPending = false;
+      if (this.disposed) return;
+      const snapshot = this.scenarioBoundarySnapshot();
+      for (const listener of this.scenarioBoundaryListeners) listener(snapshot);
+    });
+  }
+
+  private scenarioBoundaryFeed(): ScenarioCommittedBoundaryFeed {
+    return Object.freeze({
+      snapshot: () => this.scenarioBoundarySnapshot(),
+      subscribe: (_after, listener) => {
+        this.scenarioBoundaryListeners.add(listener);
+        return () => this.scenarioBoundaryListeners.delete(listener);
+      }
+    });
+  }
+
   private handleHistoryPublication(publication: HistoryPublication): void {
     if (this.disposed) return;
     let shouldPublish = false;
     if (publication.type === "status") {
       this.historyStatus = publication.status;
+      this.scheduleScenarioBoundaryPublication();
       shouldPublish = this.updateHistoryCondition(publication.status, publication.problem);
       this.maybeSampleStorageEstimate(publication.status);
     } else if (publication.type === "interval-cleared") {
       this.historyStatus = publication.status;
+      this.scheduleScenarioBoundaryPublication();
       // A frame after Clear can only prove visibility for the new History
       // Interval. Boundaries accepted before the clear are no longer part of
       // the rendered Evidence snapshot and must not be coalesced into it.
@@ -2577,6 +2715,7 @@ class Runtime implements WorkbenchRuntime {
       shouldPublish = true;
     } else if (publication.type === "terminal") {
       this.historyStatus = publication.status;
+      this.scheduleScenarioBoundaryPublication();
       shouldPublish = this.updateHistoryCondition(publication.status);
       this.maybeSampleStorageEstimate(publication.status);
     }
@@ -3464,6 +3603,7 @@ class Runtime implements WorkbenchRuntime {
       membershipError: null,
       pickerOpen: false,
       membershipPreview: null,
+      focusedMemberId: scenario.steps[0]!.id,
       focusedStepId: scenario.steps[0]!.id,
       removedDrafts: new Map(),
       priorRuns: [],
@@ -3494,6 +3634,7 @@ class Runtime implements WorkbenchRuntime {
     }
     state.scenario = addition.scenario;
     state.focusedStepId = addition.scenario.steps.at(-1)!.id;
+    state.focusedMemberId = state.focusedStepId;
     state.drafts.set(state.focusedStepId, candidate);
     state.membershipError = null;
     state.pickerOpen = false;
@@ -3575,6 +3716,7 @@ class Runtime implements WorkbenchRuntime {
       if (draft) state.drafts.set(step.id, draft);
     }
     state.focusedStepId = added.at(-1)?.id ?? state.focusedStepId;
+    state.focusedMemberId = state.focusedStepId;
     state.membershipPreview = null;
     state.membershipError = null;
     state.pickerOpen = false;
@@ -3603,6 +3745,7 @@ class Runtime implements WorkbenchRuntime {
     }
     state.scenario = addition.scenario;
     state.focusedStepId = addition.scenario.steps.at(-1)!.id;
+    state.focusedMemberId = state.focusedStepId;
     state.drafts.set(state.focusedStepId, authored);
     state.membershipError = null;
     this.publish();
@@ -3615,6 +3758,7 @@ class Runtime implements WorkbenchRuntime {
     if (!result.ok) { state.membershipError = result.reason; this.publish(); return; }
     state.scenario = result.scenario;
     state.focusedStepId = stepId;
+    state.focusedMemberId = stepId;
     state.membershipError = null;
     this.publish();
   }
@@ -3633,6 +3777,7 @@ class Runtime implements WorkbenchRuntime {
     state.scenario = result.scenario;
     state.drafts.set(duplicateStep.id, duplicate);
     state.focusedStepId = duplicateStep.id;
+    state.focusedMemberId = duplicateStep.id;
     state.membershipError = null;
     this.publish();
   }
@@ -3649,6 +3794,7 @@ class Runtime implements WorkbenchRuntime {
     state.drafts.delete(stepId);
     state.removedDrafts.set(stepId, draft);
     state.focusedStepId = result.scenario.steps[Math.min(index, result.scenario.steps.length - 1)]!.id;
+    state.focusedMemberId = state.focusedStepId;
     state.membershipError = null;
     this.publish();
   }
@@ -3664,6 +3810,7 @@ class Runtime implements WorkbenchRuntime {
     state.drafts.set(removedStep.id, removed);
     state.removedDrafts.delete(removedStep.id);
     state.focusedStepId = removedStep.id;
+    state.focusedMemberId = removedStep.id;
     state.membershipError = null;
     this.publish();
   }
@@ -3711,7 +3858,7 @@ class Runtime implements WorkbenchRuntime {
       committedEvidenceSeed: this.committedEvidenceBoundary,
       targetFingerprint: this.scenarioTargetFingerprint(state.drafts.get(state.scenario.steps[0]!.id)!),
       listenerIds: this.scenarioCurrentListenerIds(state.drafts.get(state.scenario.steps[0]!.id)!),
-      historyAccepting: this.historyStatus.phase === "RUNNING",
+      historyAccepting: this.historyStatus.phase === "RUNNING" && this.scenarioFollowerPhase === "LIVE" && this.projectionRecovery === null,
       clearInProgress: this.clearState !== "idle",
       activeCommandKeysByItem: state.scenario.steps.map(({ id }) => state.drafts.get(id)!).map((draft) => ({
         item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
@@ -3767,7 +3914,9 @@ class Runtime implements WorkbenchRuntime {
       clock: this.scenarioClock,
       allocateInjectionId: () => `local-injection-${++this.localInjectionSequence}`,
       beforeDispatch: ({ member }) => {
-        const draft = state.drafts.get(member.id);
+        const draft = member.kind === "step"
+          ? state.drafts.get(member.id)
+          : state.drafts.get(state.scenario.steps[0]!.id);
         if (!draft) return { allow: false as const, reason: "TARGET_RETIRED" as const, detail: "Scenario Step target is unavailable." };
         const targetProblem = this.validateLocalInjectionTarget(draft.anchor)[0];
         if (targetProblem) return { allow: false as const, reason: "TARGET_RETIRED" as const, detail: targetProblem.message };
@@ -3792,6 +3941,7 @@ class Runtime implements WorkbenchRuntime {
             }
           };
         }
+        if (member.kind === "checkpoint") return { allow: true as const };
         const review = state.reviews.get(member.id);
         if (!review || review.kind !== "reviewed") {
           return { allow: false as const, reason: "DRIFT" as const, detail: "Scenario Review is unavailable; return to Edit and Review again." };
@@ -3829,6 +3979,10 @@ class Runtime implements WorkbenchRuntime {
         const execution = await this.localInjectionExecutionCoordinator.execute(correlatedReview, { executionId });
         return settleScenarioCoordinatorExecution(execution, Date.now());
       },
+      checkpoint: {
+        feed: this.scenarioBoundaryFeed(),
+        observations: (currentRun) => this.scenarioAssertionObservations(currentRun)
+      },
       onChange: (runnerSnapshot) => {
         if (this.disposed || this.scenarioState !== state) return;
         state.runnerSnapshot = runnerSnapshot;
@@ -3841,6 +3995,46 @@ class Runtime implements WorkbenchRuntime {
               ? state.run.trace.length === 0 && state.run.controls.length === 0 ? "review" : "paused"
               : "running";
         if (!this.scenarioVisibilityTransition) this.publish();
+      }
+    });
+  }
+
+  private scenarioAssertionObservations(run: ScenarioRun): ScenarioAssertionObservation {
+    const priorOutcomes = new Map<string, WorkbenchLocalInjectionOutcome>();
+    const correlatedLocalEvidence = new Map<string, EvidenceRef>();
+    const evidenceByEventId = new Map<string, EvidenceRef>();
+    for (const entry of run.trace) {
+      if (entry.kind !== "attempted") continue;
+      priorOutcomes.set(entry.stepId, entry.outcome);
+      if (entry.evidence) evidenceByEventId.set(entry.evidence.eventId, entry.evidence);
+      if (entry.evidence && entry.evidenceAvailability === "RETAINED" && this.retainedLocalEvidenceIds.has(entry.evidence.eventId)) {
+        correlatedLocalEvidence.set(entry.stepId, entry.evidence);
+      }
+    }
+    if (this.committedEvidenceBoundary) evidenceByEventId.set(this.committedEvidenceBoundary.eventId, this.committedEvidenceBoundary);
+    return Object.freeze({
+      priorOutcomes,
+      correlatedLocalEvidence,
+      inspectCommand: ({ item, key, field }) => {
+        const inspected = this.commandStateProjections.inspect("local-effective", {
+          subscriptionId: run.target.subscriptionId,
+          item,
+          key,
+          ...(field === undefined ? {} : { field })
+        });
+        const provenance = inspected.provenance;
+        const evidence = provenance ? evidenceByEventId.get(provenance.eventId) ?? null : this.committedEvidenceBoundary;
+        const correlated = provenance?.source === "synthetic" && provenance.eventId !== undefined && this.retainedLocalEvidenceIds.has(provenance.eventId);
+        return Object.freeze({
+          state: inspected.state,
+          ...(Object.prototype.hasOwnProperty.call(inspected, "value") ? { value: inspected.value } : {}),
+          certainty: inspected.state === "ambiguous-server-null"
+            ? "ambiguous" as const
+            : inspected.state === "redacted" || inspected.state === "unavailable" || inspected.state === "unresolved-wire"
+              ? "unavailable" as const : "certain" as const,
+          provenance: correlated ? "correlated-local" as const : provenance?.source === "server" ? "server" as const : "local-effective" as const,
+          evidence
+        });
       }
     });
   }
@@ -4604,6 +4798,7 @@ class Runtime implements WorkbenchRuntime {
                   })))
                 })
               : null,
+            focusedMemberId: this.scenarioState.focusedMemberId,
             focusedStepId: this.scenarioState.focusedStepId,
             canUndoRemoval: this.scenarioState.scenario.removedSteps.length > 0,
             priorRuns: Object.freeze([...this.scenarioState.priorRuns]),

@@ -1,6 +1,7 @@
 import type { EvidenceRef } from "./event-history-authoritative";
 import type { LocalInjectionDiagnostic, LocalInjectionDocument } from "./local-injection-document";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
+import { validateScenarioCheckpoint } from "./local-injection-scenario-checkpoint";
 
 export type ScenarioTarget = Readonly<{
   pageEpoch: string | null;
@@ -51,9 +52,54 @@ export type ScenarioStep = Readonly<{
   draft: ScenarioDraftInput;
 }>;
 
+export type ScenarioPrimitive = string | number | boolean | null;
+
+export type ScenarioAssertion = Readonly<{
+  id: string;
+  kind: "prior-injection-outcome";
+  stepId: string;
+  expectedDisposition: LocalInjectionOutcome["disposition"];
+}> | Readonly<{
+  id: string;
+  kind: "listener-count";
+  stepId: string;
+  count: "attempted" | "delivered";
+  expected: number;
+}> | Readonly<{
+  id: string;
+  kind: "correlated-local-evidence-exists";
+  stepId: string;
+  withinActiveMs?: number;
+}> | Readonly<{
+  id: string;
+  kind: "command-key-exists";
+  item: ScenarioDraftInput["item"];
+  key: string;
+  expected: "present" | "absent";
+  withinActiveMs?: number;
+}> | Readonly<{
+  id: string;
+  kind: "command-field-equals";
+  item: ScenarioDraftInput["item"];
+  key: string;
+  field: string;
+  expected: ScenarioPrimitive;
+  withinActiveMs?: number;
+}>;
+
+export type ScenarioCheckpoint = Readonly<{
+  id: string;
+  kind: "checkpoint";
+  name: string;
+  assertions: readonly ScenarioAssertion[];
+}>;
+
+export type ScenarioMember = ScenarioStep | ScenarioCheckpoint;
+
 export type RemovedScenarioStep = Readonly<{
   step: ScenarioStep;
   index: number;
+  memberIndex?: number;
 }>;
 
 export type LocalInjectionScenario = Readonly<{
@@ -62,6 +108,7 @@ export type LocalInjectionScenario = Readonly<{
   phase: "edit";
   target: ScenarioTarget;
   steps: readonly ScenarioStep[];
+  members: readonly ScenarioMember[];
   restorationOrigin: ScenarioRestorationOrigin;
   nextStepSequence: number;
   removedSteps: readonly RemovedScenarioStep[];
@@ -122,6 +169,16 @@ export type ReviewedScenarioStep = Readonly<{
   relativeDelayMs: number;
 }>;
 
+export type ReviewedScenarioCheckpoint = Readonly<{
+  kind: "checkpoint";
+  id: string;
+  memberOrdinal: number;
+  name: string;
+  assertions: readonly ScenarioAssertion[];
+}>;
+
+export type ReviewedScenarioMember = ReviewedScenarioStep | ReviewedScenarioCheckpoint;
+
 export type ScenarioAuthorizationBoundary = Readonly<{
   id: string;
   kind: "INITIAL_REVIEW" | "DRIFT_REVIEW";
@@ -155,6 +212,18 @@ export type ScenarioTraceEntry = Readonly<{
   assertion: "NOT_EVALUATED";
   timing?: ScenarioTraceTiming;
   detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
+}> | Readonly<{
+  checkpointId: string;
+  checkpointName: string;
+  memberOrdinal: number;
+  kind: "checkpoint";
+  status: "pass" | "fail" | "expired" | "invalid" | "unavailable" | "not-evaluable";
+  startedActiveOffsetMs: number;
+  settledActiveOffsetMs: number;
+  startedBoundary: EvidenceRef | null;
+  resultBoundary: EvidenceRef | null;
+  evidenceAvailability: "RETAINED" | "UNAVAILABLE_AFTER_CLEAR" | "NOT_APPLICABLE";
+  assertions: readonly import("./local-injection-scenario-checkpoint").ScenarioAssertionResult[];
 }> | Readonly<{
   stepId: string;
   ordinal: number;
@@ -195,8 +264,10 @@ export type ScenarioRun = Readonly<{
   targetFingerprint: string;
   committedEvidenceSeed: EvidenceRef | null;
   steps: readonly ReviewedScenarioStep[];
+  members: readonly ReviewedScenarioMember[];
   status: "paused" | "complete" | "stopped";
   nextOrdinal: number;
+  nextMemberIndex: number;
   trace: readonly ScenarioTraceEntry[];
   accountedBytes: number;
   traceReservationBytes: number;
@@ -211,12 +282,14 @@ export function createScenarioFromDraft(
   draft: ScenarioDraftInput,
   options: Readonly<{ scenarioId: string }>
 ): LocalInjectionScenario {
+  const firstStep: ScenarioStep = { kind: "step", id: "step-1", draft };
   const initial = {
     id: options.scenarioId,
     revision: 1,
     phase: "edit" as const,
     target: draft.target,
-    steps: [{ kind: "step" as const, id: "step-1", draft }],
+    steps: [firstStep],
+    members: [firstStep],
     restorationOrigin: draft.restorationOrigin,
     nextStepSequence: 2,
     removedSteps: [] as readonly RemovedScenarioStep[],
@@ -237,8 +310,10 @@ export function addScenarioStep(
 ): ScenarioMutation {
   const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return Object.freeze({ ok: false as const, reason });
+  const step: ScenarioStep = { kind: "step", id: `step-${scenario.nextStepSequence}`, draft };
   return commitScenarioMutation(scenario, {
-    steps: [...scenario.steps, { kind: "step", id: `step-${scenario.nextStepSequence}`, draft }],
+    steps: [...scenario.steps, step],
+    members: [...scenario.members, step],
     nextStepSequence: scenario.nextStepSequence + 1
   }, true, admission.retainedRunBytes ?? 0);
 }
@@ -277,18 +352,18 @@ export function confirmScenarioMembershipPreview(
   const steps = drafts.map((draft, index) => ({ kind: "step" as const, id: `step-${scenario.nextStepSequence + index}`, draft }));
   return commitScenarioMutation(scenario, {
     steps: [...scenario.steps, ...steps],
+    members: [...scenario.members, ...steps],
     nextStepSequence: scenario.nextStepSequence + steps.length
   }, true, admission.retainedRunBytes ?? 0);
 }
 
 export function moveScenarioStep(scenario: LocalInjectionScenario, stepId: string, direction: "earlier" | "later", admission: ScenarioAdmissionContext = {}): ScenarioMutation {
-  const from = scenario.steps.findIndex(({ id }) => id === stepId);
-  const to = direction === "earlier" ? from - 1 : from + 1;
-  if (from < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
-  if (to < 0 || to >= scenario.steps.length) return freeze({ ok: false as const, reason: `Scenario Step cannot move ${direction}.` });
-  const steps = [...scenario.steps];
-  [steps[from], steps[to]] = [steps[to]!, steps[from]!];
-  return commitScenarioMutation(scenario, { steps }, true, admission.retainedRunBytes ?? 0);
+  if (!scenario.steps.some(({ id }) => id === stepId)) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
+  const moved = moveScenarioMember(scenario, stepId, direction, admission);
+  if (!moved.ok && moved.reason.startsWith("Scenario member cannot move")) {
+    return freeze({ ok: false as const, reason: `Scenario Step cannot move ${direction}.` });
+  }
+  return moved;
 }
 
 export function duplicateScenarioStep(scenario: LocalInjectionScenario, stepId: string, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
@@ -302,7 +377,9 @@ export function duplicateScenarioStep(scenario: LocalInjectionScenario, stepId: 
   };
   const steps = [...scenario.steps];
   steps.splice(index + 1, 0, duplicate);
-  return commitScenarioMutation(scenario, { steps, nextStepSequence: scenario.nextStepSequence + 1 }, true, admission.retainedRunBytes ?? 0);
+  const members = [...scenario.members];
+  members.splice(members.findIndex(({ id }) => id === stepId) + 1, 0, duplicate);
+  return commitScenarioMutation(scenario, { steps, members, nextStepSequence: scenario.nextStepSequence + 1 }, true, admission.retainedRunBytes ?? 0);
 }
 
 export function removeScenarioStep(scenario: LocalInjectionScenario, stepId: string, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
@@ -310,9 +387,11 @@ export function removeScenarioStep(scenario: LocalInjectionScenario, stepId: str
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
   if (scenario.steps.length === 1) return freeze({ ok: false as const, reason: "A Scenario must retain at least one Step." });
   const step = scenario.steps[index]!;
+  const memberIndex = scenario.members.findIndex(({ id }) => id === stepId);
   return commitScenarioMutation(scenario, {
     steps: scenario.steps.filter(({ id }) => id !== stepId),
-    removedSteps: [...scenario.removedSteps, { step, index }]
+    members: scenario.members.filter(({ id }) => id !== stepId),
+    removedSteps: [...scenario.removedSteps, { step, index, memberIndex }]
   }, true, admission.retainedRunBytes ?? 0);
 }
 
@@ -321,7 +400,9 @@ export function undoScenarioStepRemoval(scenario: LocalInjectionScenario, admiss
   if (!removed) return freeze({ ok: false as const, reason: "No removed Scenario Step is available to restore." });
   const steps = [...scenario.steps];
   steps.splice(Math.min(removed.index, steps.length), 0, removed.step);
-  return commitScenarioMutation(scenario, { steps, removedSteps: scenario.removedSteps.slice(0, -1) }, true, admission.retainedRunBytes ?? 0);
+  const members = [...scenario.members];
+  members.splice(Math.min(removed.memberIndex ?? removed.index, members.length), 0, removed.step);
+  return commitScenarioMutation(scenario, { steps, members, removedSteps: scenario.removedSteps.slice(0, -1) }, true, admission.retainedRunBytes ?? 0);
 }
 
 export function updateScenarioStepDraft(scenario: LocalInjectionScenario, stepId: string, draft: ScenarioDraftInput, admission: ScenarioAdmissionContext = {}): ScenarioMutation {
@@ -329,8 +410,10 @@ export function updateScenarioStepDraft(scenario: LocalInjectionScenario, stepId
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
   const reason = scenarioTargetIncompatibility(scenario.target, draft.target);
   if (reason) return freeze({ ok: false as const, reason });
+  const updated: ScenarioStep = { ...scenario.steps[index]!, draft };
   return commitScenarioMutation(scenario, {
-    steps: scenario.steps.map((step, stepIndex) => stepIndex === index ? { ...step, draft } : step)
+    steps: scenario.steps.map((step, stepIndex) => stepIndex === index ? updated : step),
+    members: scenario.members.map((member) => member.kind === "step" && member.id === stepId ? updated : member)
   }, true, admission.retainedRunBytes ?? 0);
 }
 
@@ -342,10 +425,10 @@ export function updateScenarioStepPresentation(
 ): ScenarioMutation {
   const index = scenario.steps.findIndex(({ id }) => id === stepId);
   if (index < 0) return freeze({ ok: false as const, reason: "Scenario Step is unavailable." });
+  const updated: ScenarioStep = { ...scenario.steps[index]!, draft: { ...scenario.steps[index]!.draft, editor } };
   return commitScenarioMutation(scenario, {
-    steps: scenario.steps.map((step, stepIndex) => stepIndex === index
-      ? { ...step, draft: { ...step.draft, editor } }
-      : step)
+    steps: scenario.steps.map((step, stepIndex) => stepIndex === index ? updated : step),
+    members: scenario.members.map((member) => member.kind === "step" && member.id === stepId ? updated : member)
   }, false, admission.retainedRunBytes ?? 0);
 }
 
@@ -357,7 +440,58 @@ export function admitScenarioValidation(
   if (steps.length !== scenario.steps.length || steps.some((step, index) => step.id !== scenario.steps[index]?.id)) {
     return freeze({ ok: false as const, reason: "Scenario validation must preserve the exact ordered Step identities." });
   }
-  return commitScenarioMutation(scenario, { steps }, false, admission.retainedRunBytes ?? 0);
+  const draftsById = new Map(steps.map((step) => [step.id, step]));
+  return commitScenarioMutation(scenario, {
+    steps,
+    members: scenario.members.map((member) => member.kind === "step" ? draftsById.get(member.id) ?? member : member)
+  }, false, admission.retainedRunBytes ?? 0);
+}
+
+export function addScenarioCheckpoint(
+  scenario: LocalInjectionScenario,
+  checkpoint: ScenarioCheckpoint,
+  admission: ScenarioAdmissionContext = {}
+): ScenarioMutation {
+  if (scenario.members.some(({ id }) => id === checkpoint.id)) return freeze({ ok: false as const, reason: "Scenario member identity is already in use." });
+  return commitScenarioMutation(scenario, { members: [...scenario.members, checkpoint] }, true, admission.retainedRunBytes ?? 0);
+}
+
+export function moveScenarioMember(
+  scenario: LocalInjectionScenario,
+  memberId: string,
+  direction: "earlier" | "later",
+  admission: ScenarioAdmissionContext = {}
+): ScenarioMutation {
+  const from = scenario.members.findIndex(({ id }) => id === memberId);
+  const to = direction === "earlier" ? from - 1 : from + 1;
+  if (from < 0) return freeze({ ok: false as const, reason: "Scenario member is unavailable." });
+  if (to < 0 || to >= scenario.members.length) return freeze({ ok: false as const, reason: `Scenario member cannot move ${direction}.` });
+  const members = [...scenario.members];
+  [members[from], members[to]] = [members[to]!, members[from]!];
+  const steps = members.filter((member): member is ScenarioStep => member.kind === "step");
+  return commitScenarioMutation(scenario, { members, steps }, true, admission.retainedRunBytes ?? 0);
+}
+
+export function removeScenarioCheckpoint(
+  scenario: LocalInjectionScenario,
+  checkpointId: string,
+  admission: ScenarioAdmissionContext = {}
+): ScenarioMutation {
+  const checkpoint = scenario.members.find((member) => member.kind === "checkpoint" && member.id === checkpointId);
+  if (!checkpoint) return freeze({ ok: false as const, reason: "Scenario Checkpoint is unavailable." });
+  return commitScenarioMutation(scenario, { members: scenario.members.filter(({ id }) => id !== checkpointId) }, true, admission.retainedRunBytes ?? 0);
+}
+
+export function updateScenarioCheckpoint(
+  scenario: LocalInjectionScenario,
+  checkpoint: ScenarioCheckpoint,
+  admission: ScenarioAdmissionContext = {}
+): ScenarioMutation {
+  const index = scenario.members.findIndex((member) => member.kind === "checkpoint" && member.id === checkpoint.id);
+  if (index < 0) return freeze({ ok: false as const, reason: "Scenario Checkpoint is unavailable." });
+  const members = [...scenario.members];
+  members[index] = checkpoint;
+  return commitScenarioMutation(scenario, { members }, true, admission.retainedRunBytes ?? 0);
 }
 
 export function reviewScenario(
@@ -380,8 +514,27 @@ export function reviewScenario(
   if (scenario.steps.length === 0) return Object.freeze({ ok: false as const, reason: "Add at least one Scenario Step before Review." });
   const keysByItem = new Map(facts.activeCommandKeysByItem.map(({ item, keys }) => [itemKey(item), new Set(keys)]));
   const reviewed: ReviewedScenarioStep[] = [];
-  for (let index = 0; index < scenario.steps.length; index += 1) {
-    const step = scenario.steps[index]!;
+  const reviewedMembers: ReviewedScenarioMember[] = [];
+  const earlierStepIds: string[] = [];
+  for (let memberIndex = 0; memberIndex < scenario.members.length; memberIndex += 1) {
+    const member = scenario.members[memberIndex]!;
+    if (member.kind === "checkpoint") {
+      const validity = validateScenarioCheckpoint(member, {
+        targetMode: scenario.target.mode,
+        deliveryPath: scenario.target.deliveryPath,
+        earlierStepIds
+      });
+      if (!validity.ok) return Object.freeze({ ok: false as const, reason: validity.reason });
+      reviewedMembers.push({
+        kind: "checkpoint",
+        id: member.id,
+        memberOrdinal: memberIndex + 1,
+        name: member.name,
+        assertions: member.assertions
+      });
+      continue;
+    }
+    const step = member;
     const keys = keysByItem.get(itemKey(step.draft.item)) ?? new Set<string>();
     keysByItem.set(itemKey(step.draft.item), keys);
     const plannedCommandBecomesValid = (step.draft.document?.command === "UPDATE" || step.draft.document?.command === "DELETE")
@@ -406,12 +559,14 @@ export function reviewScenario(
     reviewed.push({
       kind: "step",
       id: step.id,
-      ordinal: index + 1,
+      ordinal: reviewed.length + 1,
       sourceEventId: step.draft.sourceEventId,
       rawText: step.draft.rawText,
       document: step.draft.document,
       relativeDelayMs: Math.max(0, step.draft.relativeDelayMs)
     });
+    reviewedMembers.push(reviewed.at(-1)!);
+    earlierStepIds.push(step.id);
   }
   const candidate = freeze({
       id: facts.runId,
@@ -421,8 +576,10 @@ export function reviewScenario(
       targetFingerprint: facts.targetFingerprint,
       committedEvidenceSeed: facts.committedEvidenceSeed,
       steps: reviewed,
+      members: reviewedMembers,
       status: "paused" as const,
       nextOrdinal: 1,
+      nextMemberIndex: 0,
       trace: [],
       accountedBytes: 0,
       traceReservationBytes: 0,
@@ -475,13 +632,13 @@ export function scenarioRunAdmission(
   retainedRunBytes = 0
 ): Readonly<{ ok: true; accountedBytes: number; traceReservationBytes: number; controlReservationBytes: number; stepCount: number }>
   | Readonly<{ ok: false; capacity: "bytes"; reason: string }> {
-  const traceReservationBytes = run.steps.reduce((bytes, member) => bytes + scenarioMemberTraceReservationBytes(member), 0);
-  const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, controlReservationBytes: _controlBytes, trace: _trace, controls: _controls, ...immutablePlan } = run;
+  const traceReservationBytes = run.members.reduce((bytes, member) => bytes + scenarioMemberTraceReservationBytes(member), 0);
+  const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, controlReservationBytes: _controlBytes, trace: _trace, controls: _controls, steps: _derivedSteps, ...immutablePlan } = run;
   const ledgerReservationBytes = SCENARIO_MAX_LEDGER_RECORDS * SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD;
   const currentRunBaseBytes = scenario.accountedBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes + ledgerReservationBytes;
   const totalBaseAccountedBytes = retainedRunBytes + currentRunBaseBytes;
   const availableControlRecords = Math.floor((SCENARIO_MAX_ACCOUNTED_BYTES - totalBaseAccountedBytes) / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
-  const minimumControlRecords = run.steps.length + 2;
+  const minimumControlRecords = run.members.length + 2;
   if (availableControlRecords < minimumControlRecords) {
     return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario Run would exceed 8 MiB after reserving its immutable plan and append-only Trace; no Run was created." });
   }
@@ -490,10 +647,12 @@ export function scenarioRunAdmission(
   return freeze({ ok: true as const, accountedBytes, traceReservationBytes, controlReservationBytes, stepCount: run.steps.length });
 }
 
-function scenarioMemberTraceReservationBytes(member: ReviewedScenarioStep): number {
+function scenarioMemberTraceReservationBytes(member: ReviewedScenarioMember): number {
   switch (member.kind) {
     case "step":
       return SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER + canonicalBytes({ stepId: member.id, ordinal: member.ordinal });
+    case "checkpoint":
+      return 1_024 + canonicalBytes(member) + member.assertions.length * 768;
   }
 }
 
@@ -522,7 +681,8 @@ export async function stepScenarioRun<T extends Readonly<{
   }>
 ): Promise<ScenarioRun> {
   if (run.status !== "paused") return run;
-  const step = run.steps[run.nextOrdinal - 1];
+  const member = run.members[run.nextMemberIndex];
+  const step = member?.kind === "step" ? member : undefined;
   if (!step) return freeze({ ...run, status: "complete" as const });
   const terminal = await adapter.execute({
     scenarioId: run.scenarioId,
@@ -537,7 +697,7 @@ export async function stepScenarioRun<T extends Readonly<{
   if (terminal.kind === "not-run") return freeze({
     ...run,
     status: "stopped" as const,
-    trace: [...run.trace, ...run.steps.slice(run.nextOrdinal - 1).map((remaining) => freeze({
+    trace: [...run.trace, ...run.members.slice(run.nextMemberIndex).filter((remaining): remaining is ReviewedScenarioStep => remaining.kind === "step").map((remaining) => freeze({
       stepId: remaining.id,
       ordinal: remaining.ordinal,
       kind: "not-run" as const,
@@ -577,8 +737,9 @@ export async function stepScenarioRun<T extends Readonly<{
   return freeze({
     ...run,
     nextOrdinal: delivered ? nextOrdinal : run.nextOrdinal,
+    nextMemberIndex: delivered ? run.nextMemberIndex + 1 : run.nextMemberIndex,
     status: delivered
-      ? nextOrdinal > run.steps.length ? "complete" as const : "paused" as const
+      ? run.nextMemberIndex + 1 >= run.members.length ? "complete" as const : "paused" as const
       : "stopped" as const,
     trace: [...run.trace, trace, ...stoppedRemainder]
   });
@@ -631,6 +792,10 @@ export function markScenarioEvidenceUnavailableAfterClear(run: ScenarioRun): Sce
   if (run.status === "paused") return run;
   let changed = false;
   const trace = run.trace.map((entry) => {
+    if (entry.kind === "checkpoint" && entry.evidenceAvailability === "RETAINED") {
+      changed = true;
+      return freeze({ ...entry, evidenceAvailability: "UNAVAILABLE_AFTER_CLEAR" as const });
+    }
     if (entry.kind !== "attempted" || entry.evidence === null || entry.evidenceAvailability !== "RETAINED") return entry;
     changed = true;
     return freeze({ ...entry, evidenceAvailability: "UNAVAILABLE_AFTER_CLEAR" as const });
@@ -673,11 +838,12 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 
 function commitScenarioMutation(
   scenario: LocalInjectionScenario,
-  change: Partial<Pick<LocalInjectionScenario, "steps" | "nextStepSequence" | "removedSteps">>,
+  change: Partial<Pick<LocalInjectionScenario, "steps" | "members" | "nextStepSequence" | "removedSteps">>,
   advanceRevision = true,
   retainedRunBytes = 0
 ): ScenarioMutation {
   const steps = change.steps ?? scenario.steps;
+  const members = change.members ?? scenario.members;
   if (steps.length > SCENARIO_MAX_STEPS) {
     return freeze({ ok: false as const, capacity: "steps" as const, reason: `Scenario admits at most ${SCENARIO_MAX_STEPS} Steps; no membership changed.` });
   }
@@ -685,6 +851,7 @@ function commitScenarioMutation(
     ...scenario,
     ...change,
     steps,
+    members,
     revision: scenario.revision + (advanceRevision ? 1 : 0),
     accountedBytes: 0
   };
@@ -696,7 +863,9 @@ function commitScenarioMutation(
 }
 
 function scenarioDefinitionBytes(scenario: Omit<LocalInjectionScenario, "accountedBytes"> | LocalInjectionScenario): number {
-  const { accountedBytes: _ignored, ...accounted } = scenario as LocalInjectionScenario;
+  // `steps` is a compatibility projection of the canonical ordered `members`
+  // collection and must not be charged twice.
+  const { accountedBytes: _ignored, steps: _derivedSteps, ...accounted } = scenario as LocalInjectionScenario;
   return canonicalBytes(accounted);
 }
 
