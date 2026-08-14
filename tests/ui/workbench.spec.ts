@@ -267,7 +267,7 @@ test.fixme("Observed Activity keeps graphical small multiples and ranking tables
   const deliverySort = activity.getByRole("button", { name: "Update Deliveries", exact: true });
   await deliverySort.click();
   await expect(deliverySort).toHaveAttribute("aria-pressed", "true");
-  await expect(activity.getByRole("table", { name: /complete Server ranking/ })).toBeVisible();
+  await expect(activity.getByRole("table", { name: /Complete synchronized Server ranking/ })).toBeVisible();
   await expectNoSeriousAxeViolations(page, testInfo);
   await page.setViewportSize({ width: 563, height: 700 });
   await expect(activity.getByRole("button", { name: "Back to Evidence" })).toBeVisible();
