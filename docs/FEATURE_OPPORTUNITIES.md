@@ -64,7 +64,7 @@ The most important remaining gaps are:
 - Snapshot, connection recovery, subscription configuration, and duplicate data exist, but most higher-order explanations remain facts rather than conclusions.
 - Only COMMAND has reconstructed state. MERGE, DISTINCT, and RAW remain ordered Evidence without point-in-time state lenses.
 - Export exists; import, offline investigation, fixture generation, and cross-capture comparison do not.
-- Local Injection executes one Draft at a time. No accepted domain or failure model yet exists for a timed multi-event scenario.
+- Local Injection executes one Draft at a time. The single-target Scenario domain and failure model are accepted in ADR 0012, but the multi-event workflow is not implemented.
 
 Relevant implementation and product seams:
 
@@ -120,7 +120,7 @@ Effort includes the implementation and the proportional evidence required by the
 | 3 | Changed-field, delivery, provenance, and value-semantics inspection | 4.9/5 | Capture partial; Context partial | M | P0 |
 | 4 | Contextual Lightstreamer diagnostics and subscription linting | 4.9/5 | Operational diagnostics exist; semantic explanation partial | M | P0 |
 | 5 | Connection, transport, recovery, and Session-epoch lens | 4.8/5 | Topology facts exist; correlated lens absent | M | P0 |
-| 6 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Single Draft exists; scenario semantics undecided | L + design gate | P0 |
+| 6 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Scenario model accepted; implementation not started | L + accepted design gate | P0 |
 | 7 | Snapshot bootstrap and resubscription correctness lens | 4.7/5 | Snapshot phases exist; explanation partial | M | P0 |
 | 8 | Captured Client Messages and deliberate Server Injection | 4.6/5 | Planned, not implemented | L | P0 |
 | 9 | Committed Evidence Boundary and fail-closed History Capacity | 4.5/5 | Delivered through the Event History implementation train; future refinements remain possible | M-L | P0 |
@@ -410,20 +410,20 @@ Accepted decisions: [observational Capture](adr/0001-keep-capture-observational.
 
 ### Build 9 — Deterministic Multi-Event Local Injection Scenarios
 
-Preserve the current one-Draft contract until the product explicitly decides a scenario model.
+Preserve the current one-Draft production behavior until the accepted [single-target immutable Run-plan model](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md) is implemented through reviewed vertical slices.
 
-The design gate must resolve:
+The accepted decision resolves the design gate as follows:
 
-- explicit membership: which captured or authored updates belong to a Scenario;
-- whether all members must share one Subscription target;
-- ordering, relative timing, normalized timing, and clock behavior;
-- editing, duplication, removal, stepping, pausing, cancellation, and looping;
-- target retirement between steps;
-- partial delivery and listener failure semantics;
-- whether assertions observe Workbench Evidence, application callbacks, or both;
-- how each Injection, outcome, and resulting Local Evidence remains independently traceable.
+- membership is explicit, bounded, ordered, and independent of visible or filtered Evidence;
+- every Step shares one exact Subscription, Session, page, and delivery-path target while retaining an independent Source and Draft;
+- an immutable reviewed Run uses strictly serial relative delays and one monotonic active-time Scenario Clock;
+- Step next, Play, Pause, Stop, hidden-panel auto-pause, and deliberate Run again never cancel an in-flight Injection, overlap, catch up, loop, or retry automatically;
+- target retirement ends the Run, while listener drift or relevant interleaving Server Evidence pauses before another Step and requires explicit re-review;
+- partial, failed, unknown, blocked, evidence-incomplete, and assertion-failed outcomes stop before the next Step without rollback or fabricated Local Evidence;
+- assertions observe named Workbench Injection Outcomes, committed Evidence, Local Effective COMMAND State, or normalized diagnostics, never arbitrary application or Authoritative COMMAND State;
+- Scenario, Run, Step, Injection, request, outcome, assertion, and resulting Local Evidence identities remain independently correlated in a Panel Session-local Scenario Trace.
 
-Only after those decisions should implementation consider:
+Implementation may now add:
 
 - selecting an explicit Evidence range or filtered set;
 - independent Source/Draft models per member;
@@ -438,6 +438,8 @@ Guardrails:
 - A future Draft Set is not automatically a queue.
 - Current Source comparison, validation, undo, Review, target, and outcome remain per Draft.
 - Every execution remains Local Injection and never implies that an Item Update entered the server stream.
+
+Accepted decision: [ADR 0012 — Run Local Injection Scenarios as immutable single-target plans](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md).
 
 ## P1 Opportunity Details
 

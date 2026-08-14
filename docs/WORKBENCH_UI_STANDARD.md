@@ -15,6 +15,7 @@ The following accepted contracts provide detailed rules:
 - [Canonical Developer Journeys](CANONICAL_DEVELOPER_JOURNEYS.md) — the operator, journey priority, completion conditions, and degraded paths.
 - [Workbench Workspace Information Architecture](WORKBENCH_WORKSPACE_INFORMATION_ARCHITECTURE.md) — Scoped Evidence Workspace.
 - [Local Injection interaction model](../prototypes/workbench-ui-05/COMPARISON.md) — one target-anchored raw-JSON Injection Draft today and the future Draft Set boundary.
+- [Local Injection Scenario model](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md) — explicit single-target membership, immutable reviewed Run plans, deterministic controls, fail-closed outcomes, assertions, and traceability.
 - [Workbench Panel Density and Docked Layout](WORKBENCH_PANEL_DENSITY_AND_DOCKED_LAYOUT.md) — Elastic Triad.
 - [Workbench Keyboard and Operation Model](WORKBENCH_KEYBOARD_AND_OPERATION_MODEL.md) — Roving Instrument.
 - [Workbench Visual Semantics](WORKBENCH_VISUAL_SEMANTICS.md) — Plain Ledger.
@@ -108,11 +109,14 @@ A successful UI helps a developer name the boundary where behavior diverged and 
 - Current behavior contains one target-anchored Draft. Visible Evidence never joins that Draft automatically.
 - Raw JSON is the primary editor. Keep Subscription instance, Session, item identity, Source, validation, target, and execution boundary protected outside the editable document.
 - Keep Compare Source optional. Side-by-side Source/Draft comparison uses one synchronized scroll; narrower layouts use inline comparison.
-- Review and inject one focused Draft. There is no direct injection keyboard shortcut.
+- The current one-Draft workflow reviews and injects one focused Draft. There is no direct Injection or Scenario execution keyboard shortcut.
 - State that Local Injection delivers one Logical Update locally to current listeners and does not contact Lightstreamer Server.
 - Successful Evidence is explicitly Local, advances only Local Effective COMMAND State, and leaves Observed Server COMMAND State unchanged.
 - Invalid and stale Drafts say that no Injection was attempted. Failed or uncertain outcomes state only what Workbench can prove and preserve safe recovery.
 - Never silently retarget, discard, repeat, or broaden a Local Injection.
+- A Local Injection Scenario is a temporary promoted document, never a permanent destination or an implicit interpretation of a Draft Set, selection, Filter, Evidence range, or visual order.
+- Scenario Review seals one exact Subscription target and explicit ordered Steps into an immutable Run. Each Step remains one independently identified Local Injection with its own Draft, Outcome, and Evidence correlation.
+- Timed Runs remain serial and visible. Pause, Stop, hidden-panel behavior, drift, partial or unknown delivery, Evidence failure, assertions, and deliberate Run-again behavior follow ADR 0012; no control silently retries, loops, rolls back, or executes while hidden.
 
 ## Destructive and consequential actions
 

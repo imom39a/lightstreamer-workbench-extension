@@ -134,6 +134,36 @@ _Avoid_: Synthetic marker
 A Logical Update known to have been caused by an Injection. One Injection may cause zero, one, or many Injected Updates; a Server Update qualifies only when Injection Attribution provides the causal link.
 _Avoid_: Synthetic update, replayed update
 
+### Local Injection Scenarios
+
+**Local Injection Scenario**:
+A Panel Session-scoped, explicitly ordered definition of prospective Local Injections and Scenario Checkpoints that share one Local Injection Target. Membership is deliberate and never inferred from visible or filtered Evidence.
+_Avoid_: Batch Injection, replay script, queue, playlist
+
+**Scenario Step**:
+One stable Scenario member that owns an independent Injection Draft, optional Injection Source, relative delay, and assertions for one prospective Local Injection.
+_Avoid_: Batch item, queued Injection, event
+
+**Scenario Checkpoint**:
+A named, zero-Injection Scenario position that evaluates Scenario Assertions at an exact Workbench read boundary.
+_Avoid_: Application checkpoint, server checkpoint
+
+**Scenario Assertion**:
+A claim evaluated against a named Injection Outcome, committed Workbench Evidence, or derived Workbench projection at a Scenario Checkpoint. It is not an assertion about arbitrary application state or Authoritative COMMAND State.
+_Avoid_: DOM assertion, server assertion, callback assertion
+
+**Scenario Run**:
+One deliberate execution of an immutable reviewed Scenario revision. Each executed Scenario Step creates its own Injection, and running the same Scenario again creates a distinct Scenario Run.
+_Avoid_: Batch Injection, loop iteration, automatic retry
+
+**Scenario Clock**:
+The monotonic active-time clock that controls a Scenario Run's relative delays and assertion windows. Paused or hidden time does not advance it, and it never derives execution order from wall-clock time.
+_Avoid_: Capture clock, wall clock, event timestamp
+
+**Scenario Trace**:
+The immutable Panel Session-local record of a Scenario Run's reviews, controls, timing, per-Step Injection Outcomes, assertion results, and related Evidence references.
+_Avoid_: Event History, server log, application trace
+
 ### COMMAND State
 
 **Observed Server COMMAND State**:
