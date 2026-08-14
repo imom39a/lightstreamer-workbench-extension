@@ -66,7 +66,11 @@ export type LocalInjectionScenario = Readonly<{
   nextStepSequence: number;
   removedSteps: readonly RemovedScenarioStep[];
   accountedBytes: number;
+  speed: ScenarioSpeed;
 }>;
+
+export const SCENARIO_SPEEDS = [0.25, 0.5, 1, 2, 4] as const;
+export type ScenarioSpeed = typeof SCENARIO_SPEEDS[number];
 
 export const SCENARIO_MAX_STEPS = 100;
 export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
@@ -121,6 +125,7 @@ export type ScenarioTraceEntry = Readonly<{
   injectionId: string;
   outcome: LocalInjectionOutcome;
   evidence: EvidenceRef | null;
+  timing?: ScenarioTraceTiming;
   detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
 }> | Readonly<{
   stepId: string;
@@ -131,6 +136,25 @@ export type ScenarioTraceEntry = Readonly<{
   detail: string;
   evidence: null;
   detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
+}>;
+
+export type ScenarioTraceTiming = Readonly<{
+  originalDelayMs: number;
+  scaledDelayMs: number;
+  plannedDispatchActiveOffsetMs: number;
+  actualDispatchActiveOffsetMs: number;
+  settlementActiveOffsetMs: number;
+  latenessMs: number;
+  manualOverride: boolean;
+  bypassedDelayMs: number;
+}>;
+
+export type ScenarioControlRecord = Readonly<{
+  sequence: number;
+  kind: "PLAY" | "PAUSE" | "RESUME" | "STEP NEXT" | "STOP" | "HIDDEN AUTO-PAUSE";
+  activeOffsetMs: number;
+  reason: "USER" | "HIDDEN" | "DRIFT" | null;
+  detail: string;
 }>;
 
 export type ScenarioRun = Readonly<{
@@ -146,6 +170,8 @@ export type ScenarioRun = Readonly<{
   trace: readonly ScenarioTraceEntry[];
   accountedBytes: number;
   traceReservationBytes: number;
+  speed: ScenarioSpeed;
+  controls: readonly ScenarioControlRecord[];
 }>;
 
 export function createScenarioFromDraft(
@@ -161,7 +187,8 @@ export function createScenarioFromDraft(
     restorationOrigin: draft.restorationOrigin,
     nextStepSequence: 2,
     removedSteps: [] as readonly RemovedScenarioStep[],
-    accountedBytes: 0
+    accountedBytes: 0,
+    speed: 1 as const
   };
   const accountedBytes = scenarioDefinitionBytes(initial);
   if (accountedBytes > SCENARIO_MAX_ACCOUNTED_BYTES) {
@@ -358,7 +385,9 @@ export function reviewScenario(
       nextOrdinal: 1,
       trace: [],
       accountedBytes: 0,
-      traceReservationBytes: 0
+      traceReservationBytes: 0,
+      speed: scenario.speed,
+      controls: []
   });
   const admission = scenarioRunAdmission(scenario, candidate, facts.retainedRunBytes ?? 0);
   if (!admission.ok) return Object.freeze({ ok: false as const, reason: admission.reason });
@@ -366,6 +395,20 @@ export function reviewScenario(
     ok: true as const,
     run: freeze({ ...candidate, accountedBytes: admission.accountedBytes, traceReservationBytes: admission.traceReservationBytes })
   });
+}
+
+export function updateScenarioSpeed(
+  scenario: LocalInjectionScenario,
+  speed: ScenarioSpeed,
+  admission: ScenarioAdmissionContext = {}
+): ScenarioMutation {
+  if (!SCENARIO_SPEEDS.includes(speed)) return freeze({ ok: false as const, reason: "Choose a supported Scenario speed." });
+  const candidate = { ...scenario, speed, revision: scenario.revision + 1, accountedBytes: 0 };
+  const accountedBytes = scenarioDefinitionBytes(candidate);
+  if (accountedBytes + (admission.retainedRunBytes ?? 0) > SCENARIO_MAX_ACCOUNTED_BYTES) {
+    return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario and retained Runs would exceed 8 MiB of canonical accounted state; speed did not change." });
+  }
+  return freeze({ ok: true as const, scenario: freeze({ ...candidate, accountedBytes }) });
 }
 
 export function scenarioRunAdmission(
