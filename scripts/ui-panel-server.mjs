@@ -97,7 +97,7 @@ const localInjectionExecutor = scenario.localInjection?.executorOutcome ? {
     const outcome = scenario.localInjection.executorOutcome;
     if (outcome === "pending") return new Promise(() => undefined);
     if (outcome === "delivered") return Promise.resolve({ requestId: request.executionId, ok: true, status: "success", timestamp: 1_780_872_100_001, attemptedCount: 1, deliveredCount: 1, failedCount: 0 });
-    if (outcome === "partial") return Promise.resolve({ requestId: request.executionId, ok: false, status: "listener-error", timestamp: 1_780_872_100_002, error: "One current listener rejected the local delivery.", attemptedCount: 2, deliveredCount: 1, failedCount: 1 });
+    if (outcome === "partial") return Promise.resolve({ requestId: params.get("terminalLimit") === "1" ? "r".repeat(20_000) : request.executionId, ok: false, status: "listener-error", timestamp: 1_780_872_100_002, error: params.get("terminalLimit") === "1" ? "e".repeat(20_000) : "One current listener rejected the local delivery.", attemptedCount: 2, deliveredCount: 1, failedCount: 1 });
     if (outcome === "unknown") return Promise.resolve({ requestId: request.executionId, ok: false, status: "acknowledgement-unknown", timestamp: 1_780_872_100_003, error: "The page acknowledgement channel closed before Workbench could prove delivery." });
     return Promise.resolve({ requestId: request.executionId, ok: false, status: "listener-error", timestamp: 1_780_872_100_004, error: "The protected local listener rejected the update.", attemptedCount: 1, deliveredCount: 0, failedCount: 1 });
   }
