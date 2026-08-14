@@ -1025,6 +1025,32 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispose();
   });
 
+  it("does not surface delivery counts for acknowledgement-unknown standalone outcomes", async () => {
+    const runtime = createWorkbenchRuntime({
+      history: historyWithCommandTarget(),
+      captureStatus: "capturing",
+      localInjectionExecutor: {
+        execute: vi.fn(async () => result("acknowledgement-unknown", {
+          attemptedCount: 3,
+          deliveredCount: 1,
+          failedCount: 2
+        }))
+      }
+    });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "review-local-injection" });
+    runtime.dispatch({ type: "execute-local-injection" });
+    await flushAsync();
+
+    const outcome = runtime.getSnapshot().localInjection.draft?.outcome;
+    expect(outcome).toMatchObject({ disposition: "acknowledgement-unknown", headline: "DELIVERY UNKNOWN" });
+    expect(outcome).not.toHaveProperty("attemptedCount");
+    expect(outcome).not.toHaveProperty("deliveredCount");
+    expect(outcome).not.toHaveProperty("failedCount");
+    runtime.dispose();
+  });
+
   it("executes once, appends one marked Local Evidence only on success, and advances only Local Effective COMMAND State", async () => {
     const history = historyWithCommandTarget();
     let resolveExecution!: (value: LocalInjectionExecutionResult) => void;

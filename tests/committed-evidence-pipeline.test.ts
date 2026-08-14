@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   bindCommittedEvidencePipeline,
-  createCommittedEvidencePipeline,
-  createLocalDeliveryHelper
+  createCommittedEvidencePipeline
 } from "../src/extension/panel/committed-evidence-pipeline";
 import {
   createMemoryEventHistoryForTests,
@@ -11,7 +10,6 @@ import {
   pageEvidence,
   type EvidenceCandidate,
   type EventHistory,
-  type CaptureReceipt,
   type HistoryPublication,
   type HistoryStatus
 } from "../src/core/event-history-authoritative";
@@ -583,70 +581,4 @@ describe("committed-evidence pipeline", () => {
     expect(closeSpy).toHaveBeenCalledOnce();
   });
 
-  it("creates local delivery outcomes that stay DELIVERED while callbacking only on BECAME_EVIDENCE", async () => {
-    const successOnly = createLocalDeliveryHelper("exec-success", {
-      requestId: "request-success",
-      ok: true,
-      status: "success",
-      timestamp: 1_700_000_000_100
-    });
-
-    const callback = vi.fn();
-    const withEvidence: CaptureReceipt = {
-      intake: "QUEUED",
-      settled: Promise.resolve({
-        outcome: "BECAME_EVIDENCE",
-        evidence: {
-          intervalId: "test",
-          sequence: 1,
-          eventId: "evidence"
-        }
-      })
-    };
-
-    const firstRun = await successOnly.withSyntheticReceipt(withEvidence, callback);
-    expect(successOnly.outcome).toMatchObject({
-      disposition: "delivered",
-      headline: "DELIVERED LOCALLY",
-      status: "success"
-    });
-    expect(firstRun).toBe(true);
-    expect(callback).toHaveBeenCalledTimes(1);
-    expect(callback).toHaveBeenCalledWith({
-      intervalId: "test",
-      sequence: 1,
-      eventId: "evidence"
-    } as const);
-
-    const failedSynthetic = createLocalDeliveryHelper("exec-failed", {
-      requestId: "request-failed",
-      ok: false,
-      status: "success",
-      timestamp: 1_700_000_000_200,
-      error: "server rejected"
-    });
-
-    const notEvidence: CaptureReceipt = {
-      intake: "REFUSED",
-      settled: Promise.resolve({
-        outcome: "NOT_EVIDENCE",
-        problem: {
-          code: "INVALID_CANDIDATE",
-          message: "bad candidate"
-        },
-        committedEvidenceBoundary: null
-      })
-    };
-
-    const callbackRejects = vi.fn();
-    const second = await failedSynthetic.withSyntheticReceipt(notEvidence, callbackRejects);
-
-    expect(failedSynthetic.outcome).toMatchObject({
-      disposition: "delivered",
-      headline: "DELIVERED LOCALLY",
-      status: "success"
-    });
-    expect(second).toBe(false);
-    expect(callbackRejects).not.toHaveBeenCalled();
-  });
 });

@@ -239,6 +239,50 @@ describe("Local Injection execution coordinator", () => {
     }
   );
 
+  it("records a non-executable Review as distinctly blocked with full correlation", async () => {
+    const executor = vi.fn(async () => success());
+    const coordinator = createLocalInjectionExecutionCoordinator({
+      execute: executor,
+      admitEvidence: vi.fn()
+    });
+    const refused = coordinator.review({
+      fingerprint: "reviewed",
+      executionTarget: "captured-listener",
+      document,
+      draft: draft({ command: "concrete", key: "concrete", qty: "redacted" }),
+      correlation: {
+        scenarioId: "scenario-1",
+        runId: "run-1",
+        stepId: "step-1",
+        ordinal: 2,
+        injectionId: "injection-2",
+        targetId: "sub-1"
+      }
+    });
+    if (refused.kind !== "refused") throw new Error("expected refusal");
+
+    await expect(coordinator.execute(refused, { executionId: "review-blocked-1" })).resolves.toMatchObject({
+      kind: "terminal",
+      record: {
+        outcome: { disposition: "blocked", headline: "NOT RUN", status: "review-blocked" },
+        evidence: { state: "not-created" },
+        correlation: {
+          scenarioId: "scenario-1",
+          runId: "run-1",
+          stepId: "step-1",
+          ordinal: 2,
+          injectionId: "injection-2",
+          executionId: "review-blocked-1",
+          requestId: null,
+          targetId: "sub-1",
+          sourceEventId: "source-6"
+        },
+        executionResult: null
+      }
+    });
+    expect(executor).not.toHaveBeenCalled();
+  });
+
   it("treats a literal sanitizer marker as concrete application data", () => {
     const coordinator = createLocalInjectionExecutionCoordinator({
       execute: vi.fn(async () => success()),
@@ -331,6 +375,33 @@ describe("Local Injection execution coordinator", () => {
     if (review.kind !== "reviewed") throw new Error("expected review");
     const result = await coordinator.execute(review, { executionId: "x" });
     expect(result).toMatchObject({ kind: "terminal", record: { outcome: { disposition }, evidence: { state: evidenceState } } });
+  });
+
+  it("keeps acknowledgement-unknown delivery counts only in the raw terminal result", async () => {
+    const coordinator = createLocalInjectionExecutionCoordinator({
+      execute: vi.fn(async () => ({
+        ...success(),
+        ok: false,
+        status: "acknowledgement-unknown" as const,
+        attemptedCount: 3,
+        deliveredCount: 1,
+        failedCount: 2
+      })),
+      admitEvidence: vi.fn()
+    });
+    const review = coordinator.review({ fingerprint: "f", executionTarget: "captured-listener", document, draft: draft(), correlation: {} });
+    if (review.kind !== "reviewed") throw new Error("expected review");
+
+    const result = await coordinator.execute(review, { executionId: "unknown-counts" });
+    if (result.kind !== "terminal") throw new Error("expected terminal result");
+    expect(result.record.outcome).not.toHaveProperty("attemptedCount");
+    expect(result.record.outcome).not.toHaveProperty("deliveredCount");
+    expect(result.record.outcome).not.toHaveProperty("failedCount");
+    expect(result.record.executionResult).toMatchObject({
+      attemptedCount: 3,
+      deliveredCount: 1,
+      failedCount: 2
+    });
   });
 
   it("keeps synchronous bridge failure distinct from rejected acknowledgement", async () => {

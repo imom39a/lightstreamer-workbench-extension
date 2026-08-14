@@ -134,7 +134,7 @@ import {
   type LocalInjectionExecutionResult,
   type LocalInjectionExecutor,
   type LocalInjectionOutcome,
-  type LocalInjectionReviewedExecution
+  type LocalInjectionReview
 } from "./local-injection-execution-coordinator";
 
 export type {
@@ -713,7 +713,7 @@ type LocalInjectionDraftState = {
   executionId: string | null;
   preflightFingerprint: string | null;
   outcome: WorkbenchLocalInjectionOutcome | null;
-  reviewedExecution: LocalInjectionReviewedExecution | null;
+  reviewedExecution: LocalInjectionReview | null;
   reviewRefusal: string | null;
 };
 
@@ -2935,7 +2935,7 @@ class Runtime implements WorkbenchRuntime {
       } else {
         draft.phase = "review";
         draft.preflightFingerprint = fingerprint;
-        draft.reviewedExecution = null;
+        draft.reviewedExecution = reviewed;
         draft.reviewRefusal = reviewed.reason;
       }
     }
@@ -2966,7 +2966,7 @@ class Runtime implements WorkbenchRuntime {
     ) return;
     this.refreshLocalInjectionValidation(draft);
     const currentFingerprint = this.localInjectionFingerprint(draft);
-    if (draft.reviewRefusal) {
+    if (draft.reviewRefusal && draft.reviewedExecution?.kind === "refused") {
       if (currentFingerprint !== draft.preflightFingerprint) {
         draft.phase = "edit";
         draft.preflightFingerprint = null;
@@ -2974,18 +2974,11 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       }
-      const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
-      draft.executionId = executionId;
-      draft.phase = "outcome";
-      draft.outcome = this.localInjectionExecutionCoordinator.refusedOutcome(
-        executionId,
-        draft.targetDiagnostics[0]?.message ?? draft.reviewRefusal
-      );
-      this.publish();
-      return;
     }
     const reviewedExecution = draft.reviewedExecution!;
-    const executionCheck = this.localInjectionExecutionCoordinator.check(reviewedExecution);
+    const executionCheck = reviewedExecution.kind === "reviewed"
+      ? this.localInjectionExecutionCoordinator.revalidateReview(reviewedExecution)
+      : { kind: "current" as const };
     if (executionCheck.kind === "review-invalidated") {
       draft.phase = "edit";
       draft.preflightFingerprint = null;

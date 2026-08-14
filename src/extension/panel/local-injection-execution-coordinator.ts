@@ -39,7 +39,7 @@ export type LocalInjectionExecutor = Readonly<{
 export type LocalInjectionOutcome = Readonly<{
   disposition: "delivered" | "blocked" | "failed" | "partial" | "acknowledgement-unknown";
   headline: "DELIVERED LOCALLY" | "NOT RUN" | "DELIVERY FAILED" | "PARTIALLY DELIVERED" | "DELIVERY UNKNOWN";
-  status: LocalInjectionExecutionResult["status"];
+  status: LocalInjectionExecutionResult["status"] | "review-blocked";
   executionId: string;
   requestId: string | null;
   timestamp: number;
@@ -58,8 +58,7 @@ export type LocalInjectionScenarioCorrelation = Readonly<{
   targetId?: string;
 }>;
 
-export type LocalInjectionReviewedExecution = Readonly<{
-  kind: "reviewed";
+type LocalInjectionReviewPlan = Readonly<{
   fingerprint: string;
   executionTarget: ReinjectionExecutionTarget;
   document: Readonly<LocalInjectionDocument>;
@@ -67,10 +66,16 @@ export type LocalInjectionReviewedExecution = Readonly<{
   correlation: LocalInjectionScenarioCorrelation;
 }>;
 
-export type LocalInjectionReview = LocalInjectionReviewedExecution | Readonly<{
+export type LocalInjectionReviewedExecution = LocalInjectionReviewPlan & Readonly<{
+  kind: "reviewed";
+}>;
+
+export type LocalInjectionRefusedReview = LocalInjectionReviewPlan & Readonly<{
   kind: "refused";
   reason: string;
 }>;
+
+export type LocalInjectionReview = LocalInjectionReviewedExecution | LocalInjectionRefusedReview;
 
 export type LocalInjectionTerminalRecord = Readonly<{
   outcome: LocalInjectionOutcome;
@@ -83,6 +88,7 @@ export type LocalInjectionTerminalRecord = Readonly<{
     requestId: string | null;
     sourceEventId: string | null;
   }>;
+  executionResult: LocalInjectionExecutionResult | null;
 }>;
 
 export type LocalInjectionCoordinatorExecution =
@@ -95,13 +101,12 @@ type EvidenceAdmission =
 
 export type LocalInjectionExecutionCoordinator = Readonly<{
   review(input: Omit<LocalInjectionReviewedExecution, "kind">): LocalInjectionReview;
-  check(review: LocalInjectionReviewedExecution):
+  revalidateReview(review: LocalInjectionReviewedExecution):
     | Readonly<{ kind: "current" }>
     | Readonly<{ kind: "review-invalidated" }>
     | Readonly<{ kind: "stale-target"; reason: string }>;
-  refusedOutcome(executionId: string, reason: string): LocalInjectionOutcome;
   execute(
-    review: LocalInjectionReviewedExecution,
+    review: LocalInjectionReview,
     facts: Readonly<{
       executionId: string;
       onTerminal?: (record: LocalInjectionTerminalRecord) => void;
@@ -120,7 +125,7 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
   now?: () => number;
 }>): LocalInjectionExecutionCoordinator {
   const now = adapters.now ?? Date.now;
-  const check = (review: LocalInjectionReviewedExecution): ReturnType<LocalInjectionExecutionCoordinator["check"]> => {
+  const revalidateReview = (review: LocalInjectionReviewedExecution): ReturnType<LocalInjectionExecutionCoordinator["revalidateReview"]> => {
     let facts: ReturnType<typeof adapters.readExecutionFacts>;
     try {
       facts = adapters.readExecutionFacts(review);
@@ -149,7 +154,7 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
         input.executionTarget
       );
       if (!validation.valid) {
-        return Object.freeze({ kind: "refused", reason: validation.errors[0] ?? "The Local Injection Draft is not executable." });
+        return freezeRefusedReview(input, validation.errors[0] ?? "The Local Injection Draft is not executable.");
       }
       const nonConcrete = Object.entries(input.draft.fieldValueStates).find(
         ([field, state]) =>
@@ -157,10 +162,10 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
           state !== "concrete"
       );
       if (nonConcrete) {
-        return Object.freeze({
-          kind: "refused",
-          reason: `Captured Source field "${nonConcrete[0]}" requires an explicit concrete replacement.`
-        });
+        return freezeRefusedReview(
+          input,
+          `Captured Source field "${nonConcrete[0]}" requires an explicit concrete replacement.`
+        );
       }
       return Object.freeze({
         kind: "reviewed",
@@ -171,10 +176,7 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
         correlation: Object.freeze({ ...input.correlation })
       });
     },
-    check,
-    refusedOutcome(executionId, reason) {
-      return blockedOutcome(executionId, reason, now());
-    },
+    revalidateReview,
     async execute(review, facts) {
       const finish = (result: Readonly<{ kind: "terminal"; record: LocalInjectionTerminalRecord }>) => {
         try {
@@ -184,12 +186,21 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
         }
         return result;
       };
-      const current = check(review);
+      if (review.kind === "refused") {
+        return finish(terminal(
+          review,
+          facts.executionId,
+          reviewBlockedOutcome(facts.executionId, review.reason, now()),
+          { state: "not-created" },
+          null
+        ));
+      }
+      const current = revalidateReview(review);
       if (current.kind === "review-invalidated") {
         return Object.freeze({ kind: "review-invalidated" });
       }
       if (current.kind === "stale-target") {
-        return finish(terminal(review, facts.executionId, blockedOutcome(facts.executionId, current.reason, now()), { state: "not-created" }));
+        return finish(terminal(review, facts.executionId, blockedOutcome(facts.executionId, current.reason, now()), { state: "not-created" }, null));
       }
       const request = Object.freeze({
         executionId: facts.executionId,
@@ -224,7 +235,7 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
       }
       const outcome = outcomeFromResult(facts.executionId, executionResult);
       if (outcome.disposition !== "delivered") {
-        return finish(terminal(review, facts.executionId, outcome, { state: "not-created" }));
+        return finish(terminal(review, facts.executionId, outcome, { state: "not-created" }, executionResult));
       }
       let acceptingEvidence = true;
       try {
@@ -237,7 +248,8 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
           review,
           facts.executionId,
           deliveredOutcome(facts.executionId, executionResult, "Delivered locally, but the synthetic Evidence could not be retained in session history."),
-          { state: "delivered-unretained" }
+          { state: "delivered-unretained" },
+          executionResult
         ));
       }
       const synthetic = createSyntheticEventFromDraft(
@@ -258,19 +270,21 @@ export function createLocalInjectionExecutionCoordinator(adapters: Readonly<{
           review,
           facts.executionId,
           deliveredOutcome(facts.executionId, executionResult, "Delivered locally, but the synthetic Evidence could not be retained in session history."),
-          { state: "delivered-unretained" }
+          { state: "delivered-unretained" },
+          executionResult
         ));
       }
-      return finish(terminal(review, facts.executionId, outcome, { state: "committed", reference: admission.evidence }));
+      return finish(terminal(review, facts.executionId, outcome, { state: "committed", reference: admission.evidence }, executionResult));
     }
   };
 }
 
 function terminal(
-  review: LocalInjectionReviewedExecution,
+  review: LocalInjectionReview,
   executionId: string,
   outcome: LocalInjectionOutcome,
-  evidence: LocalInjectionTerminalRecord["evidence"]
+  evidence: LocalInjectionTerminalRecord["evidence"],
+  executionResult: LocalInjectionExecutionResult | null
 ): Readonly<{ kind: "terminal"; record: LocalInjectionTerminalRecord }> {
   return Object.freeze({
     kind: "terminal",
@@ -284,7 +298,8 @@ function terminal(
         sourceEventId: review.draft.provenance.source === "new-command"
           ? null
           : review.draft.sourceEventId
-      })
+      }),
+      executionResult: executionResult ? cloneAndFreeze(executionResult) : null
     })
   });
 }
@@ -298,6 +313,21 @@ function freezeEvidence(
         reference: Object.freeze({ ...evidence.reference })
       })
     : Object.freeze({ ...evidence });
+}
+
+function freezeRefusedReview(
+  input: Omit<LocalInjectionReviewedExecution, "kind">,
+  reason: string
+): LocalInjectionRefusedReview {
+  return Object.freeze({
+    kind: "refused",
+    reason,
+    fingerprint: input.fingerprint,
+    executionTarget: input.executionTarget,
+    document: cloneAndFreeze(input.document),
+    draft: cloneAndFreeze(input.draft),
+    correlation: Object.freeze({ ...input.correlation })
+  });
 }
 
 function withCorrelation(
@@ -339,6 +369,10 @@ function blockedOutcome(executionId: string, detail: string, timestamp: number):
   return Object.freeze({ disposition: "blocked", headline: "NOT RUN", status: "stale-target", executionId, requestId: null, timestamp, detail: `BLOCKED · ${detail}` });
 }
 
+function reviewBlockedOutcome(executionId: string, detail: string, timestamp: number): LocalInjectionOutcome {
+  return Object.freeze({ disposition: "blocked", headline: "NOT RUN", status: "review-blocked", executionId, requestId: null, timestamp, detail: `BLOCKED · ${detail}` });
+}
+
 function outcomeFromResult(executionId: string, result: LocalInjectionExecutionResult): LocalInjectionOutcome {
   if (confirmsFullDelivery(result)) return deliveredOutcome(executionId, result);
   const deliveryCounts = counts(result);
@@ -349,7 +383,7 @@ function outcomeFromResult(executionId: string, result: LocalInjectionExecutionR
     return Object.freeze({ disposition: "blocked", headline: "NOT RUN", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: `BLOCKED · ${result.error ?? "The protected target is stale."}`, ...deliveryCounts });
   }
   if (result.status === "acknowledgement-unknown") {
-    return Object.freeze({ disposition: "acknowledgement-unknown", headline: "DELIVERY UNKNOWN", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "The page may have executed the request, but Workbench did not receive a trustworthy acknowledgement. No retry was attempted.", ...deliveryCounts });
+    return Object.freeze({ disposition: "acknowledgement-unknown", headline: "DELIVERY UNKNOWN", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "The page may have executed the request, but Workbench did not receive a trustworthy acknowledgement. No retry was attempted." });
   }
   if (result.status === "listener-error" && (result.deliveredCount ?? 0) > 0) {
     return Object.freeze({ disposition: "partial", headline: "PARTIALLY DELIVERED", status: result.status, executionId, requestId: result.requestId, timestamp: result.timestamp, detail: result.error ?? "Some captured listeners received the update and at least one listener failed.", ...deliveryCounts });
