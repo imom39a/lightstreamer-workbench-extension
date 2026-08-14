@@ -3,6 +3,7 @@ import { createFilter, createTypedFilterValue } from "../src/core/filter-algebra
 import {
   appendActivityEvidence,
   rebuildActivityProjection,
+  sortActivityRankings,
   type ActivityEvidence
 } from "../src/core/activity-projection";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
@@ -123,4 +124,31 @@ describe("Observed Activity projection", () => {
     expect(unsupported.state).toBe("UNAVAILABLE");
     expect(unsupported.reason).toContain("ITEM");
   });
+
+  it("keeps exactness and bounded presentation at the retained 10,000-record workload", () => {
+    const entries = Array.from({ length: 10_000 }, (_, index) => workloadEvidence(index + 1));
+    const projection = rebuildActivityProjection({ evidence: entries, scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint(entries) });
+
+    expect(projection.matchingEvidence).toBe(10_000);
+    expect(projection.logicalUpdateTotal).toBe(10_000);
+    expect(projection.updateDeliveryTotal).toBe(10_000);
+    expect(projection.buckets.length).toBeLessThanOrEqual(120);
+    expect(projection.rankings.length).toBeLessThanOrEqual(10);
+    expect(projection.rankingOther).toMatchObject({ label: "Other" });
+  });
+
+  it("sorts ranking rows by either exact metric with stable identity ties", () => {
+    const rankings = [
+      { identity: "b", label: "b", logicalUpdates: 2, updateDeliveries: 9 },
+      { identity: "a", label: "a", logicalUpdates: 2, updateDeliveries: 9 },
+      { identity: "c", label: "c", logicalUpdates: 1, updateDeliveries: 10 }
+    ];
+
+    expect(sortActivityRankings(rankings, "LOGICAL_UPDATES").map(({ identity }) => identity)).toEqual(["a", "b", "c"]);
+    expect(sortActivityRankings(rankings, "UPDATE_DELIVERIES").map(({ identity }) => identity)).toEqual(["c", "a", "b"]);
+  });
 });
+
+function workloadEvidence(sequence: number): ActivityEvidence {
+  return evidence(sequence, 1_000 + sequence * 250, { logicalEventId: `logical-${sequence}`, listener: { id: `listener-${sequence % 4}` }, subscription: { id: `subscription-${sequence % 25}` } });
+}

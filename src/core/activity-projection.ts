@@ -80,6 +80,7 @@ export type ActivityProjection = Readonly<{
   matchingEvidence: number;
   markers: readonly ActivityMarker[];
   rankings: readonly ActivityRanking[];
+  allRankings: readonly ActivityRanking[];
   rankingOther: ActivityRanking | null;
   clockSegments: readonly Readonly<{ index: number; startSequence: number; endSequence: number | null; startTimestamp: number; endTimestamp: number }>[];
 }>;
@@ -133,6 +134,17 @@ export function appendActivityEvidence(input: ActivityProjectionInput, accepted:
   return result;
 }
 
+export function sortActivityRankings(
+  rankings: readonly ActivityRanking[],
+  sort: "LOGICAL_UPDATES" | "UPDATE_DELIVERIES"
+): readonly ActivityRanking[] {
+  return [...rankings].sort((left, right) => {
+    const leftValue = sort === "LOGICAL_UPDATES" ? left.logicalUpdates : left.updateDeliveries;
+    const rightValue = sort === "LOGICAL_UPDATES" ? right.logicalUpdates : right.updateDeliveries;
+    return rightValue - leftValue || left.identity.localeCompare(right.identity);
+  });
+}
+
 function project(input: ActivityProjectionInput): ActivityProjection {
   const readPoint = input.readPoint;
   const scope = input.scope;
@@ -155,6 +167,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
   const duration = range ? chooseDuration(range.last.timestamp - range.first.timestamp) : null;
   const buckets = duration === null ? [] : makeBuckets(serverLogical, localLogical, matching, range!, duration, segments);
   const state: ActivityState = readPoint.coverage === "UNAVAILABLE" ? "UNAVAILABLE" : matching.length === 0 ? "EMPTY_MATCH" : serverLogical.length === 0 ? "EMPTY_MATCH" : readPoint.coverage === "LIMITED" || readPoint.terminal ? "LIMITED" : "AVAILABLE";
+  const allRankings = rankings(serverLogical, server, scope);
   return Object.freeze({
     ...base,
     state,
@@ -170,14 +183,15 @@ function project(input: ActivityProjectionInput): ActivityProjection {
     bucketDuration: duration,
     buckets: Object.freeze(buckets),
     markers: Object.freeze(markers(matching)),
-    rankings: Object.freeze(rankings(serverLogical, server, scope).slice(0, 10)),
-    rankingOther: otherRanking(rankings(serverLogical, server, scope)),
+    rankings: Object.freeze(allRankings.slice(0, 10)),
+    allRankings: Object.freeze(allRankings),
+    rankingOther: otherRanking(allRankings),
     clockSegments: Object.freeze(segments)
   });
 }
 
 function emptyProjection(scope: ActivityScope, revision: number, readPoint: ActivityReadPoint): ActivityProjection {
-  return Object.freeze({ state: "EMPTY_INTERVAL", reason: null, scope, filterRevision: revision, readPoint, intervalId: readPoint.intervalId, retainedRange: readPoint.retainedRange, committedEvidenceBoundary: readPoint.committedEvidenceBoundary, bucketDuration: null, buckets: Object.freeze([]), logicalUpdateTotal: 0, snapshotLogicalUpdateTotal: 0, liveLogicalUpdateTotal: 0, updateDeliveryTotal: 0, localLogicalUpdateTotal: 0, localUpdateDeliveryTotal: 0, matchingEvidence: 0, markers: Object.freeze([]), rankings: Object.freeze([]), rankingOther: null, clockSegments: Object.freeze([]) });
+  return Object.freeze({ state: "EMPTY_INTERVAL", reason: null, scope, filterRevision: revision, readPoint, intervalId: readPoint.intervalId, retainedRange: readPoint.retainedRange, committedEvidenceBoundary: readPoint.committedEvidenceBoundary, bucketDuration: null, buckets: Object.freeze([]), logicalUpdateTotal: 0, snapshotLogicalUpdateTotal: 0, liveLogicalUpdateTotal: 0, updateDeliveryTotal: 0, localLogicalUpdateTotal: 0, localUpdateDeliveryTotal: 0, matchingEvidence: 0, markers: Object.freeze([]), rankings: Object.freeze([]), allRankings: Object.freeze([]), rankingOther: null, clockSegments: Object.freeze([]) });
 }
 
 function isServerUpdate(event: LightstreamerEventEnvelope): boolean { return event.kind === "item-update" && event.source === "server" && !event.synthetic; }
