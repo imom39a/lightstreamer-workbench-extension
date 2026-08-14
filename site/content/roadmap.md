@@ -18,9 +18,12 @@ Correlate connection recovery, Session epochs, snapshot bootstrap, subscription 
 
 Capture `LightstreamerClient.sendMessage` calls and listener outcomes as outbound Evidence. A reviewed Server Injection will send once through the inspected client's normal message path. It will not directly create an inbound Item Update, prove a downstream business effect, or retry an unknown outcome automatically.
 
+### Deterministic multi-event Local Injection Scenarios
+
+The explicit-membership, single-target, immutable-Run Scenario workflow is implemented and package-verified in the source tree. Public availability follows the maintainer-controlled Chrome Web Store release process; package verification does not mean the candidate is published.
+
 ## Exploring
 
-- Deterministic multi-event Local Injection Scenarios using the accepted explicit-membership, single-target, immutable-Run model. Richer selected-update inspection and contextual diagnostics can ship independently; normalized-diagnostic assertions follow the diagnostic observation contract later.
 - Capture import, offline investigation, fixture generation, and cross-capture comparison.
 - Listener performance, client-log, protocol, frequency, bandwidth, buffer, and loss diagnostics.
 - Broader frame, worker, transport, and bundled-client observation coverage.

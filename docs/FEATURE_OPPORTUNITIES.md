@@ -15,7 +15,7 @@ The highest-value direction is now:
 1. Finish contextual faceted Evidence filtering, then add a scoped graphical **Observed Activity** dashboard that turns accepted Evidence into fast live-session orientation and reversible Evidence drill-down.
 2. Make selected Evidence more conclusive through changed-field and delivery inspection, diagnostics, connection recovery, and snapshot explanation.
 3. Add first-class Client Message Capture and the planned Server Injection workflow through the inspected client's normal `sendMessage` path.
-4. Design multi-event Local Injection as a real scenario model before adding any batch or run-all UI to the current one-Draft workflow.
+4. Keep extending the implemented deterministic Local Injection Scenario workflow without weakening its explicit-membership, single-target, immutable-Run boundary.
 5. Add deeper QoS, mode, two-level COMMAND, listener, and protocol diagnostics only after the primary Diagnose and Injection journeys remain coherent under the extra evidence.
 
 The Observed Activity dashboard is not a permanent metric-card destination and does not replace Ordered Evidence. A concise runtime-dossier summary opens one temporary promoted document that inherits Scope, Filter, the current History Interval, Observation Coverage, and Live/Frozen position. It visualizes what Workbench actually observed and keeps every aggregate traceable to supporting Evidence; it does not manufacture a composite health score or call callback activity end-to-end performance.
@@ -33,7 +33,7 @@ The accepted contracts now require:
 - Runtime and selected-Evidence explanation to live in Context.
 - COMMAND projections, raw evidence, export, and Injection to open contextually while preserving the investigation.
 - Scope, Filter, Find, selection, focus, Capture Operation, Observation Coverage, History Capacity, and Live/Frozen position to remain distinct.
-- Exactly one target-anchored Local Injection Draft today. A future Draft Set does not imply ordering, timing, shared targets, or multi-event execution.
+- One protected standalone target-anchored Local Injection Draft or one separate temporary Scenario. A Scenario is neither an inferred Draft Set nor a generic run-all queue.
 - New permanent surfaces and shared UI abstractions to pass the explicit evidence and maintainer-approval gates.
 
 Consequently, this reassessment removes already-shipped foundations, narrows several oversized proposals into contextual lenses, and demotes controls whose main use case is already solved by Frozen Evidence and accepted Evidence bounded by the current History Interval's Committed Evidence Boundary.
@@ -49,7 +49,9 @@ The redesigned production panel now provides:
 - Independent Scope, text Filter, Find, Evidence selection, Context, and Live/Frozen state. Frozen Evidence continues Capture and reports newer matching Evidence.
 - Full committed-Evidence copy for the current interval plus versioned scoped JSON and offline HTML exports with bounded collections, opt-in interval-bounded evidence, category redaction, and unconditional credential exclusion.
 - Named **Observed Server COMMAND State** and **Local Effective COMMAND State** projections.
-- Exactly one protected Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, optional Source comparison, validation, Review, explicit local delivery, persistent outcome, and marked Local Evidence.
+- One protected standalone Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, optional Source comparison, validation, Review, explicit local delivery, persistent outcome, and marked Local Evidence.
+- Deterministic Local Injection Scenarios with one to 100 explicit single-target Steps, optional zero-Injection Checkpoints, an 8 MiB accounted-state boundary, immutable reviewed Runs, serial controls, Workbench-owned assertions, per-Step outcomes, and complete Scenario/Run/Step/Injection/request/Evidence correlation.
+- The first Scenario release deliberately excludes diagnostic-presence assertions until a normalized diagnostic observation contract exists; richer selected-update inspection and full contextual diagnostics remain parallel enhancements rather than Scenario release gates.
 - Primary public-API instrumentation plus WebSocket/TLCP fallback, including documented connection and subscription metadata, `onPropertyChange`, real maximum frequency, and second-level COMMAND error/loss callbacks.
 - A single global footer for session- and runtime-level diagnostics, with workflow-local validation and outcomes kept at their decision boundaries.
 
@@ -64,7 +66,6 @@ The most important remaining gaps are:
 - Snapshot, connection recovery, subscription configuration, and duplicate data exist, but most higher-order explanations remain facts rather than conclusions.
 - Only COMMAND has reconstructed state. MERGE, DISTINCT, and RAW remain ordered Evidence without point-in-time state lenses.
 - Export exists; import, offline investigation, fixture generation, and cross-capture comparison do not.
-- Local Injection executes one Draft at a time. The single-target Scenario domain and failure model are accepted in ADR 0012, but the multi-event workflow is not implemented. The current Draft, target, delivery-outcome, committed-Evidence, and Local Effective COMMAND contracts are sufficient to start the core workflow; richer selected-update inspection and full contextual diagnostics are parallel enhancements rather than release gates.
 
 Relevant implementation and product seams:
 
@@ -120,7 +121,7 @@ Effort includes the implementation and the proportional evidence required by the
 | 3 | Changed-field, delivery, provenance, and value-semantics inspection | 4.9/5 | Capture partial; Context partial | M | P0 |
 | 4 | Contextual Lightstreamer diagnostics and subscription linting | 4.9/5 | Operational diagnostics exist; semantic explanation partial | M | P0 |
 | 5 | Connection, transport, recovery, and Session-epoch lens | 4.8/5 | Topology facts exist; correlated lens absent | M | P0 |
-| 6 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Scenario model accepted; implementation not started | L + accepted design gate | P0 |
+| 6 | Deterministic multi-event Local Injection scenarios | 4.8/5 | Implemented and release-verified in the repository candidate | L + accepted design gate, delivered | Delivered |
 | 7 | Snapshot bootstrap and resubscription correctness lens | 4.7/5 | Snapshot phases exist; explanation partial | M | P0 |
 | 8 | Captured Client Messages and deliberate Server Injection | 4.6/5 | Planned, not implemented | L | P0 |
 | 9 | Committed Evidence Boundary and fail-closed History Capacity | 4.5/5 | Delivered through the Event History implementation train; future refinements remain possible | M-L | P0 |
@@ -150,7 +151,7 @@ This is the execution order for incremental delivery. Do not start an opportunit
 | 5 | Contextual Lightstreamer diagnostics and subscription linting | 1 | B |
 | 6 | Connection, transport, recovery, and Session-epoch lens | 1, 5 | B |
 | 7 | Snapshot bootstrap and resubscription correctness lens | 1, 4, 5 | B |
-| 8 | Captured Client Messages and deliberate Server Injection | 1, 5, existing one-Draft contract, accepted Server Injection ADRs | C |
+| 8 | Captured Client Messages and deliberate Server Injection | 1, 5, existing standalone Local Injection execution contract, accepted Server Injection ADRs | C |
 | 9 | Deterministic multi-event Local Injection scenarios | 1, 2, accepted Scenario domain and interaction model, narrow Item Update replayability/value-semantics contract; diagnostic-presence assertion extension also requires the normalized diagnostic contract from 5 | D |
 | 10 | Deep Delivery QoS and Loss Profiler | 1, 3, 4, 5, 6 | E |
 | 11 | Watch rules and conditional listener breakpoints | 1, 2, 5 | E |
@@ -410,7 +411,7 @@ Accepted decisions: [observational Capture](adr/0001-keep-capture-observational.
 
 ### Build 9 — Deterministic Multi-Event Local Injection Scenarios
 
-Preserve the current one-Draft production behavior until the accepted [single-target immutable Run-plan model](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md) is implemented through reviewed vertical slices.
+Delivered through reviewed vertical slices under the accepted [single-target immutable Run-plan model](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md).
 
 The accepted decision resolves the design gate as follows:
 
@@ -423,19 +424,19 @@ The accepted decision resolves the design gate as follows:
 - initial assertions observe named Workbench Injection Outcomes, committed Evidence, or Local Effective COMMAND State, never arbitrary application or Authoritative COMMAND State; normalized-diagnostic presence is a later additive assertion after Build 5 supplies a stable observation contract;
 - Scenario, Run, Step, Injection, request, outcome, assertion, and resulting Local Evidence identities remain independently correlated in a Panel Session-local Scenario Trace.
 
-Implementation may now add:
+The repository release candidate now provides:
 
-- selecting an explicit Evidence range or filtered set;
+- previewing and confirming exact compatible Evidence membership;
 - independent Source/Draft models per member;
 - step, play, pause, speed, and stop;
 - per-step target availability and outcome;
-- session-local named checkpoints;
-- assertions such as “key exists” or “field equals”, with “diagnostic appears” added only after Build 5's normalized diagnostic observation contract ships.
+- session-local named zero-Injection Checkpoints;
+- Workbench-owned Outcome, delivery-count, committed-Evidence, Local Effective COMMAND key, and strict primitive field assertions. Diagnostic presence remains omitted until Build 5's normalized diagnostic observation contract ships.
 
 Guardrails:
 
 - Visible Evidence is never implicit Scenario membership.
-- A future Draft Set is not automatically a queue.
+- A Scenario is not a Draft Set or automatic queue.
 - Current Source comparison, validation, undo, Review, target, and outcome remain per Draft.
 - Every execution remains Local Injection and never implies that an Item Update entered the server stream.
 
@@ -604,13 +605,12 @@ For applications using the optional MPN module, inspect device registration/susp
 4. Prove processed, denied, discarded, error, aborted, stale-Session, and unknown outcomes.
 5. Add explicit Repeat Injection handling without automatic retry.
 
-### Increment D: Design and Build Multi-Event Local Scenarios
+### Increment D: Delivered Multi-Event Local Scenarios
 
-1. Resolve Scenario membership, target, clock, partial-outcome, cancellation, and assertion semantics.
-2. Prototype materially different models and amend domain/UI contracts where required.
-3. Add independent Draft models only after the execution model is accepted.
-4. Implement stepping before timed automation.
-5. Prove target retirement and failure between steps before adding loop or speed controls.
+1. Resolved explicit membership, one exact target, monotonic active-time clock, partial-outcome, stop, drift, and assertion semantics in ADR 0012.
+2. Added independent per-Step Drafts inside a temporary promoted Scenario document without weakening the protected standalone Draft boundary.
+3. Implemented Step next, serial timed Play, Pause, Stop, hidden auto-pause, deliberate Run again, and bounded Scenario Traces.
+4. Proved target retirement, inter-Step drift, terminal delivery and Evidence failures, and Workbench-owned Checkpoints without loops, automatic retry, rollback, or a batch bridge.
 
 ### Increment E: Add Deep Diagnostics and Sharing
 
@@ -676,7 +676,7 @@ Product boundaries to preserve:
 - Observational Capture and immutable Evidence.
 - Observed Activity derived from accepted Evidence only, with Scope, Filter, History Interval, Retained Range, Committed Evidence Boundary, Observation Coverage, and provenance visible at the aggregate decision boundary.
 - Explicitly marked Local Evidence and separate COMMAND projections.
-- One protected Local Injection Draft until a separate Scenario decision changes that contract.
+- One protected standalone Local Injection Draft or one explicitly authored Scenario; Workbench never activates or replaces either silently.
 - Consequential client/server operations explicit, reviewed, and scoped.
 - No permanent surface or navigation category without the accepted UI gate.
 - No silent event sampling or partial aggregate presented as complete; Activity failure remains isolated from Capture and Event History.
@@ -689,7 +689,7 @@ Product boundaries to preserve:
 - Direct server-stream or Data Adapter Item Update injection.
 - A generic Item-Update-to-Client-Message translator.
 - Treating visible or selected Evidence as implicit Scenario membership.
-- Adding “run all” to the current one-Draft editor before Scenario semantics exist.
+- Adding a generic “run all” action that bypasses Scenario membership, Review, target, clock, or Trace semantics.
 - Pause Capture or rolling retention as a substitute for Frozen Evidence and capacity work.
 - Cross-session Capture persistence without a separate privacy, pruning, schema, and user-control decision.
 - A privileged server-monitoring/JMX dashboard in the browser extension.

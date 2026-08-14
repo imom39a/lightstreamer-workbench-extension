@@ -103,7 +103,7 @@ Then run the complete fixture verification:
 npm run fixture:test
 ```
 
-This command builds the single Store extension and fixture adapter, starts a local Lightstreamer container, runs the static Capture assertions, then drives the shipped React Workbench in a headless real-DevTools session through CDP. The browser proof selects compatible Item Update Evidence, creates exactly one Local Injection Draft, edits and reviews it, injects it through the inspected page's normal local delivery boundary, and verifies that the official Lightstreamer client updates the fixture application's rendered UI exactly once per successful action. Applicable direct and compatibility-fallback delivery checks remain part of the fixture packet.
+This command builds the single Store extension and fixture adapter, starts a local Lightstreamer container, runs the static Capture assertions, then drives the shipped React Workbench in a headless real-DevTools session through CDP. The browser proof exercises a protected standalone Local Injection Draft and a reviewed three-Step ADD → UPDATE → DELETE Scenario. The Scenario uses exactly three ordinary local-delivery requests and application callbacks, preserves distinct Scenario, Run, Step, Injection, request, and Evidence identities, leaves Observed Server COMMAND State unchanged while Local Effective COMMAND State reflects the local sequence, and allocates fresh identities for **Run again**. Applicable direct and compatibility-fallback delivery checks remain part of the fixture packet.
 
 To run only the real-browser proof, use `npm run fixture:test:browser`. The acceptance browser path is unconditionally headless, uses only cached Chrome for Testing 151, and refuses a system-Chrome fallback.
 
@@ -142,7 +142,7 @@ Run the deterministic Workbench panel scenarios in Chromium with:
 npm run test:ui
 ```
 
-The runner covers deterministic Diagnose, Scope, Ordered Evidence, degraded-operation, responsive-layout, and single-Draft Local Injection scenarios. It retains screenshots, traces, videos, page HTML, and browser console output when a check fails. Select one scenario, viewport, or theme when diagnosing a case:
+The runner covers deterministic Diagnose, Scope, Ordered Evidence, degraded operation, responsive layout, protected standalone Drafts, and Local Injection Scenario authoring, membership, Review, clock controls, drift, fail-closed outcomes, and Checkpoints. It retains screenshots, traces, videos, page HTML, and browser console output when a check fails. Select one scenario, viewport, or theme when diagnosing a case:
 
 ```bash
 npm run test:ui -- --scenario=local-injection-authored --viewport=900x700 --theme=dark

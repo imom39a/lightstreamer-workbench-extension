@@ -1,12 +1,13 @@
-## 2.0.1 — pending Chrome Web Store release
+## 2.0.1 — verified release candidate
 
-Version 2.0.1 is a maintenance package for the unified **Scoped Evidence Workspace** delivered in 2.0.0.
+Version 2.0.1 is a verified release candidate for the unified **Scoped Evidence Workspace** delivered in 2.0.0.
 
-- Carries forward the verified 2.0.0 extension behavior without user-facing feature or UI changes.
+- Adds deterministic multi-event Local Injection Scenarios with explicit single-target membership, immutable reviewed Runs, serial controls, per-Step outcomes, Workbench-owned Checkpoints, and complete correlation.
+- Proves a three-Step ADD → UPDATE → DELETE Run through the official Lightstreamer client using three ordinary local-delivery requests, then verifies the separate Observed Server and Local Effective COMMAND projections.
 - Keeps the same Manifest V3 permissions, local-only data handling, Panel Session-owned temporary Event History, and Local Injection boundaries.
-- Refreshes the extension package with 2.0.1 version metadata for the Chrome Web Store update.
+- Produces an audited 2.0.1 extension package for maintainer-controlled release.
 
-Version 2.0.1 is prepared for Chrome Web Store review and is not yet the current public release.
+The repository package is verified for maintainer release. This record does not mean it has been uploaded, submitted for review, approved, rolled out, or published; 2.0.0 remains the current Chrome Web Store release.
 
 ## 2.0.0 — current Chrome Web Store release
 

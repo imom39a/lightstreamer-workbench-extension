@@ -12,6 +12,8 @@ Lightstreamer Workbench is an open-source Chrome DevTools extension for debuggin
 
 Version `2.0.0` is the current public release and the first version of the unified Scoped Evidence Workspace. Install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/lightstreamer-workbench/kfpgbhfphbhkebglopimjhfnnmbifocf), or build it from source and load the generated `dist/` directory as an unpacked extension.
 
+The repository currently prepares a verified `2.0.1` release candidate. Building and packaging that candidate does not upload, submit, approve, roll out, or publish it; `2.0.0` remains the current public release until a maintainer completes the Chrome Web Store release process.
+
 Version 2 focuses on local, current-session debugging for the inspected tab through one unified Scoped Evidence Workspace. The public [roadmap](https://imom39a.github.io/lightstreamer-workbench-extension/roadmap/) separates near-term opportunities from exploratory work without promising dates.
 
 ## What The Extension Does
@@ -22,8 +24,9 @@ Version 2 focuses on local, current-session debugging for the inspected tab thro
 - Presents the accepted React **Scoped Evidence Workspace**: structural Topology chooses Scope, Ordered Evidence remains the dominant investigation surface, and Context explains the active runtime object or selected Evidence.
 - Keeps Capture operation, Coverage, Scope, Filter, Find, selection, and Live/Frozen Evidence position independent while retaining accepted current-session Evidence through its Committed Evidence Boundary behind a bounded rendered window.
 - Reconstructs **Observed Server COMMAND State** from captured Server Updates and **Local Effective COMMAND State** from Server Updates plus successful Local Injected Updates.
-- Maintains exactly one target-anchored **Local Injection Draft**, created from an immutable selected Injection Source or authored from a live COMMAND scope, with raw JSON editing, validation, Review, and a persistent truthful outcome.
-- Delivers a reviewed Local Injection through a captured listener or captured Lightstreamer WebSocket path in the inspected page.
+- Maintains one protected standalone target-anchored **Local Injection Draft**, created from an immutable selected Injection Source or authored from a live COMMAND scope, with raw JSON editing, validation, Review, and a persistent truthful outcome.
+- Provides a temporary **Local Injection Scenario** document with explicit ordered single-target Steps and optional Checkpoints; Review freezes an immutable Run that dispatches one ordinary Local Injection at a time with per-Step outcomes and correlation.
+- Delivers standalone Drafts and Scenario Steps through the same captured listener or captured Lightstreamer WebSocket path in the inspected page; Scenarios add no batch bridge.
 - Provides WebSocket/TLCP fallback diagnostics when primary Web Client API instrumentation is unavailable.
 - Marks successful Local Injected Update Evidence clearly so it remains distinguishable from Server Evidence.
 

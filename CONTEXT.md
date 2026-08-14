@@ -141,7 +141,7 @@ A Panel Session-scoped, explicitly ordered definition of prospective Local Injec
 _Avoid_: Batch Injection, replay script, queue, playlist
 
 **Scenario Step**:
-One stable Scenario member that owns an independent Injection Draft, optional Injection Source, relative delay, and assertions for one prospective Local Injection.
+One stable Scenario member that owns an independent Injection Draft, optional Injection Source, and relative delay for one prospective Local Injection.
 _Avoid_: Batch item, queued Injection, event
 
 **Scenario Checkpoint**:

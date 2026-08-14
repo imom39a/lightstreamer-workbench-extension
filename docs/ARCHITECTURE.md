@@ -47,7 +47,7 @@ The extension runs in four active JavaScript contexts plus optional test fixture
 | Isolated content bridge | `src/content/content-script.ts` | `dist/content/content-script.js` | Forward page `postMessage` Capture events to the extension runtime and retain the internal compatibility relay for Local Injection delivery. |
 | Extension service worker | `src/extension/background.ts` | `dist/extension/background.js` | Register DevTools panel ports by `(tabId, PanelSessionId)` and broadcast unscoped live Capture to every panel for the tab while targeting sync and Injection results to one Panel Session; retain compatibility routing for Local Injection when direct inspected-page evaluation is unavailable. |
 | DevTools page loader | `src/extension/devtools.ts` | `dist/extension/devtools.js` | Register the `Lightstreamer Workbench` DevTools panel. |
-| DevTools panel UI | `src/extension/panel/panel.tsx`, `src/extension/panel/workbench-runtime.ts`, `src/extension/panel/react/`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Mount the React Scoped Evidence Workspace, own session history and investigation state, expose exactly one Local Injection Draft, call the local-delivery bridge, clear retired 0.1.x telemetry state, and expose first-party Help links. |
+| DevTools panel UI | `src/extension/panel/panel.tsx`, `src/extension/panel/workbench-runtime.ts`, `src/extension/panel/react/`, `src/extension/panel/bridge-client.ts`, `src/extension/panel/index.html` | `dist/extension/panel/index.js`, `dist/assets/index.css`, `dist/extension/panel/index.html` | Mount the React Scoped Evidence Workspace, own session history and investigation state, expose one protected standalone Local Injection Draft or one mutually protected temporary Scenario, call the shared local-delivery coordinator, clear retired 0.1.x telemetry state, and expose first-party Help links. |
 
 ```mermaid
 flowchart LR
@@ -699,10 +699,10 @@ Each active row keeps origin provenance and latest provenance separately. Delete
 
 ## Local Injection Delivery Architecture
 
-Local Injection never injects data into a real Lightstreamer Server stream. It creates one protected, target-anchored Injection Draft and has two explicit inspected-page delivery paths. Existing source and bridge identifiers use `reinjection` for protocol continuity; that internal term does not name the user-facing workflow. Every implemented Local Injection request and result carries the validated `InjectionCorrelation` of `panelSessionId` plus `requestId`; future planned Server Injection requests and results must reuse that same contract.
+Local Injection never injects data into a real Lightstreamer Server stream. A standalone Draft or each Scenario Step creates one ordinary Local Injection request and uses one of two explicit inspected-page delivery paths. A Scenario adds no batch bridge or message shape. Existing source and bridge identifiers use `reinjection` for protocol continuity; that internal term does not name the user-facing workflow. Every implemented Local Injection request and result carries the validated `InjectionCorrelation` of `panelSessionId` plus `requestId`; future planned Server Injection requests and results must reuse that same contract.
 
 1. The injected script captures original `onItemUpdate` callbacks and active Lightstreamer WebSocket subscription schemas.
-2. `WorkbenchRuntime` creates exactly one `ReinjectionDraft` from an immutable Injection Source or a live COMMAND scope, then owns its text, validation, Review state, protected target, pending execution, and outcome.
+2. For the standalone workflow, `WorkbenchRuntime` creates one protected `ReinjectionDraft` from an immutable Injection Source or a live COMMAND scope, then owns its text, validation, Review state, protected target, pending execution, and outcome. Scenario Steps retain independent versions of the same Draft contract.
 3. The runtime derives the only valid page target from Capture: `captured-listener` for listener captures or `captured-wire` for wire captures. Review and execution stay blocked if that target is unavailable or stale.
 4. The panel's executor invokes the versioned MAIN-world reinjection capability through `chrome.devtools.inspectedWindow.eval`. If a refreshed extension finds the global missing, it first reuses the already-loaded page's request-scoped message handler directly. A version-skewed or unavailable page context falls back to the panel → service worker → content script compatibility relay.
 5. For listener delivery, the injected script calls the captured callback with a synthetic `ItemUpdate`-like object. For wire delivery, it builds a complete schema-ordered TLCP `U` frame and dispatches a local `MessageEvent` on the captured page WebSocket.
@@ -722,7 +722,7 @@ sequenceDiagram
   participant WS as Captured page WebSocket
   participant History as Panel EventHistory
 
-  UI->>UI: create or edit one Injection Draft
+  UI->>UI: review standalone Draft or immutable Run Step
   UI->>PBC: reinjectDraft(draft, executionTarget)
   alt direct capability available
     PBC->>Inj: inspectedWindow.eval(versioned bridge.reinject)
@@ -799,6 +799,8 @@ Draft validation remains a core boundary even though the user-facing document is
 - `validateDraftForExecutionTarget()` checks target-specific listener or wire context plus COMMAND command/key requirements.
 - `validateNewCommandDraft()` checks captured COMMAND context, schema membership, the selected execution target, and semantic COMMAND validity against current state.
 
+`src/extension/panel/local-injection-execution-coordinator.ts` owns the renderer-neutral Review, fingerprint revalidation, execute-once, committed-Evidence settlement, and truthful outcome mapping path. Standalone Drafts and Scenario Steps share this coordinator, so each Step remains one ordinary request/result operation and cannot acquire separate delivery semantics.
+
 ## Panel UI Architecture
 
 The production panel is the React **Scoped Evidence Workspace**. `src/extension/panel/bootstrap.ts` mounts one root through `mountWorkbenchPanel()` in `src/extension/panel/panel.tsx`. The mount owns IndexedDB initialization with an in-memory fallback, bridge and visibility wiring, theme state, cleanup of retired 0.1.x telemetry records, the React root, and idempotent teardown.
@@ -814,7 +816,7 @@ The runtime owns:
 - a bounded Ordered Evidence query window, Live/Frozen position, Filter, Find, focus, selection, and Context identity;
 - named Observed Server and Local Effective COMMAND projections plus diagnostics;
 - raw Evidence, scoped export, responsive-layout restoration identities, and session operations;
-- exactly one Local Injection Source/Draft/target/review/execution/outcome lifecycle.
+- one protected standalone Local Injection Source/Draft/target/review/execution/outcome lifecycle or one mutually protected Panel Session-local Scenario/Run/Trace/clock/Checkpoint lifecycle.
 
 Storage mode, retained-history capacity, and advisory browser headroom are
 independent of Observation Coverage. If IndexedDB initialization fails, the
@@ -846,9 +848,19 @@ Neither projection is Authoritative COMMAND State. Projection differences remain
 
 ### Local Injection Document
 
-The panel maintains exactly one target-anchored Injection Draft. A developer enters from a compatible selected Captured Item Update or a live COMMAND scope. `WorkbenchRuntime` protects the Injection Source, Subscription instance, Session, item identity, target, validation, Review state, pending lock, and outcome outside the editable document.
+The panel maintains one protected standalone target-anchored Injection Draft. A developer enters from a compatible selected Captured Item Update or a live COMMAND scope. `WorkbenchRuntime` protects the Injection Source, Subscription instance, Session, item identity, target, validation, Review state, pending lock, and outcome outside the editable document.
 
 `react/local-injection-document.tsx` is lazy-loaded. Its raw JSON editor and optional immutable Source comparison use modular CodeMirror packages that stay out of the initial panel chunk. A stale or invalid Draft cannot execute; a second entry cannot silently replace the current Draft; and successful delivery changes only Local Effective COMMAND State.
+
+### Local Injection Scenario
+
+A Local Injection Scenario is a separate mutually protected temporary document rather than a broadened standalone Draft or permanent workspace destination. `src/core/local-injection-scenario.ts` owns explicit ordered membership, one exact target, independent per-Step Drafts, optional Checkpoints, immutable reviewed Runs, stable correlation, the 100-Step limit, and the 8 MiB accounted-state boundary. Visible, selected, ranged, or filtered Evidence never becomes membership without a preview and explicit confirmation.
+
+`src/core/local-injection-scenario-runner.ts` owns strictly serial dispatch against a monotonic active-time Scenario Clock. Step next, Play, Pause, Stop, hidden-panel auto-pause, drift re-review, and deliberate Run again never overlap, catch up, loop, roll back, retry automatically, or cancel an in-flight Injection. Target retirement and terminal delivery or Evidence-settlement outcomes stop before another Step and leave a truthful Trace with the remainder marked `NOT RUN`.
+
+`src/core/local-injection-scenario-checkpoint.ts` evaluates named zero-Injection Checkpoints against an exact committed-Evidence boundary. The first release supports prior Injection Outcome, attempted/delivered/listener counts, correlated committed Local Evidence, Local Effective COMMAND key presence or absence, and strict primitive field equality. Positive assertions may use a bounded active-time `within` window. Wire listener counts are unavailable, server-derived public-API `null` is ambiguous, and Evidence routes exist only while the exact boundary remains retained. Diagnostic-presence and arbitrary inspected-page/application assertions do not exist.
+
+`react/local-injection-scenario-document.tsx` renders Scenario Edit, Review, Running, Paused, terminal, Checkpoint, and Trace states as one promoted document. `WorkbenchRuntime` owns authoring protection, immutable Run inputs, clock visibility, committed-boundary subscription, correlation, and Panel Session cleanup; closing the panel disposes the runner and discards the Scenario and Trace.
 
 `topology-export.ts` maps one immutable scoped `TopologyState` snapshot into the shared versioned export schema. Compact evidence collections declare total, included, omitted, truncation, and latest-sampling metadata; complete evidence is opt-in. Server addresses, client IPs, item names, COMMAND keys, configured fields/schemas, and captured identifiers are independently redactable, while credential-like fields and URL credentials are always excluded. `topology-html-report.ts` renders the approved structured snapshot into offline HTML with inline CSS/search only, escaped application-controlled values, collapsible hierarchy, and the same bounded evidence metadata.
 
@@ -862,6 +874,9 @@ The production seams keep domain/runtime state deeper than React presentation:
 | `workbench-runtime.ts` | Investigation state, history queries, projections, Draft lifecycle, export state, and publication cadence | Cached immutable snapshots plus typed commands |
 | `react/workbench-panel.tsx` | Scoped Evidence Workspace geometry, accessible composites, focus/restoration, and semantic controls | Snapshot rendering and command dispatch only |
 | `react/local-injection-document.tsx` | Promoted Draft, Source comparison, Review, and outcome presentation | Runtime-owned Draft semantics and target protection |
+| `local-injection-execution-coordinator.ts` | Shared Review, revalidation, execute-once, Evidence settlement, and outcome mapping | One ordinary Local Injection boundary for standalone Drafts and Scenario Steps |
+| `local-injection-scenario.ts`, `local-injection-scenario-runner.ts`, and `local-injection-scenario-checkpoint.ts` | Scenario definition, immutable Run and Trace, serial active-time runner, and Checkpoint assertions | Framework-independent bounded Scenario semantics |
+| `react/local-injection-scenario-document.tsx` | Promoted Scenario authoring, Review, controls, Checkpoints, outcomes, and Trace | Runtime-owned Scenario and Run semantics |
 | `react/local-injection-code-editor.tsx` | CodeMirror document state and editor-local interaction | Runtime-owned JSON text and diagnostics |
 | `topology-projection.ts` and `topology-view-model.ts` | Renderer-neutral structural reconstruction and view model | Capture/history inputs independent of React |
 | `topology-export.ts` and `topology-html-report.ts` | Versioned scoped export and offline report | Immutable scoped topology snapshot |
@@ -922,7 +937,7 @@ The default `npm test` command runs the Vitest files ending in `.test.ts`. The L
 npm run fixture:test
 ```
 
-Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` builds the single Store artifact, runs the static fixture assertions, and exercises the loaded extension against the official client in real DevTools sessions. The browser coverage verifies Capture, selected Evidence and live COMMAND-scope entry paths, exactly one Local Injection Draft, direct and compatibility delivery where applicable, truthful success/error rendering, exact application UI update counts, and distinct Observed Server and Local Effective COMMAND projections.
+Run `npm run fixture:browser:install` once to install Chrome for Testing into the ignored project cache. `fixture:test` builds the single Store artifact, runs the static fixture assertions, and exercises the loaded extension against the official client in real DevTools sessions. The browser coverage verifies Capture, both protected standalone Draft entry paths, direct and compatibility delivery where applicable, truthful success/error rendering, and distinct Observed Server and Local Effective COMMAND projections. It also proves a reviewed three-Step ADD → UPDATE → DELETE Scenario through exactly three ordinary page requests and application callbacks, stable Scenario/Run/Step/Injection/request/Evidence correlation, the final projection split, and fresh identities on deliberate Run again.
 
 All fixture lifecycle and test entry points route through `scripts/lightstreamer/fixture.mjs`; the browser installer uses Puppeteer's cross-platform CLI. The Node runner keeps process arguments and filesystem paths cross-platform, uses built-in HTTP readiness polling instead of `curl`, and invokes Docker and Maven consistently from Windows, macOS, and Linux. The extensionless Bash files remain thin compatibility wrappers for existing Unix workflows.
 
@@ -945,14 +960,18 @@ Coverage is organized by architectural boundary:
 | `tests/panel-bridge-client.test.ts` | Panel port registration, reconnect, direct reinjection, request-scoped missing-global recovery, version-skew relay fallback, and timeout/error behavior. |
 | `tests/workbench-runtime.test.ts` | Cached snapshot ownership, Scope/Evidence/Context independence, bounded history, projections, storage fallback, export, passive publication, and disposal. |
 | `tests/workbench-local-injection-runtime.test.ts` | Both Local Injection entry paths, exactly-one-Draft protection, validation, Review, stale targets, pending locks, truthful outcomes, and COMMAND projection effects. |
+| `tests/local-injection-execution-coordinator.test.ts` | Shared standalone/Scenario Review, fingerprint revalidation, execute-once behavior, committed-Evidence settlement, and terminal outcome mapping. |
+| `tests/local-injection-scenario.test.ts` | Scenario membership, target protection, per-Step Drafts, immutable Runs, correlation, capacity accounting, and Trace bounds. |
+| `tests/local-injection-scenario-runner.test.ts` | Monotonic active-time scheduling, serial controls, hidden pause, drift re-review, stop semantics, and terminal `NOT RUN` completion. |
+| `tests/local-injection-scenario-assertions.test.ts` | Checkpoint validation and evaluation, committed boundaries, strict primitive equality, unavailable/ambiguous facts, bounded waits, and Evidence routes. |
 | `tests/react-workbench-panel.test.ts` | React semantic rendering, accessible composites, command dispatch, responsive restoration, and Local Injection presentation. |
 | `tests/panel-mount.test.ts` | Production mount wiring, storage fallback, bridge delivery, visibility, theme, retired telemetry cleanup, first-party resources, and teardown. |
 | `tests/panel-scenarios.test.ts` | Renderer-neutral deterministic Capture and topology scenario fixtures shared by runtime and performance checks. |
-| `tests/ui/workbench.spec.ts` | Browser-level Diagnose, Scope, Evidence, Context, geometry, keyboard, accessibility, export, and single-Draft Local Injection journeys. |
+| `tests/ui/workbench.spec.ts` | Browser-level Diagnose, Scope, Evidence, Context, geometry, keyboard, accessibility, export, protected standalone Drafts, and Scenario authoring, Review, controls, failures, and Checkpoints. |
 | `tests/fixture-runner.test.ts` | Cross-platform fixture npm entry points, runner loading, and argument-safe Docker command construction. |
 | `tests/lightstreamer-fixture-capture.spec.ts` | Fixture smoke assertions against served fixture page and Java adapter source; run by `npm run fixture:test`. |
 | `tests/extension-panel.browser.spec.ts` | Loaded-extension semantic smoke for the shipped Scoped Evidence Workspace. |
-| `tests/extension-ui/lightstreamer-capture.spec.ts` | Official-client loaded-extension proof for listener and wire Capture, Scoped Evidence, both Local Injection entry paths, exact application delivery, lazy editor loading, and Manifest V3 CSP compatibility. |
+| `tests/extension-ui/lightstreamer-capture.spec.ts` | Official-client loaded-extension proof for listener and wire Capture, Scoped Evidence, both standalone Local Injection entry paths, exact application delivery, lazy editor loading, Manifest V3 CSP compatibility, and the three-Step Scenario request/callback, correlation, projection, and Run-again proof. |
 
 Other quality commands:
 

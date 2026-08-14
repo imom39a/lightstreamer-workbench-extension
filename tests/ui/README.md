@@ -6,10 +6,12 @@ suite contains no production Capture data or third-party visual assets.
 
 The browser checks cover Diagnose, structural Scope, Ordered Evidence,
 Context, Live/Frozen behavior, degraded operation, responsive geometry,
-keyboard and focus restoration, accessibility, export, and exactly one Local
-Injection Draft through both accepted entry paths. Local Injection scenarios
-include raw JSON editing, immutable Source comparison, validation, Review,
-stale targets, pending execution, and truthful outcomes.
+keyboard and focus restoration, accessibility, export, one protected
+standalone Local Injection Draft through both accepted entry paths, and the
+temporary Local Injection Scenario document. Scenario coverage includes
+explicit membership, 100-Step and accounted-state capacity, immutable Review,
+serial clock controls and hidden auto-pause, drift, fail-closed terminal
+outcomes, and Checkpoint authoring, evaluation, and retained-Evidence routes.
 
 Select a scenario, viewport, or theme when diagnosing a case:
 
@@ -30,6 +32,13 @@ at compact geometry (Light), reversible More actions at shallow geometry
 (Dark), and a matching COMMAND projection summary in runtime-object Context at
 wide geometry (Light).
 `npm run test:ui` can only compare those images.
+
+Additional Scenario baseline matrices cover authored Edit, Review, completion,
+clock controls, terminal outcomes, membership preview, undo, capacity refusal,
+and Checkpoint authoring, Review, waiting, pass, fail, unavailable,
+ambiguous-value, and high-volume states across the required compact, normal,
+shallow, and wide geometries. Use the generated manifest as the authoritative
+inventory rather than relying on a hand-maintained image count.
 Use `npm run test:ui:update` for a deliberate baseline creation or update and
 record the inspected artifacts and reason in the Project item or pull request.
 
