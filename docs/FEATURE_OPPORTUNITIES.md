@@ -64,7 +64,7 @@ The most important remaining gaps are:
 - Snapshot, connection recovery, subscription configuration, and duplicate data exist, but most higher-order explanations remain facts rather than conclusions.
 - Only COMMAND has reconstructed state. MERGE, DISTINCT, and RAW remain ordered Evidence without point-in-time state lenses.
 - Export exists; import, offline investigation, fixture generation, and cross-capture comparison do not.
-- Local Injection executes one Draft at a time. The single-target Scenario domain and failure model are accepted in ADR 0012, but the multi-event workflow is not implemented.
+- Local Injection executes one Draft at a time. The single-target Scenario domain and failure model are accepted in ADR 0012, but the multi-event workflow is not implemented. The current Draft, target, delivery-outcome, committed-Evidence, and Local Effective COMMAND contracts are sufficient to start the core workflow; richer selected-update inspection and full contextual diagnostics are parallel enhancements rather than release gates.
 
 Relevant implementation and product seams:
 
@@ -151,7 +151,7 @@ This is the execution order for incremental delivery. Do not start an opportunit
 | 6 | Connection, transport, recovery, and Session-epoch lens | 1, 5 | B |
 | 7 | Snapshot bootstrap and resubscription correctness lens | 1, 4, 5 | B |
 | 8 | Captured Client Messages and deliberate Server Injection | 1, 5, existing one-Draft contract, accepted Server Injection ADRs | C |
-| 9 | Deterministic multi-event Local Injection scenarios | 1, 2, 4, 5, accepted Scenario domain and interaction model | D |
+| 9 | Deterministic multi-event Local Injection scenarios | 1, 2, accepted Scenario domain and interaction model; diagnostic-presence assertion extension also requires the normalized diagnostic contract from 5 | D |
 | 10 | Deep Delivery QoS and Loss Profiler | 1, 3, 4, 5, 6 | E |
 | 11 | Watch rules and conditional listener breakpoints | 1, 2, 5 | E |
 | 12 | MERGE, DISTINCT, and RAW state reconstruction with point-in-time inspection | 1, 4, 7 | E |
@@ -420,7 +420,7 @@ The accepted decision resolves the design gate as follows:
 - Step next, Play, Pause, Stop, hidden-panel auto-pause, and deliberate Run again never cancel an in-flight Injection, overlap, catch up, loop, or retry automatically;
 - target retirement ends the Run, while listener drift or relevant interleaving Server Evidence pauses before another Step and requires explicit re-review;
 - partial, failed, unknown, blocked, evidence-incomplete, and assertion-failed outcomes stop before the next Step without rollback or fabricated Local Evidence;
-- assertions observe named Workbench Injection Outcomes, committed Evidence, Local Effective COMMAND State, or normalized diagnostics, never arbitrary application or Authoritative COMMAND State;
+- initial assertions observe named Workbench Injection Outcomes, committed Evidence, or Local Effective COMMAND State, never arbitrary application or Authoritative COMMAND State; normalized-diagnostic presence is a later additive assertion after Build 5 supplies a stable observation contract;
 - Scenario, Run, Step, Injection, request, outcome, assertion, and resulting Local Evidence identities remain independently correlated in a Panel Session-local Scenario Trace.
 
 Implementation may now add:
@@ -430,7 +430,7 @@ Implementation may now add:
 - step, play, pause, speed, and stop;
 - per-step target availability and outcome;
 - session-local named checkpoints;
-- assertions such as “key exists,” “field equals,” or “diagnostic appears.”
+- assertions such as “key exists” or “field equals”, with “diagnostic appears” added only after Build 5's normalized diagnostic observation contract ships.
 
 Guardrails:
 
@@ -440,6 +440,8 @@ Guardrails:
 - Every execution remains Local Injection and never implies that an Item Update entered the server stream.
 
 Accepted decision: [ADR 0012 — Run Local Injection Scenarios as immutable single-target plans](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md).
+
+Dependency boundary: full Build 4 is not required to construct, execute, or trace a Scenario because the retained Item Update payload and current Local Injection contracts already carry the needed Source, Draft, target, provenance, outcome counts, and Evidence settlement. Build 9 itself must add the narrow headless replayability check that prevents sanitized, unavailable, or unresolved source fields from becoming executable values without explicit replacement; it does not wait for Build 4's inspection UI. Build 5's additional callback capture, explanations, and lint rules are likewise not execution gates. The first Scenario release deliberately omits diagnostic-presence assertions; that assertion family follows the narrow normalized diagnostic observation contract rather than blocking the rest of Build 9.
 
 ## P1 Opportunity Details
 

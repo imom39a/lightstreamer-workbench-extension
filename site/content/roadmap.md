@@ -20,7 +20,7 @@ Capture `LightstreamerClient.sendMessage` calls and listener outcomes as outboun
 
 ## Exploring
 
-- Deterministic multi-event Local Injection Scenarios using the accepted explicit-membership, single-target, immutable-Run model after their selected-update and diagnostic prerequisites ship.
+- Deterministic multi-event Local Injection Scenarios using the accepted explicit-membership, single-target, immutable-Run model. Richer selected-update inspection and contextual diagnostics can ship independently; normalized-diagnostic assertions follow the diagnostic observation contract later.
 - Capture import, offline investigation, fixture generation, and cross-capture comparison.
 - Listener performance, client-log, protocol, frequency, bandwidth, buffer, and loss diagnostics.
 - Broader frame, worker, transport, and bundled-client observation coverage.
