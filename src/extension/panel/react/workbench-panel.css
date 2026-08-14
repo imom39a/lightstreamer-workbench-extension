@@ -346,6 +346,8 @@
 .workbench-react__scenario-ledger header strong { color: var(--wb-text); }
 .workbench-react__scenario-ledger ol { display: grid; gap: 2px; margin: 5px 0 0; padding-left: 18px; }
 .workbench-react__scenario-ledger li { overflow-wrap: anywhere; font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__scenario-ledger details { margin-top: 5px; }
+.workbench-react__scenario-ledger summary { cursor: pointer; color: var(--wb-text); font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__scenario-picker { position: absolute; z-index: 12; inset: 58px 10px 48px; display: flex; min-height: 0; flex-direction: column; border: 1px solid var(--wb-border-strong); background: var(--wb-raised); box-shadow: 0 8px 24px color-mix(in srgb, #000 35%, transparent); padding: 9px; }
 .workbench-react__scenario-picker header { display: grid; gap: 3px; border-bottom: 1px solid var(--wb-border); padding-bottom: 7px; }
 .workbench-react__scenario-picker-actions { display: flex; align-items: center; gap: 7px; padding-top: 7px; }

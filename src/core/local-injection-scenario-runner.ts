@@ -197,7 +197,7 @@ export function createLocalInjectionScenarioRunner(
       phase = "paused";
       pauseReason = "DRIFT_REVIEW_REQUIRED";
       remainingDelayMs = 0;
-      run = appendScenarioDrift(run, {
+      const driftedRun = appendScenarioDrift(run, {
         kind: guard.drift?.kind ?? "MIXED",
         activeOffsetMs: activeNow(),
         addedListenerIds: guard.drift?.addedListenerIds ?? [],
@@ -205,6 +205,14 @@ export function createLocalInjectionScenarioRunner(
         evidence: guard.drift?.evidence ?? null,
         detail: guard.detail
       });
+      if (driftedRun === run) {
+        run = terminalizeScenarioRun(run, activeNow(), "Scenario stopped before dispatch because its bounded drift ledger could not retain the exact record.");
+        phase = "stopped";
+        pauseReason = null;
+        publish();
+        return;
+      }
+      run = driftedRun;
       appendControl("PAUSE", "DRIFT", guard.detail);
       publish();
       return;
@@ -270,7 +278,7 @@ export function createLocalInjectionScenarioRunner(
         phase = "paused";
         pauseReason = "DRIFT_REVIEW_REQUIRED";
         remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
-        run = appendScenarioDrift(run, {
+        const driftedRun = appendScenarioDrift(run, {
           kind: settlementGuard.drift?.kind ?? "MIXED",
           activeOffsetMs: activeNow(),
           addedListenerIds: settlementGuard.drift?.addedListenerIds ?? [],
@@ -278,6 +286,14 @@ export function createLocalInjectionScenarioRunner(
           evidence: settlementGuard.drift?.evidence ?? null,
           detail: settlementGuard.detail
         });
+        if (driftedRun === run) {
+          run = terminalizeScenarioRun(run, activeNow(), "Scenario stopped because its bounded drift ledger could not retain the exact record.");
+          phase = "stopped";
+          pauseReason = null;
+          remainingDelayMs = 0;
+        } else {
+          run = driftedRun;
+        }
         appendControl("PAUSE", "DRIFT", settlementGuard.detail);
       } else if (steppedManually) {
         freezeActive();
@@ -373,7 +389,12 @@ export function createLocalInjectionScenarioRunner(
       if (phase !== "paused" || pauseReason !== "DRIFT_REVIEW_REQUIRED" || run.status !== "paused") {
         return Object.freeze({ ok: false as const, reason: "Scenario Run is not awaiting drift re-review." });
       }
-      run = appendScenarioAuthorization(run, { ...input, activeOffsetMs: activeNow() });
+      const authorizedRun = appendScenarioAuthorization(run, { ...input, activeOffsetMs: activeNow() });
+      if (authorizedRun === run) {
+        stop("Drift re-review failed because the bounded authorization ledger could not retain the exact boundary.");
+        return Object.freeze({ ok: false as const, reason: "Bounded authorization ledger capacity reached." });
+      }
+      run = authorizedRun;
       pauseReason = "USER";
       publish();
       return Object.freeze({ ok: true as const });

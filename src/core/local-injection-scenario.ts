@@ -77,11 +77,11 @@ export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
 // Coordinator outcomes are bounded before they reach this module. Reserve their
 // complete canonical form (including generated correlation/Evidence identity)
 // rather than shortening an already-settled outcome after dispatch.
-const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 16 * 1024;
+const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 13 * 1024;
 export const SCENARIO_MAX_CONTROL_RECORDS = 128;
 export const SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD = 512;
-export const SCENARIO_MAX_LEDGER_RECORDS = 128;
-export const SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD = 2 * 1024;
+export const SCENARIO_MAX_LEDGER_RECORDS = 8;
+export const SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD = 8 * 1024;
 
 export type ScenarioAdmissionContext = Readonly<{ retainedRunBytes?: number }>;
 
@@ -152,6 +152,7 @@ export type ScenarioTraceEntry = Readonly<{
   evidence: EvidenceRef | null;
   retention: "NOT_CREATED" | "COMMITTED" | "DELIVERED_UNRETAINED";
   evidenceAvailability: "RETAINED" | "UNAVAILABLE_AFTER_CLEAR" | "NOT_APPLICABLE";
+  assertion: "NOT_EVALUATED";
   timing?: ScenarioTraceTiming;
   detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
 }> | Readonly<{
@@ -162,6 +163,7 @@ export type ScenarioTraceEntry = Readonly<{
   timestamp: number;
   detail: string;
   evidence: null;
+  assertion: "NOT_EVALUATED";
   detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
 }>;
 
@@ -426,8 +428,8 @@ export function reviewScenario(
       traceReservationBytes: 0,
       controlReservationBytes: 0,
       speed: scenario.speed,
-      controls: []
-      ,authorizations: [freeze({
+      controls: [],
+      authorizations: [freeze({
         id: `${facts.runId}:authorization:1`,
         kind: "INITIAL_REVIEW" as const,
         targetFingerprint: facts.targetFingerprint,
@@ -438,6 +440,13 @@ export function reviewScenario(
       })],
       drifts: []
   });
+  const oversizedAuthorization = candidate.authorizations.find((record) => canonicalBytes(record) > SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD);
+  if (oversizedAuthorization) {
+    return Object.freeze({
+      ok: false as const,
+      reason: `Scenario authorization requires ${canonicalBytes(oversizedAuthorization)} canonical bytes, exceeding its ${SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD}-byte bounded ledger record; no Run was created.`
+    });
+  }
   const admission = scenarioRunAdmission(scenario, candidate, facts.retainedRunBytes ?? 0);
   if (!admission.ok) return Object.freeze({ ok: false as const, reason: admission.reason });
   return Object.freeze({
@@ -534,7 +543,8 @@ export async function stepScenarioRun<T extends Readonly<{
       reason: "RUN STOPPED" as const,
       timestamp: terminal.timestamp,
       detail: remaining.ordinal === step.ordinal ? terminal.detail : `RUN STOPPED before Step ${remaining.ordinal}; this Step was not attempted.`,
-      evidence: null
+      evidence: null,
+      assertion: "NOT_EVALUATED" as const
     }))]
   });
   const retainedEvidence = terminal.outcome.disposition === "delivered" ? terminal.evidence : null;
@@ -548,7 +558,8 @@ export async function stepScenarioRun<T extends Readonly<{
     retention: retainedEvidence !== null
       ? "COMMITTED" as const
       : terminal.outcome.disposition === "delivered" ? "DELIVERED_UNRETAINED" as const : "NOT_CREATED" as const,
-    evidenceAvailability: retainedEvidence !== null ? "RETAINED" as const : "NOT_APPLICABLE" as const
+    evidenceAvailability: retainedEvidence !== null ? "RETAINED" as const : "NOT_APPLICABLE" as const,
+    assertion: "NOT_EVALUATED" as const
   });
   const nextOrdinal = run.nextOrdinal + 1;
   const delivered = terminal.outcome.disposition === "delivered" && terminal.evidence !== null;
@@ -559,7 +570,8 @@ export async function stepScenarioRun<T extends Readonly<{
     reason: "RUN STOPPED" as const,
     timestamp: terminal.outcome.timestamp,
     detail: `RUN STOPPED after Step ${step.ordinal}; this Step was not attempted.`,
-    evidence: null
+    evidence: null,
+    assertion: "NOT_EVALUATED" as const
   }));
   return freeze({
     ...run,
@@ -583,6 +595,7 @@ export function appendScenarioDrift(
     addedListenerIds: [...drift.addedListenerIds].sort(),
     removedListenerIds: [...drift.removedListenerIds].sort()
   });
+  if (canonicalBytes(record) > SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD) return run;
   return freeze({ ...run, drifts: [...run.drifts, record] });
 }
 
@@ -605,6 +618,7 @@ export function appendScenarioAuthorization(
     authorizedRemainingFromOrdinal: run.nextOrdinal,
     activeOffsetMs: input.activeOffsetMs
   });
+  if (canonicalBytes(authorization) > SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD) return run;
   return freeze({
     ...run,
     targetFingerprint: input.targetFingerprint,
@@ -635,7 +649,8 @@ export function terminalizeScenarioRun(run: ScenarioRun, timestamp: number, deta
       reason: "RUN STOPPED" as const,
       timestamp,
       detail,
-      evidence: null
+      evidence: null,
+      assertion: "NOT_EVALUATED" as const
     }))]
   });
 }

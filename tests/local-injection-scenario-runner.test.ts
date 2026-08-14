@@ -138,8 +138,56 @@ describe("Local Injection Scenario runner", () => {
     expect(runner.snapshot().run.authorizations[1]).toMatchObject({ kind: "DRIFT_REVIEW", targetFingerprint: "fingerprint-2", authorizedRemainingFromOrdinal: 1 });
   });
 
+  it("fails closed before identity allocation when an exact drift record exceeds its reserved ledger", () => {
+    const clock = new FakeClock();
+    const allocateInjectionId = vi.fn(() => "must-not-exist");
+    const runner = createLocalInjectionScenarioRunner(reviewedRun([0, 100]), {
+      clock,
+      allocateInjectionId,
+      execute: async ({ ordinal }) => delivered(ordinal),
+      beforeDispatch: () => ({
+        allow: false,
+        reason: "DRIFT",
+        detail: "x".repeat(9 * 1024),
+        drift: { kind: "LISTENER_SET", addedListenerIds: ["listener-2"], removedListenerIds: [], evidence: null }
+      })
+    });
+    runner.play();
+    clock.advance(0);
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped", run: { status: "stopped", drifts: [] } });
+    expect(runner.snapshot().run.trace).toMatchObject([
+      { kind: "not-run", stepId: "step-1" },
+      { kind: "not-run", stepId: "step-2" }
+    ]);
+    expect(allocateInjectionId).not.toHaveBeenCalled();
+  });
+
+  it("terminalizes the immutable remainder when drift re-review cannot retain its exact authorization", () => {
+    const clock = new FakeClock();
+    const runner = createLocalInjectionScenarioRunner(reviewedRun([0, 100]), {
+      clock,
+      allocateInjectionId: () => "must-not-exist",
+      execute: async ({ ordinal }) => delivered(ordinal),
+      beforeDispatch: () => ({ allow: false, reason: "DRIFT", detail: "Listener changed." })
+    });
+    runner.play();
+    clock.advance(0);
+    expect(runner.reReview({
+      targetFingerprint: "x".repeat(9 * 1024),
+      listenerIds: ["listener-1"],
+      committedEvidenceBoundary: null
+    })).toEqual({ ok: false, reason: "Bounded authorization ledger capacity reached." });
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped", run: { status: "stopped", authorizations: [{ kind: "INITIAL_REVIEW" }] } });
+    expect(runner.snapshot().run.trace).toHaveLength(2);
+  });
+
   it.each([
     ["partial", { ...delivered(1).outcome, disposition: "partial" as const, headline: "PARTIALLY DELIVERED" as const, status: "listener-error" as const, attemptedCount: 3, deliveredCount: 2, failedCount: 1 }],
+    ["listener failure", { ...delivered(1).outcome, disposition: "failed" as const, headline: "DELIVERY FAILED" as const, status: "listener-error" as const, attemptedCount: 1, deliveredCount: 0, failedCount: 1 }],
+    ["stale target", { ...delivered(1).outcome, disposition: "blocked" as const, headline: "NOT RUN" as const, status: "stale-target" as const, requestId: null }],
+    ["review blocked", { ...delivered(1).outcome, disposition: "blocked" as const, headline: "NOT RUN" as const, status: "review-blocked" as const, requestId: null }],
+    ["wire failure", { ...delivered(1).outcome, disposition: "failed" as const, headline: "DELIVERY FAILED" as const, status: "wire-error" as const }],
+    ["bridge failure", { ...delivered(1).outcome, disposition: "failed" as const, headline: "DELIVERY FAILED" as const, status: "bridge-error" as const }],
     ["unknown", { ...delivered(1).outcome, disposition: "acknowledgement-unknown" as const, headline: "DELIVERY UNKNOWN" as const, status: "acknowledgement-unknown" as const }],
     ["delivered-unretained", delivered(1).outcome]
   ])("stops truthfully for %s without advancing or fabricating Evidence", async (_name, outcome) => {
@@ -147,7 +195,11 @@ describe("Local Injection Scenario runner", () => {
     const runner = createLocalInjectionScenarioRunner(reviewedRun([0, 100]), {
       clock,
       allocateInjectionId: () => "injection-1",
-      execute: async () => ({ kind: "attempted", outcome, evidence: null })
+      execute: async () => ({
+        kind: "attempted",
+        outcome,
+        evidence: outcome.disposition === "delivered" ? null : { intervalId: "must-not", sequence: 99, eventId: "must-not" }
+      })
     });
     runner.play();
     clock.advance(0);

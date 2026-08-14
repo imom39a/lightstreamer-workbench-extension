@@ -1754,6 +1754,36 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps prior Run correlations inspectable in the Panel Session ledger", async () => {
+    const current = reviewedScenario();
+    const priorRun = {
+      ...current.run!,
+      id: "run-prior",
+      status: "complete" as const,
+      nextOrdinal: 2,
+      trace: [{
+        stepId: "step-1", ordinal: 1, kind: "attempted" as const, injectionId: "injection-prior",
+        outcome: { disposition: "delivered" as const, headline: "DELIVERED LOCALLY" as const, status: "success" as const, executionId: "execution-prior", requestId: "request-prior", timestamp: 42, detail: "settled", attemptedCount: 1, deliveredCount: 1, failedCount: 0 },
+        evidence: { intervalId: "interval-1", sequence: 7, eventId: "evidence-prior" },
+        retention: "COMMITTED" as const, evidenceAvailability: "RETAINED" as const, assertion: "NOT_EVALUATED" as const
+      }]
+    };
+    const runtime = createTestRuntime(snapshot({ scenario: { ...current, priorRuns: [priorRun] } }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Prior Scenario Run ledgers"]')).toBeTruthy());
+    const priorLedger = document.querySelector<HTMLElement>('[aria-label="Prior Scenario Run ledgers"]')!;
+    expect(priorLedger.textContent).toContain("run-prior");
+    const disclosure = priorLedger.querySelector<HTMLDetailsElement>("details")!;
+    disclosure.open = true;
+    expect(priorLedger.textContent).toContain("injection-prior");
+    expect(priorLedger.textContent).toContain("execution-prior");
+    expect(priorLedger.textContent).toContain("request-prior");
+    expect(priorLedger.textContent).toContain("assertion NOT_EVALUATED");
+    expect(priorLedger.textContent).toContain("evidence-prior");
+    await act(async () => root.unmount());
+  });
+
   it("moves focus from a disappearing timed control only when that control still owns focus", async () => {
     const initial = reviewedScenario();
     const runtime = createTestRuntime(snapshot({ scenario: initial }));

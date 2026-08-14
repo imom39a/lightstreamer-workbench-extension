@@ -212,6 +212,31 @@ describe("WorkbenchRuntime Local Injection", () => {
     expect(settlement).toEqual({ kind: "not-run", reason: "TARGET NOT RUN", timestamp: 41, detail: "Subscription retired before dispatch." });
     expect(settlement).not.toHaveProperty("injectionId");
   });
+
+  it.each([
+    ["stale-target", { error: "target retired" }],
+    ["listener-error", { attemptedCount: 2, deliveredCount: 1, failedCount: 1 }],
+    ["listener-error", { attemptedCount: 1, deliveredCount: 0, failedCount: 1 }],
+    ["wire-error", { error: "wire rejected" }],
+    ["bridge-error", { error: "bridge unavailable" }],
+    ["acknowledgement-unknown", { error: "acknowledgement lost" }]
+  ] as const)("halts a Scenario after the coordinator settles %s without Local Evidence", async (status, facts) => {
+    const executor = { execute: vi.fn(async () => result(status, facts)) };
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", localInjectionExecutor: executor });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "review-scenario" });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "stopped", run: { nextOrdinal: 1 } });
+    expect(runtime.getSnapshot().scenario?.run?.trace[0]).toMatchObject({
+      kind: "attempted", outcome: { status }, evidence: null, retention: "NOT_CREATED", evidenceAvailability: "NOT_APPLICABLE", assertion: "NOT_EVALUATED"
+    });
+    runtime.dispose();
+  });
+
   it("converts a protected Draft, adds one same-target update, and steps the immutable Run one Injection at a time", async () => {
     const history = createAuthoritativeHistory({
       precommitted: [
@@ -383,6 +408,37 @@ describe("WorkbenchRuntime Local Injection", () => {
     await flushAsync();
     runtime.dispatch({ type: "step-next-scenario" });
     expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "paused", runner: { pauseReason: "DRIFT_REVIEW_REQUIRED" }, run: { drifts: [{ kind: "SERVER_ITEM_UPDATE", evidence: { eventId: "server-interleave-7", sequence: 7 } }] } });
+    runtime.dispose();
+  });
+
+  it("does not carry a pre-Clear Server interleave into a later History interval", async () => {
+    const history = historyWithCommandTarget();
+    let execution = 0;
+    const executor = { execute: vi.fn(async () => ++execution === 1
+      ? result("wire-error", { error: "first Run stopped" })
+      : result("success", { attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) };
+    const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing", localInjectionExecutor: executor });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "review-scenario" });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    history.offer(commandEvent("pre-clear-server", "item-update", { update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 8 }, changedFields: { qty: 8 } } }));
+    await flushAsync();
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await vi.waitFor(() => expect(runtime.getSnapshot().retention.clearState).toBe("idle"));
+    await history.offer(commandEvent("post-clear-boundary", "item-update", { update: { isSnapshot: false, command: "UPDATE", key: "order-1", fields: { command: "UPDATE", key: "order-1", qty: 9 }, changedFields: { qty: 9 } } })).settled;
+    await flushAsync();
+    runtime.dispatch({ type: "run-scenario-again" });
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "review", run: { drifts: [] } });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    expect(runtime.getSnapshot().scenario).toMatchObject({ phase: "complete", run: { drifts: [] } });
+    expect(executor.execute).toHaveBeenCalledTimes(2);
     runtime.dispose();
   });
 

@@ -293,6 +293,19 @@ async function mutateEvidenceRecord(
 }
 
 describe("IndexedDB authoritative EventHistory", () => {
+  it("settles Scenario Local Evidence in IndexedDB and clears it before Panel Session close", async () => {
+    const history = await freshIndexedHistory("scenario-indexeddb-lifecycle");
+    const receipt = history.offer(candidate("scenario-local-indexeddb", {
+      source: "synthetic", synthetic: true,
+      raw: { scenarioId: "scenario-1", runId: "run-1", stepId: "step-1", ordinal: 1, injectionId: "injection-1", executionId: "execution-1" }
+    }));
+    expect(receipt.intake).toBe("QUEUED");
+    await expect(receipt.settled).resolves.toMatchObject({ outcome: "BECAME_EVIDENCE", evidence: { eventId: "scenario-local-indexeddb" } });
+    await expect(history.clear()).resolves.toMatchObject({ ok: true, value: { interval: { ordinal: 2 } } });
+    await expect(history.read({})).resolves.toMatchObject({ ok: true, value: { total: 0 } });
+    await expect(history.close()).resolves.toMatchObject({ ok: true });
+  });
+
   it("takes an immutable offer snapshot and publishes only after the adapter commits it", async () => {
     let releaseCommit!: () => void;
     const commitGate = new Promise<void>((resolve) => {

@@ -2204,6 +2204,7 @@ class Runtime implements WorkbenchRuntime {
         }
         this.resetCoherentStateAfterClear();
         if (this.scenarioState) {
+          this.scenarioState.serverInterleaves = [];
           if (this.scenarioState.run) this.scenarioState.run = markScenarioEvidenceUnavailableAfterClear(this.scenarioState.run);
           this.scenarioState.priorRuns = this.scenarioState.priorRuns.map(markScenarioEvidenceUnavailableAfterClear);
           this.scenarioState.runnerSnapshot = this.scenarioState.runnerSnapshot && this.scenarioState.run
@@ -2470,7 +2471,9 @@ class Runtime implements WorkbenchRuntime {
       ((scenarioDraft.anchor.itemName !== null && event.item?.name === scenarioDraft.anchor.itemName) ||
         (scenarioDraft.anchor.itemPosition !== null && event.item?.position === scenarioDraft.anchor.itemPosition))
     ) {
-      scenario.serverInterleaves.push(Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId }));
+      if (scenario.serverInterleaves.length === 0) {
+        scenario.serverInterleaves = [Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId })];
+      }
     }
     const activityKey = `${entry.intervalId}\u0000${entry.sequence}`;
     if (!this.activityEvidenceKeys.has(activityKey)) {
@@ -3744,6 +3747,7 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     state.scenario = scenario;
+    state.serverInterleaves = [];
     state.run = reviewed.run;
     state.reviews = reviews;
     state.phase = "review";
@@ -3767,9 +3771,7 @@ class Runtime implements WorkbenchRuntime {
         const authorizedListeners = authorization?.listenerIds ?? [];
         const addedListenerIds = currentListeners.filter((id) => !authorizedListeners.includes(id));
         const removedListenerIds = authorizedListeners.filter((id) => !currentListeners.includes(id));
-        const serverEvidence = state.serverInterleaves.find((reference) =>
-          authorization?.committedEvidenceBoundary === null || authorization?.committedEvidenceBoundary === undefined ||
-          reference.intervalId !== authorization.committedEvidenceBoundary.intervalId || reference.sequence > authorization.committedEvidenceBoundary.sequence);
+        const serverEvidence = this.scenarioPendingServerInterleave(state, authorization?.committedEvidenceBoundary ?? null);
         if (addedListenerIds.length > 0 || removedListenerIds.length > 0 || serverEvidence) {
           return {
             allow: false as const,
@@ -3803,9 +3805,7 @@ class Runtime implements WorkbenchRuntime {
       afterSettlement: async () => {
         const currentRun = state.run;
         const authorization = currentRun?.authorizations.at(-1);
-        const serverEvidence = state.serverInterleaves.find((reference) =>
-          authorization?.committedEvidenceBoundary === null || authorization?.committedEvidenceBoundary === undefined ||
-          reference.intervalId !== authorization.committedEvidenceBoundary.intervalId || reference.sequence > authorization.committedEvidenceBoundary.sequence);
+        const serverEvidence = this.scenarioPendingServerInterleave(state, authorization?.committedEvidenceBoundary ?? null);
         return serverEvidence
           ? { continue: false as const, reason: "DRIFT" as const, detail: `Committed Server Item Update ${serverEvidence.eventId} interleaved on the exact Scenario target.`, drift: { kind: "SERVER_ITEM_UPDATE" as const, addedListenerIds: [], removedListenerIds: [], evidence: serverEvidence } }
           : { continue: true as const };
@@ -3880,6 +3880,12 @@ class Runtime implements WorkbenchRuntime {
       committedEvidenceBoundary: this.committedEvidenceBoundary
     });
     if (!accepted.ok) state.runner.stop(`Drift re-review failed: ${accepted.reason}`);
+    else state.serverInterleaves = [];
+  }
+
+  private scenarioPendingServerInterleave(state: ScenarioState, boundary: EvidenceRef | null): EvidenceRef | null {
+    return state.serverInterleaves.find((reference) => boundary === null ||
+      (reference.intervalId === boundary.intervalId && reference.sequence > boundary.sequence)) ?? null;
   }
 
   private archiveCurrentScenarioRun(state: ScenarioState): void {
