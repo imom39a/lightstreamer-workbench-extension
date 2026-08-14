@@ -268,13 +268,13 @@ export function createLocalInjectionScenarioRunner(
     }
     checkpointWasPlaying = phase === "waiting";
     const withinDurations = member.assertions.flatMap((assertion) => "withinActiveMs" in assertion && assertion.withinActiveMs !== undefined ? [assertion.withinActiveMs] : []);
-    const deadlineActiveOffsetMs = startedActiveOffsetMs + Math.max(0, ...withinDurations);
+    const deadlineActiveOffsetMs = startedActiveOffsetMs + (withinDurations.length > 0 ? Math.min(...withinDurations) : 0);
     let startedBoundary: EvidenceRef | null = null;
     let settled = false;
 
-    const evaluate = (snapshot: ReturnType<ScenarioCommittedBoundaryFeed["snapshot"]>, expired = false): void => {
+    const evaluate = (snapshot: ReturnType<ScenarioCommittedBoundaryFeed["snapshot"]>): void => {
       if (settled || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
-      const evaluation = evaluateScenarioCheckpoint(member, snapshot, checkpointAdapter.observations(run), activeNow(), expired);
+      const evaluation = evaluateScenarioCheckpoint(member, snapshot, checkpointAdapter.observations(run), activeNow(), startedActiveOffsetMs);
       if (evaluation.status === "waiting") {
         activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: evaluation.boundary, status: "waiting", assertions: evaluation.assertions });
         if (phase !== "paused") phase = "checkpoint-waiting";
@@ -318,7 +318,7 @@ export function createLocalInjectionScenarioRunner(
     checkpointUnsubscribe = checkpointAdapter.feed.subscribe(null, (snapshot) => evaluate(snapshot));
     const initialBoundary = checkpointAdapter.feed.snapshot();
     startedBoundary = initialBoundary.boundary;
-    const initial = evaluateScenarioCheckpoint(member, initialBoundary, checkpointAdapter.observations(run), activeNow());
+    const initial = evaluateScenarioCheckpoint(member, initialBoundary, checkpointAdapter.observations(run), activeNow(), startedActiveOffsetMs);
     if (initial.status === "waiting" && withinDurations.length > 0) {
       phase = "checkpoint-waiting";
       activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: initial.boundary, status: "waiting", assertions: initial.assertions });
@@ -326,7 +326,7 @@ export function createLocalInjectionScenarioRunner(
       timer = adapter.clock.setTimer(() => {
         if (generation !== scheduleGeneration || settled) return;
         timer = null;
-        evaluate(checkpointAdapter.feed.snapshot(), true);
+        evaluate(checkpointAdapter.feed.snapshot());
       }, Math.max(0, deadlineActiveOffsetMs - activeNow()));
       resumeCheckpoint = () => {
         checkpointWasPlaying = true;
@@ -338,7 +338,7 @@ export function createLocalInjectionScenarioRunner(
         timer = adapter.clock.setTimer(() => {
           if (generation !== scheduleGeneration || settled) return;
           timer = null;
-          evaluate(checkpointAdapter.feed.snapshot(), true);
+          evaluate(checkpointAdapter.feed.snapshot());
         }, Math.max(0, deadlineActiveOffsetMs - activeNow()));
       };
       publish();

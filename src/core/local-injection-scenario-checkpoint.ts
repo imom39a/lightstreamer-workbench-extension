@@ -128,12 +128,20 @@ export function evaluateScenarioCheckpoint(
   boundary: ScenarioCommittedBoundarySnapshot,
   observation: ScenarioAssertionObservation,
   activeOffsetMs: number,
-  expired = false
+  startedActiveOffsetMs = activeOffsetMs
 ): ScenarioCheckpointEvaluation {
   if (boundary.history !== "accepting" || boundary.projection !== "live") {
     return unavailableEvaluation(checkpoint, boundary.boundary, activeOffsetMs);
   }
-  const independentlyEvaluated = checkpoint.assertions.map((assertion) => evaluateAssertion(assertion, observation));
+  const independentlyEvaluated = checkpoint.assertions.map((assertion) => {
+    const evaluated = evaluateAssertion(assertion, observation);
+    const withinActiveMs = "withinActiveMs" in assertion ? assertion.withinActiveMs : undefined;
+    const elapsed = activeOffsetMs - startedActiveOffsetMs;
+    if (withinActiveMs !== undefined && ((evaluated.status === "waiting" && elapsed >= withinActiveMs) || (evaluated.status === "pass" && elapsed > withinActiveMs))) {
+      return frozen({ ...evaluated, status: "expired" as const });
+    }
+    return evaluated;
+  });
   const hasTerminalFailure = independentlyEvaluated.some(({ status }) => status !== "pass" && status !== "waiting");
   const waiting = independentlyEvaluated.some(({ status }) => status === "waiting");
   // Eventual assertions are a conjunction at one boundary. A fact that was true
@@ -143,16 +151,14 @@ export function evaluateScenarioCheckpoint(
     : independentlyEvaluated;
   const status: ScenarioAssertionStatus = hasTerminalFailure
     ? assertions.find(({ status: candidate }) => candidate !== "pass" && candidate !== "waiting")!.status
-    : waiting ? (expired ? "expired" : "waiting") : "pass";
+    : waiting ? "waiting" : "pass";
   return frozen({
     checkpointId: checkpoint.id,
     checkpointName: checkpoint.name,
     status,
     activeOffsetMs,
     boundary: boundary.boundary,
-    assertions: expired && status === "expired"
-      ? assertions.map((result) => result.status === "waiting" ? frozen({ ...result, status: "expired" as const }) : result)
-      : assertions
+    assertions
   });
 }
 

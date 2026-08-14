@@ -134,6 +134,20 @@ describe("Scenario Checkpoints", () => {
     expect(result.status).toBe("waiting");
     expect(result.assertions.map(({ status }) => status)).toEqual(["waiting", "waiting"]);
     expect(result.boundary).toEqual(boundary);
+    const expired = evaluateScenarioCheckpoint(checkpoint([
+      { id: "first", kind: "correlated-local-evidence-exists", stepId: "step-1", withinActiveMs: 50 },
+      { id: "second", kind: "command-key-exists", item: { name: "orders", position: 1 }, key: "order-1", expected: "present", withinActiveMs: 100 }
+    ]), snapshot(), {
+      priorOutcomes: new Map(), correlatedLocalEvidence: new Map(),
+      inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: boundary })
+    }, 50, 0);
+    expect(expired).toMatchObject({
+      status: "expired",
+      assertions: [
+        { assertionId: "first", status: "expired" },
+        { assertionId: "second", status: "waiting" }
+      ]
+    });
   });
 
   it("fails closed when History or projection cannot supply an applied committed boundary", () => {
