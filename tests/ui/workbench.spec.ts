@@ -2153,6 +2153,42 @@ test("Workbench keeps dense Evidence controls and protected Local Injection boun
   await attachMatrixScreenshot(page, testInfo, "wide-light-delivered-outcome");
 });
 
+test("reviewed same-target Scenario steps exactly one Injection and retains its trace", async ({ page }, testInfo) => {
+  for (const scene of [
+    { scenario: "local-injection-scenario-edit" as const, width: 563, height: 700, theme: "light" as const },
+    { scenario: "local-injection-scenario-review" as const, width: 900, height: 700, theme: "dark" as const },
+    { scenario: "local-injection-scenario-complete" as const, width: 1440, height: 900, theme: "light" as const }
+  ]) {
+    await openScenario(page, scene.scenario, { width: scene.width, height: scene.height }, scene.theme);
+    const document = page.getByRole("region", { name: "Local Injection Scenario" });
+    await expect(document).toBeVisible();
+    await expect(document.getByRole("article")).toHaveCount(2);
+    await expect(document).toContainText("exact shared Subscription target");
+    await expect(document).toContainText("LOCAL ONLY");
+    await expectShellFitsExactly(page);
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    if (scene.scenario === "local-injection-scenario-edit") {
+      const add = document.getByRole("button", { name: "Add captured update" });
+      await add.focus();
+      await expect(add).toBeFocused();
+      await add.press("Enter");
+      await expect(page.getByRole("region", { name: "Scenario Evidence picker" })).toBeVisible();
+      await page.getByRole("button", { name: "Cancel" }).click();
+      await expect(add).toBeFocused();
+    }
+    if (scene.scenario === "local-injection-scenario-review") {
+      await expect(document.getByRole("button", { name: "Step next" })).toBeVisible();
+      await expect(document).toContainText("Scenario revision 2");
+    }
+    if (scene.scenario === "local-injection-scenario-complete") {
+      await expect(document).toContainText("RUN COMPLETE · 2 independently traced Injections");
+      await expect(document.getByText(/Local Evidence synthetic-/)).toHaveCount(2);
+    }
+    await attachNamedScenarioScreenshot(page, testInfo, `${scene.scenario}-${scene.width}x${scene.height}-${scene.theme}`);
+  }
+});
+
 async function expectProtectedBoundaryValues(draft: ReturnType<Page["getByRole"]>): Promise<void> {
   const values = await draft.locator(".workbench-react__local-boundary > div").evaluateAll((boundaries) =>
     boundaries.map((boundary) => {

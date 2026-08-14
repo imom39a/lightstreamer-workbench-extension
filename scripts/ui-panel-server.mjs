@@ -67,7 +67,7 @@ if (!(root instanceof HTMLElement)) throw new Error("Workbench scenario requires
 const scenario = getWorkbenchScenario(scenarioId);
 let failSyntheticEvidenceRetention = false;
 const history = createInMemoryEventHistory({
-  ...(scenario.historyCapacity ? { panelSessionId: "scenario-" + scenario.id } : {}),
+  panelSessionId: "scenario-" + scenario.id,
   ...(scenario.historyCapacity ? { capacity: scenario.historyCapacity } : {}),
   ...(scenario.storage?.mode === "memory"
     ? {
@@ -169,6 +169,20 @@ if (scenario.localInjection) {
   if (scenario.localInjection.staleAfterReview) runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
   if (scenario.localInjection.execute) runtime.dispatch({ type: "execute-local-injection" });
   if (scenario.localInjection.secondEntry) runtime.dispatch({ type: scenario.localInjection.secondEntry === "selection" ? "begin-local-injection-from-selection" : "begin-local-injection-from-scope" });
+  if (scenario.localInjection.scenario) {
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    if (scenario.localInjection.scenario.addEventId) {
+      runtime.dispatch({ type: "open-scenario-evidence-picker" });
+      runtime.dispatch({ type: "select-evidence", eventId: scenario.localInjection.scenario.addEventId });
+      await new Promise((resolve) => setTimeout(resolve, 48));
+      runtime.dispatch({ type: "add-selected-evidence-to-scenario" });
+    }
+    if (scenario.localInjection.scenario.review) runtime.dispatch({ type: "review-scenario" });
+    for (let index = 0; index < (scenario.localInjection.scenario.steps ?? 0); index += 1) {
+      runtime.dispatch({ type: "step-next-scenario" });
+      await new Promise((resolve) => setTimeout(resolve, 48));
+    }
+  }
 }
 await new Promise((resolve) => setTimeout(resolve, 48));
 document.documentElement.dataset.reactScenario = scenarioId;

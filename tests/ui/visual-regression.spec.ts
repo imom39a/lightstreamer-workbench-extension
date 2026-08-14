@@ -8,7 +8,7 @@ type VisualCase = Readonly<{
   viewport: { width: number; height: number };
   theme: "dark" | "light";
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
+  production: { scenario: string; setup: "none" | "scenario" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -52,6 +52,9 @@ async function openScenario(page: Page, visual: VisualCase): Promise<void> {
 
 async function prepareProductionState(page: Page, visual: VisualCase): Promise<void> {
   switch (visual.production.setup) {
+    case "scenario":
+      await expect(page.getByRole("region", { name: "Local Injection Scenario" })).toBeVisible();
+      return;
     case "none":
       await expect(page.locator(".workbench-react__evidence-summary")).toHaveCSS("display", "flex");
       return;

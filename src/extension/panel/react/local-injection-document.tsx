@@ -351,7 +351,7 @@ export function LocalInjectionDocument({
       </div>
 
       <footer className="workbench-react__local-footer">
-        {editing ? <><span>{draft.ready ? "READY · Review the protected payload and target before delivery." : "BLOCKED · No Injection will be attempted."}</span><button type="button" disabled={!draft.ready} data-local-focus-transition="true" onClick={() => {
+        {editing ? <><button type="button" data-local-focus-transition="true" onClick={() => dispatch(runtime, { type: "convert-local-injection-to-scenario" })}>Convert to Scenario</button><span>{draft.ready ? "READY · Review the protected payload and target before delivery." : "BLOCKED · No Injection will be attempted."}</span><button type="button" disabled={!draft.ready} data-local-focus-transition="true" onClick={() => {
           carryScrollTo("review");
           dispatch(runtime, { type: "review-local-injection" });
         }}>Review Local Injection</button></> : null}

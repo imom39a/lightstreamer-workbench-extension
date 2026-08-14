@@ -473,6 +473,10 @@ async function captureProduction(runningBrowser, scenario) {
 }
 
 async function prepareProductionState(page, setup) {
+  if (setup === "scenario") {
+    await expect(page.getByRole("region", { name: "Local Injection Scenario" })).toBeVisible();
+    return;
+  }
   if (setup === "none") return;
   if (setup === "diagnostics") {
     const diagnostics = page.getByLabel("Workbench diagnostic entries");

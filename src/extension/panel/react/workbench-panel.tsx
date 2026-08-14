@@ -29,6 +29,7 @@ import { renderTopologyHtmlReport } from "../topology-html-report";
 import { WORKBENCH_PUBLIC_RESOURCES } from "../public-resources";
 import { CommandProjectionComparison, CommandProjectionContextSummary } from "./command-projection-comparison";
 import { ObservedActivityDocument } from "./observed-activity-document";
+import { LocalInjectionScenarioDocument } from "./local-injection-scenario-document";
 
 import "./workbench-panel.css";
 
@@ -746,7 +747,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
     : snapshot.contextId === "context:export"
       ? "export"
       : "inspect";
-  const workspaceAvailable = !localInjectionDraft?.open && !commandProjectionComparison && !rawEvidence;
+  const workspaceAvailable = !localInjectionDraft?.open && !snapshot.scenario && !commandProjectionComparison && !rawEvidence;
   const scopeIsPresented = geometry === "wide"
     ? !scopeCollapsed
     : geometry === "compact"
@@ -1643,13 +1644,14 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         {snapshot.activity ? <button ref={activityTrigger} type="button" onClick={() => dispatch(runtime, { type: "open-activity" })}>Open Activity</button> : null}
       </nav>
       {localInjection.entryError ? <div className="workbench-react__condition workbench-react__condition--warning" role="alert"><strong>Local Injection unavailable</strong><span>{localInjection.entryError}</span></div> : null}
-      {localInjectionDraft ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection editor…</div>}><LazyLocalInjectionDocument
+      {snapshot.scenario ? <LocalInjectionScenarioDocument runtime={runtime} snapshot={snapshot} /> : null}
+      {localInjectionDraft && !snapshot.scenario ? <Suspense fallback={<div className="workbench-react__local-loading" role="status">Loading Local Injection editor…</div>}><LazyLocalInjectionDocument
         runtime={runtime}
         localInjection={localInjection}
         hidden={!localInjectionDraft.open}
         inlineCompare={geometry !== "wide"}
       /></Suspense> : null}
-      {localInjectionDraft?.parked ? <section className="workbench-react__local-parked" aria-label="Parked Local Injection Draft">
+      {localInjectionDraft?.parked && !snapshot.scenario ? <section className="workbench-react__local-parked" aria-label="Parked Local Injection Draft">
         <div><span className="workbench-react__eyebrow">Parked Local Injection Draft</span><strong>{localInjectionDraft.anchor.subscriptionId} · {localInjectionDraft.anchor.itemName ?? `Item #${localInjectionDraft.anchor.itemPosition ?? "Unknown"}`}</strong></div>
         <span>{localInjectionDraft.ready ? "READY" : "BLOCKED"} · Session {localInjectionDraft.anchor.sessionId ?? "Unknown"} · {localInjectionDraft.compareStatus === "no-source" ? "newly authored" : `Source ${localInjectionDraft.anchor.sourceEventId ?? "Unknown"}`}</span>
         <button type="button" ref={resumeLocalInjection} onClick={() => dispatch(runtime, { type: "resume-local-injection" })}>Resume Local Injection Draft</button>
@@ -1667,7 +1669,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           dispatch(runtime, { type: "cancel-discard-local-injection" });
         }}>Keep draft</button><button type="button" onClick={() => dispatch(runtime, { type: "confirm-discard-local-injection" })}>Confirm discard</button>
       </section> : null}
-      {localInjectionDraft?.open ? null : snapshot.activity?.open && snapshot.activity ? <ObservedActivityDocument runtime={runtime} activity={snapshot.activity} scopeLabel={scopeLabel} /> : commandProjectionComparison ? <CommandProjectionComparison
+      {localInjectionDraft?.open || snapshot.scenario ? null : snapshot.activity?.open && snapshot.activity ? <ObservedActivityDocument runtime={runtime} activity={snapshot.activity} scopeLabel={scopeLabel} /> : commandProjectionComparison ? <CommandProjectionComparison
         scope={scopeLabel}
         capture={snapshot.capture}
         projections={snapshot.commandProjections}

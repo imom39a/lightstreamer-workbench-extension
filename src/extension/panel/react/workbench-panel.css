@@ -335,6 +335,30 @@
   background: var(--wb-bg);
 }
 .workbench-react__local-injection[hidden] { display: none; }
+.workbench-react__scenario { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; background: var(--wb-bg); }
+.workbench-react__scenario-header { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--wb-border-strong); background: var(--wb-raised); padding: 7px 9px; }
+.workbench-react__scenario-header > div { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+.workbench-react__scenario-header h1 { margin: 0; font-size: 14px; white-space: nowrap; }
+.workbench-react__scenario-header > strong { border-left: 3px solid var(--wb-info); padding: 3px 6px; color: var(--wb-info); font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__scenario-problem { flex: 0 0 auto; margin: 0; border-bottom: 1px solid var(--wb-error); background: var(--wb-error-soft); color: var(--wb-text); padding: 7px 9px; }
+.workbench-react__scenario-picker { position: absolute; z-index: 12; inset: 58px 10px 48px; display: flex; min-height: 0; flex-direction: column; border: 1px solid var(--wb-border-strong); background: var(--wb-raised); box-shadow: 0 8px 24px color-mix(in srgb, #000 35%, transparent); padding: 9px; }
+.workbench-react__scenario-picker header { display: grid; gap: 3px; border-bottom: 1px solid var(--wb-border); padding-bottom: 7px; }
+.workbench-react__scenario-picker header span, .workbench-react__scenario-picker small { color: var(--wb-muted); }
+.workbench-react__scenario-picker ul { display: grid; min-height: 0; flex: 1 1 auto; gap: 3px; margin: 7px 0; overflow: auto; padding: 0; list-style: none; }
+.workbench-react__scenario-picker li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; border-bottom: 1px solid var(--wb-border); padding: 6px; }
+.workbench-react__scenario-picker li > div { display: grid; min-width: 0; gap: 2px; }
+.workbench-react__scenario-steps { display: grid; min-height: 0; flex: 1 1 auto; gap: 8px; overflow: auto; padding: 9px; }
+.workbench-react__scenario-steps article { display: grid; gap: 7px; border: 1px solid var(--wb-border); border-left: 3px solid var(--wb-border-strong); background: var(--wb-surface); padding: 8px; }
+.workbench-react__scenario-steps article[data-step-state="next"] { border-left-color: var(--wb-info); }
+.workbench-react__scenario-steps article[data-step-state="complete"] { border-left-color: var(--wb-accent); }
+.workbench-react__scenario-steps article > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.workbench-react__scenario-steps article > header span { color: var(--wb-muted); font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__scenario-steps dl { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
+.workbench-react__scenario-steps dl > div { min-width: 0; }
+.workbench-react__scenario-steps dt { color: var(--wb-muted); font-size: 10px; text-transform: uppercase; }
+.workbench-react__scenario-steps dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.workbench-react__scenario-steps pre { max-height: 220px; margin: 0; overflow: auto; border: 1px solid var(--wb-border); background: var(--wb-bg); padding: 8px; color: var(--wb-text); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workbench-react__scenario-steps p { margin: 0; }
 .workbench-react__local-header {
   display: grid;
   min-width: 0;

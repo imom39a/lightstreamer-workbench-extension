@@ -57,6 +57,9 @@ export const WORKBENCH_SCENARIO_IDS = [
   "local-injection-failed",
   "local-injection-partial",
   "local-injection-unknown"
+  ,"local-injection-scenario-edit"
+  ,"local-injection-scenario-review"
+  ,"local-injection-scenario-complete"
 ] as const;
 
 export type WorkbenchScenarioId = (typeof WORKBENCH_SCENARIO_IDS)[number];
@@ -103,6 +106,7 @@ export type WorkbenchScenario = Readonly<{
     execute?: boolean;
     secondEntry?: "selection" | "scope";
     executorOutcome?: "pending" | "delivered" | "failed" | "partial" | "unknown";
+    scenario?: Readonly<{ addEventId?: string; review?: boolean; steps?: number }>;
   }>;
 }>;
 
@@ -608,7 +612,46 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return localInjectionOutcomeScenario(id, "partial");
     case "local-injection-unknown":
       return localInjectionOutcomeScenario(id, "unknown");
+    case "local-injection-scenario-edit":
+      return localInjectionScenario(id, false, 0);
+    case "local-injection-scenario-review":
+      return localInjectionScenario(id, true, 0);
+    case "local-injection-scenario-complete":
+      return localInjectionScenario(id, true, 2);
   }
+}
+
+function localInjectionScenario(
+  id: WorkbenchScenarioId,
+  review: boolean,
+  steps: number
+): WorkbenchScenario {
+  const topology = getPanelScenario("topology-small");
+  const source = topology.capturedEvents.find(({ id: eventId }) => eventId === "event-5") ?? topology.capturedEvents.at(-1);
+  if (!source?.update) throw new Error("Topology scenario requires a captured Item Update.");
+  const second: LightstreamerEventEnvelope = {
+    ...source,
+    id: "scenario-compatible-update",
+    timestamp: source.timestamp + 1,
+    update: {
+      ...source.update,
+      command: "UPDATE",
+      fields: { ...source.update.fields, command: "UPDATE", value: "2" },
+      changedFields: { command: "UPDATE", value: "2" }
+    }
+  };
+  return {
+    id,
+    initialEvents: [...topology.capturedEvents, second],
+    topologySyncFrames: topology.topologySyncFrames,
+    selectedEventId: source.id,
+    captureStatus: "capturing",
+    localInjection: {
+      entry: "selection",
+      executorOutcome: "delivered",
+      scenario: { addEventId: second.id, review, steps }
+    }
+  };
 }
 
 function localInjectionCapturedScenario(id: WorkbenchScenarioId): WorkbenchScenario {
