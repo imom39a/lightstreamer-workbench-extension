@@ -49,6 +49,7 @@ import {
 import {
   createDraftFromEvent,
   createNewCommandDraftFromContext,
+  validateDraftForExecutionTarget,
   type ReinjectionDraft,
   type ReinjectionExecutionTarget
 } from "../../core/reinjection-draft";
@@ -729,6 +730,7 @@ type LocalInjectionDraftState = {
   targetDiagnostics: readonly LocalInjectionDiagnostic[];
   sourceDocument: LocalInjectionDocument | null;
   sourceRawText: string | null;
+  explicitConcreteFields: Set<string>;
   phase: "edit" | "review" | "pending" | "outcome";
   compareOpen: boolean;
   minimized: boolean;
@@ -2850,6 +2852,7 @@ class Runtime implements WorkbenchRuntime {
       targetDiagnostics: Object.freeze([]),
       sourceDocument,
       sourceRawText: sourceDocument ? serializeLocalInjectionDocument(sourceDocument) : null,
+      explicitConcreteFields: new Set<string>(),
       phase: "edit",
       compareOpen: false,
       minimized: false,
@@ -2934,7 +2937,25 @@ class Runtime implements WorkbenchRuntime {
     }
 
     const executionId = `local-injection-execution-${++this.localInjectionSequence}`;
-    const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, draft.document);
+    const executionDraft = applyLocalInjectionDocumentToDraft(
+      draft.baseDraft,
+      draft.document,
+      draft.explicitConcreteFields
+    );
+    const executionValidation = validateDraftForExecutionTarget(
+      executionDraft,
+      draft.anchor.executionTarget
+    );
+    if (!executionValidation.valid) {
+      draft.executionId = executionId;
+      draft.phase = "outcome";
+      draft.outcome = blockedLocalInjectionOutcome(
+        executionId,
+        executionValidation.errors[0] ?? "The Local Injection Draft is not executable."
+      );
+      this.publish();
+      return;
+    }
     const request: LocalInjectionExecutionRequest = Object.freeze({
       executionId,
       preflightFingerprint: draft.preflightFingerprint,
@@ -3045,6 +3066,7 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private refreshLocalInjectionValidation(draft: LocalInjectionDraftState): void {
+    const previousDocument = draft.document;
     const analysis = analyzeLocalInjectionDocument(draft.rawText, {
       mode: draft.anchor.subscriptionMode,
       commandSemantics:
@@ -3058,6 +3080,11 @@ class Runtime implements WorkbenchRuntime {
       itemName: draft.anchor.itemName,
       itemPosition: draft.anchor.itemPosition
     });
+    rememberExplicitConcreteFields(
+      draft.explicitConcreteFields,
+      previousDocument,
+      analysis.document
+    );
     draft.document = analysis.document;
     draft.documentDiagnostics = analysis.diagnostics;
     draft.targetDiagnostics = Object.freeze(this.validateLocalInjectionTarget(draft.anchor));
@@ -4777,6 +4804,28 @@ function localInjectionReady(draft: LocalInjectionDraftState): boolean {
     draft.targetDiagnostics.every(({ severity }) => severity !== "error");
 }
 
+function rememberExplicitConcreteFields(
+  fields: Set<string>,
+  previous: LocalInjectionDocument | null,
+  next: LocalInjectionDocument | null
+): void {
+  if (!previous || !next) return;
+  const names = new Set([
+    ...Object.keys(previous.fields),
+    ...Object.keys(next.fields)
+  ]);
+  for (const name of names) {
+    const previousHas = Object.prototype.hasOwnProperty.call(previous.fields, name);
+    const nextHas = Object.prototype.hasOwnProperty.call(next.fields, name);
+    if (
+      previousHas !== nextHas ||
+      (previousHas && stableJson(previous.fields[name]) !== stableJson(next.fields[name]))
+    ) {
+      fields.add(name);
+    }
+  }
+}
+
 function isActiveLocalInjectionDeliveryListener(
   listener: Readonly<{ active: boolean; callbacks: readonly string[] }>
 ): boolean {
@@ -4819,6 +4868,8 @@ function cloneReinjectionDraft(draft: ReinjectionDraft): ReinjectionDraft {
     item: { ...draft.item },
     fields: { ...draft.fields },
     sourceFields: { ...draft.sourceFields },
+    fieldValueStates: { ...draft.fieldValueStates },
+    sourceFieldValueStates: { ...draft.sourceFieldValueStates },
     changedFields: { ...draft.changedFields },
     originalChangedFields: { ...draft.originalChangedFields },
     provenance: { ...draft.provenance }

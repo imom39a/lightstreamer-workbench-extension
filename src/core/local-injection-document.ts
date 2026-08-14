@@ -3,6 +3,7 @@ import {
   type CommandState
 } from "./command-state";
 import {
+  deriveDraftFieldValueStates,
   draftFieldsMatchSource,
   type DraftFields,
   type DraftFieldValue,
@@ -225,7 +226,8 @@ export function validateLocalInjectionDocument(
 
 export function applyLocalInjectionDocumentToDraft(
   source: ReinjectionDraft,
-  document: LocalInjectionDocument
+  document: LocalInjectionDocument,
+  explicitConcreteFields: ReadonlySet<string> = new Set()
 ): ReinjectionDraft {
   const expansion = expandJsonStringFields(source.fields);
   const serializedFields = serializeJsonStringFields(expansion, document.fields);
@@ -235,6 +237,11 @@ export function applyLocalInjectionDocumentToDraft(
     key: document.key,
     isSnapshot: document.isSnapshot,
     fields: { ...serializedFields },
+    fieldValueStates: deriveDraftFieldValueStates(
+      source,
+      serializedFields,
+      explicitConcreteFields
+    ),
     manualChangedFieldsOverride: false
   };
   return {

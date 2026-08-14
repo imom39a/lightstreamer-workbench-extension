@@ -1,12 +1,13 @@
 import type { JsonPrimitive } from "../bridge/messages";
 import type {
   EventUpdate,
-  ItemUpdateFieldValueState
+  ItemUpdateFieldValueState,
+  LightstreamerEventEnvelope
 } from "./event-envelope";
 
 export type ItemUpdateFieldCollection = "fields" | "changedFields";
 
-export type ItemUpdateFieldReplayability =
+export type InjectionSourceFieldExecutability =
   | Readonly<{
       field: string;
       classification: "executable";
@@ -35,12 +36,17 @@ export type ItemUpdateAssertionObservedValue =
 export type ItemUpdateAssertionValueResult = Readonly<{
   result: "equal" | "not-equal" | "not-evaluable";
   observed: ItemUpdateAssertionObservedValue;
+  provenance: ItemUpdateAssertionValueProvenance;
 }>;
 
-export function classifyItemUpdateReplayability(
+export type ItemUpdateAssertionValueProvenance =
+  | Readonly<{ source: "server"; observationPath: "listener" | "wire" }>
+  | Readonly<{ source: "local"; requestId: string | null }>;
+
+export function classifyInjectionSourceFieldExecutability(
   update: EventUpdate,
   collection: ItemUpdateFieldCollection = "fields"
-): readonly ItemUpdateFieldReplayability[] {
+): readonly InjectionSourceFieldExecutability[] {
   const { values, states } = fieldCollection(update, collection);
   const names = new Set([...Object.keys(values), ...Object.keys(states)]);
   return [...names].map((field) => {
@@ -63,22 +69,40 @@ export function classifyItemUpdateReplayability(
 }
 
 export function evaluateItemUpdateAssertionValue(
-  update: EventUpdate,
+  event: LightstreamerEventEnvelope,
   field: string,
   expected: JsonPrimitive,
   collection: ItemUpdateFieldCollection = "fields"
 ): ItemUpdateAssertionValueResult {
+  const update = event.update ?? {};
   const { values, states } = fieldCollection(update, collection);
   const observed = readObservedValue(values, states, field);
+  const provenance = assertionValueProvenance(event);
   if (observed.state === "missing") {
-    return { result: "not-equal", observed };
+    return { result: "not-equal", observed, provenance };
   }
   if (observed.state !== "concrete") {
-    return { result: "not-evaluable", observed };
+    return { result: "not-evaluable", observed, provenance };
   }
   return {
     result: observed.value === expected ? "equal" : "not-equal",
-    observed
+    observed,
+    provenance
+  };
+}
+
+function assertionValueProvenance(
+  event: LightstreamerEventEnvelope
+): ItemUpdateAssertionValueProvenance {
+  if (event.source === "synthetic") {
+    return {
+      source: "local",
+      requestId: typeof event.raw?.requestId === "string" ? event.raw.requestId : null
+    };
+  }
+  return {
+    source: "server",
+    observationPath: event.captureSource === "wire" ? "wire" : "listener"
   };
 }
 

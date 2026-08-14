@@ -4311,32 +4311,18 @@ function sanitizeCapturePayload(payload: CapturePayload): CapturePayload {
 }
 
 function sanitizeCaptureObject(source: CapturePayload): CapturePayload {
+  return sanitizeCaptureObjectWithOutcome(source).value;
+}
+
+function sanitizeCaptureObjectWithOutcome(
+  source: CapturePayload
+): { value: CapturePayload; redacted: boolean } {
   const sanitized: CapturePayload = {};
+  let redacted = false;
   for (const [key, value] of Object.entries(source)) {
-    if (isSensitiveCaptureKey(key) || key === "reason" || key === "error") {
-      sanitized[key] = value === null ? null : "[redacted]";
-      continue;
-    }
-    if (key === "clientIp") {
-      sanitized[key] =
-        typeof value === "string" ? maskClientIp(value) ?? "[redacted]" : null;
-      continue;
-    }
-    if (
-      (key === "serverAddress" || key === "serverInstanceAddress" || key === "url") &&
-      typeof value === "string"
-    ) {
-      sanitized[key] = sanitizeServerUrl(value);
-      continue;
-    }
-    if (Array.isArray(value)) {
-      sanitized[key] = value.map(sanitizeCaptureValue);
-      continue;
-    }
-    sanitized[key] =
-      isObject(value) && !Array.isArray(value)
-        ? sanitizeCaptureObject(value as CapturePayload)
-        : value;
+    const outcome = sanitizeCaptureEntry(key, value);
+    sanitized[key] = outcome.value;
+    redacted ||= outcome.redacted;
   }
   preserveItemUpdateFieldSanitizationState(
     source,
@@ -4350,7 +4336,41 @@ function sanitizeCaptureObject(source: CapturePayload): CapturePayload {
     "changedFields",
     "changedFieldValueStates"
   );
-  return sanitized;
+  return { value: sanitized, redacted };
+}
+
+function sanitizeCaptureEntry(
+  key: string,
+  value: CapturePayload[string]
+): { value: CapturePayload[string]; redacted: boolean } {
+  if (isSensitiveCaptureKey(key) || key === "reason" || key === "error") {
+    return {
+      value: value === null ? null : "[redacted]",
+      redacted: value !== null
+    };
+  }
+  if (key === "clientIp") {
+    const sanitized = typeof value === "string" ? maskClientIp(value) ?? "[redacted]" : null;
+    return { value: sanitized, redacted: value !== sanitized };
+  }
+  if (
+    (key === "serverAddress" || key === "serverInstanceAddress" || key === "url") &&
+    typeof value === "string"
+  ) {
+    const sanitized = sanitizeServerUrl(value);
+    return { value: sanitized, redacted: value !== sanitized };
+  }
+  if (Array.isArray(value)) {
+    const outcomes = value.map((entry) => sanitizeCaptureEntry("", entry));
+    return {
+      value: outcomes.map((outcome) => outcome.value),
+      redacted: outcomes.some((outcome) => outcome.redacted)
+    };
+  }
+  if (isObject(value)) {
+    return sanitizeCaptureObjectWithOutcome(value as CapturePayload);
+  }
+  return { value, redacted: false };
 }
 
 function preserveItemUpdateFieldSanitizationState(
@@ -4369,8 +4389,7 @@ function preserveItemUpdateFieldSanitizationState(
     [...new Set([...Object.keys(sourceFields), ...Object.keys(sourceStates)])].map((fieldName) => {
       const state = captureFieldWasSanitized(
         fieldName,
-        sourceFields[fieldName],
-        sanitizedFields[fieldName]
+        sourceFields[fieldName]
       )
         ? "redacted"
         : existingStates[fieldName] ?? sourceStates[fieldName] ?? "concrete";
@@ -4381,33 +4400,9 @@ function preserveItemUpdateFieldSanitizationState(
 
 function captureFieldWasSanitized(
   fieldName: string,
-  before: CapturePayload[string],
-  after: CapturePayload[string] | undefined
+  before: CapturePayload[string]
 ): boolean {
-  if (
-    isSensitiveCaptureKey(fieldName) ||
-    fieldName === "reason" ||
-    fieldName === "error" ||
-    fieldName === "clientIp"
-  ) {
-    return before !== null;
-  }
-  if (
-    (fieldName === "serverAddress" ||
-      fieldName === "serverInstanceAddress" ||
-      fieldName === "url") &&
-    typeof before === "string"
-  ) {
-    return before !== after;
-  }
-  return false;
-}
-
-function sanitizeCaptureValue(value: CapturePayload[string]): CapturePayload[string] {
-  if (Array.isArray(value)) {
-    return value.map(sanitizeCaptureValue);
-  }
-  return isObject(value) ? sanitizeCaptureObject(value as CapturePayload) : value;
+  return sanitizeCaptureEntry(fieldName, before).redacted;
 }
 
 function isSensitiveCaptureKey(key: string): boolean {

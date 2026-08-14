@@ -61,6 +61,8 @@ function createLocalInjectionExecutionRequest(): LocalInjectionExecutionRequest 
     sourceKey: "mount-key",
     fields: { command: "UPDATE", key: "mount-key", value: 2 },
     sourceFields: { command: "UPDATE", key: "mount-key", value: 1 },
+    fieldValueStates: { command: "concrete" as const, key: "concrete" as const, value: "concrete" as const },
+    sourceFieldValueStates: { command: "concrete" as const, key: "concrete" as const, value: "concrete" as const },
     changedFields: { value: 2 },
     originalChangedFields: { value: 1 },
     isSnapshot: false,

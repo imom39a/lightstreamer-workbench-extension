@@ -174,6 +174,8 @@ function createDraft(): ReinjectionDraft {
       key: "item-1",
       price: 100
     },
+    fieldValueStates: { command: "concrete", key: "concrete", price: "concrete" },
+    sourceFieldValueStates: { command: "concrete", key: "concrete", price: "concrete" },
     changedFields: {
       price: 101
     },

@@ -9,8 +9,10 @@ import {
   type EventClient,
   type EventItem,
   type EventSubscription,
+  type ItemUpdateFieldValueState,
   type LightstreamerEventEnvelope
 } from "./event-envelope";
+import { classifyInjectionSourceFieldExecutability } from "./item-update-value-semantics";
 
 export type DraftFieldValue = string | number | boolean | null;
 export type DraftFields = Record<string, DraftFieldValue>;
@@ -36,6 +38,8 @@ export type ReinjectionDraft = {
   sourceKey: string | null;
   fields: DraftFields;
   sourceFields: DraftFields;
+  fieldValueStates: Record<string, ItemUpdateFieldValueState>;
+  sourceFieldValueStates: Record<string, ItemUpdateFieldValueState>;
   changedFields: DraftFields;
   originalChangedFields: DraftFields;
   isSnapshot: boolean;
@@ -89,6 +93,7 @@ export function createDraftFromEvent(event: LightstreamerEventEnvelope): Reinjec
 
   const fields = normalizeFields(event.update?.fields);
   const changedFields = normalizeFields(event.update?.changedFields);
+  const fieldValueStates = normalizeSourceFieldValueStates(event, fields);
   const command = stringOrNull(event.update?.command ?? fields.command);
   const key = stringOrNull(event.update?.key ?? fields.key);
 
@@ -120,6 +125,8 @@ export function createDraftFromEvent(event: LightstreamerEventEnvelope): Reinjec
     sourceKey: key,
     fields,
     sourceFields: { ...fields },
+    fieldValueStates: { ...fieldValueStates },
+    sourceFieldValueStates: { ...fieldValueStates },
     changedFields: { ...changedFields },
     originalChangedFields: { ...changedFields },
     isSnapshot: Boolean(event.update?.isSnapshot),
@@ -165,6 +172,8 @@ export function createNewCommandDraftFromContext(context: CommandItemContext): R
     sourceKey: null,
     fields,
     sourceFields: { ...fields },
+    fieldValueStates: concreteFieldValueStates(fields),
+    sourceFieldValueStates: concreteFieldValueStates(fields),
     changedFields: {},
     originalChangedFields: {},
     isSnapshot: false,
@@ -190,6 +199,10 @@ export function updateDraftField(
   const next = {
     ...draft,
     fields,
+    fieldValueStates: {
+      ...draft.fieldValueStates,
+      [fieldName]: "concrete" as const
+    },
     command: fieldName === "command" ? stringOrNull(value) : draft.command,
     key: fieldName === "key" ? stringOrNull(value) : draft.key
   };
@@ -198,25 +211,11 @@ export function updateDraftField(
 }
 
 export function updateDraftCommand(draft: ReinjectionDraft, command: string): ReinjectionDraft {
-  return refreshChangedFields({
-    ...draft,
-    command: command || null,
-    fields: {
-      ...draft.fields,
-      command: command || null
-    }
-  });
+  return updateDraftField(draft, "command", command || null);
 }
 
 export function updateDraftKey(draft: ReinjectionDraft, key: string): ReinjectionDraft {
-  return refreshChangedFields({
-    ...draft,
-    key: key || null,
-    fields: {
-      ...draft.fields,
-      key: key || null
-    }
-  });
+  return updateDraftField(draft, "key", key || null);
 }
 
 export function updateDraftSnapshot(draft: ReinjectionDraft, isSnapshot: boolean): ReinjectionDraft {
@@ -251,12 +250,13 @@ export function deriveChangedFields(sourceFields: DraftFields, draftFields: Draf
  * Creates an execution copy of the captured source, independent of any edits
  * currently held by the staged draft.
  */
-export function createSourceReplayDraft(draft: ReinjectionDraft): ReinjectionDraft {
+export function createInjectionSourceDraft(draft: ReinjectionDraft): ReinjectionDraft {
   return {
     ...draft,
     command: draft.sourceCommand,
     key: draft.sourceKey,
     fields: { ...draft.sourceFields },
+    fieldValueStates: { ...draft.sourceFieldValueStates },
     changedFields: { ...draft.originalChangedFields },
     isSnapshot: draft.sourceIsSnapshot,
     manualChangedFieldsOverride: false
@@ -278,6 +278,7 @@ export function validateDraftForExecutionTarget(
   }
 
   const errors = [...result.errors];
+  errors.push(...nonExecutableSourceFieldErrors(draft));
   if (executionTarget === "captured-listener") {
     if (options.bridgeAvailable === false) {
       errors.push("Subscription listener bridge is unavailable.");
@@ -306,6 +307,29 @@ export function validateDraftForExecutionTarget(
     valid: errors.length === 0,
     errors
   };
+}
+
+export function deriveDraftFieldValueStates(
+  source: ReinjectionDraft,
+  fields: DraftFields,
+  explicitConcreteFields: ReadonlySet<string> = new Set()
+): Record<string, ItemUpdateFieldValueState> {
+  const states: Record<string, ItemUpdateFieldValueState> = {};
+  for (const [fieldName, sourceState] of Object.entries(source.sourceFieldValueStates)) {
+    states[fieldName] =
+      explicitConcreteFields.has(fieldName) ||
+      (Object.prototype.hasOwnProperty.call(fields, fieldName) &&
+      (!Object.prototype.hasOwnProperty.call(source.sourceFields, fieldName) ||
+        !Object.is(fields[fieldName], source.sourceFields[fieldName])))
+        ? "concrete"
+        : sourceState;
+  }
+  for (const fieldName of Object.keys(fields)) {
+    if (!Object.prototype.hasOwnProperty.call(states, fieldName)) {
+      states[fieldName] = "concrete";
+    }
+  }
+  return states;
 }
 
 export function validateEditableDraft(draft: ReinjectionDraft | null): DraftValidationResult {
@@ -451,6 +475,59 @@ function normalizeFields(
   fields: Record<string, string | number | boolean | null> | undefined
 ): DraftFields {
   return fields ? { ...fields } : {};
+}
+
+function normalizeSourceFieldValueStates(
+  event: LightstreamerEventEnvelope,
+  fields: DraftFields
+): Record<string, ItemUpdateFieldValueState> {
+  const supplied = event.update?.fieldValueStates ?? {};
+  const classified = classifyInjectionSourceFieldExecutability(event.update ?? {});
+  return Object.fromEntries(classified.map((entry) => {
+    if (
+      !Object.prototype.hasOwnProperty.call(supplied, entry.field) &&
+      fields[entry.field] === null &&
+      (event.source === "synthetic" || event.captureSource === "wire")
+    ) {
+      return [entry.field, "concrete"];
+    }
+    switch (entry.classification) {
+      case "executable":
+        return [entry.field, "concrete"];
+      case "ambiguous":
+        return [entry.field, entry.reason];
+      case "replacement-required":
+        return [entry.field, entry.reason];
+    }
+  }));
+}
+
+function concreteFieldValueStates(
+  fields: DraftFields
+): Record<string, "concrete"> {
+  return Object.fromEntries(Object.keys(fields).map((name) => [name, "concrete"]));
+}
+
+function nonExecutableSourceFieldErrors(draft: ReinjectionDraft): string[] {
+  return Object.entries(draft.fieldValueStates).flatMap(([fieldName, state]) => {
+    switch (state) {
+      case "concrete":
+        return [];
+      case "ambiguous-null":
+        return [
+          `Captured Source field "${fieldName}" is ambiguous and requires an explicit concrete replacement.`
+        ];
+      case "unresolved-wire-difference":
+        return [
+          `Captured Source field "${fieldName}" requires an explicit concrete replacement (unresolved wire difference).`
+        ];
+      case "redacted":
+      case "unavailable":
+        return [
+          `Captured Source field "${fieldName}" requires an explicit concrete replacement (${state}).`
+        ];
+    }
+  });
 }
 
 type ValidatedCommandItemContext = {

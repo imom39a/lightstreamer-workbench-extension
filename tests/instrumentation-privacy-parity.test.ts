@@ -25,6 +25,7 @@ describe("instrumentation privacy and behavior parity", () => {
         iterator("status", 1, "[redacted]");
         iterator("token", 2, "application-secret");
         iterator("nullable", 3, undefined);
+        iterator("metadata", 4, [{ token: "nested-secret" }]);
       },
       forEachChangedField(iterator: (name: string, pos: number, value: unknown) => void) {
         iterator("token", 2, "application-secret");
@@ -34,11 +35,17 @@ describe("instrumentation privacy and behavior parity", () => {
     const update = messages.find((message) => message.kind === "item-update")?.payload
       .update as Record<string, unknown>;
     expect(update).toMatchObject({
-      fields: { status: "[redacted]", token: "[redacted]", nullable: null },
+      fields: {
+        status: "[redacted]",
+        token: "[redacted]",
+        nullable: null,
+        metadata: [{ token: "[redacted]" }]
+      },
       fieldValueStates: {
         status: "concrete",
         token: "redacted",
-        nullable: "ambiguous-null"
+        nullable: "ambiguous-null",
+        metadata: "redacted"
       },
       changedFieldValueStates: { token: "redacted" }
     });

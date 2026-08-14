@@ -75,7 +75,9 @@ function commandEvent(
   };
 }
 
-function historyWithCommandTarget() {
+function historyWithCommandTarget(
+  sourceOverrides: Partial<LightstreamerEventEnvelope> = {}
+) {
   return createAuthoritativeHistory({
     precommitted: [
       commandEvent("journey-1", "client-created"),
@@ -83,7 +85,7 @@ function historyWithCommandTarget() {
       commandEvent("journey-3", "subscription-created"),
       commandEvent("journey-4", "subscription-started"),
       commandEvent("journey-5", "listener-added"),
-      commandEvent("source-6", "item-update")
+      commandEvent("source-6", "item-update", sourceOverrides)
     ]
   });
 }
@@ -122,7 +124,7 @@ function beginSelected(runtime: ReturnType<typeof createWorkbenchRuntime>) {
   runtime.dispatch({ type: "begin-local-injection-from-selection" });
 }
 
-function updateDocument(qty = 2): string {
+function updateDocument(qty: number | null = 2): string {
   return JSON.stringify(
     {
       command: "UPDATE",
@@ -173,6 +175,74 @@ function scheduler(): WorkbenchRuntimeScheduler & { flush(): void } {
 }
 
 describe("WorkbenchRuntime Local Injection", () => {
+  it("does not call a custom executor with an unchanged non-concrete Source field", async () => {
+    const history = historyWithCommandTarget({
+      update: {
+        isSnapshot: false,
+        command: "ADD",
+        key: "order-1",
+        fields: { command: "ADD", key: "order-1", qty: "[redacted]" },
+        fieldValueStates: {
+          command: "concrete",
+          key: "concrete",
+          qty: "redacted"
+        },
+        changedFields: { command: "ADD", key: "order-1", qty: "[redacted]" }
+      }
+    });
+    const executor = { execute: vi.fn(async (_request: unknown) => result("success")) };
+    const runtime = createWorkbenchRuntime({ history, localInjectionExecutor: executor });
+    await flushAsync();
+    beginSelected(runtime);
+
+    runtime.dispatch({ type: "review-local-injection" });
+    runtime.dispatch({ type: "execute-local-injection" });
+    await flushAsync();
+
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(runtime.getSnapshot().localInjection.draft?.outcome).toMatchObject({
+      disposition: "blocked",
+      detail: expect.stringContaining("explicit concrete replacement")
+    });
+    runtime.dispose();
+  });
+
+  it("executes an explicit concrete null replacement after a value-equal final edit", async () => {
+    const history = historyWithCommandTarget({
+      update: {
+        isSnapshot: false,
+        command: "ADD",
+        key: "order-1",
+        fields: { command: "ADD", key: "order-1", qty: null },
+        fieldValueStates: {
+          command: "concrete",
+          key: "concrete",
+          qty: "ambiguous-null"
+        },
+        changedFields: { command: "ADD", key: "order-1", qty: null }
+      }
+    });
+    const executor = { execute: vi.fn(async (_request: unknown) => result("success")) };
+    const runtime = createWorkbenchRuntime({ history, localInjectionExecutor: executor });
+    await flushAsync();
+    beginSelected(runtime);
+
+    runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(2) });
+    runtime.dispatch({ type: "set-local-injection-json", text: updateDocument(null) });
+    runtime.dispatch({ type: "review-local-injection" });
+    runtime.dispatch({ type: "execute-local-injection" });
+    await flushAsync();
+
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(executor.execute.mock.calls[0]?.[0]).toMatchObject({
+      draft: {
+        fields: { qty: null },
+        fieldValueStates: { qty: "concrete" }
+      }
+    });
+    runtime.dispose();
+  });
+
   it("publishes semantic entry availability for selected updates and live COMMAND Scope", async () => {
     const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing" });
     await flushAsync();

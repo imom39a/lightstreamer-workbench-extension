@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createDraftFromEvent,
-  createSourceReplayDraft,
+  createInjectionSourceDraft,
   setManualChangedFieldsOverride,
   updateDraftField,
   validateDraftForExecutionTarget,
@@ -333,7 +333,7 @@ describe("reinjection drafts", () => {
     expect(edited.changedFields).toEqual({ qty: 11 });
   });
 
-  it("creates an unchanged source replay after the staged draft has been edited", () => {
+  it("creates an unchanged Injection Source copy after the staged draft has been edited", () => {
     const source = createDraftFromEvent(itemUpdate());
     if (!source) {
       throw new Error("missing draft");
@@ -343,7 +343,7 @@ describe("reinjection drafts", () => {
     edited.key = "different";
     edited.isSnapshot = false;
 
-    const replay = createSourceReplayDraft(edited);
+    const replay = createInjectionSourceDraft(edited);
 
     expect(replay.fields).toEqual(source.sourceFields);
     expect(replay.changedFields).toEqual(source.originalChangedFields);
@@ -351,6 +351,111 @@ describe("reinjection drafts", () => {
     expect(replay.key).toBe("alpha");
     expect(replay.isSnapshot).toBe(true);
     expect(edited.fields.qty).toBe(11);
+  });
+
+  it("refuses non-concrete captured Source fields until each has an explicit value", () => {
+    const draft = createDraftFromEvent(
+      itemUpdate({
+        update: {
+          fields: {
+            command: "ADD",
+            key: "alpha",
+            literalMarker: "[redacted]",
+            secret: "[redacted]",
+            ambiguous: null,
+            patch: "raw-diff"
+          },
+          fieldValueStates: {
+            command: "concrete",
+            key: "concrete",
+            literalMarker: "concrete",
+            secret: "redacted",
+            ambiguous: "ambiguous-null",
+            unavailable: "unavailable",
+            patch: "unresolved-wire-difference"
+          },
+          changedFields: {},
+          command: "ADD",
+          key: "alpha"
+        }
+      })
+    );
+    if (!draft) throw new Error("missing draft");
+
+    expect(validateDraftForExecutionTarget(draft, "captured-listener")).toEqual({
+      valid: false,
+      errors: [
+        'Captured Source field "secret" requires an explicit concrete replacement (redacted).',
+        'Captured Source field "ambiguous" is ambiguous and requires an explicit concrete replacement.',
+        'Captured Source field "patch" requires an explicit concrete replacement (unresolved wire difference).',
+        'Captured Source field "unavailable" requires an explicit concrete replacement (unavailable).'
+      ]
+    });
+
+    const replaced = [
+      ["secret", "manual-secret"],
+      ["ambiguous", null],
+      ["unavailable", false],
+      ["patch", "complete-value"]
+    ].reduce(
+      (current, [name, value]) => updateDraftField(current, String(name), value as string | boolean | null),
+      draft
+    );
+    expect(validateDraftForExecutionTarget(replaced, "captured-listener").valid).toBe(true);
+    expect(replaced.fieldValueStates.literalMarker).toBe("concrete");
+  });
+
+  it("keeps Source certainty when restoring the captured Source draft", () => {
+    const source = createDraftFromEvent(
+      itemUpdate({
+        update: {
+          fields: { command: "ADD", key: "alpha", secret: "[redacted]" },
+          fieldValueStates: {
+            command: "concrete",
+            key: "concrete",
+            secret: "redacted"
+          },
+          changedFields: {},
+          command: "ADD",
+          key: "alpha"
+        }
+      })
+    );
+    if (!source) throw new Error("missing draft");
+
+    const replaced = updateDraftField(source, "secret", "manual-secret");
+    expect(validateDraftForExecutionTarget(replaced, "captured-listener").valid).toBe(true);
+    expect(
+      validateDraftForExecutionTarget(
+        createInjectionSourceDraft(replaced),
+        "captured-listener"
+      ).valid
+    ).toBe(false);
+  });
+
+  it("treats changed Local Injection document values as explicit concrete replacements", () => {
+    const source = createDraftFromEvent(
+      itemUpdate({
+        update: {
+          fields: { command: "ADD", key: "alpha", secret: "[redacted]" },
+          fieldValueStates: {
+            command: "concrete",
+            key: "concrete",
+            secret: "redacted"
+          },
+          changedFields: {},
+          command: "ADD",
+          key: "alpha"
+        }
+      })
+    );
+    if (!source) throw new Error("missing draft");
+    const document = createLocalInjectionDocumentFromDraft(source);
+    document.fields.secret = "manual-secret";
+
+    const replaced = applyLocalInjectionDocumentToDraft(source, document);
+    expect(replaced.fieldValueStates.secret).toBe("concrete");
+    expect(validateDraftForExecutionTarget(replaced, "captured-listener").valid).toBe(true);
   });
 
   it("preserves manual changed-fields override when active", () => {
