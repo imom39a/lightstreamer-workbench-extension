@@ -66,6 +66,21 @@ describe("Scenario Checkpoints", () => {
     if (removed.ok) expect(removed.scenario.members).toHaveLength(1);
   });
   it("rejects diagnostic assertions, future Step references, invalid within windows, and listener counts on wire", () => {
+    expect(validateScenarioCheckpoint(null as never, {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint must be an object." });
+    expect(validateScenarioCheckpoint({ kind: "checkpoint", id: "", name: "Invalid identity", assertions: [] } as never, {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint requires a non-empty stable identity and checkpoint kind." });
+    expect(validateScenarioCheckpoint({ kind: "step", id: "checkpoint-1", name: 42, assertions: null } as never, {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint requires a non-empty stable identity and checkpoint kind." });
+    expect(validateScenarioCheckpoint({ kind: "checkpoint", id: "checkpoint-1", name: 42, assertions: [] } as never, {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint name must contain 1 to 256 characters." });
+    expect(validateScenarioCheckpoint({ kind: "checkpoint", id: "checkpoint-1", name: "Invalid assertions", assertions: null } as never, {
+      targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+    })).toEqual({ ok: false, assertionId: "<checkpoint>", reason: "A Scenario Checkpoint requires 1 to 16 assertions." });
     expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "correlated-local-evidence-exists", stepId: "step-2" }]), {
       targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
     })).toEqual({ ok: false, assertionId: "a", reason: "Checkpoint assertions may reference only an earlier Scenario Step." });

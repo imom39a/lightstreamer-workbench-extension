@@ -72,10 +72,17 @@ export function validateScenarioCheckpoint(
   checkpoint: ScenarioCheckpoint,
   context: Readonly<{ targetMode: string | null; deliveryPath: "listener" | "wire"; earlierStepIds: readonly string[] }>
 ): Readonly<{ ok: true }> | Readonly<{ ok: false; assertionId: string; reason: string }> {
-  if (checkpoint.name.trim().length < 1 || checkpoint.name.length > 256) {
+  if (typeof checkpoint !== "object" || checkpoint === null || Array.isArray(checkpoint)) {
+    return frozen({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint must be an object." });
+  }
+  const rawCheckpoint = checkpoint as unknown as Readonly<Record<string, unknown>>;
+  if (rawCheckpoint.kind !== "checkpoint" || typeof rawCheckpoint.id !== "string" || rawCheckpoint.id.length === 0 || rawCheckpoint.id.length > 256) {
+    return frozen({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint requires a non-empty stable identity and checkpoint kind." });
+  }
+  if (typeof rawCheckpoint.name !== "string" || rawCheckpoint.name.trim().length < 1 || rawCheckpoint.name.length > 256) {
     return frozen({ ok: false, assertionId: "<checkpoint>", reason: "Scenario Checkpoint name must contain 1 to 256 characters." });
   }
-  if (checkpoint.assertions.length < 1 || checkpoint.assertions.length > SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT) {
+  if (!Array.isArray(rawCheckpoint.assertions) || rawCheckpoint.assertions.length < 1 || rawCheckpoint.assertions.length > SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT) {
     return frozen({ ok: false, assertionId: "<checkpoint>", reason: `A Scenario Checkpoint requires 1 to ${SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT} assertions.` });
   }
   const ids = new Set<string>();
