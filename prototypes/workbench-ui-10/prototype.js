@@ -1,5 +1,5 @@
 const VARIANTS = {
-  A: { name: "Diagnose", states: ["live", "selected", "command", "frozen", "raw", "export", "empty"] },
+  A: { name: "Diagnose", states: ["live", "selected", "activity", "command", "frozen", "raw", "export", "empty"] },
   B: { name: "Local Injection", states: ["edit", "compare", "invalid", "stale", "review", "delivered", "failed"] },
   C: { name: "Recover", states: ["coverage", "disconnected", "storage", "retired", "recovering"] }
 };
@@ -7,6 +7,7 @@ const VARIANTS = {
 const STATE_LABELS = {
   live: "Live orientation",
   selected: "Selected evidence",
+  activity: "Observed Activity",
   command: "COMMAND projections",
   frozen: "Frozen high volume",
   raw: "Complete raw evidence",
@@ -182,6 +183,7 @@ function renderScopeStrip() {
 }
 
 function renderPrimarySurface() {
+  if (state.visualSetup.startsWith("activity")) return renderActivityDocument();
   if (state.variant === "B") return renderInjectionDocument();
   if (state.variant === "A" && state.state === "command") return renderCommandDocument();
   if (state.variant === "A" && state.state === "raw") return renderRawDocument();
@@ -195,6 +197,27 @@ function renderWorkspace() {
     ${renderEvidencePane()}
     ${renderContextPane()}
   </section>`;
+}
+
+function renderActivityDocument() {
+  const degraded = state.variant === "C";
+  const total = state.visualSetup === "activity-10k" ? "9,999" : "40";
+  const deliveryTotal = state.visualSetup === "activity-10k" ? "9,999" : degraded ? "8" : "26";
+  const boundary = degraded ? "17" : state.visualSetup === "activity-10k" ? "10,000" : "40";
+  const rows = degraded
+    ? [["17:00:00–17:01:00 · PARTIAL", "0", "12", "12", "8"]]
+    : state.visualSetup === "activity-10k"
+      ? [["17:00:00–17:01:00 · PARTIAL", "0", "996", "996", "996"], ["17:01:00–17:02:00", "0", "1,000", "1,000", "1,000"], ["17:02:00–17:03:00 · PARTIAL", "0", "3", "3", "3"]]
+      : [["17:00:00–17:01:00 · LIVE · PARTIAL", "0", "40", "40", "26"]];
+  const rowMarkup = rows.map((row) => "<tr>" + row.map((cell, index) => index === 0 ? "<th><button>" + cell + "</button></th>" : "<td>" + cell + "</td>").join("") + "</tr>").join("");
+  const bars = "▮".repeat(degraded ? 12 : 24);
+  return "<section class=\"document-pane activity-document\" aria-label=\"Observed Activity\">" +
+    "<header><div><small>Observed Activity</small><strong>Inspected page</strong></div><button>Back to Evidence</button></header>" +
+    "<div class=\"document-boundary\"><span>Scope <strong>PAGE</strong></span><span>Filter <strong>None</strong></span><span>History Interval <strong>session-3:interval-1</strong></span><span>Committed Boundary <strong>" + boundary + "</strong></span><span>Coverage <strong>" + (degraded ? "LIMITED" : "USEFUL") + "</strong></span><span>View <strong>FOLLOW LIVE</strong></span></div>" +
+    (degraded ? "<p class=\"activity-status\">Observation Coverage is limited.</p>" : "") +
+    "<div class=\"activity-scroll\"><section class=\"activity-card\"><h2>Observed Server activity</h2><p>" + total + " Logical Updates · " + deliveryTotal + " Update Deliveries · 0 snapshot · " + total + " live</p><label><input type=\"checkbox\" /> Show separate <code>LOCAL</code> activity</label><div><button>Freeze Activity</button><button>Follow Live</button></div></section>" +
+    "<section class=\"activity-card\"><h2>Timeline · exact 1000 ms buckets</h2><p>Server Logical Updates and Update Deliveries · zero-based linear scale · exact values remain in the table</p><div class=\"activity-multiples\"><strong>Server Logical Updates</strong><span>" + bars + "</span><strong>Update Deliveries</strong><span>" + bars + "</span></div><table aria-label=\"Activity timeline buckets\"><caption>Server Logical Updates and Update Deliveries</caption><thead><tr><th>Interval</th><th>Snapshot</th><th>Live</th><th>Logical Updates</th><th>Update Deliveries</th></tr></thead><tbody>" + rowMarkup + "</tbody></table></section>" +
+    "<section class=\"activity-card\"><h2>Selection</h2><p>Select a bucket, marker, or ranked identity to inspect exact supporting facts.</p></section><section class=\"activity-card\"><h2>Captured transitions, loss, and errors</h2><p>No captured markers in the retained interval.</p></section></div></section>";
 }
 
 function renderScopePane() {

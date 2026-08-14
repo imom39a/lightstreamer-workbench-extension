@@ -240,14 +240,13 @@ test("Observed Activity preserves exact 10,000-record orientation and keyboard s
   await grid.focus();
   await page.keyboard.press("End");
   await expect(activity.locator("tr[aria-selected='true']")).toHaveCount(1);
-  await expect(activity.getByRole("button", { name: "Show supporting Evidence" })).toHaveCount(0);
+  await expect(activity.getByRole("button", { name: "Show supporting Evidence" })).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(page.getByText(/Filter: /)).toBeVisible();
   await attachNamedScenarioScreenshot(page, testInfo, "activity-10k-normal-light");
 });
 
-// activity-followup-02: ranking sort currently drops the synchronized ranking table.
-test.fixme("Observed Activity keeps graphical small multiples and ranking tables in one accessible selection model", async ({ page }, testInfo) => {
+test("Observed Activity keeps graphical small multiples and ranking tables in one accessible selection model", async ({ page }, testInfo) => {
   await openScenario(page, "activity-graphical", { width: 900, height: 700 }, "dark");
   await page.getByRole("button", { name: "Open Activity" }).click();
   const activity = page.getByRole("main", { name: "Observed Activity" });
@@ -256,7 +255,7 @@ test.fixme("Observed Activity keeps graphical small multiples and ranking tables
   await expect(chart.getByRole("img", { name: /Server Logical Updates/ })).toBeVisible();
   await expect(chart.getByRole("img", { name: /Update Deliveries/ })).toBeVisible();
   await expect(chart).toContainText("zero-based linear scale");
-  await expect(activity.getByRole("table", { name: "Server Logical Updates and Update Deliveries" })).toBeVisible();
+  await expect(activity.getByRole("grid", { name: "Activity timeline buckets" })).toBeVisible();
 
   const timeline = activity.getByRole("grid", { name: "Activity timeline buckets" });
   await timeline.focus();
@@ -265,13 +264,28 @@ test.fixme("Observed Activity keeps graphical small multiples and ranking tables
   await expect(activity.getByRole("region", { name: "Activity selection detail" })).toContainText("Logical Updates");
 
   const deliverySort = activity.getByRole("button", { name: "Update Deliveries", exact: true });
+  const ranking = activity.getByRole("region", { name: "Activity ranking" });
+  const rankingChart = ranking.getByRole("group", { name: "Busiest ranking bars" });
+  const rankingTable = ranking.getByRole("table", { name: /Complete synchronized Server ranking/ });
+  await expect(rankingTable.locator("tbody tr")).toHaveCount(12);
+  await expect(rankingChart.locator("[data-ranking-identity]")).toHaveCount(10);
+  await expect(rankingChart.locator("[data-ranking-identity]").first()).toHaveAttribute("aria-hidden", "true");
+  const selectedRankingRow = rankingTable.locator("tbody tr").filter({ hasText: "activity-graphical-subscription-1" }).first();
+  const selectedRankingIdentity = await selectedRankingRow.getByRole("button").innerText();
+  await selectedRankingRow.getByRole("button").click();
+  await expect(selectedRankingRow).toHaveAttribute("aria-selected", "true");
+  await expect(rankingChart.locator(`[data-ranking-identity="${selectedRankingIdentity}"]`)).toHaveAttribute("data-selected", "true");
   await deliverySort.click();
   await expect(deliverySort).toHaveAttribute("aria-pressed", "true");
-  await expect(activity.getByRole("table", { name: /Complete synchronized Server ranking/ })).toBeVisible();
+  await expect(rankingTable).toBeVisible();
+  await expect(rankingTable.locator("tbody tr")).toHaveCount(12);
+  await expect(selectedRankingRow).toHaveAttribute("aria-selected", "true");
+  await expect(rankingChart.locator(`[data-ranking-identity="${selectedRankingIdentity}"]`)).toHaveAttribute("data-selected", "true");
   await expectNoSeriousAxeViolations(page, testInfo);
   await page.setViewportSize({ width: 563, height: 700 });
   await expect(activity.getByRole("button", { name: "Back to Evidence" })).toBeVisible();
   await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
 });
 
 test("Workbench explains Local-only COMMAND projection differences without changing the observed projection", async ({ page }, testInfo) => {

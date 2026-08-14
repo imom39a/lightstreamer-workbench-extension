@@ -1581,7 +1581,7 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
         </div>
       </header>
       <nav className="workbench-react__scope-strip" aria-label="Current runtime scope">
-        <button type="button" ref={scopeTrigger} disabled={!workspaceAvailable} aria-controls={workspaceAvailable ? "workbench-runtime-scope" : undefined} aria-expanded={workspaceAvailable && scopeIsPresented} onClick={(event) => openScope(event.currentTarget)}>Scope</button>
+        <button type="button" ref={scopeTrigger} disabled={!workspaceAvailable} aria-controls={workspaceAvailable && !snapshot.activity?.open ? "workbench-runtime-scope" : undefined} aria-expanded={workspaceAvailable && !snapshot.activity?.open && scopeIsPresented} onClick={(event) => openScope(event.currentTarget)}>Scope</button>
         {scopeCollapsed ? <button ref={scopeRestore} className="workbench-react__restore-pane workbench-react__restore-pane--scope" type="button" onClick={() => restorePane("scope")}>Restore Scope</button> : null}
         {contextCollapsed ? <button ref={contextRestore} className="workbench-react__restore-pane" type="button" onClick={() => restorePane("context")}>Restore Context</button> : null}
         <strong className="workbench-react__scope-label">{scopeLabel}</strong>

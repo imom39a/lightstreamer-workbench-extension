@@ -291,13 +291,20 @@ async function assertPrototypeSetup(page, workbench, setup) {
     "memory-operations": ["in-memory fallback", "Panel Session closes."],
     "clear-confirmation": ["Clear retained events", "This removes retained Evidence from this Panel Session and cannot be undone."],
     "matching-summary": ["Matching projections", "Neither projection is Authoritative COMMAND State."],
-    "selected-json": ["json-string-event", "JSON string", "AIRPORT-02"]
+    "selected-json": ["json-string-event", "JSON string", "AIRPORT-02"],
+    "activity-10k": ["Observed Server activity", "9,999 Logical Updates", "Server Logical Updates and Update Deliveries"],
+    "activity-graphical": ["Observed Server activity", "Server Logical Updates and Update Deliveries"],
+    "activity-limited": ["Observed Server activity", "Coverage LIMITED", "Observation Coverage is limited"],
+    "activity-memory": ["Observed Server activity"]
   }[setup];
   if (expectedText) {
     const text = await workbench.innerText();
     for (const marker of expectedText) {
       if (!text.includes(marker)) throw new Error(`Prototype setup ${setup} is missing ${JSON.stringify(marker)}.`);
     }
+  }
+  if (setup === "activity-10k" || setup === "activity-graphical") {
+    await workbench.getByRole("table", { name: "Activity timeline buckets" }).waitFor();
   }
   if (setup === "authored-review") {
     const text = await workbench.innerText();
@@ -389,7 +396,7 @@ async function captureProduction(runningBrowser, scenario) {
     let helpResources = null;
     let focusEvidence = null;
     let memoryEvidence = null;
-    if (["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics"].includes(scenario.production.setup)) {
+    if (["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics", "activity-10k", "activity-graphical", "activity-limited", "activity-memory"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -487,6 +494,25 @@ async function prepareProductionState(page, setup) {
         const owner = document.querySelector(".workbench-react__status-diagnostics");
         return owner instanceof HTMLElement && owner.scrollTop === 0;
       });
+    }
+    return;
+  }
+  if (setup.startsWith("activity")) {
+    await page.getByRole("button", { name: "Open Activity" }).click();
+    const document = page.getByRole("main", { name: "Observed Activity" });
+    await document.waitFor();
+    if (setup === "activity-10k" || setup === "activity-graphical") {
+      await document.getByRole("grid", { name: "Activity timeline buckets" }).waitFor();
+    } else if (setup === "activity-limited") {
+      await document.getByRole("status").waitFor();
+      await document.getByText("Observation Coverage is limited", { exact: false }).waitFor();
+    } else {
+      await document.getByText("Observed Server activity", { exact: true }).waitFor();
+      await document.getByText("History Interval", { exact: false }).waitFor();
+    }
+    if (setup === "activity-10k") {
+      await document.getByText("9,999 Logical Updates", { exact: false }).waitFor();
+      await document.getByText("9,999 Update Deliveries", { exact: false }).waitFor();
     }
     return;
   }

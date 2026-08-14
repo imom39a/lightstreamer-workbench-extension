@@ -155,6 +155,18 @@ code, pre, time { font-family: var(--font-code); }
 .prototype-selected-update pre { margin: 4px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 11px; }
 
 .document-pane { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
+.activity-scroll { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 12px; background: var(--bg); }
+.activity-card { border: 1px solid var(--border); background: var(--raised); padding: 10px; margin: 0 0 10px; }
+.activity-card h2 { margin: 0 0 6px; font-size: 12px; }
+.activity-card p { margin: 5px 0; color: var(--muted); }
+.activity-card > div { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+.activity-multiples { display: grid !important; grid-template-columns: 180px 1fr; align-items: center; gap: 5px 8px !important; border-bottom: 1px solid var(--border); padding: 7px 0 10px; margin: 8px 0 !important; color: var(--text); }
+.activity-multiples span { min-height: 22px; overflow: hidden; color: var(--text); letter-spacing: 2px; white-space: nowrap; }
+.activity-card table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.activity-card th, .activity-card td { border-bottom: 1px solid var(--border); padding: 5px 7px; text-align: right; white-space: nowrap; }
+.activity-card th:first-child, .activity-card td:first-child { text-align: left; }
+.activity-card caption { padding: 0 0 6px; text-align: left; color: var(--muted); }
+.activity-status { border-bottom: 1px solid var(--border); margin: 0; padding: 7px 12px; color: var(--warning); }
 .document-pane > header { display: flex; min-height: 50px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); background: var(--raised); padding: 7px 11px; }
 .document-pane > header > div { display: grid; }
 .document-pane > footer { flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--raised); color: var(--muted); padding: 7px 11px; }

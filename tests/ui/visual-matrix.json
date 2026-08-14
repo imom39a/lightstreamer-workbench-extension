@@ -145,5 +145,40 @@
     "theme": "dark",
     "prototype": { "variant": "C", "state": "coverage", "frame": "compact", "setup": "none" },
     "production": { "scenario": "diagnostics-stress", "setup": "diagnostics" }
+  },
+  {
+    "id": "activity-10k-normal-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "activity", "frame": "normal", "setup": "activity-10k" },
+    "production": { "scenario": "activity-10k", "setup": "activity-10k" }
+  },
+  {
+    "id": "activity-compact-dark",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "activity", "frame": "compact", "setup": "activity-graphical" },
+    "production": { "scenario": "activity-graphical", "setup": "activity-graphical" }
+  },
+  {
+    "id": "activity-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "activity", "frame": "wide", "setup": "activity-graphical" },
+    "production": { "scenario": "activity-graphical", "setup": "activity-graphical" }
+  },
+  {
+    "id": "activity-limited-normal-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "C", "state": "coverage", "frame": "normal", "setup": "activity-limited" },
+    "production": { "scenario": "limited-capture", "setup": "activity-limited" }
+  },
+  {
+    "id": "activity-memory-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "C", "state": "storage", "frame": "compact", "setup": "activity-memory" },
+    "production": { "scenario": "memory-fallback", "setup": "activity-memory" }
   }
 ]
