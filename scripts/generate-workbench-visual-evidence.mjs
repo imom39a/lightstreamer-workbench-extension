@@ -113,8 +113,8 @@ try {
     platform: process.platform,
     baselinePlatformSuffix: process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform,
     platformBaselineCommands: [
-      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-\"", result: "7/7 passed" },
-      { platform: "linux", update: "docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci --ignore-scripts && npm run test:ui:update -- --grep \"visual baseline: scenario-\"'", comparison: "docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci --ignore-scripts && npm run test:ui -- --grep \"visual baseline: scenario-\"'", result: "7/7 passed" }
+      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-\"", result: "8/8 passed" },
+      { platform: "linux", update: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -v /tmp/lsw-scenario04-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui:update -- --grep \"visual baseline: scenario-\"'", comparison: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -v /tmp/lsw-scenario04-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui -- --grep \"visual baseline: scenario-\"'", result: "8/8 passed" }
     ],
     browser: await browser.version(),
     browserMode: "headless",
@@ -143,8 +143,8 @@ try {
         seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
       keyboardAndFocus: "Native Tab order reaches each Step trigger and its labelled Move earlier/later controls; Enter performs keyboard reordering, Escape restores the captured-update trigger, nested input arrows retain native behavior, and only the focused Step mounts CodeMirror.",
-      matrixRationale: "Seven Scenario states cover compact Edit, normal Review, wide Complete, shallow forced-colors stopped, bulk preview with incompatible reasons, authored removal with Undo, and the 100-Step capacity refusal.",
-      baselineIntent: "Maintain platform-specific Scenario baselines for Darwin and Linux for all seven membership and execution states changed or relied on by this Material UI slice."
+      matrixRationale: "Eight Scenario states cover compact Edit and paused controls, normal Review, wide Complete timing ledger, shallow forced-colors truthful stopped Trace, bulk preview with incompatible reasons, authored removal with Undo, and the 100-Step capacity refusal.",
+      baselineIntent: "Maintain platform-specific Scenario baselines for Darwin and Linux for all eight membership and execution states changed or relied on by this Material UI slice."
     } : {
       classification: "Material UI",
       changedWorkflow: "The global diagnostics footer keeps mixed Warning, Error, and Information entries readable and discoverable without taking over the Evidence workspace.",
