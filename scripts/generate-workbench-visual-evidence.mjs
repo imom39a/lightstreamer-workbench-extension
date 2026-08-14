@@ -119,8 +119,8 @@ try {
     platform: process.platform,
     baselinePlatformSuffix: process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform,
     platformBaselineCommands: [
-      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-\"", result: "14/14 passed" },
-      { platform: "linux", update: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -v /tmp/lsw-scenario04-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui:update -- --grep \"visual baseline: scenario-\"'", comparison: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -v /tmp/lsw-scenario04-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui -- --grep \"visual baseline: scenario-\"'", result: "14/14 passed" }
+      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-checkpoint\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-checkpoint\"", result: "8/8 passed" },
+      { platform: "linux", update: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -v /tmp/lsw-scenario06-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui:update -- --grep \"visual baseline: scenario-checkpoint\"'", comparison: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui -- --grep \"visual baseline: scenario-checkpoint\"'", result: "8/8 passed" }
     ],
     browser: await browser.version(),
     browserMode: "headless",
@@ -133,7 +133,27 @@ try {
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
     contactSheets,
-    review: results.some(({ id }) => id.startsWith("scenario-")) ? {
+    review: results.some(({ id }) => id.startsWith("scenario-checkpoint-")) ? {
+      classification: "Material UI",
+      changedWorkflow: "A Scenario Checkpoint authors protected assertions, evaluates one exact committed Evidence boundary without dispatching an Injection, and exposes waiting and terminal truth in the promoted document.",
+      acceptanceCriteria: [
+        "Checkpoint authoring and Review keep protected identity, boundary, assertions, and zero-Injection meaning visible outside raw Item Update JSON.",
+        "Waiting, pass, fail, wire-unavailable, and ambiguous Server-null states remain textually distinct with exact Evidence provenance and a retained-Evidence inspection route.",
+        "Compact, normal, shallow forced-colors, wide, Dark, and Light states retain one Scenario content scroll, keyboard focus, and no serious or critical axe violations.",
+        "The high-volume document contains 100 independent Steps plus 100 Checkpoints while keeping every large editor unmounted and all non-focused Checkpoints collapsed."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.filter(({ id }) => id.startsWith("scenario-checkpoint-")).length}/${results.filter(({ id }) => id.startsWith("scenario-checkpoint-")).length} passed`,
+        browserDiagnostics: results.filter(({ id }) => id.startsWith("scenario-checkpoint-")).reduce((count, result) => count + result.checks.browserDiagnostics.length, 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.id.startsWith("scenario-checkpoint-") && result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.filter(({ id }) => id.startsWith("scenario-checkpoint-")).reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: "Each state scrolls its exact Checkpoint into view and physically focuses the labelled CHECKPOINT control; the retained-Evidence route is also activated through physical keyboard input in the browser gate.",
+      matrixRationale: "Eight deterministic states cover compact Light authoring, normal Dark Review, wide Light waiting, normal Light pass and Evidence route, compact Dark failure, shallow forced-colors Dark wire unavailability, wide Dark ambiguous Server null, and wide Light 100-Step plus 100-Checkpoint high volume.",
+      baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all eight Scenario Checkpoint states."
+    } : results.some(({ id }) => id.startsWith("scenario-")) ? {
       classification: "Material UI",
       changedWorkflow: "A reviewed same-target Scenario halts before unsafe work, records exact target/listener/Server-Evidence drift, and preserves truthful partial, unknown, delivered-unretained, and post-Clear Evidence outcomes.",
       acceptanceCriteria: [
@@ -516,6 +536,28 @@ async function captureProduction(runningBrowser, scenario) {
         throw new Error(`Scenario focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
     }
+    if (scenario.production.setup === "scenario-checkpoint" || scenario.production.setup === "scenario-checkpoint-high-volume") {
+      const scenarioDocument = page.getByRole("region", { name: "Local Injection Scenario" });
+      const checkpoint = scenarioDocument.locator(".workbench-react__scenario-checkpoint").last();
+      const action = checkpoint.getByRole("button", { name: /CHECKPOINT \d+/ });
+      await action.scrollIntoViewIfNeeded();
+      await action.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest" }));
+      await action.focus();
+      focusEvidence = await action.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          action: element.textContent?.trim() ?? "",
+          focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+        };
+      });
+      if (!focusEvidence.focused || !focusEvidence.visible || !focusEvidence.unobscured) {
+        throw new Error(`Scenario Checkpoint focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
+      }
+    }
     if (scenario.production.setup === "more-actions-help") {
       helpResources = await page.getByRole("navigation", { name: "Help and resources" }).evaluate((navigation) => {
         const inViewport = (element) => {
@@ -580,6 +622,15 @@ async function captureProduction(runningBrowser, scenario) {
 }
 
 async function prepareProductionState(page, setup) {
+  if (setup === "scenario-checkpoint" || setup === "scenario-checkpoint-high-volume") {
+    const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+    await scenario.waitFor({ state: "visible" });
+    const checkpoints = scenario.locator(".workbench-react__scenario-checkpoint");
+    await checkpoints.last().waitFor();
+    await checkpoints.last().scrollIntoViewIfNeeded();
+    await checkpoints.last().evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest" }));
+    return;
+  }
   if (setup === "scenario-hidden-pause") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await page.evaluate(() => window.__setWorkbenchVisible(false));

@@ -9,7 +9,7 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "scenario" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
+  production: { scenario: string; setup: "none" | "scenario" | "scenario-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -119,6 +119,43 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         });
       }
       return;
+    case "scenario-checkpoint": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      const checkpoint = scenario.locator(".workbench-react__scenario-checkpoint");
+      await expect(checkpoint).toHaveCount(1);
+      await expect(checkpoint).toContainText("Zero Injections");
+      if (visual.production.scenario.endsWith("authoring")) await expect(checkpoint).toHaveAttribute("data-checkpoint-state", "authoring");
+      if (visual.production.scenario.endsWith("review")) await expect(checkpoint).toContainText("REVIEWED");
+      if (visual.production.scenario.endsWith("waiting")) await expect(checkpoint).toContainText("WAITING");
+      if (visual.production.scenario.endsWith("pass")) {
+        await expect(checkpoint).toContainText("PASS");
+        const route = checkpoint.getByRole("button", { name: /Inspect Evidence/ });
+        await expect(route).toBeVisible();
+        await route.focus();
+        await page.keyboard.press("Enter");
+        await expect(route).toBeFocused();
+      }
+      if (visual.production.scenario.endsWith("fail")) await expect(checkpoint).toContainText("FAIL");
+      if (visual.production.scenario.endsWith("wire-unavailable")) {
+        await expect(scenario.getByRole("alert")).toContainText("Wire delivery does not expose listener counts");
+        await expect(checkpoint).toHaveAttribute("aria-label", "Scenario Checkpoint Listener count unavailable on wire");
+      }
+      if (visual.production.scenario.endsWith("ambiguous-null")) {
+        await expect(checkpoint).toContainText("NOT-EVALUABLE");
+        await expect(checkpoint).toContainText("ambiguous · server");
+      }
+      return;
+    }
+    case "scenario-checkpoint-high-volume": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      await expect(scenario.locator("article")).toHaveCount(200);
+      await expect(scenario.locator(".workbench-react__scenario-checkpoint")).toHaveCount(100);
+      await expect(scenario.locator(".workbench-react__scenario-checkpoint .workbench-react__scenario-collapsed")).toHaveCount(99);
+      await expect(scenario.getByText("Collapsed Draft · Open editor", { exact: false })).toHaveCount(100);
+      await expect(scenario.locator(".cm-editor")).toHaveCount(0);
+      await expect(scenario).toContainText("100/100 explicit Steps");
+      return;
+    }
     case "none":
       await expect(page.locator(".workbench-react__evidence-summary")).toHaveCSS("display", "flex");
       return;

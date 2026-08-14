@@ -8,6 +8,7 @@ import {
 } from "../../src/bridge/messages";
 import { getPanelScenario } from "./panel-scenarios";
 import type { HistoryCapacityOverrides } from "../../src/core/event-history-authoritative";
+import type { ScenarioAssertion } from "../../src/core/local-injection-scenario";
 
 export const WORKBENCH_SCENARIO_IDS = [
   "live-selected",
@@ -68,6 +69,14 @@ export const WORKBENCH_SCENARIO_IDS = [
   ,"local-injection-scenario-unknown"
   ,"local-injection-scenario-unretained"
   ,"local-injection-scenario-cleared"
+  ,"local-injection-scenario-checkpoint-authoring"
+  ,"local-injection-scenario-checkpoint-review"
+  ,"local-injection-scenario-checkpoint-waiting"
+  ,"local-injection-scenario-checkpoint-pass"
+  ,"local-injection-scenario-checkpoint-fail"
+  ,"local-injection-scenario-checkpoint-wire-unavailable"
+  ,"local-injection-scenario-checkpoint-ambiguous-null"
+  ,"local-injection-scenario-checkpoint-high-volume"
 ] as const;
 
 export type WorkbenchScenarioId = (typeof WORKBENCH_SCENARIO_IDS)[number];
@@ -115,7 +124,23 @@ export type WorkbenchScenario = Readonly<{
     secondEntry?: "selection" | "scope";
     executorOutcome?: "pending" | "delivered" | "delayed" | "failed" | "partial" | "unknown";
     terminalLimit?: boolean;
-    scenario?: Readonly<{ addEventId?: string; authoredSteps?: number; review?: boolean; steps?: number; delayMs?: number; speed?: 0.25 | 0.5 | 1 | 2 | 4; play?: boolean; driftEvent?: LightstreamerEventEnvelope; driftFrames?: readonly TopologySyncFrame[]; clearAfterRun?: boolean }>;
+    scenario?: Readonly<{
+      addEventId?: string;
+      authoredSteps?: number;
+      checkpoints?: readonly Readonly<{
+        name: string;
+        assertions: readonly ScenarioAssertion[];
+        beforeSteps?: boolean;
+      }>[];
+      review?: boolean;
+      steps?: number;
+      delayMs?: number;
+      speed?: 0.25 | 0.5 | 1 | 2 | 4;
+      play?: boolean;
+      driftEvent?: LightstreamerEventEnvelope;
+      driftFrames?: readonly TopologySyncFrame[];
+      clearAfterRun?: boolean;
+    }>;
   }>;
 }>;
 
@@ -643,7 +668,146 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return { ...localInjectionScenario(id, true, 1, "delivered"), failLocalEvidenceRetention: true };
     case "local-injection-scenario-cleared":
       return localInjectionScenario(id, true, 2, "delivered", { clearAfterRun: true });
+    case "local-injection-scenario-checkpoint-authoring":
+      return localInjectionCheckpointScenario(id, "authoring");
+    case "local-injection-scenario-checkpoint-review":
+      return localInjectionCheckpointScenario(id, "review");
+    case "local-injection-scenario-checkpoint-waiting":
+      return localInjectionCheckpointScenario(id, "waiting");
+    case "local-injection-scenario-checkpoint-pass":
+      return localInjectionCheckpointScenario(id, "pass");
+    case "local-injection-scenario-checkpoint-fail":
+      return localInjectionCheckpointScenario(id, "fail");
+    case "local-injection-scenario-checkpoint-wire-unavailable":
+      return localInjectionCheckpointScenario(id, "wire-unavailable");
+    case "local-injection-scenario-checkpoint-ambiguous-null":
+      return localInjectionCheckpointScenario(id, "ambiguous-null");
+    case "local-injection-scenario-checkpoint-high-volume":
+      return localInjectionCheckpointHighVolumeScenario(id);
   }
+}
+
+type CheckpointVisualState = "authoring" | "review" | "waiting" | "pass" | "fail" | "wire-unavailable" | "ambiguous-null";
+
+function localInjectionCheckpointScenario(id: WorkbenchScenarioId, state: CheckpointVisualState): WorkbenchScenario {
+  const beforeSteps = state === "ambiguous-null";
+  const assertions: readonly ScenarioAssertion[] = state === "waiting"
+    ? [{ id: "assertion-waiting-key", kind: "command-key-exists", item: { name: "topology-small-item", position: 1 }, key: "never-arrives", expected: "present", withinActiveMs: 60_000 }]
+    : state === "pass"
+      ? [{ id: "assertion-correlated-evidence", kind: "correlated-local-evidence-exists", stepId: "step-2" }]
+      : state === "fail"
+        ? [{ id: "assertion-failed-outcome", kind: "prior-injection-outcome", stepId: "step-2", expectedDisposition: "failed" }]
+        : state === "wire-unavailable"
+          ? [{ id: "assertion-wire-listeners", kind: "listener-count", stepId: "step-1", count: "delivered", expected: 1 }]
+          : state === "ambiguous-null"
+            ? [{ id: "assertion-server-null", kind: "command-field-equals", item: { name: "topology-small-item", position: 1 }, key: "small-alpha", field: "note", expected: null }]
+            : [{ id: "assertion-delivered", kind: "prior-injection-outcome", stepId: "step-2", expectedDisposition: "delivered" }];
+  const review = state !== "authoring";
+  const steps = state === "waiting" || state === "pass" || state === "fail" ? 3 : state === "ambiguous-null" ? 1 : 0;
+  const base = localInjectionScenario(id, false, 0);
+  const configured: WorkbenchScenario = {
+    ...base,
+    localInjection: {
+      ...base.localInjection!,
+      scenario: {
+        ...base.localInjection!.scenario!,
+        checkpoints: [{ name: checkpointVisualName(state), assertions, ...(beforeSteps ? { beforeSteps: true } : {}) }],
+        review,
+        steps
+      }
+    }
+  };
+  if (state === "wire-unavailable") return withWireScenarioSource(configured);
+  if (state === "ambiguous-null") return withAmbiguousServerNull(configured);
+  return configured;
+}
+
+function checkpointVisualName(state: CheckpointVisualState): string {
+  switch (state) {
+    case "authoring": return "Confirm the reviewed delivery";
+    case "review": return "Reviewed local delivery contract";
+    case "waiting": return "Wait for the committed key";
+    case "pass": return "Correlated Local Evidence retained";
+    case "fail": return "Expected failure did not occur";
+    case "wire-unavailable": return "Listener count unavailable on wire";
+    case "ambiguous-null": return "Server null requires attribution";
+  }
+}
+
+function localInjectionCheckpointHighVolumeScenario(id: WorkbenchScenarioId): WorkbenchScenario {
+  const base = localInjectionHighVolumeScenario(id);
+  const checkpoints = Array.from({ length: 100 }, (_, index) => ({
+    name: `Checkpoint ${String(index + 1).padStart(3, "0")} · retained outcome boundary`,
+    assertions: [{ id: `assertion-${index + 1}`, kind: "prior-injection-outcome" as const, stepId: `step-${index + 1}`, expectedDisposition: "delivered" as const }]
+  }));
+  return {
+    ...base,
+    localInjection: {
+      ...base.localInjection!,
+      scenario: { ...base.localInjection!.scenario!, checkpoints }
+    }
+  };
+}
+
+function withWireScenarioSource(scenario: WorkbenchScenario): WorkbenchScenario {
+  const selected = scenario.initialEvents.find(({ id }) => id === scenario.selectedEventId);
+  if (!selected?.update) throw new Error("Wire Checkpoint scenario requires its selected Item Update.");
+  const wire = { ...selected, id: "scenario-wire-update", captureSource: "wire" as const, listener: undefined };
+  return {
+    ...scenario,
+    initialEvents: [...scenario.initialEvents, wire],
+    selectedEventId: wire.id,
+    localInjection: {
+      ...scenario.localInjection!,
+      scenario: { ...scenario.localInjection!.scenario!, addEventId: undefined }
+    }
+  };
+}
+
+function withAmbiguousServerNull(scenario: WorkbenchScenario): WorkbenchScenario {
+  const selectedId = scenario.selectedEventId;
+  const schemaEvents = scenario.initialEvents.map((event): LightstreamerEventEnvelope => event.kind === "item-update" && event.subscription
+    ? {
+        ...event,
+        subscription: { ...event.subscription, fields: [...(event.subscription.fields ?? ["command", "key", "value"]), "note"] },
+      }
+    : event);
+  const selected = schemaEvents.find((event) => event.id === selectedId);
+  if (!selected?.update) throw new Error("Ambiguous-null Checkpoint scenario requires its selected Item Update.");
+  const ambiguous: LightstreamerEventEnvelope = {
+    ...selected,
+    id: "scenario-ambiguous-server-null",
+    timestamp: selected.timestamp + 10,
+    update: {
+      ...selected.update,
+      command: "UPDATE",
+      fields: { command: "UPDATE", key: "small-alpha", note: null },
+      changedFields: { note: null }
+    }
+  };
+  const topologySyncFrames = scenario.topologySyncFrames?.map((frame) => frame.type === "lsew:topology-sync-chunk"
+    ? {
+        ...frame,
+        records: frame.records.map((record) => record.kind === "subscription" && record.values?.subscription
+          ? { ...record, values: { ...record.values, subscription: { ...(record.values.subscription as Record<string, unknown>), fields: ["command", "key", "value", "note"] } } }
+          : record)
+      }
+    : frame);
+  return {
+    ...scenario,
+    initialEvents: [...schemaEvents, ambiguous],
+    topologySyncFrames,
+    localInjection: {
+      ...scenario.localInjection!,
+      rawText: JSON.stringify({
+        command: "ADD",
+        key: "small-alpha",
+        isSnapshot: false,
+        fields: { command: "ADD", key: "small-alpha", value: "1", note: "explicit Local replacement" }
+      }, null, 2),
+      scenario: { ...scenario.localInjection!.scenario!, addEventId: undefined }
+    }
+  };
 }
 
 function localInjectionHighVolumeScenario(id: WorkbenchScenarioId): WorkbenchScenario {

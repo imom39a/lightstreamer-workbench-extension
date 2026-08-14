@@ -193,6 +193,22 @@ if (scenario.localInjection) {
     for (let index = 0; index < (scenario.localInjection.scenario.authoredSteps ?? 0); index += 1) {
       runtime.dispatch({ type: "add-authored-scenario-step" });
     }
+    for (const configuredCheckpoint of scenario.localInjection.scenario.checkpoints ?? []) {
+      runtime.dispatch({ type: "add-scenario-checkpoint" });
+      const checkpoint = runtime.getSnapshot().scenario?.scenario.members.findLast((member) => member.kind === "checkpoint");
+      if (!checkpoint) throw new Error("Scenario fixture could not add its configured Checkpoint.");
+      runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: {
+        ...checkpoint,
+        name: configuredCheckpoint.name,
+        assertions: configuredCheckpoint.assertions
+      } });
+      if (configuredCheckpoint.beforeSteps) {
+        const stepCount = runtime.getSnapshot().scenario?.scenario.steps.length ?? 0;
+        for (let index = 0; index < stepCount; index += 1) {
+          runtime.dispatch({ type: "move-scenario-member", memberId: checkpoint.id, direction: "earlier" });
+        }
+      }
+    }
     if (scenario.localInjection.scenario.delayMs !== undefined) {
       const stepId = runtime.getSnapshot().scenario?.scenario.steps[0]?.id;
       if (stepId) runtime.dispatch({ type: "set-scenario-step-delay", stepId, delayMs: scenario.localInjection.scenario.delayMs });

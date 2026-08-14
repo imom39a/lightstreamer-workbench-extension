@@ -281,5 +281,62 @@
     "theme": "dark",
     "prototype": { "variant": "A", "state": "cleared", "frame": "compact", "setup": "scenario-halt" },
     "production": { "scenario": "local-injection-scenario-cleared", "setup": "scenario" }
+  },
+  {
+    "id": "scenario-checkpoint-authoring-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-checkpoint-authoring", "setup": "scenario-checkpoint" }
+  },
+  {
+    "id": "scenario-checkpoint-review-normal-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-checkpoint-review", "setup": "scenario-checkpoint" }
+  },
+  {
+    "id": "scenario-checkpoint-waiting-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-checkpoint-waiting", "setup": "scenario-checkpoint" }
+  },
+  {
+    "id": "scenario-checkpoint-pass-evidence-normal-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-checkpoint-pass", "setup": "scenario-checkpoint" }
+  },
+  {
+    "id": "scenario-checkpoint-failure-compact-dark",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-checkpoint-fail", "setup": "scenario-checkpoint" }
+  },
+  {
+    "id": "scenario-checkpoint-wire-unavailable-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-checkpoint-wire-unavailable", "setup": "scenario-checkpoint" }
+  },
+  {
+    "id": "scenario-checkpoint-ambiguous-null-wide-dark",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-checkpoint-ambiguous-null", "setup": "scenario-checkpoint" }
+  },
+  {
+    "id": "scenario-checkpoint-high-volume-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-checkpoint-high-volume", "setup": "scenario-checkpoint-high-volume" }
   }
 ]
