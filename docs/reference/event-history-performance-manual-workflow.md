@@ -2,52 +2,50 @@
 
 This is a deliberate developer-run gate, not ordinary CI. It measures the
 authoritative `EventHistory.offer` → `follow` → `read` boundary through the
-production React `WorkbenchPanel` path in real Chrome for Testing major 151.
-The runner has two explicit proof modes: `headed-visible-frame` (the manual
-foreground/compositor gate) and `non-interactive-layout-commit` (automation
-under a locked console).
+production React `WorkbenchPanel` path in headless Chrome for Testing major
+151. The runner's only supported proof mode is
+`non-interactive-layout-commit`; it records DOM/layout publication evidence and
+does not claim a foreground compositor frame.
 
 ## Run
 
 Use the exact cached Chrome for Testing 151 and fail closed if it is absent:
 
 ```sh
-LSEW_BROWSER_HEADLESS=false \
-LSEW_UI_HEADLESS=false \
 LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
 npm run measure:event-history
 ```
 
-The headed mode refuses headless mode, system-Chrome fallback, fake IndexedDB,
+The runner is unconditionally headless and refuses a system-Chrome fallback, fake IndexedDB,
 and missing reference data. It runs three independent samples for every adapter,
 workload, and payload-shape matrix cell, plus three post-GC heap samples for
 each checkpoint tier. It writes the machine report and concise interpretation
 to `test-results/event-history-performance.json` and `.md`.
 
-The headed file harness launches Chrome with the centralized unattended-test
+The headless file harness launches Chrome with the centralized unattended-test
 policy (`--use-mock-keychain`, `--password-store=basic`, `--disable-sync`,
 `--no-first-run`, `--no-default-browser-check`, and the supported password,
 sign-in, and profile-onboarding feature disables). It also uses
-`--disable-features=CalculateNativeWinOcclusion` and, on macOS,
-`--activate-on-launch`, in addition to its visible foreground gate
-(`Page.bringToFront` plus the bounded double-frame probe). The exact spawned
-Chrome PID is reactivated by the bounded native helper during the proof. These
-launch controls prevent credential prompts and reduce native occlusion and
-activation scheduling failures; the workload, long-task, and boundary
-semantics are unchanged.
+`--disable-features=CalculateNativeWinOcclusion`; it does not create or
+activate desktop windows, request focus, or run compositor/rAF diagnostics.
+The workload, long-task, boundary, and storage semantics are unchanged.
+
+An explicit `LSEW_EVENT_HISTORY_PERF_MODE=headed-visible-frame` request fails
+before Chrome launch with a headless-only policy error because that legacy
+mode cannot make its compositor claim without a desktop window.
 
 The pinned reference is [event-history-performance-reference.json](event-history-performance-reference.json).
 A report never replaces it automatically. A reference update requires an
 explicit maintainer rationale and disposition in the same focused change.
 
-### Locked-console closure mode
+### Non-interactive closure mode
 
-When the macOS console is locked, use the separate non-interactive proof. It
-uses a fresh temporary profile, real native IndexedDB, real DOM/React, and the
-same 36-cell, query, scenario, heap, and absolute-threshold workloads. It does
-not activate windows, request focus, probe rAF, use screencasts, or claim a
-headed compositor result. The compositor-dependent publication confirmation is
-replaced only by the independently instrumented production React
+The supported non-interactive proof uses a fresh temporary profile, real native
+IndexedDB, real DOM/React, and the same 36-cell, query, scenario, heap, and
+absolute-threshold workloads. It does not activate windows, request focus,
+probe rAF, use screencasts, or claim a headed compositor result. The
+compositor-dependent publication confirmation is replaced only by the
+independently instrumented production React
 layout-effect/DOM publication boundary; query, storage, correctness, heap, and
 performance thresholds are unchanged.
 
@@ -65,6 +63,10 @@ The JSON and Markdown artifacts explicitly report
 `compositorFrameMeasured=false`. Adoption is a separate deliberate local
 operation, followed by a clean comparison run; a candidate never becomes its
 own reference.
+
+The legacy `LSEW_BROWSER_HEADLESS` and `LSEW_UI_HEADLESS` variables no longer
+select a visible browser; setting either to `false` is ignored by the launch
+policy.
 
 For the `filter-impl-08` closure, add the explicit scoped selection:
 
@@ -107,16 +109,14 @@ bytes, identifiers/order, pressure and terminal facts, transaction/index
 telemetry, query distributions, Long Tasks, heap, and lifecycle samples.
 Inspect the Markdown matrix and retain the report with the cutover evidence.
 An unpacked-extension smoke may be run separately with
-`LSEW_BROWSER_HEADLESS=false LSEW_UI_HEADLESS=false`; it also uses cached CFT151
-only and has browser/CDP waits of at least 240 seconds. Docking overhead is
-integration evidence, not a timing baseline.
+`npm run test:ui:extension`; it also uses cached CFT151 only and is
+unconditionally headless. Docking overhead is integration evidence, not a
+timing baseline.
 
 The supporting production-panel artifact command is also fail-closed and uses
-the same visible browser pin:
+the same headless browser pin:
 
 ```sh
-LSEW_BROWSER_HEADLESS=false \
-LSEW_UI_HEADLESS=false \
 LSEW_BROWSER_CACHE_DIR=.cache/lsew-browsers \
 npm run measure:panel
 ```

@@ -141,14 +141,14 @@ describe("Event History performance startup fail-closed seams", () => {
     `);
   });
 
-  it("uses the macOS activation flag while keeping other platforms neutral", () => {
+  it("uses headless non-interactive arguments on every platform", () => {
     runNode(`
       import assert from "node:assert/strict";
       const { chromeLaunchArguments } = await import(${JSON.stringify(scriptUrl)});
-      for (const [platform, activates] of [["darwin", true], ["linux", false], ["win32", false]]) {
+      for (const platform of ["darwin", "linux", "win32"]) {
         const args = chromeLaunchArguments("/tmp/lsew-profile", platform);
-        assert.equal(args.some((arg) => arg === "--activate-on-launch"), activates);
-        assert.equal(args.includes("--headless"), false);
+        assert.equal(args.some((arg) => arg === "--activate-on-launch"), false);
+        assert.equal(args.includes("--headless=new"), true);
         assert.equal(args.includes("--no-proxy-server"), true);
         assert.equal(args.includes("--use-mock-keychain"), true);
         assert.equal(args.includes("--password-store=basic"), true);
@@ -173,8 +173,12 @@ describe("Event History performance startup fail-closed seams", () => {
       assert.equal(nonInteractive.includes("--use-mock-keychain"), true);
       assert.equal(nonInteractive.includes("--password-store=basic"), true);
       assert.equal(nonInteractive.includes("--disable-sync"), true);
-      assert.equal(nonInteractive.includes("--no-first-run"), true);
-      assert.equal(nonInteractive.includes("--no-default-browser-check"), true);
+        assert.equal(nonInteractive.includes("--no-first-run"), true);
+        assert.equal(nonInteractive.includes("--no-default-browser-check"), true);
+      assert.throws(
+        () => chromeLaunchArguments("/tmp/lsew-profile", "darwin", "headed-visible-frame"),
+        /headless-only/iu
+      );
     `);
   });
 

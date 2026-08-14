@@ -2,7 +2,7 @@
 
 Status: benchmark tooling, 2026-08-05. Change class: **Non-UI**. This adds no panel code, DOM, accessibility state, or rendered behavior.
 
-`npm run measure:event-history` runs the authoritative `EventHistory.offer` → `follow` → `read` seam through the production React panel in visible Chrome for Testing 151 and writes a machine-readable JSON report plus a concise Markdown interpretation to `test-results/event-history-performance.{json,md}`. The ignored report is evidence for the machine and Chrome version that ran it; it is not a portable performance promise.
+`npm run measure:event-history` runs the authoritative `EventHistory.offer` → `follow` → `read` seam through the production React panel in headless Chrome for Testing 151 and writes a machine-readable JSON report plus a concise Markdown interpretation to `test-results/event-history-performance.{json,md}`. The ignored report is non-interactive evidence for the machine and Chrome version that ran it; it is not a portable performance promise or a compositor-frame claim.
 
 The benchmark derives three deterministic, application-neutral shapes from existing evidence:
 
@@ -23,7 +23,7 @@ The deliberate real-Chrome run measures, for every shape and for IndexedDB plus 
 
 Each shape's envelopes and serialized byte sizes are prepared before its timed workload. Long Task observation covers Event History enqueue, backlog drain, publication, and query work; fixture generation and report serialization are excluded. The runner refuses to publish a report unless accepted, published, and retained counts match and every published and retained identifier remains in Capture order.
 
-The gate always records three independent samples per adapter/workload/shape cell and three post-GC heap samples per checkpoint tier. It fails closed unless `LSEW_BROWSER_HEADLESS=false` and `LSEW_UI_HEADLESS=false` are set, and it refuses a system-Chrome fallback. Do not use a reduced or incomplete output as baseline evidence.
+The gate always records three independent samples per adapter/workload/shape cell and three post-GC heap samples per checkpoint tier. It is unconditionally headless, ignores legacy `LSEW_BROWSER_HEADLESS=false` and `LSEW_UI_HEADLESS=false` overrides, and refuses a system-Chrome fallback. Do not use a reduced or incomplete output as baseline evidence.
 
 The authoritative classifier emits one `PASS`, `REVIEW`, or `FAIL` judgment. It applies the absolute limits per sample and never averages away a correctness, boundary, Long Task, query, or heap failure. JS heap data excludes browser-process memory, IndexedDB disk files, and extension IPC.
 

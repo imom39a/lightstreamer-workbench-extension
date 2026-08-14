@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * Visible Chrome for Testing 151 gate for the production 100k normal tier.
+ * Headless Chrome for Testing 151 gate for the production 100k normal tier.
  * This is deliberately separate from the historical 1k/1,692 timing baseline:
  * every cell gets a fresh temporary profile and identity evidence is bounded.
+ * The evidence is non-interactive and does not claim a visible compositor frame.
  */
 import { createServer } from "node:http";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -27,9 +28,6 @@ const workloadNames = (process.env.LSEW_HISTORY_100K_WORKLOADS ?? "small-lifecyc
   .map((value) => value.trim())
   .filter(Boolean);
 
-if (process.env.LSEW_BROWSER_HEADLESS !== "false" || process.env.LSEW_UI_HEADLESS !== "false") {
-  throw new Error("100k activation requires LSEW_BROWSER_HEADLESS=false and LSEW_UI_HEADLESS=false.");
-}
 if (!Number.isSafeInteger(samples) || samples < 3) throw new Error("100k activation requires at least three independent samples.");
 if (workloadNames.length !== 4) throw new Error("100k activation requires all four workload shapes.");
 
@@ -83,14 +81,13 @@ try {
       try {
         context = await chromium.launchPersistentContext(profile, {
           executablePath: chromeExecutable,
-          headless: false,
+          headless: true,
           viewport: { width: 900, height: 700 },
           colorScheme: sample % 2 === 0 ? "light" : "dark",
           args: chromeTestArguments({
-            headless: false,
+            headless: true,
             disableNativeOcclusion: true,
-              activateOnLaunch: process.platform === "darwin",
-              exposeGc: true,
+            exposeGc: true,
             additional: [
               "--remote-debugging-port=0",
               `--disable-extensions-except=${extensionPath}`,
@@ -146,11 +143,13 @@ try {
     verdict: failures.length === 0 ? "PASS" : "FAIL",
     runner: {
       kind: "real-chrome",
-      headless: false,
+      headless: true,
+      proofMode: "non-interactive",
+      compositorFrameMeasured: false,
       fakeIndexedDbUsed: false,
       product: await browserProduct(chromeExecutable),
       chromeMajor: 151,
-      policyFlags: chromeTestArguments({ headless: false, additional: ["--remote-debugging-port=0"] }),
+      policyFlags: chromeTestArguments({ headless: true, additional: ["--remote-debugging-port=0"] }),
       profileIsolation: profiles.map(({ workload, sample, isolated }) => ({ workload, sample, isolated, freshTemporaryProfile: true }))
     },
     source: {
@@ -192,8 +191,8 @@ async function browserProduct(executable) {
   const profile = await mkdtemp(join(tmpdir(), "lsew-history-100k-product-"));
   const context = await chromium.launchPersistentContext(profile, {
     executablePath: executable,
-    headless: false,
-    args: chromeTestArguments({ headless: false, additional: ["--remote-debugging-port=0"] })
+    headless: true,
+    args: chromeTestArguments({ headless: true, additional: ["--remote-debugging-port=0"] })
   });
   try {
     return await context.browser()?.version();
@@ -208,8 +207,9 @@ function renderMarkdown(report) {
     "# History 100k activation proof",
     "",
     `Verdict: **${report.verdict}**`,
-    `Chrome: **${report.runner.product}**; visible: **${!report.runner.headless}**; fake IndexedDB: **${report.runner.fakeIndexedDbUsed}**`,
+    `Chrome: **${report.runner.product}**; headless: **${report.runner.headless}**; proof: **${report.runner.proofMode}**; compositor frame measured: **${report.runner.compositorFrameMeasured}**; fake IndexedDB: **${report.runner.fakeIndexedDbUsed}**`,
     `Profiles: **${report.runner.profileIsolation.length}** fresh temporary profiles; no profile reuse`,
+    "This is non-interactive headless evidence. It does not claim desktop-window visibility or a foreground compositor frame.",
     "",
     "Canonical logical bytes are recorded separately from physical origin usage and quota estimates; none is treated as a reservation.",
     "",

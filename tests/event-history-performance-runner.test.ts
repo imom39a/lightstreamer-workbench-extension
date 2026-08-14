@@ -513,6 +513,10 @@ describe("Event History performance runner reference preflight", () => {
 
   it("records the scoped noninteractive selection and excludes unrelated lifecycle work", () => {
     const source = readFileSync("scripts/event-history-performance.mjs", "utf8");
+    expect(source).toContain('process.env.LSEW_EVENT_HISTORY_PERF_MODE ?? NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE');
+    expect(source).not.toContain("LSEW_BROWSER_HEADLESS");
+    expect(source).not.toContain("LSEW_UI_HEADLESS");
+    expect(source).not.toMatch(/headless\s*:\s*false/u);
     expect(source).toContain("LSEW_EVENT_HISTORY_PERF_SELECTION");
     expect(source).toContain("filter-impl-08-noninteractive-layout-commit");
     expect(source).toContain("does not prove foreground scheduling or compositor frames");

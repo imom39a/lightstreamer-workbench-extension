@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Deliberate Event History release gate. This runner is intentionally visible:
- * proof must not silently turn into a headless or synthetic measurement.
+ * Deliberate Event History release gate. Repository browser proofs are
+ * unconditionally headless; this runner publishes non-interactive evidence
+ * and does not claim a foreground compositor frame.
  */
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -56,7 +57,12 @@ async function main() {
     throw new Error("filter-impl-08 selection requires non-interactive-layout-commit proof mode.");
   }
   const nonInteractive = proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE;
-  requireVisibleEnvironment(proofMode);
+  if (
+    process.env.LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS === "true"
+    || process.env.LSEW_EVENT_HISTORY_PERF_FRAME_PROBE_ONLY === "true"
+  ) {
+    throw new Error("Headless-only Event History proof cannot run headed compositor diagnostics or the headed rAF discriminator; use the non-interactive layout-commit evidence.");
+  }
   const captureMode = process.env.LSEW_EVENT_HISTORY_PERF_CAPTURE === "true";
   const classificationMode = selectionMode === PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08
     ? (captureMode ? "filter-impl-08-capture-only" : "filter-impl-08")
@@ -165,12 +171,6 @@ async function main() {
       }
     });
     const environment = await requestControlCdpWithDeadline(browserCdp, "Browser.getVersion", {}, { deadlineAt: proofDeadlineAt, phase: "Browser.getVersion" });
-    if (nonInteractive && (
-      process.env.LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS === "true"
-      || process.env.LSEW_EVENT_HISTORY_PERF_FRAME_PROBE_ONLY === "true"
-    )) {
-      throw new Error("The non-interactive proof mode cannot run headed compositor diagnostics or the headed rAF discriminator.");
-    }
     if (process.env.LSEW_EVENT_HISTORY_PERF_FRAME_DIAGNOSTICS === "true") {
       frameDiagnostics = createFrameDiagnostics();
       await requestControlCdpWithDeadline(browserCdp, "Target.setDiscoverTargets", { discover: true }, { deadlineAt: proofDeadlineAt, phase: "Target.setDiscoverTargets" });
@@ -216,7 +216,7 @@ async function main() {
         tracing: false,
         screencast: false,
         source: safeSourceState(),
-        runner: { kind: "real-chrome", headless: false, fakeIndexedDbUsed: false, product: environment.product, userAgent: environment.userAgent, jsVersion: environment.jsVersion },
+        runner: { kind: "real-chrome", headless: true, proofMode: NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE, compositorFrameMeasured: false, fakeIndexedDbUsed: false, product: environment.product, userAgent: environment.userAgent, jsVersion: environment.jsVersion },
         target: { ...initialTarget.windowEvidence, targetId: initialTarget.targetId, pageToken: initialTarget.pageToken, url: initialTarget.url },
         callbacks: { independentForegroundRaf: true, afterDomMutationRaf: mutation?.callback === true },
         evidence: { mutation }
@@ -617,7 +617,7 @@ export async function preparePageForNonInteractiveRun(cdp, expectedUrl, timeoutM
     || state?.url !== expectedUrl
     || state?.harnessReady !== true
   ) {
-    throw new Error("Non-interactive real-Chrome proof requires a loaded visible document and ready production harness.");
+    throw new Error("Non-interactive real-Chrome proof requires a loaded document and ready production harness.");
   }
 }
 
@@ -875,25 +875,27 @@ function attachCleanupEvidence(primaryError, cleanupError) {
 export function chromeLaunchArguments(
   profile,
   platformOrUrl = process.platform,
-  proofModeOrPlatform = HEADED_VISIBLE_FRAME_PROOF_MODE
+  proofModeOrPlatform = NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE
 ) {
   const urlCall = typeof platformOrUrl === "string" && /^(?:about|file|https?):/u.test(platformOrUrl);
   const url = urlCall ? platformOrUrl : "about:blank";
   const platform = urlCall ? proofModeOrPlatform : platformOrUrl;
-  const proofMode = urlCall ? HEADED_VISIBLE_FRAME_PROOF_MODE : proofModeOrPlatform;
-  if (proofMode !== HEADED_VISIBLE_FRAME_PROOF_MODE && proofMode !== NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) {
+  const proofMode = urlCall ? NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE : proofModeOrPlatform;
+  if (proofMode === HEADED_VISIBLE_FRAME_PROOF_MODE) {
+    throw new Error("Headless-only Event History proof does not support headed-visible-frame; use non-interactive-layout-commit.");
+  }
+  if (proofMode !== NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) {
     throw new Error(`Unsupported Event History Chrome proof mode: ${String(proofMode)}.`);
   }
   return [
     ...chromeTestArguments({
       profile,
       platform,
-      headless: proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE,
+      headless: true,
       noProxyServer: true,
       disableNativeOcclusion: true,
       allowFileAccess: true,
       exposeGc: true,
-      activateOnLaunch: proofMode === HEADED_VISIBLE_FRAME_PROOF_MODE && platform === "darwin",
       additional: ["--remote-debugging-port=0"]
     }),
     url
@@ -1215,9 +1217,12 @@ function foregroundKeeperError(error) {
 }
 
 function requestedProofMode() {
-  const mode = process.env.LSEW_EVENT_HISTORY_PERF_MODE ?? HEADED_VISIBLE_FRAME_PROOF_MODE;
-  if (mode !== HEADED_VISIBLE_FRAME_PROOF_MODE && mode !== NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) {
-    throw new Error(`LSEW_EVENT_HISTORY_PERF_MODE must be ${HEADED_VISIBLE_FRAME_PROOF_MODE} or ${NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE}.`);
+  const mode = process.env.LSEW_EVENT_HISTORY_PERF_MODE ?? NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE;
+  if (mode === HEADED_VISIBLE_FRAME_PROOF_MODE) {
+    throw new Error("LSEW_EVENT_HISTORY_PERF_MODE=headed-visible-frame is unavailable under the headless-only policy; use non-interactive-layout-commit.");
+  }
+  if (mode !== NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) {
+    throw new Error(`LSEW_EVENT_HISTORY_PERF_MODE must be ${NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE}.`);
   }
   return mode;
 }
@@ -1228,16 +1233,6 @@ function requestedSelectionMode() {
     throw new Error(`LSEW_EVENT_HISTORY_PERF_SELECTION must be ${PERFORMANCE_SELECTION_MODES.FULL_RELEASE} or ${PERFORMANCE_SELECTION_MODES.FILTER_IMPL_08}.`);
   }
   return mode;
-}
-
-function requireVisibleEnvironment(proofMode) {
-  if (proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE) return;
-  if (process.env.LSEW_BROWSER_HEADLESS !== "false") {
-    throw new Error("Event History proof requires LSEW_BROWSER_HEADLESS=false; refusing to switch to headless Chrome.");
-  }
-  if (process.env.LSEW_UI_HEADLESS !== "false") {
-    throw new Error("Event History proof requires LSEW_UI_HEADLESS=false; refusing to switch to headless Chrome.");
-  }
 }
 
 async function chromeExecutable() {
@@ -1436,7 +1431,7 @@ function legacyMarkdown(report) {
 }
 
 function markdown(report) {
-  const proofMode = report.proofMode ?? report.runner?.proofMode ?? HEADED_VISIBLE_FRAME_PROOF_MODE;
+  const proofMode = report.proofMode ?? report.runner?.proofMode ?? NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE;
   const nonInteractive = proofMode === NON_INTERACTIVE_LAYOUT_COMMIT_PROOF_MODE;
   const publicationLabel = nonInteractive ? "React layout-commit/DOM publication" : "visible compositor frame";
   const boundaryLabel = nonInteractive ? "layout-commit boundary" : "visible-frame boundary";
@@ -1446,7 +1441,7 @@ function markdown(report) {
 
 Verdict: **${report.decision.verdict}**
 
-Proof mode: **${proofMode}**; Chrome headless: **${String(report.runner?.headless)}**; compositor frame measured: **${String(report.frameProof?.compositorFrameMeasured ?? !nonInteractive)}**. This run uses **${publicationLabel}** and does not claim a headed compositor PASS.
+Proof mode: **${proofMode}**; Chrome headless: **${String(report.runner?.headless)}**; compositor frame measured: **${String(report.frameProof?.compositorFrameMeasured ?? false)}**. This run uses **${publicationLabel}** and is non-interactive; it does not claim a headed compositor PASS.
 
 Real Chrome: ${report.runner?.product}; user agent: ${report.runner?.userAgent}; JS: ${report.runner?.jsVersion}; source: ${report.source.revision}; dirty: ${String(report.source.dirty)}; reference: ${report.reference.path}.
 
@@ -1551,7 +1546,7 @@ export async function debuggingPort(profile, child, options = {}) {
   const sleep = options.sleep ?? delay;
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error("Visible Chrome exited before CDP was ready.");
+    if (child.exitCode !== null) throw new Error("Headless Chrome exited before CDP was ready.");
     try {
       const remaining = deadline - Date.now();
       const contents = await readFileWithStartupTimeout(
@@ -1567,7 +1562,7 @@ export async function debuggingPort(profile, child, options = {}) {
       await sleep(Math.min(100, remaining));
     }
   }
-  throw new StartupTimeout("Timed out waiting for visible Chrome CDP.");
+  throw new StartupTimeout("Timed out waiting for headless Chrome CDP.");
 }
 
 export async function pageTarget(port, expected, options = {}) {
@@ -1590,7 +1585,7 @@ export async function pageTarget(port, expected, options = {}) {
     if (remaining <= 0) break;
     await sleep(Math.min(100, remaining));
   }
-  throw new StartupTimeout("Timed out waiting for visible performance page.");
+  throw new StartupTimeout("Timed out waiting for headless performance page.");
 }
 
 export async function browserTarget(port, options = {}) {

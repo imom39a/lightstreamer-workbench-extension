@@ -52,6 +52,9 @@ describe("panel performance evidence runner", () => {
 
     expect(source).toContain('page.getByRole("region", { name: "Lightstreamer Workbench", exact: true })');
     expect(source).not.toContain('page.getByRole("button", { name: "Find", exact: true })');
+    expect(source).toContain("headless: true");
+    expect(source).not.toContain("LSEW_BROWSER_HEADLESS");
+    expect(source).not.toContain("LSEW_UI_HEADLESS");
   });
 
   it("mounts the standalone harness with the authoritative Event History contract", () => {

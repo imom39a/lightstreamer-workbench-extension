@@ -62,7 +62,7 @@ Options:
   --lifecycle-scenario ID  mount, runtime, history, capture, visibility, or full-ui (default: full-ui).
   --print-config           Print resolved lifecycle configuration and exit.
   --inspect-harness        Bundle the standalone harness and print its resolved React build.
-  Visible proof requires LSEW_BROWSER_HEADLESS=false and LSEW_UI_HEADLESS=false.
+  Browser evidence is always headless and non-interactive; it does not claim a foreground compositor frame.
   --help                   Show this help.`);
   process.exit(0);
 }
@@ -93,10 +93,6 @@ if (args.evaluate) {
   process.exit(gate.passed ? 0 : 1);
 }
 
-if (process.env.LSEW_BROWSER_HEADLESS !== "false" || process.env.LSEW_UI_HEADLESS !== "false") {
-  throw new Error("Panel performance proof requires LSEW_BROWSER_HEADLESS=false and LSEW_UI_HEADLESS=false; refusing to switch to headless Chrome.");
-}
-
 const jsonPath = resolve(projectRoot, args.json ?? defaultJsonPath);
 const temporaryRoot = await mkdtemp(join(tmpdir(), "lsew-panel-measure-"));
 let server;
@@ -111,8 +107,8 @@ try {
   const chromeExecutable = await resolveChromeExecutable();
   browser = await chromium.launch({
     executablePath: chromeExecutable,
-    headless: false,
-    args: chromeTestArguments({ headless: false, disableNativeOcclusion: true, exposeGc: true })
+    headless: true,
+    args: chromeTestArguments({ headless: true, disableNativeOcclusion: true, exposeGc: true })
   });
   const measuredBrowserVersion = await browser.version();
   if (!/\b151\./u.test(measuredBrowserVersion)) {
@@ -122,6 +118,12 @@ try {
   const report = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
+    proof: {
+      mode: "non-interactive",
+      headless: true,
+      compositorFrameMeasured: false,
+      disclaimer: "Scoped headless layout/DOM evidence only; it does not prove foreground scheduling or compositor frames."
+    },
     environment: await environmentSnapshot(browser, chromeExecutable),
     harness: harness.evidence,
     configuration: {
@@ -157,6 +159,7 @@ try {
     report.limitations = [
       "Measurements use a deterministic standalone panel harness, not DevTools frontend docking overhead.",
       "Long Task API attribution is page-wide; the measurement page contains only Workbench and its harness.",
+      "This run is headless and non-interactive; refresh and lifecycle measurements do not claim a foreground compositor frame.",
       ...lifecycleLimitations([report.lifecycle]).slice(1)
     ];
   }
@@ -881,6 +884,7 @@ async function environmentSnapshot(browser, chromeExecutable) {
     npm: npmVersion,
     chrome: await browser.version(),
     chromeExecutable,
+    headless: true,
     vite: vitePackage.version,
     react: reactPackage.version,
     reactDom: reactDomPackage.version,
@@ -917,7 +921,7 @@ function printSummary(report, jsonPath) {
     },
     { metric: "High-volume max panel task", value: formatMs(report.highVolume.maxLongTaskMs) },
     {
-      metric: "Visible Evidence refresh gap max / p95",
+      metric: "DOM Evidence refresh gap max / p95",
       value: `${formatOptionalMs(report.highVolume.maxRefreshGapMs)} / ${formatOptionalMs(report.highVolume.p95RefreshGapMs)}`
     },
     {

@@ -57,7 +57,7 @@ async function runOfficialClientPanelJourney(
     const chromeArguments = [
       ...chromeTestArguments({
         profile: profileDir,
-        headless: process.env.LSEW_BROWSER_HEADLESS !== "false",
+        headless: true,
         disableNativeOcclusion: true,
         additional: [
           "--auto-open-devtools-for-tabs",

@@ -54,7 +54,7 @@ async function runBrowserProof(): Promise<void> {
   const chrome = spawn(chromeExecutable, [
     ...chromeTestArguments({
       profile: profileDir,
-      headless: process.env.LSEW_BROWSER_HEADLESS !== "false",
+      headless: true,
       disableNativeOcclusion: true,
       additional: [
         "--auto-open-devtools-for-tabs",

@@ -8,7 +8,19 @@ import { createPlaywrightLaunchOptions } from "../scripts/chrome-launch-args.mjs
 const projectRoot = process.cwd();
 const configSources = [
   readFileSync(join(projectRoot, "playwright.config.ts"), "utf8"),
+  readFileSync(join(projectRoot, "playwright.extension.config.ts"), "utf8"),
   readFileSync(join(projectRoot, "playwright.site.config.ts"), "utf8")
+];
+const launchOptionSources = [configSources[0], configSources[2]];
+
+const launchPolicySourcePaths = [
+  "scripts/event-history-100k-activation.mjs",
+  "scripts/event-history-performance.mjs",
+  "scripts/generate-workbench-visual-evidence.mjs",
+  "scripts/measure-panel.mjs",
+  "tests/extension-panel.browser.spec.ts",
+  "tests/extension-ui/lightstreamer-capture.spec.ts",
+  "tests/lightstreamer-local-injection.browser.spec.ts"
 ];
 
 const REQUIRED_FLAGS = [
@@ -43,11 +55,22 @@ describe("Playwright unattended Chrome launch policy", () => {
   });
 
   it("installs launch options in both shipped configs", () => {
-    for (const source of configSources) {
+    for (const source of launchOptionSources) {
       expect(source).toContain("launchOptions: createPlaywrightLaunchOptions(chromeExecutable)");
-      expect(source).not.toMatch(/\.\.\.\(chromeExecutable\s*\?/u);
       expect(source).toContain("Playwright owns the fresh temporary profile");
+    }
+    for (const source of configSources) {
+      expect(source).toMatch(/headless:\s*true/u);
+      expect(source).not.toMatch(/\.\.\.\(chromeExecutable\s*\?/u);
       expect(source).not.toContain("--user-data-dir=");
+    }
+  });
+
+  it("keeps every repository-owned UI/browser launch headless", () => {
+    for (const relativePath of launchPolicySourcePaths) {
+      const source = readFileSync(join(projectRoot, relativePath), "utf8");
+      expect(source, relativePath).not.toMatch(/headless\s*:\s*false/u);
+      expect(source, relativePath).not.toMatch(/LSEW_(?:BROWSER|UI)_HEADLESS/u);
     }
   });
 });

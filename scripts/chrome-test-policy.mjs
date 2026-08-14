@@ -1,6 +1,6 @@
 /**
- * Central launch policy for every unattended Chrome process used by the
- * repository's browser, UI, visual, fixture, and performance proofs.
+ * Central launch policy for every unattended, headless Chrome process used by
+ * the repository's browser, UI, visual, fixture, and performance proofs.
  *
  * Callers own the profile lifecycle. Direct launchers must pass a fresh
  * temporary profile; Playwright owns an equivalent fresh profile when no
@@ -24,8 +24,10 @@ export const CHROME_TEST_ONBOARDING_FEATURES = Object.freeze([
 
 export function chromeTestArguments({
   profile = null,
-  headless = false,
-  platform = process.platform,
+  // Retained for compatibility with older callers. The repository policy is
+  // unconditionally headless and never honors a visible-mode request.
+  headless: _requestedHeadless = true,
+  platform: _platform = process.platform,
   noProxyServer = false,
   disableNativeOcclusion = false,
   allowFileAccess = false,
@@ -39,8 +41,8 @@ export function chromeTestArguments({
   if (!Array.isArray(additional) || additional.some((argument) => typeof argument !== "string" || argument.length === 0)) {
     throw new Error("Chrome test policy additional arguments must be non-empty strings.");
   }
-  if (activateOnLaunch && (headless || platform !== "darwin")) {
-    throw new Error("Chrome test policy activation is only valid for headed macOS Chrome.");
+  if (activateOnLaunch) {
+    throw new Error("Chrome test policy is headless-only; activateOnLaunch is unavailable.");
   }
 
   const features = [
@@ -48,7 +50,7 @@ export function chromeTestArguments({
     ...CHROME_TEST_ONBOARDING_FEATURES
   ];
   const argumentsList = [
-    ...(headless ? ["--headless=new"] : []),
+    "--headless=new",
     "--no-sandbox",
     "--disable-dev-shm-usage",
     ...(noProxyServer ? ["--no-proxy-server"] : []),

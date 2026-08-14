@@ -16,7 +16,6 @@ const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactRoot = resolve(projectRoot, "test-results/workbench-visual-qa");
 const prototypePort = Number(process.env.LSEW_VISUAL_PROTOTYPE_PORT ?? 4191);
 const panelPort = Number(process.env.LSEW_VISUAL_PANEL_PORT ?? 4192);
-const browserHeadless = process.env.LSEW_BROWSER_HEADLESS !== "false";
 const scenarios = JSON.parse(
   await readFile(resolve(projectRoot, "tests/ui/visual-matrix.json"), "utf8")
 );
@@ -71,8 +70,8 @@ try {
 
   browser = await chromium.launch({
     executablePath: await resolveChromeExecutable(),
-    headless: browserHeadless,
-    args: chromeTestArguments({ headless: browserHeadless, disableNativeOcclusion: true })
+    headless: true,
+    args: chromeTestArguments({ headless: true, disableNativeOcclusion: true })
   });
   const results = [];
   for (const scenario of scenarios) {
@@ -105,7 +104,8 @@ try {
     generatedAt: new Date().toISOString(),
     command: "npm run test:ui:visual",
     browser: await browser.version(),
-    browserMode: browserHeadless ? "headless" : "visible",
+    browserMode: "headless",
+    evidenceMode: "non-interactive",
     source: {
       reference: "accepted prototypes/workbench-ui-10",
       current: "production Workbench scenario harness using shipped panel root document",

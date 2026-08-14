@@ -34,8 +34,6 @@ const extensionDir = resolve(rootDir, process.env.LSEW_EXTENSION_DIR ?? "dist");
 const SMOKE_TIMEOUT_MS = readTimeout(process.env.LSEW_SMOKE_TIMEOUT_MS ?? "300000");
 
 async function runExtensionPanelSmoke(): Promise<void> {
-  assert.equal(process.env.LSEW_BROWSER_HEADLESS, "false", "The unpacked DevTools smoke requires visible Chrome.");
-  assert.equal(process.env.LSEW_UI_HEADLESS, "false", "The unpacked DevTools smoke requires a visible UI.");
   const profileDir = await mkdtemp(join(tmpdir(), "lsew-extension-panel-smoke-"));
   const chromeExecutable = await resolveChromeExecutable(rootDir);
   const chromeLogs: string[] = [];
@@ -56,7 +54,7 @@ async function runExtensionPanelSmoke(): Promise<void> {
     const chromeArguments = [
       ...chromeTestArguments({
         profile: profileDir,
-        headless: process.env.LSEW_BROWSER_HEADLESS !== "false",
+        headless: true,
         disableNativeOcclusion: true,
         additional: [
           "--auto-open-devtools-for-tabs",
@@ -322,7 +320,7 @@ document.querySelector('[aria-label="Structural runtime scope"]') &&
     assert.ok(survivingPanel, "The primary real panel should have a retained CDP connection.");
     await closeWorkbenchTab(devtoolsFrontendCdp, secondPanelId);
     await waitForWorkbenchTabToClose(devtoolsFrontendCdp, secondPanelId);
-    // Chrome's headed DevTools tabbed pane removes a closed panel tab without
+    // Chrome's DevTools tabbed pane removes a closed panel tab without
     // unloading its extension iframe. Dispatch the production lifecycle seam
     // so this smoke exercises the same mount disposal and ownership-safe close.
     await panelToClose.request("Runtime.evaluate", {

@@ -13,5 +13,8 @@ export default defineConfig({
   reporter: [
     ["list"],
     ["html", { outputFolder: "test-results/extension-ui-report", open: "never" }]
-  ]
+  ],
+  use: {
+    headless: true
+  }
 });

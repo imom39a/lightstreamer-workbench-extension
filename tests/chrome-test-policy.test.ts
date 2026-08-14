@@ -7,6 +7,11 @@ import {
 } from "../scripts/chrome-test-policy.mjs";
 
 describe("central unattended Chrome policy", () => {
+  it("is headless by default and ignores a legacy visible-mode request", () => {
+    expect(chromeTestArguments()).toContain("--headless=new");
+    expect(chromeTestArguments({ headless: false })).toContain("--headless=new");
+  });
+
   it("requires every prompt-suppression and onboarding flag", () => {
     const args = chromeTestArguments({
       profile: "/tmp/lsew-policy-profile",
@@ -26,8 +31,8 @@ describe("central unattended Chrome policy", () => {
     expect(args).not.toContain("--activate-on-launch");
   });
 
-  it("cannot activate a headless or non-macOS process", () => {
-    expect(() => chromeTestArguments({ headless: true, activateOnLaunch: true })).toThrow(/activation/u);
-    expect(() => chromeTestArguments({ platform: "linux", activateOnLaunch: true })).toThrow(/activation/u);
+  it("cannot activate a process under the headless-only policy", () => {
+    expect(() => chromeTestArguments({ platform: "darwin", activateOnLaunch: true })).toThrow(/headless|activation/u);
+    expect(() => chromeTestArguments({ platform: "linux", activateOnLaunch: true })).toThrow(/headless|activation/u);
   });
 });
