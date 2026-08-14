@@ -128,7 +128,7 @@ export const SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES = 4_096;
 // complete canonical form (including generated correlation/Evidence identity)
 // rather than shortening an already-settled outcome after dispatch.
 const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 13 * 1024;
-export const SCENARIO_MAX_CONTROL_RECORDS = 128;
+export const SCENARIO_BASE_CONTROL_RECORDS = 128;
 export const SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD = 512;
 export const SCENARIO_MAX_LEDGER_RECORDS = 8;
 export const SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD = 8 * 1024;
@@ -645,7 +645,8 @@ export function scenarioRunAdmission(
   if (availableControlRecords < minimumControlRecords) {
     return freeze({ ok: false as const, capacity: "bytes" as const, reason: "Scenario Run would exceed 8 MiB after reserving its immutable plan and append-only Trace; no Run was created." });
   }
-  const controlReservationBytes = Math.min(SCENARIO_MAX_CONTROL_RECORDS, availableControlRecords) * SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD;
+  const desiredControlRecords = Math.max(SCENARIO_BASE_CONTROL_RECORDS, minimumControlRecords);
+  const controlReservationBytes = Math.min(desiredControlRecords, availableControlRecords) * SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD;
   const accountedBytes = currentRunBaseBytes + controlReservationBytes;
   return freeze({ ok: true as const, accountedBytes, traceReservationBytes, controlReservationBytes, stepCount: run.steps.length });
 }

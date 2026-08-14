@@ -132,6 +132,27 @@ function checkpointThenStepRun() {
   return reviewed.run;
 }
 
+function highVolumeCheckpointRun() {
+  let scenario = createScenarioFromDraft(input("draft-1", "ADD", 0), { scenarioId: "scenario-high-volume-checkpoints" });
+  for (let ordinal = 1; ordinal <= 100; ordinal += 1) {
+    const stepId = scenario.steps.at(-1)!.id;
+    const checkpoint = addScenarioCheckpoint(scenario, {
+      id: `checkpoint-${ordinal}`, kind: "checkpoint", name: `Boundary ${ordinal}`,
+      assertions: [{ id: `assertion-${ordinal}`, kind: "correlated-local-evidence-exists", stepId }]
+    });
+    if (!checkpoint.ok) throw new Error(checkpoint.reason);
+    scenario = checkpoint.scenario;
+    if (ordinal < 100) {
+      const next = addScenarioStep(scenario, input(`draft-${ordinal + 1}`, "UPDATE", 0));
+      if (!next.ok) throw new Error(next.reason);
+      scenario = next.scenario;
+    }
+  }
+  const reviewed = reviewScenario(scenario, { runId: "run-high-volume-checkpoints", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+  if (!reviewed.ok) throw new Error(reviewed.reason);
+  return reviewed.run;
+}
+
 function delivered(stepOrdinal: number) {
   return {
     kind: "attempted" as const,
@@ -709,6 +730,37 @@ describe("Local Injection Scenario runner", () => {
     }
     expect(runner.snapshot()).toMatchObject({ phase: "complete", run: { controls: expect.any(Array) } });
     expect(runner.snapshot().run.controls).toHaveLength(100);
+    expect(execute).toHaveBeenCalledTimes(100);
+  });
+
+  it("admits enough control Trace to Step next through 100 Steps and 100 Checkpoints", async () => {
+    const clock = new FakeClock();
+    const run = highVolumeCheckpointRun();
+    const evidence = { intervalId: "interval-1", sequence: 1, eventId: "local-evidence" };
+    const execute = vi.fn(async ({ ordinal }: { ordinal: number }) => delivered(ordinal));
+    const runner = createLocalInjectionScenarioRunner(run, {
+      clock,
+      allocateInjectionId: ({ ordinal }) => `injection-${ordinal}`,
+      execute,
+      checkpoint: {
+        feed: new FakeBoundaryFeed(),
+        observations: () => ({
+          priorOutcomes: new Map(),
+          correlatedLocalEvidence: new Map(run.steps.map(({ id }) => [id, evidence] as const)),
+          inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence })
+        })
+      }
+    });
+    expect(run.members).toHaveLength(200);
+    expect(runner.snapshot().run.controlReservationBytes).toBeGreaterThanOrEqual(202 * 512);
+    for (let memberIndex = 0; memberIndex < run.members.length; memberIndex += 1) {
+      runner.stepNext();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(runner.snapshot().run.trace).toHaveLength(memberIndex + 1);
+    }
+    expect(runner.snapshot().phase).toBe("complete");
     expect(execute).toHaveBeenCalledTimes(100);
   });
 

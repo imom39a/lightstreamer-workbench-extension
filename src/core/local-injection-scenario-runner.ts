@@ -4,7 +4,6 @@ import {
   stepScenarioRun,
   terminalizeScenarioRun,
   SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD,
-  SCENARIO_MAX_CONTROL_RECORDS,
   type ReviewedScenarioStep,
   type ReviewedScenarioMember,
   type ReviewedScenarioCheckpoint,
@@ -137,7 +136,7 @@ export function createLocalInjectionScenarioRunner(
   let activeCheckpoint: ScenarioRunnerSnapshot["activeCheckpoint"] = null;
   let checkpointWasPlaying = false;
   let resumeCheckpoint: (() => void) | null = null;
-  const admittedControlRecords = Math.min(SCENARIO_MAX_CONTROL_RECORDS, Math.floor(run.controlReservationBytes / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD));
+  const admittedControlRecords = Math.floor(run.controlReservationBytes / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
 
   function cursor(): ReviewedScenarioMemberCursor {
     return Object.freeze({ members: run.members, index: Math.max(0, run.nextMemberIndex) });
