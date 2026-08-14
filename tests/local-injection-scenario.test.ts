@@ -9,6 +9,7 @@ import {
   createScenarioFromDraft,
   duplicateScenarioStep,
   moveScenarioStep,
+  markScenarioEvidenceUnavailableAfterClear,
   previewScenarioMembership,
   removeScenarioStep,
   reviewScenario,
@@ -49,6 +50,29 @@ function input(id: string, command: "ADD" | "UPDATE" | "DELETE", qty: number): S
 }
 
 describe("Local Injection Scenario", () => {
+  it("reviews only while History is accepting and appends the exact initial authorization boundary", () => {
+    const scenario = createScenarioFromDraft(input("draft-1", "ADD", 1), { scenarioId: "scenario-1" });
+    expect(reviewScenario(scenario, { runId: "blocked-run", committedEvidenceSeed: null, targetFingerprint: "fp", activeCommandKeysByItem: [], historyAccepting: false }))
+      .toMatchObject({ ok: false, reason: expect.stringContaining("RUNNING and accepting") });
+    const reviewed = reviewScenario(scenario, {
+      runId: "run-1",
+      committedEvidenceSeed: { intervalId: "interval-1", sequence: 9, eventId: "server-9" },
+      targetFingerprint: "fp-1",
+      listenerIds: ["listener-2", "listener-1"],
+      activeCommandKeysByItem: [],
+      historyAccepting: true,
+      clearInProgress: false
+    });
+    if (!reviewed.ok) throw new Error(reviewed.reason);
+    expect(reviewed.run.authorizations).toEqual([expect.objectContaining({
+      kind: "INITIAL_REVIEW",
+      targetFingerprint: "fp-1",
+      listenerIds: ["listener-1", "listener-2"],
+      committedEvidenceBoundary: { eventId: "server-9", intervalId: "interval-1", sequence: 9 },
+      authorizedRemainingFromOrdinal: 1
+    })]);
+    expect(markScenarioEvidenceUnavailableAfterClear(reviewed.run)).toBe(reviewed.run);
+  });
   it("deliberately converts one protected Draft without losing its authoring state", () => {
     const source = input("draft-1", "ADD", 1);
     const scenario = createScenarioFromDraft(source, { scenarioId: "scenario-1" });

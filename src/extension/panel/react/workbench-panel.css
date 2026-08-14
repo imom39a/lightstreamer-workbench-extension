@@ -341,6 +341,11 @@
 .workbench-react__scenario-header h1 { margin: 0; font-size: 14px; white-space: nowrap; }
 .workbench-react__scenario-header > strong { border-left: 3px solid var(--wb-info); padding: 3px 6px; color: var(--wb-info); font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__scenario-problem { flex: 0 0 auto; margin: 0; border-bottom: 1px solid var(--wb-error); background: var(--wb-error-soft); color: var(--wb-text); padding: 7px 9px; }
+.workbench-react__scenario-ledger { flex: 0 0 auto; border-bottom: 1px solid var(--wb-border); background: var(--wb-raised); padding: 6px 9px; }
+.workbench-react__scenario-ledger header { display: flex; justify-content: space-between; gap: 8px; color: var(--wb-muted); font-size: 10px; }
+.workbench-react__scenario-ledger header strong { color: var(--wb-text); }
+.workbench-react__scenario-ledger ol { display: grid; gap: 2px; margin: 5px 0 0; padding-left: 18px; }
+.workbench-react__scenario-ledger li { overflow-wrap: anywhere; font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .workbench-react__scenario-picker { position: absolute; z-index: 12; inset: 58px 10px 48px; display: flex; min-height: 0; flex-direction: column; border: 1px solid var(--wb-border-strong); background: var(--wb-raised); box-shadow: 0 8px 24px color-mix(in srgb, #000 35%, transparent); padding: 9px; }
 .workbench-react__scenario-picker header { display: grid; gap: 3px; border-bottom: 1px solid var(--wb-border); padding-bottom: 7px; }
 .workbench-react__scenario-picker-actions { display: flex; align-items: center; gap: 7px; padding-top: 7px; }

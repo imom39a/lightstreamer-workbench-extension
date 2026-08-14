@@ -1,4 +1,6 @@
 import {
+  appendScenarioAuthorization,
+  appendScenarioDrift,
   stepScenarioRun,
   terminalizeScenarioRun,
   SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD,
@@ -7,7 +9,8 @@ import {
   type ScenarioControlRecord,
   type ScenarioRun,
   type ScenarioTraceEntry,
-  type ScenarioTraceTiming
+  type ScenarioTraceTiming,
+  type ScenarioDriftRecord
 } from "./local-injection-scenario";
 import type { EvidenceRef } from "./event-history-authoritative";
 import type { LocalInjectionDocument } from "./local-injection-document";
@@ -19,7 +22,7 @@ export interface ScenarioClock {
   clearTimer(handle: unknown): void;
 }
 
-export type ScenarioPauseReason = "USER" | "HIDDEN" | "DRIFT";
+export type ScenarioPauseReason = "USER" | "HIDDEN" | "DRIFT" | "DRIFT_REVIEW_REQUIRED";
 export type ScenarioRunnerPhase = "paused" | "waiting" | "in-flight" | "pause-pending" | "stop-pending" | "complete" | "stopped" | "disposed";
 export type ReviewedScenarioMember = ReviewedScenarioStep;
 export type ReviewedScenarioMemberCursor = Readonly<{ members: readonly ReviewedScenarioMember[]; index: number }>;
@@ -68,6 +71,18 @@ export type ScenarioRunner = Readonly<{
   activeDeadlineAfter(durationMs: number): number;
   remainingUntilActiveDeadline(deadlineActiveOffsetMs: number): number;
   dispose(): void;
+  reReview(input: Readonly<{
+    targetFingerprint: string;
+    listenerIds: readonly string[];
+    committedEvidenceBoundary: EvidenceRef | null;
+  }>): Readonly<{ ok: true }> | Readonly<{ ok: false; reason: string }>;
+}>;
+
+type ScenarioDriftInput = Readonly<{
+  kind: ScenarioDriftRecord["kind"];
+  addedListenerIds: readonly string[];
+  removedListenerIds: readonly string[];
+  evidence: EvidenceRef | null;
 }>;
 
 export function createLocalInjectionScenarioRunner(
@@ -78,9 +93,10 @@ export function createLocalInjectionScenarioRunner(
     execute(input: ScenarioDispatchInput): Promise<ExecutionTerminal>;
     beforeDispatch?(input: Readonly<{ run: ScenarioRun; member: ReviewedScenarioMember; activeOffsetMs: number }>):
       | Readonly<{ allow: true }>
-      | Readonly<{ allow: false; reason: "DRIFT"; detail: string }>;
+      | Readonly<{ allow: false; reason: "DRIFT"; detail: string; drift?: ScenarioDriftInput }>
+      | Readonly<{ allow: false; reason: "TARGET_RETIRED"; detail: string }>;
     afterSettlement?(input: Readonly<{ run: ScenarioRun; member: ReviewedScenarioMember; trace: ScenarioTraceEntry }>): Promise<
-      void | Readonly<{ continue: true }> | Readonly<{ continue: false; reason: "DRIFT"; detail: string }>
+      void | Readonly<{ continue: true }> | Readonly<{ continue: false; reason: "DRIFT"; detail: string; drift?: ScenarioDriftInput }>
     >;
     onChange?(snapshot: ScenarioRunnerSnapshot): void;
   }>
@@ -170,9 +186,25 @@ export function createLocalInjectionScenarioRunner(
     if (!guard.allow) {
       manualOverride = false;
       freezeActive();
+      if (guard.reason === "TARGET_RETIRED") {
+        run = terminalizeScenarioRun(run, activeNow(), guard.detail);
+        phase = "stopped";
+        pauseReason = null;
+        remainingDelayMs = 0;
+        publish();
+        return;
+      }
       phase = "paused";
-      pauseReason = "DRIFT";
+      pauseReason = "DRIFT_REVIEW_REQUIRED";
       remainingDelayMs = 0;
+      run = appendScenarioDrift(run, {
+        kind: guard.drift?.kind ?? "MIXED",
+        activeOffsetMs: activeNow(),
+        addedListenerIds: guard.drift?.addedListenerIds ?? [],
+        removedListenerIds: guard.drift?.removedListenerIds ?? [],
+        evidence: guard.drift?.evidence ?? null,
+        detail: guard.detail
+      });
       appendControl("PAUSE", "DRIFT", guard.detail);
       publish();
       return;
@@ -236,8 +268,16 @@ export function createLocalInjectionScenarioRunner(
       } else if (settlementGuard && !settlementGuard.continue) {
         freezeActive();
         phase = "paused";
-        pauseReason = "DRIFT";
+        pauseReason = "DRIFT_REVIEW_REQUIRED";
         remainingDelayMs = scaledDelay(nextMember()?.relativeDelayMs ?? 0, run.speed);
+        run = appendScenarioDrift(run, {
+          kind: settlementGuard.drift?.kind ?? "MIXED",
+          activeOffsetMs: activeNow(),
+          addedListenerIds: settlementGuard.drift?.addedListenerIds ?? [],
+          removedListenerIds: settlementGuard.drift?.removedListenerIds ?? [],
+          evidence: settlementGuard.drift?.evidence ?? null,
+          detail: settlementGuard.detail
+        });
         appendControl("PAUSE", "DRIFT", settlementGuard.detail);
       } else if (steppedManually) {
         freezeActive();
@@ -291,7 +331,7 @@ export function createLocalInjectionScenarioRunner(
   return Object.freeze({
     snapshot,
     play() {
-      if (phase !== "paused" || !visible || run.status !== "paused" || pauseReason === "DRIFT") return;
+      if (phase !== "paused" || !visible || run.status !== "paused" || pauseReason === "DRIFT" || pauseReason === "DRIFT_REVIEW_REQUIRED") return;
       if (run.controls.length >= admittedControlRecords - 2) return;
       if (!appendControl(run.controls.some(({ kind }) => kind === "PLAY") ? "RESUME" : "PLAY", null, run.controls.length === 0 ? "Timed Scenario execution started." : "Timed Scenario execution resumed.")) return;
       schedule(remainingDelayMs);
@@ -299,7 +339,7 @@ export function createLocalInjectionScenarioRunner(
     pause,
     stepNext() {
       const member = nextMember();
-      if (phase !== "paused" || !member || !visible || run.status !== "paused" || pauseReason === "DRIFT") return;
+      if (phase !== "paused" || !member || !visible || run.status !== "paused" || pauseReason === "DRIFT" || pauseReason === "DRIFT_REVIEW_REQUIRED") return;
       if (run.controls.length >= admittedControlRecords - 2) return;
       if (!appendControl("STEP NEXT", pauseReason, `Step ${member.ordinal} dispatched immediately; its remaining delay was bypassed.`)) return;
       manualOverride = true;
@@ -329,6 +369,15 @@ export function createLocalInjectionScenarioRunner(
     },
     activeDeadlineAfter(durationMs: number) { return activeNow() + Math.max(0, durationMs); },
     remainingUntilActiveDeadline(deadlineActiveOffsetMs: number) { return Math.max(0, deadlineActiveOffsetMs - activeNow()); },
+    reReview(input) {
+      if (phase !== "paused" || pauseReason !== "DRIFT_REVIEW_REQUIRED" || run.status !== "paused") {
+        return Object.freeze({ ok: false as const, reason: "Scenario Run is not awaiting drift re-review." });
+      }
+      run = appendScenarioAuthorization(run, { ...input, activeOffsetMs: activeNow() });
+      pauseReason = "USER";
+      publish();
+      return Object.freeze({ ok: true as const });
+    },
     dispose() {
       if (phase === "disposed") return;
       clearScheduledTimer();

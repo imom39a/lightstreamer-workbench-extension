@@ -147,6 +147,7 @@ import {
   previewScenarioMembership,
   removeScenarioStep,
   reviewScenario,
+  markScenarioEvidenceUnavailableAfterClear,
   terminalizeScenarioRun,
   scenarioTargetIncompatibility,
   undoScenarioStepRemoval,
@@ -613,6 +614,7 @@ export type WorkbenchCommand =
   | { type: "set-scenario-step-delay"; stepId: string; delayMs: number }
   | { type: "set-scenario-speed"; speed: ScenarioSpeed }
   | { type: "review-scenario" }
+  | { type: "re-review-scenario" }
   | { type: "edit-scenario" }
   | { type: "play-scenario" }
   | { type: "pause-scenario" }
@@ -811,6 +813,7 @@ type ScenarioState = {
   retainedRunBytes: number;
   runner: ScenarioRunner | null;
   runnerSnapshot: ScenarioRunnerSnapshot | null;
+  serverInterleaves: EvidenceRef[];
 };
 
 type InvestigationCheckpoint = Readonly<{
@@ -1433,6 +1436,12 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       case "request-clear-history":
+        if (this.scenarioState && !["edit", "complete", "stopped"].includes(this.scenarioState.phase)) {
+          this.clearState = "error";
+          this.clearError = "Clear is unavailable while a Scenario Run is active or awaiting drift re-review.";
+          this.publish();
+          return;
+        }
         this.clearState = "confirming";
         this.clearError = null;
         this.publish();
@@ -1653,6 +1662,9 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "review-scenario":
         this.reviewCurrentScenario();
+        return;
+      case "re-review-scenario":
+        this.reReviewCurrentScenario();
         return;
       case "edit-scenario":
         if (!this.scenarioState || this.scenarioState.phase === "running") return;
@@ -2191,6 +2203,13 @@ class Runtime implements WorkbenchRuntime {
           });
         }
         this.resetCoherentStateAfterClear();
+        if (this.scenarioState) {
+          if (this.scenarioState.run) this.scenarioState.run = markScenarioEvidenceUnavailableAfterClear(this.scenarioState.run);
+          this.scenarioState.priorRuns = this.scenarioState.priorRuns.map(markScenarioEvidenceUnavailableAfterClear);
+          this.scenarioState.runnerSnapshot = this.scenarioState.runnerSnapshot && this.scenarioState.run
+            ? Object.freeze({ ...this.scenarioState.runnerSnapshot, run: this.scenarioState.run })
+            : this.scenarioState.runnerSnapshot;
+        }
         this.mode = preservedMode;
         this.restorationCheckpoints.splice(0);
         this.restorationIndex = -1;
@@ -2441,6 +2460,18 @@ class Runtime implements WorkbenchRuntime {
       return;
     }
     const event = entry.candidate;
+    const scenario = this.scenarioState;
+    const scenarioDraft = scenario ? scenario.drafts.get(scenario.scenario.steps[0]!.id) : null;
+    if (
+      scenario && scenarioDraft && scenario.run && !event.synthetic && event.kind === "item-update" &&
+      event.client?.id === scenarioDraft.anchor.clientId &&
+      event.client?.sessionId === scenarioDraft.anchor.sessionId &&
+      event.subscription?.id === scenarioDraft.anchor.subscriptionId &&
+      ((scenarioDraft.anchor.itemName !== null && event.item?.name === scenarioDraft.anchor.itemName) ||
+        (scenarioDraft.anchor.itemPosition !== null && event.item?.position === scenarioDraft.anchor.itemPosition))
+    ) {
+      scenario.serverInterleaves.push(Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId }));
+    }
     const activityKey = `${entry.intervalId}\u0000${entry.sequence}`;
     if (!this.activityEvidenceKeys.has(activityKey)) {
       this.activityEvidenceKeys.add(activityKey);
@@ -3430,7 +3461,8 @@ class Runtime implements WorkbenchRuntime {
       priorRuns: [],
       retainedRunBytes: 0,
       runner: null,
-      runnerSnapshot: null
+      runnerSnapshot: null,
+      serverInterleaves: []
     };
     draft.open = false;
     draft.parked = false;
@@ -3670,6 +3702,9 @@ class Runtime implements WorkbenchRuntime {
       runId: `local-injection-run-${++this.localInjectionSequence}`,
       committedEvidenceSeed: this.committedEvidenceBoundary,
       targetFingerprint: this.scenarioTargetFingerprint(state.drafts.get(state.scenario.steps[0]!.id)!),
+      listenerIds: this.scenarioCurrentListenerIds(state.drafts.get(state.scenario.steps[0]!.id)!),
+      historyAccepting: this.historyStatus.phase === "RUNNING",
+      clearInProgress: this.clearState !== "idle",
       activeCommandKeysByItem: state.scenario.steps.map(({ id }) => state.drafts.get(id)!).map((draft) => ({
         item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
         keys: this.activeCommandKeys(draft.anchor)
@@ -3723,6 +3758,33 @@ class Runtime implements WorkbenchRuntime {
       clock: this.scenarioClock,
       allocateInjectionId: () => `local-injection-${++this.localInjectionSequence}`,
       beforeDispatch: ({ member }) => {
+        const draft = state.drafts.get(member.id);
+        if (!draft) return { allow: false as const, reason: "TARGET_RETIRED" as const, detail: "Scenario Step target is unavailable." };
+        const targetProblem = this.validateLocalInjectionTarget(draft.anchor)[0];
+        if (targetProblem) return { allow: false as const, reason: "TARGET_RETIRED" as const, detail: targetProblem.message };
+        const authorization = state.run?.authorizations.at(-1);
+        const currentListeners = this.scenarioCurrentListenerIds(draft);
+        const authorizedListeners = authorization?.listenerIds ?? [];
+        const addedListenerIds = currentListeners.filter((id) => !authorizedListeners.includes(id));
+        const removedListenerIds = authorizedListeners.filter((id) => !currentListeners.includes(id));
+        const serverEvidence = state.serverInterleaves.find((reference) =>
+          authorization?.committedEvidenceBoundary === null || authorization?.committedEvidenceBoundary === undefined ||
+          reference.intervalId !== authorization.committedEvidenceBoundary.intervalId || reference.sequence > authorization.committedEvidenceBoundary.sequence);
+        if (addedListenerIds.length > 0 || removedListenerIds.length > 0 || serverEvidence) {
+          return {
+            allow: false as const,
+            reason: "DRIFT" as const,
+            detail: serverEvidence
+              ? `Committed Server Item Update ${serverEvidence.eventId} interleaved on the exact Scenario target.`
+              : `Item Update listener set changed: added ${addedListenerIds.join(", ") || "none"}; removed ${removedListenerIds.join(", ") || "none"}.`,
+            drift: {
+              kind: serverEvidence && (addedListenerIds.length > 0 || removedListenerIds.length > 0) ? "MIXED" as const : serverEvidence ? "SERVER_ITEM_UPDATE" as const : "LISTENER_SET" as const,
+              addedListenerIds,
+              removedListenerIds,
+              evidence: serverEvidence ?? null
+            }
+          };
+        }
         const review = state.reviews.get(member.id);
         if (!review || review.kind !== "reviewed") {
           return { allow: false as const, reason: "DRIFT" as const, detail: "Scenario Review is unavailable; return to Edit and Review again." };
@@ -3737,6 +3799,16 @@ class Runtime implements WorkbenchRuntime {
                 ? `${current.reason} Return to Edit and Review again.`
                 : "Scenario Review was invalidated; return to Edit and Review again."
             };
+      },
+      afterSettlement: async () => {
+        const currentRun = state.run;
+        const authorization = currentRun?.authorizations.at(-1);
+        const serverEvidence = state.serverInterleaves.find((reference) =>
+          authorization?.committedEvidenceBoundary === null || authorization?.committedEvidenceBoundary === undefined ||
+          reference.intervalId !== authorization.committedEvidenceBoundary.intervalId || reference.sequence > authorization.committedEvidenceBoundary.sequence);
+        return serverEvidence
+          ? { continue: false as const, reason: "DRIFT" as const, detail: `Committed Server Item Update ${serverEvidence.eventId} interleaved on the exact Scenario target.`, drift: { kind: "SERVER_ITEM_UPDATE" as const, addedListenerIds: [], removedListenerIds: [], evidence: serverEvidence } }
+          : { continue: true as const };
       },
       execute: async (input) => {
         const review = state.reviews.get(input.stepId);
@@ -3768,12 +3840,54 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
+  private reReviewCurrentScenario(): void {
+    const state = this.scenarioState;
+    if (!state?.run || !state.runner || state.runnerSnapshot?.pauseReason !== "DRIFT_REVIEW_REQUIRED") return;
+    if (this.historyStatus.phase !== "RUNNING" || this.clearState !== "idle") {
+      state.runner.stop("Drift re-review failed because Event History is not RUNNING and accepting.");
+      return;
+    }
+    const firstDraft = state.drafts.get(state.scenario.steps[0]!.id);
+    if (!firstDraft) {
+      state.runner.stop("Drift re-review failed because the exact Scenario target is unavailable.");
+      return;
+    }
+    const targetProblem = this.validateLocalInjectionTarget(firstDraft.anchor)[0];
+    if (targetProblem) {
+      state.runner.stop(`Drift re-review failed: ${targetProblem.message}`);
+      return;
+    }
+    const reviews = new Map(state.run.steps.slice(state.run.nextOrdinal - 1).map((step) => {
+      const draft = state.drafts.get(step.id)!;
+      const executionDraft = applyLocalInjectionDocumentToDraft(draft.baseDraft, step.document, draft.explicitConcreteFields);
+      return [step.id, this.localInjectionExecutionCoordinator.review({
+        fingerprint: this.localInjectionFingerprint(draft),
+        executionTarget: draft.anchor.executionTarget,
+        document: step.document,
+        draft: cloneReinjectionDraft(executionDraft),
+        correlation: { scenarioId: state.run!.scenarioId, runId: state.run!.id, stepId: step.id, ordinal: step.ordinal, targetId: draft.anchor.subscriptionId }
+      })] as const;
+    }));
+    const refusal = [...reviews.values()].find((review) => review.kind === "refused");
+    if (refusal?.kind === "refused") {
+      state.runner.stop(`Drift re-review failed: ${refusal.reason}`);
+      return;
+    }
+    for (const [stepId, review] of reviews) state.reviews.set(stepId, review);
+    const accepted = state.runner.reReview({
+      targetFingerprint: this.scenarioTargetFingerprint(firstDraft),
+      listenerIds: this.scenarioCurrentListenerIds(firstDraft),
+      committedEvidenceBoundary: this.committedEvidenceBoundary
+    });
+    if (!accepted.ok) state.runner.stop(`Drift re-review failed: ${accepted.reason}`);
+  }
+
   private archiveCurrentScenarioRun(state: ScenarioState): void {
     state.runner?.stop("Scenario returned to Edit before this Step was attempted.");
     const run = state.run ? terminalizeScenarioRun(state.run, this.scenarioClock.now()) : null;
     if (!run) return;
     state.priorRuns.push(run);
-    state.retainedRunBytes = run.accountedBytes - state.scenario.accountedBytes;
+    state.retainedRunBytes += run.accountedBytes - state.scenario.accountedBytes;
   }
 
   private stepNextScenario(): void {
@@ -3928,6 +4042,11 @@ class Runtime implements WorkbenchRuntime {
 
   private scenarioTargetFingerprint(draft: LocalInjectionDraftState): string {
     return hashLocalInjectionValue({ anchor: draft.anchor, deliveryIdentity: this.localInjectionDeliveryIdentity(draft.anchor) });
+  }
+
+  private scenarioCurrentListenerIds(draft: LocalInjectionDraftState): readonly string[] {
+    const identity = this.localInjectionDeliveryIdentity(draft.anchor) as { deliveryListenerIds?: readonly string[] };
+    return Object.freeze([...(identity.deliveryListenerIds ?? [])].sort());
   }
 
   private refreshEvidence(

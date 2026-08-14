@@ -95,6 +95,72 @@ function delivered(stepOrdinal: number) {
 }
 
 describe("Local Injection Scenario runner", () => {
+  it("halts a retired target before allocating identity and terminalizes every due Step", () => {
+    const clock = new FakeClock();
+    const allocateInjectionId = vi.fn(() => "must-not-exist");
+    const runner = createLocalInjectionScenarioRunner(reviewedRun([0, 100]), {
+      clock,
+      allocateInjectionId,
+      execute: async ({ ordinal }) => delivered(ordinal),
+      beforeDispatch: () => ({ allow: false, reason: "TARGET_RETIRED", detail: "Session session-1 retired." })
+    });
+    runner.play();
+    clock.advance(0);
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped", run: { status: "stopped" } });
+    expect(runner.snapshot().run.trace).toMatchObject([
+      { kind: "not-run", stepId: "step-1", detail: "Session session-1 retired." },
+      { kind: "not-run", stepId: "step-2" }
+    ]);
+    expect(allocateInjectionId).not.toHaveBeenCalled();
+  });
+
+  it("records exact listener drift, requires immutable-plan re-review, and then resumes", () => {
+    const clock = new FakeClock();
+    let drift = true;
+    const run = reviewedRun([0]);
+    const runner = createLocalInjectionScenarioRunner(run, {
+      clock,
+      allocateInjectionId: () => "injection-1",
+      execute: async () => delivered(1),
+      beforeDispatch: () => drift
+        ? { allow: false, reason: "DRIFT", detail: "Listener set changed.", drift: { kind: "LISTENER_SET", addedListenerIds: ["listener-2"], removedListenerIds: [], evidence: null } }
+        : { allow: true }
+    });
+    runner.play();
+    clock.advance(0);
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "DRIFT_REVIEW_REQUIRED" });
+    expect(runner.snapshot().run.drifts).toEqual([expect.objectContaining({ kind: "LISTENER_SET", addedListenerIds: ["listener-2"] })]);
+    const originalPlan = runner.snapshot().run.steps;
+    drift = false;
+    expect(runner.reReview({ targetFingerprint: "fingerprint-2", listenerIds: ["listener-1", "listener-2"], committedEvidenceBoundary: { intervalId: "interval-1", sequence: 7, eventId: "server-7" } })).toEqual({ ok: true });
+    expect(runner.snapshot().run.steps).toBe(originalPlan);
+    expect(runner.snapshot().run.authorizations).toHaveLength(2);
+    expect(runner.snapshot().run.authorizations[1]).toMatchObject({ kind: "DRIFT_REVIEW", targetFingerprint: "fingerprint-2", authorizedRemainingFromOrdinal: 1 });
+  });
+
+  it.each([
+    ["partial", { ...delivered(1).outcome, disposition: "partial" as const, headline: "PARTIALLY DELIVERED" as const, status: "listener-error" as const, attemptedCount: 3, deliveredCount: 2, failedCount: 1 }],
+    ["unknown", { ...delivered(1).outcome, disposition: "acknowledgement-unknown" as const, headline: "DELIVERY UNKNOWN" as const, status: "acknowledgement-unknown" as const }],
+    ["delivered-unretained", delivered(1).outcome]
+  ])("stops truthfully for %s without advancing or fabricating Evidence", async (_name, outcome) => {
+    const clock = new FakeClock();
+    const runner = createLocalInjectionScenarioRunner(reviewedRun([0, 100]), {
+      clock,
+      allocateInjectionId: () => "injection-1",
+      execute: async () => ({ kind: "attempted", outcome, evidence: null })
+    });
+    runner.play();
+    clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().phase).toBe("stopped"));
+    expect(runner.snapshot().run.nextOrdinal).toBe(1);
+    expect(runner.snapshot().run.trace[0]).toMatchObject({
+      kind: "attempted",
+      evidence: null,
+      retention: outcome.disposition === "delivered" ? "DELIVERED_UNRETAINED" : "NOT_CREATED",
+      evidenceAvailability: "NOT_APPLICABLE"
+    });
+    expect(runner.snapshot().run.trace[1]).toMatchObject({ kind: "not-run", stepId: "step-2" });
+  });
   it("starts the first relative delay at Play and schedules the next only after Evidence settlement", async () => {
     const clock = new FakeClock();
     let settle!: (value: ReturnType<typeof delivered>) => void;
@@ -275,7 +341,7 @@ describe("Local Injection Scenario runner", () => {
     });
     runner.play();
     clock.advance(0);
-    expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "DRIFT" });
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "DRIFT_REVIEW_REQUIRED" });
     expect(allocateInjectionId).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
     runner.play();
@@ -356,7 +422,7 @@ describe("Local Injection Scenario runner", () => {
     });
     runner.play();
     clock.advance(0);
-    await vi.waitFor(() => expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "DRIFT", nextOrdinal: 2, remainingDelayMs: 100 }));
+    await vi.waitFor(() => expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "DRIFT_REVIEW_REQUIRED", nextOrdinal: 2, remainingDelayMs: 100 }));
     clock.advance(1_000);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(runner.snapshot().run.controls.at(-1)).toMatchObject({ kind: "PAUSE", reason: "DRIFT" });

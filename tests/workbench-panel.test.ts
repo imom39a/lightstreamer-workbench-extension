@@ -348,7 +348,7 @@ function reviewedScenario(runnerPhase: "paused" | "waiting" | "in-flight" = "pau
   const reviewedStep = { kind: "step" as const, id: "step-1", ordinal: 1, sourceEventId: local.anchor.sourceEventId, rawText: local.rawText, document: local.document!, relativeDelayMs: 100 };
   const run = {
     id: "run-1", scenarioId: scenario.id, scenarioRevision: scenario.revision, target, targetFingerprint: "fp-1", committedEvidenceSeed: null,
-    steps: [reviewedStep], status: "paused" as const, nextOrdinal: 1, trace: [], accountedBytes: 4096, traceReservationBytes: 1024, controlReservationBytes: 1024, speed: 2 as const, controls: []
+    steps: [reviewedStep], status: "paused" as const, nextOrdinal: 1, trace: [], accountedBytes: 4096, traceReservationBytes: 1024, controlReservationBytes: 1024, speed: 2 as const, controls: [], authorizations: [], drifts: []
   };
   return {
     phase: runnerPhase === "paused" ? "review" : "running",
@@ -1737,10 +1737,14 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...paused, phase: "paused" } })));
     expect(document.activeElement).toBe(find("Resume"));
 
-    const drifted = { ...paused, phase: "paused" as const };
-    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...drifted, runner: { ...drifted.runner!, pauseReason: "DRIFT" } } })));
-    expect(find("Resume")?.disabled).toBe(true);
-    expect(find("Step next")?.disabled).toBe(true);
+    const driftRun = { ...paused.run!, authorizations: [{ id: "auth-1", kind: "INITIAL_REVIEW" as const, targetFingerprint: "fp-1", listenerIds: ["listener-1"], committedEvidenceBoundary: { intervalId: "interval-1", sequence: 6, eventId: "source-6" }, authorizedRemainingFromOrdinal: 1, activeOffsetMs: 0 }], drifts: [{ id: "drift-1", kind: "LISTENER_SET" as const, detectedBeforeOrdinal: 1, activeOffsetMs: 25, addedListenerIds: ["listener-2"], removedListenerIds: [], evidence: null, detail: "Listener set changed." }] };
+    const drifted = { ...paused, phase: "paused" as const, run: driftRun, runner: { ...paused.runner!, run: driftRun } };
+    await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...drifted, runner: { ...drifted.runner!, pauseReason: "DRIFT_REVIEW_REQUIRED" } } })));
+    expect(find("Re-review immutable plan")?.disabled).toBe(false);
+    expect(find("Step next")).toBeUndefined();
+    expect(document.querySelector('[aria-label="Scenario Run ledger"]')?.textContent).toContain("listener-2");
+    await act(async () => find("Re-review immutable plan")?.click());
+    expect(runtime.commands).toContainEqual({ type: "re-review-scenario" });
 
     await act(async () => runtime.setSnapshot(snapshot({ scenario: { ...drifted, runner: { ...drifted.runner!, pauseReason: "USER", controlCapacityReached: true } } })));
     expect(document.querySelector('[aria-label="Local Injection Scenario"]')?.textContent).toContain("CONTROL TRACE CAPACITY REACHED");

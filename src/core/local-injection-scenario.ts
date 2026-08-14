@@ -80,6 +80,8 @@ export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
 const SCENARIO_TRACE_RESERVATION_BYTES_PER_INJECTION_MEMBER = 16 * 1024;
 export const SCENARIO_MAX_CONTROL_RECORDS = 128;
 export const SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD = 512;
+export const SCENARIO_MAX_LEDGER_RECORDS = 128;
+export const SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD = 2 * 1024;
 
 export type ScenarioAdmissionContext = Readonly<{ retainedRunBytes?: number }>;
 
@@ -120,6 +122,27 @@ export type ReviewedScenarioStep = Readonly<{
   relativeDelayMs: number;
 }>;
 
+export type ScenarioAuthorizationBoundary = Readonly<{
+  id: string;
+  kind: "INITIAL_REVIEW" | "DRIFT_REVIEW";
+  targetFingerprint: string;
+  listenerIds: readonly string[];
+  committedEvidenceBoundary: EvidenceRef | null;
+  authorizedRemainingFromOrdinal: number;
+  activeOffsetMs: number;
+}>;
+
+export type ScenarioDriftRecord = Readonly<{
+  id: string;
+  kind: "LISTENER_SET" | "SERVER_ITEM_UPDATE" | "MIXED";
+  detectedBeforeOrdinal: number;
+  activeOffsetMs: number;
+  addedListenerIds: readonly string[];
+  removedListenerIds: readonly string[];
+  evidence: EvidenceRef | null;
+  detail: string;
+}>;
+
 export type ScenarioTraceEntry = Readonly<{
   stepId: string;
   ordinal: number;
@@ -127,6 +150,8 @@ export type ScenarioTraceEntry = Readonly<{
   injectionId: string;
   outcome: LocalInjectionOutcome;
   evidence: EvidenceRef | null;
+  retention: "NOT_CREATED" | "COMMITTED" | "DELIVERED_UNRETAINED";
+  evidenceAvailability: "RETAINED" | "UNAVAILABLE_AFTER_CLEAR" | "NOT_APPLICABLE";
   timing?: ScenarioTraceTiming;
   detailLimited?: Readonly<{ originalBytes: number; retainedBytes: number }>;
 }> | Readonly<{
@@ -176,6 +201,8 @@ export type ScenarioRun = Readonly<{
   controlReservationBytes: number;
   speed: ScenarioSpeed;
   controls: readonly ScenarioControlRecord[];
+  authorizations: readonly ScenarioAuthorizationBoundary[];
+  drifts: readonly ScenarioDriftRecord[];
 }>;
 
 export function createScenarioFromDraft(
@@ -338,9 +365,16 @@ export function reviewScenario(
     committedEvidenceSeed: EvidenceRef | null;
     targetFingerprint: string;
     activeCommandKeysByItem: readonly Readonly<{ item: ScenarioDraftInput["item"]; keys: readonly string[] }>[];
+    listenerIds?: readonly string[];
+    historyAccepting?: boolean;
+    clearInProgress?: boolean;
+    activeOffsetMs?: number;
     retainedRunBytes?: number;
   }>
 ): Readonly<{ ok: true; run: ScenarioRun }> | Readonly<{ ok: false; reason: string; stepId?: string }> {
+  if (facts.historyAccepting === false || facts.clearInProgress) {
+    return Object.freeze({ ok: false as const, reason: "Scenario Review requires Event History to be RUNNING and accepting; Clear must be idle." });
+  }
   if (scenario.steps.length === 0) return Object.freeze({ ok: false as const, reason: "Add at least one Scenario Step before Review." });
   const keysByItem = new Map(facts.activeCommandKeysByItem.map(({ item, keys }) => [itemKey(item), new Set(keys)]));
   const reviewed: ReviewedScenarioStep[] = [];
@@ -393,6 +427,16 @@ export function reviewScenario(
       controlReservationBytes: 0,
       speed: scenario.speed,
       controls: []
+      ,authorizations: [freeze({
+        id: `${facts.runId}:authorization:1`,
+        kind: "INITIAL_REVIEW" as const,
+        targetFingerprint: facts.targetFingerprint,
+        listenerIds: [...(facts.listenerIds ?? (scenario.target.listenerId ? [scenario.target.listenerId] : []))].sort(),
+        committedEvidenceBoundary: facts.committedEvidenceSeed,
+        authorizedRemainingFromOrdinal: 1,
+        activeOffsetMs: facts.activeOffsetMs ?? 0
+      })],
+      drifts: []
   });
   const admission = scenarioRunAdmission(scenario, candidate, facts.retainedRunBytes ?? 0);
   if (!admission.ok) return Object.freeze({ ok: false as const, reason: admission.reason });
@@ -424,7 +468,8 @@ export function scenarioRunAdmission(
   | Readonly<{ ok: false; capacity: "bytes"; reason: string }> {
   const traceReservationBytes = run.steps.reduce((bytes, member) => bytes + scenarioMemberTraceReservationBytes(member), 0);
   const { accountedBytes: _runBytes, traceReservationBytes: _traceBytes, controlReservationBytes: _controlBytes, trace: _trace, controls: _controls, ...immutablePlan } = run;
-  const baseAccountedBytes = scenario.accountedBytes + retainedRunBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes;
+  const ledgerReservationBytes = SCENARIO_MAX_LEDGER_RECORDS * SCENARIO_LEDGER_RESERVATION_BYTES_PER_RECORD;
+  const baseAccountedBytes = scenario.accountedBytes + retainedRunBytes + canonicalBytes(immutablePlan) + canonicalBytes(run.trace) + traceReservationBytes + ledgerReservationBytes;
   const availableControlRecords = Math.floor((SCENARIO_MAX_ACCOUNTED_BYTES - baseAccountedBytes) / SCENARIO_CONTROL_RESERVATION_BYTES_PER_RECORD);
   const minimumControlRecords = run.steps.length + 2;
   if (availableControlRecords < minimumControlRecords) {
@@ -492,13 +537,18 @@ export async function stepScenarioRun<T extends Readonly<{
       evidence: null
     }))]
   });
+  const retainedEvidence = terminal.outcome.disposition === "delivered" ? terminal.evidence : null;
   const trace: ScenarioTraceEntry = freeze({
     stepId: step.id,
     ordinal: step.ordinal,
     kind: "attempted" as const,
     injectionId: adapter.injectionId,
     outcome: terminal.outcome,
-    evidence: terminal.evidence
+    evidence: retainedEvidence,
+    retention: retainedEvidence !== null
+      ? "COMMITTED" as const
+      : terminal.outcome.disposition === "delivered" ? "DELIVERED_UNRETAINED" as const : "NOT_CREATED" as const,
+    evidenceAvailability: retainedEvidence !== null ? "RETAINED" as const : "NOT_APPLICABLE" as const
   });
   const nextOrdinal = run.nextOrdinal + 1;
   const delivered = terminal.outcome.disposition === "delivered" && terminal.evidence !== null;
@@ -519,6 +569,58 @@ export async function stepScenarioRun<T extends Readonly<{
       : "stopped" as const,
     trace: [...run.trace, trace, ...stoppedRemainder]
   });
+}
+
+export function appendScenarioDrift(
+  run: ScenarioRun,
+  drift: Omit<ScenarioDriftRecord, "id" | "detectedBeforeOrdinal"> & Partial<Pick<ScenarioDriftRecord, "id" | "detectedBeforeOrdinal">>
+): ScenarioRun {
+  if (run.authorizations.length + run.drifts.length >= SCENARIO_MAX_LEDGER_RECORDS) return run;
+  const record = freeze({
+    ...drift,
+    id: drift.id ?? `${run.id}:drift:${run.drifts.length + 1}`,
+    detectedBeforeOrdinal: drift.detectedBeforeOrdinal ?? run.nextOrdinal,
+    addedListenerIds: [...drift.addedListenerIds].sort(),
+    removedListenerIds: [...drift.removedListenerIds].sort()
+  });
+  return freeze({ ...run, drifts: [...run.drifts, record] });
+}
+
+export function appendScenarioAuthorization(
+  run: ScenarioRun,
+  input: Readonly<{
+    targetFingerprint: string;
+    listenerIds: readonly string[];
+    committedEvidenceBoundary: EvidenceRef | null;
+    activeOffsetMs: number;
+  }>
+): ScenarioRun {
+  if (run.authorizations.length + run.drifts.length >= SCENARIO_MAX_LEDGER_RECORDS) return run;
+  const authorization = freeze({
+    id: `${run.id}:authorization:${run.authorizations.length + 1}`,
+    kind: "DRIFT_REVIEW" as const,
+    targetFingerprint: input.targetFingerprint,
+    listenerIds: [...input.listenerIds].sort(),
+    committedEvidenceBoundary: input.committedEvidenceBoundary,
+    authorizedRemainingFromOrdinal: run.nextOrdinal,
+    activeOffsetMs: input.activeOffsetMs
+  });
+  return freeze({
+    ...run,
+    targetFingerprint: input.targetFingerprint,
+    authorizations: [...run.authorizations, authorization]
+  });
+}
+
+export function markScenarioEvidenceUnavailableAfterClear(run: ScenarioRun): ScenarioRun {
+  if (run.status === "paused") return run;
+  let changed = false;
+  const trace = run.trace.map((entry) => {
+    if (entry.kind !== "attempted" || entry.evidence === null || entry.evidenceAvailability !== "RETAINED") return entry;
+    changed = true;
+    return freeze({ ...entry, evidenceAvailability: "UNAVAILABLE_AFTER_CLEAR" as const });
+  });
+  return changed ? freeze({ ...run, trace }) : run;
 }
 
 export function terminalizeScenarioRun(run: ScenarioRun, timestamp: number, detail = "Scenario returned to Edit before this Step was attempted."): ScenarioRun {
