@@ -138,7 +138,7 @@ try {
       changedWorkflow: "A Scenario Checkpoint authors protected assertions, evaluates one exact committed Evidence boundary without dispatching an Injection, and exposes waiting and terminal truth in the promoted document.",
       acceptanceCriteria: [
         "Checkpoint authoring and Review keep protected identity, boundary, assertions, and zero-Injection meaning visible outside raw Item Update JSON.",
-        "Waiting, pass, fail, wire-unavailable, and ambiguous Server-null states remain textually distinct with exact Evidence provenance and a retained-Evidence inspection route.",
+        "Waiting, pass, fail, wire-unavailable, and ambiguous Server-null states remain textually distinct; evaluated results expose exact Evidence provenance and a retained-Evidence route whenever related Evidence exists, while invalid wire Review fabricates neither a boundary nor a route.",
         "Compact, normal, shallow forced-colors, wide, Dark, and Light states retain one Scenario content scroll, keyboard focus, and no serious or critical axe violations.",
         "The high-volume document contains 100 independent Steps plus 100 Checkpoints while keeping every large editor unmounted and all non-focused Checkpoints collapsed."
       ],
@@ -150,7 +150,7 @@ try {
         checkedScenarios: results.filter((result) => result.id.startsWith("scenario-checkpoint-") && result.checks.accessibility).map((result) => result.id),
         seriousOrCriticalViolations: results.filter(({ id }) => id.startsWith("scenario-checkpoint-")).reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
       },
-      keyboardAndFocus: "Each state scrolls its exact Checkpoint into view and physically focuses the labelled CHECKPOINT control; the retained-Evidence route is also activated through physical keyboard input in the browser gate.",
+      keyboardAndFocus: "Evaluated retained-Evidence routes are activated through physical keyboard input in the browser gate. Each state scrolls its exact Checkpoint into view; the shallow wire refusal physically focuses its protected Assertion control inside the one Scenario scroll, while other states focus the labelled CHECKPOINT control.",
       matrixRationale: "Eight deterministic states cover compact Light authoring, normal Dark Review, wide Light waiting, normal Light pass and Evidence route, compact Dark failure, shallow forced-colors Dark wire unavailability, wide Dark ambiguous Server null, and wide Light 100-Step plus 100-Checkpoint high volume.",
       baselineIntent: "Add independently generated Darwin and pinned-Linux baselines for all eight Scenario Checkpoint states."
     } : results.some(({ id }) => id.startsWith("scenario-")) ? {
@@ -539,7 +539,9 @@ async function captureProduction(runningBrowser, scenario) {
     if (scenario.production.setup === "scenario-checkpoint" || scenario.production.setup === "scenario-checkpoint-high-volume") {
       const scenarioDocument = page.getByRole("region", { name: "Local Injection Scenario" });
       const checkpoint = scenarioDocument.locator(".workbench-react__scenario-checkpoint").last();
-      const action = checkpoint.getByRole("button", { name: /CHECKPOINT \d+/ });
+      const action = scenario.production.scenario.endsWith("wire-unavailable")
+        ? checkpoint.getByRole("combobox", { name: /Assertion/ })
+        : checkpoint.getByRole("button", { name: /CHECKPOINT \d+/ });
       await action.scrollIntoViewIfNeeded();
       await action.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest" }));
       await action.focus();

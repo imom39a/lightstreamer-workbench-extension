@@ -696,7 +696,7 @@ function localInjectionCheckpointScenario(id: WorkbenchScenarioId, state: Checkp
     : state === "pass"
       ? [{ id: "assertion-correlated-evidence", kind: "correlated-local-evidence-exists", stepId: "step-2" }]
       : state === "fail"
-        ? [{ id: "assertion-failed-outcome", kind: "prior-injection-outcome", stepId: "step-2", expectedDisposition: "failed" }]
+        ? [{ id: "assertion-mismatched-value", kind: "command-field-equals", item: { name: "topology-small-item", position: 1 }, key: "small-alpha", field: "value", expected: "expected-but-not-observed" }]
         : state === "wire-unavailable"
           ? [{ id: "assertion-wire-listeners", kind: "listener-count", stepId: "step-1", count: "delivered", expected: 1 }]
           : state === "ambiguous-null"
@@ -795,7 +795,8 @@ function withAmbiguousServerNull(scenario: WorkbenchScenario): WorkbenchScenario
     : frame);
   return {
     ...scenario,
-    initialEvents: [...schemaEvents, ambiguous],
+    initialEvents: schemaEvents,
+    laterEvents: [...(scenario.laterEvents ?? []), ambiguous],
     topologySyncFrames,
     localInjection: {
       ...scenario.localInjection!,

@@ -127,18 +127,24 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       if (visual.production.scenario.endsWith("authoring")) await expect(checkpoint).toHaveAttribute("data-checkpoint-state", "authoring");
       if (visual.production.scenario.endsWith("review")) await expect(checkpoint).toContainText("REVIEWED");
       if (visual.production.scenario.endsWith("waiting")) await expect(checkpoint).toContainText("WAITING");
-      if (visual.production.scenario.endsWith("pass")) {
-        await expect(checkpoint).toContainText("PASS");
+      if (visual.production.scenario.endsWith("pass")) await expect(checkpoint).toContainText("PASS");
+      if (visual.production.scenario.endsWith("fail")) await expect(checkpoint).toContainText("FAIL");
+      if (["waiting", "pass", "fail", "ambiguous-null"].some((suffix) => visual.production.scenario.endsWith(suffix))) {
         const route = checkpoint.getByRole("button", { name: /Inspect Evidence/ });
         await expect(route).toBeVisible();
         await route.focus();
         await page.keyboard.press("Enter");
         await expect(route).toBeFocused();
       }
-      if (visual.production.scenario.endsWith("fail")) await expect(checkpoint).toContainText("FAIL");
       if (visual.production.scenario.endsWith("wire-unavailable")) {
         await expect(scenario.getByRole("alert")).toContainText("Wire delivery does not expose listener counts");
         await expect(checkpoint).toHaveAttribute("aria-label", "Scenario Checkpoint Listener count unavailable on wire");
+        const assertion = checkpoint.getByRole("combobox", { name: /Assertion/ });
+        await assertion.scrollIntoViewIfNeeded();
+        await assertion.focus();
+        await expect(assertion).toBeFocused();
+        await expect(assertion).toBeInViewport();
+        await expect(checkpoint.getByRole("button", { name: /Inspect Evidence/ })).toHaveCount(0);
       }
       if (visual.production.scenario.endsWith("ambiguous-null")) {
         await expect(checkpoint).toContainText("NOT-EVALUABLE");
