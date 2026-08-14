@@ -185,21 +185,21 @@
     "id": "scenario-edit-compact-light",
     "viewport": { "width": 563, "height": 700 },
     "theme": "light",
-    "prototype": { "variant": "A", "state": "edit", "frame": "compact", "setup": "captured-draft" },
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-edit", "setup": "scenario" }
   },
   {
     "id": "scenario-review-normal-dark",
     "viewport": { "width": 900, "height": 700 },
     "theme": "dark",
-    "prototype": { "variant": "C", "state": "review", "frame": "normal", "setup": "authored-review" },
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-review", "setup": "scenario" }
   },
   {
     "id": "scenario-complete-wide-light",
     "viewport": { "width": 1440, "height": 900 },
     "theme": "light",
-    "prototype": { "variant": "B", "state": "review", "frame": "wide", "setup": "authored-review" },
+    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
     "production": { "scenario": "local-injection-scenario-complete", "setup": "scenario" }
   }
 ]

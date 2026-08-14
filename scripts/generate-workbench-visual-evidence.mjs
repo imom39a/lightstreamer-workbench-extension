@@ -16,9 +16,14 @@ const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactRoot = resolve(projectRoot, "test-results/workbench-visual-qa");
 const prototypePort = Number(process.env.LSEW_VISUAL_PROTOTYPE_PORT ?? 4191);
 const panelPort = Number(process.env.LSEW_VISUAL_PANEL_PORT ?? 4192);
-const scenarios = JSON.parse(
+const allScenarios = JSON.parse(
   await readFile(resolve(projectRoot, "tests/ui/visual-matrix.json"), "utf8")
 );
+const grepIndex = process.argv.indexOf("--grep");
+const grep = grepIndex >= 0 ? process.argv[grepIndex + 1] : null;
+if (grepIndex >= 0 && (!grep || grep.startsWith("--"))) throw new Error("--grep requires a matrix id substring.");
+const scenarios = grep ? allScenarios.filter(({ id }) => id.includes(grep)) : allScenarios;
+if (grep && scenarios.length === 0) throw new Error(`No visual matrix ids include ${JSON.stringify(grep)}.`);
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`Usage: npm run test:ui:visual [-- --print-matrix]
@@ -29,6 +34,7 @@ The artifacts are reference evidence, not a pixel-parity acceptance gate.
 
 Options:
   --print-matrix  Print the deterministic viewport/theme/state matrix and exit.
+  --grep <text>   Generate only matrix entries whose id includes text.
   --help          Show this help.`);
   process.exit(0);
 }
@@ -36,7 +42,8 @@ if (process.argv.includes("--print-matrix")) {
   console.log(JSON.stringify(publicMatrix()));
   process.exit(0);
 }
-for (const argument of process.argv.slice(2)) {
+for (const [index, argument] of process.argv.slice(2).entries()) {
+  if (argument === "--grep" || index > 0 && process.argv.slice(2)[index - 1] === "--grep") continue;
   throw new Error(`Unknown option: ${argument}`);
 }
 
@@ -112,7 +119,26 @@ try {
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
     contactSheets,
-    review: {
+    review: grep?.startsWith("scenario") ? {
+      classification: "Material UI",
+      changedWorkflow: "A protected standalone Local Injection Draft becomes an explicit two-Step, same-target Scenario that is reviewed into one immutable Run and stepped one ordinary Injection at a time.",
+      acceptanceCriteria: [
+        "Conversion preserves the Draft Source, raw JSON, validation, exact target, editor responsibility, and restoration origin; adding Evidence admits exactly one compatible chosen update.",
+        "Both Steps retain stable independent identities and explicit order while Review freezes revision, payloads, delays, exact target fingerprint, and committed-Evidence seed.",
+        "Step next dispatches one existing-coordinator Local Injection, waits for its Outcome and committed Evidence settlement, then returns Paused before the next Step.",
+        "Compact Light, normal Dark, and wide Light states preserve protected boundaries, keyboard focus/restoration, no serious or critical axe violations, and distinct Run/Injection/Evidence trace meaning."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: "Compact Edit opens the bounded Evidence picker by keyboard and restores focus to Add captured update; normal Review and wide Complete expose visible focus on Step next and Finish Scenario. The focused browser test also verifies exact picker restoration.",
+      baselineIntent: "Create three Scenario-only Darwin baselines for compact Edit in Light, normal Review in Dark, and wide completed Trace in Light; no existing baseline is changed."
+    } : {
       classification: "Material UI",
       changedWorkflow: "The global diagnostics footer keeps mixed Warning, Error, and Information entries readable and discoverable without taking over the Evidence workspace.",
       acceptanceCriteria: [
@@ -152,7 +178,7 @@ function publicMatrix() {
 }
 
 async function createContactSheets(runningBrowser, results) {
-  const affectedIds = [
+  const affectedIds = grep ? results.map(({ id }) => id) : [
     "wide-diagnostics-stress-light",
     "normal-diagnostics-stress-dark",
     "shallow-diagnostics-stress-light",
@@ -396,7 +422,7 @@ async function captureProduction(runningBrowser, scenario) {
     let helpResources = null;
     let focusEvidence = null;
     let memoryEvidence = null;
-    if (["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics", "activity-10k", "activity-graphical", "activity-limited", "activity-memory"].includes(scenario.production.setup)) {
+    if (["scenario", "more-actions-help", "clear-confirmation", "memory-operations", "diagnostics", "activity-10k", "activity-graphical", "activity-limited", "activity-memory"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -408,6 +434,37 @@ async function captureProduction(runningBrowser, scenario) {
         throw new Error(`Help resources has serious or critical axe violations: ${JSON.stringify(seriousOrCriticalViolations)}`);
       }
       accessibility = { seriousOrCriticalViolations };
+    }
+    if (scenario.production.setup === "scenario") {
+      const scenarioDocument = page.getByRole("region", { name: "Local Injection Scenario" });
+      const actionName = scenario.production.scenario.endsWith("edit")
+        ? "Add captured update"
+        : scenario.production.scenario.endsWith("review")
+          ? "Step next"
+          : "Finish Scenario";
+      const action = scenarioDocument.getByRole("button", { name: actionName });
+      if (actionName === "Add captured update") {
+        await action.focus();
+        await page.keyboard.press("Enter");
+        await page.getByRole("region", { name: "Scenario Evidence picker" }).waitFor();
+        await page.getByRole("button", { name: "Cancel" }).click();
+      } else {
+        await action.focus();
+      }
+      focusEvidence = await action.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          action: element.textContent?.trim() ?? "",
+          focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+        };
+      });
+      if (!focusEvidence.focused || !focusEvidence.visible || !focusEvidence.unobscured) {
+        throw new Error(`Scenario focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
+      }
     }
     if (scenario.production.setup === "more-actions-help") {
       helpResources = await page.getByRole("navigation", { name: "Help and resources" }).evaluate((navigation) => {
@@ -474,7 +531,7 @@ async function captureProduction(runningBrowser, scenario) {
 
 async function prepareProductionState(page, setup) {
   if (setup === "scenario") {
-    await expect(page.getByRole("region", { name: "Local Injection Scenario" })).toBeVisible();
+    await page.getByRole("region", { name: "Local Injection Scenario" }).waitFor({ state: "visible" });
     return;
   }
   if (setup === "none") return;
