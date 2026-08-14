@@ -5,6 +5,45 @@ import type { LightstreamerHost } from "../src/core/lightstreamer-types";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
 describe("instrumentation privacy and behavior parity", () => {
+  it("keeps literal sanitizer markers concrete while marking sanitized Item Update fields", () => {
+    class Subscription {
+      listener?: { onItemUpdate(update: unknown): void };
+
+      addListener(listener: { onItemUpdate(update: unknown): void }) {
+        this.listener = listener;
+      }
+    }
+    const messages: CaptureMessage[] = [];
+    const host = { Subscription };
+    installLightstreamerInstrumentation(host as unknown as LightstreamerHost, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+    const subscription = new host.Subscription();
+    subscription.addListener({ onItemUpdate: () => undefined });
+    subscription.listener?.onItemUpdate({
+      forEachField(iterator: (name: string, pos: number, value: unknown) => void) {
+        iterator("status", 1, "[redacted]");
+        iterator("token", 2, "application-secret");
+        iterator("nullable", 3, undefined);
+      },
+      forEachChangedField(iterator: (name: string, pos: number, value: unknown) => void) {
+        iterator("token", 2, "application-secret");
+      }
+    });
+
+    const update = messages.find((message) => message.kind === "item-update")?.payload
+      .update as Record<string, unknown>;
+    expect(update).toMatchObject({
+      fields: { status: "[redacted]", token: "[redacted]", nullable: null },
+      fieldValueStates: {
+        status: "concrete",
+        token: "redacted",
+        nullable: "ambiguous-null"
+      },
+      changedFieldValueStates: { token: "redacted" }
+    });
+  });
+
   it("sanitizes client addresses before a capture message crosses the page boundary", () => {
     class PrivacyClient {
       readonly connectionDetails = {

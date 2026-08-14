@@ -130,11 +130,14 @@ type WireSubscriptionState = {
 
 type WireItemState = {
   fields: Record<string, string | number | boolean | null>;
+  fieldValueStates: CapturePayload;
 };
 
 type DecodedWireFields = {
   fields: Record<string, string | number | boolean | null>;
   changedFields: Record<string, string | number | boolean | null>;
+  fieldValueStates: CapturePayload;
+  changedFieldValueStates: CapturePayload;
   jsonPatches: CapturePayload;
   unsupportedDiffFields: string[];
 };
@@ -2058,12 +2061,18 @@ function handleWireUpdate(
   }
   const itemKey = String(parsed.itemPosition);
   const itemState = getWireItemState(subscription, itemKey);
-  const decoded = decodeWireFields(subscription, parsed.fieldData, itemState.fields);
+  const decoded = decodeWireFields(
+    subscription,
+    parsed.fieldData,
+    itemState.fields,
+    itemState.fieldValueStates
+  );
   const isSnapshot = inferWireSnapshot(subscription, itemKey);
   const command = readCommandField(subscription, decoded.fields);
   const key = readKeyField(subscription, decoded.fields);
 
   itemState.fields = decoded.fields;
+  itemState.fieldValueStates = decoded.fieldValueStates;
   subscription.firstUpdateItems.add(itemKey);
 
   state.emit("item-update", {
@@ -2074,6 +2083,8 @@ function handleWireUpdate(
       isSnapshot,
       fields: decoded.fields,
       changedFields: decoded.changedFields,
+      fieldValueStates: decoded.fieldValueStates,
+      changedFieldValueStates: decoded.changedFieldValueStates,
       jsonPatches: decoded.jsonPatches,
       command,
       key
@@ -2176,7 +2187,7 @@ function getWireItemState(subscription: WireSubscriptionState, itemKey: string):
     return existing;
   }
 
-  const itemState = { fields: {} };
+  const itemState = { fields: {}, fieldValueStates: {} };
   subscription.itemStates.set(itemKey, itemState);
   return itemState;
 }
@@ -2184,9 +2195,14 @@ function getWireItemState(subscription: WireSubscriptionState, itemKey: string):
 function decodeWireFields(
   subscription: WireSubscriptionState,
   fieldData: string,
-  previousFields: Record<string, string | number | boolean | null>
+  previousFields: Record<string, string | number | boolean | null>,
+  previousFieldValueStates: CapturePayload
 ): DecodedWireFields {
   const fields = { ...previousFields };
+  const fieldValueStates: CapturePayload = {
+    ...Object.fromEntries(Object.keys(previousFields).map((name) => [name, "concrete"])),
+    ...previousFieldValueStates
+  };
   const changedFields: Record<string, string | number | boolean | null> = {};
   const jsonPatches: CapturePayload = {};
   const unsupportedDiffFields: string[] = [];
@@ -2207,6 +2223,7 @@ function decodeWireFields(
     if (token === "#") {
       fields[fieldName] = null;
       changedFields[fieldName] = null;
+      fieldValueStates[fieldName] = "concrete";
       pointer += 1;
       continue;
     }
@@ -2214,6 +2231,7 @@ function decodeWireFields(
     if (token === "$") {
       fields[fieldName] = "";
       changedFields[fieldName] = "";
+      fieldValueStates[fieldName] = "concrete";
       pointer += 1;
       continue;
     }
@@ -2226,9 +2244,8 @@ function decodeWireFields(
       }
       unsupportedDiffFields.push(fieldName);
       changedFields[fieldName] = diffValue;
-      if (!Object.prototype.hasOwnProperty.call(fields, fieldName)) {
-        fields[fieldName] = diffValue;
-      }
+      delete fields[fieldName];
+      fieldValueStates[fieldName] = "unresolved-wire-difference";
       pointer += 1;
       continue;
     }
@@ -2236,12 +2253,20 @@ function decodeWireFields(
     const value = decodeTlcpValue(token);
     fields[fieldName] = value;
     changedFields[fieldName] = value;
+    fieldValueStates[fieldName] = "concrete";
     pointer += 1;
   }
 
   return {
     fields,
     changedFields,
+    fieldValueStates,
+    changedFieldValueStates: {
+      ...Object.fromEntries(Object.keys(changedFields).map((name) => [name, "concrete"])),
+      ...Object.fromEntries(
+        unsupportedDiffFields.map((name) => [name, "unresolved-wire-difference"])
+      )
+    },
     jsonPatches,
     unsupportedDiffFields
   };
@@ -3894,6 +3919,8 @@ function readItemUpdatePayload(update: unknown): CapturePayload {
   const extractionErrors: string[] = [];
   const fields = readUpdateFields(update, "forEachField", extractionErrors);
   const changedFields = readUpdateFields(update, "forEachChangedField", extractionErrors);
+  const fieldValueStates = publicItemUpdateFieldValueStates(fields);
+  const changedFieldValueStates = publicItemUpdateFieldValueStates(changedFields);
   const jsonPatches = readJsonPatches(update, fields, changedFields, extractionErrors);
   const command = asNullableString(fields.command ?? changedFields.command);
   const key = asNullableString(fields.key ?? changedFields.key);
@@ -3907,6 +3934,8 @@ function readItemUpdatePayload(update: unknown): CapturePayload {
       isSnapshot: readUpdateGetter(update, "isSnapshot", extractionErrors),
       fields,
       changedFields,
+      fieldValueStates,
+      changedFieldValueStates,
       jsonPatches,
       command,
       key
@@ -3917,6 +3946,15 @@ function readItemUpdatePayload(update: unknown): CapturePayload {
       changedFieldCount: Object.keys(changedFields).length
     })
   };
+}
+
+function publicItemUpdateFieldValueStates(fields: CapturePayload): CapturePayload {
+  return Object.fromEntries(
+    Object.entries(fields).map(([name, value]) => [
+      name,
+      value === null ? "ambiguous-null" : "concrete"
+    ])
+  );
 }
 
 function readUpdateFields(
@@ -4300,7 +4338,69 @@ function sanitizeCaptureObject(source: CapturePayload): CapturePayload {
         ? sanitizeCaptureObject(value as CapturePayload)
         : value;
   }
+  preserveItemUpdateFieldSanitizationState(
+    source,
+    sanitized,
+    "fields",
+    "fieldValueStates"
+  );
+  preserveItemUpdateFieldSanitizationState(
+    source,
+    sanitized,
+    "changedFields",
+    "changedFieldValueStates"
+  );
   return sanitized;
+}
+
+function preserveItemUpdateFieldSanitizationState(
+  source: CapturePayload,
+  sanitized: CapturePayload,
+  fieldsKey: "fields" | "changedFields",
+  statesKey: "fieldValueStates" | "changedFieldValueStates"
+): void {
+  const sourceFields = captureObject(source[fieldsKey]);
+  const sanitizedFields = captureObject(sanitized[fieldsKey]);
+  if (!sourceFields || !sanitizedFields) return;
+
+  const sourceStates = captureObject(source[statesKey]) ?? {};
+  const existingStates = captureObject(sanitized[statesKey]) ?? {};
+  sanitized[statesKey] = Object.fromEntries(
+    [...new Set([...Object.keys(sourceFields), ...Object.keys(sourceStates)])].map((fieldName) => {
+      const state = captureFieldWasSanitized(
+        fieldName,
+        sourceFields[fieldName],
+        sanitizedFields[fieldName]
+      )
+        ? "redacted"
+        : existingStates[fieldName] ?? sourceStates[fieldName] ?? "concrete";
+      return [fieldName, state];
+    })
+  );
+}
+
+function captureFieldWasSanitized(
+  fieldName: string,
+  before: CapturePayload[string],
+  after: CapturePayload[string] | undefined
+): boolean {
+  if (
+    isSensitiveCaptureKey(fieldName) ||
+    fieldName === "reason" ||
+    fieldName === "error" ||
+    fieldName === "clientIp"
+  ) {
+    return before !== null;
+  }
+  if (
+    (fieldName === "serverAddress" ||
+      fieldName === "serverInstanceAddress" ||
+      fieldName === "url") &&
+    typeof before === "string"
+  ) {
+    return before !== after;
+  }
+  return false;
 }
 
 function sanitizeCaptureValue(value: CapturePayload[string]): CapturePayload[string] {

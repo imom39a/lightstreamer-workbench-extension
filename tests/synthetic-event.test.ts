@@ -4,6 +4,27 @@ import { createSyntheticEventFromDraft } from "../src/core/synthetic-event";
 import { type ReinjectionDraft } from "../src/core/reinjection-draft";
 
 describe("synthetic reinjection event", () => {
+  it("marks correlated delivered Local Draft primitives including null as concrete", () => {
+    const draft = createDraft();
+    draft.fields = { command: "UPDATE", key: "item-1", note: null };
+    draft.changedFields = { note: null };
+    draft.manualChangedFieldsOverride = true;
+
+    const event = createSyntheticEventFromDraft(draft, {
+      requestId: "local-null",
+      status: "success",
+      timestamp: 123,
+      ok: true
+    });
+
+    expect(event.update?.fieldValueStates).toEqual({
+      command: "concrete",
+      key: "concrete",
+      note: "concrete"
+    });
+    expect(event.update?.changedFieldValueStates).toEqual({ note: "concrete" });
+  });
+
   it("creates a synthetic item-update envelope with provenance", () => {
     const event = createSyntheticEventFromDraft(createDraft(), {
       requestId: "request-1",

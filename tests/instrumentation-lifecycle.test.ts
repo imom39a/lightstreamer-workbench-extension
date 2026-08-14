@@ -796,6 +796,36 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     });
   });
 
+  it("does not present an unresolved wire difference as a stale full value", () => {
+    FakeWebSocket.instances = [];
+    const messages: CaptureMessage[] = [];
+    const target: { WebSocket: typeof WebSocket } = {
+      WebSocket: FakeWebSocket as unknown as typeof WebSocket
+    };
+    installLightstreamerInstrumentation(target, (message) => {
+      messages.push(message as CaptureMessage);
+    });
+
+    const socket = new target.WebSocket(
+      "wss://push.example.test/lightstreamer"
+    ) as unknown as FakeWebSocket;
+    socket.send(
+      "LS_reqId=1&LS_op=add&LS_subId=1&LS_group=orders&LS_schema=command+key+document&LS_mode=COMMAND"
+    );
+    socket.emitMessage(
+      "CONOK,S1,50000,5000,*\nSUBCMD,1,1,3,2,1\nU,1,1,ADD|alpha|before\nU,1,1,||^P%5B%5D\nU,1,1,||"
+    );
+
+    const updates = messages.filter((message) => message.kind === "item-update");
+    const update = updates[1]?.payload.update as Record<string, Record<string, unknown>>;
+    expect(update.fields).not.toHaveProperty("document");
+    expect(update.fieldValueStates.document).toBe("unresolved-wire-difference");
+    expect(update.changedFieldValueStates.document).toBe("unresolved-wire-difference");
+    const following = updates[2]?.payload.update as Record<string, Record<string, unknown>>;
+    expect(following.fields).not.toHaveProperty("document");
+    expect(following.fieldValueStates.document).toBe("unresolved-wire-difference");
+  });
+
   it("locally delivers a mutated wire COMMAND update through the captured WebSocket", () => {
     FakeWebSocket.instances = [];
     const messages: unknown[] = [];

@@ -86,10 +86,23 @@ export type EventItem = {
   position?: number | null;
 };
 
+export const ITEM_UPDATE_FIELD_VALUE_STATES = [
+  "concrete",
+  "ambiguous-null",
+  "redacted",
+  "unavailable",
+  "unresolved-wire-difference"
+] as const;
+
+export type ItemUpdateFieldValueState =
+  (typeof ITEM_UPDATE_FIELD_VALUE_STATES)[number];
+
 export type EventUpdate = {
   isSnapshot?: boolean;
   fields?: Record<string, string | number | boolean | null>;
   changedFields?: Record<string, string | number | boolean | null>;
+  fieldValueStates?: Record<string, ItemUpdateFieldValueState>;
+  changedFieldValueStates?: Record<string, ItemUpdateFieldValueState>;
   jsonPatches?: Record<string, unknown>;
   command?: string | null;
   key?: string | null;

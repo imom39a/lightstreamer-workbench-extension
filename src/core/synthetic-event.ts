@@ -48,6 +48,8 @@ export function createSyntheticEventFromDraft(
       isSnapshot: draft.isSnapshot,
       fields: { ...draft.fields },
       changedFields,
+      fieldValueStates: concreteFieldValueStates(draft.fields),
+      changedFieldValueStates: concreteFieldValueStates(changedFields),
       command: draft.command,
       key: draft.key
     },
@@ -71,4 +73,12 @@ export function createSyntheticEventFromDraft(
       provenance: { ...draft.provenance }
     }
   };
+}
+
+function concreteFieldValueStates(
+  fields: Record<string, string | number | boolean | null>
+): Record<string, "concrete"> {
+  return Object.fromEntries(
+    Object.keys(fields).map((name) => [name, "concrete"] as const)
+  );
 }

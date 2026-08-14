@@ -7,6 +7,8 @@ import {
   type EventListener,
   type EventSubscription,
   type EventUpdate,
+  ITEM_UPDATE_FIELD_VALUE_STATES,
+  type ItemUpdateFieldValueState,
   type LightstreamerEventEnvelope
 } from "./event-envelope";
 
@@ -31,7 +33,8 @@ export function normalizeCaptureMessage(
   id = "event-1"
 ): LightstreamerEventEnvelope {
   const payload = message.payload;
-  const update = toEventUpdate(payload.update);
+  const captureSource = toCaptureSource(payload.raw);
+  const update = toEventUpdate(payload.update, captureSource);
   const raw = toRaw(payload.raw);
 
   return {
@@ -39,7 +42,7 @@ export function normalizeCaptureMessage(
     timestamp: message.timestamp,
     direction: "inbound",
     source: "server",
-    captureSource: toCaptureSource(payload.raw),
+    captureSource,
     synthetic: false,
     kind: message.kind,
     logicalEventId: asString(raw?.logicalEventId),
@@ -196,7 +199,10 @@ function toItem(value: JsonValue | undefined): EventItem | undefined {
   };
 }
 
-function toEventUpdate(value: JsonValue | undefined): EventUpdate | undefined {
+function toEventUpdate(
+  value: JsonValue | undefined,
+  captureSource: EventCaptureSource
+): EventUpdate | undefined {
   const record = asRecord(value);
   if (!record) {
     return undefined;
@@ -204,6 +210,16 @@ function toEventUpdate(value: JsonValue | undefined): EventUpdate | undefined {
 
   const fields = asFieldRecord(record.fields);
   const changedFields = asFieldRecord(record.changedFields);
+  const fieldValueStates = toFieldValueStates(
+    fields,
+    asRecord(record.fieldValueStates),
+    captureSource
+  );
+  const changedFieldValueStates = toFieldValueStates(
+    changedFields,
+    asRecord(record.changedFieldValueStates),
+    captureSource
+  );
   const command = asNullableString(record.command ?? fields?.command ?? changedFields?.command);
   const key = asNullableString(record.key ?? fields?.key ?? changedFields?.key);
 
@@ -211,11 +227,51 @@ function toEventUpdate(value: JsonValue | undefined): EventUpdate | undefined {
     isSnapshot: asBoolean(record.isSnapshot),
     fields,
     changedFields,
+    ...(fieldValueStates ? { fieldValueStates } : {}),
+    ...(changedFieldValueStates ? { changedFieldValueStates } : {}),
     jsonPatches: asObjectRecord(record.jsonPatches),
     command,
     key,
     lostUpdates: asNullableNumber(record.lostUpdates)
   };
+}
+
+function toFieldValueStates(
+  fields: EventUpdate["fields"],
+  supplied: JsonObject | undefined,
+  captureSource: EventCaptureSource
+): Record<string, ItemUpdateFieldValueState> | undefined {
+  const names = new Set([
+    ...Object.keys(fields ?? {}),
+    ...Object.keys(supplied ?? {})
+  ]);
+  if (names.size === 0) return undefined;
+
+  return Object.fromEntries(
+    [...names].flatMap((name) => {
+      const explicit = supplied?.[name];
+      if (
+        fields?.[name] === null &&
+        captureSource === "listener" &&
+        (explicit === undefined ||
+          explicit === "concrete" ||
+          explicit === "ambiguous-null")
+      ) {
+        return [[name, "ambiguous-null"] as const];
+      }
+      if (
+        typeof explicit === "string" &&
+        ITEM_UPDATE_FIELD_VALUE_STATES.includes(explicit as ItemUpdateFieldValueState)
+      ) {
+        return [[name, explicit as ItemUpdateFieldValueState] as const];
+      }
+      if (Object.prototype.hasOwnProperty.call(supplied ?? {}, name)) {
+        return [[name, "unavailable"] as const];
+      }
+      if (!Object.prototype.hasOwnProperty.call(fields ?? {}, name)) return [];
+      return [[name, "concrete"] as const];
+    })
+  );
 }
 
 function toRaw(value: JsonValue | undefined): JsonObject | undefined {

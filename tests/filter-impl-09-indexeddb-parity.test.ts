@@ -186,6 +186,71 @@ async function databaseShape(name: string): Promise<{ version: number; stores: s
 }
 
 describe("filter-impl-09 durable public-result parity", () => {
+  it("preserves Item Update field certainty through memory and IndexedDB replay and Clear", async () => {
+    Object.assign(globalThis, { indexedDB: new IDBFactory(), IDBKeyRange });
+    const name = `item-update-field-certainty-${Date.now()}`;
+    const memory = await createMemoryEventHistoryForTests({ panelSessionId: name });
+    const durable = await createIndexedDbEventHistory({ panelSessionId: name });
+    const candidate = event("certainty", 1, "alpha", {
+      update: {
+        fields: { key: "alpha", nullable: null, secret: "[redacted]" },
+        changedFields: { nullable: null, secret: "[redacted]" },
+        fieldValueStates: {
+          key: "concrete",
+          nullable: "ambiguous-null",
+          secret: "redacted",
+          patch: "unresolved-wire-difference"
+        },
+        changedFieldValueStates: {
+          nullable: "ambiguous-null",
+          secret: "redacted"
+        }
+      }
+    });
+    try {
+      await Promise.all([offerBatch(memory, [candidate]), offerBatch(durable, [candidate])]);
+      const request = { ...requestAt("LATEST_COMMITTED", emptyFilter()), includePayload: true };
+      const [memoryResult, durableResult] = await Promise.all([
+        memory.query!(request),
+        durable.query!(request)
+      ]);
+      expect(memoryResult.ok).toBe(true);
+      expect(durableResult.ok).toBe(true);
+      if (!memoryResult.ok || !durableResult.ok) throw new Error("Expected replay queries");
+      const expectedStates = {
+        key: "concrete",
+        nullable: "ambiguous-null",
+        secret: "redacted",
+        patch: "unresolved-wire-difference"
+      };
+      expect((memoryResult.value.page.evidence[0]?.payload as LightstreamerEventEnvelope)
+        .update?.fieldValueStates).toEqual(expectedStates);
+      expect((durableResult.value.page.evidence[0]?.payload as LightstreamerEventEnvelope)
+        .update?.fieldValueStates).toEqual(expectedStates);
+      expect((memoryResult.value.page.evidence[0]?.payload as LightstreamerEventEnvelope)
+        .update?.changedFieldValueStates).toEqual({
+          nullable: "ambiguous-null",
+          secret: "redacted"
+        });
+      expect((durableResult.value.page.evidence[0]?.payload as LightstreamerEventEnvelope)
+        .update?.changedFieldValueStates).toEqual({
+          nullable: "ambiguous-null",
+          secret: "redacted"
+        });
+
+      await Promise.all([memory.clear(), durable.clear()]);
+      const [clearedMemory, clearedDurable] = await Promise.all([
+        memory.query!(requestAt("LATEST_COMMITTED", emptyFilter())),
+        durable.query!(requestAt("LATEST_COMMITTED", emptyFilter()))
+      ]);
+      expect(clearedMemory.ok && clearedMemory.value.page.evidence).toEqual([]);
+      expect(clearedDurable.ok && clearedDurable.value.page.evidence).toEqual([]);
+    } finally {
+      await Promise.all([memory.close(), durable.close()]);
+      await deleteAuthoritativeEventDatabase(name);
+    }
+  });
+
   it("matches the memory oracle across every facet, query shape, provenance, conflict, and selected-evidence path", async () => {
     const { memory, durable } = await paired(`filter-impl-09-parity-${Date.now()}`);
     try {

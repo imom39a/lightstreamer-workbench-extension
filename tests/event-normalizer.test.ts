@@ -74,6 +74,42 @@ describe("event normalizer", () => {
     });
   });
 
+  it("normalizes public Item Update values with field-level certainty", () => {
+    const event = normalizeCaptureMessage(
+      createCaptureMessage("item-update", {
+        update: {
+          fields: {
+            literalMarker: "[redacted]",
+            publicNull: null,
+            secret: "[redacted]",
+            corrupt: "untrusted"
+          },
+          changedFields: { publicNull: null, secret: "[redacted]" },
+          fieldValueStates: {
+            publicNull: "concrete",
+            secret: "redacted",
+            corrupt: "future-state"
+          },
+          changedFieldValueStates: { secret: "redacted" }
+        }
+      })
+    );
+
+    expect(event.update?.fieldValueStates).toEqual({
+      literalMarker: "concrete",
+      publicNull: "ambiguous-null",
+      secret: "redacted",
+      corrupt: "unavailable"
+    });
+    expect(event.update?.changedFieldValueStates).toEqual({
+      publicNull: "ambiguous-null",
+      secret: "redacted"
+    });
+    expect(toPersistableEventEnvelope(event).update?.fieldValueStates).toEqual(
+      event.update?.fieldValueStates
+    );
+  });
+
   it("preserves snapshot status at update time", () => {
     const event = normalizeCaptureMessage(
       createCaptureMessage("item-update", {
