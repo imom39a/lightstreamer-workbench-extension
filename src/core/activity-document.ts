@@ -1,4 +1,4 @@
-import { type ActivityProjection, type ActivityScope, type ActivityReadPoint } from "./activity-projection";
+import { clipActivityTimeRange, type ActivityProjection, type ActivityScope, type ActivityReadPoint } from "./activity-projection";
 import { applyFilterMutations, type Filter, type FilterMutation } from "./filter-algebra";
 
 export type ActivityDocumentOrigin = Readonly<{
@@ -54,8 +54,20 @@ export function reduceActivityDocument(state: ActivityDocumentState, command: Ac
   if (command.type === "supporting-evidence") {
     const selection = state.selection;
     if (!selection) return { state, supportingEvidence: null };
-    const selected = selection.kind === "bucket" ? state.projection.buckets[Number(selection.id)] : null;
-    const around = selected ? { intervalId: state.readPoint.intervalId, start: Math.max(state.readPoint.retainedRange?.first.timestamp ?? selected.start, selected.start), end: Math.min(state.readPoint.retainedRange?.last.timestamp ?? selected.end, selected.end) } : null;
+    const selected = selection.kind === "bucket"
+      ? state.projection.buckets[Number(selection.id)]
+      : selection.kind === "marker"
+        ? state.projection.buckets.find((bucket) => bucket.start <= (state.projection.markers[Number(selection.id)]?.timestamp ?? Number.NaN) && (state.projection.markers[Number(selection.id)]?.timestamp ?? Number.NaN) < bucket.end)
+        : null;
+    const marker = selection.kind === "marker" ? state.projection.markers[Number(selection.id)] : null;
+    const selectedRange = selected ? { start: selected.start, end: selected.end } : marker ? { start: marker.timestamp, end: marker.timestamp + 1 } : null;
+    const clipped = selectedRange
+      ? clipActivityTimeRange(
+        selectedRange,
+        state.readPoint.retainedRange
+      )
+      : null;
+    const around = clipped ? { intervalId: state.readPoint.intervalId, ...clipped } : null;
     if (!around) return { state, supportingEvidence: null };
     const result = applyFilterMutations(state.filter, state.filter.revision, [{ type: "set-around", around } as FilterMutation]);
     return result.ok ? { state, supportingEvidence: { filter: result.filter, scope: state.scope, readPoint: state.readPoint } } : { state, supportingEvidence: null };

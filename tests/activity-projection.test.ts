@@ -99,6 +99,23 @@ describe("Observed Activity projection", () => {
     expect(projection.committedEvidenceBoundary?.sequence).toBe(2);
   });
 
+  it("keeps clock-regressed evidence in separate bucket segments", () => {
+    const entries = [evidence(1, 10_000), evidence(2, 11_000), evidence(3, 1_000), evidence(4, 2_000)];
+    const projection = rebuildActivityProjection({
+      evidence: entries,
+      scope: { kind: "PAGE" },
+      filter: createFilter(1),
+      readPoint: {
+        ...readPoint(entries),
+        retainedRange: { first: { timestamp: 1_000, sequence: 3 }, last: { timestamp: 11_000, sequence: 2 } }
+      }
+    });
+
+    expect(projection.clockSegments).toHaveLength(2);
+    expect(projection.buckets.filter((bucket) => bucket.segment === 0).reduce((n, bucket) => n + bucket.logicalUpdates, 0)).toBe(2);
+    expect(projection.buckets.filter((bucket) => bucket.segment === 1).reduce((n, bucket) => n + bucket.logicalUpdates, 0)).toBe(2);
+  });
+
   it("separates logical identity, metric-owner fallback, deliveries, phase, and provenance", () => {
     const first = evidence(1, 1_000, { logicalEventId: "same", update: { isSnapshot: true } });
     const callback = evidence(2, 1_000, { logicalEventId: "same", listener: { id: "listener-1" } });
@@ -135,6 +152,43 @@ describe("Observed Activity projection", () => {
     expect(projection.buckets.length).toBeLessThanOrEqual(120);
     expect(projection.rankings.length).toBeLessThanOrEqual(10);
     expect(projection.rankingOther).toMatchObject({ label: "Other" });
+  });
+
+  it("keeps degraded coverage distinct from an empty matching result and preserves marker identity", () => {
+    const event = evidence(1, 1_000, {
+      kind: "subscription-error",
+      client: { id: "client-7", sessionId: "session-9", status: "CONNECTED" },
+      subscription: { id: "subscription-4" },
+      raw: { code: 17, message: "bad selector" }
+    });
+    const projection = rebuildActivityProjection({
+      evidence: [event],
+      scope: { kind: "PAGE" },
+      filter: createFilter(1),
+      readPoint: { ...readPoint([event]), coverage: "LIMITED" }
+    });
+
+    expect(projection.state).toBe("EMPTY_MATCH");
+    expect(projection.reason).toContain("limited");
+    expect(projection.markers[0]).toMatchObject({
+      kind: "SUBSCRIPTION_ERROR",
+      clientId: "client-7",
+      sessionId: "session-9",
+      subscriptionId: "subscription-4",
+      errorCode: 17,
+      errorMessage: "bad selector"
+    });
+  });
+
+  it("distinguishes terminal completion from aggregation failure", () => {
+    const event = evidence(1, 1_000);
+    const terminal = rebuildActivityProjection({ evidence: [event], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: { ...readPoint([event]), terminal: true } });
+    const failed = rebuildActivityProjection({ evidence: [event], scope: { kind: "PAGE" }, filter: createFilter(1), readPoint: readPoint([event]), aggregate: () => { throw new Error("bucket failure"); } });
+
+    expect(terminal.state).toBe("LIMITED");
+    expect(terminal.reason).toContain("complete through the terminal");
+    expect(failed.state).toBe("AGGREGATION_FAILED");
+    expect(failed.reason).toBe("bucket failure");
   });
 
   it("sorts ranking rows by either exact metric with stable identity ties", () => {

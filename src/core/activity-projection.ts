@@ -36,6 +36,16 @@ export type ActivityMarker = Readonly<{
   eventId: string;
   label: string;
   reportedCount: number | null;
+  clientId: string | null;
+  sessionId: string | null;
+  subscriptionId: string | null;
+  itemName: string | null;
+  itemPosition: number | null;
+  status: string | null;
+  errorCode: string | number | null;
+  errorMessage: string | null;
+  provenance: "SERVER" | "LOCAL";
+  consequenceLimit: string;
 }>;
 
 export type ActivityBucket = Readonly<{
@@ -93,6 +103,19 @@ export type ActivityProjectionInput = Readonly<{
   /** Test/diagnostic hook; production callers should let aggregation errors surface. */
   aggregate?: ((evidence: readonly ActivityEvidence[]) => void) | null;
 }>;
+
+export type ActivityTimeRange = Readonly<{ start: number; end: number }>;
+
+/** Clips a user-selected half-open interval to the retained timestamp range. */
+export function clipActivityTimeRange(
+  range: ActivityTimeRange,
+  retainedRange: ActivityReadPoint["retainedRange"]
+): ActivityTimeRange | null {
+  if (!retainedRange) return null;
+  const start = Math.max(range.start, retainedRange.first.timestamp);
+  const end = Math.min(range.end, retainedRange.last.timestamp + 1);
+  return start < end ? { start, end } : null;
+}
 
 export const MAX_ACTIVITY_BUCKETS = 120;
 const DURATIONS = Object.freeze([1_000, 2_000, 5_000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000, 86_400_000]);
@@ -162,16 +185,26 @@ function project(input: ActivityProjectionInput): ActivityProjection {
   const serverLogical = uniqueLogical(server);
   const localLogical = uniqueLogical(local);
   const segments = clockSegments([...serverLogical, ...localLogical].sort((a, b) => a.sequence - b.sequence));
-  const timestamps = [...serverLogical, ...localLogical].map(({ event }) => event.timestamp);
   const range = readPoint.retainedRange;
-  const duration = range ? chooseDuration(range.last.timestamp - range.first.timestamp) : null;
-  const buckets = duration === null ? [] : makeBuckets(serverLogical, localLogical, matching, range!, duration, segments);
+  const duration = segments.length
+    ? Math.max(...segments.map((segment) => chooseDuration(segment.endTimestamp - segment.startTimestamp)))
+    : null;
+  const buckets = duration === null ? [] : makeBuckets(serverLogical, localLogical, matching, duration, segments);
   const state: ActivityState = readPoint.coverage === "UNAVAILABLE" ? "UNAVAILABLE" : matching.length === 0 ? "EMPTY_MATCH" : serverLogical.length === 0 ? "EMPTY_MATCH" : readPoint.coverage === "LIMITED" || readPoint.terminal ? "LIMITED" : "AVAILABLE";
+  const reason = state === "UNAVAILABLE"
+    ? "Observation Coverage is unavailable."
+    : state === "EMPTY_MATCH" && readPoint.coverage === "LIMITED"
+        ? "No matching accepted Evidence; Observation Coverage is limited."
+        : state === "EMPTY_MATCH" && readPoint.terminal
+          ? "No matching accepted Evidence through the terminal Committed Evidence Boundary."
+          : state === "LIMITED"
+            ? (readPoint.terminal ? "Activity is complete through the terminal Committed Evidence Boundary." : "Observation Coverage is limited.")
+            : null;
   const allRankings = rankings(serverLogical, server, scope);
   return Object.freeze({
     ...base,
     state,
-    reason: state === "LIMITED" ? (readPoint.terminal ? "Activity is complete through the terminal Committed Evidence Boundary." : "Observation Coverage is limited.") : null,
+    reason,
     retainedRange: range,
     logicalUpdateTotal: serverLogical.length,
     snapshotLogicalUpdateTotal: serverLogical.filter(({ event }) => event.update?.isSnapshot === true).length,
@@ -241,28 +274,82 @@ function clockSegments(entries: readonly ActivityEvidence[]): Array<{ index: num
   const result: Array<{ index: number; startSequence: number; endSequence: number | null; startTimestamp: number; endTimestamp: number }> = [];
   let previous: ActivityEvidence | null = null;
   for (const entry of entries) {
-    if (!previous || entry.event.timestamp < previous.event.timestamp) result.push({ index: result.length, startSequence: entry.sequence, endSequence: null, startTimestamp: entry.event.timestamp, endTimestamp: entry.event.timestamp });
-    else result[result.length - 1].endTimestamp = entry.event.timestamp;
-    if (previous) result[result.length - 2]?.endSequence === null && result.length > 1 ? result[result.length - 2].endSequence = previous.sequence : undefined;
+    if (!previous || entry.event.timestamp < previous.event.timestamp) {
+      if (result.length) result[result.length - 1].endSequence = previous!.sequence;
+      result.push({ index: result.length, startSequence: entry.sequence, endSequence: null, startTimestamp: entry.event.timestamp, endTimestamp: entry.event.timestamp });
+    } else {
+      result[result.length - 1].endTimestamp = entry.event.timestamp;
+    }
     previous = entry;
   }
   if (previous && result.length) result[result.length - 1].endSequence = previous.sequence;
   return result;
 }
 
-function makeBuckets(server: readonly ActivityEvidence[], local: readonly ActivityEvidence[], matching: readonly ActivityEvidence[], range: NonNullable<ActivityReadPoint["retainedRange"]>, duration: number, segments: readonly { index: number; startTimestamp: number; endTimestamp: number }[]): ActivityBucket[] {
-  const first = Math.floor(range.first.timestamp / duration) * duration;
-  const count = Math.max(1, Math.ceil((range.last.timestamp - first + 1 || duration) / duration));
-  return Array.from({ length: count }, (_, index) => {
-    const start = first + index * duration; const end = start + duration;
-    const inBucket = (entry: ActivityEvidence) => entry.event.timestamp >= start && entry.event.timestamp < end;
-    const segment = segments.find((candidate) => candidate.startTimestamp <= start && candidate.endTimestamp >= start)?.index ?? 0;
-    return Object.freeze({ start, end, logicalUpdates: server.filter(inBucket).length, snapshotLogicalUpdates: server.filter((entry) => inBucket(entry) && entry.event.update?.isSnapshot === true).length, liveLogicalUpdates: server.filter((entry) => inBucket(entry) && entry.event.update?.isSnapshot !== true).length, updateDeliveries: matching.filter((entry) => inBucket(entry) && isServerUpdate(entry.event) && Boolean(entry.event.listener)).length, localLogicalUpdates: local.filter(inBucket).length, localUpdateDeliveries: matching.filter((entry) => inBucket(entry) && isLocalUpdate(entry.event) && Boolean(entry.event.listener)).length, firstPartial: start < range.first.timestamp, currentPartial: start <= range.last.timestamp && range.last.timestamp < end, finalPartial: start <= range.last.timestamp && range.last.timestamp < end, segment });
+function makeBuckets(
+  server: readonly ActivityEvidence[],
+  local: readonly ActivityEvidence[],
+  matching: readonly ActivityEvidence[],
+  duration: number,
+  segments: readonly { index: number; startSequence: number; endSequence: number | null; startTimestamp: number; endTimestamp: number }[]
+): ActivityBucket[] {
+  const inSegment = (entry: ActivityEvidence, segment: typeof segments[number]) => entry.sequence >= segment.startSequence && (segment.endSequence === null || entry.sequence <= segment.endSequence);
+  return segments.flatMap((segment, segmentIndex) => {
+    const segmentEntries = [...server, ...local].filter((entry) => inSegment(entry, segment));
+    if (!segmentEntries.length) return [];
+    const firstTimestamp = Math.min(...segmentEntries.map(({ event }) => event.timestamp));
+    const lastTimestamp = Math.max(...segmentEntries.map(({ event }) => event.timestamp));
+    const first = Math.floor(firstTimestamp / duration) * duration;
+    const count = Math.max(1, Math.ceil((lastTimestamp - first + 1) / duration));
+    return Array.from({ length: count }, (_, index) => {
+      const start = first + index * duration; const end = start + duration;
+      const inBucket = (entry: ActivityEvidence) => inSegment(entry, segment) && entry.event.timestamp >= start && entry.event.timestamp < end;
+      const finalPartial = lastTimestamp < end;
+      return Object.freeze({
+        start, end,
+        logicalUpdates: server.filter(inBucket).length,
+        snapshotLogicalUpdates: server.filter((entry) => inBucket(entry) && entry.event.update?.isSnapshot === true).length,
+        liveLogicalUpdates: server.filter((entry) => inBucket(entry) && entry.event.update?.isSnapshot !== true).length,
+        updateDeliveries: matching.filter((entry) => inBucket(entry) && isServerUpdate(entry.event) && Boolean(entry.event.listener)).length,
+        localLogicalUpdates: local.filter(inBucket).length,
+        localUpdateDeliveries: matching.filter((entry) => inBucket(entry) && isLocalUpdate(entry.event) && Boolean(entry.event.listener)).length,
+        firstPartial: start < firstTimestamp,
+        currentPartial: segmentIndex === segments.length - 1 && finalPartial,
+        finalPartial,
+        segment: segment.index
+      });
+    });
   });
 }
 
 function markers(entries: readonly ActivityEvidence[]): ActivityMarker[] {
-  return entries.filter(({ event }) => event.kind === "client-status" || event.kind === "subscription-error" || event.kind === "lost-updates" || event.topology?.kind === "session-established" || event.topology?.kind === "session-absent").sort((a, b) => a.event.timestamp - b.event.timestamp || a.sequence - b.sequence).map(({ event, sequence }) => Object.freeze({ kind: event.kind === "client-status" ? "CLIENT_STATUS" as const : event.kind === "subscription-error" ? "SUBSCRIPTION_ERROR" as const : event.kind === "lost-updates" ? "LOST_UPDATES" as const : "SESSION_TRANSITION" as const, timestamp: event.timestamp, sequence, eventId: event.id, label: event.kind, reportedCount: event.update?.lostUpdates ?? null }));
+  return entries
+    .filter(({ event }) => event.kind === "client-status" || event.kind === "subscription-error" || event.kind === "lost-updates" || event.topology?.kind === "session-established" || event.topology?.kind === "session-absent")
+    .sort((a, b) => a.event.timestamp - b.event.timestamp || a.sequence - b.sequence)
+    .map(({ event, sequence }) => {
+      const kind = event.kind === "client-status" ? "CLIENT_STATUS" as const : event.kind === "subscription-error" ? "SUBSCRIPTION_ERROR" as const : event.kind === "lost-updates" ? "LOST_UPDATES" as const : "SESSION_TRANSITION" as const;
+      const raw = event.raw ?? {};
+      const rawString = (key: string): string | null => typeof raw[key] === "string" ? raw[key] as string : null;
+      const rawScalar = (key: string): string | number | null => typeof raw[key] === "string" || typeof raw[key] === "number" ? raw[key] as string | number : null;
+      return Object.freeze({
+        kind,
+        timestamp: event.timestamp,
+        sequence,
+        eventId: event.id,
+        label: kind === "CLIENT_STATUS" ? event.client?.status ?? "Client status observed" : kind === "SUBSCRIPTION_ERROR" ? "Subscription error" : kind === "LOST_UPDATES" ? "Lost updates" : "Session transition",
+        reportedCount: event.update?.lostUpdates ?? null,
+        clientId: event.client?.id ?? null,
+        sessionId: event.client?.sessionId ?? null,
+        subscriptionId: event.subscription?.id ?? null,
+        itemName: event.item?.name ?? null,
+        itemPosition: event.item?.position ?? null,
+        status: event.client?.status ?? rawString("status"),
+        errorCode: kind === "SUBSCRIPTION_ERROR" ? rawScalar("code") : null,
+        errorMessage: kind === "SUBSCRIPTION_ERROR" ? rawString("message") : null,
+        provenance: event.synthetic || event.source === "synthetic" ? "LOCAL" as const : "SERVER" as const,
+        consequenceLimit: kind === "LOST_UPDATES" ? "The reported loss does not establish its server-side cause." : kind === "SUBSCRIPTION_ERROR" ? "The captured error does not establish downstream application effect." : "This is a captured observation, not a continuous state interval."
+      });
+    });
 }
 
 function rankings(entries: readonly ActivityEvidence[], deliveriesFor: readonly ActivityEvidence[], scope: ActivityScope): ActivityRanking[] {

@@ -50,4 +50,24 @@ describe("promoted Activity document seam", () => {
     expect(changed.localSeries).toBe(true);
     expect(changed.rankingSort).toBe("UPDATE_DELIVERIES");
   });
+
+  it("clips supporting Evidence to the retained half-open range", () => {
+    const { filter, readPoint, projection } = fixture();
+    const document = openActivityDocument(projection, { scope: { kind: "PAGE" }, filter, readPoint, evidenceSelectionId: null, evidenceScrollTop: 0, view: "FOLLOW LIVE", localDraftId: null });
+    const selected = reduceActivityDocument(document, { type: "select", selection: { kind: "bucket", id: "0" } }).state;
+    const result = reduceActivityDocument(selected, { type: "supporting-evidence" });
+
+    expect(result.supportingEvidence?.filter.around).toEqual({ intervalId: "interval-1", start: 1_000, end: 1_001 });
+  });
+
+  it("drills from a selected marker into its containing retained Evidence bucket", () => {
+    const event: ActivityEvidence = { intervalId: "interval-1", sequence: 1, event: { id: "error-1", timestamp: 1_000, direction: "inbound", source: "server", synthetic: false, kind: "subscription-error", logicalEventId: undefined, client: { id: "client-1", sessionId: "session-1" }, subscription: { id: "subscription-1" }, raw: { code: 17, message: "bad selector" } } };
+    const filter = createFilter(1);
+    const readPoint = { intervalId: "interval-1", committedEvidenceBoundary: { intervalId: "interval-1", sequence: 1, eventId: "error-1" }, retainedRange: { first: { timestamp: 1_000, sequence: 1 }, last: { timestamp: 1_000, sequence: 1 } }, coverage: "LIMITED" as const, terminal: false };
+    const projection = rebuildActivityProjection({ evidence: [event], scope: { kind: "PAGE" }, filter, readPoint });
+    const document = openActivityDocument(projection, { scope: { kind: "PAGE" }, filter, readPoint, evidenceSelectionId: null, evidenceScrollTop: 0, view: "FOLLOW LIVE", localDraftId: null });
+    const selected = reduceActivityDocument(document, { type: "select", selection: { kind: "marker", id: "0" } }).state;
+
+    expect(reduceActivityDocument(selected, { type: "supporting-evidence" }).supportingEvidence?.filter.around).toEqual({ intervalId: "interval-1", start: 1_000, end: 1_001 });
+  });
 });
