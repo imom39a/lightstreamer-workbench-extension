@@ -112,13 +112,17 @@ import {
 } from "./storage-headroom";
 import {
   createActivityProjection,
+  failedActivityProjection,
   clipActivityTimeRange,
+  matchesActivityEvidence,
   type ActivityEvidence,
   type ActivityProjection,
+  type ActivityProjectionInput,
   type ActivityScope,
   type ActivityReadPoint
 } from "../../core/activity-projection";
 import {
+  closeActivityDocument,
   openActivityDocument,
   reduceActivityDocument,
   type ActivityDocumentState
@@ -282,6 +286,7 @@ export type WorkbenchEvidenceSnapshot = Readonly<{
   mode: "live" | "frozen";
   newerCount: number;
   offset: number;
+  scrollTop?: number;
   visibleStart: number;
   visibleEnd: number;
   hasOlder: boolean;
@@ -565,6 +570,7 @@ export type WorkbenchCommand =
   | { type: "finish-local-injection" }
   | { type: "select-evidence"; eventId: string | null }
   | { type: "focus-evidence"; eventId: string | null }
+  | { type: "set-evidence-scroll"; scrollTop: number }
   | { type: "set-context"; contextId: string | null }
   | { type: "open-command-projection-comparison" }
   | { type: "close-command-projection-comparison" }
@@ -687,6 +693,8 @@ export type WorkbenchRuntimeOptions = {
   localInjectionExecutor?: LocalInjectionExecutor;
   performanceHooks?: WorkbenchRuntimePerformanceHooks;
   evidenceQuery?: EvidenceInvestigationQuery;
+  /** Test seam for proving Activity projection failures stay renderer-local. */
+  activityProjectionFactory?: (input: ActivityProjectionInput) => ActivityProjection;
   investigationDiscoveries?: readonly FacetDiscoveryRequest[];
   /** Safety ceiling for any complete Evidence copy or export artifact. */
   outputByteLimit?: number;
@@ -778,6 +786,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly normalizer: EventNormalizer;
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
+  private readonly activityProjectionFactory: (input: ActivityProjectionInput) => ActivityProjection;
   private readonly evidenceQuery: EvidenceInvestigationQuery;
   private readonly investigationDiscoveries: readonly FacetDiscoveryRequest[];
   private filterDiscovery: FacetDiscoveryRequest | null = null;
@@ -803,6 +812,7 @@ class Runtime implements WorkbenchRuntime {
   private selectionEventId: string | null = null;
   private selectedEventEnvelope: LightstreamerEventEnvelope | null = null;
   private focusedEventId: string | null = null;
+  private evidenceScrollTop = 0;
   private selectionHiddenByFilter = false;
   private filterRecoveryFocused = false;
   private contextId: string | null = null;
@@ -951,6 +961,7 @@ class Runtime implements WorkbenchRuntime {
     this.normalizer = options.normalizer ?? createEventNormalizer();
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
     this.performanceHooks = options.performanceHooks ?? null;
+    this.activityProjectionFactory = options.activityProjectionFactory ?? createActivityProjection;
     this.investigationDiscoveries = Object.freeze([...(options.investigationDiscoveries ?? [])]);
     this.storage = options.storage ?? { mode: "indexeddb" };
     this.storageEstimate = options.storageEstimate ?? null;
@@ -1473,6 +1484,10 @@ class Runtime implements WorkbenchRuntime {
           this.refreshEvidence("command");
         }
         return;
+      case "set-evidence-scroll":
+        this.evidenceScrollTop = Math.max(0, command.scrollTop);
+        this.publish();
+        return;
       case "set-context":
         this.contextId = command.contextId;
         this.publish();
@@ -1531,6 +1546,12 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       case "close-activity":
+        if (this.activityDocumentState) {
+          const origin = closeActivityDocument(this.activityDocumentState);
+          this.selectionEventId = origin.evidenceSelectionId;
+          this.focusedEventId = origin.evidenceFocusId ?? origin.evidenceSelectionId;
+          this.evidenceScrollTop = Math.max(0, origin.evidenceScrollTop);
+        }
         this.activityOpen = false;
         if (this.activityDocumentState) this.activityDocumentState = Object.freeze({ ...this.activityDocumentState, open: false });
         this.publish();
@@ -1925,6 +1946,7 @@ class Runtime implements WorkbenchRuntime {
     this.selectionHiddenByFilter = false;
     this.filterRecoveryFocused = false;
     this.focusedEventId = null;
+    this.evidenceScrollTop = 0;
     this.clearedSelectionEventId = null;
     this.contextId = "context:scope";
     this.commandProjectionReturnContextId = null;
@@ -3565,6 +3587,7 @@ class Runtime implements WorkbenchRuntime {
       ? null
       : this.findCurrentEventId ?? findResult?.current?.eventId ?? null;
     const revealAvailability = this.revealSelectionAvailability();
+    const activity = this.activitySnapshot(scope);
     return Object.freeze({
       version: this.version,
       renderedEvidenceBoundary: this.renderedEvidenceBoundary
@@ -3582,7 +3605,7 @@ class Runtime implements WorkbenchRuntime {
           ? this.presentEvidence(this.selectedEventEnvelope)
           : null,
       contextId: this.contextId,
-      context: this.contextSnapshot(evidence.events, scope),
+      context: this.contextSnapshot(evidence.events, scope, activity.projection),
       commandProjections: this.commandProjectionSnapshot(),
       diagnostics: this.diagnosticSnapshot(scope),
       historyCondition: this.historyCondition,
@@ -3591,7 +3614,7 @@ class Runtime implements WorkbenchRuntime {
       retention: this.retentionSnapshot(),
       export: this.exportSnapshot(),
       evidenceCopy: this.evidenceCopy,
-      activity: this.activitySnapshot(scope),
+      activity,
       localInjection: this.localInjectionSnapshot(),
       evidence: Object.freeze({
         events: Object.freeze(evidence.events.map((event) => this.presentEvidence(event))),
@@ -3601,6 +3624,7 @@ class Runtime implements WorkbenchRuntime {
         mode: this.mode,
         newerCount,
         offset: this.mode === "frozen" ? evidence.offset : newerCount,
+        scrollTop: this.evidenceScrollTop,
         visibleStart,
         visibleEnd,
         hasOlder: visibleStart > 1,
@@ -3907,19 +3931,29 @@ class Runtime implements WorkbenchRuntime {
       coverage: this.captureSnapshot().coverage,
       terminal: this.historyStatus.phase === "STOPPED" || Boolean(this.historyStatus.terminal)
     };
-    const projection = createActivityProjection({
+    const projectionInput: ActivityProjectionInput = {
       evidence: this.activityOpen || entries.length <= 1_000 ? entries : [],
       scope: activityScope,
       filter: this.canonicalFilter,
       readPoint
-    });
+    };
+    let projection: ActivityProjection;
+    try {
+      projection = this.activityProjectionFactory(projectionInput);
+    } catch (error) {
+      projection = failedActivityProjection(
+        projectionInput,
+        error instanceof Error ? error.message : "Activity aggregation failed."
+      );
+    }
     if (this.activityOpen && !this.activityDocumentState) {
       this.activityDocumentState = openActivityDocument(projection, {
         scope: activityScope,
         filter: this.canonicalFilter,
         readPoint,
         evidenceSelectionId: this.selectionEventId,
-        evidenceScrollTop: 0,
+        evidenceFocusId: this.focusedEventId,
+        evidenceScrollTop: this.evidenceScrollTop,
         view: this.mode === "frozen" ? "FROZEN" : "FOLLOW LIVE",
         localDraftId: this.localInjectionDraft?.id ?? null
       });
@@ -3939,7 +3973,7 @@ class Runtime implements WorkbenchRuntime {
         }).state;
       } else if (document.view === "FROZEN") {
         const frozenSequence = document.readPoint.committedEvidenceBoundary?.sequence ?? 0;
-        const newer = entries.filter((entry) => entry.sequence > frozenSequence).length;
+        const newer = entries.filter((entry) => entry.sequence > frozenSequence && matchesActivityEvidence(entry, document.filter, document.scope)).length;
         this.activityDocumentState = Object.freeze({ ...document, newerMatchingEvidence: newer });
       } else {
         this.activityDocumentState = Object.freeze({ ...document, scope: activityScope, filter: this.canonicalFilter, readPoint, projection, newerMatchingEvidence: 0 });
@@ -3957,23 +3991,22 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private async hydrateActivityEvidence(): Promise<void> {
-    let cursor: string | undefined;
-    const hydrated: ActivityEvidence[] = [];
-    do {
-      const result = await this.evidenceQuery.query({
-        at: "LATEST_COMMITTED",
-        scope: { kind: "PAGE" },
-        filter: createFilter(1),
-        page: { order: "OLDEST_FIRST", size: 100, ...(cursor ? { cursor } : {}) },
-        discover: [],
-        includePayload: true
-      });
-      if (!result.ok) return;
-      for (const record of result.value.page.evidence) {
-        hydrated.push({ intervalId: record.identity.intervalId, sequence: record.identity.sequence, event: this.eventForRecord(record) });
-      }
-      cursor = result.value.page.nextCursor ?? undefined;
-    } while (cursor);
+    // Activity is a projection of accepted Evidence, not a second query
+    // surface. The paged investigation contract deliberately caps pages at
+    // 100 records for renderer work, but using it for retained-history
+    // hydration would rescan the complete journal once per page. Read the
+    // already-latched authoritative candidates once, then merge any arrivals
+    // accepted while that read was in flight below.
+    const result = await this.evidencePipeline.read({
+      intervalId: this.historyStatus.interval.id,
+      order: "asc"
+    });
+    if (!result.ok) return;
+    const hydrated: ActivityEvidence[] = result.value.evidence.flatMap((entry) =>
+      isLightstreamerEvidenceCandidate(entry.candidate)
+        ? [{ intervalId: entry.intervalId, sequence: entry.sequence, event: entry.candidate }]
+        : []
+    );
     if (this.disposed) return;
     const latchedIntervalId = hydrated[0]?.intervalId ?? this.historyStatus.interval.id;
     const latchedBoundary = hydrated.reduce((highest, entry) => Math.max(highest, entry.sequence), 0);
@@ -4022,7 +4055,8 @@ class Runtime implements WorkbenchRuntime {
 
   private contextSnapshot(
     events: readonly LightstreamerEventEnvelope[],
-    scope: WorkbenchSnapshot["scope"]
+    scope: WorkbenchSnapshot["scope"],
+    activityProjection: ActivityProjection
   ): WorkbenchContextSnapshot {
     const selected =
       (this.selectedEventEnvelope?.id === this.selectionEventId
@@ -4036,7 +4070,8 @@ class Runtime implements WorkbenchRuntime {
         scope.coverage,
         this.captureSnapshot(),
         events.length,
-        this.liveEvidence.total
+        this.liveEvidence.total,
+        activityProjection
       );
     }
     return Object.freeze({
@@ -4223,7 +4258,8 @@ function runtimeObjectDossier(
   topologyCoverage: WorkbenchSnapshot["scope"]["coverage"],
   capture: WorkbenchCaptureSnapshot,
   visibleEvidenceCount: number,
-  matchingEvidenceCount: number
+  matchingEvidenceCount: number,
+  activityProjection: ActivityProjection
 ): WorkbenchContextSnapshot {
   const fields: Array<readonly [string, string]> = [];
   const add = (name: string, value: unknown): void => {
@@ -4325,6 +4361,10 @@ function runtimeObjectDossier(
   );
   add("Visible Evidence", visibleEvidenceCount);
   add("Matching retained Evidence", matchingEvidenceCount);
+  add(
+    "Activity",
+    `${activityProjection.logicalUpdateTotal.toLocaleString()} Logical Updates · ${activityProjection.updateDeliveryTotal.toLocaleString()} Update Deliveries · ${activityProjection.state}`
+  );
 
   return Object.freeze({
     kind: "runtime",

@@ -6,6 +6,7 @@ export type ActivityDocumentOrigin = Readonly<{
   filter: Filter;
   readPoint: ActivityReadPoint;
   evidenceSelectionId: string | null;
+  evidenceFocusId?: string | null;
   evidenceScrollTop: number;
   view: "FOLLOW LIVE" | "FROZEN";
   localDraftId: string | null;

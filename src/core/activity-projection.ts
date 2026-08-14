@@ -128,6 +128,18 @@ export function rebuildActivityProjection(input: ActivityProjectionInput): Activ
   return project(input);
 }
 
+/** Creates a truthful renderer-safe failure projection after an unexpected aggregation error. */
+export function failedActivityProjection(
+  input: Pick<ActivityProjectionInput, "scope" | "filter" | "readPoint">,
+  reason: string
+): ActivityProjection {
+  return Object.freeze({
+    ...emptyProjection(input.scope, input.filter.revision, input.readPoint),
+    state: "AGGREGATION_FAILED",
+    reason
+  });
+}
+
 /** An actual incremental accumulator: accepted entries are indexed once and never replayed by append. */
 export type ActivityAccumulator = Readonly<{
   append(entry: ActivityEvidence, readPoint?: ActivityReadPoint): ActivityProjection;
@@ -179,7 +191,7 @@ function project(input: ActivityProjectionInput): ActivityProjection {
   if (input.aggregate) {
     try { input.aggregate(ordered); } catch (error) { return Object.freeze({ ...base, state: "AGGREGATION_FAILED", reason: error instanceof Error ? error.message : "Activity aggregation failed." }); }
   }
-  const matching = ordered.filter((entry) => matches(entry, input.filter, scope));
+  const matching = ordered.filter((entry) => matchesActivityEvidence(entry, input.filter, scope));
   const server = matching.filter(({ event }) => isServerUpdate(event));
   const local = matching.filter(({ event }) => isLocalUpdate(event));
   const serverLogical = uniqueLogical(server);
@@ -250,7 +262,8 @@ function metricOwnerIdentity(entry: ActivityEvidence): string | null {
   return `owner:${entry.event.subscription?.id ?? "?"}:${entry.event.item?.name ?? entry.event.item?.position ?? "?"}:${entry.event.timestamp}`;
 }
 
-function matches(entry: ActivityEvidence, filter: Filter, scope: ActivityScope): boolean {
+/** Returns whether one accepted Evidence entry belongs to the supplied Activity view. */
+export function matchesActivityEvidence(entry: ActivityEvidence, filter: Filter, scope: ActivityScope): boolean {
   const event = entry.event;
   if (!scopeMatches(event, scope)) return false;
   const facets = extractEvidenceFacets(event, { identity: { intervalId: entry.intervalId, pageId: "activity", ownerId: event.subscription?.id ?? event.client?.id ?? "page", sequence: entry.sequence, eventId: event.id } });

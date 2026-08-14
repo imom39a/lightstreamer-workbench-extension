@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFilter, createTypedFilterValue } from "../src/core/filter-algebra";
 import {
   appendActivityEvidence,
+  matchesActivityEvidence,
   rebuildActivityProjection,
   sortActivityRankings,
   type ActivityEvidence
@@ -102,6 +103,24 @@ describe("Observed Activity projection", () => {
     expect(scoped.state).toBe("EMPTY_MATCH");
     expect(scoped.logicalUpdateTotal).toBe(0);
     expect(scoped.matchingEvidence).toBe(1);
+  });
+
+  it("matches newer Evidence against the active Scope, Filter, and provenance", () => {
+    const local = evidence(3, 3_000, { source: "synthetic", synthetic: true });
+    const serverOtherSubscription = evidence(4, 4_000, { subscription: { id: "subscription-2" } });
+    const server = evidence(5, 5_000);
+    const filter = {
+      ...createFilter(2),
+      criteria: {
+        provenance: {
+          include: [createTypedFilterValue("provenance", "enum", "SERVER")],
+          exclude: []
+        }
+      }
+    };
+    const scope = { kind: "SUBSCRIPTION" as const, subscriptionId: "subscription-1" };
+
+    expect([local, serverOtherSubscription, server].filter((entry) => matchesActivityEvidence(entry, filter, scope))).toEqual([server]);
   });
 
   it("retains evidence order and marks backward captured timestamps as discontinuities", () => {
