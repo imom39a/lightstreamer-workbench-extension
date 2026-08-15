@@ -140,6 +140,8 @@ try {
       acceptanceCriteria: [
         "Observed Activity preserves exact 10,000-record orientation, graphical and textual meaning, limited and memory-fallback coverage truth, and normal, compact, and wide reachability.",
         "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
+        "Contextual diagnostics present server errors and bounded keepalive aggregation without a health verdict; duplicate, overlap, listener churn, and subscription lint remain scope-relevant and route to supporting Evidence.",
+        "Committed snapshot, COMMAND, and lost-update anomalies preserve exact epoch attribution, bounded limitations, and one normalized lifecycle without duplicate footer ownership.",
         "Global diagnostics and More actions remain readable, keyboard reachable, and unobscured without horizontal shell or document overflow in compact, normal, shallow, wide, Dark, Light, and forced-colors states.",
         "Every captured state emits no browser diagnostics; axe-checked states have no serious or critical violations, and every focus-checked action remains visible and unobscured."
       ],
@@ -744,6 +746,39 @@ async function prepareProductionState(page, setup) {
         return owner instanceof HTMLElement && owner.scrollTop === 0;
       });
     }
+    return;
+  }
+  if (setup === "diagnostic-server") {
+    const diagnostics = page.getByLabel("Workbench diagnostic entries");
+    await diagnostics.waitFor();
+    const text = await diagnostics.innerText();
+    for (const marker of ["Warning · Server error -7", "Information · Server keepalive observed", "does not prove that the connection"]) {
+      if (!text.includes(marker)) throw new Error(`Server diagnostic visual state is missing ${JSON.stringify(marker)}.`);
+    }
+    await diagnostics.focus();
+    await page.keyboard.press("Home");
+    return;
+  }
+  if (setup === "diagnostic-subscription") {
+    const diagnostics = page.getByLabel("Workbench diagnostic entries");
+    await diagnostics.waitFor();
+    const text = await diagnostics.innerText();
+    for (const marker of ["Information · Exact duplicate Subscriptions", "Information · Semantic Subscription overlap", "Information · Listener registration churn"]) {
+      if (!text.includes(marker)) throw new Error(`Subscription diagnostic visual state is missing ${JSON.stringify(marker)}.`);
+    }
+    await diagnostics.focus();
+    await page.keyboard.press("Home");
+    return;
+  }
+  if (setup === "diagnostic-anomaly") {
+    const diagnostics = page.getByLabel("Workbench diagnostic entries");
+    await diagnostics.waitFor();
+    const text = await diagnostics.innerText();
+    for (const marker of ["Warning · Snapshot phase incomplete", "Warning · Unknown COMMAND key update", "Warning · Subscription updates lost"]) {
+      if (!text.includes(marker)) throw new Error(`Anomaly diagnostic visual state is missing ${JSON.stringify(marker)}.`);
+    }
+    await diagnostics.focus();
+    await page.keyboard.press("Home");
     return;
   }
   if (setup.startsWith("activity")) {

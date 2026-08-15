@@ -43,4 +43,13 @@ describe("Workbench visual-evidence runner", () => {
     expect(runnerSource).not.toContain('visual baseline: scenario-checkpoint');
     expect(runnerSource).not.toContain('result: "8/8 passed"');
   });
+
+  it("prepares every integrated diagnostic matrix setup and records its review scope", () => {
+    for (const setup of ["diagnostic-server", "diagnostic-subscription", "diagnostic-anomaly"]) {
+      expect(runnerSource).toContain(`setup === "${setup}"`);
+    }
+    expect(runnerSource).toContain("server errors and bounded keepalive aggregation");
+    expect(runnerSource).toContain("duplicate, overlap, listener churn, and subscription lint");
+    expect(runnerSource).toContain("snapshot, COMMAND, and lost-update anomalies");
+  });
 });
