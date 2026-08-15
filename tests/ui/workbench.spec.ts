@@ -1357,15 +1357,17 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
   ];
   for (const scene of scenes) {
     await openScenario(page, "diagnostic-subscription-context", scene, scene.theme);
+    await page.getByRole("button", { name: "Open Scope Context" }).click();
     const footer = page.getByRole("region", { name: "Workbench diagnostics" });
-    await expect(footer).toContainText("Information · Exact duplicate Subscriptions");
-    await expect(footer).toContainText("Information · Semantic Subscription overlap");
-    await expect(footer).toContainText("Information · Listener registration churn");
-    await expect(footer).toContainText("immutable committed topology facts");
-    await expect(footer).toContainText("does not infer application intent");
-    await expect(page.getByRole("complementary", { name: "Context" }).locator(".workbench-react__diagnostic")).toHaveCount(0);
+    const contextDiagnostics = page.getByRole("region", { name: "Context diagnostics" });
+    await expect(contextDiagnostics).toContainText("Information · Exact duplicate Subscriptions");
+    await expect(contextDiagnostics).toContainText("Information · Semantic Subscription overlap");
+    await expect(contextDiagnostics).toContainText("Information · Listener registration churn");
+    await expect(contextDiagnostics).toContainText("immutable committed topology facts");
+    await expect(contextDiagnostics).toContainText("does not infer application intent");
+    await expect(footer).not.toContainText("Exact duplicate Subscriptions");
 
-    const exactDuplicate = footer.locator(".workbench-react__status-diagnostic").filter({ hasText: "Exact duplicate Subscriptions" }).first();
+    const exactDuplicate = contextDiagnostics.locator(".workbench-react__context-diagnostic").filter({ hasText: "Exact duplicate Subscriptions" }).first();
     const exactRoute = exactDuplicate.getByRole("button", { name: "Inspect supporting Evidence" });
     await exactRoute.focus();
     await page.keyboard.press("Enter");
@@ -1374,29 +1376,33 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
 
     await page.getByRole("button", { name: "Scope", exact: true }).click();
     await page.getByRole("treeitem").filter({ hasText: "raw-capability" }).click();
-    await expect(footer).toContainText("RAW snapshot unavailable");
-    await expect(footer).toContainText("Buffer request not applicable");
-    await expect(footer).not.toContainText("Exact duplicate Subscriptions");
+    await page.getByRole("button", { name: "Open Scope Context" }).click();
+    const selectedContextDiagnostics = page.getByRole("region", { name: "Context diagnostics" });
+    await expect(selectedContextDiagnostics).toContainText("RAW snapshot unavailable");
+    await expect(selectedContextDiagnostics).toContainText("Buffer request not applicable");
+    await expect(selectedContextDiagnostics).not.toContainText("Exact duplicate Subscriptions");
+    await expect(footer).not.toContainText("RAW snapshot unavailable");
     await expectShellFits(page);
     await expectNoSeriousAxeViolations(page, testInfo);
     await attachNamedScenarioScreenshot(page, testInfo, `subscription-diagnostics-${scene.width}x${scene.height}-${scene.theme}`);
   }
   await page.emulateMedia({ forcedColors: "active" });
-  const forcedFooter = page.getByRole("region", { name: "Workbench diagnostics" });
-  await expect(forcedFooter).toContainText("RAW snapshot unavailable");
+  await expect(page.getByRole("region", { name: "Context diagnostics" })).toContainText("RAW snapshot unavailable");
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
 test("Workbench presents lost-update, snapshot, and COMMAND anomalies without duplicate banners", async ({ page }, testInfo) => {
   await openScenario(page, "diagnostic-anomalies", { width: 900, height: 700 }, "dark");
+  await page.getByRole("button", { name: "Open Scope Context" }).click();
   const footer = page.getByRole("region", { name: "Workbench diagnostics" });
-  await expect(footer).toContainText("Warning · Snapshot phase incomplete");
-  await expect(footer).toContainText("Warning · Unknown COMMAND key update");
-  await expect(footer).toContainText("Warning · Subscription updates lost");
-  await expect(footer.getByText("Snapshot phase incomplete", { exact: false })).toHaveCount(1);
-  await expect(page.getByRole("complementary", { name: "Context" }).locator(".workbench-react__diagnostic")).toHaveCount(0);
-  const routes = footer.getByRole("button", { name: "Inspect supporting Evidence" });
+  const contextDiagnostics = page.getByRole("region", { name: "Context diagnostics" });
+  await expect(contextDiagnostics).toContainText("Warning · Snapshot phase incomplete");
+  await expect(contextDiagnostics).toContainText("Warning · Unknown COMMAND key update");
+  await expect(contextDiagnostics).toContainText("Warning · Subscription updates lost");
+  await expect(contextDiagnostics.getByText("Snapshot phase incomplete", { exact: false })).toHaveCount(1);
+  await expect(footer).not.toContainText("Snapshot phase incomplete");
+  const routes = contextDiagnostics.getByRole("button", { name: "Inspect supporting Evidence" });
   await expect(routes).not.toHaveCount(0);
   await routes.last().focus();
   await expect(routes.last()).toBeFocused();

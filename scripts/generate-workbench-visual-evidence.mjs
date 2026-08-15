@@ -563,8 +563,12 @@ async function captureProduction(runningBrowser, scenario) {
       accessibility = { seriousOrCriticalViolations };
     }
     if (isIntegratedDiagnosticSetup(scenario.production.setup)) {
-      const diagnostics = page.getByLabel("Workbench diagnostic entries");
-      focusEvidence = await diagnostics.evaluate((element) => {
+      const diagnosticFocus = scenario.production.setup === "diagnostic-server"
+        ? page.getByLabel("Workbench diagnostic entries")
+        : page.getByLabel("Context diagnostics").getByRole("button").first();
+      await diagnosticFocus.scrollIntoViewIfNeeded();
+      await diagnosticFocus.focus();
+      focusEvidence = await diagnosticFocus.evaluate((element) => {
         const style = getComputedStyle(element);
         const rect = element.getBoundingClientRect();
         return {
@@ -812,25 +816,33 @@ async function prepareProductionState(page, setup) {
     return;
   }
   if (setup === "diagnostic-subscription") {
-    const diagnostics = page.getByLabel("Workbench diagnostic entries");
+    await page.getByRole("button", { name: "Open Scope Context" }).click();
+    const diagnostics = page.getByLabel("Context diagnostics");
     await diagnostics.waitFor();
     const text = await diagnostics.innerText();
     for (const marker of ["Information · Exact duplicate Subscriptions", "Information · Semantic Subscription overlap", "Information · Listener registration churn"]) {
       if (!text.includes(marker)) throw new Error(`Subscription diagnostic visual state is missing ${JSON.stringify(marker)}.`);
     }
-    await diagnostics.focus();
-    await page.keyboard.press("Home");
+    const action = diagnostics.getByRole("button").first();
+    await action.scrollIntoViewIfNeeded();
+    await action.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
     return;
   }
   if (setup === "diagnostic-anomaly") {
-    const diagnostics = page.getByLabel("Workbench diagnostic entries");
+    await page.getByRole("button", { name: "Open Scope Context" }).click();
+    const diagnostics = page.getByLabel("Context diagnostics");
     await diagnostics.waitFor();
     const text = await diagnostics.innerText();
     for (const marker of ["Warning · Snapshot phase incomplete", "Warning · Unknown COMMAND key update", "Warning · Subscription updates lost"]) {
       if (!text.includes(marker)) throw new Error(`Anomaly diagnostic visual state is missing ${JSON.stringify(marker)}.`);
     }
-    await diagnostics.focus();
-    await page.keyboard.press("Home");
+    const action = diagnostics.getByRole("button").first();
+    await action.scrollIntoViewIfNeeded();
+    await action.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
     return;
   }
   if (setup.startsWith("activity")) {

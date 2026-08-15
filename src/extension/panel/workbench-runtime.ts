@@ -5642,12 +5642,7 @@ class Runtime implements WorkbenchRuntime {
     const selected = scope.selection;
     return [...this.committedDiagnosticPresentations.values()].filter((diagnostic) => {
       if (!selected || selected.kind === "page") {
-        return diagnostic.affectedIdentity === undefined ||
-          diagnostic.affectedIdentity.kind === "page" ||
-          diagnostic.affectedIdentity.kind === "client" ||
-          diagnostic.affectedIdentity.kind === "session" ||
-          (diagnostic.affectedIdentity.kind === "evidence" && diagnostic.affectedIdentity.eventId === this.selectionEventId) ||
-          diagnostic.affectedIdentity.kind === "unavailable";
+        return true;
       }
       const target = findTopologySelection(this.topologyProjection.snapshot(), selected.id);
       return diagnostic.affectedIdentity !== undefined && target !== null

@@ -218,24 +218,27 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       return;
     }
     case "diagnostic-subscription": {
-      const diagnostics = page.getByLabel("Workbench diagnostic entries");
+      await page.getByRole("button", { name: "Open Scope Context" }).click();
+      const diagnostics = page.getByLabel("Context diagnostics");
       await expect(diagnostics).toContainText("Information · Exact duplicate Subscriptions");
       await expect(diagnostics).toContainText("Information · Semantic Subscription overlap");
       await expect(diagnostics).toContainText("Information · Listener registration churn");
-      await diagnostics.focus();
-      await page.keyboard.press("Home");
-      await expect(diagnostics).toBeFocused();
-      await expect.poll(() => diagnostics.evaluate((element) => element.scrollTop)).toBe(0);
+      const action = diagnostics.getByRole("button").first();
+      await action.scrollIntoViewIfNeeded();
+      await action.focus();
+      await expect(action).toBeFocused();
       return;
     }
     case "diagnostic-anomaly": {
-      const diagnostics = page.getByLabel("Workbench diagnostic entries");
+      await page.getByRole("button", { name: "Open Scope Context" }).click();
+      const diagnostics = page.getByLabel("Context diagnostics");
       await expect(diagnostics).toContainText("Warning · Snapshot phase incomplete");
       await expect(diagnostics).toContainText("Warning · Unknown COMMAND key update");
       await expect(diagnostics).toContainText("Warning · Subscription updates lost");
-      await diagnostics.focus();
-      await page.keyboard.press("Home");
-      await expect(diagnostics).toBeFocused();
+      const action = diagnostics.getByRole("button").first();
+      await action.scrollIntoViewIfNeeded();
+      await action.focus();
+      await expect(action).toBeFocused();
       return;
     }
     case "captured-draft": {
