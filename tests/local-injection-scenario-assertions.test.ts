@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION } from "../src/core/diagnostic-observation";
+import { DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION, type DiagnosticObservation, type DiagnosticObservationRead } from "../src/core/diagnostic-observation";
 
 import {
   evaluateScenarioCheckpoint,
@@ -138,6 +138,61 @@ describe("Scenario Checkpoints", () => {
       expect(validateScenarioCheckpoint(checkpoint([{ id: "diagnostic", kind: "diagnostic-observation-exists", ...assertion } as never]), {
         targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
       })).toMatchObject({ ok: false, assertionId: "diagnostic" });
+    }
+  });
+
+  it("matches only post-authorization normalized occurrences or active condition transitions", () => {
+    const affected = { kind: "subscription", pageId: "page", clientId: "client", sessionId: "session", subscriptionId: "sub" } as const;
+    const assertion = checkpoint([{
+      id: "diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1,
+      ruleCode: "subscription.lost-updates", lifecycle: "occurrence", minimumSeverity: "warning", affected
+    }]);
+    const occurrence = {
+      schemaVersion: 1, id: "diag-7", code: "subscription.lost-updates", ruleVersion: 1, severity: "error",
+      lifecycle: { kind: "occurrence", occurrenceId: "lost-7", state: "observed" }, affected, observedAt: 10,
+      observationBoundary: { intervalId: "diagnostic-interval", sequence: 7 }, observed: "Lost updates", limitation: "Count only",
+      consequence: "Projection may be incomplete", route: { kind: "inspect-affected" }
+    } as const satisfies DiagnosticObservation;
+    const complete: DiagnosticObservationRead = {
+      status: "complete", coverage: "complete", retention: "complete", through: occurrence.observationBoundary, observations: [occurrence]
+    };
+    const common = {
+      priorOutcomes: new Map(), correlatedLocalEvidence: new Map(),
+      inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: boundary } as const)
+    };
+    const passed = evaluateScenarioCheckpoint(assertion, snapshot(), { ...common, diagnosticReads: new Map([["diagnostic", complete]]) }, 0);
+    expect(passed).toMatchObject({ status: "pass", assertions: [{ status: "pass", observed: { state: "observed", provenance: "diagnostic-observation" }, relatedDiagnostics: [{ id: "diag-7", route: { kind: "inspect-affected" } }] }] });
+
+    const wrongIdentity = { ...occurrence, affected: { ...affected, subscriptionId: "other" } } satisfies DiagnosticObservation;
+    const absent = evaluateScenarioCheckpoint(assertion, snapshot(), { ...common, diagnosticReads: new Map([["diagnostic", { ...complete, observations: [wrongIdentity] }]]) }, 0);
+    expect(absent).toMatchObject({ status: "fail", assertions: [{ status: "fail", observed: { state: "absent" }, relatedDiagnostics: [] }] });
+
+    const conditionAssertion = checkpoint([{
+      id: "condition", kind: "diagnostic-observation-exists", contractVersion: 1,
+      ruleCode: "capture.disconnected", lifecycle: "condition", minimumSeverity: "warning", affected, withinActiveMs: 100
+    }]);
+    const resolved = { ...occurrence, id: "condition-8", code: "capture.disconnected", lifecycle: { kind: "condition", conditionId: "bridge", state: "resolved" } } as const satisfies DiagnosticObservation;
+    expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, observations: [resolved] }]]) }, 50, 0))
+      .toMatchObject({ status: "waiting", assertions: [{ status: "waiting", observed: { state: "absent" } }] });
+    const active = { ...resolved, id: "condition-9", lifecycle: { ...resolved.lifecycle, state: "active" } } as const satisfies DiagnosticObservation;
+    expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, observations: [resolved, active] }]]) }, 50, 0))
+      .toMatchObject({ status: "pass", assertions: [{ status: "pass", observed: { state: "active" }, relatedDiagnostics: [{ id: "condition-9" }] }] });
+  });
+
+  it("fails diagnostic assertions closed for limited, cleared, unavailable, or closed reads", () => {
+    const affected = { kind: "page", pageId: "page" } as const;
+    const assertion = checkpoint([{
+      id: "diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1,
+      ruleCode: "capture.disconnected", lifecycle: "condition", minimumSeverity: "warning", affected, withinActiveMs: 100
+    }]);
+    const common = {
+      priorOutcomes: new Map(), correlatedLocalEvidence: new Map(),
+      inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: boundary } as const)
+    };
+    for (const status of ["unsupported", "retention-gap", "cleared", "unavailable", "closed"] as const) {
+      const read: DiagnosticObservationRead = { status, coverage: status === "retention-gap" ? "limited" : "unavailable", retention: status === "cleared" ? "cleared" : status === "retention-gap" ? "limited" : "unavailable", through: { intervalId: "diagnostic-interval", sequence: 8 }, observations: [] };
+      expect(evaluateScenarioCheckpoint(assertion, snapshot(), { ...common, diagnosticReads: new Map([["diagnostic", read]]) }, 10, 0))
+        .toMatchObject({ status: "unavailable", assertions: [{ status: "unavailable", observed: { state: status, certainty: "unavailable" } }] });
     }
   });
 
