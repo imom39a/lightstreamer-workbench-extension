@@ -610,6 +610,98 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
+  it("reconciles configuration and topology Context diagnostics from committed immutable latches", async () => {
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "topology-latch-diagnostics" });
+    const client = { id: "lint-client", status: "CONNECTED:WS-STREAMING", sessionId: "lint-session", adapterSet: "LINT_ADAPTERS" };
+    const topology = (kind: LightstreamerEventEnvelope["kind"], captureSequence: number) => ({
+      version: 1 as const,
+      kind,
+      pageEpoch: "lint-page",
+      captureSequence,
+      provenance: { instrumentationSource: "official-public-api" as const },
+      coverage: { status: "complete" as const, getters: {} }
+    });
+    const configured = (id: string, mode: "MERGE" | "RAW", captureSequence: number): LightstreamerEventEnvelope => ({
+      id,
+      timestamp: 1_000 + captureSequence,
+      direction: "inbound",
+      source: "server",
+      synthetic: false,
+      kind: "subscription-started",
+      client,
+      subscription: {
+        id,
+        mode,
+        items: ["prices"],
+        fields: ["price"],
+        dataAdapter: "QUOTE_ADAPTER",
+        selector: null,
+        requestedSnapshot: "yes",
+        requestedBufferSize: null,
+        requestedMaxFrequency: null,
+        commandSecondLevelFields: undefined,
+        commandSecondLevelFieldSchema: null,
+        commandSecondLevelDataAdapter: null,
+        active: true,
+        subscribed: true
+      },
+      topology: topology("subscription-started", captureSequence),
+      raw: { callback: "onSubscription" }
+    });
+    const history = createAuthoritativeHistory({ precommitted: [
+      {
+        id: "lint-client-status",
+        timestamp: 1_000,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "client-status",
+        client,
+        topology: topology("client-status", 1)
+      },
+      configured("duplicate-a", "MERGE", 2),
+      configured("duplicate-b", "MERGE", 3),
+      configured("raw-subscription", "RAW", 4),
+      {
+        id: "duplicate-b-ended",
+        timestamp: 1_005,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "subscription-ended",
+        client,
+        subscription: { id: "duplicate-b" },
+        topology: topology("subscription-ended", 5)
+      },
+      {
+        id: "post-duplicate-boundary",
+        timestamp: 1_006,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "client-status",
+        client,
+        topology: topology("client-status", 6)
+      }
+    ] });
+    const runtime = createWorkbenchRuntime({ history, capture: { coverage: "USEFUL" }, diagnosticObservations });
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+    const observations = (await diagnosticObservations.query()).observations;
+    expect(observations.filter(({ code, lifecycle }) => code === "ls.subscription.exact-duplicate" && lifecycle.kind === "condition" && lifecycle.state === "active")).toHaveLength(1);
+    expect(observations.filter(({ code, lifecycle }) => code === "ls.subscription.exact-duplicate" && lifecycle.kind === "condition" && lifecycle.state === "resolved")).toHaveLength(1);
+    expect(observations.filter(({ code, lifecycle }) => code === "ls.subscription.exact-duplicate" && lifecycle.kind === "occurrence")).toHaveLength(1);
+    expect(observations).toContainEqual(expect.objectContaining({
+      code: "ls.sub.raw-snapshot-unavailable",
+      affected: expect.objectContaining({ kind: "subscription", subscriptionId: "raw-subscription" })
+    }));
+    expect(runtime.getSnapshot().diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ls.subscription.exact-duplicate" }),
+      expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
+    ]));
+    runtime.dispose();
+  });
+
   it("fails closed and exposes settlement failure when a normalized mutation cannot commit", async () => {
     const memory = createMemoryDiagnosticObservationJournal({ panelSessionId: "failed-diagnostics" });
     const failure = new Error("diagnostic persistence unavailable");

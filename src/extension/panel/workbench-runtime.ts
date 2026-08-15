@@ -28,6 +28,10 @@ import {
   type SubscriptionDiagnosticProposal
 } from "../../core/subscription-diagnostic-producer";
 import {
+  createCommittedTopologyDiagnosticCoordinator,
+  type CommittedTopologyDiagnosticCoordinator
+} from "./committed-topology-diagnostic-coordinator";
+import {
   createInMemoryEventHistory,
   type EvidenceRef,
   type EventHistory,
@@ -917,6 +921,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly normalizer: EventNormalizer;
   private readonly diagnosticObservations: DiagnosticObservationJournal;
   private subscriptionDiagnosticProducer: SubscriptionDiagnosticProducer = createSubscriptionDiagnosticProducer();
+  private committedTopologyDiagnostics: CommittedTopologyDiagnosticCoordinator = createCommittedTopologyDiagnosticCoordinator();
   private readonly activeRuntimeDiagnosticConditions = new Map<string, Readonly<{
     code: string;
     conditionId: string;
@@ -1043,6 +1048,7 @@ class Runtime implements WorkbenchRuntime {
     topology: TopologyProjection;
     command: CommandStateProjections;
     diagnostics: SubscriptionDiagnosticProducer;
+    topologyDiagnostics: CommittedTopologyDiagnosticCoordinator;
     topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null;
   } | null = null;
   private historyCondition: WorkbenchHistoryCondition | null = null;
@@ -2403,6 +2409,7 @@ class Runtime implements WorkbenchRuntime {
     this.diagnosticEvidenceSequences.clear();
     this.committedDiagnosticPresentations.clear();
     this.subscriptionDiagnosticProducer.clear();
+    this.committedTopologyDiagnostics.clear();
     this.queueDiagnosticMutation(() => this.diagnosticObservations.clear());
     this.activityEvidence.splice(0, this.activityEvidence.length);
     this.activityEvidenceKeys.clear();
@@ -2625,6 +2632,7 @@ class Runtime implements WorkbenchRuntime {
     const topologyProjection = projectionRecovery?.topology ?? this.topologyProjection;
     const commandStateProjections = projectionRecovery?.command ?? this.commandStateProjections;
     const diagnosticProducer = projectionRecovery?.diagnostics ?? this.subscriptionDiagnosticProducer;
+    const topologyDiagnostics = projectionRecovery?.topologyDiagnostics ?? this.committedTopologyDiagnostics;
     this.recordSubscriptionDiagnosticProposals(
       diagnosticProducer.applyCommittedEvidence(entry)
     );
@@ -2638,6 +2646,14 @@ class Runtime implements WorkbenchRuntime {
         if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
         else this.topologyCoverage = "LIMITED";
       }
+      this.recordSubscriptionDiagnosticProposals(topologyDiagnostics.apply(
+        entry,
+        topologyProjection.snapshot(),
+        typeof entry.candidate.checkpoint.pageEpoch === "string"
+          ? entry.candidate.checkpoint.pageEpoch
+          : this.currentPageEpoch,
+        { historyStatus: this.history.status() }
+      ));
       if (this.acceptDiagnosticEvidenceTransition(entry)) {
         this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot(), true);
       }
@@ -2683,6 +2699,12 @@ class Runtime implements WorkbenchRuntime {
       if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
       else this.topologyCoverage = "LIMITED";
     }
+    this.recordSubscriptionDiagnosticProposals(topologyDiagnostics.apply(
+      entry,
+      topologyProjection.snapshot(),
+      event.topology?.pageEpoch ?? this.currentPageEpoch,
+      { historyStatus: this.history.status() }
+    ));
     commandStateProjections.apply(event);
     this.recordCommittedServerDiagnosticFindings(entry, event);
     if (this.acceptDiagnosticEvidenceTransition(entry)) {
@@ -2714,6 +2736,7 @@ class Runtime implements WorkbenchRuntime {
           topology: createTopologyProjection(),
           command: createCommandStateProjections(),
           diagnostics: createSubscriptionDiagnosticProducer(),
+          topologyDiagnostics: createCommittedTopologyDiagnosticCoordinator(),
           topologyCoverage: null
         };
       } else if (this.projectionRecovery.intervalId === null && intervalId !== null) {
@@ -2727,6 +2750,7 @@ class Runtime implements WorkbenchRuntime {
         this.topologyProjection = recovery.topology;
         this.commandStateProjections = recovery.command;
         this.subscriptionDiagnosticProducer = recovery.diagnostics;
+        this.committedTopologyDiagnostics = recovery.topologyDiagnostics;
         this.topologyCoverage = recovery.topologyCoverage;
         this.projectionRecovery = null;
         this.invalidatePreparedExport();
