@@ -296,6 +296,8 @@ JSON Patch remains a specialist sub-lens. Verify that applying a patch to the pr
 
 Extend the existing diagnostic footer and runtime dossiers rather than create a permanent Diagnostics Center.
 
+Foundation implemented: ADR 0013 defines the versioned renderer-neutral Diagnostic Observation journal, exact typed identity matching, independent committed observation boundaries and feed, lifecycle/retention semantics, bounded privacy contract, current-finding adapters, and memory/IndexedDB parity. The remaining Build 5 slices populate that contract and present contextual explanations and lint findings.
+
 Capture and explain:
 
 - `ClientListener.onServerError` and `onServerKeepalive`;

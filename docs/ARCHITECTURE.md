@@ -14,6 +14,7 @@ The architecture is event-driven and split across Chrome extension execution con
 - [Message Contracts](#message-contracts)
 - [Event Model](#event-model)
 - [Storage Architecture](#storage-architecture)
+- [Diagnostic Observation Architecture](#diagnostic-observation-architecture)
 - [Topology State Architecture](#topology-state-architecture)
 - [COMMAND State Architecture](#command-state-architecture)
 - [Local Injection Delivery Architecture](#local-injection-delivery-architecture)
@@ -542,6 +543,12 @@ failure stop, Event History refuses later offers, settles any already queued
 prefix, records the final committed boundary and typed terminal cause, and cannot
 resume through Clear or an adapter switch. Failed, refused, or discarded
 candidates do not receive Evidence sequence numbers or projection effects.
+
+## Diagnostic Observation Architecture
+
+`src/core/diagnostic-observation.ts` defines the renderer- and storage-neutral Diagnostic Observation journal. Its independent Panel Session-local cursor orders every occurrence, condition activation/update, and resolution, whether or not Event History supports the finding. Query consumers capture immutable lower and upper boundaries and read the exact `(after, through]` range; the feed publishes only newly committed lifecycle events. Memory and IndexedDB implementations share the same public contract and explicitly report retention gaps, Clear, unavailable storage, unsupported schema, and close instead of treating missing observations as proof of absence.
+
+`src/core/diagnostic-observation-adapters.ts` is the allowlisting boundary for current history, storage, Capture, Session, COMMAND, subscription-error, and lost-update findings. Stable codes, typed affected identities, facts, limitations, consequences, and bounded routes cross that boundary. Renderer titles, array order, localized copy, and arbitrary raw messages do not. The existing footer remains the presentation authority during migration, so this foundation changes no visible copy, order, focus, accessibility state, or layout.
 
 ## Topology State Architecture
 
