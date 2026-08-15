@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import type { ScenarioClock } from "../src/core/local-injection-scenario-runner";
-import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
+import { createMemoryDiagnosticObservationJournal, diagnosticObservationRef } from "../src/core/diagnostic-observation";
 import {
   createWorkbenchRuntime,
   settleScenarioCoordinatorExecution,
@@ -91,6 +91,17 @@ function historyWithCommandTarget(
       commandEvent("source-6", "item-update", sourceOverrides)
     ]
   });
+}
+
+function pageTopology(pageEpoch: string): NonNullable<LightstreamerEventEnvelope["topology"]> {
+  return {
+    version: 1,
+    kind: "item-observed",
+    pageEpoch,
+    captureSequence: 6,
+    provenance: { instrumentationSource: "official-public-api" },
+    coverage: { status: "complete", getters: {} }
+  };
 }
 
 function historyWithMergeTarget() {
@@ -734,7 +745,7 @@ describe("WorkbenchRuntime Local Injection", () => {
     const diagnostics = createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-runtime-diagnostics" });
     const affected = { kind: "subscription", pageId: "page-1", clientId: identity.clientId, sessionId: identity.sessionId, subscriptionId: identity.subscriptionId } as const;
     await diagnostics.observe({ code: "subscription.lost-updates", severity: "warning", lifecycle: { kind: "occurrence", occurrenceId: "before-review" }, affected, observedAt: 1, observed: "Earlier loss", limitation: "Count only", consequence: "May be incomplete", route: { kind: "inspect-affected" } });
-    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", diagnosticObservations: diagnostics, localInjectionExecutor: { execute: vi.fn(async () => result("success", { requestId: "diagnostic-step", attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) } });
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget({ topology: pageTopology("page-1") }), captureStatus: "capturing", diagnosticObservations: diagnostics, localInjectionExecutor: { execute: vi.fn(async () => result("success", { requestId: "diagnostic-step", attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) } });
     await flushAsync();
     beginSelected(runtime);
     runtime.dispatch({ type: "convert-local-injection-to-scenario" });
@@ -767,6 +778,31 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispatch({ type: "confirm-clear-history" });
     await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ diagnosticAvailability: "UNAVAILABLE_AFTER_CLEAR" }));
     runtime.dispose();
+  });
+
+  it("refuses inspect-affected routing when the current page epoch is unknown or different despite colliding object identities", async () => {
+    const observation = diagnosticObservationRef(await createMemoryDiagnosticObservationJournal({ panelSessionId: "route-page-epoch" }).observe({
+      code: "subscription.lost-updates", severity: "warning", lifecycle: { kind: "occurrence", occurrenceId: "collision" },
+      affected: { kind: "subscription", pageId: "page-1", clientId: identity.clientId, sessionId: identity.sessionId, subscriptionId: identity.subscriptionId },
+      observedAt: 1, observed: "Lost updates", limitation: "Count only", consequence: "May be incomplete", route: { kind: "inspect-affected" }
+    }));
+
+    for (const [label, history] of [
+      ["unknown", historyWithCommandTarget()],
+      ["different", historyWithCommandTarget({ topology: pageTopology("page-2") })]
+    ] as const) {
+      const runtime = createWorkbenchRuntime({ history, captureStatus: "capturing" });
+      await flushAsync();
+      beginSelected(runtime);
+      runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+      runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation });
+      expect(runtime.getSnapshot()).toMatchObject({
+        scope: { selection: { kind: "page" } },
+        scenario: { membershipError: expect.stringContaining("unavailable in the current runtime topology") }
+      });
+      expect(runtime.getSnapshot().evidence.restoration.canBack, label).toBe(false);
+      runtime.dispose();
+    }
   });
 
   it("lets a zero-Injection Checkpoint observe Server drift and gates the following Injection", async () => {

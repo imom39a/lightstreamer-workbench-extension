@@ -129,7 +129,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
         {state.priorRuns.map((prior) => <details key={prior.id}>
           <summary>{prior.id} · {prior.status.toUpperCase()} · revision {prior.scenarioRevision} · {prior.trace.length} terminal member records</summary>
           <ol>{prior.trace.map((entry) => entry.kind === "checkpoint"
-            ? <li key={`checkpoint:${entry.checkpointId}:${entry.memberOrdinal}`}><strong>{entry.status.toUpperCase()}</strong>{` · Scenario ${prior.scenarioId} · Run ${prior.id} · Checkpoint ${entry.checkpointName}/${entry.memberOrdinal} · zero Injections · Evidence boundary ${entry.resultBoundary?.eventId ?? "unavailable"}`}</li>
+            ? <li key={`checkpoint:${entry.checkpointId}:${entry.memberOrdinal}`}><strong>{entry.status.toUpperCase()}</strong>{` · Scenario ${prior.scenarioId} · Run ${prior.id} · Checkpoint ${entry.checkpointName}/${entry.memberOrdinal} · zero Injections · Evidence boundary ${entry.resultBoundary?.eventId ?? "unavailable"} · Diagnostic Observation current cursor ${formatDiagnosticBoundary(entry.diagnosticCurrentBoundary)}`}</li>
             : <li key={`${entry.stepId}:${entry.ordinal}`}><strong>{entry.kind === "attempted" ? entry.outcome.headline : "NOT RUN"}</strong>{entry.kind === "attempted" ? ` · Scenario ${prior.scenarioId} · Run ${prior.id} · Step ${entry.stepId}/${entry.ordinal} · Injection ${entry.injectionId} · execution ${entry.outcome.executionId} · request ${entry.outcome.requestId ?? "not allocated"} · outcome ${entry.outcome.status} · retention ${entry.retention} · assertion ${entry.assertion} · Evidence ${entry.evidence?.eventId ?? entry.evidenceAvailability}` : ` · Scenario ${prior.scenarioId} · Run ${prior.id} · Step ${entry.stepId}/${entry.ordinal} · no Injection/execution/request · assertion ${entry.assertion}`}</li>)}</ol>
         </details>)}
       </section> : null}
@@ -195,6 +195,7 @@ type ActiveCheckpointPresentation = Readonly<{
   startedActiveOffsetMs: number;
   deadlineActiveOffsetMs: number | null;
   boundary: Readonly<{ intervalId: string; sequence: number; eventId: string }> | null;
+  diagnosticCurrentBoundary: Readonly<{ intervalId: string; sequence: number }> | null;
   status: "waiting";
   assertions: readonly import("../../../core/local-injection-scenario-checkpoint").ScenarioAssertionResult[];
 }>;
@@ -215,6 +216,7 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
   const results = trace?.assertions ?? active?.assertions ?? [];
   const relatedDiagnostics = uniqueRelatedDiagnostics(results);
   const resultBoundary = trace?.resultBoundary ?? active?.boundary ?? null;
+  const diagnosticCurrentBoundary = trace?.diagnosticCurrentBoundary ?? active?.diagnosticCurrentBoundary ?? null;
   const terminalFailure = status === "fail" || status === "expired" || status === "invalid" || status === "unavailable" || status === "not-evaluable";
   const updateCheckpoint = (next: ScenarioCheckpoint): void => runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: next });
   return <article className="workbench-react__scenario-checkpoint" aria-label={`Scenario Checkpoint ${checkpoint.name}`} data-checkpoint-state={status} data-step-focused={focused ? "true" : "false"}>
@@ -234,7 +236,7 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
     </ol>
     {phase === "edit" ? <div className="workbench-react__scenario-step-actions" aria-label={`${checkpoint.name} actions`}><button type="button" disabled={checkpoint.assertions.length >= 16} onClick={() => updateCheckpoint({ ...checkpoint, assertions: [...checkpoint.assertions, defaultAssertion(nextAssertionId(checkpoint), "correlated-local-evidence-exists", precedingStepIds.at(-1) ?? "")] })}>Add assertion</button><button type="button" disabled={!canMoveEarlier} onClick={() => runtime.dispatch({ type: "move-scenario-member", memberId: checkpoint.id, direction: "earlier" })}>Move checkpoint earlier</button><button type="button" disabled={!canMoveLater} onClick={() => runtime.dispatch({ type: "move-scenario-member", memberId: checkpoint.id, direction: "later" })}>Move checkpoint later</button><button type="button" onClick={() => runtime.dispatch({ type: "remove-scenario-checkpoint", checkpointId: checkpoint.id })}>Remove checkpoint</button></div> : null}
     {phase === "edit" ? <p>Protected Scenario authoring · assertions are outside raw Item Update JSON and invalidate Review when changed.</p>
-      : <p role={terminalFailure ? "alert" : "status"} aria-live="polite"><strong>{status.toUpperCase()}</strong>{active ? ` · Scenario Clock ${active.startedActiveOffsetMs} ms${active.deadlineActiveOffsetMs === null ? "" : ` · deadline ${active.deadlineActiveOffsetMs} ms`}` : ""} · {resultBoundary ? `Evidence boundary ${resultBoundary.eventId} · sequence ${resultBoundary.sequence}` : "Evidence boundary unavailable"} · zero Injections dispatched.</p>}
+      : <p role={terminalFailure ? "alert" : "status"} aria-live="polite"><strong>{status.toUpperCase()}</strong>{active ? ` · Scenario Clock ${active.startedActiveOffsetMs} ms${active.deadlineActiveOffsetMs === null ? "" : ` · deadline ${active.deadlineActiveOffsetMs} ms`}` : ""} · {resultBoundary ? `Evidence boundary ${resultBoundary.eventId} · sequence ${resultBoundary.sequence}` : "Evidence boundary unavailable"} · Diagnostic Observation current cursor {formatDiagnosticBoundary(diagnosticCurrentBoundary)} · zero Injections dispatched.</p>}
     {trace?.evidenceAvailability === "UNAVAILABLE_AFTER_CLEAR"
       ? <p role="note">Related Evidence is unavailable after Clear; the immutable Checkpoint result and exact identity remain in this Trace.</p>
       : uniqueRelatedEvidence(results).map((evidence) => <button key={`${evidence.intervalId}:${evidence.sequence}:${evidence.eventId}`} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-checkpoint-evidence", evidence })}>Inspect Evidence {evidence.eventId}</button>)}

@@ -14,6 +14,7 @@ import {
   DIAGNOSTIC_RULE_CODE_MAX_LENGTH,
   isDiagnosticAffectedIdentity,
   type DiagnosticObservation,
+  type DiagnosticObservationBoundary,
   type DiagnosticObservationRead,
   type DiagnosticObservationRef
 } from "./diagnostic-observation";
@@ -85,6 +86,7 @@ export type ScenarioCheckpointEvaluation = Readonly<{
   status: ScenarioAssertionStatus;
   activeOffsetMs: number;
   boundary: EvidenceRef | null;
+  diagnosticCurrentBoundary: DiagnosticObservationBoundary | null;
   assertions: readonly ScenarioAssertionResult[];
 }>;
 
@@ -199,12 +201,13 @@ export function evaluateScenarioCheckpoint(
   activeOffsetMs: number,
   startedActiveOffsetMs = activeOffsetMs
 ): ScenarioCheckpointEvaluation {
+  const diagnosticCurrentBoundary = checkpointDiagnosticCurrentBoundary(checkpoint, observation);
   if ((boundary.boundary !== null && !isBoundedEvidenceRef(boundary.boundary))
     || (boundary.retainedRange !== null && (!isBoundedEvidenceRef(boundary.retainedRange.first) || !isBoundedEvidenceRef(boundary.retainedRange.last)))) {
-    return unavailableEvaluation(checkpoint, null, activeOffsetMs);
+    return unavailableEvaluation(checkpoint, null, activeOffsetMs, diagnosticCurrentBoundary);
   }
   if (boundary.history !== "accepting" || boundary.projection !== "live") {
-    return unavailableEvaluation(checkpoint, boundary.boundary, activeOffsetMs);
+    return unavailableEvaluation(checkpoint, boundary.boundary, activeOffsetMs, diagnosticCurrentBoundary);
   }
   const independentlyEvaluated = checkpoint.assertions.map((assertion) => {
     const evaluated = evaluateAssertion(assertion, observation);
@@ -239,6 +242,7 @@ export function evaluateScenarioCheckpoint(
     status,
     activeOffsetMs,
     boundary: boundary.boundary,
+    diagnosticCurrentBoundary,
     assertions
   });
 }
@@ -283,11 +287,11 @@ function evaluateAssertion(assertion: ScenarioAssertion, observation: ScenarioAs
       const candidates = read.observations.filter((candidate) => candidate.schemaVersion === assertion.contractVersion
         && candidate.code === assertion.ruleCode
         && candidate.lifecycle.kind === assertion.lifecycle
-        && diagnosticSeverityRank(candidate.severity) >= diagnosticSeverityRank(assertion.minimumSeverity)
         && diagnosticAffectedIdentityEquals(candidate.affected, assertion.affected));
       const match = assertion.lifecycle === "occurrence"
-        ? candidates.find((candidate) => candidate.lifecycle.kind === "occurrence")
-        : latestActiveCondition(candidates);
+        ? candidates.find((candidate) => candidate.lifecycle.kind === "occurrence"
+          && diagnosticSeverityRank(candidate.severity) >= diagnosticSeverityRank(assertion.minimumSeverity))
+        : latestActiveCondition(candidates, assertion.minimumSeverity);
       const status = match ? "pass" : assertion.withinActiveMs ? "waiting" : "fail";
       return result(assertion, status, {
         state: match?.lifecycle.state ?? "absent",
@@ -300,7 +304,10 @@ function evaluateAssertion(assertion: ScenarioAssertion, observation: ScenarioAs
   }
 }
 
-function latestActiveCondition(observations: readonly DiagnosticObservation[]): DiagnosticObservation | undefined {
+function latestActiveCondition(
+  observations: readonly DiagnosticObservation[],
+  minimumSeverity: "information" | "warning" | "error"
+): DiagnosticObservation | undefined {
   const latestByCondition = new Map<string, DiagnosticObservation>();
   for (const observation of observations) {
     if (observation.lifecycle.kind !== "condition") continue;
@@ -309,7 +316,21 @@ function latestActiveCondition(observations: readonly DiagnosticObservation[]): 
       latestByCondition.set(observation.lifecycle.conditionId, observation);
     }
   }
-  return [...latestByCondition.values()].find((observation) => observation.lifecycle.kind === "condition" && observation.lifecycle.state === "active");
+  return [...latestByCondition.values()].find((observation) => observation.lifecycle.kind === "condition"
+    && observation.lifecycle.state === "active"
+    && diagnosticSeverityRank(observation.severity) >= diagnosticSeverityRank(minimumSeverity));
+}
+
+function checkpointDiagnosticCurrentBoundary(
+  checkpoint: ScenarioCheckpoint,
+  observation: ScenarioAssertionObservation
+): DiagnosticObservationBoundary | null {
+  for (const assertion of checkpoint.assertions) {
+    if (assertion.kind !== "diagnostic-observation-exists") continue;
+    const read = observation.diagnosticReads?.get(assertion.id);
+    if (read) return read.through;
+  }
+  return null;
 }
 
 function inspectionTerminalStatus(inspection: ScenarioCommandInspection): ScenarioAssertionStatus | null {
@@ -392,13 +413,19 @@ function expectedFor(assertion: ScenarioAssertion): Readonly<Record<string, unkn
   }
 }
 
-function unavailableEvaluation(checkpoint: ScenarioCheckpoint, boundary: EvidenceRef | null, activeOffsetMs: number): ScenarioCheckpointEvaluation {
+function unavailableEvaluation(
+  checkpoint: ScenarioCheckpoint,
+  boundary: EvidenceRef | null,
+  activeOffsetMs: number,
+  diagnosticCurrentBoundary: DiagnosticObservationBoundary | null = null
+): ScenarioCheckpointEvaluation {
   return frozen({
     checkpointId: checkpoint.id,
     checkpointName: checkpoint.name,
     status: "unavailable",
     activeOffsetMs,
     boundary,
+    diagnosticCurrentBoundary,
     assertions: checkpoint.assertions.map((assertion) => result(assertion, "unavailable", { state: "committed-boundary-unavailable", certainty: "unavailable", provenance: "history", evidence: boundary }, boundary ? [boundary] : []))
   });
 }

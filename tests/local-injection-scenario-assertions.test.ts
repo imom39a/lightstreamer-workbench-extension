@@ -163,11 +163,11 @@ describe("Scenario Checkpoints", () => {
       inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: boundary } as const)
     };
     const passed = evaluateScenarioCheckpoint(assertion, snapshot(), { ...common, diagnosticReads: new Map([["diagnostic", complete]]) }, 0);
-    expect(passed).toMatchObject({ status: "pass", assertions: [{ status: "pass", observed: { state: "observed", provenance: "diagnostic-observation" }, relatedDiagnostics: [{ id: "diag-7", route: { kind: "inspect-affected" } }] }] });
+    expect(passed).toMatchObject({ status: "pass", diagnosticCurrentBoundary: occurrence.observationBoundary, assertions: [{ status: "pass", observed: { state: "observed", provenance: "diagnostic-observation" }, relatedDiagnostics: [{ id: "diag-7", route: { kind: "inspect-affected" } }] }] });
 
     const wrongIdentity = { ...occurrence, affected: { ...affected, subscriptionId: "other" } } satisfies DiagnosticObservation;
     const absent = evaluateScenarioCheckpoint(assertion, snapshot(), { ...common, diagnosticReads: new Map([["diagnostic", { ...complete, observations: [wrongIdentity] }]]) }, 0);
-    expect(absent).toMatchObject({ status: "fail", assertions: [{ status: "fail", observed: { state: "absent" }, relatedDiagnostics: [] }] });
+    expect(absent).toMatchObject({ status: "fail", diagnosticCurrentBoundary: complete.through, assertions: [{ status: "fail", observed: { state: "absent" }, relatedDiagnostics: [] }] });
 
     const conditionAssertion = checkpoint([{
       id: "condition", kind: "diagnostic-observation-exists", contractVersion: 1,
@@ -185,7 +185,7 @@ describe("Scenario Checkpoints", () => {
       expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, through: resolvedAfterActive.observationBoundary, observations }]]) }, 50, 0))
         .toMatchObject({ status: "waiting", assertions: [{ status: "waiting", observed: { state: "absent" }, relatedDiagnostics: [] }] });
       expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, through: resolvedAfterActive.observationBoundary, observations }]]) }, 100, 0))
-        .toMatchObject({ status: "expired", assertions: [{ status: "expired", observed: { state: "absent" }, relatedDiagnostics: [] }] });
+        .toMatchObject({ status: "expired", diagnosticCurrentBoundary: resolvedAfterActive.observationBoundary, assertions: [{ status: "expired", observed: { state: "absent" }, relatedDiagnostics: [] }] });
     }
 
     const activeAfterResolved = { ...active, id: "condition-11", observationBoundary: { intervalId: "diagnostic-interval", sequence: 11 } } as const satisfies DiagnosticObservation;
@@ -193,6 +193,21 @@ describe("Scenario Checkpoints", () => {
       expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, through: activeAfterResolved.observationBoundary, observations }]]) }, 50, 0))
         .toMatchObject({ status: "pass", assertions: [{ status: "pass", observed: { state: "active" }, relatedDiagnostics: [{ id: "condition-11" }] }] });
     }
+
+    const informationActive = { ...active, id: "condition-12", severity: "information", observationBoundary: { intervalId: "diagnostic-interval", sequence: 12 } } as const satisfies DiagnosticObservation;
+    for (const observations of [[activeAfterResolved, informationActive], [informationActive, activeAfterResolved]]) {
+      expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, through: informationActive.observationBoundary, observations }]]) }, 50, 0))
+        .toMatchObject({ status: "waiting", diagnosticCurrentBoundary: informationActive.observationBoundary, assertions: [{ status: "waiting", observed: { state: "absent" }, relatedDiagnostics: [] }] });
+    }
+    const informationResolved = { ...resolved, id: "condition-13", severity: "information", observationBoundary: { intervalId: "diagnostic-interval", sequence: 13 } } as const satisfies DiagnosticObservation;
+    for (const observations of [[activeAfterResolved, informationResolved], [informationResolved, activeAfterResolved]]) {
+      expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, through: informationResolved.observationBoundary, observations }]]) }, 50, 0))
+        .toMatchObject({ status: "waiting", diagnosticCurrentBoundary: informationResolved.observationBoundary, assertions: [{ status: "waiting", observed: { state: "absent" }, relatedDiagnostics: [] }] });
+    }
+
+    const informationOccurrence = { ...occurrence, id: "diag-information", severity: "information", observationBoundary: { intervalId: "diagnostic-interval", sequence: 14 } } as const satisfies DiagnosticObservation;
+    expect(evaluateScenarioCheckpoint(assertion, snapshot(), { ...common, diagnosticReads: new Map([["diagnostic", { ...complete, through: informationOccurrence.observationBoundary, observations: [informationOccurrence] }]]) }, 0))
+      .toMatchObject({ status: "fail", diagnosticCurrentBoundary: informationOccurrence.observationBoundary, assertions: [{ status: "fail", observed: { state: "absent" } }] });
   });
 
   it("fails diagnostic assertions closed for limited, cleared, unavailable, or closed reads", () => {
@@ -208,7 +223,7 @@ describe("Scenario Checkpoints", () => {
     for (const status of ["unsupported", "retention-gap", "cleared", "unavailable", "closed"] as const) {
       const read: DiagnosticObservationRead = { status, coverage: status === "retention-gap" ? "limited" : "unavailable", retention: status === "cleared" ? "cleared" : status === "retention-gap" ? "limited" : "unavailable", through: { intervalId: "diagnostic-interval", sequence: 8 }, observations: [] };
       expect(evaluateScenarioCheckpoint(assertion, snapshot(), { ...common, diagnosticReads: new Map([["diagnostic", read]]) }, 10, 0))
-        .toMatchObject({ status: "unavailable", assertions: [{ status: "unavailable", observed: { state: status, certainty: "unavailable" } }] });
+        .toMatchObject({ status: "unavailable", diagnosticCurrentBoundary: read.through, assertions: [{ status: "unavailable", observed: { state: status, certainty: "unavailable" } }] });
     }
   });
 
