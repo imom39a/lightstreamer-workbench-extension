@@ -1913,6 +1913,7 @@ describe("React Workbench Diagnose panel", () => {
     const editRuntime = createTestRuntime(snapshot({ scenario: { ...reviewed, phase: "edit", scenario, run: null, runner: null, focusedMemberId: checkpoint.id } }));
     const root = createRoot(document.querySelector("#app")!);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime: editRuntime })));
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="Scenario Checkpoint Lost update observed"]')).toBeTruthy());
     const region = document.querySelector<HTMLElement>('[aria-label="Scenario Checkpoint Lost update observed"]')!;
     expect(region.textContent).toContain("Diagnostic Observation contract v1");
     expect(region.querySelector<HTMLInputElement>('[aria-label="Diagnostic rule code"]')?.value).toBe("subscription.lost-updates");
@@ -1929,10 +1930,25 @@ describe("React Workbench Diagnose panel", () => {
     const result = { assertionId: assertion.id, kind: assertion.kind, status: "pass" as const, expected: {}, observed: { state: "observed", value: "error", certainty: "certain" as const, provenance: "diagnostic-observation" as const, evidence: null }, relatedEvidence: [], relatedDiagnostics: [observation] };
     const reviewedCheckpoint = { ...checkpoint, memberOrdinal: 2 };
     const trace = { checkpointId: checkpoint.id, checkpointName: checkpoint.name, memberOrdinal: 2, kind: "checkpoint" as const, status: "pass" as const, startedActiveOffsetMs: 0, settledActiveOffsetMs: 0, startedBoundary: null, resultBoundary: null, evidenceAvailability: "NOT_APPLICABLE" as const, assertions: [result] };
-    const run = { ...reviewed.run!, members: [reviewed.run!.steps[0], reviewedCheckpoint], trace: [trace] };
+    const diagnosticAuthorization = { intervalId: "diagnostic-review", sequence: 3 };
+    const run = {
+      ...reviewed.run!,
+      members: [reviewed.run!.steps[0], reviewedCheckpoint],
+      authorizations: [{
+        id: "run-1:authorization:1", kind: "INITIAL_REVIEW" as const, targetFingerprint: "fp-1", listenerIds: ["listener-7"],
+        committedEvidenceBoundary: null, diagnosticObservationBoundary: diagnosticAuthorization, authorizedRemainingFromOrdinal: 1, activeOffsetMs: 0
+      }],
+      trace: [trace]
+    };
     await act(async () => editRuntime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run, focusedMemberId: checkpoint.id, runner: { ...reviewed.runner!, run, phase: "complete", activeCheckpoint: null } } })));
     expect(region.textContent).toContain("Diagnostic Observation subscription.lost-updates");
     expect(region.textContent).toContain("observed observed \"error\" · certain · diagnostic-observation");
+    expect(document.querySelector('[aria-label="Protected Scenario target and execution boundary"]')?.textContent).toContain("Diagnostic authorization seeddiagnostic-review · sequence 3");
+    expect(document.querySelector('[aria-label="Scenario Run ledger"]')?.textContent).toContain("Evidence boundary empty · Diagnostic Observation cursor diagnostic-review · sequence 3");
+    expect(region.textContent).toContain("Exact affected identity subscription · page page-1 · client client-1 · session session-1 · subscription subscription-1");
+    expect(region.textContent).toContain("Diagnostic Observation boundary diagnostic-interval · sequence 7");
+    expect(region.textContent).toContain("Compact reference only · raw diagnostic messages are not copied into Scenario Trace");
+    expect(region.textContent).toContain("Route inspect affected");
     const inspect = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Inspect Diagnostic Observation subscription.lost-updates");
     expect(inspect).toBeTruthy();
     await act(async () => inspect?.click());

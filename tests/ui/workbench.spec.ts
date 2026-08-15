@@ -2316,6 +2316,27 @@ test("Scenario Checkpoint authoring stays protected, keyboard reachable, and Rev
   await attachMatrixScreenshot(page, testInfo, "scenario-checkpoint-authoring-normal-dark");
 });
 
+test("Scenario Diagnostic Observation Review and Trace expose bounded provenance without copying messages", async ({ page }, testInfo) => {
+  await openScenario(page, "local-injection-scenario-diagnostic-pass", { width: 900, height: 700 }, "light");
+  const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+  await expect(scenario.getByLabel("Protected Scenario target and execution boundary")).toContainText(/Diagnostic authorization seed.*sequence 0/);
+  await expect(scenario.getByRole("region", { name: "Scenario Run ledger" })).toContainText(/Evidence boundary .*Diagnostic Observation cursor .*sequence 0/);
+
+  const checkpoint = page.getByRole("article", { name: "Scenario Checkpoint Later lost-updates observation exists" });
+  await expect(checkpoint).toContainText("PASS");
+  await expect(checkpoint).toContainText("Exact affected identity subscription · page topology-small-page · client topology-small-client · session topology-small-session · subscription topology-small-subscription");
+  await expect(checkpoint).toContainText(/Diagnostic Observation boundary .*sequence 1/);
+  await expect(checkpoint).toContainText("Compact reference only · raw diagnostic messages are not copied into Scenario Trace");
+  await expect(checkpoint).toContainText("Route inspect affected");
+  const inspect = checkpoint.getByRole("button", { name: "Inspect Diagnostic Observation subscription.lost-updates" });
+  await inspect.focus();
+  await expect(inspect).toBeFocused();
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await expectShellFitsExactly(page);
+  await expectShellFits(page);
+  await attachMatrixScreenshot(page, testInfo, "scenario-diagnostic-trace-normal-light");
+});
+
 test("Scenario high-volume document mounts one of 100 representative large editors and keeps keyboard reorder usable", async ({ page }, testInfo) => {
   await openScenario(page, "live-selected", { width: 563, height: 700 }, "light");
   expect(await page.locator('[data-editor-engine="codemirror-6"]').count()).toBe(0);
