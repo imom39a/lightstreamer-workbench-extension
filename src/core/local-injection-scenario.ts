@@ -237,6 +237,7 @@ export type ScenarioTraceEntry = Readonly<{
   startedBoundary: EvidenceRef | null;
   resultBoundary: EvidenceRef | null;
   evidenceAvailability: "RETAINED" | "UNAVAILABLE_AFTER_CLEAR" | "NOT_APPLICABLE";
+  diagnosticAvailability: "RETAINED" | "UNAVAILABLE_AFTER_CLEAR" | "NOT_APPLICABLE";
   assertions: readonly import("./local-injection-scenario-checkpoint").ScenarioAssertionResult[];
 }> | Readonly<{
   stepId: string;
@@ -818,7 +819,15 @@ export function markScenarioEvidenceUnavailableAfterClear(run: ScenarioRun): Sce
   const trace = run.trace.map((entry) => {
     if (entry.kind === "checkpoint" && entry.evidenceAvailability === "RETAINED") {
       changed = true;
-      return freeze({ ...entry, evidenceAvailability: "UNAVAILABLE_AFTER_CLEAR" as const });
+      return freeze({
+        ...entry,
+        evidenceAvailability: "UNAVAILABLE_AFTER_CLEAR" as const,
+        diagnosticAvailability: entry.diagnosticAvailability === "RETAINED" ? "UNAVAILABLE_AFTER_CLEAR" as const : entry.diagnosticAvailability
+      });
+    }
+    if (entry.kind === "checkpoint" && entry.diagnosticAvailability === "RETAINED") {
+      changed = true;
+      return freeze({ ...entry, diagnosticAvailability: "UNAVAILABLE_AFTER_CLEAR" as const });
     }
     if (entry.kind !== "attempted" || entry.evidence === null || entry.evidenceAvailability !== "RETAINED") return entry;
     changed = true;

@@ -750,7 +750,10 @@ describe("WorkbenchRuntime Local Injection", () => {
     await diagnostics.observe({ code: "subscription.lost-updates", severity: "error", lifecycle: { kind: "occurrence", occurrenceId: "after-review" }, affected, observedAt: 2, observed: "Later loss", limitation: "Count only", consequence: "May be incomplete", route: { kind: "inspect-affected" } });
     runtime.dispatch({ type: "step-next-scenario" });
     await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace).toHaveLength(2));
-    expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ kind: "checkpoint", status: "pass", assertions: [{ assertionId: "diagnostic", relatedDiagnostics: [{ lifecycle: { occurrenceId: "after-review" } }] }] });
+    expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ kind: "checkpoint", status: "pass", diagnosticAvailability: "RETAINED", assertions: [{ assertionId: "diagnostic", relatedDiagnostics: [{ lifecycle: { occurrenceId: "after-review" } }] }] });
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ diagnosticAvailability: "UNAVAILABLE_AFTER_CLEAR" }));
     runtime.dispose();
   });
 
