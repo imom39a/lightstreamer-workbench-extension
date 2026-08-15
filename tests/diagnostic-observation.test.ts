@@ -8,6 +8,13 @@ import {
 } from "../src/core/diagnostic-observation";
 import { IDBFactory } from "fake-indexeddb";
 
+function requestResult<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
 describe("normalized Diagnostic Observation contract", () => {
   it("commits a versioned occurrence with stable identity and exact Evidence boundary", async () => {
     const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-1" });
@@ -36,7 +43,7 @@ describe("normalized Diagnostic Observation contract", () => {
     expect(observation).toMatchObject({
       schemaVersion: DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
       ruleVersion: 1,
-      id: "diag:ls.subscription.error:occurrence:evidence-7:subscription:page-1:client-1:session-1:subscription-1",
+      id: "diag:ls.subscription.error:v1:occurrence:evidence-7:subscription:page-1:client-1:session-1:subscription-1",
       code: "ls.subscription.error",
       severity: "error",
       lifecycle: { kind: "occurrence", occurrenceId: "evidence-7", state: "observed" },
@@ -148,6 +155,66 @@ describe("normalized Diagnostic Observation contract", () => {
     const repeated = await journal.observe({ ...input, observedAt: 20 });
     expect(repeated).toBe(first);
     expect(journal.currentBoundary().sequence).toBe(1);
+  });
+
+  it("treats a newer rule version as a new stable diagnostic identity", async () => {
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-version" });
+    const input = {
+      code: "ls.subscription.error",
+      severity: "error" as const,
+      lifecycle: { kind: "occurrence" as const, occurrenceId: "event-1" },
+      affected: { kind: "evidence" as const, intervalId: "history", sequence: 1, eventId: "event-1" },
+      observedAt: 10,
+      observed: "SubscriptionListener reported an error.",
+      limitation: "The callback does not expose server state.",
+      consequence: "Updates may be unavailable.",
+      route: { kind: "inspect-affected" as const }
+    };
+    const version1 = await journal.observe(input);
+    const version2 = await journal.observe({ ...input, ruleVersion: 2 });
+    expect(version2.id).not.toBe(version1.id);
+    expect(version2.observationBoundary.sequence).toBe(2);
+    expect((await journal.query({ ruleVersion: 2 })).observations).toEqual([version2]);
+  });
+
+  it.each(["memory", "indexeddb"] as const)("keeps %s lifecycle identity after observation retention loss", async (tier) => {
+    const indexedDB = new IDBFactory();
+    const panelSessionId = `retained-lifecycle-${tier}`;
+    let journal = tier === "memory"
+      ? createMemoryDiagnosticObservationJournal({ panelSessionId })
+      : await openIndexedDbDiagnosticObservationJournal({ panelSessionId, indexedDB });
+    const occurrenceInput = {
+      code: "ls.subscription.error",
+      severity: "error" as const,
+      lifecycle: { kind: "occurrence" as const, occurrenceId: "event-1" },
+      affected: { kind: "evidence" as const, intervalId: "history", sequence: 1, eventId: "event-1" },
+      observedAt: 10,
+      observed: "SubscriptionListener reported an error.",
+      limitation: "The callback does not expose server state.",
+      consequence: "Updates may be unavailable.",
+      route: { kind: "inspect-affected" as const }
+    };
+    const occurrence = await journal.observe(occurrenceInput);
+    const condition = await journal.observe({
+      ...occurrenceInput,
+      code: "workbench.capture.disconnected",
+      lifecycle: { kind: "condition", conditionId: "bridge" },
+      affected: { kind: "page", pageId: "page" },
+      observed: "The bridge disconnected."
+    });
+    await journal.discardRetainedThrough(condition.observationBoundary);
+    if (tier === "indexeddb") {
+      await journal.close();
+      journal = await openIndexedDbDiagnosticObservationJournal({ panelSessionId, indexedDB });
+    }
+    expect(await journal.observe(occurrenceInput)).toMatchObject({ id: occurrence.id, observationBoundary: occurrence.observationBoundary });
+    expect(journal.currentBoundary().sequence).toBe(2);
+    expect(await journal.resolveCondition({
+      code: condition.code,
+      conditionId: "bridge",
+      affected: condition.affected,
+      observedAt: 20
+    })).toMatchObject({ lifecycle: { kind: "condition", state: "resolved" }, observationBoundary: { sequence: 3 } });
   });
 
   it("serializes concurrent duplicate offers into one committed occurrence", async () => {
@@ -267,5 +334,41 @@ describe("normalized Diagnostic Observation contract", () => {
       observations: []
     });
     await expect(journal.observe({} as never)).rejects.toThrow(status);
+  });
+
+  it("fails closed for future, reversed, and future feed cursors", async () => {
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-cursors" });
+    const current = journal.currentBoundary();
+    const future = { ...current, sequence: 2 };
+    expect(await journal.query({ after: current, through: future })).toMatchObject({ status: "unavailable", coverage: "unavailable" });
+    expect(await journal.query({ after: future, through: current })).toMatchObject({ status: "unsupported", coverage: "unavailable" });
+    const statuses: string[] = [];
+    journal.subscribe(future, (publication) => {
+      if (publication.type === "status") statuses.push(publication.status);
+    });
+    expect(statuses).toEqual(["unavailable"]);
+  });
+
+  it("reports unsupported newer IndexedDB schema and rejects malformed persisted observations", async () => {
+    const newerFactory = new IDBFactory();
+    const newerRequest = newerFactory.open("lsew-diagnostics-v1-newer", 2);
+    newerRequest.onupgradeneeded = () => newerRequest.result.createObjectStore("diagnosticState");
+    (await requestResult(newerRequest)).close();
+    const newer = await openIndexedDbDiagnosticObservationJournal({ panelSessionId: "newer", indexedDB: newerFactory });
+    expect(await newer.query()).toMatchObject({ status: "unsupported", coverage: "unavailable" });
+
+    const malformedFactory = new IDBFactory();
+    const malformedRequest = malformedFactory.open("lsew-diagnostics-v1-malformed", 1);
+    malformedRequest.onupgradeneeded = () => malformedRequest.result.createObjectStore("diagnosticState");
+    const malformedDatabase = await requestResult(malformedRequest);
+    const transaction = malformedDatabase.transaction("diagnosticState", "readwrite");
+    transaction.objectStore("diagnosticState").put({ intervalOrdinal: 1, sequence: 1, retainedThrough: 0, records: [{ rawMessage: "secret" }] }, "state");
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+    malformedDatabase.close();
+    const malformed = await openIndexedDbDiagnosticObservationJournal({ panelSessionId: "malformed", indexedDB: malformedFactory });
+    expect(await malformed.query()).toMatchObject({ status: "unavailable", coverage: "unavailable", observations: [] });
   });
 });
