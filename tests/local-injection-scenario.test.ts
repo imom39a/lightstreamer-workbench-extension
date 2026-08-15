@@ -59,6 +59,7 @@ describe("Local Injection Scenario", () => {
       committedEvidenceSeed: { intervalId: "interval-1", sequence: 9, eventId: "server-9" },
       targetFingerprint: "fp-1",
       listenerIds: ["listener-2", "listener-1"],
+      diagnosticObservationBoundary: { intervalId: "diagnostic-interval-1", sequence: 17 },
       activeCommandKeysByItem: [],
       historyAccepting: true,
       clearInProgress: false
@@ -69,6 +70,7 @@ describe("Local Injection Scenario", () => {
       targetFingerprint: "fp-1",
       listenerIds: ["listener-1", "listener-2"],
       committedEvidenceBoundary: { eventId: "server-9", intervalId: "interval-1", sequence: 9 },
+      diagnosticObservationBoundary: { intervalId: "diagnostic-interval-1", sequence: 17 },
       authorizedRemainingFromOrdinal: 1
     })]);
     expect(markScenarioEvidenceUnavailableAfterClear(reviewed.run)).toBe(reviewed.run);

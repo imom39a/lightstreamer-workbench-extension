@@ -402,10 +402,10 @@ describe("Local Injection Scenario runner", () => {
     expect(runner.snapshot().run.drifts).toEqual([expect.objectContaining({ kind: "LISTENER_SET", addedListenerIds: ["listener-2"] })]);
     const originalPlan = runner.snapshot().run.steps;
     drift = false;
-    expect(runner.reReview({ targetFingerprint: "fingerprint-2", listenerIds: ["listener-1", "listener-2"], committedEvidenceBoundary: { intervalId: "interval-1", sequence: 7, eventId: "server-7" } })).toEqual({ ok: true });
+    expect(runner.reReview({ targetFingerprint: "fingerprint-2", listenerIds: ["listener-1", "listener-2"], committedEvidenceBoundary: { intervalId: "interval-1", sequence: 7, eventId: "server-7" }, diagnosticObservationBoundary: { intervalId: "diagnostic-interval-1", sequence: 23 } })).toEqual({ ok: true });
     expect(runner.snapshot().run.steps).toBe(originalPlan);
     expect(runner.snapshot().run.authorizations).toHaveLength(2);
-    expect(runner.snapshot().run.authorizations[1]).toMatchObject({ kind: "DRIFT_REVIEW", targetFingerprint: "fingerprint-2", authorizedRemainingFromOrdinal: 1 });
+    expect(runner.snapshot().run.authorizations[1]).toMatchObject({ kind: "DRIFT_REVIEW", targetFingerprint: "fingerprint-2", authorizedRemainingFromOrdinal: 1, diagnosticObservationBoundary: { intervalId: "diagnostic-interval-1", sequence: 23 } });
   });
 
   it("fails closed before identity allocation when an exact drift record exceeds its reserved ledger", () => {
