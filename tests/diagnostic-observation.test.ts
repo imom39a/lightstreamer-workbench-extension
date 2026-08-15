@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
   createMemoryDiagnosticObservationJournal,
+  createUnavailableDiagnosticObservationJournal,
   openIndexedDbDiagnosticObservationJournal
 } from "../src/core/diagnostic-observation";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -185,5 +186,15 @@ describe("normalized Diagnostic Observation contract", () => {
     });
     await journal.close();
     expect(await journal.query()).toMatchObject({ status: "closed", coverage: "unavailable", observations: [] });
+  });
+
+  it.each(["unsupported", "unavailable"] as const)("reports %s query coverage without renderer state", async (status) => {
+    const journal = createUnavailableDiagnosticObservationJournal({ panelSessionId: `panel-${status}`, status });
+    expect(await journal.query({ after: journal.currentBoundary() })).toMatchObject({
+      status,
+      coverage: "unavailable",
+      observations: []
+    });
+    await expect(journal.observe({} as never)).rejects.toThrow(status);
   });
 });

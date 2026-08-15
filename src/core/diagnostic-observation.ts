@@ -132,6 +132,28 @@ export function createMemoryDiagnosticObservationJournal(
   return createDiagnosticObservationJournal(options.panelSessionId, emptyPersistedState(), async () => undefined);
 }
 
+export function createUnavailableDiagnosticObservationJournal(options: Readonly<{
+  panelSessionId: string;
+  status: "unsupported" | "unavailable";
+}>): DiagnosticObservationJournal {
+  assertComponent(options.panelSessionId, "Panel Session identity");
+  const boundary = Object.freeze({ intervalId: diagnosticIntervalId(options.panelSessionId, 1), sequence: 0 });
+  const rejected = (): never => { throw new Error(`Diagnostic Observation journal is ${options.status}.`); };
+  return Object.freeze({
+    async observe(): Promise<DiagnosticObservation> { return rejected(); },
+    async resolveCondition(): Promise<DiagnosticObservation | null> { return rejected(); },
+    async query(query: DiagnosticObservationQuery = {}): Promise<DiagnosticObservationRead> {
+      return readWithStatus(options.status, "unavailable", "complete", query.through ?? boundary, []);
+    },
+    async replay(): Promise<readonly DiagnosticObservation[]> { return Object.freeze([]); },
+    currentBoundary(): DiagnosticObservationBoundary { return boundary; },
+    subscribe(): () => void { return () => undefined; },
+    async discardRetainedThrough(): Promise<void> { return rejected(); },
+    async clear(): Promise<DiagnosticObservationBoundary> { return rejected(); },
+    async close(): Promise<void> { return undefined; }
+  });
+}
+
 type PersistedDiagnosticState = {
   intervalOrdinal: number;
   sequence: number;
@@ -454,19 +476,20 @@ function assertResultRef(ref: DiagnosticResultRef): void {
 
 function diagnosticObservationId(input: DiagnosticObservationInput): string {
   const lifecycleId = input.lifecycle.kind === "occurrence"
-    ? `occurrence:${input.lifecycle.occurrenceId}`
-    : `condition:${input.lifecycle.conditionId}`;
+    ? `occurrence:${encodeURIComponent(input.lifecycle.occurrenceId)}`
+    : `condition:${encodeURIComponent(input.lifecycle.conditionId)}`;
   return `diag:${input.code}:${lifecycleId}:${affectedIdentity(input.affected)}`;
 }
 
 function affectedIdentity(affected: DiagnosticAffectedIdentity): string {
+  const part = (value: string | number): string => encodeURIComponent(String(value));
   switch (affected.kind) {
-    case "page": return `page:${affected.pageId}`;
-    case "client": return `client:${affected.pageId}:${affected.clientId}`;
-    case "session": return `session:${affected.pageId}:${affected.clientId}:${affected.sessionId}`;
-    case "subscription": return `subscription:${affected.pageId}:${affected.clientId}:${affected.sessionId ?? "-"}:${affected.subscriptionId}`;
-    case "item": return `item:${affected.pageId}:${affected.clientId}:${affected.subscriptionId}:${affected.item}`;
-    case "evidence": return `evidence:${affected.intervalId}:${affected.sequence}:${affected.eventId}`;
+    case "page": return `page:${part(affected.pageId)}`;
+    case "client": return `client:${part(affected.pageId)}:${part(affected.clientId)}`;
+    case "session": return `session:${part(affected.pageId)}:${part(affected.clientId)}:${part(affected.sessionId)}`;
+    case "subscription": return `subscription:${part(affected.pageId)}:${part(affected.clientId)}:${part(affected.sessionId ?? "-")}:${part(affected.subscriptionId)}`;
+    case "item": return `item:${part(affected.pageId)}:${part(affected.clientId)}:${part(affected.subscriptionId)}:${part(affected.item)}`;
+    case "evidence": return `evidence:${part(affected.intervalId)}:${part(affected.sequence)}:${part(affected.eventId)}`;
   }
 }
 
