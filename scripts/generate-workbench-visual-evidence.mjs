@@ -25,6 +25,7 @@ const grep = grepIndex >= 0 ? process.argv[grepIndex + 1] : null;
 if (grepIndex >= 0 && (!grep || grep.startsWith("--"))) throw new Error("--grep requires a matrix id substring.");
 const scenarios = grep ? allScenarios.filter(({ id }) => id.includes(grep)) : allScenarios;
 if (grep && scenarios.length === 0) throw new Error(`No visual matrix ids include ${JSON.stringify(grep)}.`);
+const baselineGrepArgument = grep ? ` -- --grep ${JSON.stringify(`visual baseline: ${grep}`)}` : "";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`Usage: npm run test:ui:visual [-- --print-matrix]
@@ -119,8 +120,8 @@ try {
     platform: process.platform,
     baselinePlatformSuffix: process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform,
     platformBaselineCommands: [
-      { platform: "darwin", update: "CI=1 npm run test:ui:update -- --grep \"visual baseline: scenario-checkpoint\"", comparison: "CI=1 npm run test:ui -- --grep \"visual baseline: scenario-checkpoint\"", result: "8/8 passed" },
-      { platform: "linux", update: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v \"$PWD:/work\" -v /tmp/lsw-scenario06-linux-node_modules:/work/node_modules -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui:update -- --grep \"visual baseline: scenario-checkpoint\"'", comparison: "docker run --rm --ipc=host -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v \"$PWD:/work\" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm run test:ui -- --grep \"visual baseline: scenario-checkpoint\"'", result: "8/8 passed" }
+      { platform: "darwin", update: `CI=1 npm run test:ui:update${baselineGrepArgument}`, comparison: `CI=1 npm run test:ui${baselineGrepArgument}`, result: "Run separately and record the exact Playwright result with this packet." },
+      { platform: "linux", update: `docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui:update${baselineGrepArgument}'`, comparison: `docker run --rm --ipc=host --tmpfs /work/node_modules:exec -e HOME=/tmp/playwright-home -e CHROME_PATH=/ms-playwright/chromium-1234/chrome-linux/chrome -e LSEW_BROWSER_CACHE_DIR=/tmp/playwright-browsers -e CI=1 -e LSEW_UI_UPDATE=0 -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.62.1-noble bash -lc 'npm ci && npm run test:ui${baselineGrepArgument}'`, result: "Run separately and record the exact Playwright result with this packet." }
     ],
     browser: await browser.version(),
     browserMode: "headless",
@@ -133,7 +134,28 @@ try {
       diff: "absolute per-channel pixel delta; inspect as reference evidence, not a parity threshold"
     },
     contactSheets,
-    review: results.some(({ id }) => id.startsWith("scenario-checkpoint-")) ? {
+    review: !grep && results.length === allScenarios.length ? {
+      classification: "Material UI",
+      changedWorkflow: "The integrated Workbench matrix covers promoted Activity, Local Injection Scenario authoring and execution, diagnostics, and compact operating actions in the shipped panel shell.",
+      acceptanceCriteria: [
+        "Observed Activity preserves exact 10,000-record orientation, graphical and textual meaning, limited and memory-fallback coverage truth, and normal, compact, and wide reachability.",
+        "Local Injection Scenario states preserve explicit membership, immutable Review, timing and terminal controls, drift and failure truth, zero-Injection Checkpoints, exact Evidence routes, and bounded high-volume presentation.",
+        "Global diagnostics and More actions remain readable, keyboard reachable, and unobscured without horizontal shell or document overflow in compact, normal, shallow, wide, Dark, Light, and forced-colors states.",
+        "Every captured state emits no browser diagnostics; axe-checked states have no serious or critical violations, and every focus-checked action remains visible and unobscured."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0),
+        shellOrDocumentOverflows: results.reduce((count, result) => count + Number(result.checks.horizontalOverflow.shell || result.checks.horizontalOverflow.document), 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; help-resource and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
+      matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; Activity, Scenario, diagnostics, and operating-action workflows.`,
+      baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
+    } : results.some(({ id }) => id.startsWith("scenario-checkpoint-")) ? {
       classification: "Material UI",
       changedWorkflow: "A Scenario Checkpoint authors protected assertions, evaluates one exact committed Evidence boundary without dispatching an Injection, and exposes waiting and terminal truth in the promoted document.",
       acceptanceCriteria: [

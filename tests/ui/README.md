@@ -43,7 +43,7 @@ Use `npm run test:ui:update` for a deliberate baseline creation or update and
 record the inspected artifacts and reason in the Project item or pull request.
 
 Run `npm run test:ui:visual` for the independent Material-UI review packet.
-It captures the same eight states from the accepted `workbench-ui-10`
+It captures every manifest-selected state from the accepted `workbench-ui-10`
 prototype, the production harness, and inspectable visual diffs in
 `test-results/workbench-visual-qa/`. The prototype diff is evidence for
 semantic review, not a pixel-parity threshold.
