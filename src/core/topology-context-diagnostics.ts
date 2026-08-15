@@ -274,7 +274,7 @@ function subscriptionComparisonObservations(input: TopologyContextDiagnosticInpu
       const evidence = input.boundary.evidence;
       const lifecycle = left.current && right.current
         ? { kind: "condition" as const, conditionId: `${ids[0]}:${ids[1]}` }
-        : { kind: "occurrence" as const, occurrenceId: `${evidence.eventId}:${ids[0]}:${ids[1]}` };
+        : { kind: "occurrence" as const, occurrenceId: `historical:${ids[0]}:${ids[1]}` };
       const differing = differingConfiguration(left.configuration, right.configuration);
       const temporalState = left.current && right.current ? "current active" : "historical active-at-boundary";
       observations.push(normalized({

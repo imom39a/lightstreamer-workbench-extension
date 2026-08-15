@@ -94,7 +94,7 @@ describe("topology Context diagnostics", () => {
     ]));
 
     expect(current.observations[0]?.lifecycle).toEqual({ kind: "condition", conditionId: "sub-a:sub-b" });
-    expect(historical.observations[0]?.lifecycle).toEqual({ kind: "occurrence", occurrenceId: "topology-20:sub-a:sub-b" });
+    expect(historical.observations[0]?.lifecycle).toEqual({ kind: "occurrence", occurrenceId: "historical:sub-a:sub-b" });
     expect(historical.observations[0]?.observed).toContain("historical active-at-boundary");
     expect(evaluateTopologyContextDiagnostics(input([first]), current.observations).resolutions).toEqual([
       expect.objectContaining({ code: "ls.subscription.exact-duplicate", conditionId: "sub-a:sub-b" })
