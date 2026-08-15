@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLocalInjectionScenarioRunner, type ScenarioClock } from "../src/core/local-injection-scenario-runner";
-import { addScenarioCheckpoint, addScenarioStep, createScenarioFromDraft, moveScenarioMember, reviewScenario, updateScenarioSpeed, type ScenarioDraftInput } from "../src/core/local-injection-scenario";
+import { addScenarioCheckpoint, addScenarioStep, createScenarioFromDraft, moveScenarioMember, reviewScenario, SCENARIO_MAX_ACCOUNTED_BYTES, updateScenarioSpeed, type ScenarioDraftInput } from "../src/core/local-injection-scenario";
 import type { ScenarioCommittedBoundaryFeed, ScenarioCommittedBoundarySnapshot } from "../src/core/local-injection-scenario-checkpoint";
 import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 
@@ -173,6 +173,20 @@ function diagnosticCheckpointRun(diagnosticObservationBoundary: Readonly<{ inter
   return reviewed.run;
 }
 
+function maximumDiagnosticCheckpointRun(diagnosticObservationBoundary: Readonly<{ intervalId: string; sequence: number }>, code: string, affected: Readonly<{ kind: "item"; pageId: string; clientId: string; subscriptionId: string; item: string }>) {
+  const initial = createScenarioFromDraft(input("draft-maximum-diagnostic", "ADD", 0), { scenarioId: "scenario-maximum-diagnostic-checkpoint" });
+  const added = addScenarioCheckpoint(initial, {
+    id: "checkpoint-maximum-diagnostic", kind: "checkpoint", name: "Maximum compact diagnostic",
+    assertions: [{ id: "maximum-diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1, ruleCode: code, lifecycle: "occurrence", minimumSeverity: "information", affected }]
+  });
+  if (!added.ok) throw new Error(added.reason);
+  const moved = moveScenarioMember(added.scenario, "checkpoint-maximum-diagnostic", "earlier");
+  if (!moved.ok) throw new Error(moved.reason);
+  const reviewed = reviewScenario(moved.scenario, { runId: "run-maximum-diagnostic", committedEvidenceSeed: null, diagnosticObservationBoundary, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+  if (!reviewed.ok) throw new Error(reviewed.reason);
+  return reviewed.run;
+}
+
 function delivered(stepOrdinal: number) {
   return {
     kind: "attempted" as const,
@@ -193,6 +207,39 @@ function delivered(stepOrdinal: number) {
 }
 
 describe("Local Injection Scenario runner", () => {
+  it("appends a maximum-shaped compact diagnostic reference within its pre-admitted 8 MiB Trace", async () => {
+    const component = "🧭".repeat(128);
+    const code = "a".repeat(96);
+    const affected = { kind: "item", pageId: component, clientId: component, subscriptionId: component, item: component } as const;
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: component });
+    const authorization = journal.currentBoundary();
+    const run = maximumDiagnosticCheckpointRun(authorization, code, affected);
+    await journal.observe({
+      code, ruleVersion: Number.MAX_SAFE_INTEGER, severity: "error", lifecycle: { kind: "occurrence", occurrenceId: component }, affected,
+      observedAt: Number.MAX_SAFE_INTEGER, observed: "x", limitation: "x", consequence: "x",
+      evidenceBoundary: { intervalId: component, sequence: Number.MAX_SAFE_INTEGER, eventId: component },
+      route: { kind: "inspect-evidence", evidence: { intervalId: component, sequence: Number.MAX_SAFE_INTEGER, eventId: component } },
+      resultRef: { kind: "projection", projection: "local-effective-command-state", key: component }
+    });
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const runner = createLocalInjectionScenarioRunner(run, {
+      clock, allocateInjectionId: () => "must-not-allocate", execute: async () => delivered(1),
+      checkpoint: {
+        feed,
+        observations: () => ({ priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }),
+        diagnostics: { currentBoundary: journal.currentBoundary.bind(journal), query: journal.query.bind(journal), subscribe: journal.subscribe.bind(journal) }
+      }
+    });
+    runner.play(); clock.advance(0);
+    await vi.waitFor(() => expect(runner.snapshot().run.trace[0]).toMatchObject({ kind: "checkpoint", status: "pass" }));
+    const settled = runner.snapshot().run;
+    const traceBytes = new TextEncoder().encode(JSON.stringify(settled.trace)).byteLength;
+    expect(traceBytes).toBeLessThanOrEqual(settled.traceReservationBytes);
+    expect(settled.accountedBytes).toBeLessThanOrEqual(SCENARIO_MAX_ACCOUNTED_BYTES);
+    expect(settled.trace[0]).toMatchObject({ assertions: [{ relatedDiagnostics: [{ affected, route: { kind: "inspect-evidence" } }] }] });
+  });
+
   for (const pauseDuringLoad of ["user", "hidden"] as const) {
     it(`preserves ${pauseDuringLoad} pause intent while the initial Diagnostic Observation query is blocked`, async () => {
       const clock = new FakeClock();

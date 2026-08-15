@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION, type DiagnosticObservation, type DiagnosticObservationRead } from "../src/core/diagnostic-observation";
+import { createMemoryDiagnosticObservationJournal, DIAGNOSTIC_OBSERVATION_REF_MAX_BYTES, DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION, diagnosticObservationRef, type DiagnosticObservation, type DiagnosticObservationRead } from "../src/core/diagnostic-observation";
 
 import {
   evaluateScenarioCheckpoint,
@@ -17,6 +17,7 @@ import {
   removeScenarioCheckpoint,
   reviewScenario,
   SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES,
+  SCENARIO_DIAGNOSTIC_ASSERTION_TRACE_RESERVATION_BYTES,
   SCENARIO_MAX_ACCOUNTED_BYTES,
   SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES,
   type ScenarioDraftInput
@@ -275,6 +276,36 @@ describe("Scenario Checkpoints", () => {
       inspectCommand: () => ({ state: "concrete", value: observedValue, certainty: "certain", provenance: "local-effective", evidence: boundary })
     }, 0);
     expect(equal.assertions[0]).toMatchObject({ status: "pass", observed: { valueLimited: { comparison: "equal" } } });
+  });
+
+  it("fits a maximum-shaped compact Diagnostic Observation reference inside its admitted assertion Trace reservation", async () => {
+    const component = "🧭".repeat(128);
+    const code = "a".repeat(96);
+    const affected = { kind: "item", pageId: component, clientId: component, subscriptionId: component, item: component } as const;
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: component });
+    const observation = await journal.observe({
+      code, ruleVersion: Number.MAX_SAFE_INTEGER, severity: "error", lifecycle: { kind: "occurrence", occurrenceId: component }, affected,
+      observedAt: Number.MAX_SAFE_INTEGER, observed: "x", limitation: "x", consequence: "x",
+      evidenceBoundary: { intervalId: component, sequence: Number.MAX_SAFE_INTEGER, eventId: component },
+      route: { kind: "inspect-evidence", evidence: { intervalId: component, sequence: Number.MAX_SAFE_INTEGER, eventId: component } },
+      resultRef: { kind: "projection", projection: "local-effective-command-state", key: component }
+    });
+    const assertion = checkpoint([{
+      id: "maximum-diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1,
+      ruleCode: code, lifecycle: "occurrence", minimumSeverity: "information", affected
+    }]);
+    const read: DiagnosticObservationRead = { status: "complete", coverage: "complete", retention: "complete", through: observation.observationBoundary, observations: [observation] };
+    const evaluation = evaluateScenarioCheckpoint(assertion, snapshot(), {
+      priorOutcomes: new Map(), correlatedLocalEvidence: new Map(),
+      inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }),
+      diagnosticReads: new Map([["maximum-diagnostic", read]])
+    }, 0);
+    const ref = diagnosticObservationRef(observation);
+    const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    expect(evaluation).toMatchObject({ status: "pass", assertions: [{ relatedDiagnostics: [{ id: observation.id }] }] });
+    expect(bytes(ref)).toBeLessThanOrEqual(DIAGNOSTIC_OBSERVATION_REF_MAX_BYTES);
+    expect(bytes(ref)).toBeLessThan(SCENARIO_DIAGNOSTIC_ASSERTION_TRACE_RESERVATION_BYTES);
+    expect(bytes(evaluation.assertions[0])).toBeLessThan(SCENARIO_DIAGNOSTIC_ASSERTION_TRACE_RESERVATION_BYTES);
   });
 
   it("keeps eventual assertions waiting as a conjunction until one common committed boundary satisfies all", () => {
