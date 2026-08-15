@@ -1775,9 +1775,19 @@ class Runtime implements WorkbenchRuntime {
           this.dispatch({ type: "show-scenario-checkpoint-evidence", evidence: route.evidence });
           return;
         }
-        state.membershipError = route.kind === "inspect-affected"
-          ? `Diagnostic Observation ${command.observation.code} retains the exact affected ${command.observation.affected.kind} identity for the shared inspection route.`
-          : `Diagnostic Observation ${command.observation.code} retains recovery route ${route.action}.`;
+        if (route.kind === "inspect-affected") {
+          const scopeId = this.diagnosticAffectedScopeId(command.observation.affected);
+          if (scopeId) {
+            state.membershipError = null;
+            this.dispatch({ type: "set-scope", scopeId });
+            this.dispatch({ type: "open-scope" });
+            return;
+          }
+          state.membershipError = `The exact affected ${command.observation.affected.kind} object is unavailable in the current runtime topology; the Scenario Trace was not changed.`;
+          this.publish();
+          return;
+        }
+        state.membershipError = `Recovery route ${route.action} is unavailable from Scenario Trace; use the shared diagnostic recovery surface.`;
         this.publish();
         return;
       }
@@ -5155,6 +5165,28 @@ class Runtime implements WorkbenchRuntime {
       })
     };
     return Object.freeze(snapshot);
+  }
+
+  private diagnosticAffectedScopeId(affected: DiagnosticAffectedIdentity): string | null {
+    const state = this.topologyProjection.snapshot();
+    const structure = this.currentScopeStructure(state);
+    if (affected.kind === "unavailable" || affected.kind === "evidence" || ("pageId" in affected && this.currentPageEpoch !== null && affected.pageId !== this.currentPageEpoch)) return null;
+    for (const descriptor of structure.descriptors) {
+      const located = locateScopeDescriptor(state, descriptor.locator);
+      if (!located) continue;
+      if (affected.kind === "page" && located.kind === "page") return descriptor.id;
+      if (affected.kind === "client" && located.kind === "client" && located.client.id === affected.clientId) return descriptor.id;
+      if (affected.kind === "session" && located.kind === "session" && located.client.id === affected.clientId && located.session.id === affected.sessionId) return descriptor.id;
+      if (affected.kind === "subscription" && located.kind === "subscription"
+        && located.client?.id === affected.clientId
+        && located.subscription.id === affected.subscriptionId
+        && (affected.sessionId === undefined || located.session?.id === affected.sessionId)) return descriptor.id;
+      if (affected.kind === "item" && located.kind === "item"
+        && located.client?.id === affected.clientId
+        && located.subscription.id === affected.subscriptionId
+        && (located.item.name === affected.item || `#${located.item.position}` === affected.item)) return descriptor.id;
+    }
+    return null;
   }
 
   private currentScopeStructure(state: TopologyState): NonNullable<Runtime["scopeStructureCache"]> {

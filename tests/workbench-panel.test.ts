@@ -1953,6 +1953,15 @@ describe("React Workbench Diagnose panel", () => {
     expect(inspect).toBeTruthy();
     await act(async () => inspect?.click());
     expect(editRuntime.commands).toContainEqual({ type: "show-scenario-diagnostic-observation", observation });
+
+    const recoveryObservation = { ...observation, id: "diag:capture.disconnected:recover", code: "capture.disconnected", route: { kind: "recover" as const, action: "reload-inspected-page" } };
+    const recoveryTrace = { ...trace, assertions: [{ ...result, relatedDiagnostics: [recoveryObservation] }] };
+    const recoveryRun = { ...run, trace: [recoveryTrace] };
+    await act(async () => editRuntime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run: recoveryRun, focusedMemberId: checkpoint.id, runner: { ...reviewed.runner!, run: recoveryRun, phase: "complete", activeCheckpoint: null } } })));
+    const unavailableRecovery = region.querySelector<HTMLButtonElement>('[aria-label="Recovery unavailable for Diagnostic Observation capture.disconnected"]');
+    expect(unavailableRecovery).toBeTruthy();
+    expect(unavailableRecovery?.disabled).toBe(true);
+    expect(region.textContent).toContain("Recovery unavailable from Scenario Trace");
     await act(async () => root.unmount());
   });
 

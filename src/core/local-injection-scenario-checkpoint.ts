@@ -13,6 +13,7 @@ import {
   DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
   DIAGNOSTIC_RULE_CODE_MAX_LENGTH,
   isDiagnosticAffectedIdentity,
+  type DiagnosticObservation,
   type DiagnosticObservationRead,
   type DiagnosticObservationRef
 } from "./diagnostic-observation";

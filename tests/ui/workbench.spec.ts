@@ -2331,6 +2331,16 @@ test("Scenario Diagnostic Observation Review and Trace expose bounded provenance
   const inspect = checkpoint.getByRole("button", { name: "Inspect Diagnostic Observation subscription.lost-updates" });
   await inspect.focus();
   await expect(inspect).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("navigation", { name: "Current runtime scope" })).toContainText("topology-small-subscription");
+  const back = page.getByRole("button", { name: "Back investigation" });
+  await expect(back).toBeEnabled();
+  await back.focus();
+  await expect(back).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(back).toBeDisabled();
+  await expect(page.getByRole("navigation", { name: "Current runtime scope" })).toContainText("Inspected page");
+  await expect(inspect).toBeVisible();
   await expectNoSeriousAxeViolations(page, testInfo);
   await expectShellFitsExactly(page);
   await expectShellFits(page);
