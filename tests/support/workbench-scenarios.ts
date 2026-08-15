@@ -37,6 +37,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "memory-fallback",
   "diagnostics-stress",
   "diagnostic-server-callbacks",
+  "diagnostic-subscription-context",
   "raw-evidence",
   "filter-find",
   "filter-hidden-selection",
@@ -451,6 +452,12 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return {
         id,
         initialEvents: diagnosticServerEvents(canonical),
+        captureStatus: "capturing"
+      };
+    case "diagnostic-subscription-context":
+      return {
+        id,
+        initialEvents: diagnosticSubscriptionContextEvents(canonical),
         captureStatus: "capturing"
       };
     case "raw-evidence":
@@ -1105,6 +1112,82 @@ function diagnosticServerEvents(canonical: readonly LightstreamerEventEnvelope[]
       topology: topology("server-keepalive", 2)
     };
   return Object.freeze([serverError, serverKeepalive]);
+}
+
+function diagnosticSubscriptionContextEvents(canonical: readonly LightstreamerEventEnvelope[]): readonly LightstreamerEventEnvelope[] {
+  const source = canonical[0];
+  if (!source) throw new Error("The canonical scenario must include a source event for diagnostics.");
+  const client = { id: "configuration-client", status: "CONNECTED:WS-STREAMING", sessionId: "configuration-session", adapterSet: "DEMO" };
+  const topology = (kind: LightstreamerEventEnvelope["kind"], captureSequence: number, reason?: "late-attachment") => ({
+    version: TOPOLOGY_OBSERVATION_VERSION,
+    kind,
+    pageEpoch: "configuration-page",
+    captureSequence,
+    provenance: { instrumentationSource: "official-public-api" as const },
+    coverage: { status: reason ? "partial" as const : "complete" as const, ...(reason ? { reason } : {}), getters: {} }
+  });
+  const configured = (
+    id: string,
+    mode: "MERGE" | "RAW",
+    captureSequence: number,
+    requestedBufferSize: number | null = null
+  ): LightstreamerEventEnvelope => ({
+    ...source,
+    id,
+    timestamp: source.timestamp + captureSequence,
+    kind: "subscription-started",
+    client,
+    subscription: {
+      id,
+      mode,
+      items: ["prices"],
+      fields: ["price"],
+      dataAdapter: "QUOTE_ADAPTER",
+      selector: null,
+      requestedSnapshot: "yes",
+      requestedBufferSize,
+      requestedMaxFrequency: null,
+      commandSecondLevelFieldSchema: null,
+      commandSecondLevelDataAdapter: null,
+      active: true,
+      subscribed: true
+    },
+    listener: undefined,
+    item: undefined,
+    update: undefined,
+    raw: { callback: "onSubscription" },
+    topology: topology("subscription-started", captureSequence)
+  });
+  const events: LightstreamerEventEnvelope[] = [{
+    ...source,
+    id: "configuration-client-status",
+    timestamp: source.timestamp + 1,
+    kind: "client-status",
+    client,
+    subscription: undefined,
+    listener: undefined,
+    item: undefined,
+    update: undefined,
+    raw: { callback: "onStatusChange" },
+    topology: topology("client-status", 1, "late-attachment")
+  }, configured("duplicate-a", "MERGE", 2), configured("duplicate-b", "MERGE", 3), configured("semantic-overlap", "MERGE", 4, 10), configured("raw-capability", "RAW", 5, 20)];
+  for (let index = 0; index < 6; index += 1) {
+    const kind = index % 2 === 0 ? "listener-added" as const : "listener-removed" as const;
+    events.push({
+      ...source,
+      id: `configuration-listener-${index + 1}`,
+      timestamp: source.timestamp + 6 + index,
+      kind,
+      client,
+      subscription: { id: "duplicate-a" },
+      listener: { id: "configuration-listener", callbacks: ["onItemUpdate"] },
+      item: undefined,
+      update: undefined,
+      raw: { callback: kind === "listener-added" ? "addListener" : "removeListener" },
+      topology: topology(kind, 6 + index)
+    });
+  }
+  return Object.freeze(events);
 }
 
 function highVolumeEvents(first: number, count: number): readonly LightstreamerEventEnvelope[] {

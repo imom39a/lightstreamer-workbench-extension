@@ -1348,6 +1348,46 @@ test("Workbench explains server errors and keepalives contextually without a hea
   await expectNoSeriousAxeViolations(page, testInfo);
 });
 
+test("Workbench explains committed Subscription and topology diagnostics in Context", async ({ page }, testInfo) => {
+  const scenes = [
+    { width: 563, height: 700, theme: "dark" as const },
+    { width: 900, height: 700, theme: "light" as const },
+    { width: 900, height: 320, theme: "dark" as const },
+    { width: 1440, height: 900, theme: "light" as const }
+  ];
+  for (const scene of scenes) {
+    await openScenario(page, "diagnostic-subscription-context", scene, scene.theme);
+    const footer = page.getByRole("region", { name: "Workbench diagnostics" });
+    await expect(footer).toContainText("Information · RAW snapshot unavailable");
+    await expect(footer).toContainText("Information · Buffer request not applicable");
+    await expect(footer).toContainText("Information · Exact duplicate Subscriptions");
+    await expect(footer).toContainText("Information · Semantic Subscription overlap");
+    await expect(footer).toContainText("Information · Listener registration churn");
+    await expect(footer).toContainText("Information · Capture attached late");
+    await expect(footer).toContainText("immutable committed topology facts");
+    await expect(footer).toContainText("does not infer application intent");
+    await expect(page.getByRole("complementary", { name: "Context" }).locator(".workbench-react__diagnostic")).toHaveCount(0);
+
+    const exactDuplicate = footer.locator(".workbench-react__status-diagnostic").filter({ hasText: "Exact duplicate Subscriptions" }).first();
+    await exactDuplicate.getByRole("button", { name: "Inspect supporting Evidence" }).click();
+    await expect(page.getByRole("heading", { name: /duplicate-b · Subscription Started/ })).toBeVisible();
+    await page.getByRole("button", { name: "Back investigation" }).click();
+
+    await page.getByRole("button", { name: "Scope", exact: true }).click();
+    await page.getByRole("treeitem").filter({ hasText: "raw-capability" }).click();
+    await expect(footer).toContainText("RAW snapshot unavailable");
+    await expect(footer).not.toContainText("Exact duplicate Subscriptions");
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `subscription-diagnostics-${scene.width}x${scene.height}-${scene.theme}`);
+  }
+  await page.emulateMedia({ forcedColors: "active" });
+  const forcedFooter = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(forcedFooter).toContainText("RAW snapshot unavailable");
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
 test("Workbench retains ordered Evidence while a typed Session recovery is in progress", async ({
   page
 }, testInfo) => {

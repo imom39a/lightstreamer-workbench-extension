@@ -28,4 +28,26 @@ describe("Diagnostic Observation presentation adapter", () => {
       route: { kind: "inspect-evidence", eventId: "error-1", label: "Inspect supporting Evidence" }
     });
   });
+
+  it.each([
+    ["ls.sub.raw-snapshot-unavailable", "RAW snapshot unavailable"],
+    ["ls.sub.buffer-not-applicable-mode", "Buffer request not applicable"],
+    ["ls.sub.nonraw-mode-overlap", "Non-RAW mode overlap"],
+    ["ls.subscription.exact-duplicate", "Exact duplicate Subscriptions"],
+    ["ls.subscription.semantic-overlap", "Semantic Subscription overlap"],
+    ["ls.listener.registration-churn", "Listener registration churn"],
+    ["workbench.capture.late-attachment", "Capture attached late"]
+  ])("presents %s with a concise renderer-neutral title", (code, title) => {
+    expect(presentDiagnosticObservation({
+      code,
+      severity: "information",
+      lifecycle: { kind: "condition", conditionId: "condition" },
+      affected: { kind: "page", pageId: "page-1" },
+      observedAt: 1,
+      observed: "Observed fact.",
+      limitation: "Bounded limitation.",
+      consequence: "Bounded consequence.",
+      route: { kind: "inspect-affected" }
+    }).title).toBe(title);
+  });
 });
