@@ -723,10 +723,19 @@ function hydratePersistedState(
   if (expectedSequence !== sequence + 1) throw new Error("Diagnostic retained observations do not reach the committed boundary.");
   if (new Set(current.map(({ id }) => id)).size !== current.length) throw new Error("Diagnostic current lifecycle identities are duplicated.");
   const currentById = new Map(current.map((observation) => [observation.id, observation]));
+  const latestRetainedById = new Map<string, DiagnosticObservation>();
   for (const observation of records) {
+    latestRetainedById.set(observation.id, observation);
     const latest = currentById.get(observation.id);
     if (!latest || latest.observationBoundary.sequence < observation.observationBoundary.sequence) {
       throw new Error("Diagnostic current lifecycle state is older than retained observations.");
+    }
+  }
+  for (const observation of current) {
+    if (observation.observationBoundary.sequence <= retainedThrough) continue;
+    const retained = latestRetainedById.get(observation.id);
+    if (!retained || JSON.stringify(retained) !== JSON.stringify(observation)) {
+      throw new Error("Diagnostic current lifecycle state does not match retained observations.");
     }
   }
   return { intervalOrdinal, sequence, retainedThrough, records, current };
