@@ -5554,6 +5554,47 @@ class Runtime implements WorkbenchRuntime {
       });
       this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
     }
+    if (event.kind === "server-error") {
+      const originalCode = event.serverError?.code;
+      const nonPositive = typeof originalCode === "number" && originalCode <= 0;
+      const sessionKnown = event.client?.sessionId !== undefined && event.client.sessionId !== null && event.client.sessionId !== "";
+      const adapted = adaptCommittedEvidenceFinding({
+        family: "server-error",
+        severity: "warning",
+        lifecycle: { kind: "occurrence", occurrenceId: event.id },
+        affected,
+        observedAt: event.timestamp,
+        observed: typeof originalCode === "number"
+          ? `ClientListener reported server error code ${originalCode}.`
+          : "ClientListener reported a server error without a usable numeric code.",
+        limitation: `${nonPositive ? "Non-positive codes can be application-specific. " : ""}${sessionKnown ? "The callback does not expose server-side application state." : "No current Session identity was available at callback time; Workbench attributes this only to the Client."}`,
+        consequence: "The callback proves a server error notification, but not the complete server-side cause or resulting connection state.",
+        route: { kind: "inspect-evidence", evidence: evidenceBoundary },
+        evidenceBoundary,
+        ...(typeof originalCode === "number" && Number.isSafeInteger(originalCode) ? { originalCode } : {}),
+        ...(event.serverError?.messageState === "safe" && event.serverError.message ? { safeMessage: event.serverError.message } : {})
+      });
+      this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
+    }
+    if (event.kind === "server-keepalive") {
+      const count = event.keepalive?.count ?? 1;
+      const sessionKnown = event.client?.sessionId !== undefined && event.client.sessionId !== null && event.client.sessionId !== "";
+      const adapted = adaptCommittedEvidenceFinding({
+        family: "server-keepalive",
+        severity: "information",
+        lifecycle: { kind: "occurrence", occurrenceId: event.id },
+        affected,
+        observedAt: event.timestamp,
+        observed: `ClientListener reported ${count} keepalive callback${count === 1 ? "" : "s"} in bounded window ${event.keepalive?.windowId ?? "unavailable"}.`,
+        limitation: sessionKnown
+          ? "Keepalive presence says only that the callback occurred for the captured Session window."
+          : "No current Session identity was available; the callback is attributed only to the Client.",
+        consequence: "A keepalive callback does not prove that the connection, application, or end-to-end data flow is healthy.",
+        route: { kind: "inspect-evidence", evidence: evidenceBoundary },
+        evidenceBoundary
+      });
+      this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
+    }
     const commandDiagnostics = projections.snapshot(event.synthetic ? "local-effective" : "observed-server").diagnostics
       .filter((diagnostic) => diagnostic.eventId === event.id);
     commandDiagnostics.forEach((diagnostic, index) => {
@@ -5708,6 +5749,9 @@ function diagnosticAffectedIdentity(
       ...(event.client.sessionId ? { sessionId: event.client.sessionId } : {}),
       subscriptionId: event.subscription.id
     });
+  }
+  if (event.client?.id && event.client.sessionId) {
+    return Object.freeze({ kind: "session", pageId, clientId: event.client.id, sessionId: event.client.sessionId });
   }
   if (event.client?.id) return Object.freeze({ kind: "client", pageId, clientId: event.client.id });
   return Object.freeze({ kind: "evidence", ...evidence });

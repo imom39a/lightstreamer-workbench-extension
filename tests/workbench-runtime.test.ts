@@ -240,6 +240,20 @@ describe("WorkbenchRuntime", () => {
     const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "runtime-diagnostics" });
     const baseHistory = createAuthoritativeHistory({
       precommitted: [
+        topologyEvent("server-error-0", "server-error", {
+          subscription: undefined,
+          item: undefined,
+          update: undefined,
+          topology: { version: 1, kind: "server-error", pageEpoch: "page-1", captureSequence: 1, provenance: { instrumentationSource: "official-public-api" }, coverage: { status: "complete", getters: {} } },
+          serverError: { code: -7, message: "Application denied the operation", messageState: "safe" }
+        }),
+        topologyEvent("server-keepalive-0", "server-keepalive", {
+          subscription: undefined,
+          item: undefined,
+          update: undefined,
+          topology: { version: 1, kind: "server-keepalive", pageEpoch: "page-1", captureSequence: 2, provenance: { instrumentationSource: "official-public-api" }, coverage: { status: "complete", getters: {} } },
+          keepalive: { count: 4, windowId: "S-1:1", firstObservedAt: 1, lastObservedAt: 4, aggregate: true }
+        }),
         {
         ...event("subscription-error-1", "orders"),
         kind: "subscription-error",
@@ -334,6 +348,8 @@ describe("WorkbenchRuntime", () => {
     expect(observations.map(({ code }) => code)).toEqual(expect.arrayContaining([
       "ls.subscription.error",
       "ls.subscription.lost-updates",
+      "ls.client.server-error",
+      "ls.client.server-keepalive",
       "ls.command.unknown-key-update",
       "ls.command.unsupported-command",
       "workbench.history.lower-capacity-fallback",
@@ -345,6 +361,19 @@ describe("WorkbenchRuntime", () => {
       expect.objectContaining({ code: "ls.command.unknown-key-update", affected: expect.objectContaining({ kind: "item", item: "orders" }) }),
       expect.objectContaining({ code: "ls.session.recovering", affected: expect.objectContaining({ kind: "session", sessionId: "S-1" }) }),
       expect.objectContaining({ code: "ls.subscription.error", affected: expect.objectContaining({ kind: "evidence", eventId: "subscription-error-1" }) })
+      ,expect.objectContaining({
+        code: "ls.client.server-error",
+        severity: "warning",
+        originalCode: -7,
+        safeMessage: "Application denied the operation",
+        affected: { kind: "session", pageId: "page-1", clientId: "client-main", sessionId: "S-1" }
+      }),
+      expect.objectContaining({
+        code: "ls.client.server-keepalive",
+        severity: "information",
+        observed: expect.stringContaining("4 keepalive callbacks"),
+        consequence: expect.stringContaining("not prove")
+      })
     ]));
     expect(JSON.stringify(observations)).not.toContain("private source text");
     expect(JSON.stringify(observations)).not.toContain("PRIVATE-COMMAND-VALUE");

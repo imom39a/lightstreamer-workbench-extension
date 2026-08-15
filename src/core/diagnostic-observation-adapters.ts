@@ -38,7 +38,7 @@ export type ProjectionFinding = DiagnosticSemantics & Readonly<{
 }>;
 
 export type CommittedEvidenceFinding = DiagnosticSemantics & Readonly<{
-  family: "subscription-error" | "lost-updates";
+  family: "subscription-error" | "lost-updates" | "server-error" | "server-keepalive";
   lifecycle: Readonly<{ kind: "occurrence"; occurrenceId: string }>;
   evidenceBoundary: DiagnosticEvidenceBoundary;
 }>;
@@ -55,9 +55,16 @@ export function adaptProjectionFinding(finding: ProjectionFinding): AdaptedDiagn
 }
 
 export function adaptCommittedEvidenceFinding(finding: CommittedEvidenceFinding): AdaptedDiagnosticFinding {
+  const code = finding.family === "subscription-error"
+    ? "ls.subscription.error"
+    : finding.family === "lost-updates"
+      ? "ls.subscription.lost-updates"
+      : finding.family === "server-error"
+        ? "ls.client.server-error"
+        : "ls.client.server-keepalive";
   return adapted(
     finding,
-    finding.family === "subscription-error" ? "ls.subscription.error" : "ls.subscription.lost-updates",
+    code,
     { kind: "evidence", ...finding.evidenceBoundary }
   );
 }
