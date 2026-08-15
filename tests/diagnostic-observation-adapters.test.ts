@@ -58,20 +58,21 @@ describe("Diagnostic Observation adapters", () => {
     const adapter = adaptCommittedEvidenceFinding({
       family: "subscription-error",
       severity: "error",
-      lifecycle: { kind: "occurrence", occurrenceId: "event-private" },
-      affected: affectedSubscription,
+      lifecycle: { kind: "occurrence", occurrenceId: "event-private", rawSecret: "lifecycle-secret" },
+      affected: { ...affectedSubscription, rawSecret: "affected-secret" },
       observedAt: 100,
       observed: "SubscriptionListener reported an error.",
       limitation: "The callback provides no server-side application state.",
       consequence: "Subscription updates may be unavailable.",
-      route: { kind: "inspect-evidence", evidence: { intervalId: "history", sequence: 1, eventId: "event-private" } },
+      route: { kind: "inspect-evidence", evidence: { intervalId: "history", sequence: 1, eventId: "event-private", rawSecret: "route-secret" } },
       evidenceBoundary: { intervalId: "history", sequence: 1, eventId: "event-private" },
       safeMessage: "safe summary",
       rawMessage: "Bearer secret-must-never-cross"
-    } as Parameters<typeof adaptCommittedEvidenceFinding>[0] & { rawMessage: string });
+    } as unknown as Parameters<typeof adaptCommittedEvidenceFinding>[0] & { rawMessage: string });
     const observation = await journal.observe(adapter.observation);
 
     expect(JSON.stringify(observation)).not.toContain("secret-must-never-cross");
+    expect(JSON.stringify(observation)).not.toContain("-secret");
     expect(diagnosticObservationRef(observation)).not.toHaveProperty("safeMessage");
     expect(JSON.stringify(diagnosticObservationRef(observation)).length).toBeLessThan(4_096);
     await expect(journal.observe({

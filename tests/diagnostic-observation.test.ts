@@ -138,6 +138,28 @@ describe("normalized Diagnostic Observation contract", () => {
     expect(replayedByFeed).toEqual([observation.id]);
   });
 
+  it("isolates feed observers after an observation is committed", async () => {
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-observers" });
+    const cursor = journal.currentBoundary();
+    journal.subscribe(cursor, () => { throw new Error("observer failed"); });
+    const delivered: string[] = [];
+    journal.subscribe(cursor, (publication) => {
+      if (publication.type === "observation") delivered.push(publication.observation.code);
+    });
+    await expect(journal.observe({
+      code: "workbench.capture.disconnected",
+      severity: "error",
+      lifecycle: { kind: "condition", conditionId: "bridge" },
+      affected: { kind: "page", pageId: "page" },
+      observedAt: 1,
+      observed: "The bridge disconnected.",
+      limitation: "Later activity is unavailable.",
+      consequence: "Capture is unavailable.",
+      route: { kind: "recover", action: "reconnect" }
+    })).resolves.toMatchObject({ observationBoundary: { sequence: 1 } });
+    expect(delivered).toEqual(["workbench.capture.disconnected"]);
+  });
+
   it("does not advance a condition cursor for a timestamp-only repeat", async () => {
     const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-dedup" });
     const input = {
@@ -370,5 +392,32 @@ describe("normalized Diagnostic Observation contract", () => {
     malformedDatabase.close();
     const malformed = await openIndexedDbDiagnosticObservationJournal({ panelSessionId: "malformed", indexedDB: malformedFactory });
     expect(await malformed.query()).toMatchObject({ status: "unavailable", coverage: "unavailable", observations: [] });
+
+    const discontinuousFactory = new IDBFactory();
+    const source = createMemoryDiagnosticObservationJournal({ panelSessionId: "discontinuous" });
+    const base = {
+      code: "ls.subscription.error",
+      severity: "error" as const,
+      affected: { kind: "page" as const, pageId: "page" },
+      observedAt: 1,
+      observed: "An error occurred.",
+      limitation: "Only the callback is known.",
+      consequence: "Updates may be unavailable.",
+      route: { kind: "inspect-affected" as const }
+    };
+    await source.observe({ ...base, lifecycle: { kind: "occurrence", occurrenceId: "one" } });
+    const second = await source.observe({ ...base, lifecycle: { kind: "occurrence", occurrenceId: "two" } });
+    const discontinuousRequest = discontinuousFactory.open("lsew-diagnostics-v1-discontinuous", 1);
+    discontinuousRequest.onupgradeneeded = () => discontinuousRequest.result.createObjectStore("diagnosticState");
+    const discontinuousDatabase = await requestResult(discontinuousRequest);
+    const discontinuousTransaction = discontinuousDatabase.transaction("diagnosticState", "readwrite");
+    discontinuousTransaction.objectStore("diagnosticState").put({ intervalOrdinal: 1, sequence: 2, retainedThrough: 0, records: [second], current: [second] }, "state");
+    await new Promise<void>((resolve, reject) => {
+      discontinuousTransaction.oncomplete = () => resolve();
+      discontinuousTransaction.onerror = () => reject(discontinuousTransaction.error);
+    });
+    discontinuousDatabase.close();
+    const discontinuous = await openIndexedDbDiagnosticObservationJournal({ panelSessionId: "discontinuous", indexedDB: discontinuousFactory });
+    expect(await discontinuous.query()).toMatchObject({ status: "unavailable", observations: [] });
   });
 });

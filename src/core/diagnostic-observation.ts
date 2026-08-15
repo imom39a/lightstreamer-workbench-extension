@@ -158,7 +158,7 @@ export function createUnavailableDiagnosticObservationJournal(options: Readonly<
     async replay(): Promise<readonly DiagnosticObservation[]> { return Object.freeze([]); },
     currentBoundary(): DiagnosticObservationBoundary { return boundary; },
     subscribe(_after: DiagnosticObservationBoundary, observer: (publication: DiagnosticObservationFeedPublication) => void): () => void {
-      observer(Object.freeze({ type: "status", status: options.status, boundary }));
+      publishSafely(observer, Object.freeze({ type: "status", status: options.status, boundary }));
       return () => undefined;
     },
     async discardRetainedThrough(): Promise<void> { return rejected(); },
@@ -238,7 +238,7 @@ function createDiagnosticObservationJournal(
     state: "observed" | "active" | "resolved"
   ): Promise<DiagnosticObservation> {
     assertOpen(closed);
-    const normalized = normalizeInput(input);
+    const normalized = normalizeDiagnosticObservationInput(input);
     const nextSequence = sequence + 1;
     const lifecycle = normalized.lifecycle.kind === "occurrence"
       ? Object.freeze({ ...normalized.lifecycle, state: "observed" as const })
@@ -263,9 +263,9 @@ function createDiagnosticObservationJournal(
     for (const value of nextCurrent.values()) current.set(value.id, value);
     for (const subscriber of subscribers) {
       if (subscriber.after.intervalId === intervalId && subscriber.after.sequence < retainedThrough) {
-        subscriber.observer(Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
+        publishSafely(subscriber.observer, Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
       }
-      if (isStrictlyAfter(observation.observationBoundary, subscriber.after)) subscriber.observer(Object.freeze({ type: "observation", observation }));
+      if (isStrictlyAfter(observation.observationBoundary, subscriber.after)) publishSafely(subscriber.observer, Object.freeze({ type: "observation", observation }));
     }
     return observation;
   }
@@ -274,7 +274,7 @@ function createDiagnosticObservationJournal(
     observe(input: DiagnosticObservationInput): Promise<DiagnosticObservation> {
       return enqueue(async () => {
         assertOpen(closed);
-        normalizeInput(input);
+        normalizeDiagnosticObservationInput(input);
         const id = diagnosticObservationId(input);
         const existing = current.get(id);
         if (existing && input.lifecycle.kind === "occurrence") return existing;
@@ -350,18 +350,18 @@ function createDiagnosticObservationJournal(
       assertOpen(closed);
       const subscription = Object.freeze({ after: Object.freeze({ ...after }), observer });
       if (after.intervalId !== intervalId) {
-        observer(Object.freeze({ type: "status", status: "cleared", boundary: Object.freeze({ intervalId, sequence }) }));
+        publishSafely(observer, Object.freeze({ type: "status", status: "cleared", boundary: Object.freeze({ intervalId, sequence }) }));
         return () => undefined;
       } else if (after.sequence > sequence) {
-        observer(Object.freeze({ type: "status", status: "unavailable", boundary: Object.freeze({ intervalId, sequence }) }));
+        publishSafely(observer, Object.freeze({ type: "status", status: "unavailable", boundary: Object.freeze({ intervalId, sequence }) }));
         return () => undefined;
       } else {
         subscribers.add(subscription);
         if (after.sequence < retainedThrough) {
-          observer(Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
+          publishSafely(observer, Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
         }
         for (const observation of records) {
-          if (isStrictlyAfter(observation.observationBoundary, after)) observer(Object.freeze({ type: "observation", observation }));
+          if (isStrictlyAfter(observation.observationBoundary, after)) publishSafely(observer, Object.freeze({ type: "observation", observation }));
         }
       }
       return () => subscribers.delete(subscription);
@@ -377,7 +377,7 @@ function createDiagnosticObservationJournal(
         records.splice(0, records.length, ...nextRecords);
         for (const subscriber of subscribers) {
           if (subscriber.after.intervalId === intervalId && subscriber.after.sequence < retainedThrough) {
-            subscriber.observer(Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
+          publishSafely(subscriber.observer, Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
           }
         }
       });
@@ -395,7 +395,7 @@ function createDiagnosticObservationJournal(
         records.splice(0);
         current.clear();
         for (const subscriber of subscribers) {
-          subscriber.observer(Object.freeze({ type: "status", status: "cleared", boundary: Object.freeze({ intervalId, sequence }) }));
+          publishSafely(subscriber.observer, Object.freeze({ type: "status", status: "cleared", boundary: Object.freeze({ intervalId, sequence }) }));
         }
         return Object.freeze({ intervalId, sequence });
       });
@@ -404,7 +404,7 @@ function createDiagnosticObservationJournal(
       return enqueue(async () => {
         if (closed) return;
         for (const subscriber of subscribers) {
-          subscriber.observer(Object.freeze({ type: "status", status: "closed", boundary: Object.freeze({ intervalId, sequence }) }));
+          publishSafely(subscriber.observer, Object.freeze({ type: "status", status: "closed", boundary: Object.freeze({ intervalId, sequence }) }));
         }
         subscribers.clear();
         closeStorage();
@@ -422,6 +422,13 @@ function readWithStatus(
   observations: readonly DiagnosticObservation[]
 ): DiagnosticObservationRead {
   return Object.freeze({ status, coverage, retention, through: Object.freeze({ ...through }), observations: Object.freeze([...observations]) });
+}
+
+function publishSafely(
+  observer: (publication: DiagnosticObservationFeedPublication) => void,
+  publication: DiagnosticObservationFeedPublication
+): void {
+  try { observer(publication); } catch { /* A consumer cannot rewrite an already-committed feed outcome. */ }
 }
 
 function diagnosticIntervalId(panelSessionId: string, ordinal: number): string {
@@ -506,7 +513,7 @@ function isAtOrBefore(value: DiagnosticObservationBoundary, upper: DiagnosticObs
   return value.intervalId === upper.intervalId && value.sequence <= upper.sequence;
 }
 
-function normalizeInput(input: DiagnosticObservationInput): DiagnosticObservationInput {
+export function normalizeDiagnosticObservationInput(input: DiagnosticObservationInput): DiagnosticObservationInput {
   assertRuleCode(input.code);
   assertPositiveInteger(input.ruleVersion ?? 1, "Diagnostic rule version");
   assertPositiveInteger(input.observedAt, "Diagnostic observed timestamp", true);
@@ -525,18 +532,43 @@ function normalizeInput(input: DiagnosticObservationInput): DiagnosticObservatio
     code: input.code,
     ruleVersion: input.ruleVersion,
     severity: input.severity,
-    lifecycle: Object.freeze({ ...input.lifecycle }),
-    affected: Object.freeze({ ...input.affected }),
+    lifecycle: normalizeLifecycle(input.lifecycle),
+    affected: normalizeAffected(input.affected),
     observedAt: input.observedAt,
-    evidenceBoundary: input.evidenceBoundary ? Object.freeze({ ...input.evidenceBoundary }) : undefined,
+    evidenceBoundary: input.evidenceBoundary ? Object.freeze({ intervalId: input.evidenceBoundary.intervalId, sequence: input.evidenceBoundary.sequence, eventId: input.evidenceBoundary.eventId }) : undefined,
     observed: input.observed,
     limitation: input.limitation,
     consequence: input.consequence,
     route: freezeDiagnosticInspectionRoute(input.route),
-    resultRef: input.resultRef ? Object.freeze({ ...input.resultRef }) : undefined,
+    resultRef: input.resultRef ? normalizeResultRef(input.resultRef) : undefined,
     originalCode: input.originalCode,
     safeMessage: input.safeMessage
   });
+}
+
+function normalizeLifecycle(lifecycle: DiagnosticObservationInput["lifecycle"]): DiagnosticObservationInput["lifecycle"] {
+  return lifecycle.kind === "occurrence"
+    ? Object.freeze({ kind: "occurrence", occurrenceId: lifecycle.occurrenceId })
+    : Object.freeze({ kind: "condition", conditionId: lifecycle.conditionId });
+}
+
+function normalizeAffected(affected: DiagnosticAffectedIdentity): DiagnosticAffectedIdentity {
+  switch (affected.kind) {
+    case "page": return Object.freeze({ kind: "page", pageId: affected.pageId });
+    case "client": return Object.freeze({ kind: "client", pageId: affected.pageId, clientId: affected.clientId });
+    case "session": return Object.freeze({ kind: "session", pageId: affected.pageId, clientId: affected.clientId, sessionId: affected.sessionId });
+    case "subscription": return Object.freeze({ kind: "subscription", pageId: affected.pageId, clientId: affected.clientId, ...(affected.sessionId === undefined ? {} : { sessionId: affected.sessionId }), subscriptionId: affected.subscriptionId });
+    case "item": return Object.freeze({ kind: "item", pageId: affected.pageId, clientId: affected.clientId, subscriptionId: affected.subscriptionId, item: affected.item });
+    case "evidence": return Object.freeze({ kind: "evidence", intervalId: affected.intervalId, sequence: affected.sequence, eventId: affected.eventId });
+  }
+}
+
+function normalizeResultRef(ref: DiagnosticResultRef): DiagnosticResultRef {
+  switch (ref.kind) {
+    case "evidence": return Object.freeze({ kind: "evidence", intervalId: ref.intervalId, sequence: ref.sequence, eventId: ref.eventId });
+    case "projection": return Object.freeze({ kind: "projection", projection: ref.projection, key: ref.key });
+    case "injection-outcome": return Object.freeze({ kind: "injection-outcome", runId: ref.runId, stepId: ref.stepId });
+  }
 }
 
 function assertRuleCode(code: string): void {
@@ -604,6 +636,11 @@ function diagnosticObservationId(input: DiagnosticObservationInput): string {
   return `diag:${input.code}:v${input.ruleVersion ?? 1}:${lifecycleId}:${affectedIdentity(input.affected)}`;
 }
 
+export function diagnosticObservationIdentity(input: DiagnosticObservationInput): string {
+  const normalized = normalizeDiagnosticObservationInput(input);
+  return diagnosticObservationId(normalized);
+}
+
 function affectedIdentity(affected: DiagnosticAffectedIdentity): string {
   const part = (value: string | number): string => encodeURIComponent(String(value));
   switch (affected.kind) {
@@ -618,8 +655,10 @@ function affectedIdentity(affected: DiagnosticAffectedIdentity): string {
 
 export function freezeDiagnosticInspectionRoute(route: DiagnosticInspectionRoute): DiagnosticInspectionRoute {
   return route.kind === "inspect-evidence"
-    ? Object.freeze({ kind: route.kind, evidence: Object.freeze({ ...route.evidence }) })
-    : Object.freeze({ ...route });
+    ? Object.freeze({ kind: route.kind, evidence: Object.freeze({ intervalId: route.evidence.intervalId, sequence: route.evidence.sequence, eventId: route.evidence.eventId }) })
+    : route.kind === "recover"
+      ? Object.freeze({ kind: "recover", action: route.action })
+      : Object.freeze({ kind: "inspect-affected" });
 }
 
 function freezeObservation(observation: DiagnosticObservation): DiagnosticObservation {
@@ -676,15 +715,20 @@ function hydratePersistedState(
   const intervalId = diagnosticIntervalId(panelSessionId, intervalOrdinal);
   const records = state.records.map((observation) => hydrateObservation(observation, intervalId, sequence));
   const current = state.current.map((observation) => hydrateObservation(observation, intervalId, sequence));
-  let priorSequence = retainedThrough;
+  let expectedSequence = retainedThrough + 1;
   for (const observation of records) {
-    if (observation.observationBoundary.sequence <= priorSequence) throw new Error("Diagnostic retained observations are not strictly ordered.");
-    priorSequence = observation.observationBoundary.sequence;
+    if (observation.observationBoundary.sequence !== expectedSequence) throw new Error("Diagnostic retained observations are not contiguous.");
+    expectedSequence += 1;
   }
-  if (records.some(({ observationBoundary }) => observationBoundary.sequence <= retainedThrough)) {
-    throw new Error("Diagnostic retained observations cross the retained boundary.");
-  }
+  if (expectedSequence !== sequence + 1) throw new Error("Diagnostic retained observations do not reach the committed boundary.");
   if (new Set(current.map(({ id }) => id)).size !== current.length) throw new Error("Diagnostic current lifecycle identities are duplicated.");
+  const currentById = new Map(current.map((observation) => [observation.id, observation]));
+  for (const observation of records) {
+    const latest = currentById.get(observation.id);
+    if (!latest || latest.observationBoundary.sequence < observation.observationBoundary.sequence) {
+      throw new Error("Diagnostic current lifecycle state is older than retained observations.");
+    }
+  }
   return { intervalOrdinal, sequence, retainedThrough, records, current };
 }
 
@@ -697,7 +741,7 @@ function hydrateObservation(value: unknown, intervalId: string, committedSequenc
     : lifecycleRecord.kind === "condition"
       ? { kind: "condition" as const, conditionId: stringValue(lifecycleRecord.conditionId, "Diagnostic condition identity") }
       : (() => { throw new Error("Diagnostic lifecycle kind is unsupported."); })();
-  const input = normalizeInput({
+  const input = normalizeDiagnosticObservationInput({
     code: stringValue(record.code, "Diagnostic rule code"),
     ruleVersion: numberValue(record.ruleVersion, "Diagnostic rule version"),
     severity: severityValue(record.severity),
