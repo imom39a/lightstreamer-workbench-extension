@@ -2601,6 +2601,7 @@ class Runtime implements WorkbenchRuntime {
         if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
         else this.topologyCoverage = "LIMITED";
       }
+      this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot());
       this.invalidatePreparedExport(false);
       this.scheduleScenarioBoundaryPublication();
       if (this.visible) this.schedulePassivePublication();
@@ -2645,6 +2646,7 @@ class Runtime implements WorkbenchRuntime {
     }
     commandStateProjections.apply(event);
     this.recordCommittedDiagnosticFindings(entry, event, commandStateProjections);
+    this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot());
     if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
     this.scheduleScenarioBoundaryPublication();
     this.invalidatePreparedExport(false);
@@ -5568,8 +5570,8 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  private refreshRuntimeDiagnosticObservations(): void {
-    const pageId = this.currentPageEpoch ?? "inspected-page";
+  private refreshRuntimeDiagnosticObservations(topology: TopologyState = this.topologyProjection.snapshot()): void {
+    const pageId = this.currentPageEpoch;
     const desired = new Map<string, Readonly<{ code: string; conditionId: string; affected: DiagnosticAffectedIdentity }>>();
     const record = (input: Readonly<{
       family: "history" | "storage" | "capture" | "session";
@@ -5597,7 +5599,9 @@ class Runtime implements WorkbenchRuntime {
       desired.set(diagnosticObservationIdentity(adapted.observation), { code: adapted.observation.code, conditionId: input.conditionId, affected: input.affected });
       this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
     };
-    const page = Object.freeze({ kind: "page" as const, pageId });
+    const page: DiagnosticAffectedIdentity = pageId
+      ? Object.freeze({ kind: "page" as const, pageId })
+      : Object.freeze({ kind: "unavailable" as const, reason: "page-identity-unavailable" as const });
     if (this.historyCondition) {
       record({
         family: "history",
@@ -5621,18 +5625,21 @@ class Runtime implements WorkbenchRuntime {
     } else if (capture.coverage !== "USEFUL" && !this.captureBoundary) {
       record({ family: "capture", localCode: "coverage-limited", conditionId: "coverage", severity: capture.coverage === "UNAVAILABLE" ? "error" : "warning", affected: page, observed: `Observation Coverage is ${capture.coverage}.`, limitation: capture.detail ?? "Some runtime properties are unavailable; Workbench does not infer values without Evidence.", consequence: "Current Workbench conclusions are limited to the activity Capture observed.", route: "inspect-capture-status" });
     }
-    const topology = this.topologyProjection.snapshot();
     for (const client of topology.clients) {
-      const sessions = client.sessions.filter((session) => session.normalizedStatus === "recovering");
+      const sessions = client.sessions.filter((session) => !session.historical && session.normalizedStatus === "recovering");
       if (sessions.length) {
         for (const session of sessions) {
-          const affected = session.id
+          const affected: DiagnosticAffectedIdentity = !pageId
+            ? page
+            : session.id
             ? Object.freeze({ kind: "session" as const, pageId, clientId: client.id, sessionId: session.id })
             : Object.freeze({ kind: "client" as const, pageId, clientId: client.id });
           record({ family: "session", localCode: "recovering", conditionId: session.id ?? session.key, severity: "warning", affected, observed: "The official client is attempting Session recovery.", limitation: "Recovery status does not prove whether the prior Session will resume.", consequence: "Current runtime availability may change while Evidence remains ordered.", route: "inspect-session" });
         }
       } else if (client.normalizedStatus === "recovering") {
-        const affected = Object.freeze({ kind: "client" as const, pageId, clientId: client.id });
+        const affected: DiagnosticAffectedIdentity = pageId
+          ? Object.freeze({ kind: "client" as const, pageId, clientId: client.id })
+          : page;
         record({ family: "session", localCode: "recovering", conditionId: client.id, severity: "warning", affected, observed: "The official client is attempting Session recovery.", limitation: "The current Session identity is unavailable.", consequence: "Current runtime availability may change while Evidence remains ordered.", route: "inspect-session" });
       }
     }
@@ -5662,7 +5669,8 @@ function diagnosticAffectedIdentity(
   event: LightstreamerEventEnvelope,
   evidence: Readonly<{ intervalId: string; sequence: number; eventId: string }>
 ): DiagnosticAffectedIdentity {
-  const pageId = event.topology?.pageEpoch ?? "inspected-page";
+  const pageId = event.topology?.pageEpoch;
+  if (!pageId) return Object.freeze({ kind: "evidence", ...evidence });
   if (event.client?.id && event.subscription?.id) {
     if (event.item?.name !== undefined || event.item?.position !== undefined) {
       return Object.freeze({
