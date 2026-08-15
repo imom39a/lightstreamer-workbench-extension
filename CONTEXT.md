@@ -72,6 +72,14 @@ _Avoid_: DevTools session, storage lifetime
 An Event History with no missing captured events from the start of its History Interval through its Committed Evidence Boundary. Completeness is qualified by that interval and boundary, not by the full panel lifetime after Clear or stopped Capture.
 _Avoid_: Complete session history, all observed activity
 
+**Diagnostic Observation**:
+A versioned, renderer-neutral occurrence or condition lifecycle event committed to the Panel Session's Diagnostic Observation journal. Its stable rule code, typed affected identity, severity, monotonic observation boundary, observed fact, limitation, consequence, and route support deterministic queries without using display copy or raw messages as identity.
+_Avoid_: Footer entry, diagnostic title, warning row
+
+**Diagnostic Observation Boundary**:
+The greatest Panel Session-local Diagnostic Observation sequence committed in one diagnostic interval. It orders Evidence-backed and non-Evidence-backed observations independently of timestamps; range queries use immutable `(after, through]` boundaries.
+_Avoid_: Evidence boundary, diagnostic timestamp, footer position
+
 **History Capacity**:
 The supported workload envelope within which Event History can continue accepting complete, ordered Evidence. A lower-capacity history changes neither Observation Coverage nor the completeness of Evidence already accepted.
 _Avoid_: Observation Coverage, retained count, storage quota
