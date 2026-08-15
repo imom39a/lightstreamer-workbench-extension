@@ -194,4 +194,69 @@ describe("topology Context diagnostics", () => {
     expect(evaluateTopologyContextDiagnostics({ ...base, churnWindows: [{ ...window, totalChanges: 8, endedAt: 60_001 }] }).observations).toEqual([]);
     expect(evaluateTopologyContextDiagnostics({ ...base, churnWindows: [{ ...window, totalChanges: 8, retainedChanges: [] }] }).observations).toEqual([]);
   });
+
+  it.each([
+    [{ kind: "late-attachment", attachedAt: 900, detail: "page activity before attachment was not observed", weakens: ["pre-attachment-churn", "topology-completeness"] }, "workbench.capture.late-attachment", "information"],
+    [{ kind: "observation-path", path: "wire", detail: "listener registrations are not observable on this path", weakens: ["listener-presence", "update-delivery-attribution"] }, "workbench.capture.observation-path-limited", "information"],
+    [{ kind: "history-capacity", state: "lower-capacity", detail: "the memory tier has a smaller fixed envelope", weakens: ["topology-completeness"] }, "workbench.history.lower-capacity", "information"],
+    [{ kind: "history-capacity", state: "terminal", detail: "later captured candidates were refused", weakens: ["history-after-terminal-boundary"] }, "workbench.history.terminal", "error"],
+    [{ kind: "unsupported-shape", shape: "subscription-vNext", detail: "configuration fields could not be normalized", weakens: ["subscription-configuration"] }, "workbench.capture.unsupported-shape", "warning"]
+  ] as const)("scopes %s to the exact conclusions it weakens", (specific, code, severity) => {
+    const base = input([]);
+    const [observation] = evaluateTopologyContextDiagnostics({
+      ...base,
+      limitations: Object.freeze([{
+        id: `limit-${code}`,
+        affected: Object.freeze({ kind: "subscription" as const, pageId: "page", clientId: "client", sessionId: "session", subscriptionId: "sub" }),
+        current: true,
+        evidence,
+        ...specific
+      }])
+    }).observations;
+
+    expect(observation).toMatchObject({
+      code,
+      severity,
+      lifecycle: { kind: "condition", conditionId: `limit-${code}` },
+      affected: expect.objectContaining({ kind: "subscription", subscriptionId: "sub" }),
+      route: { kind: "inspect-evidence", evidence }
+    });
+    expect(observation.limitation).toContain([...specific.weakens].sort().join(", "));
+    expect(observation.limitation).toContain("does not globally degrade unrelated Workbench conclusions");
+  });
+
+  it("turns a cleared limitation into a deterministic resolution and retains a historical limitation occurrence", () => {
+    const base = input([]);
+    const limitation = Object.freeze({
+      id: "late-attach",
+      kind: "late-attachment" as const,
+      affected: Object.freeze({ kind: "page" as const, pageId: "page" }),
+      current: true,
+      attachedAt: 500,
+      detail: "earlier page activity was not observed",
+      weakens: Object.freeze(["pre-attachment-churn" as const])
+    });
+    const current = evaluateTopologyContextDiagnostics({ ...base, limitations: [limitation] });
+    expect(evaluateTopologyContextDiagnostics(base, current.observations).resolutions).toEqual([
+      expect.objectContaining({ code: "workbench.capture.late-attachment", conditionId: "late-attach" })
+    ]);
+    expect(evaluateTopologyContextDiagnostics({ ...base, limitations: [{ ...limitation, current: false }] }).observations[0]?.lifecycle)
+      .toEqual({ kind: "occurrence", occurrenceId: "late-attach" });
+  });
+
+  it("does not create a generic limitation when no conclusion is weakened", () => {
+    const base = input([]);
+    expect(evaluateTopologyContextDiagnostics({
+      ...base,
+      limitations: [{
+        id: "empty",
+        kind: "observation-path",
+        affected: { kind: "page", pageId: "page" },
+        current: true,
+        path: "wire",
+        detail: "wire path",
+        weakens: []
+      }]
+    }).observations).toEqual([]);
+  });
 });
