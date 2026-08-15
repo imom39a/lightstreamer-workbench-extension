@@ -94,7 +94,7 @@ export type DiagnosticObservationReadStatus = "complete" | "unsupported" | "rete
 export type DiagnosticObservationRead = Readonly<{
   status: DiagnosticObservationReadStatus;
   coverage: "complete" | "limited" | "unavailable";
-  retention: "complete" | "limited" | "cleared";
+  retention: "complete" | "limited" | "cleared" | "unavailable";
   through: DiagnosticObservationBoundary;
   observations: readonly DiagnosticObservation[];
 }>;
@@ -151,7 +151,7 @@ export function createUnavailableDiagnosticObservationJournal(options: Readonly<
     async observe(): Promise<DiagnosticObservation> { return rejected(); },
     async resolveCondition(): Promise<DiagnosticObservation | null> { return rejected(); },
     async query(query: DiagnosticObservationQuery = {}): Promise<DiagnosticObservationRead> {
-      return readWithStatus(options.status, "unavailable", "complete", query.through ?? boundary, []);
+      return readWithStatus(options.status, "unavailable", "unavailable", query.through ?? boundary, []);
     },
     async replay(): Promise<readonly DiagnosticObservation[]> { return Object.freeze([]); },
     currentBoundary(): DiagnosticObservationBoundary { return boundary; },
@@ -270,6 +270,7 @@ function createDiagnosticObservationJournal(
     },
     resolveCondition(resolution: DiagnosticConditionResolution): Promise<DiagnosticObservation | null> {
       return enqueue(async () => {
+        assertOpen(closed);
         const id = diagnosticObservationId({
           ...resolution,
           severity: "information",
@@ -301,7 +302,7 @@ function createDiagnosticObservationJournal(
     },
     async query(query: DiagnosticObservationQuery = {}): Promise<DiagnosticObservationRead> {
       const through = query.through ?? Object.freeze({ intervalId, sequence });
-      if (closed) return readWithStatus("closed", "unavailable", "complete", through, []);
+      if (closed) return readWithStatus("closed", "unavailable", "unavailable", through, []);
       if ((query.after && query.after.intervalId !== intervalId) || through.intervalId !== intervalId) {
         return readWithStatus("cleared", "limited", "cleared", through, []);
       }
@@ -315,7 +316,7 @@ function createDiagnosticObservationJournal(
         && severityRank(observation.severity) >= minimum
         && (!query.affected || diagnosticAffectedIdentityEquals(observation.affected, query.affected))
       ));
-      const gap = Boolean(query.after && query.after.sequence < retainedThrough);
+      const gap = (query.after?.sequence ?? 0) < retainedThrough;
       return readWithStatus(gap ? "retention-gap" : "complete", gap ? "limited" : "complete", gap ? "limited" : "complete", through, observations);
     },
     async replay(): Promise<readonly DiagnosticObservation[]> {
