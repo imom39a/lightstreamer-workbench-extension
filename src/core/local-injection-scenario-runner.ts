@@ -242,6 +242,7 @@ export function createLocalInjectionScenarioRunner(
       startedBoundary,
       resultBoundary: evaluation.boundary,
       evidenceAvailability: evaluation.boundary ? "RETAINED" as const : "NOT_APPLICABLE" as const,
+      diagnosticAvailability: evaluation.assertions.some(({ relatedDiagnostics }) => relatedDiagnostics.length > 0) ? "RETAINED" as const : "NOT_APPLICABLE" as const,
       assertions: evaluation.assertions
     });
   }

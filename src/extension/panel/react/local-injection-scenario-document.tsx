@@ -236,7 +236,9 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
     {trace?.evidenceAvailability === "UNAVAILABLE_AFTER_CLEAR"
       ? <p role="note">Related Evidence is unavailable after Clear; the immutable Checkpoint result and exact identity remain in this Trace.</p>
       : uniqueRelatedEvidence(results).map((evidence) => <button key={`${evidence.intervalId}:${evidence.sequence}:${evidence.eventId}`} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-checkpoint-evidence", evidence })}>Inspect Evidence {evidence.eventId}</button>)}
-    {uniqueRelatedDiagnostics(results).map((observation) => <button key={observation.id} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation })}>Inspect Diagnostic Observation {observation.code}</button>)}
+    {trace?.diagnosticAvailability === "UNAVAILABLE_AFTER_CLEAR"
+      ? <p role="note">Related Diagnostic Observations are unavailable after Clear; bounded references remain in this immutable Trace.</p>
+      : uniqueRelatedDiagnostics(results).map((observation) => <button key={observation.id} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation })}>Inspect Diagnostic Observation {observation.code}</button>)}
     </>}
   </article>;
 }
