@@ -238,24 +238,85 @@ function contextFields(runtime: ReturnType<typeof createWorkbenchRuntime>): Reco
 describe("WorkbenchRuntime", () => {
   it("migrates committed and runtime findings through the normalized Diagnostic Observation journal without changing the footer", async () => {
     const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "runtime-diagnostics" });
-    const history = createAuthoritativeHistory({
-      precommitted: [{
+    const baseHistory = createAuthoritativeHistory({
+      precommitted: [
+        {
         ...event("subscription-error-1", "orders"),
         kind: "subscription-error",
         update: undefined,
         raw: { code: 41, message: "private source text remains outside normalization" }
-      }]
+        },
+        {
+          ...event("lost-updates-2", "orders"),
+          kind: "lost-updates",
+          update: { lostUpdates: 2 }
+        },
+        topologyEvent("command-3", "item-update", {
+          item: { name: "orders", position: 1 },
+          update: {
+            isSnapshot: false,
+            command: "UPDATE",
+            key: "missing-key",
+            fields: { command: "UPDATE", key: "missing-key", qty: 2 },
+            changedFields: { qty: 2 }
+          }
+        }),
+        topologyEvent("recovering-4", "client-status", {
+          client: { id: "client-main", status: "DISCONNECTED:TRYING-RECOVERY", sessionId: "S-1" }
+        })
+      ]
     });
-    const runtime = createWorkbenchRuntime({ history, diagnosticObservations, captureStatus: "bridge disconnected" });
+    const history: EventHistory = {
+      ...baseHistory,
+      status: () => ({
+        ...baseHistory.status(),
+        capacity: { tier: "LOWER", state: "AVAILABLE" },
+        fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+      }),
+      follow: (options, observer) => baseHistory.follow(options, (publication) => {
+        observer(publication.type === "status"
+          ? {
+              ...publication,
+              status: {
+                ...publication.status,
+                capacity: { tier: "LOWER", state: "AVAILABLE" },
+                fallback: "PRIMARY_JOURNAL_UNAVAILABLE"
+              }
+            }
+          : publication);
+      })
+    };
+    const runtime = createWorkbenchRuntime({
+      history,
+      diagnosticObservations,
+      captureStatus: "bridge disconnected",
+      storageEstimate: {
+        source: "navigator.storage.estimate",
+        status: "AVAILABLE",
+        usageBytes: 1,
+        quotaBytes: 2,
+        headroomBytes: 1,
+        failure: null
+      }
+    });
     await flushStoreNotifications();
     const snapshot = runtime.getSnapshot();
-    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
     const observations = (await diagnosticObservations.query()).observations;
 
     expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({ title: "Capture disconnected" }));
     expect(observations.map(({ code }) => code)).toEqual(expect.arrayContaining([
       "ls.subscription.error",
-      "workbench.capture.disconnected"
+      "ls.subscription.lost-updates",
+      "ls.command.unknown-key-update",
+      "workbench.history.lower-capacity-fallback",
+      "workbench.storage.headroom-limited",
+      "workbench.capture.disconnected",
+      "ls.session.recovering"
+    ]));
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ls.command.unknown-key-update", affected: expect.objectContaining({ kind: "item", item: "orders" }) }),
+      expect.objectContaining({ code: "ls.session.recovering", affected: expect.objectContaining({ kind: "session", sessionId: "S-1" }) })
     ]));
     expect(JSON.stringify(observations)).not.toContain("private source text");
     runtime.dispose();

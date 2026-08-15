@@ -419,5 +419,30 @@ describe("normalized Diagnostic Observation contract", () => {
     discontinuousDatabase.close();
     const discontinuous = await openIndexedDbDiagnosticObservationJournal({ panelSessionId: "discontinuous", indexedDB: discontinuousFactory });
     expect(await discontinuous.query()).toMatchObject({ status: "unavailable", observations: [] });
+
+    const mismatchedCurrentFactory = new IDBFactory();
+    const validSource = createMemoryDiagnosticObservationJournal({ panelSessionId: "mismatched-current" });
+    const retained = await validSource.observe({ ...base, lifecycle: { kind: "condition", conditionId: "active" } });
+    const mismatchedCurrentRequest = mismatchedCurrentFactory.open("lsew-diagnostics-v1-mismatched-current", 1);
+    mismatchedCurrentRequest.onupgradeneeded = () => mismatchedCurrentRequest.result.createObjectStore("diagnosticState");
+    const mismatchedCurrentDatabase = await requestResult(mismatchedCurrentRequest);
+    const mismatchedCurrentTransaction = mismatchedCurrentDatabase.transaction("diagnosticState", "readwrite");
+    mismatchedCurrentTransaction.objectStore("diagnosticState").put({
+      intervalOrdinal: 1,
+      sequence: 1,
+      retainedThrough: 0,
+      records: [retained],
+      current: [{ ...retained, consequence: "Fabricated restored lifecycle state." }]
+    }, "state");
+    await new Promise<void>((resolve, reject) => {
+      mismatchedCurrentTransaction.oncomplete = () => resolve();
+      mismatchedCurrentTransaction.onerror = () => reject(mismatchedCurrentTransaction.error);
+    });
+    mismatchedCurrentDatabase.close();
+    const mismatchedCurrent = await openIndexedDbDiagnosticObservationJournal({
+      panelSessionId: "mismatched-current",
+      indexedDB: mismatchedCurrentFactory
+    });
+    expect(await mismatchedCurrent.query()).toMatchObject({ status: "unavailable", observations: [] });
   });
 });
