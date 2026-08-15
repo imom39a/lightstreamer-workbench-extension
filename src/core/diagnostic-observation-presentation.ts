@@ -62,7 +62,20 @@ const DIAGNOSTIC_TITLES: Readonly<Record<string, string>> = Object.freeze({
   "workbench.capture.observation-path-limited": "Observation path limited",
   "workbench.history.lower-capacity": "Lower History capacity",
   "workbench.history.terminal": "History reached terminal boundary",
-  "workbench.capture.unsupported-shape": "Unsupported captured shape"
+  "workbench.capture.unsupported-shape": "Unsupported captured shape",
+  "ls.subscription.snapshot.phase-incomplete": "Snapshot phase incomplete",
+  "ls.subscription.snapshot.phase-inconsistent": "Snapshot phase inconsistent",
+  "ls.subscription.snapshot.phase-insufficient": "Snapshot phase insufficient",
+  "ls.subscription.snapshot.raw-inconsistent": "RAW snapshot inconsistency",
+  "ls.subscription.snapshot.resubscribed": "Subscription resubscribed",
+  "ls.subscription.snapshot.completed": "Snapshot completed",
+  "ls.subscription.snapshot.cleared": "Snapshot cleared",
+  "ls.command.unknown-key-update": "Unknown COMMAND key update",
+  "ls.command.unknown-key-delete": "Unknown COMMAND key delete",
+  "ls.command.unsupported-command": "Unsupported COMMAND operation",
+  "ls.command.reducer-incomplete": "COMMAND projection incomplete",
+  "ls.subscription.lost-updates": "Subscription updates lost",
+  "ls.subscription.second-level.lost-updates": "Second-level updates lost"
 });
 
 function affectedLabel(affected: DiagnosticAffectedIdentity): string {

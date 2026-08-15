@@ -37,6 +37,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "memory-fallback",
   "diagnostics-stress",
   "diagnostic-server-callbacks",
+  "diagnostic-anomalies",
   "diagnostic-subscription-context",
   "raw-evidence",
   "filter-find",
@@ -454,11 +455,26 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
         initialEvents: diagnosticServerEvents(canonical),
         captureStatus: "capturing"
       };
+    case "diagnostic-anomalies":
+      return {
+        id,
+        initialEvents: [],
+        laterEvents: diagnosticAnomalyEvents(canonical),
+        topologySyncFrames: topology.topologySyncFrames,
+        captureMessages: topology.captureMessages,
+        captureStatus: "capturing",
+        selectedScope: { kind: "subscription", retired: false, label: "topology-small-subscription" }
+      };
     case "diagnostic-subscription-context":
       return {
         id,
         initialEvents: diagnosticSubscriptionContextEvents(canonical),
-        captureStatus: "capturing"
+        captureStatus: "capturing",
+        selectedScope: {
+          kind: "subscription",
+          retired: false,
+          label: "duplicate-a"
+        }
       };
     case "raw-evidence":
       return { id, initialEvents: canonical, selectedEventId: "scenario-event-3", captureStatus: "capturing", openRawEvidence: true };
@@ -1188,6 +1204,95 @@ function diagnosticSubscriptionContextEvents(canonical: readonly LightstreamerEv
     });
   }
   return Object.freeze(events);
+}
+
+function diagnosticAnomalyEvents(canonical: readonly LightstreamerEventEnvelope[]): readonly LightstreamerEventEnvelope[] {
+  const source = canonical[0];
+  if (!source) throw new Error("The canonical scenario must include a source event for diagnostics.");
+  const client = { id: "topology-small-client", status: "CONNECTED:WS-STREAMING", sessionId: "topology-small-session", adapterSet: "DEMO" };
+  const topology = (kind: LightstreamerEventEnvelope["kind"], captureSequence: number) => ({
+    version: TOPOLOGY_OBSERVATION_VERSION,
+    kind,
+    pageEpoch: "anomaly-page",
+    captureSequence,
+    provenance: { instrumentationSource: "official-public-api" as const },
+    coverage: { status: "complete" as const, getters: {} }
+  });
+  const prefix: LightstreamerEventEnvelope[] = [{
+    ...source,
+    id: "anomaly-client-status",
+    timestamp: source.timestamp,
+    kind: "client-status",
+    client,
+    subscription: undefined,
+    item: undefined,
+    listener: undefined,
+    update: undefined,
+    topology: topology("client-status", 1)
+  }, {
+    ...source,
+    id: "anomaly-subscription-started",
+    timestamp: source.timestamp + 1,
+    kind: "subscription-started",
+    client,
+    subscription: {
+      id: "topology-small-subscription",
+      mode: "COMMAND",
+      items: ["portfolio"],
+      fields: ["command", "key", "value"],
+      dataAdapter: "PORTFOLIO_ADAPTER",
+      requestedSnapshot: "yes",
+      requestedBufferSize: null,
+      requestedMaxFrequency: null,
+      active: true,
+      subscribed: true
+    },
+    item: undefined,
+    listener: undefined,
+    update: undefined,
+    topology: topology("subscription-started", 2)
+  }];
+  const updates = canonical.slice(0, 4).map((event, index): LightstreamerEventEnvelope => ({
+    ...event,
+    id: `anomaly-update-${index + 1}`,
+    timestamp: source.timestamp + 2 + index,
+    client,
+    subscription: { ...event.subscription, id: "topology-small-subscription", mode: "COMMAND" },
+    item: { name: "topology-small-item", position: 1 },
+    topology: topology("item-update", 3 + index)
+  }));
+  const lost: LightstreamerEventEnvelope = {
+    ...source,
+    id: "anomaly-lost-updates",
+    timestamp: source.timestamp + 8,
+    kind: "lost-updates",
+    client,
+    subscription: { id: "topology-small-subscription", mode: "COMMAND" },
+    item: { name: "topology-small-item", position: 1 },
+    listener: { id: "anomaly-listener", callbacks: ["onItemLostUpdates"] },
+    update: { lostUpdates: 3 },
+    raw: { callback: "onItemLostUpdates", args: ["portfolio", 3] },
+    topology: topology("lost-updates", 8)
+  };
+  const unknownKey: LightstreamerEventEnvelope = {
+    ...source,
+    id: "anomaly-unknown-command-key",
+    timestamp: source.timestamp + 7,
+    kind: "item-update",
+    client,
+    subscription: { id: "topology-small-subscription", mode: "COMMAND" },
+    item: { name: "topology-small-item", position: 1 },
+    listener: { id: "anomaly-listener", callbacks: ["onItemUpdate"] },
+    update: {
+      isSnapshot: false,
+      command: "UPDATE",
+      key: "ghost",
+      fields: { command: "UPDATE", key: "ghost", value: "not-established" }
+    },
+    raw: { callback: "onItemUpdate" },
+    topology: topology("item-update", 7)
+  };
+  return Object.freeze([...prefix, ...updates, unknownKey, lost]);
 }
 
 function highVolumeEvents(first: number, count: number): readonly LightstreamerEventEnvelope[] {

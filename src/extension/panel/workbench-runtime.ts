@@ -11,6 +11,7 @@ import {
 } from "../../core/event-envelope";
 import { createEventNormalizer, type EventNormalizer } from "../../core/event-normalizer";
 import {
+  DIAGNOSTIC_TEXT_MAX_LENGTH,
   createMemoryDiagnosticObservationJournal,
   diagnosticObservationIdentity,
   type DiagnosticAffectedIdentity,
@@ -1937,6 +1938,8 @@ class Runtime implements WorkbenchRuntime {
         const event = this.evidenceEventCache.get(command.eventId);
         if (!event) return;
         this.recordInvestigationCheckpoint();
+        this.scopeId = "page";
+        this.scopeFocusedNodeId = "page";
         this.selectionEventId = command.eventId;
         this.focusedEventId = command.eventId;
         this.contextId = `context:${command.eventId}`;
@@ -5590,7 +5593,14 @@ class Runtime implements WorkbenchRuntime {
   private relevantCommittedDiagnosticPresentations(scope: WorkbenchSnapshot["scope"]): WorkbenchDiagnostic[] {
     const selected = scope.selection;
     return [...this.committedDiagnosticPresentations.values()].filter((diagnostic) => {
-      if (!selected || selected.kind === "page") return true;
+      if (!selected || selected.kind === "page") {
+        return diagnostic.affectedIdentity === undefined ||
+          diagnostic.affectedIdentity.kind === "page" ||
+          diagnostic.affectedIdentity.kind === "client" ||
+          diagnostic.affectedIdentity.kind === "session" ||
+          (diagnostic.affectedIdentity.kind === "evidence" && diagnostic.affectedIdentity.eventId === this.selectionEventId) ||
+          diagnostic.affectedIdentity.kind === "unavailable";
+      }
       const target = findTopologySelection(this.topologyProjection.snapshot(), selected.id);
       return diagnostic.affectedIdentity !== undefined && target !== null
         ? diagnosticAffectedIdentityAppliesToTarget(diagnostic.affectedIdentity, target)
@@ -5682,22 +5692,24 @@ class Runtime implements WorkbenchRuntime {
     for (const proposal of proposals) {
       if (proposal.kind === "observe") {
         const presentation = presentDiagnosticObservation(proposal.observation);
-        this.rememberCommittedDiagnosticPresentation(
-          diagnosticProposalPresentationKey(proposal),
-          {
-            id: presentation.id,
-            code: presentation.code,
-            category: "session",
-            severity: presentation.severity,
-            title: presentation.title,
-            affected: presentation.affected,
-            affectedIdentity: proposal.observation.affected,
-            detail: presentation.observed,
-            limitation: presentation.limitation,
-            consequence: presentation.consequence,
-            route: presentation.route
-          }
-        );
+        if (proposal.observation.code !== "workbench.history.lower-capacity" && proposal.observation.code !== "workbench.history.terminal") {
+          this.rememberCommittedDiagnosticPresentation(
+            diagnosticProposalPresentationKey(proposal),
+            {
+              id: presentation.id,
+              code: presentation.code,
+              category: "session",
+              severity: presentation.severity,
+              title: presentation.title,
+              affected: presentation.affected,
+              affectedIdentity: proposal.observation.affected,
+              detail: presentation.observed,
+              limitation: presentation.limitation,
+              consequence: presentation.consequence,
+              route: presentation.route
+            }
+          );
+        }
       } else {
         this.committedDiagnosticPresentations.delete(diagnosticProposalPresentationKey(proposal));
       }
@@ -5751,9 +5763,9 @@ class Runtime implements WorkbenchRuntime {
         lifecycle: { kind: "condition", conditionId: input.conditionId },
         affected: input.affected,
         observedAt: Date.now(),
-        observed: input.observed,
-        limitation: input.limitation,
-        consequence: input.consequence,
+        observed: boundedDiagnosticText(input.observed),
+        limitation: boundedDiagnosticText(input.limitation),
+        consequence: boundedDiagnosticText(input.consequence),
         route: { kind: "recover", action: input.route }
       });
       desired.set(diagnosticObservationIdentity(adapted.observation), { code: adapted.observation.code, conditionId: input.conditionId, affected: input.affected });
@@ -5823,6 +5835,10 @@ class Runtime implements WorkbenchRuntime {
       });
     void this.diagnosticObservationSettlement.catch(() => undefined);
   }
+}
+
+function boundedDiagnosticText(value: string): string {
+  return [...value].slice(0, DIAGNOSTIC_TEXT_MAX_LENGTH).join("");
 }
 
 function diagnosticAffectedIdentity(

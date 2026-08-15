@@ -695,8 +695,13 @@ describe("WorkbenchRuntime", () => {
       code: "ls.sub.raw-snapshot-unavailable",
       affected: expect.objectContaining({ kind: "subscription", subscriptionId: "raw-subscription" })
     }));
+    expect(runtime.getSnapshot().diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ls.subscription.exact-duplicate" })
+    ]));
+    const rawScope = runtime.getSnapshot().scope.nodes.find(({ kind, label }) => kind === "subscription" && label.includes("raw-subscription"));
+    expect(rawScope).toBeDefined();
+    runtime.dispatch({ type: "set-scope", scopeId: rawScope?.id ?? null });
     expect(runtime.getSnapshot().diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "ls.subscription.exact-duplicate" }),
       expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
     ]));
 

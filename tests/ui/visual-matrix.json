@@ -396,5 +396,34 @@
     "theme": "light",
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-subscription-context", "setup": "diagnostic-subscription" }
+  },
+  {
+    "id": "anomaly-diagnostics-compact-dark",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "diagnostic", "frame": "compact", "setup": "diagnostic-footer" },
+    "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
+  },
+  {
+    "id": "anomaly-diagnostics-normal-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "diagnostic", "frame": "normal", "setup": "diagnostic-footer" },
+    "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
+  },
+  {
+    "id": "anomaly-diagnostics-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": { "variant": "A", "state": "diagnostic", "frame": "shallow", "setup": "diagnostic-footer" },
+    "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
+  },
+  {
+    "id": "anomaly-diagnostics-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
+    "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
   }
 ]

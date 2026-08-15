@@ -1358,24 +1358,24 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
   for (const scene of scenes) {
     await openScenario(page, "diagnostic-subscription-context", scene, scene.theme);
     const footer = page.getByRole("region", { name: "Workbench diagnostics" });
-    await expect(footer).toContainText("Information · RAW snapshot unavailable");
-    await expect(footer).toContainText("Information · Buffer request not applicable");
     await expect(footer).toContainText("Information · Exact duplicate Subscriptions");
     await expect(footer).toContainText("Information · Semantic Subscription overlap");
     await expect(footer).toContainText("Information · Listener registration churn");
-    await expect(footer).toContainText("Information · Capture attached late");
     await expect(footer).toContainText("immutable committed topology facts");
     await expect(footer).toContainText("does not infer application intent");
     await expect(page.getByRole("complementary", { name: "Context" }).locator(".workbench-react__diagnostic")).toHaveCount(0);
 
     const exactDuplicate = footer.locator(".workbench-react__status-diagnostic").filter({ hasText: "Exact duplicate Subscriptions" }).first();
-    await exactDuplicate.getByRole("button", { name: "Inspect supporting Evidence" }).click();
+    const exactRoute = exactDuplicate.getByRole("button", { name: "Inspect supporting Evidence" });
+    await exactRoute.focus();
+    await page.keyboard.press("Enter");
     await expect(page.getByRole("heading", { name: /duplicate-b · Subscription Started/ })).toBeVisible();
     await page.getByRole("button", { name: "Back investigation" }).click();
 
     await page.getByRole("button", { name: "Scope", exact: true }).click();
     await page.getByRole("treeitem").filter({ hasText: "raw-capability" }).click();
     await expect(footer).toContainText("RAW snapshot unavailable");
+    await expect(footer).toContainText("Buffer request not applicable");
     await expect(footer).not.toContainText("Exact duplicate Subscriptions");
     await expectShellFits(page);
     await expectNoSeriousAxeViolations(page, testInfo);
@@ -1386,6 +1386,23 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
   await expect(forcedFooter).toContainText("RAW snapshot unavailable");
   await expectShellFits(page);
   await expectNoSeriousAxeViolations(page, testInfo);
+});
+
+test("Workbench presents lost-update, snapshot, and COMMAND anomalies without duplicate banners", async ({ page }, testInfo) => {
+  await openScenario(page, "diagnostic-anomalies", { width: 900, height: 700 }, "dark");
+  const footer = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(footer).toContainText("Warning · Snapshot phase incomplete");
+  await expect(footer).toContainText("Warning · Unknown COMMAND key update");
+  await expect(footer).toContainText("Warning · Subscription updates lost");
+  await expect(footer.getByText("Snapshot phase incomplete", { exact: false })).toHaveCount(1);
+  await expect(page.getByRole("complementary", { name: "Context" }).locator(".workbench-react__diagnostic")).toHaveCount(0);
+  const routes = footer.getByRole("button", { name: "Inspect supporting Evidence" });
+  await expect(routes).not.toHaveCount(0);
+  await routes.last().focus();
+  await expect(routes.last()).toBeFocused();
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+  await attachNamedScenarioScreenshot(page, testInfo, "diagnostic-anomalies-normal-dark");
 });
 
 test("Workbench retains ordered Evidence while a typed Session recovery is in progress", async ({
@@ -1637,10 +1654,16 @@ test("Workbench keeps Filter and Find separate across raw, disconnected, fallbac
   await page.keyboard.press("Tab");
   await expect(disconnectedDiagnostics).toBeFocused();
   await expect(disconnectedDiagnostics).toHaveCSS("outline-style", "solid");
-  await expect.poll(() => disconnectedDiagnostics.evaluate((region) => {
+  const diagnosticEntries = page.getByLabel("Workbench diagnostic entries");
+  await diagnosticEntries.focus();
+  await page.keyboard.press("End");
+  await expect.poll(() => diagnosticEntries.evaluate((region) => region.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => diagnosticEntries.evaluate((region) => {
     const regionRect = region.getBoundingClientRect();
-    return [...region.querySelectorAll<HTMLElement>(".workbench-react__status-diagnostic")]
-      .every((diagnostic) => diagnostic.getBoundingClientRect().bottom <= regionRect.bottom);
+    const diagnostic = region.querySelector<HTMLElement>(".workbench-react__status-diagnostic:last-child");
+    if (!diagnostic) return false;
+    const diagnosticRect = diagnostic.getBoundingClientRect();
+    return diagnosticRect.top < regionRect.bottom && diagnosticRect.bottom > regionRect.top;
   })).toBe(true);
   await expect.poll(() => page.getByLabel("Ordered Evidence").evaluate((evidence) => {
     const evidenceRect = evidence.getBoundingClientRect();

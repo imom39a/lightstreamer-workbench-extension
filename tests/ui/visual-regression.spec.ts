@@ -9,7 +9,7 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" };
+  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -219,7 +219,6 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
     }
     case "diagnostic-subscription": {
       const diagnostics = page.getByLabel("Workbench diagnostic entries");
-      await expect(diagnostics).toContainText("Information · RAW snapshot unavailable");
       await expect(diagnostics).toContainText("Information · Exact duplicate Subscriptions");
       await expect(diagnostics).toContainText("Information · Semantic Subscription overlap");
       await expect(diagnostics).toContainText("Information · Listener registration churn");
@@ -227,6 +226,16 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
       await page.keyboard.press("Home");
       await expect(diagnostics).toBeFocused();
       await expect.poll(() => diagnostics.evaluate((element) => element.scrollTop)).toBe(0);
+      return;
+    }
+    case "diagnostic-anomaly": {
+      const diagnostics = page.getByLabel("Workbench diagnostic entries");
+      await expect(diagnostics).toContainText("Warning · Snapshot phase incomplete");
+      await expect(diagnostics).toContainText("Warning · Unknown COMMAND key update");
+      await expect(diagnostics).toContainText("Warning · Subscription updates lost");
+      await diagnostics.focus();
+      await page.keyboard.press("Home");
+      await expect(diagnostics).toBeFocused();
       return;
     }
     case "captured-draft": {
