@@ -771,6 +771,11 @@ async function runOfficialClientScenarioJourney(
   expect(new Set(firstRun.injectionIds).size, JSON.stringify(firstRun)).toBe(3);
   expect(new Set(firstRun.stepIds).size, JSON.stringify(firstRun)).toBe(3);
   expect(new Set(firstRun.evidenceIds).size, JSON.stringify(firstRun)).toBe(3);
+  expect(firstRun.correlations).toHaveLength(3);
+  expect(firstRun.correlations.map(({ outcome }) => outcome)).toEqual(["delivered", "delivered", "delivered"]);
+  expect(firstRun.correlations.map(({ requestId }) => requestId)).toEqual(firstRun.requestIds);
+  expect(firstRun.correlations.map(({ stepId }) => stepId)).toEqual(["step-1", "step-2", "step-3"]);
+  expect(new Set(firstRun.executionIds).size, JSON.stringify(firstRun)).toBe(3);
   expect(firstRun.runIds).toHaveLength(1);
   expect(firstRun.scenarioIds).toHaveLength(1);
   expect(firstRun.applicationEvents).toEqual([
@@ -794,8 +799,15 @@ async function runOfficialClientScenarioJourney(
   expect(new Set(allRuns.injectionIds).size).toBe(6);
   expect(new Set(allRuns.runIds).size).toBe(2);
   expect(new Set(allRuns.scenarioIds).size).toBe(1);
+  expect(allRuns.correlations).toHaveLength(6);
+  expect(allRuns.correlations.map(({ outcome }) => outcome)).toEqual(Array(6).fill("delivered"));
+  expect(allRuns.correlations.map(({ requestId }) => requestId)).toEqual(allRuns.requestIds);
+  expect(new Set(allRuns.executionIds).size).toBe(6);
+  expect(new Set(allRuns.evidenceIds).size).toBe(6);
   expect(allRuns.requestIds.slice(3)).not.toEqual(firstRun.requestIds);
   expect(allRuns.injectionIds.slice(3)).not.toEqual(firstRun.injectionIds);
+  expect(allRuns.evidenceIds.slice(3)).not.toEqual(firstRun.evidenceIds);
+  expect(allRuns.correlations.slice(0, 3)).toEqual(firstRun.correlations);
 
   await clickPanelButton(panelCdp, "Finish Scenario");
   await clearPanelEvidenceSelection(panelCdp);
@@ -866,7 +878,18 @@ async function readScenarioProof(
   runIds: string[];
   stepIds: string[];
   injectionIds: string[];
+  executionIds: string[];
   evidenceIds: string[];
+  correlations: Array<{
+    scenarioId: string;
+    runId: string;
+    stepId: string;
+    injectionId: string;
+    executionId: string;
+    requestId: string;
+    outcome: string;
+    evidenceId: string;
+  }>;
 }> {
   const page = await evaluateByValue<{
     commands: string[];
@@ -883,18 +906,56 @@ async function readScenarioProof(
         .reverse()
     };
   })()`);
-  const ledger = await evaluateByValue<string>(
-    panelCdp,
-    `document.querySelector('[aria-label="Local Injection Scenario"]')?.textContent ?? ""`
-  );
-  const matches = (pattern: RegExp): string[] => [...ledger.matchAll(pattern)].map((match) => match[1]!);
+  const correlations = await evaluateByValue<Array<{
+    scenarioId: string;
+    runId: string;
+    stepId: string;
+    injectionId: string;
+    executionId: string;
+    requestId: string;
+    outcome: string;
+    evidenceId: string;
+  }>>(panelCdp, `(() => {
+    const scenario = document.querySelector('[aria-label="Local Injection Scenario"]');
+    if (!scenario) throw new Error("Scenario document is missing.");
+    const scenarioId = scenario.textContent?.match(/local-injection-scenario-\\d+/)?.[0];
+    const runBoundary = [...scenario.querySelectorAll("dl div")]
+      .find((row) => row.querySelector("dt")?.textContent?.trim() === "Reviewed Run")
+      ?.querySelector("dd")?.textContent ?? "";
+    const currentRunId = runBoundary.match(/local-injection-run-\\d+/)?.[0];
+    if (!scenarioId || !currentRunId) throw new Error("Scenario or current Run identity is missing.");
+    const current = [...scenario.querySelectorAll('[aria-label="Ordered Scenario Steps"] > article')].map((article) => {
+      const text = article.textContent ?? "";
+      const stepId = text.match(/(step-\\d+) · stable identity/)?.[1];
+      const injectionId = text.match(/Injection (local-injection-\\d+)/)?.[1];
+      const executionId = text.match(/execution (local-injection-execution-\\d+)/)?.[1];
+      const requestId = text.match(/request ([^\\s·]+)/)?.[1];
+      const evidenceId = text.match(/Local Evidence ([^\\s·]+)/)?.[1];
+      const headline = article.querySelector("p strong")?.textContent?.trim().toLowerCase();
+      const outcome = headline?.startsWith("delivered") ? "delivered" : headline;
+      if (!stepId || !injectionId || !executionId || !requestId || !evidenceId || !outcome) {
+        throw new Error("Current Scenario correlation is incomplete: " + text);
+      }
+      return { scenarioId, runId: currentRunId, stepId, injectionId, executionId, requestId, outcome, evidenceId };
+    });
+    const prior = [...scenario.querySelectorAll('[aria-label="Prior Scenario Run ledgers"] li')].map((row) => {
+      const text = row.textContent ?? "";
+      const match = text.match(/^(\\S+(?: \\S+)*) · Scenario (local-injection-scenario-\\d+) · Run (local-injection-run-\\d+) · Step (step-\\d+)\\/\\d+ · Injection (local-injection-\\d+) · execution (local-injection-execution-\\d+) · request ([^\\s·]+) · outcome ([^\\s·]+).* · Evidence ([^\\s·]+)/);
+      if (!match) throw new Error("Prior Scenario correlation is incomplete: " + text);
+      const outcome = match[1].toLowerCase().startsWith("delivered") ? "delivered" : match[8];
+      return { scenarioId: match[2], runId: match[3], stepId: match[4], injectionId: match[5], executionId: match[6], requestId: match[7], outcome, evidenceId: match[9] };
+    });
+    return [...prior, ...current];
+  })()`);
   return {
     ...page,
-    scenarioIds: [...new Set(matches(/(local-injection-scenario-\d+)/g))],
-    runIds: [...new Set(matches(/(local-injection-run-\d+)/g))],
-    stepIds: matches(/(step-\d+)/g),
-    injectionIds: matches(/Injection (local-injection-\d+)/g),
-    evidenceIds: matches(/(?:Local Evidence|Evidence) (synthetic-[^\s]+)/g)
+    scenarioIds: [...new Set(correlations.map(({ scenarioId }) => scenarioId))],
+    runIds: [...new Set(correlations.map(({ runId }) => runId))],
+    stepIds: correlations.map(({ stepId }) => stepId),
+    injectionIds: correlations.map(({ injectionId }) => injectionId),
+    executionIds: correlations.map(({ executionId }) => executionId),
+    evidenceIds: correlations.map(({ evidenceId }) => evidenceId),
+    correlations
   };
 }
 
