@@ -401,20 +401,8 @@ export function createLocalInjectionScenarioRunner(
     startedBoundary = isBoundedEvidenceRef(initialBoundary.boundary) ? initialBoundary.boundary : null;
     const initial = evaluateScenarioCheckpoint(member, initialBoundary, { ...checkpointAdapter.observations(run), diagnosticReads }, activeNow(), startedActiveOffsetMs);
     if (initial.status === "waiting" && withinDurations.length > 0) {
-      phase = "checkpoint-waiting";
       activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: initial.boundary, status: "waiting", assertions: initial.assertions });
-      const generation = ++scheduleGeneration;
-      timer = adapter.clock.setTimer(() => {
-        if (generation !== scheduleGeneration || settled) return;
-        timer = null;
-        evaluate(checkpointAdapter.feed.snapshot());
-      }, Math.max(0, deadlineActiveOffsetMs - activeNow()));
-      resumeCheckpoint = () => {
-        checkpointWasPlaying = true;
-        startActive();
-        phase = "checkpoint-waiting";
-        evaluate(checkpointAdapter.feed.snapshot());
-        if (settled || phase !== "checkpoint-waiting") return;
+      const scheduleCheckpointDeadline = (): void => {
         const generation = ++scheduleGeneration;
         timer = adapter.clock.setTimer(() => {
           if (generation !== scheduleGeneration || settled) return;
@@ -422,6 +410,21 @@ export function createLocalInjectionScenarioRunner(
           evaluate(checkpointAdapter.feed.snapshot());
         }, Math.max(0, deadlineActiveOffsetMs - activeNow()));
       };
+      resumeCheckpoint = () => {
+        checkpointWasPlaying = true;
+        startActive();
+        phase = "checkpoint-waiting";
+        evaluate(checkpointAdapter.feed.snapshot());
+        if (settled || phase !== "checkpoint-waiting") return;
+        scheduleCheckpointDeadline();
+      };
+      if (phase === "paused" || !visible) {
+        remainingDelayMs = Math.max(0, deadlineActiveOffsetMs - activeNow());
+        publish();
+        return;
+      }
+      phase = "checkpoint-waiting";
+      scheduleCheckpointDeadline();
       publish();
       return;
     }
