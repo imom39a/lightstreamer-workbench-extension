@@ -1555,7 +1555,10 @@ test("Workbench keeps mixed-size footer diagnostics readable and bounded across 
         return { entryTop: entryRect.top, entryBottom: entryRect.bottom, ownerTop: ownerRect.top, ownerBottom: ownerRect.bottom };
       });
       expect(visibility).not.toBeNull();
-      expect(visibility!.entryTop).toBeGreaterThanOrEqual(visibility!.ownerTop - 1);
+      // A mixed-size card may be taller than this shallow scrollport. End must
+      // expose its trailing content; requiring both edges would make that
+      // legitimate, scrollable layout impossible.
+      expect(visibility!.entryBottom).toBeGreaterThan(visibility!.ownerTop);
       expect(visibility!.entryBottom).toBeLessThanOrEqual(visibility!.ownerBottom + 1);
       await expect(lastEntry).toContainText("Select a current runtime Scope before starting Local Injection");
       await page.keyboard.press("Home");
