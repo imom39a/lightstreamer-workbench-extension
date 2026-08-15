@@ -395,7 +395,7 @@ function assertionLabel(assertion: ScenarioAssertion): string {
     case "correlated-local-evidence-exists": return `Correlated committed Local Evidence exists after Step ${assertion.stepId.replace(/^step-/, "")}`;
     case "command-key-exists": return `Local Effective COMMAND key ${assertion.key} is ${assertion.expected}`;
     case "command-field-equals": return `Local Effective COMMAND field ${assertion.field} strictly equals ${JSON.stringify(assertion.expected)}`;
-    case "diagnostic-observation-exists": return `Diagnostic Observation ${assertion.ruleCode} exists for the exact affected ${assertion.affected.kind}`;
+    case "diagnostic-observation-exists": return `Diagnostic Observation ${assertion.ruleCode} exists for Exact affected identity ${formatDiagnosticAffectedIdentity(assertion.affected)} · contract v${assertion.contractVersion} · ${assertion.lifecycle} · minimum ${assertion.minimumSeverity}`;
   }
 }
 
