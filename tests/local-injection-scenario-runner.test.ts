@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLocalInjectionScenarioRunner, type ScenarioClock } from "../src/core/local-injection-scenario-runner";
-import { addScenarioCheckpoint, addScenarioStep, createScenarioFromDraft, reviewScenario, updateScenarioSpeed, type ScenarioDraftInput } from "../src/core/local-injection-scenario";
+import { addScenarioCheckpoint, addScenarioStep, createScenarioFromDraft, moveScenarioMember, reviewScenario, updateScenarioSpeed, type ScenarioDraftInput } from "../src/core/local-injection-scenario";
 import type { ScenarioCommittedBoundaryFeed, ScenarioCommittedBoundarySnapshot } from "../src/core/local-injection-scenario-checkpoint";
+import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 
 const target = Object.freeze({
   pageEpoch: "page-1",
@@ -153,6 +154,25 @@ function highVolumeCheckpointRun() {
   return reviewed.run;
 }
 
+function diagnosticCheckpointRun(diagnosticObservationBoundary: Readonly<{ intervalId: string; sequence: number }>) {
+  const initial = createScenarioFromDraft(input("draft-1", "ADD", 0), { scenarioId: "scenario-diagnostic-checkpoint" });
+  const added = addScenarioCheckpoint(initial, {
+    id: "checkpoint-diagnostic", kind: "checkpoint", name: "Lost update observed",
+    assertions: [{
+      id: "diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1,
+      ruleCode: "subscription.lost-updates", lifecycle: "occurrence", minimumSeverity: "warning",
+      affected: { kind: "subscription", pageId: "page-1", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1" },
+      withinActiveMs: 100
+    }]
+  });
+  if (!added.ok) throw new Error(added.reason);
+  const moved = moveScenarioMember(added.scenario, "checkpoint-diagnostic", "earlier");
+  if (!moved.ok) throw new Error(moved.reason);
+  const reviewed = reviewScenario(moved.scenario, { runId: "run-diagnostic", committedEvidenceSeed: null, diagnosticObservationBoundary, targetFingerprint: "fp", activeCommandKeysByItem: [] });
+  if (!reviewed.ok) throw new Error(reviewed.reason);
+  return reviewed.run;
+}
+
 function delivered(stepOrdinal: number) {
   return {
     kind: "attempted" as const,
@@ -173,6 +193,49 @@ function delivered(stepOrdinal: number) {
 }
 
 describe("Local Injection Scenario runner", () => {
+  it("queries the authorized Diagnostic Observation range and cannot lose a racing feed commit", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostic" });
+    const authorization = journal.currentBoundary();
+    const originalQuery = journal.query.bind(journal);
+    let releaseFirstQuery!: () => void;
+    const firstQueryBlocked = new Promise<void>((resolve) => { releaseFirstQuery = resolve; });
+    let first = true;
+    const query = vi.fn(async (request: Parameters<typeof journal.query>[0]) => {
+      if (first) {
+        first = false;
+        await firstQueryBlocked;
+      }
+      return originalQuery(request);
+    });
+    const runner = createLocalInjectionScenarioRunner(diagnosticCheckpointRun(authorization), {
+      clock,
+      allocateInjectionId: () => "must-not-allocate",
+      execute: async () => delivered(1),
+      checkpoint: {
+        feed,
+        observations: () => ({ priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }),
+        diagnostics: { currentBoundary: journal.currentBoundary.bind(journal), query, subscribe: journal.subscribe.bind(journal) }
+      }
+    });
+
+    runner.play();
+    clock.advance(0);
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await journal.observe({
+      code: "subscription.lost-updates", severity: "warning", lifecycle: { kind: "occurrence", occurrenceId: "lost-1" },
+      affected: { kind: "subscription", pageId: "page-1", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1" },
+      observedAt: 1, observed: "Lost updates", limitation: "Count only", consequence: "Projection may be incomplete", route: { kind: "inspect-affected" }
+    });
+    releaseFirstQuery();
+
+    await vi.waitFor(() => expect(runner.snapshot().run.trace[0]).toMatchObject({ kind: "checkpoint", status: "pass" }));
+    expect(runner.snapshot().phase).toBe("waiting");
+    expect(query.mock.calls[0]?.[0]).toMatchObject({ after: authorization, through: authorization, codes: ["subscription.lost-updates"], lifecycle: "occurrence", minimumSeverity: "warning" });
+    expect(query.mock.calls.at(-1)?.[0]).toMatchObject({ after: authorization, through: { sequence: 1 } });
+    expect(runner.snapshot().run.trace).toMatchObject([{ kind: "checkpoint", status: "pass", assertions: [{ relatedDiagnostics: [{ id: expect.stringContaining("lost-1") }] }] }]);
+  });
   it("evaluates a zero-Injection Checkpoint without allocating an Injection identity", async () => {
     const clock = new FakeClock();
     const feed = new FakeBoundaryFeed();

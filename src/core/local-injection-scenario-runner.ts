@@ -23,6 +23,11 @@ import { isBoundedEvidenceRef, type EvidenceRef } from "./event-history-authorit
 import type { LocalInjectionDocument } from "./local-injection-document";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
 import type { DiagnosticObservationBoundary } from "./diagnostic-observation";
+import type {
+  DiagnosticObservationFeedPublication,
+  DiagnosticObservationJournal,
+  DiagnosticObservationRead
+} from "./diagnostic-observation";
 
 export interface ScenarioClock {
   now(): number;
@@ -119,6 +124,7 @@ export function createLocalInjectionScenarioRunner(
     checkpoint?: Readonly<{
       feed: ScenarioCommittedBoundaryFeed;
       observations(run: ScenarioRun): ScenarioAssertionObservation;
+      diagnostics?: Pick<DiagnosticObservationJournal, "currentBoundary" | "query" | "subscribe">;
     }>;
   }>
 ): ScenarioRunner {
@@ -135,6 +141,8 @@ export function createLocalInjectionScenarioRunner(
   let remainingDelayMs = scaledDelay(memberDelay(nextMember()), run.speed);
   let manualOverride = false;
   let checkpointUnsubscribe: (() => void) | null = null;
+  let diagnosticCheckpointUnsubscribe: (() => void) | null = null;
+  let checkpointDiagnosticRefresh: (() => void) | null = null;
   let activeCheckpoint: ScenarioRunnerSnapshot["activeCheckpoint"] = null;
   let checkpointWasPlaying = false;
   let resumeCheckpoint: (() => void) | null = null;
@@ -209,6 +217,9 @@ export function createLocalInjectionScenarioRunner(
   function stopCheckpointObservation(): void {
     checkpointUnsubscribe?.();
     checkpointUnsubscribe = null;
+    diagnosticCheckpointUnsubscribe?.();
+    diagnosticCheckpointUnsubscribe = null;
+    checkpointDiagnosticRefresh = null;
     if (timer !== null) adapter.clock.clearTimer(timer);
     timer = null;
     resumeCheckpoint = null;
@@ -257,8 +268,71 @@ export function createLocalInjectionScenarioRunner(
   }
 
   function dispatchCheckpoint(member: ReviewedScenarioCheckpoint): void {
-    const checkpointAdapter = adapter.checkpoint;
     const startedActiveOffsetMs = activeNow();
+    const wasPlaying = phase === "waiting";
+    const diagnosticAssertions = member.assertions.filter((assertion) => assertion.kind === "diagnostic-observation-exists");
+    if (diagnosticAssertions.length === 0) {
+      beginCheckpoint(member, startedActiveOffsetMs, new Map(), wasPlaying);
+      return;
+    }
+    const diagnostics = adapter.checkpoint?.diagnostics;
+    const authorization = run.authorizations.at(-1)?.diagnosticObservationBoundary ?? null;
+    if (!diagnostics || !authorization) {
+      beginCheckpoint(member, startedActiveOffsetMs, new Map(), wasPlaying);
+      return;
+    }
+    phase = "checkpoint-waiting";
+    checkpointWasPlaying = true;
+    const reads = new Map<string, DiagnosticObservationRead>();
+    let latest = diagnostics.currentBoundary();
+    let loading = true;
+    let refreshRequested = false;
+    let generation = 0;
+    const load = async (through: DiagnosticObservationBoundary): Promise<void> => {
+      const loadGeneration = ++generation;
+      const results = await Promise.all(diagnosticAssertions.map(async (assertion) => {
+        try {
+          const read = await diagnostics.query({
+            after: authorization,
+            through,
+            codes: [assertion.ruleCode],
+            lifecycle: assertion.lifecycle,
+            minimumSeverity: assertion.minimumSeverity,
+            affected: assertion.affected
+          });
+          return [assertion.id, read] as const;
+        } catch {
+          return [assertion.id, unavailableDiagnosticRead(through)] as const;
+        }
+      }));
+      if (loadGeneration !== generation || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
+      for (const [assertionId, read] of results) reads.set(assertionId, read);
+      if (refreshRequested) {
+        refreshRequested = false;
+        await load(latest);
+        return;
+      }
+      if (loading) {
+        loading = false;
+        beginCheckpoint(member, startedActiveOffsetMs, reads, wasPlaying);
+      } else {
+        checkpointDiagnosticRefresh?.();
+      }
+    };
+    const onPublication = (publication: DiagnosticObservationFeedPublication): void => {
+      latest = publication.type === "observation" ? publication.observation.observationBoundary : publication.boundary;
+      if (loading) refreshRequested = true;
+      else void load(latest);
+    };
+    // Anchor the subscription before querying (authorization, current] so a
+    // commit racing the bounded read is replayed or delivered by the feed.
+    diagnosticCheckpointUnsubscribe = diagnostics.subscribe(latest, onPublication);
+    void load(latest);
+    publish();
+  }
+
+  function beginCheckpoint(member: ReviewedScenarioCheckpoint, startedActiveOffsetMs: number, diagnosticReads: ReadonlyMap<string, DiagnosticObservationRead>, wasPlaying: boolean): void {
+    const checkpointAdapter = adapter.checkpoint;
     if (!checkpointAdapter) {
       const unavailable = evaluateScenarioCheckpoint(member, {
         boundary: null, intervalId: null, retainedRange: null, history: "unavailable", projection: "failed"
@@ -267,7 +341,7 @@ export function createLocalInjectionScenarioRunner(
       publish();
       return;
     }
-    checkpointWasPlaying = phase === "waiting";
+    checkpointWasPlaying = wasPlaying;
     const withinDurations = member.assertions.flatMap((assertion) => "withinActiveMs" in assertion && assertion.withinActiveMs !== undefined ? [assertion.withinActiveMs] : []);
     const deadlineActiveOffsetMs = startedActiveOffsetMs + (withinDurations.length > 0 ? Math.min(...withinDurations) : 0);
     let startedBoundary: EvidenceRef | null = null;
@@ -275,7 +349,7 @@ export function createLocalInjectionScenarioRunner(
 
     const evaluate = (snapshot: ReturnType<ScenarioCommittedBoundaryFeed["snapshot"]>): void => {
       if (settled || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
-      const evaluation = evaluateScenarioCheckpoint(member, snapshot, checkpointAdapter.observations(run), activeNow(), startedActiveOffsetMs);
+      const evaluation = evaluateScenarioCheckpoint(member, snapshot, { ...checkpointAdapter.observations(run), diagnosticReads }, activeNow(), startedActiveOffsetMs);
       if (evaluation.status === "waiting") {
         activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: evaluation.boundary, status: "waiting", assertions: evaluation.assertions });
         if (phase !== "paused") phase = "checkpoint-waiting";
@@ -314,13 +388,14 @@ export function createLocalInjectionScenarioRunner(
       }
       publish();
     };
+    checkpointDiagnosticRefresh = () => evaluate(checkpointAdapter.feed.snapshot());
 
     // Subscribe first, then read a snapshot, so a commit cannot be lost between
     // the initial boundary and the live subscription.
     checkpointUnsubscribe = checkpointAdapter.feed.subscribe(null, (snapshot) => evaluate(snapshot));
     const initialBoundary = checkpointAdapter.feed.snapshot();
     startedBoundary = isBoundedEvidenceRef(initialBoundary.boundary) ? initialBoundary.boundary : null;
-    const initial = evaluateScenarioCheckpoint(member, initialBoundary, checkpointAdapter.observations(run), activeNow(), startedActiveOffsetMs);
+    const initial = evaluateScenarioCheckpoint(member, initialBoundary, { ...checkpointAdapter.observations(run), diagnosticReads }, activeNow(), startedActiveOffsetMs);
     if (initial.status === "waiting" && withinDurations.length > 0) {
       phase = "checkpoint-waiting";
       activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: initial.boundary, status: "waiting", assertions: initial.assertions });
@@ -598,6 +673,16 @@ export function createLocalInjectionScenarioRunner(
 
 function scaledDelay(delayMs: number, speed: ScenarioRun["speed"]): number {
   return Math.ceil(Math.max(0, delayMs) / speed);
+}
+
+function unavailableDiagnosticRead(through: DiagnosticObservationBoundary): DiagnosticObservationRead {
+  return Object.freeze({
+    status: "unavailable" as const,
+    coverage: "unavailable" as const,
+    retention: "unavailable" as const,
+    through: Object.freeze({ ...through }),
+    observations: Object.freeze([])
+  });
 }
 
 function memberDelay(member: ReviewedScenarioMember | undefined): number {
