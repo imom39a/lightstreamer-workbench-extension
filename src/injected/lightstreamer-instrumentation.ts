@@ -88,6 +88,7 @@ type ListenerRegistrationState = {
 
 type KeepaliveWindow = {
   sessionKey: string;
+  clientMetadata: CapturePayload;
   ordinal: number;
   firstObservedAt: number;
   lastObservedAt: number;
@@ -95,6 +96,9 @@ type KeepaliveWindow = {
 };
 
 const KEEPALIVE_WINDOW_MS = 60_000;
+const SAFE_SERVER_ERROR_MESSAGES = new Set([
+  "Adapter refused the request"
+]);
 
 type WireReinjectionTarget = {
   subscriptionId: string;
@@ -2754,10 +2758,8 @@ function safeServerErrorMessage(value: unknown): Readonly<{
   if (typeof value !== "string") return { value: null, state: "unavailable" };
   const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   if (!normalized) return { value: null, state: "unavailable" };
-  if (/\b(?:authorization|cookie|password|passwd|secret|token|bearer)\b\s*[:=]/i.test(normalized)) {
-    return { value: null, state: "redacted" };
-  }
-  return { value: Array.from(normalized).slice(0, 256).join(""), state: "safe" };
+  if (!SAFE_SERVER_ERROR_MESSAGES.has(normalized)) return { value: null, state: "redacted" };
+  return { value: normalized, state: "safe" };
 }
 
 function captureServerKeepalive(
@@ -2774,7 +2776,7 @@ function captureServerKeepalive(
   const startsNewWindow = !current || current.sessionKey !== sessionKey || observedAt - current.firstObservedAt >= KEEPALIVE_WINDOW_MS;
   if (current && startsNewWindow && current.count > 1) {
     state.emit("server-keepalive", {
-      client: clientMetadata,
+      client: current.clientMetadata,
       listener,
       keepalive: {
         count: current.count,
@@ -2789,6 +2791,7 @@ function captureServerKeepalive(
   if (startsNewWindow) {
     const next: KeepaliveWindow = {
       sessionKey,
+      clientMetadata,
       ordinal: (current?.ordinal ?? 0) + 1,
       firstObservedAt: observedAt,
       lastObservedAt: observedAt,

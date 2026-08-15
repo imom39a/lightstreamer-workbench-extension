@@ -99,6 +99,88 @@ describe("instrumentation privacy and behavior parity", () => {
     expect(JSON.stringify(messages)).not.toContain("bearer-secret-canary");
   });
 
+  it.each([
+    ["Bearer text", "Request denied Bearer eyJhbGciOiJIUzI1NiJ9.canary-signature"],
+    ["token query", "Request failed at https://example.test/path?token=query-secret-canary&mode=stream"],
+    ["unlabelled high entropy", "vP7xQ2mN9kR4tY8wL3cF6jH1sD5aB0uE"]
+  ])("irreversibly redacts adversarial server-error %s", (_caseName, unsafeMessage) => {
+    class PrivacyClient {
+      private listener: Record<string, unknown> | null = null;
+
+      addListener(listener: Record<string, unknown>) {
+        this.listener = listener;
+      }
+
+      deliver(message: string) {
+        (this.listener?.onServerError as ((code: number, text: string) => void) | undefined)?.(51, message);
+      }
+    }
+    const messages: CaptureMessage[] = [];
+    const host = { LightstreamerClient: PrivacyClient };
+    installLightstreamerInstrumentation(
+      host as unknown as LightstreamerHost,
+      (message) => messages.push(message as CaptureMessage)
+    );
+    const client = new host.LightstreamerClient();
+    client.addListener({ onServerError: () => undefined });
+
+    client.deliver(unsafeMessage);
+
+    expect(messages.find(({ kind }) => kind === "server-error")?.payload.serverError).toEqual({
+      code: 51,
+      message: null,
+      messageState: "redacted"
+    });
+    expect(JSON.stringify(messages)).not.toContain(unsafeMessage);
+    expect(JSON.stringify(messages)).not.toMatch(/eyJhbGci|query-secret-canary|vP7xQ2mN9kR4/);
+  });
+
+  it("attributes a closing keepalive aggregate to its original Session before opening the next Session window", () => {
+    let sessionId = "session-a";
+    class SessionClient {
+      private listener: Record<string, unknown> | null = null;
+      readonly connectionDetails = { getSessionId: () => sessionId };
+
+      addListener(listener: Record<string, unknown>) {
+        this.listener = listener;
+      }
+
+      keepalive() {
+        (this.listener?.onServerKeepalive as (() => void) | undefined)?.();
+      }
+    }
+    const messages: CaptureMessage[] = [];
+    const host = { LightstreamerClient: SessionClient };
+    installLightstreamerInstrumentation(
+      host as unknown as LightstreamerHost,
+      (message) => messages.push(message as CaptureMessage)
+    );
+    const client = new host.LightstreamerClient();
+    client.addListener({ onServerKeepalive: () => undefined });
+
+    client.keepalive();
+    client.keepalive();
+    sessionId = "session-b";
+    client.keepalive();
+
+    const keepalives = messages.filter(({ kind }) => kind === "server-keepalive");
+    expect(keepalives).toHaveLength(3);
+    expect(keepalives.map(({ payload }) => ({ client: payload.client, keepalive: payload.keepalive }))).toMatchObject([
+      {
+        client: { sessionId: "session-a" },
+        keepalive: { count: 1, aggregate: false, windowId: "session-a:1" }
+      },
+      {
+        client: { sessionId: "session-a" },
+        keepalive: { count: 2, aggregate: true, windowId: "session-a:1" }
+      },
+      {
+        client: { sessionId: "session-b" },
+        keepalive: { count: 1, aggregate: false, windowId: "session-b:2" }
+      }
+    ]);
+  });
+
   it("keeps literal sanitizer markers concrete while marking sanitized Item Update fields", () => {
     class Subscription {
       listener?: { onItemUpdate(update: unknown): void };
