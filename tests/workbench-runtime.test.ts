@@ -244,7 +244,7 @@ describe("WorkbenchRuntime", () => {
         ...event("subscription-error-1", "orders"),
         kind: "subscription-error",
         update: undefined,
-        raw: { code: 41, message: "private source text remains outside normalization" }
+        raw: { args: [41, "private source text remains outside normalization"] }
         },
         {
           ...event("lost-updates-2", "orders"),
@@ -261,7 +261,17 @@ describe("WorkbenchRuntime", () => {
             changedFields: { qty: 2 }
           }
         }),
-        topologyEvent("recovering-4", "client-status", {
+        topologyEvent("command-4", "item-update", {
+          item: { name: "orders", position: 1 },
+          update: {
+            isSnapshot: false,
+            command: "PRIVATE-COMMAND-VALUE",
+            key: "secret-key",
+            fields: { command: "PRIVATE-COMMAND-VALUE", key: "secret-key" },
+            changedFields: { command: "PRIVATE-COMMAND-VALUE" }
+          }
+        }),
+        topologyEvent("recovering-5", "client-status", {
           client: { id: "client-main", status: "DISCONNECTED:TRYING-RECOVERY", sessionId: "S-1" }
         })
       ]
@@ -309,6 +319,7 @@ describe("WorkbenchRuntime", () => {
       "ls.subscription.error",
       "ls.subscription.lost-updates",
       "ls.command.unknown-key-update",
+      "ls.command.unsupported-command",
       "workbench.history.lower-capacity-fallback",
       "workbench.storage.headroom-limited",
       "workbench.capture.disconnected",
@@ -319,6 +330,67 @@ describe("WorkbenchRuntime", () => {
       expect.objectContaining({ code: "ls.session.recovering", affected: expect.objectContaining({ kind: "session", sessionId: "S-1" }) })
     ]));
     expect(JSON.stringify(observations)).not.toContain("private source text");
+    expect(JSON.stringify(observations)).not.toContain("PRIVATE-COMMAND-VALUE");
+    expect(observations.find(({ code }) => code === "ls.subscription.error")?.originalCode).toBe(41);
+    runtime.dispose();
+  });
+
+  it("records and resolves source conditions while hidden", async () => {
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "hidden-diagnostics" });
+    const runtime = createWorkbenchRuntime({
+      visible: false,
+      capture: { coverage: "USEFUL" },
+      diagnosticObservations
+    });
+    runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
+    runtime.dispatch({ type: "set-capture-status", status: "bridge connected" });
+    await runtime.settleDiagnosticObservations?.();
+
+    expect((await diagnosticObservations.query({ codes: ["workbench.capture.disconnected"] })).observations)
+      .toEqual([
+        expect.objectContaining({ lifecycle: expect.objectContaining({ state: "active" }) }),
+        expect.objectContaining({ lifecycle: expect.objectContaining({ state: "resolved" }) })
+      ]);
+    runtime.dispose();
+  });
+
+  it("fails closed and exposes settlement failure when a normalized mutation cannot commit", async () => {
+    const memory = createMemoryDiagnosticObservationJournal({ panelSessionId: "failed-diagnostics" });
+    const failure = new Error("diagnostic persistence unavailable");
+    const diagnosticObservations = {
+      ...memory,
+      observe: async () => { throw failure; }
+    };
+    const runtime = createWorkbenchRuntime({
+      capture: { coverage: "USEFUL" },
+      diagnosticObservations
+    });
+    runtime.dispatch({ type: "set-capture-status", status: "bridge disconnected" });
+
+    await expect(runtime.settleDiagnosticObservations?.()).rejects.toThrow(failure.message);
+    expect(await memory.query()).toMatchObject({ status: "closed", coverage: "unavailable" });
+    runtime.dispose();
+  });
+
+  it("fails closed instead of continuing the prior diagnostic interval when Clear cannot commit", async () => {
+    const memory = createMemoryDiagnosticObservationJournal({ panelSessionId: "failed-diagnostic-clear" });
+    const failure = new Error("diagnostic clear unavailable");
+    const diagnosticObservations = {
+      ...memory,
+      clear: async () => { throw failure; }
+    };
+    const runtime = createWorkbenchRuntime({
+      history: createAuthoritativeHistory({ precommitted: [event("before-clear")] }),
+      capture: { coverage: "USEFUL" },
+      diagnosticObservations
+    });
+    await flushStoreNotifications();
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await flushStoreNotifications();
+
+    await expect(runtime.settleDiagnosticObservations?.()).rejects.toThrow(failure.message);
+    expect(await memory.query()).toMatchObject({ status: "closed", coverage: "unavailable" });
     runtime.dispose();
   });
 

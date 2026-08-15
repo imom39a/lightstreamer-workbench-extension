@@ -2150,7 +2150,10 @@ class Runtime implements WorkbenchRuntime {
           error instanceof Error ? error.message : String(error)
         );
       }
-    ).then(() => this.diagnosticObservationSettlement).then(() => this.diagnosticObservations.close());
+    ).then(async () => {
+      await this.diagnosticObservationSettlement.catch(() => undefined);
+      await this.diagnosticObservations.close().catch(() => undefined);
+    });
   }
 
   async disposeAndWait(): Promise<void> {
@@ -4742,6 +4745,7 @@ class Runtime implements WorkbenchRuntime {
     if (this.disposed) {
       return;
     }
+    this.refreshRuntimeDiagnosticObservations();
     if (!this.visible && !allowHidden) {
       this.hiddenDirty = true;
       return;
@@ -4764,7 +4768,6 @@ class Runtime implements WorkbenchRuntime {
         localInjectionDraft.reviewRefusal = null;
       }
     }
-    this.refreshRuntimeDiagnosticObservations();
     this.version += 1;
     this.snapshot = this.createSnapshot();
     for (const listener of this.listeners) {
@@ -5520,7 +5523,7 @@ class Runtime implements WorkbenchRuntime {
     const evidenceBoundary = Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId });
     const affected = diagnosticAffectedIdentity(event, evidenceBoundary);
     if (event.kind === "subscription-error" || event.kind === "lost-updates") {
-      const rawCode = event.raw?.code;
+      const rawCode = event.raw?.code ?? (Array.isArray(event.raw?.args) ? event.raw.args[0] : undefined);
       const adapted = adaptCommittedEvidenceFinding({
         family: event.kind,
         severity: "warning",
@@ -5553,7 +5556,7 @@ class Runtime implements WorkbenchRuntime {
         evidenceBoundary,
         observed: `COMMAND projection recorded ${diagnostic.code} for committed Evidence ${event.id}.`,
         limitation: "The projection uses committed Workbench Evidence and is not Authoritative COMMAND State.",
-        consequence: diagnostic.explanation,
+        consequence: "The committed COMMAND projection detected an inconsistent or malformed update.",
         route: { kind: "inspect-evidence", evidence: evidenceBoundary },
         resultRef: {
           kind: "projection",
@@ -5643,8 +5646,15 @@ class Runtime implements WorkbenchRuntime {
 
   private queueDiagnosticMutation(operation: () => Promise<unknown>): void {
     this.diagnosticObservationSettlement = this.diagnosticObservationSettlement
-      .then(operation)
-      .then(() => undefined, () => undefined);
+      .then(async () => {
+        try {
+          await operation();
+        } catch (error) {
+          await this.diagnosticObservations.close().catch(() => undefined);
+          throw error;
+        }
+      });
+    void this.diagnosticObservationSettlement.catch(() => undefined);
   }
 }
 
