@@ -284,6 +284,9 @@ export function createLocalInjectionScenarioRunner(
     }
     phase = "checkpoint-waiting";
     checkpointWasPlaying = true;
+    const withinDurations = diagnosticAssertions.flatMap((assertion) => assertion.withinActiveMs === undefined ? [] : [assertion.withinActiveMs]);
+    const deadlineActiveOffsetMs = startedActiveOffsetMs + (withinDurations.length > 0 ? Math.min(...withinDurations) : 0);
+    activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: null, status: "waiting", assertions: Object.freeze([]) });
     const reads = new Map<string, DiagnosticObservationRead>();
     let latest = diagnostics.currentBoundary();
     let loading = true;
