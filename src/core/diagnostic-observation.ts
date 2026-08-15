@@ -449,17 +449,22 @@ function retainDiagnosticCapacity(
   maximumBytes: number
 ): Readonly<{ records: DiagnosticObservation[]; retainedThrough: number }> {
   let retainedThrough = previousRetainedThrough;
-  const encoder = new TextEncoder();
-  const lifecycleBytes = lifecycleState.reduce((total, observation) => total + encoder.encode(JSON.stringify(observation)).byteLength, 0);
-  if (lifecycleBytes > maximumBytes) throw new Error("Diagnostic lifecycle state byte capacity is exhausted.");
-  let bytes = lifecycleBytes + candidate.reduce((total, observation) => total + encoder.encode(JSON.stringify(observation)).byteLength, 0);
-  while (candidate.length > maximumCount || bytes > maximumBytes) {
+  if (diagnosticPersistedCollectionsBytes([], lifecycleState) > maximumBytes) {
+    throw new Error("Diagnostic lifecycle state byte capacity is exhausted.");
+  }
+  while (candidate.length > maximumCount || diagnosticPersistedCollectionsBytes(candidate, lifecycleState) > maximumBytes) {
     const removed = candidate.shift();
     if (!removed) break;
-    bytes -= encoder.encode(JSON.stringify(removed)).byteLength;
     retainedThrough = Math.max(retainedThrough, removed.observationBoundary.sequence);
   }
   return { records: candidate, retainedThrough };
+}
+
+function diagnosticPersistedCollectionsBytes(
+  records: readonly unknown[],
+  current: readonly unknown[]
+): number {
+  return new TextEncoder().encode(JSON.stringify({ records, current })).byteLength;
 }
 
 function equivalentActiveObservation(existing: DiagnosticObservation, input: DiagnosticObservationInput): boolean {
@@ -710,7 +715,7 @@ function hydratePersistedState(
   if (state.records.length > maximumRecords || state.current.length > DIAGNOSTIC_MAX_LIFECYCLE_IDENTITIES) {
     throw new Error("Diagnostic persisted collections exceed their capacity.");
   }
-  const persistedBytes = new TextEncoder().encode(JSON.stringify({ records: state.records, current: state.current })).byteLength;
+  const persistedBytes = diagnosticPersistedCollectionsBytes(state.records, state.current);
   if (persistedBytes > maximumBytes) throw new Error("Diagnostic persisted state exceeds its byte capacity.");
   const intervalId = diagnosticIntervalId(panelSessionId, intervalOrdinal);
   const records = state.records.map((observation) => hydrateObservation(observation, intervalId, sequence));

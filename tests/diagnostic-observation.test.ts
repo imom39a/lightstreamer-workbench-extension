@@ -239,6 +239,40 @@ describe("normalized Diagnostic Observation contract", () => {
     })).toMatchObject({ lifecycle: { kind: "condition", state: "resolved" }, observationBoundary: { sequence: 3 } });
   });
 
+  it("uses identical byte accounting before and after IndexedDB reopen", async () => {
+    const panelSessionId = "byte-parity";
+    const input = {
+      code: "workbench.capture.disconnected",
+      severity: "error" as const,
+      lifecycle: { kind: "condition" as const, conditionId: "bridge" },
+      affected: { kind: "page" as const, pageId: "page" },
+      observedAt: 10,
+      observed: "The bridge disconnected.",
+      limitation: "Later activity cannot be observed.",
+      consequence: "Evidence may be incomplete.",
+      route: { kind: "inspect-affected" as const }
+    };
+    const sample = await createMemoryDiagnosticObservationJournal({ panelSessionId }).observe(input);
+    const individualBytes = new TextEncoder().encode(JSON.stringify(sample)).byteLength;
+    const indexedDB = new IDBFactory();
+    let journal = await openIndexedDbDiagnosticObservationJournal({
+      panelSessionId,
+      indexedDB,
+      maxRetainedBytes: individualBytes * 2
+    });
+    await journal.observe(input);
+    const before = await journal.query();
+    await journal.close();
+    journal = await openIndexedDbDiagnosticObservationJournal({
+      panelSessionId,
+      indexedDB,
+      maxRetainedBytes: individualBytes * 2
+    });
+    const after = await journal.query();
+
+    expect(after).toEqual(before);
+  });
+
   it("serializes concurrent duplicate offers into one committed occurrence", async () => {
     const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-concurrent" });
     const input = {
