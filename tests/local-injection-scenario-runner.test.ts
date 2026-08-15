@@ -236,6 +236,43 @@ describe("Local Injection Scenario runner", () => {
     expect(query.mock.calls.at(-1)?.[0]).toMatchObject({ after: authorization, through: { sequence: 1 } });
     expect(runner.snapshot().run.trace).toMatchObject([{ kind: "checkpoint", status: "pass", assertions: [{ relatedDiagnostics: [{ id: expect.stringContaining("lost-1") }] }] }]);
   });
+
+  it("uses the latest drift re-review diagnostic cursor and keeps the eventual window on active time", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostic-rereview" });
+    const affected = { kind: "subscription", pageId: "page-1", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1" } as const;
+    let drift = true;
+    const query = vi.fn(journal.query.bind(journal));
+    const runner = createLocalInjectionScenarioRunner(diagnosticCheckpointRun(journal.currentBoundary()), {
+      clock,
+      allocateInjectionId: () => "injection-after-checkpoint",
+      execute: async () => delivered(1),
+      beforeDispatch: () => drift ? { allow: false, reason: "DRIFT", detail: "Listener changed." } : { allow: true },
+      checkpoint: {
+        feed,
+        observations: () => ({ priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }),
+        diagnostics: { currentBoundary: journal.currentBoundary.bind(journal), query, subscribe: journal.subscribe.bind(journal) }
+      }
+    });
+    runner.play();
+    clock.advance(0);
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "DRIFT_REVIEW_REQUIRED" });
+    await journal.observe({ code: "subscription.lost-updates", severity: "warning", lifecycle: { kind: "occurrence", occurrenceId: "before-rereview" }, affected, observedAt: 1, observed: "Earlier loss", limitation: "Count only", consequence: "May be incomplete", route: { kind: "inspect-affected" } });
+    const reauthorized = journal.currentBoundary();
+    expect(runner.reReview({ targetFingerprint: "fingerprint-2", listenerIds: ["listener-1"], committedEvidenceBoundary: null, diagnosticObservationBoundary: reauthorized })).toEqual({ ok: true });
+    drift = false;
+    runner.stepNext();
+    await vi.waitFor(() => expect(runner.snapshot().phase).toBe("checkpoint-waiting"));
+    expect(query).toHaveBeenLastCalledWith(expect.objectContaining({ after: reauthorized, through: reauthorized }));
+    clock.advance(40);
+    runner.setVisible(false);
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 40, remainingDelayMs: 60, pauseReason: "HIDDEN" });
+    clock.advance(10_000);
+    await journal.observe({ code: "subscription.lost-updates", severity: "warning", lifecycle: { kind: "occurrence", occurrenceId: "after-rereview" }, affected, observedAt: 2, observed: "Later loss", limitation: "Count only", consequence: "May be incomplete", route: { kind: "inspect-affected" } });
+    await vi.waitFor(() => expect(runner.snapshot().run.trace[0]).toMatchObject({ kind: "checkpoint", status: "pass", settledActiveOffsetMs: 40, assertions: [{ relatedDiagnostics: [{ lifecycle: { occurrenceId: "after-rereview" } }] }] }));
+    expect(runner.snapshot()).toMatchObject({ phase: "paused", pauseReason: "HIDDEN", activeOffsetMs: 40 });
+  });
   it("evaluates a zero-Injection Checkpoint without allocating an Injection identity", async () => {
     const clock = new FakeClock();
     const feed = new FakeBoundaryFeed();
