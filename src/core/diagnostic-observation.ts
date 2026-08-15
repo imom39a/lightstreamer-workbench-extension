@@ -191,7 +191,7 @@ export async function openIndexedDbDiagnosticObservationJournal(
   let database: IDBDatabase | null = null;
   try {
     database = await openDiagnosticDatabase(factory, databaseName);
-    const persisted = hydratePersistedState(await readDiagnosticState(database), options.panelSessionId);
+    const persisted = hydratePersistedState(await readDiagnosticState(database), options.panelSessionId, options);
     return createDiagnosticObservationJournal(options.panelSessionId, persisted, async (state) => {
       await writeDiagnosticState(database!, state);
     }, () => database?.close(), options);
@@ -654,7 +654,11 @@ function openDiagnosticDatabase(factory: IDBFactory, name: string): Promise<IDBD
   });
 }
 
-function hydratePersistedState(value: unknown, panelSessionId: string): PersistedDiagnosticState {
+function hydratePersistedState(
+  value: unknown,
+  panelSessionId: string,
+  capacity: Readonly<{ maxRetainedObservations?: number; maxRetainedBytes?: number }>
+): PersistedDiagnosticState {
   if (value === null || value === undefined) return emptyPersistedState();
   const state = recordValue(value, "Diagnostic Observation state");
   const intervalOrdinal = numberValue(state.intervalOrdinal, "Diagnostic interval ordinal");
@@ -662,6 +666,13 @@ function hydratePersistedState(value: unknown, panelSessionId: string): Persiste
   const retainedThrough = numberValue(state.retainedThrough, "Diagnostic retained boundary", true);
   if (retainedThrough > sequence) throw new Error("Diagnostic retained boundary exceeds the committed boundary.");
   if (!Array.isArray(state.records) || !Array.isArray(state.current)) throw new Error("Diagnostic persisted collections are malformed.");
+  const maximumRecords = boundedCapacity(capacity.maxRetainedObservations, DIAGNOSTIC_MAX_RETAINED_OBSERVATIONS, "Diagnostic Observation count capacity");
+  const maximumBytes = boundedCapacity(capacity.maxRetainedBytes, DIAGNOSTIC_MAX_RETAINED_BYTES, "Diagnostic Observation byte capacity");
+  if (state.records.length > maximumRecords || state.current.length > DIAGNOSTIC_MAX_LIFECYCLE_IDENTITIES) {
+    throw new Error("Diagnostic persisted collections exceed their capacity.");
+  }
+  const persistedBytes = new TextEncoder().encode(JSON.stringify({ records: state.records, current: state.current })).byteLength;
+  if (persistedBytes > maximumBytes) throw new Error("Diagnostic persisted state exceeds its byte capacity.");
   const intervalId = diagnosticIntervalId(panelSessionId, intervalOrdinal);
   const records = state.records.map((observation) => hydrateObservation(observation, intervalId, sequence));
   const current = state.current.map((observation) => hydrateObservation(observation, intervalId, sequence));
