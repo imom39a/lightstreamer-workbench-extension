@@ -3,6 +3,7 @@ export const DIAGNOSTIC_RULE_CODE_MAX_LENGTH = 96;
 export const DIAGNOSTIC_IDENTITY_COMPONENT_MAX_LENGTH = 128;
 export const DIAGNOSTIC_TEXT_MAX_LENGTH = 512;
 export const DIAGNOSTIC_SAFE_MESSAGE_MAX_LENGTH = 256;
+export const DIAGNOSTIC_OBSERVATION_REF_MAX_BYTES = 16 * 1024;
 export const DIAGNOSTIC_MAX_RETAINED_OBSERVATIONS = 5_000;
 export const DIAGNOSTIC_MAX_RETAINED_BYTES = 16 * 1_048_576;
 export const DIAGNOSTIC_MAX_LIFECYCLE_IDENTITIES = 100_000;
@@ -504,7 +505,7 @@ export function isDiagnosticAffectedIdentity(value: unknown): value is Diagnosti
 }
 
 export function diagnosticObservationRef(observation: DiagnosticObservation): DiagnosticObservationRef {
-  return Object.freeze({
+  const ref = Object.freeze({
     schemaVersion: observation.schemaVersion,
     id: observation.id,
     code: observation.code,
@@ -518,6 +519,10 @@ export function diagnosticObservationRef(observation: DiagnosticObservation): Di
     route: observation.route,
     resultRef: observation.resultRef
   });
+  if (new TextEncoder().encode(JSON.stringify(ref)).byteLength > DIAGNOSTIC_OBSERVATION_REF_MAX_BYTES) {
+    throw new RangeError("Diagnostic Observation reference exceeds its canonical byte bound.");
+  }
+  return ref;
 }
 
 function isStrictlyAfter(value: DiagnosticObservationBoundary, lower: DiagnosticObservationBoundary): boolean {

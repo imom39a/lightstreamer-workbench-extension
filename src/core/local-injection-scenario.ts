@@ -134,6 +134,7 @@ export const SCENARIO_MAX_ACCOUNTED_BYTES = 8 * 1024 * 1024;
 export const SCENARIO_MAX_RECORDED_ASSERTION_STRING_BYTES = 1_024;
 export const SCENARIO_CHECKPOINT_TRACE_SHELL_RESERVATION_BYTES = 4_096;
 export const SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES = 4_096;
+export const SCENARIO_DIAGNOSTIC_ASSERTION_TRACE_RESERVATION_BYTES = 24 * 1024;
 // Coordinator outcomes are bounded before they reach this module. Reserve their
 // complete canonical form (including generated correlation/Evidence identity)
 // rather than shortening an already-settled outcome after dispatch.
@@ -675,7 +676,10 @@ function scenarioMemberTraceReservationBytes(member: ReviewedScenarioMember): nu
     case "checkpoint":
       // The immutable member accounts for the expected values copied into the
       // result. Runtime observations are capped before they enter the Trace.
-      return SCENARIO_CHECKPOINT_TRACE_SHELL_RESERVATION_BYTES + canonicalBytes(member) + member.assertions.length * SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES;
+      return SCENARIO_CHECKPOINT_TRACE_SHELL_RESERVATION_BYTES + canonicalBytes(member) + member.assertions.reduce(
+        (bytes, assertion) => bytes + (assertion.kind === "diagnostic-observation-exists" ? SCENARIO_DIAGNOSTIC_ASSERTION_TRACE_RESERVATION_BYTES : SCENARIO_CHECKPOINT_ASSERTION_TRACE_RESERVATION_BYTES),
+        0
+      );
   }
 }
 
