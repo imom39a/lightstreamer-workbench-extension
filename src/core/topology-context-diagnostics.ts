@@ -81,11 +81,17 @@ export type TopologyContextDiagnosticEvaluation = Readonly<{
   resolutions: readonly DiagnosticConditionResolution[];
 }>;
 
+export const MAX_DIAGNOSTIC_CHURN_WINDOW_MS = 60_000;
+export const MAX_RETAINED_DIAGNOSTIC_CHANGES = 100;
+
 export function evaluateTopologyContextDiagnostics(
   input: TopologyContextDiagnosticInput,
   previouslyActive: readonly DiagnosticObservationInput[] = []
 ): TopologyContextDiagnosticEvaluation {
-  const observations = exactDuplicateObservations(input);
+  const observations = [
+    ...exactDuplicateObservations(input),
+    ...churnObservations(input)
+  ];
   const active = new Set(observations.flatMap((observation) =>
     observation.lifecycle.kind === "condition" ? [diagnosticObservationIdentity(observation)] : []));
   const resolutions = previouslyActive.flatMap((observation): DiagnosticConditionResolution[] => {
@@ -100,6 +106,59 @@ export function evaluateTopologyContextDiagnostics(
     })];
   });
   return Object.freeze({ observations: Object.freeze(observations), resolutions: Object.freeze(resolutions) });
+}
+
+function churnObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
+  const observations: DiagnosticObservationInput[] = [];
+  for (const window of input.churnWindows) {
+    const duration = window.endedAt - window.startedAt;
+    if (!Number.isSafeInteger(window.threshold) || window.threshold <= 0 ||
+        !Number.isSafeInteger(window.totalChanges) || window.totalChanges < window.threshold ||
+        !Number.isSafeInteger(duration) || duration < 0 || duration > MAX_DIAGNOSTIC_CHURN_WINDOW_MS ||
+        window.retainedChanges.length === 0 || window.retainedChanges.length > MAX_RETAINED_DIAGNOSTIC_CHANGES) continue;
+    const latest = window.retainedChanges.reduce((candidate, change) =>
+      change.evidence.intervalId === candidate.evidence.intervalId && change.evidence.sequence > candidate.evidence.sequence
+        ? change
+        : candidate);
+    const code = window.kind === "listener" ? "ls.listener.registration-churn" : "ls.subscription.lifecycle-churn";
+    const affectedKey = affectedIdentityKey(window.affected);
+    const lifecycle = window.current
+      ? { kind: "condition" as const, conditionId: `${window.kind}:${affectedKey}:${window.id}` }
+      : { kind: "occurrence" as const, occurrenceId: window.id };
+    const completeness = window.complete
+      ? "The bounded observation window is complete through its committed Evidence boundary."
+      : "The bounded observation window is incomplete, so the captured count is a lower bound.";
+    const attachment = window.lateAttachment
+      ? " Workbench attached after application startup; earlier changes are unavailable."
+      : " Capture was attached for the full stated window.";
+    observations.push(normalizeDiagnosticObservationInput({
+      code,
+      ruleVersion: 1,
+      severity: "information",
+      lifecycle,
+      affected: window.affected,
+      observedAt: input.boundary.observedAt,
+      evidenceBoundary: latest.evidence,
+      observed: `${window.totalChanges} captured add/remove changes from ${window.startedAt} through ${window.endedAt} (${duration} ms), meeting the configured threshold of ${window.threshold}.`,
+      limitation: `${completeness}${attachment} Counts describe captured registration activity and do not establish application intent.`,
+      consequence: `Repeated ${window.kind === "listener" ? "listener registration" : "Subscription lifecycle"} activity occurred within the stated bounded window.`,
+      route: { kind: "inspect-evidence", evidence: latest.evidence },
+      resultRef: { kind: "evidence", ...latest.evidence }
+    }));
+  }
+  return observations;
+}
+
+function affectedIdentityKey(affected: DiagnosticAffectedIdentity): string {
+  switch (affected.kind) {
+    case "unavailable": return affected.reason;
+    case "page": return affected.pageId;
+    case "client": return affected.clientId;
+    case "session": return affected.sessionId;
+    case "subscription": return affected.subscriptionId;
+    case "item": return `${affected.subscriptionId}:${affected.item}`;
+    case "evidence": return affected.eventId;
+  }
 }
 
 function exactDuplicateObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
