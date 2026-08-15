@@ -53,6 +53,7 @@ function scenarioHarnessSource() {
 import { createRoot } from "react-dom/client";
 import { createElement } from "react";
 import { createInMemoryEventHistory } from ${source("src/core/event-history-authoritative.ts")};
+import { createMemoryDiagnosticObservationJournal, createUnavailableDiagnosticObservationJournal } from ${source("src/core/diagnostic-observation.ts")};
 import { WorkbenchPanel } from ${source("src/extension/panel/react/workbench-panel.tsx")};
 import { createWorkbenchRuntime } from ${source("src/extension/panel/workbench-runtime.ts")};
 import { getWorkbenchScenario, isWorkbenchScenarioId } from ${source("tests/support/workbench-scenarios.ts")};
@@ -65,6 +66,9 @@ const root = document.querySelector("#app");
 if (!(root instanceof HTMLElement)) throw new Error("Workbench scenario requires #app.");
 
 const scenario = getWorkbenchScenario(scenarioId);
+const diagnosticObservations = scenario.diagnosticJournal === "unsupported"
+  ? createUnavailableDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostics-" + scenario.id, status: "unsupported" })
+  : createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostics-" + scenario.id });
 let failSyntheticEvidenceRetention = false;
 const history = createInMemoryEventHistory({
   panelSessionId: "scenario-" + scenario.id,
@@ -129,6 +133,7 @@ const runtime = createWorkbenchRuntime({
     }
   } : {}),
   captureStatus: scenario.captureStatus,
+  diagnosticObservations,
   capture: scenario.capture,
   ...(scenario.activityProjectionFailure ? {
     activityProjectionFactory: () => { throw new Error(scenario.activityProjectionFailure); }
@@ -215,6 +220,7 @@ if (scenario.localInjection) {
     }
     if (scenario.localInjection.scenario.speed !== undefined) runtime.dispatch({ type: "set-scenario-speed", speed: scenario.localInjection.scenario.speed });
     if (scenario.localInjection.scenario.review) runtime.dispatch({ type: "review-scenario" });
+    for (const observation of scenario.diagnosticObservationsAfterReview ?? []) await diagnosticObservations.observe(observation);
     for (const frame of scenario.localInjection.scenario.driftFrames ?? []) runtime.dispatch({ type: "apply-topology-sync-frame", frame });
     if (scenario.localInjection.scenario.driftFrames) {
       await new Promise((resolve) => setTimeout(resolve, 48));

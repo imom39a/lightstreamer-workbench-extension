@@ -2277,8 +2277,12 @@ test("Scenario Checkpoint authoring stays protected, keyboard reachable, and Rev
   await expect(name).toHaveValue("Portfolio row is locally settled");
   await expect(checkpoint).toHaveAttribute("aria-label", "Scenario Checkpoint Portfolio row is locally settled");
   const assertionKind = checkpoint.getByRole("combobox", { name: /Assertion .* kind/ });
-  await expect(assertionKind.locator("option")).toHaveCount(5);
-  await expect(assertionKind.locator("option").filter({ hasText: /diagnostic/i })).toHaveCount(0);
+  await expect(assertionKind.locator("option")).toHaveCount(6);
+  await expect(assertionKind.locator("option").filter({ hasText: "Diagnostic Observation exists" })).toHaveCount(1);
+  await assertionKind.selectOption("diagnostic-observation-exists");
+  await expect(checkpoint).toContainText("Diagnostic Observation contract v1");
+  await expect(checkpoint.getByRole("textbox", { name: "Diagnostic rule code" })).toHaveValue("capture.disconnected");
+  await expect(checkpoint.getByRole("combobox", { name: "Diagnostic affected kind" })).toHaveValue("unavailable");
   await assertionKind.selectOption("correlated-local-evidence-exists");
   await expect(checkpoint).toContainText("Correlated committed Local Evidence exists after Step");
   const within = checkpoint.getByRole("spinbutton", { name: "Within active ms" });
