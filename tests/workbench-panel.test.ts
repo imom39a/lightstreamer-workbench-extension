@@ -19,6 +19,12 @@ type TestRuntime = WorkbenchRuntime & {
   commands: WorkbenchCommand[];
 };
 
+const emptyDiagnosticOptions = () => ({
+  diagnosticCode: [],
+  diagnosticSeverity: [],
+  diagnosticAffected: []
+});
+
 function createTestRuntime(snapshot: WorkbenchSnapshot): TestRuntime {
   const listeners = new Set<() => void>();
   const commands: WorkbenchCommand[] = [];
@@ -178,7 +184,7 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
         ["COMMAND operation", "UPDATE"]
       ],
       diagnostics: [],
-      diagnosticFilter: { criteria: {}, active: false },
+      diagnosticFilter: { criteria: {}, active: false, options: emptyDiagnosticOptions() },
       selectedUpdate: {
         fields: [],
         changedFields: [],
@@ -650,7 +656,15 @@ describe("React Workbench Diagnose panel", () => {
     const runtime = createTestRuntime({
       ...base,
       diagnostics: [],
-      context: { ...base.context, diagnostics: [diagnostic], diagnosticFilter: { criteria: {}, active: false } }
+      context: {
+        ...base.context,
+        diagnostics: [diagnostic],
+        diagnosticFilter: {
+          criteria: {},
+          active: false,
+          options: { ...emptyDiagnosticOptions(), diagnosticCode: [{ value: codeValue, count: 1 }] }
+        }
+      }
     });
     const root = createRoot(rootElement);
     await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
@@ -662,6 +676,20 @@ describe("React Workbench Diagnose panel", () => {
     Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect affected Scope")?.click();
     expect(runtime.commands).toContainEqual({ type: "apply-diagnostic-filter", facet: "diagnosticCode", value: codeValue, polarity: "include" });
     expect(runtime.commands).toContainEqual({ type: "inspect-diagnostic-affected", affected: diagnostic.affectedIdentity });
+
+    await act(async () => runtime.setSnapshot({
+      ...runtime.getSnapshot(),
+      context: {
+        ...runtime.getSnapshot().context,
+        diagnosticFilter: {
+          ...runtime.getSnapshot().context.diagnosticFilter,
+          criteria: { diagnosticCode: { include: [codeValue], exclude: [] } },
+          active: true
+        }
+      }
+    }));
+    Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Remove Include ls.sub.raw-snapshot-unavailable")?.click();
+    expect(runtime.commands).toContainEqual({ type: "remove-diagnostic-filter", facet: "diagnosticCode", value: codeValue, polarity: "include" });
 
     await act(async () => root.unmount());
   });
@@ -740,7 +768,7 @@ describe("React Workbench Diagnose panel", () => {
         title: "Inspected page",
         fields: [["Scope type", "Inspected page"]],
         diagnostics: [],
-        diagnosticFilter: { criteria: {}, active: false },
+        diagnosticFilter: { criteria: {}, active: false, options: emptyDiagnosticOptions() },
         selectedUpdate: null
       }
     });
@@ -775,7 +803,7 @@ describe("React Workbench Diagnose panel", () => {
         title: "evt-2 · Session lifecycle",
         fields: [["Source", "RUNTIME"]],
         diagnostics: [],
-        diagnosticFilter: { criteria: {}, active: false },
+        diagnosticFilter: { criteria: {}, active: false, options: emptyDiagnosticOptions() },
         selectedUpdate: null
       }
     });

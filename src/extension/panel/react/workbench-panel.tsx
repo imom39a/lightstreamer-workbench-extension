@@ -565,6 +565,16 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
   const findState = evidence.findState;
   const hiddenSelection = evidence.hiddenSelection;
   const contextFields = snapshot.context.fields;
+  const activeDiagnosticCriteria = (["diagnosticCode", "diagnosticSeverity", "diagnosticAffected"] as const).flatMap((facet) => {
+    const criterion = snapshot.context.diagnosticFilter.criteria[facet];
+    if (!criterion) return [];
+    const include = "include" in criterion ? criterion.include : criterion;
+    const exclude = "exclude" in criterion ? criterion.exclude : [];
+    return [
+      ...include.map((value) => ({ facet, value, polarity: "include" as const })),
+      ...exclude.map((value) => ({ facet, value, polarity: "exclude" as const }))
+    ];
+  });
   const scopeNodes = snapshot.scope.structure;
   const {
     scopeNodeById,
@@ -1812,18 +1822,17 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
               {snapshot.context.diagnostics.length || snapshot.context.diagnosticFilter.active ? <section className="workbench-react__context-diagnostics" role="region" aria-label="Context diagnostics">
                 <div className="workbench-react__context-diagnostics-heading"><strong>Diagnostics for this Scope</strong>{snapshot.context.diagnosticFilter.active ? <button type="button" onClick={() => dispatch(runtime, { type: "reset-diagnostic-filter" })}>Reset diagnostic filters</button> : null}</div>
+                {activeDiagnosticCriteria.length ? <div className="workbench-react__diagnostic-active-filters" aria-label="Active diagnostic filters">{activeDiagnosticCriteria.map(({ facet, value, polarity }) => <button type="button" key={`${facet}-${polarity}-${value.identity}`} onClick={() => dispatch(runtime, { type: "remove-diagnostic-filter", facet, value, polarity })}>Remove {polarity === "include" ? "Include" : "Exclude"} {value.label}</button>)}</div> : null}
+                <details className="workbench-react__diagnostic-filter-options">
+                  <summary>Filter diagnostics</summary>
+                  {(["diagnosticCode", "diagnosticSeverity", "diagnosticAffected"] as const).map((facet) => <fieldset key={facet}><legend>{facet === "diagnosticCode" ? "Code" : facet === "diagnosticSeverity" ? "Severity" : "Affected"}</legend>{snapshot.context.diagnosticFilter.options[facet].map(({ value, count }) => <span key={value.identity}><span>{value.label} ({count})</span><button type="button" onClick={() => dispatch(runtime, { type: "apply-diagnostic-filter", facet, value, polarity: "include" })}>Include {value.label}</button><button type="button" onClick={() => dispatch(runtime, { type: "apply-diagnostic-filter", facet, value, polarity: "exclude" })}>Exclude {value.label}</button></span>)}</fieldset>)}
+                </details>
                 {snapshot.context.diagnostics.map((diagnostic, index) => <article className="workbench-react__context-diagnostic" data-severity={diagnostic.severity.toLowerCase()} key={diagnostic.id ? `${diagnostic.code ?? diagnostic.title}:${diagnostic.id}` : `${diagnostic.title}-${index}`}>
                   <strong>{diagnostic.severity} · {diagnostic.title}</strong>
                   <span>Affected: {diagnostic.affected}</span>
                   <span>{diagnostic.detail}</span>
                   {diagnostic.limitation ? <span>Limit: {diagnostic.limitation}</span> : null}
                   {diagnostic.consequence ? <span>Consequence: {diagnostic.consequence}</span> : null}
-                  {diagnostic.filterFacets ? <div className="workbench-react__diagnostic-filter-actions" aria-label={`Filter ${diagnostic.title}`}>
-                    {(["diagnosticCode", "diagnosticSeverity", "diagnosticAffected"] as const).flatMap((facet) => diagnostic.filterFacets?.[facet].slice(-1).flatMap((value) => [
-                      <button type="button" key={`${facet}-${value.identity}-include`} onClick={() => dispatch(runtime, { type: "apply-diagnostic-filter", facet, value, polarity: "include" })}>Include {value.label}</button>,
-                      <button type="button" key={`${facet}-${value.identity}-exclude`} onClick={() => dispatch(runtime, { type: "apply-diagnostic-filter", facet, value, polarity: "exclude" })}>Exclude {value.label}</button>
-                    ]) ?? [])}
-                  </div> : null}
                   {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
                     ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
                     : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}

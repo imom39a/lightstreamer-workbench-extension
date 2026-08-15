@@ -4,9 +4,9 @@ import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { type EventHistory, type HistoryPublication } from "../src/core/event-history-authoritative";
 import { createTypedFilterValue } from "../src/core/filter-algebra";
 import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
-import { diagnosticCodeFacetValue } from "../src/core/diagnostic-observation-index";
+import { diagnosticCodeFacetValue, diagnosticSeverityFacetValue } from "../src/core/diagnostic-observation-index";
 import { createCaptureMessage } from "../src/bridge/messages";
-import { createWorkbenchRuntime, type WorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
+import { createWorkbenchRuntime, type WorkbenchRuntime, type WorkbenchRuntimeScheduler, type WorkbenchSnapshot } from "../src/extension/panel/workbench-runtime";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
 import { getPanelScenario } from "./support/panel-scenarios";
 
@@ -739,6 +739,60 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().diagnostics).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "ls.subscription.exact-duplicate" })
     ]));
+    const initialDiagnosticFilter: WorkbenchSnapshot["context"]["diagnosticFilter"] = runtime.getSnapshot().context.diagnosticFilter;
+    const initialSeverityOptionIds = initialDiagnosticFilter.options.diagnosticSeverity.map(({ value }) => value.identity);
+    const initialAffectedOptionIds = initialDiagnosticFilter.options.diagnosticAffected.map(({ value }) => value.identity);
+    expect(initialDiagnosticFilter.options.diagnosticCode.map(({ value }) => value.label)).toEqual(expect.arrayContaining([
+      "ls.subscription.exact-duplicate",
+      "ls.sub.raw-snapshot-unavailable"
+    ]));
+    runtime.dispatch({
+      type: "apply-diagnostic-filter",
+      facet: "diagnosticCode",
+      value: diagnosticCodeFacetValue("ls.subscription.exact-duplicate"),
+      polarity: "include"
+    } as never);
+    expect(runtime.getSnapshot().context.diagnosticFilter.options.diagnosticCode.map(({ value }) => value.label))
+      .toEqual(expect.arrayContaining(["ls.subscription.exact-duplicate", "ls.sub.raw-snapshot-unavailable"]));
+    expect(runtime.getSnapshot().context.diagnosticFilter.options.diagnosticSeverity.map(({ value }) => value.identity))
+      .toEqual(initialSeverityOptionIds);
+    expect(runtime.getSnapshot().context.diagnosticFilter.options.diagnosticAffected.map(({ value }) => value.identity))
+      .toEqual(initialAffectedOptionIds);
+    runtime.dispatch({
+      type: "apply-diagnostic-filter",
+      facet: "diagnosticCode",
+      value: diagnosticCodeFacetValue("ls.sub.raw-snapshot-unavailable"),
+      polarity: "include"
+    } as never);
+    expect(runtime.getSnapshot().context.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining([
+      "ls.subscription.exact-duplicate",
+      "ls.sub.raw-snapshot-unavailable"
+    ]));
+    runtime.dispatch({
+      type: "apply-diagnostic-filter",
+      facet: "diagnosticSeverity",
+      value: diagnosticSeverityFacetValue("error"),
+      polarity: "include"
+    } as never);
+    expect(runtime.getSnapshot().context.diagnostics).toEqual([]);
+    runtime.dispatch({
+      type: "remove-diagnostic-filter",
+      facet: "diagnosticSeverity",
+      value: diagnosticSeverityFacetValue("error"),
+      polarity: "include"
+    } as never);
+    expect(runtime.getSnapshot().context.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining([
+      "ls.subscription.exact-duplicate",
+      "ls.sub.raw-snapshot-unavailable"
+    ]));
+    runtime.dispatch({
+      type: "remove-diagnostic-filter",
+      facet: "diagnosticCode",
+      value: diagnosticCodeFacetValue("ls.subscription.exact-duplicate"),
+      polarity: "include"
+    } as never);
+    expect(runtime.getSnapshot().context.diagnostics.map(({ code }) => code)).not.toContain("ls.subscription.exact-duplicate");
+    runtime.dispatch({ type: "reset-diagnostic-filter" } as never);
     const rawScope = runtime.getSnapshot().scope.nodes.find(({ kind, label }) => kind === "subscription" && label.includes("raw-subscription"));
     expect(rawScope).toBeDefined();
     runtime.dispatch({ type: "set-scope", scopeId: rawScope?.id ?? null });

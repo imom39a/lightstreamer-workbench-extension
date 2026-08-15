@@ -1355,7 +1355,7 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
     { width: 900, height: 320, theme: "dark" as const },
     { width: 1440, height: 900, theme: "light" as const }
   ];
-  for (const scene of scenes) {
+  for (const [sceneIndex, scene] of scenes.entries()) {
     await openScenario(page, "diagnostic-subscription-context", scene, scene.theme);
     await page.getByRole("button", { name: "Open Scope Context" }).click();
     const footer = page.getByRole("region", { name: "Workbench diagnostics" });
@@ -1366,6 +1366,32 @@ test("Workbench explains committed Subscription and topology diagnostics in Cont
     await expect(contextDiagnostics).toContainText("immutable committed topology facts");
     await expect(contextDiagnostics).toContainText("does not infer application intent");
     await expect(footer).not.toContainText("Exact duplicate Subscriptions");
+
+    if (sceneIndex === 0) {
+      await contextDiagnostics.getByText("Filter diagnostics", { exact: true }).click();
+      const includeExact = contextDiagnostics.getByRole("button", { name: "Include ls.subscription.exact-duplicate", exact: true });
+      const includeOverlap = contextDiagnostics.getByRole("button", { name: "Include ls.subscription.semantic-overlap", exact: true });
+      await includeExact.click();
+      await expect(contextDiagnostics).toContainText("Exact duplicate Subscriptions");
+      await expect(contextDiagnostics).not.toContainText("Semantic Subscription overlap");
+      await expect(includeOverlap).toBeVisible();
+      await expect(contextDiagnostics.getByRole("button", { name: "Include Information", exact: true })).toBeVisible();
+      await expect(contextDiagnostics.getByRole("button", { name: "Include Subscription duplicate-a", exact: true })).toBeVisible();
+      await includeOverlap.click();
+      await expect(contextDiagnostics).toContainText("Exact duplicate Subscriptions");
+      await expect(contextDiagnostics).toContainText("Semantic Subscription overlap");
+      await expect(contextDiagnostics.getByRole("button", { name: "Remove Include ls.subscription.exact-duplicate", exact: true })).toBeVisible();
+      await contextDiagnostics.getByRole("button", { name: "Exclude ls.subscription.exact-duplicate", exact: true }).click();
+      await expect(contextDiagnostics).not.toContainText("Exact duplicate Subscriptions");
+      await expect(contextDiagnostics).toContainText("Semantic Subscription overlap");
+      await expect(contextDiagnostics.getByRole("button", { name: "Remove Exclude ls.subscription.exact-duplicate", exact: true })).toBeVisible();
+      await contextDiagnostics.getByRole("button", { name: "Remove Include ls.subscription.semantic-overlap", exact: true }).click();
+      await expect(contextDiagnostics).not.toContainText("Exact duplicate Subscriptions");
+      await contextDiagnostics.getByRole("button", { name: "Reset diagnostic filters", exact: true }).click();
+      await expect(contextDiagnostics).toContainText("Exact duplicate Subscriptions");
+      await expect(contextDiagnostics).toContainText("Semantic Subscription overlap");
+      await expect(contextDiagnostics).toContainText("Listener registration churn");
+    }
 
     const exactDuplicate = contextDiagnostics.locator(".workbench-react__context-diagnostic").filter({ hasText: "Exact duplicate Subscriptions" }).first();
     const exactRoute = exactDuplicate.getByRole("button", { name: "Inspect supporting Evidence" });

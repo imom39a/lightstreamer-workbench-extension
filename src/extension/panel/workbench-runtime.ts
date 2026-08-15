@@ -19,6 +19,7 @@ import {
   type DiagnosticObservationJournal
 } from "../../core/diagnostic-observation";
 import {
+  DIAGNOSTIC_FILTER_FACETS,
   createDiagnosticObservationIndex,
   type DiagnosticFilterCriteria,
   type DiagnosticFilterFacet
@@ -349,6 +350,7 @@ export type WorkbenchContextSnapshot = Readonly<{
   diagnosticFilter: Readonly<{
     criteria: DiagnosticFilterCriteria;
     active: boolean;
+    options: Readonly<Record<DiagnosticFilterFacet, readonly Readonly<{ value: TypedFacetValue; count: number }>[]>>;
   }>;
 }>;
 
@@ -697,6 +699,7 @@ export type WorkbenchCommand =
   | { type: "inspect-diagnostic-evidence"; evidence: EvidenceRef }
   | { type: "inspect-diagnostic-affected"; affected: DiagnosticAffectedIdentity }
   | { type: "apply-diagnostic-filter"; facet: DiagnosticFilterFacet; value: TypedFacetValue; polarity: "include" | "exclude" }
+  | { type: "remove-diagnostic-filter"; facet: DiagnosticFilterFacet; value: TypedFacetValue; polarity: "include" | "exclude" }
   | { type: "reset-diagnostic-filter" }
   | { type: "export-scope" }
   | { type: "open-actions" }
@@ -1978,6 +1981,9 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "apply-diagnostic-filter":
         this.applyDiagnosticFilter(command.facet, command.value, command.polarity);
+        return;
+      case "remove-diagnostic-filter":
+        this.removeDiagnosticFilter(command.facet, command.value, command.polarity);
         return;
       case "reset-diagnostic-filter":
         this.diagnosticFilterCriteria = Object.freeze({});
@@ -5429,7 +5435,8 @@ class Runtime implements WorkbenchRuntime {
         "include" in criterion
           ? criterion.include.length > 0 || criterion.exclude.length > 0
           : criterion.length > 0
-      )
+      ),
+      options: this.contextDiagnosticFilterOptions(scope)
     });
     const selected =
       (this.selectedEventEnvelope?.id === this.selectionEventId
@@ -5669,6 +5676,20 @@ class Runtime implements WorkbenchRuntime {
       .map(({ diagnostic }) => diagnostic));
   }
 
+  private contextDiagnosticFilterOptions(
+    scope: WorkbenchSnapshot["scope"]
+  ): Readonly<Record<DiagnosticFilterFacet, readonly Readonly<{ value: TypedFacetValue; count: number }> []>> {
+    const relevant = new Set(this.relevantCommittedDiagnosticPresentations(scope).filter(isContextOwnedDiagnostic));
+    const observations = [...this.committedDiagnosticPresentations.entries()].flatMap(([key, diagnostic]) => {
+      const observation = relevant.has(diagnostic) ? this.committedDiagnosticObservations.get(key) : undefined;
+      return observation ? [observation] : [];
+    });
+    const index = createDiagnosticObservationIndex(observations);
+    return Object.freeze(Object.fromEntries(
+      DIAGNOSTIC_FILTER_FACETS.map((facet) => [facet, index.discover(facet)])
+    ) as Record<DiagnosticFilterFacet, readonly Readonly<{ value: TypedFacetValue; count: number }>[] >);
+  }
+
   private applyDiagnosticFilter(
     facet: DiagnosticFilterFacet,
     value: TypedFacetValue,
@@ -5685,6 +5706,26 @@ class Runtime implements WorkbenchRuntime {
       ...this.diagnosticFilterCriteria,
       [facet]: Object.freeze({ include: Object.freeze(include), exclude: Object.freeze(exclude) })
     });
+    this.publish();
+  }
+
+  private removeDiagnosticFilter(
+    facet: DiagnosticFilterFacet,
+    value: TypedFacetValue,
+    polarity: "include" | "exclude"
+  ): void {
+    const prior = this.diagnosticFilterCriteria[facet];
+    if (!prior) return;
+    const include = [...("include" in prior ? prior.include : prior)];
+    const exclude = [...("exclude" in prior ? prior.exclude : [])];
+    const values = polarity === "include" ? include : exclude;
+    const index = values.findIndex((entry) => entry.identity === value.identity);
+    if (index < 0) return;
+    values.splice(index, 1);
+    const criteria = { ...this.diagnosticFilterCriteria };
+    if (include.length === 0 && exclude.length === 0) delete criteria[facet];
+    else criteria[facet] = Object.freeze({ include: Object.freeze(include), exclude: Object.freeze(exclude) });
+    this.diagnosticFilterCriteria = Object.freeze(criteria);
     this.publish();
   }
 
@@ -6175,7 +6216,11 @@ function runtimeObjectDossier(
     selectedUpdate: null,
     filterActions: Object.freeze([]),
     diagnostics: Object.freeze([]),
-    diagnosticFilter: Object.freeze({ criteria: Object.freeze({}), active: false })
+    diagnosticFilter: Object.freeze({
+      criteria: Object.freeze({}),
+      active: false,
+      options: Object.freeze({ diagnosticCode: Object.freeze([]), diagnosticSeverity: Object.freeze([]), diagnosticAffected: Object.freeze([]) })
+    })
   });
 }
 

@@ -293,6 +293,12 @@
 .workbench-react__context-diagnostic[data-severity="error"] { border-left-color: var(--wb-error); background: var(--wb-error-soft); }
 .workbench-react__context-diagnostic[data-severity="information"] { border-left-color: var(--wb-info); background: var(--wb-info-soft); }
 .workbench-react__diagnostic-filter-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.workbench-react__diagnostic-active-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.workbench-react__diagnostic-filter-options { border: 1px solid var(--wb-border); border-radius: 4px; padding: 6px; }
+.workbench-react__diagnostic-filter-options > summary { cursor: pointer; font-weight: 600; }
+.workbench-react__diagnostic-filter-options fieldset { display: grid; gap: 4px; margin: 7px 0 0; }
+.workbench-react__diagnostic-filter-options fieldset > span { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.workbench-react__diagnostic-filter-options fieldset > span > span { flex: 1 1 150px; overflow-wrap: anywhere; }
 .workbench-react__selected-update { display: grid; gap: 8px; margin: 0 0 12px; border-bottom: 1px solid var(--wb-border); padding-bottom: 10px; }
 .workbench-react__selected-update > h3, .workbench-react__selected-update h4 { margin: 0; }
 .workbench-react__selected-update > h3 { font-size: 13px; }
