@@ -16,7 +16,8 @@ import {
   diagnosticObservationIdentity,
   type DiagnosticAffectedIdentity,
   type DiagnosticObservationInput,
-  type DiagnosticObservationJournal
+  type DiagnosticObservationJournal,
+  type DiagnosticObservationRef
 } from "../../core/diagnostic-observation";
 import {
   DIAGNOSTIC_FILTER_FACETS,
@@ -667,6 +668,7 @@ export type WorkbenchCommand =
   | { type: "move-scenario-member"; memberId: string; direction: "earlier" | "later" }
   | { type: "remove-scenario-checkpoint"; checkpointId: string }
   | { type: "show-scenario-checkpoint-evidence"; evidence: EvidenceRef }
+  | { type: "show-scenario-diagnostic-observation"; observation: DiagnosticObservationRef }
   | { type: "move-scenario-step"; stepId: string; direction: "earlier" | "later" }
   | { type: "duplicate-scenario-step"; stepId: string }
   | { type: "remove-scenario-step"; stepId: string }
@@ -1809,6 +1811,30 @@ class Runtime implements WorkbenchRuntime {
         }
         state.membershipError = null;
         this.dispatch({ type: "select-evidence", eventId: command.evidence.eventId });
+        return;
+      }
+      case "show-scenario-diagnostic-observation": {
+        const state = this.scenarioState;
+        if (!state) return;
+        const route = command.observation.route;
+        if (route.kind === "inspect-evidence") {
+          this.dispatch({ type: "show-scenario-checkpoint-evidence", evidence: route.evidence });
+          return;
+        }
+        if (route.kind === "inspect-affected") {
+          const scopeId = this.diagnosticAffectedScopeId(command.observation.affected);
+          if (scopeId) {
+            state.membershipError = null;
+            this.dispatch({ type: "set-scope", scopeId });
+            this.dispatch({ type: "open-scope" });
+            return;
+          }
+          state.membershipError = `The exact affected ${command.observation.affected.kind} object is unavailable in the current runtime topology; the Scenario Trace was not changed.`;
+          this.publish();
+          return;
+        }
+        state.membershipError = `Recovery route ${route.action} is unavailable from Scenario Trace; use the shared diagnostic recovery surface.`;
+        this.publish();
         return;
       }
       case "move-scenario-step":
@@ -4025,7 +4051,8 @@ class Runtime implements WorkbenchRuntime {
         item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
         keys: this.activeCommandKeys(draft.anchor)
       })),
-      retainedRunBytes: state.retainedRunBytes
+      retainedRunBytes: state.retainedRunBytes,
+      diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary()
     });
     if (!reviewed.ok) {
       state.membershipError = `${reviewed.stepId ? `${reviewed.stepId}: ` : ""}${reviewed.reason}`;
@@ -4146,7 +4173,12 @@ class Runtime implements WorkbenchRuntime {
       },
       checkpoint: {
         feed: this.scenarioBoundaryFeed(),
-        observations: (currentRun) => this.scenarioAssertionObservations(currentRun)
+        observations: (currentRun) => this.scenarioAssertionObservations(currentRun),
+        diagnostics: {
+          currentBoundary: () => this.diagnosticObservations.currentBoundary(),
+          query: (query) => this.diagnosticObservations.query(query),
+          subscribe: (after, observer) => this.diagnosticObservations.subscribe(after, observer)
+        }
       },
       onChange: (runnerSnapshot) => {
         if (this.disposed || this.scenarioState !== state) return;
@@ -4241,7 +4273,8 @@ class Runtime implements WorkbenchRuntime {
     const accepted = state.runner.reReview({
       targetFingerprint: this.scenarioTargetFingerprint(firstDraft),
       listenerIds: this.scenarioCurrentListenerIds(firstDraft),
-      committedEvidenceBoundary: this.committedEvidenceBoundary
+      committedEvidenceBoundary: this.committedEvidenceBoundary,
+      diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary()
     });
     if (!accepted.ok) state.runner.stop(`Drift re-review failed: ${accepted.reason}`);
     else state.serverInterleaves = [];
@@ -5237,6 +5270,30 @@ class Runtime implements WorkbenchRuntime {
       })
     };
     return Object.freeze(snapshot);
+  }
+
+  private diagnosticAffectedScopeId(affected: DiagnosticAffectedIdentity): string | null {
+    const state = this.topologyProjection.snapshot();
+    const structure = this.currentScopeStructure(state);
+    if (affected.kind === "unavailable" || affected.kind === "evidence"
+      || this.currentPageEpoch === null
+      || affected.pageId !== this.currentPageEpoch) return null;
+    for (const descriptor of structure.descriptors) {
+      const located = locateScopeDescriptor(state, descriptor.locator);
+      if (!located) continue;
+      if (affected.kind === "page" && located.kind === "page") return descriptor.id;
+      if (affected.kind === "client" && located.kind === "client" && located.client.id === affected.clientId) return descriptor.id;
+      if (affected.kind === "session" && located.kind === "session" && located.client.id === affected.clientId && located.session.id === affected.sessionId) return descriptor.id;
+      if (affected.kind === "subscription" && located.kind === "subscription"
+        && located.client?.id === affected.clientId
+        && located.subscription.id === affected.subscriptionId
+        && (affected.sessionId === undefined || located.session?.id === affected.sessionId)) return descriptor.id;
+      if (affected.kind === "item" && located.kind === "item"
+        && located.client?.id === affected.clientId
+        && located.subscription.id === affected.subscriptionId
+        && (located.item.name === affected.item || `#${located.item.position}` === affected.item)) return descriptor.id;
+    }
+    return null;
   }
 
   private currentScopeStructure(state: TopologyState): NonNullable<Runtime["scopeStructureCache"]> {

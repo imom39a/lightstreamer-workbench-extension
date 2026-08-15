@@ -9,7 +9,7 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" };
+  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" | "diagnostic-server" | "diagnostic-subscription" | "diagnostic-anomaly" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -175,6 +175,39 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         await expect(checkpoint).toContainText("NOT-EVALUABLE");
         await expect(checkpoint).toContainText("ambiguous · server");
       }
+      return;
+    }
+    case "scenario-diagnostic-checkpoint": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      const checkpoint = scenario.locator(".workbench-react__scenario-checkpoint");
+      await expect(checkpoint).toHaveCount(1);
+      await expect(checkpoint).toContainText("Diagnostic Observation subscription.lost-updates");
+      await expect(checkpoint).toContainText("Exact affected identity subscription");
+      if (visual.production.scenario.endsWith("authoring")) {
+        await expect(checkpoint).toHaveAttribute("data-checkpoint-state", "authoring");
+        const rule = checkpoint.getByRole("textbox", { name: "Diagnostic rule code" });
+        await rule.focus();
+        await expect(rule).toBeFocused();
+        await expect(rule).toBeInViewport();
+      }
+      if (!visual.production.scenario.endsWith("authoring")) {
+        await expect(scenario.getByLabel("Protected Scenario target and execution boundary")).toContainText("Diagnostic authorization seed");
+        await expect(scenario.getByRole("region", { name: "Scenario Run ledger" })).toContainText("Diagnostic Observation cursor");
+      }
+      if (visual.production.scenario.endsWith("review")) await expect(checkpoint).toContainText("REVIEWED");
+      if (visual.production.scenario.endsWith("waiting")) await expect(checkpoint).toContainText("WAITING");
+      if (visual.production.scenario.endsWith("pass")) {
+        await expect(checkpoint).toContainText("PASS");
+        await expect(checkpoint).toContainText("Diagnostic Observation boundary");
+        await expect(checkpoint).toContainText("Compact reference only · raw diagnostic messages are not copied into Scenario Trace");
+        await expect(checkpoint).toContainText("Route inspect affected");
+        const route = checkpoint.getByRole("button", { name: "Inspect Diagnostic Observation subscription.lost-updates" });
+        await route.focus();
+        await expect(route).toBeFocused();
+        await expect(route).toBeInViewport();
+      }
+      if (visual.production.scenario.endsWith("fail")) await expect(checkpoint).toContainText("FAIL");
+      if (visual.production.scenario.endsWith("unavailable")) await expect(checkpoint).toContainText("UNAVAILABLE");
       return;
     }
     case "scenario-checkpoint-high-volume": {

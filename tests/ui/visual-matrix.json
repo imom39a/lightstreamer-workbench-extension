@@ -425,5 +425,48 @@
     "theme": "light",
     "prototype": { "variant": "A", "state": "diagnostic", "frame": "wide", "setup": "diagnostic-footer" },
     "production": { "scenario": "diagnostic-anomalies", "setup": "diagnostic-anomaly" }
+  },
+  {
+    "id": "scenario-diagnostic-authoring-compact-light",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-diagnostic-authoring", "setup": "scenario-diagnostic-checkpoint" }
+  },
+  {
+    "id": "scenario-diagnostic-review-normal-dark",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-diagnostic-review", "setup": "scenario-diagnostic-checkpoint" }
+  },
+  {
+    "id": "scenario-diagnostic-waiting-wide-light",
+    "viewport": { "width": 1440, "height": 900 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "wide", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-diagnostic-waiting", "setup": "scenario-diagnostic-checkpoint" }
+  },
+  {
+    "id": "scenario-diagnostic-pass-normal-light",
+    "viewport": { "width": 900, "height": 700 },
+    "theme": "light",
+    "prototype": { "variant": "A", "state": "selected", "frame": "normal", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-diagnostic-pass", "setup": "scenario-diagnostic-checkpoint" }
+  },
+  {
+    "id": "scenario-diagnostic-fail-compact-dark",
+    "viewport": { "width": 563, "height": 700 },
+    "theme": "dark",
+    "prototype": { "variant": "A", "state": "selected", "frame": "compact", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-diagnostic-fail", "setup": "scenario-diagnostic-checkpoint" }
+  },
+  {
+    "id": "scenario-diagnostic-unavailable-shallow-forced-dark",
+    "viewport": { "width": 900, "height": 320 },
+    "theme": "dark",
+    "forcedColors": true,
+    "prototype": { "variant": "A", "state": "selected", "frame": "shallow", "setup": "scenario-reference" },
+    "production": { "scenario": "local-injection-scenario-diagnostic-unavailable", "setup": "scenario-diagnostic-checkpoint" }
   }
 ]
