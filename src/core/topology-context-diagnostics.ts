@@ -118,7 +118,7 @@ export function evaluateTopologyContextDiagnostics(
   const active = new Set(observations.flatMap((observation) =>
     observation.lifecycle.kind === "condition" ? [diagnosticObservationIdentity(observation)] : []));
   const resolutions = previouslyActive.flatMap((observation): DiagnosticConditionResolution[] => {
-    if (observation.lifecycle.kind !== "condition" || active.has(diagnosticObservationIdentity(observation))) return [];
+    if (!isOwnedCode(observation.code) || observation.lifecycle.kind !== "condition" || active.has(diagnosticObservationIdentity(observation))) return [];
     return [Object.freeze({
       code: observation.code,
       ruleVersion: observation.ruleVersion,
@@ -361,14 +361,22 @@ function normalized(input: DiagnosticObservationInput): DiagnosticObservationInp
 
 function uniqueObservations(observations: readonly DiagnosticObservationInput[]): DiagnosticObservationInput[] {
   const unique = new Map<string, DiagnosticObservationInput>();
-  for (const observation of observations) unique.set(diagnosticObservationIdentity(observation), observation);
-  return [...unique.values()];
+  for (const observation of observations) {
+    const identity = diagnosticObservationIdentity(observation);
+    const existing = unique.get(identity);
+    if (!existing || JSON.stringify(observation).localeCompare(JSON.stringify(existing)) < 0) unique.set(identity, observation);
+  }
+  return [...unique.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, observation]) => observation);
 }
 
 function uniqueResolutions(resolutions: readonly DiagnosticConditionResolution[]): DiagnosticConditionResolution[] {
   const unique = new Map<string, DiagnosticConditionResolution>();
   for (const resolution of resolutions) unique.set(`${resolution.code}:${resolution.conditionId}:${JSON.stringify(resolution.affected)}`, resolution);
   return [...unique.values()];
+}
+
+function isOwnedCode(code: string): boolean {
+  return (Object.values(TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES) as readonly string[]).includes(code);
 }
 
 function boundedIdentity(value: string): string {

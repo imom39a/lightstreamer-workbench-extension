@@ -300,4 +300,21 @@ describe("topology Context diagnostics", () => {
     expect(resolved[0]).toMatchObject({ code: "ls.subscription.exact-duplicate", lifecycle: { state: "resolved" } });
     expect((await journal.replay()).map(({ lifecycle }) => lifecycle.state)).toEqual(["active", "resolved"]);
   });
+
+  it("requires a committed topology boundary for comparisons and never resolves another producer's condition", () => {
+    const source = input([subscription("sub-a"), subscription("sub-b")]);
+    expect(evaluateTopologyContextDiagnostics({ ...source, boundary: { observedAt: 1_000, sequence: 20 } }).observations).toEqual([]);
+    const unrelated = {
+      code: "workbench.capture.disconnected",
+      severity: "error" as const,
+      lifecycle: { kind: "condition" as const, conditionId: "bridge" },
+      affected: { kind: "page" as const, pageId: "page" },
+      observedAt: 900,
+      observed: "Capture bridge disconnected.",
+      limitation: "Later page activity is unavailable.",
+      consequence: "Capture cannot advance.",
+      route: { kind: "inspect-affected" as const }
+    };
+    expect(evaluateTopologyContextDiagnostics(input([]), [unrelated]).resolutions).toEqual([]);
+  });
 });
