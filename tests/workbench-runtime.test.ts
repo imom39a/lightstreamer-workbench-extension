@@ -699,6 +699,16 @@ describe("WorkbenchRuntime", () => {
       expect.objectContaining({ code: "ls.subscription.exact-duplicate" }),
       expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
     ]));
+
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+    expect((await diagnosticObservations.query()).observations).toEqual([]);
+    expect(runtime.getSnapshot().diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ls.subscription.exact-duplicate" }),
+      expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
+    ]));
     runtime.dispose();
   });
 
