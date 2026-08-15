@@ -134,6 +134,33 @@ async function runOfficialClientPanelJourney(
       );
     }
 
+    const panelSelection = await waitForWorkbenchPanel({
+      listTargets: () => listBrowserTargets(debugging.port),
+      connect: (target) => CdpClient.connect(target.webSocketDebuggerUrl ?? ""),
+      evaluateByValue
+    });
+    latestTargets = panelSelection.targets;
+    devtoolsCdp = panelSelection.cdp;
+    expect(panelSelection.selection.panelId).toBeTruthy();
+    expect(panelSelection.selection.selectedTabId).toBe(panelSelection.selection.panelId);
+
+    const panelTarget = await waitForExtensionPanelTarget(debugging.port);
+    latestTargets = await listBrowserTargets(debugging.port);
+    panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl ?? "");
+    panelCdp.on("Debugger.scriptParsed", (params) => {
+      const url = (params as { url?: unknown } | undefined)?.url;
+      if (typeof url === "string" && url) panelScriptUrls.push(url);
+    });
+    await panelCdp.request("Debugger.enable");
+    await panelCdp.request("Runtime.enable");
+    await installBrowserErrorCapture(panelCdp);
+    await setPanelViewport(
+      devtoolsCdp,
+      panelCdp,
+      viewport,
+      `${viewport.width}×${viewport.height}`
+    );
+
     if (scenario === "diagnostics") {
       await pageCdp.request("Runtime.evaluate", {
         expression: `(() => {
@@ -163,33 +190,6 @@ async function runOfficialClientPanelJourney(
         30_000
       );
     }
-
-    const panelSelection = await waitForWorkbenchPanel({
-      listTargets: () => listBrowserTargets(debugging.port),
-      connect: (target) => CdpClient.connect(target.webSocketDebuggerUrl ?? ""),
-      evaluateByValue
-    });
-    latestTargets = panelSelection.targets;
-    devtoolsCdp = panelSelection.cdp;
-    expect(panelSelection.selection.panelId).toBeTruthy();
-    expect(panelSelection.selection.selectedTabId).toBe(panelSelection.selection.panelId);
-
-    const panelTarget = await waitForExtensionPanelTarget(debugging.port);
-    latestTargets = await listBrowserTargets(debugging.port);
-    panelCdp = await CdpClient.connect(panelTarget.webSocketDebuggerUrl ?? "");
-    panelCdp.on("Debugger.scriptParsed", (params) => {
-      const url = (params as { url?: unknown } | undefined)?.url;
-      if (typeof url === "string" && url) panelScriptUrls.push(url);
-    });
-    await panelCdp.request("Debugger.enable");
-    await panelCdp.request("Runtime.enable");
-    await installBrowserErrorCapture(panelCdp);
-    await setPanelViewport(
-      devtoolsCdp,
-      panelCdp,
-      viewport,
-      `${viewport.width}×${viewport.height}`
-    );
 
     if (scenario === "scenario") {
       await runOfficialClientScenarioJourney(pageCdp, panelCdp);
@@ -663,10 +663,17 @@ document.querySelector(".workbench-react__operating strong")?.textContent === "C
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
   } catch (error) {
     const logTail = chromeLogs.join("").slice(-4_000);
+    const panelState = panelCdp
+      ? await evaluateByValue(panelCdp, `({
+          diagnostics: document.querySelector('[aria-label="Workbench diagnostic entries"]')?.textContent ?? null,
+          evidence: document.querySelector('[aria-label="Ordered Lightstreamer Evidence"]')?.textContent ?? null,
+          body: document.body?.textContent?.slice(-4000) ?? null
+        })`).catch(() => null)
+      : null;
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}\nObserved targets: ${formatTargets(
         latestTargets
-      )}${logTail ? `\nChrome log tail:\n${logTail}` : ""}`
+      )}${panelState ? `\nPanel state:\n${JSON.stringify(panelState)}` : ""}${logTail ? `\nChrome log tail:\n${logTail}` : ""}`
     );
   } finally {
     panelCdp?.close();
