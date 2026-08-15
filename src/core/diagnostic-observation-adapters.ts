@@ -6,6 +6,7 @@ import type {
   DiagnosticResultRef,
   DiagnosticSeverity
 } from "./diagnostic-observation";
+import { freezeDiagnosticInspectionRoute } from "./diagnostic-observation";
 
 type DiagnosticSemantics = Readonly<{
   severity: DiagnosticSeverity;
@@ -81,16 +82,10 @@ function adapted(
       observed: finding.observed,
       limitation: finding.limitation,
       consequence: finding.consequence,
-      route: freezeRoute(finding.route),
+      route: freezeDiagnosticInspectionRoute(finding.route),
       resultRef: resultRef ? Object.freeze({ ...resultRef }) : undefined,
       originalCode: finding.originalCode,
       safeMessage: finding.safeMessage
     })
   });
-}
-
-function freezeRoute(route: DiagnosticInspectionRoute): DiagnosticInspectionRoute {
-  return route.kind === "inspect-evidence"
-    ? Object.freeze({ kind: route.kind, evidence: Object.freeze({ ...route.evidence }) })
-    : Object.freeze({ ...route });
 }

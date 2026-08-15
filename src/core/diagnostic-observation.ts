@@ -5,6 +5,7 @@ export const DIAGNOSTIC_TEXT_MAX_LENGTH = 512;
 export const DIAGNOSTIC_SAFE_MESSAGE_MAX_LENGTH = 256;
 export const DIAGNOSTIC_MAX_RETAINED_OBSERVATIONS = 5_000;
 export const DIAGNOSTIC_MAX_RETAINED_BYTES = 16 * 1_048_576;
+export const DIAGNOSTIC_MAX_LIFECYCLE_IDENTITIES = 100_000;
 
 export type DiagnosticSeverity = "information" | "warning" | "error";
 
@@ -116,6 +117,7 @@ export type DiagnosticObservationRef = Readonly<{
 
 export type DiagnosticConditionResolution = Readonly<{
   code: string;
+  ruleVersion?: number;
   conditionId: string;
   affected: DiagnosticAffectedIdentity;
   observedAt: number;
@@ -170,6 +172,7 @@ type PersistedDiagnosticState = {
   sequence: number;
   retainedThrough: number;
   records: DiagnosticObservation[];
+  current: DiagnosticObservation[];
 };
 
 type DiagnosticIndexedDbOptions = Readonly<{
@@ -183,17 +186,24 @@ export async function openIndexedDbDiagnosticObservationJournal(
   options: DiagnosticIndexedDbOptions
 ): Promise<DiagnosticObservationJournal> {
   const factory = options.indexedDB ?? globalThis.indexedDB;
-  if (!factory) throw new Error("IndexedDB is unavailable for Diagnostic Observations.");
+  if (!factory) return createUnavailableDiagnosticObservationJournal({ panelSessionId: options.panelSessionId, status: "unavailable" });
   const databaseName = `lsew-diagnostics-v${DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION}-${boundedDatabaseComponent(options.panelSessionId)}`;
-  const database = await openDiagnosticDatabase(factory, databaseName);
-  const persisted = await readDiagnosticState(database) ?? emptyPersistedState();
-  return createDiagnosticObservationJournal(options.panelSessionId, persisted, async (state) => {
-    await writeDiagnosticState(database, state);
-  }, () => database.close(), options);
+  let database: IDBDatabase | null = null;
+  try {
+    database = await openDiagnosticDatabase(factory, databaseName);
+    const persisted = hydratePersistedState(await readDiagnosticState(database), options.panelSessionId);
+    return createDiagnosticObservationJournal(options.panelSessionId, persisted, async (state) => {
+      await writeDiagnosticState(database!, state);
+    }, () => database?.close(), options);
+  } catch (error) {
+    database?.close();
+    const status = typeof error === "object" && error !== null && "name" in error && error.name === "VersionError" ? "unsupported" : "unavailable";
+    return createUnavailableDiagnosticObservationJournal({ panelSessionId: options.panelSessionId, status });
+  }
 }
 
 function emptyPersistedState(): PersistedDiagnosticState {
-  return { intervalOrdinal: 1, sequence: 0, retainedThrough: 0, records: [] };
+  return { intervalOrdinal: 1, sequence: 0, retainedThrough: 0, records: [], current: [] };
 }
 
 function createDiagnosticObservationJournal(
@@ -210,7 +220,7 @@ function createDiagnosticObservationJournal(
   let intervalId = diagnosticIntervalId(panelSessionId, intervalOrdinal);
   const records: DiagnosticObservation[] = initial.records.map(freezeObservation);
   const current = new Map<string, DiagnosticObservation>();
-  for (const observation of records) current.set(observation.id, observation);
+  for (const observation of initial.current) current.set(observation.id, freezeObservation(observation));
   const subscribers = new Set<Readonly<{ after: DiagnosticObservationBoundary; observer: (publication: DiagnosticObservationFeedPublication) => void }>>();
   let closed = false;
   let mutationTail: Promise<void> = Promise.resolve();
@@ -241,12 +251,16 @@ function createDiagnosticObservationJournal(
       lifecycle,
       observationBoundary: { intervalId, sequence: nextSequence }
     });
-    const retained = retainDiagnosticCapacity([...records, observation], retainedThrough, maxRetainedObservations, maxRetainedBytes);
-    await persist({ intervalOrdinal, sequence: nextSequence, retainedThrough: retained.retainedThrough, records: retained.records });
+    const nextCurrent = new Map(current);
+    nextCurrent.set(observation.id, observation);
+    if (nextCurrent.size > DIAGNOSTIC_MAX_LIFECYCLE_IDENTITIES) throw new Error("Diagnostic lifecycle identity capacity is exhausted.");
+    const retained = retainDiagnosticCapacity([...records, observation], [...nextCurrent.values()], retainedThrough, maxRetainedObservations, maxRetainedBytes);
+    await persist({ intervalOrdinal, sequence: nextSequence, retainedThrough: retained.retainedThrough, records: retained.records, current: [...nextCurrent.values()] });
     sequence = nextSequence;
     retainedThrough = retained.retainedThrough;
     records.splice(0, records.length, ...retained.records);
-    rebuildCurrent(current, records);
+    current.clear();
+    for (const value of nextCurrent.values()) current.set(value.id, value);
     for (const subscriber of subscribers) {
       if (subscriber.after.intervalId === intervalId && subscriber.after.sequence < retainedThrough) {
         subscriber.observer(Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
@@ -273,6 +287,7 @@ function createDiagnosticObservationJournal(
         assertOpen(closed);
         const id = diagnosticObservationId({
           ...resolution,
+          ruleVersion: resolution.ruleVersion,
           severity: "information",
           lifecycle: { kind: "condition", conditionId: resolution.conditionId },
           observed: "",
@@ -306,6 +321,12 @@ function createDiagnosticObservationJournal(
       if ((query.after && query.after.intervalId !== intervalId) || through.intervalId !== intervalId) {
         return readWithStatus("cleared", "limited", "cleared", through, []);
       }
+      if ((query.after && query.after.sequence > through.sequence)) {
+        return readWithStatus("unsupported", "unavailable", "unavailable", through, []);
+      }
+      if (through.sequence > sequence || (query.after?.sequence ?? 0) > sequence) {
+        return readWithStatus("unavailable", "unavailable", "unavailable", through, []);
+      }
       const minimum = severityRank(query.minimumSeverity ?? "information");
       const observations = Object.freeze(records.filter((observation) =>
         (!query.after || isStrictlyAfter(observation.observationBoundary, query.after))
@@ -328,10 +349,14 @@ function createDiagnosticObservationJournal(
     subscribe(after: DiagnosticObservationBoundary, observer: (publication: DiagnosticObservationFeedPublication) => void): () => void {
       assertOpen(closed);
       const subscription = Object.freeze({ after: Object.freeze({ ...after }), observer });
-      subscribers.add(subscription);
       if (after.intervalId !== intervalId) {
         observer(Object.freeze({ type: "status", status: "cleared", boundary: Object.freeze({ intervalId, sequence }) }));
+        return () => undefined;
+      } else if (after.sequence > sequence) {
+        observer(Object.freeze({ type: "status", status: "unavailable", boundary: Object.freeze({ intervalId, sequence }) }));
+        return () => undefined;
       } else {
+        subscribers.add(subscription);
         if (after.sequence < retainedThrough) {
           observer(Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
         }
@@ -347,10 +372,9 @@ function createDiagnosticObservationJournal(
         if (boundary.intervalId !== intervalId) return;
         const nextRetainedThrough = Math.max(retainedThrough, Math.min(boundary.sequence, sequence));
         const nextRecords = records.filter((observation) => observation.observationBoundary.sequence > nextRetainedThrough);
-        await persist({ intervalOrdinal, sequence, retainedThrough: nextRetainedThrough, records: nextRecords });
+        await persist({ intervalOrdinal, sequence, retainedThrough: nextRetainedThrough, records: nextRecords, current: [...current.values()] });
         retainedThrough = nextRetainedThrough;
         records.splice(0, records.length, ...nextRecords);
-        rebuildCurrent(current, records);
         for (const subscriber of subscribers) {
           if (subscriber.after.intervalId === intervalId && subscriber.after.sequence < retainedThrough) {
             subscriber.observer(Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
@@ -363,7 +387,7 @@ function createDiagnosticObservationJournal(
         assertOpen(closed);
         const nextIntervalOrdinal = intervalOrdinal + 1;
         const nextIntervalId = diagnosticIntervalId(panelSessionId, nextIntervalOrdinal);
-        await persist({ intervalOrdinal: nextIntervalOrdinal, sequence: 0, retainedThrough: 0, records: [] });
+        await persist({ intervalOrdinal: nextIntervalOrdinal, sequence: 0, retainedThrough: 0, records: [], current: [] });
         intervalOrdinal = nextIntervalOrdinal;
         intervalId = nextIntervalId;
         sequence = 0;
@@ -404,11 +428,6 @@ function diagnosticIntervalId(panelSessionId: string, ordinal: number): string {
   return `${panelSessionId}:diagnostics:interval-${ordinal}`;
 }
 
-function rebuildCurrent(current: Map<string, DiagnosticObservation>, records: readonly DiagnosticObservation[]): void {
-  current.clear();
-  for (const observation of records) current.set(observation.id, observation);
-}
-
 function boundedCapacity(value: number | undefined, fallback: number, label: string): number {
   const resolved = value ?? fallback;
   assertPositiveInteger(resolved, label);
@@ -417,16 +436,20 @@ function boundedCapacity(value: number | undefined, fallback: number, label: str
 
 function retainDiagnosticCapacity(
   candidate: DiagnosticObservation[],
+  lifecycleState: readonly DiagnosticObservation[],
   previousRetainedThrough: number,
   maximumCount: number,
   maximumBytes: number
 ): Readonly<{ records: DiagnosticObservation[]; retainedThrough: number }> {
   let retainedThrough = previousRetainedThrough;
-  let bytes = candidate.reduce((total, observation) => total + new TextEncoder().encode(JSON.stringify(observation)).byteLength, 0);
+  const encoder = new TextEncoder();
+  const lifecycleBytes = lifecycleState.reduce((total, observation) => total + encoder.encode(JSON.stringify(observation)).byteLength, 0);
+  if (lifecycleBytes > maximumBytes) throw new Error("Diagnostic lifecycle state byte capacity is exhausted.");
+  let bytes = lifecycleBytes + candidate.reduce((total, observation) => total + encoder.encode(JSON.stringify(observation)).byteLength, 0);
   while (candidate.length > maximumCount || bytes > maximumBytes) {
     const removed = candidate.shift();
     if (!removed) break;
-    bytes -= new TextEncoder().encode(JSON.stringify(removed)).byteLength;
+    bytes -= encoder.encode(JSON.stringify(removed)).byteLength;
     retainedThrough = Math.max(retainedThrough, removed.observationBoundary.sequence);
   }
   return { records: candidate, retainedThrough };
@@ -509,7 +532,7 @@ function normalizeInput(input: DiagnosticObservationInput): DiagnosticObservatio
     observed: input.observed,
     limitation: input.limitation,
     consequence: input.consequence,
-    route: freezeRoute(input.route),
+    route: freezeDiagnosticInspectionRoute(input.route),
     resultRef: input.resultRef ? Object.freeze({ ...input.resultRef }) : undefined,
     originalCode: input.originalCode,
     safeMessage: input.safeMessage
@@ -537,6 +560,20 @@ function assertPositiveInteger(value: number, label: string, allowZero = false):
 }
 
 function assertAffected(affected: DiagnosticAffectedIdentity): void {
+  switch (affected.kind) {
+    case "page": assertComponent(affected.pageId, "Affected page identity"); break;
+    case "client": assertComponent(affected.pageId, "Affected page identity"); assertComponent(affected.clientId, "Affected Client identity"); break;
+    case "session": assertComponent(affected.pageId, "Affected page identity"); assertComponent(affected.clientId, "Affected Client identity"); assertComponent(affected.sessionId, "Affected Session identity"); break;
+    case "subscription":
+      assertComponent(affected.pageId, "Affected page identity");
+      assertComponent(affected.clientId, "Affected Client identity");
+      if (affected.sessionId !== undefined) assertComponent(affected.sessionId, "Affected Session identity");
+      assertComponent(affected.subscriptionId, "Affected Subscription identity");
+      break;
+    case "item": assertComponent(affected.pageId, "Affected page identity"); assertComponent(affected.clientId, "Affected Client identity"); assertComponent(affected.subscriptionId, "Affected Subscription identity"); assertComponent(affected.item, "Affected item identity"); break;
+    case "evidence": assertComponent(affected.intervalId, "Affected History Interval identity"); assertPositiveInteger(affected.sequence, "Affected Evidence sequence"); assertComponent(affected.eventId, "Affected Evidence identity"); break;
+    default: throw new Error("Diagnostic affected identity kind is unsupported.");
+  }
   Object.entries(affected).forEach(([key, value]) => {
     if (typeof value === "string") assertComponent(value, `Affected identity ${key}`);
     if (key === "sequence" && typeof value === "number") assertPositiveInteger(value, "Affected Evidence sequence");
@@ -544,11 +581,16 @@ function assertAffected(affected: DiagnosticAffectedIdentity): void {
 }
 
 function assertRoute(route: DiagnosticInspectionRoute): void {
-  if (route.kind === "recover") assertComponent(route.action, "Diagnostic recovery action");
-  if (route.kind === "inspect-evidence") assertAffected({ kind: "evidence", ...route.evidence });
+  if (route.kind === "inspect-affected") return;
+  if (route.kind === "recover") { assertComponent(route.action, "Diagnostic recovery action"); return; }
+  if (route.kind === "inspect-evidence") { assertAffected({ kind: "evidence", ...route.evidence }); return; }
+  throw new Error("Diagnostic inspection route kind is unsupported.");
 }
 
 function assertResultRef(ref: DiagnosticResultRef): void {
+  if (!(["evidence", "projection", "injection-outcome"] as const).includes(ref.kind)) {
+    throw new Error("Diagnostic result reference kind is unsupported.");
+  }
   Object.entries(ref).forEach(([key, value]) => {
     if (typeof value === "string") assertComponent(value, `Diagnostic result ${key}`);
     if (key === "sequence" && typeof value === "number") assertPositiveInteger(value, "Diagnostic result Evidence sequence");
@@ -559,7 +601,7 @@ function diagnosticObservationId(input: DiagnosticObservationInput): string {
   const lifecycleId = input.lifecycle.kind === "occurrence"
     ? `occurrence:${encodeURIComponent(input.lifecycle.occurrenceId)}`
     : `condition:${encodeURIComponent(input.lifecycle.conditionId)}`;
-  return `diag:${input.code}:${lifecycleId}:${affectedIdentity(input.affected)}`;
+  return `diag:${input.code}:v${input.ruleVersion ?? 1}:${lifecycleId}:${affectedIdentity(input.affected)}`;
 }
 
 function affectedIdentity(affected: DiagnosticAffectedIdentity): string {
@@ -574,7 +616,7 @@ function affectedIdentity(affected: DiagnosticAffectedIdentity): string {
   }
 }
 
-function freezeRoute(route: DiagnosticInspectionRoute): DiagnosticInspectionRoute {
+export function freezeDiagnosticInspectionRoute(route: DiagnosticInspectionRoute): DiagnosticInspectionRoute {
   return route.kind === "inspect-evidence"
     ? Object.freeze({ kind: route.kind, evidence: Object.freeze({ ...route.evidence }) })
     : Object.freeze({ ...route });
@@ -587,7 +629,7 @@ function freezeObservation(observation: DiagnosticObservation): DiagnosticObserv
     affected: Object.freeze({ ...observation.affected }),
     observationBoundary: Object.freeze({ ...observation.observationBoundary }),
     evidenceBoundary: observation.evidenceBoundary ? Object.freeze({ ...observation.evidenceBoundary }) : undefined,
-    route: freezeRoute(observation.route),
+    route: freezeDiagnosticInspectionRoute(observation.route),
     resultRef: observation.resultRef ? Object.freeze({ ...observation.resultRef }) : undefined
   });
 }
@@ -612,11 +654,105 @@ function openDiagnosticDatabase(factory: IDBFactory, name: string): Promise<IDBD
   });
 }
 
-function readDiagnosticState(database: IDBDatabase): Promise<PersistedDiagnosticState | null> {
+function hydratePersistedState(value: unknown, panelSessionId: string): PersistedDiagnosticState {
+  if (value === null || value === undefined) return emptyPersistedState();
+  const state = recordValue(value, "Diagnostic Observation state");
+  const intervalOrdinal = numberValue(state.intervalOrdinal, "Diagnostic interval ordinal");
+  const sequence = numberValue(state.sequence, "Diagnostic committed sequence", true);
+  const retainedThrough = numberValue(state.retainedThrough, "Diagnostic retained boundary", true);
+  if (retainedThrough > sequence) throw new Error("Diagnostic retained boundary exceeds the committed boundary.");
+  if (!Array.isArray(state.records) || !Array.isArray(state.current)) throw new Error("Diagnostic persisted collections are malformed.");
+  const intervalId = diagnosticIntervalId(panelSessionId, intervalOrdinal);
+  const records = state.records.map((observation) => hydrateObservation(observation, intervalId, sequence));
+  const current = state.current.map((observation) => hydrateObservation(observation, intervalId, sequence));
+  let priorSequence = retainedThrough;
+  for (const observation of records) {
+    if (observation.observationBoundary.sequence <= priorSequence) throw new Error("Diagnostic retained observations are not strictly ordered.");
+    priorSequence = observation.observationBoundary.sequence;
+  }
+  if (records.some(({ observationBoundary }) => observationBoundary.sequence <= retainedThrough)) {
+    throw new Error("Diagnostic retained observations cross the retained boundary.");
+  }
+  if (new Set(current.map(({ id }) => id)).size !== current.length) throw new Error("Diagnostic current lifecycle identities are duplicated.");
+  return { intervalOrdinal, sequence, retainedThrough, records, current };
+}
+
+function hydrateObservation(value: unknown, intervalId: string, committedSequence: number): DiagnosticObservation {
+  const record = recordValue(value, "Diagnostic Observation");
+  if (record.schemaVersion !== DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION) throw new Error("Diagnostic Observation schema is unsupported.");
+  const lifecycleRecord = recordValue(record.lifecycle, "Diagnostic lifecycle");
+  const lifecycle = lifecycleRecord.kind === "occurrence"
+    ? { kind: "occurrence" as const, occurrenceId: stringValue(lifecycleRecord.occurrenceId, "Diagnostic occurrence identity") }
+    : lifecycleRecord.kind === "condition"
+      ? { kind: "condition" as const, conditionId: stringValue(lifecycleRecord.conditionId, "Diagnostic condition identity") }
+      : (() => { throw new Error("Diagnostic lifecycle kind is unsupported."); })();
+  const input = normalizeInput({
+    code: stringValue(record.code, "Diagnostic rule code"),
+    ruleVersion: numberValue(record.ruleVersion, "Diagnostic rule version"),
+    severity: severityValue(record.severity),
+    lifecycle,
+    affected: recordValue(record.affected, "Diagnostic affected identity") as DiagnosticAffectedIdentity,
+    observedAt: numberValue(record.observedAt, "Diagnostic observed timestamp", true),
+    evidenceBoundary: record.evidenceBoundary === undefined ? undefined : recordValue(record.evidenceBoundary, "Diagnostic Evidence boundary") as DiagnosticEvidenceBoundary,
+    observed: stringValue(record.observed, "Diagnostic observed fact"),
+    limitation: stringValue(record.limitation, "Diagnostic limitation"),
+    consequence: stringValue(record.consequence, "Diagnostic consequence"),
+    route: recordValue(record.route, "Diagnostic route") as DiagnosticInspectionRoute,
+    resultRef: record.resultRef === undefined ? undefined : recordValue(record.resultRef, "Diagnostic result reference") as DiagnosticResultRef,
+    originalCode: record.originalCode === undefined ? undefined : numberValue(record.originalCode, "Original diagnostic code", true, true),
+    safeMessage: record.safeMessage === undefined ? undefined : stringValue(record.safeMessage, "Safe diagnostic message")
+  });
+  const boundary = recordValue(record.observationBoundary, "Diagnostic Observation boundary");
+  const observationBoundary = {
+    intervalId: stringValue(boundary.intervalId, "Diagnostic interval identity"),
+    sequence: numberValue(boundary.sequence, "Diagnostic Observation sequence")
+  };
+  if (observationBoundary.intervalId !== intervalId || observationBoundary.sequence > committedSequence) {
+    throw new Error("Diagnostic Observation lies outside its committed boundary.");
+  }
+  const expectedState = lifecycle.kind === "occurrence" ? "observed" : lifecycleRecord.state;
+  if (expectedState !== "observed" && expectedState !== "active" && expectedState !== "resolved") throw new Error("Diagnostic lifecycle state is unsupported.");
+  if (lifecycle.kind === "occurrence" && expectedState !== "observed") throw new Error("Diagnostic occurrence lifecycle state is invalid.");
+  if (lifecycle.kind === "condition" && expectedState === "observed") throw new Error("Diagnostic condition lifecycle state is invalid.");
+  const observation = freezeObservation({
+    ...input,
+    schemaVersion: DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
+    id: stringValue(record.id, "Diagnostic Observation identity"),
+    ruleVersion: input.ruleVersion ?? 1,
+    lifecycle: Object.freeze({ ...lifecycle, state: expectedState }) as DiagnosticObservation["lifecycle"],
+    observationBoundary
+  });
+  if (observation.id !== diagnosticObservationId(input)) throw new Error("Diagnostic Observation identity is not canonical.");
+  return observation;
+}
+
+function recordValue(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${label} must be an object.`);
+  return value as Record<string, unknown>;
+}
+
+function stringValue(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new Error(`${label} must be a string.`);
+  return value;
+}
+
+function numberValue(value: unknown, label: string, allowZero = false, allowNegative = false): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || (!allowNegative && value < (allowZero ? 0 : 1))) {
+    throw new Error(`${label} must be a safe integer.`);
+  }
+  return value;
+}
+
+function severityValue(value: unknown): DiagnosticSeverity {
+  if (value === "information" || value === "warning" || value === "error") return value;
+  throw new Error("Diagnostic severity is unsupported.");
+}
+
+function readDiagnosticState(database: IDBDatabase): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const transaction = database.transaction("diagnosticState", "readonly");
     const request = transaction.objectStore("diagnosticState").get("state");
-    request.onsuccess = () => resolve((request.result as PersistedDiagnosticState | undefined) ?? null);
+    request.onsuccess = () => resolve(request.result ?? null);
     request.onerror = () => reject(request.error ?? new Error("Could not read Diagnostic Observations."));
   });
 }
