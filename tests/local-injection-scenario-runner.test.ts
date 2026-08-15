@@ -249,6 +249,46 @@ describe("Local Injection Scenario runner", () => {
     });
   }
 
+  it("cannot resurrect a Diagnostic Observation Checkpoint after Stop while its initial query is blocked", async () => {
+    const clock = new FakeClock();
+    const feed = new FakeBoundaryFeed();
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-diagnostic-loading-stop" });
+    const authorization = journal.currentBoundary();
+    let releaseQuery!: () => void;
+    let queryResolved = false;
+    const queryBlocked = new Promise<void>((resolve) => { releaseQuery = resolve; });
+    const query = vi.fn(async (request: Parameters<typeof journal.query>[0]) => {
+      await queryBlocked;
+      const read = await journal.query(request);
+      queryResolved = true;
+      return read;
+    });
+    const allocateInjectionId = vi.fn(() => "must-not-allocate");
+    const runner = createLocalInjectionScenarioRunner(diagnosticCheckpointRun(authorization), {
+      clock, allocateInjectionId, execute: async () => delivered(1),
+      checkpoint: {
+        feed,
+        observations: () => ({ priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }),
+        diagnostics: { currentBoundary: journal.currentBoundary.bind(journal), query, subscribe: journal.subscribe.bind(journal) }
+      }
+    });
+
+    runner.play();
+    clock.advance(0);
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    runner.stop();
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped", activeCheckpoint: null, remainingDelayMs: 0 });
+    const stoppedTrace = runner.snapshot().run.trace;
+    releaseQuery();
+    await vi.waitFor(() => expect(queryResolved).toBe(true));
+    clock.advance(10_000);
+    expect(runner.snapshot()).toMatchObject({ phase: "stopped", activeCheckpoint: null, remainingDelayMs: 0 });
+    expect(runner.snapshot().run.trace).toBe(stoppedTrace);
+    expect(clock.pending()).toBe(0);
+    expect(feed.size()).toBe(0);
+    expect(allocateInjectionId).not.toHaveBeenCalled();
+  });
+
   it("queries the authorized Diagnostic Observation range and cannot lose a racing feed commit", async () => {
     const clock = new FakeClock();
     const feed = new FakeBoundaryFeed();

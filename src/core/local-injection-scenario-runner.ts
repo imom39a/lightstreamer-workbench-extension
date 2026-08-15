@@ -142,6 +142,7 @@ export function createLocalInjectionScenarioRunner(
   let manualOverride = false;
   let checkpointUnsubscribe: (() => void) | null = null;
   let diagnosticCheckpointUnsubscribe: (() => void) | null = null;
+  let diagnosticLoadGeneration = 0;
   let checkpointDiagnosticRefresh: (() => void) | null = null;
   let activeCheckpoint: ScenarioRunnerSnapshot["activeCheckpoint"] = null;
   let checkpointWasPlaying = false;
@@ -215,6 +216,7 @@ export function createLocalInjectionScenarioRunner(
   }
 
   function stopCheckpointObservation(): void {
+    diagnosticLoadGeneration += 1;
     checkpointUnsubscribe?.();
     checkpointUnsubscribe = null;
     diagnosticCheckpointUnsubscribe?.();
@@ -284,6 +286,7 @@ export function createLocalInjectionScenarioRunner(
     }
     phase = "checkpoint-waiting";
     checkpointWasPlaying = true;
+    const diagnosticLoad = ++diagnosticLoadGeneration;
     const withinDurations = diagnosticAssertions.flatMap((assertion) => assertion.withinActiveMs === undefined ? [] : [assertion.withinActiveMs]);
     const deadlineActiveOffsetMs = startedActiveOffsetMs + (withinDurations.length > 0 ? Math.min(...withinDurations) : 0);
     activeCheckpoint = Object.freeze({ checkpointId: member.id, checkpointName: member.name, startedActiveOffsetMs, deadlineActiveOffsetMs, boundary: null, status: "waiting", assertions: Object.freeze([]) });
@@ -309,7 +312,7 @@ export function createLocalInjectionScenarioRunner(
           return [assertion.id, unavailableDiagnosticRead(through)] as const;
         }
       }));
-      if (loadGeneration !== generation || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
+      if (loadGeneration !== generation || diagnosticLoad !== diagnosticLoadGeneration || phase === "disposed" || run.members[run.nextMemberIndex]?.id !== member.id) return;
       for (const [assertionId, read] of results) reads.set(assertionId, read);
       if (refreshRequested) {
         refreshRequested = false;
@@ -324,6 +327,7 @@ export function createLocalInjectionScenarioRunner(
       }
     };
     const onPublication = (publication: DiagnosticObservationFeedPublication): void => {
+      if (diagnosticLoad !== diagnosticLoadGeneration) return;
       latest = publication.type === "observation" ? publication.observation.observationBoundary : publication.boundary;
       if (loading) refreshRequested = true;
       else void load(latest);
