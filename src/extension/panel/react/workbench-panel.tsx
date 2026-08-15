@@ -1844,11 +1844,14 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
           event.currentTarget.scrollTop = event.key === "Home" ? 0 : event.currentTarget.scrollHeight;
         }}>
           {snapshot.diagnostics.length > 1 ? <span className="workbench-react__status-diagnostics-summary">{snapshot.diagnostics.length} diagnostics · Scroll to review all</span> : null}
-          {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-category={diagnostic.category} data-history-condition={diagnostic.category === "history" ? "true" : undefined} data-severity={diagnostic.severity.toLowerCase()} key={`${diagnostic.title}-${index}`}>
+          {snapshot.diagnostics.map((diagnostic, index) => <section className="workbench-react__status-diagnostic" data-category={diagnostic.category} data-history-condition={diagnostic.category === "history" ? "true" : undefined} data-severity={diagnostic.severity.toLowerCase()} key={diagnostic.id ?? `${diagnostic.title}-${index}`}>
             <strong>{diagnostic.severity} · {diagnostic.title}</strong>
             <span className="workbench-react__status-affected">Affected: {diagnostic.affected}</span>
             <span className="workbench-react__status-detail">{diagnostic.detail}</span>
+            {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
+            {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
             {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
+            {diagnostic.route ? <button type="button" onClick={() => dispatch(runtime, { type: "inspect-diagnostic-evidence", eventId: diagnostic.route!.eventId })}>{diagnostic.route.label}</button> : null}
           </section>)}
         </div> : null}
         <div className="workbench-react__status-line"><span>{limited

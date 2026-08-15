@@ -578,6 +578,38 @@ describe("React Workbench Diagnose panel", () => {
     await act(async () => root.unmount());
   });
 
+  it("renders normalized server diagnostics once in the footer with a supporting Evidence route", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const runtime = createTestRuntime(snapshot({
+      diagnostics: [{
+        id: "server-error-evt-2",
+        code: "ls.client.server-error",
+        category: "session",
+        severity: "Warning",
+        title: "Server error -7",
+        affected: "Session S-9",
+        detail: "ClientListener reported server error code -7. Message: Application denied the operation",
+        limitation: "Non-positive codes can be application-specific.",
+        consequence: "The callback does not prove the complete server-side cause.",
+        route: { kind: "inspect-evidence", eventId: "evt-2", label: "Inspect supporting Evidence" }
+      }]
+    }));
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const footer = document.querySelector<HTMLElement>("[aria-label='Workbench diagnostics']");
+    expect(footer?.textContent).toContain("Warning · Server error -7");
+    expect(footer?.textContent).toContain("Affected: Session S-9");
+    expect(footer?.textContent).toContain("Limit: Non-positive codes can be application-specific.");
+    expect(footer?.textContent).toContain("Consequence: The callback does not prove the complete server-side cause.");
+    expect(rootElement.textContent?.split("Server error -7")).toHaveLength(2);
+    const route = Array.from(footer?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect supporting Evidence");
+    route?.click();
+    expect(runtime.commands).toContainEqual({ type: "inspect-diagnostic-evidence", eventId: "evt-2" });
+    await act(async () => root.unmount());
+  });
+
   it("lists the captured COMMAND key in Ordered Evidence while preserving Evidence metadata for Context", async () => {
     const rootElement = document.querySelector<HTMLElement>("#app");
     if (!rootElement) throw new Error("missing app root");

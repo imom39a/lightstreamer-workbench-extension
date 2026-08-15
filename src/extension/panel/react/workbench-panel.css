@@ -590,6 +590,7 @@
 .workbench-react__status-detail,
 .workbench-react__status-recovery { grid-column: 1 / -1; }
 .workbench-react__status-diagnostic > .workbench-react__status-recovery { color: inherit; }
+.workbench-react__status-diagnostic > button { justify-self: start; color: inherit; }
 .workbench-react__status-line { display: flex; min-height: 27px; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 9px; white-space: nowrap; }
 .workbench-react__status-line span { overflow: hidden; text-overflow: ellipsis; }
 .workbench-react__document { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; }

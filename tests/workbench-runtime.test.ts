@@ -345,6 +345,17 @@ describe("WorkbenchRuntime", () => {
     const observations = (await diagnosticObservations.query()).observations;
 
     expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({ title: "Capture disconnected" }));
+    expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
+      code: "ls.client.server-error",
+      title: "Server error -7",
+      affected: "Session S-1",
+      route: { kind: "inspect-evidence", eventId: "server-error-0", label: "Inspect supporting Evidence" }
+    }));
+    expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
+      code: "ls.client.server-keepalive",
+      severity: "Information",
+      consequence: expect.stringContaining("does not prove")
+    }));
     expect(observations.map(({ code }) => code)).toEqual(expect.arrayContaining([
       "ls.subscription.error",
       "ls.subscription.lost-updates",

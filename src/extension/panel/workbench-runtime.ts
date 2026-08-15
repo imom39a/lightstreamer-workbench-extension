@@ -21,6 +21,7 @@ import {
   adaptProjectionFinding,
   adaptWorkbenchConditionFinding
 } from "../../core/diagnostic-observation-adapters";
+import { presentDiagnosticObservation } from "../../core/diagnostic-observation-presentation";
 import {
   createInMemoryEventHistory,
   type EvidenceRef,
@@ -337,11 +338,16 @@ export type WorkbenchCommandProjection = Readonly<{
 }>;
 
 export type WorkbenchDiagnostic = Readonly<{
+  id?: string;
+  code?: string;
   severity: "Information" | "Warning" | "Error";
   title: string;
   affected: string;
   detail: string;
   recovery?: string;
+  limitation?: string;
+  consequence?: string;
+  route?: Readonly<{ kind: "inspect-evidence"; eventId: string; label: string }>;
   category?: "activity" | "history" | "capture" | "session" | "retention" | "storage";
 }>;
 
@@ -662,6 +668,7 @@ export type WorkbenchCommand =
   | { type: "open-context" }
   | { type: "open-scope" }
   | { type: "open-raw-evidence"; eventId: string }
+  | { type: "inspect-diagnostic-evidence"; eventId: string }
   | { type: "export-scope" }
   | { type: "open-actions" }
   | { type: "close-actions" }
@@ -910,6 +917,7 @@ class Runtime implements WorkbenchRuntime {
   }>>();
   private diagnosticObservationSettlement: Promise<void> = Promise.resolve();
   private readonly diagnosticEvidenceSequences = new Map<string, number>();
+  private readonly committedDiagnosticPresentations = new Map<string, WorkbenchDiagnostic>();
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
@@ -1911,6 +1919,18 @@ class Runtime implements WorkbenchRuntime {
         this.contextId = `raw:${command.eventId}`;
         this.publish();
         return;
+      case "inspect-diagnostic-evidence": {
+        const event = this.evidenceEventCache.get(command.eventId);
+        if (!event) return;
+        this.recordInvestigationCheckpoint();
+        this.selectionEventId = command.eventId;
+        this.focusedEventId = command.eventId;
+        this.contextId = `context:${command.eventId}`;
+        this.resolveSelectedEvent(command.eventId);
+        this.recordInvestigationCheckpoint();
+        this.refreshEvidence("command");
+        return;
+      }
       case "export-scope":
         this.contextId = "context:export";
         this.prepareExport();
@@ -2373,6 +2393,7 @@ class Runtime implements WorkbenchRuntime {
   private resetCoherentStateAfterClear(): void {
     this.activeRuntimeDiagnosticConditions.clear();
     this.diagnosticEvidenceSequences.clear();
+    this.committedDiagnosticPresentations.clear();
     this.queueDiagnosticMutation(() => this.diagnosticObservations.clear());
     this.activityEvidence.splice(0, this.activityEvidence.length);
     this.activityEvidenceKeys.clear();
@@ -5523,7 +5544,23 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Try clearing history again"
       });
     }
+    diagnostics.push(...this.relevantCommittedDiagnosticPresentations(scope));
     return Object.freeze(diagnostics.map((diagnostic) => Object.freeze(diagnostic)));
+  }
+
+  private relevantCommittedDiagnosticPresentations(scope: WorkbenchSnapshot["scope"]): WorkbenchDiagnostic[] {
+    const selected = scope.selection;
+    return [...this.committedDiagnosticPresentations.values()].filter((diagnostic) => {
+      if (!selected || selected.kind === "page") return true;
+      const eventId = diagnostic.route?.eventId;
+      const event = eventId ? this.evidenceEventCache.get(eventId) : undefined;
+      if (!event) return false;
+      if (selected.kind === "client") return selected.id.includes(event.client?.id ?? "\u0000");
+      if (selected.kind === "session") return selected.id.includes(event.client?.sessionId ?? "\u0000");
+      if (selected.kind === "subscription") return selected.id.includes(event.subscription?.id ?? "\u0000");
+      if (selected.kind === "item") return selected.id.includes(event.item?.name ?? String(event.item?.position ?? "\u0000"));
+      return false;
+    });
   }
 
   private recordCommittedDiagnosticFindings(
@@ -5575,6 +5612,19 @@ class Runtime implements WorkbenchRuntime {
         ...(event.serverError?.messageState === "safe" && event.serverError.message ? { safeMessage: event.serverError.message } : {})
       });
       this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
+      const presentation = presentDiagnosticObservation(adapted.observation);
+      this.rememberCommittedDiagnosticPresentation(event, {
+        id: presentation.id,
+        code: presentation.code,
+        category: "session",
+        severity: presentation.severity,
+        title: presentation.title,
+        affected: presentation.affected,
+        detail: presentation.observed,
+        limitation: presentation.limitation,
+        consequence: presentation.consequence,
+        route: presentation.route
+      });
     }
     if (event.kind === "server-keepalive") {
       const count = event.keepalive?.count ?? 1;
@@ -5594,6 +5644,19 @@ class Runtime implements WorkbenchRuntime {
         evidenceBoundary
       });
       this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
+      const presentation = presentDiagnosticObservation(adapted.observation);
+      this.rememberCommittedDiagnosticPresentation(event, {
+        id: presentation.id,
+        code: presentation.code,
+        category: "session",
+        severity: presentation.severity,
+        title: presentation.title,
+        affected: presentation.affected,
+        detail: presentation.observed,
+        limitation: presentation.limitation,
+        consequence: presentation.consequence,
+        route: presentation.route
+      });
     }
     const commandDiagnostics = projections.snapshot(event.synthetic ? "local-effective" : "observed-server").diagnostics
       .filter((diagnostic) => diagnostic.eventId === event.id);
@@ -5618,6 +5681,15 @@ class Runtime implements WorkbenchRuntime {
       });
       this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
     });
+  }
+
+  private rememberCommittedDiagnosticPresentation(event: LightstreamerEventEnvelope, diagnostic: WorkbenchDiagnostic): void {
+    this.committedDiagnosticPresentations.set(event.id, Object.freeze(diagnostic));
+    while (this.committedDiagnosticPresentations.size > 100) {
+      const oldest = this.committedDiagnosticPresentations.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.committedDiagnosticPresentations.delete(oldest);
+    }
   }
 
   private acceptDiagnosticEvidenceTransition(entry: CommittedEvidence): boolean {
