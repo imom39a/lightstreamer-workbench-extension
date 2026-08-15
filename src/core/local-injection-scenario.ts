@@ -1,4 +1,5 @@
 import type { EvidenceRef } from "./event-history-authoritative";
+import type { DiagnosticAffectedIdentity } from "./diagnostic-observation";
 import type { LocalInjectionDiagnostic, LocalInjectionDocument } from "./local-injection-document";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
 import { validateScenarioCheckpoint } from "./local-injection-scenario-checkpoint";
@@ -84,6 +85,15 @@ export type ScenarioAssertion = Readonly<{
   key: string;
   field: string;
   expected: ScenarioPrimitive;
+  withinActiveMs?: number;
+}> | Readonly<{
+  id: string;
+  kind: "diagnostic-observation-exists";
+  contractVersion: 1;
+  ruleCode: string;
+  lifecycle: "occurrence" | "condition";
+  minimumSeverity: "information" | "warning" | "error";
+  affected: DiagnosticAffectedIdentity;
   withinActiveMs?: number;
 }>;
 

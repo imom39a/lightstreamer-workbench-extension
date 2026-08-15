@@ -6,6 +6,11 @@ import {
   type ScenarioPrimitive
 } from "./local-injection-scenario";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
+import {
+  DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
+  DIAGNOSTIC_RULE_CODE_MAX_LENGTH,
+  isDiagnosticAffectedIdentity
+} from "./diagnostic-observation";
 
 export const SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT = 16;
 
@@ -148,10 +153,28 @@ export function validateScenarioCheckpoint(
     if (assertion.kind === "command-field-equals" && (typeof assertion.field !== "string" || assertion.field.length === 0 || !isJsonPrimitive(assertion.expected))) {
       return frozen({ ok: false, assertionId, reason: "Primitive equality requires a named field and one finite JSON primitive expectation." });
     }
+    if (assertion.kind === "diagnostic-observation-exists") {
+      if (assertion.contractVersion !== DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION) {
+        return frozen({ ok: false, assertionId, reason: "Diagnostic Observation assertion requires the supported contract version." });
+      }
+      if (typeof assertion.ruleCode !== "string" || assertion.ruleCode.length > DIAGNOSTIC_RULE_CODE_MAX_LENGTH || !/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/.test(assertion.ruleCode)) {
+        return frozen({ ok: false, assertionId, reason: "Diagnostic Observation assertion requires a bounded stable rule code." });
+      }
+      if (assertion.lifecycle !== "occurrence" && assertion.lifecycle !== "condition") {
+        return frozen({ ok: false, assertionId, reason: "Diagnostic Observation assertion lifecycle must be occurrence or condition." });
+      }
+      if (assertion.minimumSeverity !== "information" && assertion.minimumSeverity !== "warning" && assertion.minimumSeverity !== "error") {
+        return frozen({ ok: false, assertionId, reason: "Diagnostic Observation assertion minimum severity is unsupported." });
+      }
+      if (!isDiagnosticAffectedIdentity(assertion.affected)) {
+        return frozen({ ok: false, assertionId, reason: "Diagnostic Observation assertion requires one exact typed affected identity." });
+      }
+    }
     if (assertion.withinActiveMs !== undefined) {
       const allowed = assertion.kind === "correlated-local-evidence-exists"
         || (assertion.kind === "command-key-exists" && assertion.expected === "present")
-        || assertion.kind === "command-field-equals";
+        || assertion.kind === "command-field-equals"
+        || assertion.kind === "diagnostic-observation-exists";
       if (!allowed) return frozen({ ok: false, assertionId, reason: "within is available only for positive Evidence, key-exists, or primitive-equality assertions." });
       if (typeof assertion.withinActiveMs !== "number" || !Number.isFinite(assertion.withinActiveMs) || assertion.withinActiveMs < 1 || assertion.withinActiveMs > 300_000) {
         return frozen({ ok: false, assertionId, reason: "within must be a finite active-time duration from 1 to 300000 ms." });
@@ -329,7 +352,7 @@ function unavailableEvaluation(checkpoint: ScenarioCheckpoint, boundary: Evidenc
 }
 
 function isAssertionKind(value: unknown): value is ScenarioAssertion["kind"] {
-  return value === "prior-injection-outcome" || value === "listener-count" || value === "correlated-local-evidence-exists" || value === "command-key-exists" || value === "command-field-equals";
+  return value === "prior-injection-outcome" || value === "listener-count" || value === "correlated-local-evidence-exists" || value === "command-key-exists" || value === "command-field-equals" || value === "diagnostic-observation-exists";
 }
 
 function isJsonPrimitive(value: unknown): value is ScenarioPrimitive {
