@@ -1309,6 +1309,45 @@ test("Workbench keeps low storage headroom advisory, global, and keyboard reacha
   await attachNamedScenarioScreenshot(page, testInfo, "storage-headroom-forced-colors");
 });
 
+test("Workbench explains server errors and keepalives contextually without a health verdict", async ({ page }, testInfo) => {
+  const scenes = [
+    { width: 563, height: 700, theme: "dark" as const },
+    { width: 900, height: 700, theme: "light" as const },
+    { width: 900, height: 320, theme: "dark" as const },
+    { width: 1440, height: 900, theme: "light" as const }
+  ];
+  for (const scene of scenes) {
+    await openScenario(page, "diagnostic-server-callbacks", scene, scene.theme);
+    const footer = page.getByRole("region", { name: "Workbench diagnostics" });
+    await expect(footer.getByText("Warning · Server error -7", { exact: true })).toHaveCount(1);
+    await expect(footer.getByText("Information · Server keepalive observed", { exact: true })).toHaveCount(1);
+    await expect(footer).toContainText("Affected: Session diagnostic-session");
+    await expect(footer).toContainText("Non-positive codes can be application-specific");
+    await expect(footer).toContainText("14 keepalive callbacks in bounded window diagnostic-session:1");
+    await expect(footer).toContainText("does not prove that the connection, application, or end-to-end data flow is healthy");
+    await expect(page.getByText("Server error -7", { exact: false })).toHaveCount(1);
+    const routes = footer.getByRole("button", { name: "Inspect supporting Evidence" });
+    await expect(routes).toHaveCount(2);
+    await routes.first().focus();
+    await expect(routes.first()).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("heading", { name: "diagnostic-server-error · Server Error" })).toBeVisible();
+    const back = page.getByRole("button", { name: "Back investigation" });
+    await expect(back).toBeEnabled();
+    await back.click();
+    await expect(page.getByRole("heading", { name: "diagnostic-server-error · Server Error" })).toHaveCount(0);
+    await expectShellFits(page);
+    await expectNoSeriousAxeViolations(page, testInfo);
+    await attachNamedScenarioScreenshot(page, testInfo, `server-diagnostics-${scene.width}x${scene.height}-${scene.theme}`);
+  }
+  await page.emulateMedia({ forcedColors: "active" });
+  const forcedFooter = page.getByRole("region", { name: "Workbench diagnostics" });
+  await expect(forcedFooter).toContainText("Warning · Server error -7");
+  await expect(forcedFooter).toContainText("Information · Server keepalive observed");
+  await expectShellFits(page);
+  await expectNoSeriousAxeViolations(page, testInfo);
+});
+
 test("Workbench retains ordered Evidence while a typed Session recovery is in progress", async ({
   page
 }, testInfo) => {

@@ -40,7 +40,7 @@ const issue16FixtureUrl = new URL(
   process.env.LSEW_FIXTURE_URL ?? "http://localhost:8080/"
 ).href;
 
-type OfficialClientScenario = "authored" | "scenario" | "high-volume-loading" | "issue-16";
+type OfficialClientScenario = "authored" | "scenario" | "diagnostics" | "high-volume-loading" | "issue-16";
 
 async function runOfficialClientPanelJourney(
   windowSize: string,
@@ -134,6 +134,36 @@ async function runOfficialClientPanelJourney(
       );
     }
 
+    if (scenario === "diagnostics") {
+      await pageCdp.request("Runtime.evaluate", {
+        expression: `(() => {
+          window.LSEW_DIAGNOSTIC_CALLBACKS = [];
+          const keepaliveClient = new window.LightstreamerClient(window.location.origin, "LSEW_FIXTURE");
+          keepaliveClient.connectionOptions.setForcedTransport("WS-STREAMING");
+          keepaliveClient.connectionOptions.setKeepaliveInterval(1000);
+          keepaliveClient.addListener({
+            onServerKeepalive() { window.LSEW_DIAGNOSTIC_CALLBACKS.push("keepalive"); }
+          });
+          keepaliveClient.connect();
+          const errorClient = new window.LightstreamerClient(window.location.origin, "LSEW_DIAGNOSTIC_MISSING");
+          errorClient.addListener({
+            onServerError(code, message) { window.LSEW_DIAGNOSTIC_CALLBACKS.push({ code, message }); }
+          });
+          errorClient.connect();
+          window.LSEW_DIAGNOSTIC_CLIENTS = [keepaliveClient, errorClient];
+        })()`,
+        returnByValue: true
+      });
+      await waitForCondition(
+        pageCdp,
+        `Array.isArray(window.LSEW_DIAGNOSTIC_CALLBACKS) &&
+          window.LSEW_DIAGNOSTIC_CALLBACKS.some((entry) => typeof entry === "object") &&
+          window.LSEW_DIAGNOSTIC_CALLBACKS.includes("keepalive")`,
+        "the official client to report a server error and keepalive callback",
+        30_000
+      );
+    }
+
     const panelSelection = await waitForWorkbenchPanel({
       listTargets: () => listBrowserTargets(debugging.port),
       connect: (target) => CdpClient.connect(target.webSocketDebuggerUrl ?? ""),
@@ -163,6 +193,23 @@ async function runOfficialClientPanelJourney(
 
     if (scenario === "scenario") {
       await runOfficialClientScenarioJourney(pageCdp, panelCdp);
+      expect(await readBrowserErrors(panelCdp)).toEqual([]);
+      return;
+    }
+
+    if (scenario === "diagnostics") {
+      await waitForCondition(
+        panelCdp,
+        `document.querySelector('[aria-label="Workbench diagnostic entries"]')?.textContent?.includes("Server error") &&
+          document.querySelector('[aria-label="Workbench diagnostic entries"]')?.textContent?.includes("Server keepalive observed") &&
+          [...document.querySelectorAll('[aria-label="Ordered Lightstreamer Evidence"] [role="gridcell"]')]
+            .some((cell) => cell.textContent?.includes("Server Error"))`,
+        "the loaded extension to render official-client server diagnostics"
+      );
+      expect(await evaluateByValue(pageCdp, `window.LSEW_DIAGNOSTIC_CALLBACKS`)).toEqual(expect.arrayContaining([
+        "keepalive",
+        expect.objectContaining({ code: expect.any(Number), message: expect.any(String) })
+      ]));
       expect(await readBrowserErrors(panelCdp)).toEqual([]);
       return;
     }
@@ -965,6 +1012,10 @@ test("official-client three-Step Scenario delivers ADD UPDATE DELETE once and ca
     { width: 900, height: 700 },
     "scenario"
   );
+});
+
+test("official-client server error and keepalive remain observable through the loaded extension", async () => {
+  await runOfficialClientPanelJourney("1200,900", { width: 900, height: 700 }, "diagnostics");
 });
 
 test("high-volume Capture does not leave shipped Evidence loading after repeated Scope choices", async () => {

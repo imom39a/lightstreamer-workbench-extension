@@ -36,6 +36,7 @@ export const WORKBENCH_SCENARIO_IDS = [
   "disconnected",
   "memory-fallback",
   "diagnostics-stress",
+  "diagnostic-server-callbacks",
   "raw-evidence",
   "filter-find",
   "filter-hidden-selection",
@@ -445,6 +446,12 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
           maxRetainedCount: 100,
           retainedWarningCount: 1
         }
+      };
+    case "diagnostic-server-callbacks":
+      return {
+        id,
+        initialEvents: diagnosticServerEvents(canonical),
+        captureStatus: "capturing"
       };
     case "raw-evidence":
       return { id, initialEvents: canonical, selectedEventId: "scenario-event-3", captureStatus: "capturing", openRawEvidence: true };
@@ -1052,6 +1059,52 @@ function semanticSessionStatus(
       client
     }
   );
+}
+
+function diagnosticServerEvents(canonical: readonly LightstreamerEventEnvelope[]): readonly LightstreamerEventEnvelope[] {
+  const source = canonical[0];
+  if (!source) throw new Error("The canonical scenario must include a source event for diagnostics.");
+  const client = { id: "diagnostic-client", status: "CONNECTED:WS-STREAMING", sessionId: "diagnostic-session", transport: "WS-STREAMING" };
+  const topology = (kind: "server-error" | "server-keepalive", captureSequence: number) => ({
+    version: TOPOLOGY_OBSERVATION_VERSION,
+    kind,
+    pageEpoch: "diagnostic-page",
+    captureSequence,
+    provenance: { instrumentationSource: "official-public-api" as const },
+    coverage: { status: "complete" as const, getters: {} },
+    client: { id: client.id, sessionId: { state: "real" as const, value: client.sessionId } }
+  });
+  const serverError: LightstreamerEventEnvelope = {
+      ...source,
+      id: "diagnostic-server-error",
+      timestamp: source.timestamp + 1,
+      kind: "server-error",
+      client,
+      subscription: undefined,
+      listener: { id: "diagnostic-listener", callbacks: ["onServerError", "onServerKeepalive"] },
+      item: undefined,
+      update: undefined,
+      serverError: { code: -7, message: "Application denied the operation", messageState: "safe" },
+      keepalive: undefined,
+      raw: { callback: "onServerError" },
+      topology: topology("server-error", 1)
+    };
+  const serverKeepalive: LightstreamerEventEnvelope = {
+      ...source,
+      id: "diagnostic-server-keepalive",
+      timestamp: source.timestamp + 2,
+      kind: "server-keepalive",
+      client,
+      subscription: undefined,
+      listener: { id: "diagnostic-listener", callbacks: ["onServerError", "onServerKeepalive"] },
+      item: undefined,
+      update: undefined,
+      serverError: undefined,
+      keepalive: { count: 14, windowId: "diagnostic-session:1", firstObservedAt: source.timestamp, lastObservedAt: source.timestamp + 2, aggregate: true },
+      raw: { callback: "onServerKeepalive", aggregation: "fixed-session-window" },
+      topology: topology("server-keepalive", 2)
+    };
+  return Object.freeze([serverError, serverKeepalive]);
 }
 
 function highVolumeEvents(first: number, count: number): readonly LightstreamerEventEnvelope[] {
