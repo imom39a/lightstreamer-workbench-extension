@@ -102,7 +102,9 @@ describe("normalized Diagnostic Observation contract", () => {
     const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-3" });
     const lower = journal.currentBoundary();
     const publications: string[] = [];
-    const unsubscribe = journal.subscribe(lower, (observation) => publications.push(observation.code));
+    const unsubscribe = journal.subscribe(lower, (publication) => {
+      if (publication.type === "observation") publications.push(publication.observation.code);
+    });
 
     const observation = await journal.observe({
       code: "workbench.storage.lower-capacity",
@@ -121,7 +123,50 @@ describe("normalized Diagnostic Observation contract", () => {
 
     expect(observation.evidenceBoundary).toBeUndefined();
     expect(publications).toEqual(["workbench.storage.lower-capacity"]);
-    expect((await journal.query({ after: lower, through: upper })).observations).toEqual([observation]);
+    expect((await journal.query({ after: lower, through: upper, ruleVersion: 2, lifecycle: "condition" })).observations).toEqual([observation]);
+    const replayedByFeed: string[] = [];
+    journal.subscribe(lower, (publication) => {
+      if (publication.type === "observation") replayedByFeed.push(publication.observation.id);
+    })();
+    expect(replayedByFeed).toEqual([observation.id]);
+  });
+
+  it("does not advance a condition cursor for a timestamp-only repeat", async () => {
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-dedup" });
+    const input = {
+      code: "workbench.capture.disconnected",
+      severity: "error" as const,
+      lifecycle: { kind: "condition" as const, conditionId: "bridge" },
+      affected: { kind: "page" as const, pageId: "page" },
+      observedAt: 10,
+      observed: "The bridge disconnected.",
+      limitation: "Later activity is not observable.",
+      consequence: "Capture is unavailable.",
+      route: { kind: "recover" as const, action: "reconnect" }
+    };
+    const first = await journal.observe(input);
+    const repeated = await journal.observe({ ...input, observedAt: 20 });
+    expect(repeated).toBe(first);
+    expect(journal.currentBoundary().sequence).toBe(1);
+  });
+
+  it("serializes concurrent duplicate offers into one committed occurrence", async () => {
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-concurrent" });
+    const input = {
+      code: "ls.subscription.error",
+      severity: "error" as const,
+      lifecycle: { kind: "occurrence" as const, occurrenceId: "event-1" },
+      affected: { kind: "evidence" as const, intervalId: "history", sequence: 1, eventId: "event-1" },
+      observedAt: 10,
+      observed: "SubscriptionListener reported an error.",
+      limitation: "The callback does not expose server state.",
+      consequence: "Updates may be unavailable.",
+      route: { kind: "inspect-affected" as const }
+    };
+    const [first, duplicate] = await Promise.all([journal.observe(input), journal.observe(input)]);
+    expect(duplicate).toBe(first);
+    expect(journal.currentBoundary().sequence).toBe(1);
+    expect(await journal.replay()).toEqual([first]);
   });
 
   it.each(["memory", "indexeddb"] as const)("keeps %s replay, retention, Clear, and close semantics deterministic", async (tier) => {
@@ -169,7 +214,12 @@ describe("normalized Diagnostic Observation contract", () => {
       await reopened.close();
     }
 
+    const feedStatuses: string[] = [];
+    journal.subscribe(initial, (publication) => {
+      if (publication.type === "status") feedStatuses.push(publication.status);
+    });
     await journal.discardRetainedThrough(occurrence.observationBoundary);
+    expect(feedStatuses).toContain("retention-gap");
     expect(await journal.query({ after: initial })).toMatchObject({
       status: "retention-gap",
       coverage: "limited",
@@ -178,6 +228,7 @@ describe("normalized Diagnostic Observation contract", () => {
     });
     const beforeClear = journal.currentBoundary();
     await journal.clear();
+    expect(feedStatuses).toContain("cleared");
     expect(await journal.query({ after: beforeClear })).toMatchObject({
       status: "cleared",
       coverage: "limited",
