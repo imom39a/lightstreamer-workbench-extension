@@ -59,15 +59,20 @@ export type DiagnosticConclusion =
   | "update-delivery-attribution"
   | "pre-attachment-churn";
 
-export type TopologyCoverageLimitation = Readonly<{
+type TopologyCoverageLimitationBase = Readonly<{
   id: string;
-  kind: "late-attachment" | "observation-path" | "history-capacity" | "unsupported-shape";
   affected: DiagnosticAffectedIdentity;
   current: boolean;
   detail: string;
   weakens: readonly DiagnosticConclusion[];
   evidence?: DiagnosticEvidenceBoundary;
 }>;
+
+export type TopologyCoverageLimitation =
+  | TopologyCoverageLimitationBase & Readonly<{ kind: "late-attachment"; attachedAt: number }>
+  | TopologyCoverageLimitationBase & Readonly<{ kind: "observation-path"; path: "wire" | "unknown" }>
+  | TopologyCoverageLimitationBase & Readonly<{ kind: "history-capacity"; state: "lower-capacity" | "terminal" }>
+  | TopologyCoverageLimitationBase & Readonly<{ kind: "unsupported-shape"; shape: string }>;
 
 export type TopologyContextDiagnosticInput = Readonly<{
   boundary: Readonly<{ observedAt: number; sequence: number; evidence?: DiagnosticEvidenceBoundary }>;
@@ -90,7 +95,8 @@ export function evaluateTopologyContextDiagnostics(
 ): TopologyContextDiagnosticEvaluation {
   const observations = [
     ...exactDuplicateObservations(input),
-    ...churnObservations(input)
+    ...churnObservations(input),
+    ...limitationObservations(input)
   ];
   const active = new Set(observations.flatMap((observation) =>
     observation.lifecycle.kind === "condition" ? [diagnosticObservationIdentity(observation)] : []));
@@ -106,6 +112,66 @@ export function evaluateTopologyContextDiagnostics(
     })];
   });
   return Object.freeze({ observations: Object.freeze(observations), resolutions: Object.freeze(resolutions) });
+}
+
+function limitationObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
+  const observations: DiagnosticObservationInput[] = [];
+  for (const limitation of input.limitations) {
+    const weakened = [...new Set(limitation.weakens)].sort();
+    if (weakened.length === 0) continue;
+    const semantics = limitationSemantics(limitation);
+    const lifecycle = limitation.current
+      ? { kind: "condition" as const, conditionId: limitation.id }
+      : { kind: "occurrence" as const, occurrenceId: limitation.id };
+    observations.push(normalizeDiagnosticObservationInput({
+      code: semantics.code,
+      ruleVersion: 1,
+      severity: semantics.severity,
+      lifecycle,
+      affected: limitation.affected,
+      observedAt: input.boundary.observedAt,
+      evidenceBoundary: limitation.evidence,
+      observed: semantics.observed,
+      limitation: `This limitation weakens only: ${weakened.join(", ")}. It does not globally degrade unrelated Workbench conclusions.`,
+      consequence: `Workbench cannot treat ${weakened.join(", ")} as complete at this boundary.`,
+      route: limitation.evidence ? { kind: "inspect-evidence", evidence: limitation.evidence } : { kind: "inspect-affected" },
+      resultRef: limitation.evidence ? { kind: "evidence", ...limitation.evidence } : undefined
+    }));
+  }
+  return observations;
+}
+
+function limitationSemantics(limitation: TopologyCoverageLimitation): Readonly<{
+  code: string;
+  severity: "information" | "warning" | "error";
+  observed: string;
+}> {
+  switch (limitation.kind) {
+    case "late-attachment": return {
+      code: "workbench.capture.late-attachment",
+      severity: "information",
+      observed: `Capture attached at ${limitation.attachedAt}; ${limitation.detail}`
+    };
+    case "observation-path": return {
+      code: "workbench.capture.observation-path-limited",
+      severity: "information",
+      observed: `Captured observation path is ${limitation.path}; ${limitation.detail}`
+    };
+    case "history-capacity": return limitation.state === "terminal" ? {
+      code: "workbench.history.terminal",
+      severity: "error",
+      observed: `Event History reached its terminal committed boundary; ${limitation.detail}`
+    } : {
+      code: "workbench.history.lower-capacity",
+      severity: "information",
+      observed: `Event History is using the lower-capacity tier; ${limitation.detail}`
+    };
+    case "unsupported-shape": return {
+      code: "workbench.capture.unsupported-shape",
+      severity: "warning",
+      observed: `Captured shape \`${limitation.shape}\` is unsupported; ${limitation.detail}`
+    };
+  }
 }
 
 function churnObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
