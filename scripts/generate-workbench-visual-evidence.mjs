@@ -28,7 +28,7 @@ if (grep && scenarios.length === 0) throw new Error(`No visual matrix ids includ
 const baselineGrepArgument = grep ? ` -- --grep ${JSON.stringify(`visual baseline: ${grep}`)}` : "";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-  console.log(`Usage: npm run test:ui:visual [-- --print-matrix]
+  console.log(`Usage: npm run test:ui:visual [-- --print-matrix | --print-review-scope]
 
 Captures the accepted integrated prototype, the shipped Workbench scenario harness,
 and an inspectable per-channel visual diff for the Material UI review packet.
@@ -36,12 +36,17 @@ The artifacts are reference evidence, not a pixel-parity acceptance gate.
 
 Options:
   --print-matrix  Print the deterministic viewport/theme/state matrix and exit.
+  --print-review-scope  Print the bounded contact-sheet, axe, and focus matrix and exit.
   --grep <text>   Generate only matrix entries whose id includes text.
   --help          Show this help.`);
   process.exit(0);
 }
 if (process.argv.includes("--print-matrix")) {
   console.log(JSON.stringify(publicMatrix()));
+  process.exit(0);
+}
+if (process.argv.includes("--print-review-scope")) {
+  console.log(JSON.stringify(publicReviewScope()));
   process.exit(0);
 }
 for (const [index, argument] of process.argv.slice(2).entries()) {
@@ -257,6 +262,29 @@ function publicMatrix() {
   return { artifactRoot: "test-results/workbench-visual-qa", scenarios };
 }
 
+function isIntegratedDiagnosticSetup(setup) {
+  return setup === "diagnostic-server"
+    || setup === "diagnostic-subscription"
+    || setup === "diagnostic-anomaly";
+}
+
+function contactSheetScenarioIds(matrix) {
+  return matrix
+    .filter(({ id, production }) => id.startsWith("scenario-") || isIntegratedDiagnosticSetup(production.setup))
+    .map(({ id }) => id);
+}
+
+function publicReviewScope() {
+  const diagnosticIds = allScenarios
+    .filter(({ production }) => isIntegratedDiagnosticSetup(production.setup))
+    .map(({ id }) => id);
+  return {
+    contactSheetScenarioIds: contactSheetScenarioIds(allScenarios),
+    accessibilityScenarioIds: diagnosticIds,
+    focusScenarioIds: diagnosticIds
+  };
+}
+
 function readGitBlob(commit, path) {
   return new Promise((resolveBlob, rejectBlob) => {
     const child = spawn("git", ["show", `${commit}:${path}`], { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"] });
@@ -274,10 +302,17 @@ function readGitBlob(commit, path) {
 async function createContactSheets(runningBrowser, results) {
   const affectedIds = grep
     ? results.map(({ id }) => id)
-    : results.filter(({ id }) => id.startsWith("scenario-")).map(({ id }) => id);
+    : contactSheetScenarioIds(results);
   const affected = affectedIds.map((id) => results.find((result) => result.id === id)).filter(Boolean);
   if (affected.length !== affectedIds.length) {
     throw new Error(`Contact-sheet scenarios are incomplete: ${affectedIds.join(", ")}`);
+  }
+  if (!grep) {
+    const requiredDiagnosticIds = publicReviewScope().focusScenarioIds;
+    const missingDiagnosticIds = requiredDiagnosticIds.filter((id) => !affectedIds.includes(id));
+    if (requiredDiagnosticIds.length !== 12 || missingDiagnosticIds.length > 0) {
+      throw new Error(`Contact sheets require all 12 integrated diagnostic states; missing: ${missingDiagnosticIds.join(", ") || "none"}.`);
+    }
   }
   const output = {};
   for (const view of ["reference", "current", "diff"]) {
@@ -514,7 +549,7 @@ async function captureProduction(runningBrowser, scenario) {
     let helpResources = null;
     let focusEvidence = null;
     let memoryEvidence = null;
-    if (scenario.production.setup.startsWith("scenario") || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics", "activity-10k", "activity-graphical", "activity-limited", "activity-memory"].includes(scenario.production.setup)) {
+    if (scenario.production.setup.startsWith("scenario") || isIntegratedDiagnosticSetup(scenario.production.setup) || ["more-actions-help", "clear-confirmation", "memory-operations", "diagnostics", "activity-10k", "activity-graphical", "activity-limited", "activity-memory"].includes(scenario.production.setup)) {
       await page.addScriptTag({ content: axe.source });
       const seriousOrCriticalViolations = await page.evaluate(async () => {
         const result = await window.axe.run(document, { resultTypes: ["violations"] });
@@ -526,6 +561,23 @@ async function captureProduction(runningBrowser, scenario) {
         throw new Error(`Help resources has serious or critical axe violations: ${JSON.stringify(seriousOrCriticalViolations)}`);
       }
       accessibility = { seriousOrCriticalViolations };
+    }
+    if (isIntegratedDiagnosticSetup(scenario.production.setup)) {
+      const diagnostics = page.getByLabel("Workbench diagnostic entries");
+      focusEvidence = await diagnostics.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          action: element.getAttribute("aria-label") ?? "",
+          focused: document.activeElement === element,
+          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineOffset}`,
+          visible: rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          unobscured: element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+        };
+      });
+      if (!focusEvidence.focused || focusEvidence.outline.startsWith("none ") || !focusEvidence.visible || !focusEvidence.unobscured) {
+        throw new Error(`Diagnostic focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
+      }
     }
     if (scenario.production.setup === "scenario") {
       const scenarioDocument = page.getByRole("region", { name: "Local Injection Scenario" });

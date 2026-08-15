@@ -10,17 +10,17 @@ const runnerSource = readFileSync(runner, "utf8");
 const matrix = JSON.parse(readFileSync(join(rootDir, "tests", "ui", "visual-matrix.json"), "utf8"));
 
 describe("Workbench visual-evidence runner", () => {
-  it("publishes the accepted prototype and production comparison matrix without starting browsers", () => {
-    const result = spawnSync(process.execPath, [runner, "--print-matrix"], {
+  it("documents bounded inspection commands without starting browsers", () => {
+    const result = spawnSync(process.execPath, [runner, "--help"], {
       cwd: rootDir,
-      encoding: "utf8"
+      encoding: "utf8",
+      maxBuffer: 8 * 1_024
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({
-      artifactRoot: "test-results/workbench-visual-qa",
-      scenarios: matrix
-    });
+    expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
+    expect(result.stdout).toContain("--print-review-scope");
+    expect(matrix).toHaveLength(60);
   });
 
   it("records the diagnostic-footer baseline intent and stress matrix in the generated packet metadata", () => {
@@ -51,5 +51,27 @@ describe("Workbench visual-evidence runner", () => {
     expect(runnerSource).toContain("server errors and bounded keepalive aggregation");
     expect(runnerSource).toContain("duplicate, overlap, listener churn, and subscription lint");
     expect(runnerSource).toContain("snapshot, COMMAND, and lost-update anomalies");
+  });
+
+  it("includes all twelve integrated diagnostic states in contact sheets, axe, and focus proof", () => {
+    const result = spawnSync(process.execPath, [runner, "--print-review-scope"], {
+      cwd: rootDir,
+      encoding: "utf8",
+      maxBuffer: 8 * 1_024
+    });
+    const diagnosticIds = matrix
+      .filter((scenario: { production?: { setup?: string } }) =>
+        scenario.production?.setup?.startsWith("diagnostic-")
+      )
+      .map((scenario: { id: string }) => scenario.id);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(8 * 1_024);
+    expect(diagnosticIds).toHaveLength(12);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      contactSheetScenarioIds: expect.arrayContaining(diagnosticIds),
+      accessibilityScenarioIds: diagnosticIds,
+      focusScenarioIds: diagnosticIds
+    });
   });
 });

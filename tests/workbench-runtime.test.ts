@@ -735,6 +735,31 @@ describe("WorkbenchRuntime", () => {
     runtime.dispose();
   });
 
+  it("advances the diagnostic journal exactly once for one authoritative History Clear", async () => {
+    const memory = createMemoryDiagnosticObservationJournal({ panelSessionId: "single-diagnostic-clear" });
+    const clear = vi.fn(memory.clear);
+    const diagnosticObservations = { ...memory, clear };
+    const publications: Array<{ type: string; status?: string }> = [];
+    const unsubscribe = memory.subscribe(memory.currentBoundary(), (publication) => publications.push(publication));
+    const runtime = createWorkbenchRuntime({
+      history: createAuthoritativeHistory({ precommitted: [event("before-single-clear")] }),
+      capture: { coverage: "USEFUL" },
+      diagnosticObservations
+    });
+    await flushStoreNotifications();
+
+    runtime.dispatch({ type: "request-clear-history" });
+    runtime.dispatch({ type: "confirm-clear-history" });
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(publications.filter(({ type, status }) => type === "status" && status === "cleared")).toHaveLength(1);
+    expect(memory.currentBoundary()).toMatchObject({ sequence: 0 });
+    unsubscribe();
+    runtime.dispose();
+  });
+
   it("fails closed instead of continuing the prior diagnostic interval when Clear cannot commit", async () => {
     const memory = createMemoryDiagnosticObservationJournal({ panelSessionId: "failed-diagnostic-clear" });
     const failure = new Error("diagnostic clear unavailable");
@@ -2689,15 +2714,22 @@ describe("WorkbenchRuntime", () => {
   });
 
   it("finds and reveals matches across all 4,000 retained events without changing the investigation", async () => {
-    const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
     const matchNumbers = new Set([5, 2_050, 3_995]);
-    for (let number = 1; number <= 4_000; number += 1) {
-      history.offer({
-        ...event(`retained-${number}`, matchNumbers.has(number) ? `needle-${number}` : `orders-${number}`),
+    const retainedEvidence = Array.from({ length: 4_000 }, (_, index) => {
+      const number = index + 1;
+      return {
+        id: `retained-${number}`,
+        timestamp: number,
+        direction: "inbound",
+        source: "server",
+        synthetic: false,
+        kind: "item-update",
+        item: { name: matchNumbers.has(number) ? `needle-${number}` : `orders-${number}`, position: 1 },
         subscription: { id: "retained-subscription", mode: "MERGE" }
-      });
-    }
+      } satisfies LightstreamerEventEnvelope;
+    });
+    const history = createAuthoritativeHistory({ precommitted: retainedEvidence });
     const runtime = createWorkbenchRuntime({ history, scheduler, windowSize: 60 });
     await flushStoreNotifications();
     runtime.dispatch({ type: "select-evidence", eventId: "retained-4000" });
