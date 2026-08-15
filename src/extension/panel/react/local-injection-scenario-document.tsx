@@ -269,6 +269,7 @@ function defaultAssertion(id: string, kind: ScenarioAssertion["kind"], stepId: s
     case "correlated-local-evidence-exists": return { id, kind, stepId };
     case "command-key-exists": return { id, kind, item: { name: null, position: 1 }, key: "", expected: "present" };
     case "command-field-equals": return { id, kind, item: { name: null, position: 1 }, key: "", field: "", expected: "" };
+    case "diagnostic-observation-exists": return { id, kind, contractVersion: 1, ruleCode: "capture.disconnected", lifecycle: "condition", minimumSeverity: "warning", affected: { kind: "unavailable", reason: "page-identity-unavailable" } };
   }
 }
 
@@ -279,11 +280,11 @@ function nextAssertionId(checkpoint: ScenarioCheckpoint): string {
   return `${checkpoint.id}-assertion-${sequence}`;
 }
 
-function supportsWithin(assertion: ScenarioAssertion): assertion is Extract<ScenarioAssertion, { kind: "correlated-local-evidence-exists" | "command-key-exists" | "command-field-equals" }> {
-  return assertion.kind === "correlated-local-evidence-exists" || assertion.kind === "command-field-equals" || (assertion.kind === "command-key-exists" && assertion.expected === "present");
+function supportsWithin(assertion: ScenarioAssertion): assertion is Extract<ScenarioAssertion, { kind: "correlated-local-evidence-exists" | "command-key-exists" | "command-field-equals" | "diagnostic-observation-exists" }> {
+  return assertion.kind === "correlated-local-evidence-exists" || assertion.kind === "command-field-equals" || assertion.kind === "diagnostic-observation-exists" || (assertion.kind === "command-key-exists" && assertion.expected === "present");
 }
 
-function withWithin(assertion: Extract<ScenarioAssertion, { kind: "correlated-local-evidence-exists" | "command-key-exists" | "command-field-equals" }>, withinActiveMs: number | undefined): ScenarioAssertion {
+function withWithin(assertion: Extract<ScenarioAssertion, { kind: "correlated-local-evidence-exists" | "command-key-exists" | "command-field-equals" | "diagnostic-observation-exists" }>, withinActiveMs: number | undefined): ScenarioAssertion {
   if (withinActiveMs !== undefined) return { ...assertion, withinActiveMs };
   const copy = { ...assertion } as ScenarioAssertion & { withinActiveMs?: number };
   delete copy.withinActiveMs;
@@ -317,6 +318,7 @@ function assertionLabel(assertion: ScenarioAssertion): string {
     case "correlated-local-evidence-exists": return `Correlated committed Local Evidence exists after Step ${assertion.stepId.replace(/^step-/, "")}`;
     case "command-key-exists": return `Local Effective COMMAND key ${assertion.key} is ${assertion.expected}`;
     case "command-field-equals": return `Local Effective COMMAND field ${assertion.field} strictly equals ${JSON.stringify(assertion.expected)}`;
+    case "diagnostic-observation-exists": return `Diagnostic Observation ${assertion.ruleCode} exists for the exact affected ${assertion.affected.kind}`;
   }
 }
 

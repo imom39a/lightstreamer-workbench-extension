@@ -7,16 +7,21 @@ import {
 } from "./local-injection-scenario";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
 import {
+  diagnosticAffectedIdentityEquals,
+  diagnosticObservationRef,
+  diagnosticSeverityRank,
   DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
   DIAGNOSTIC_RULE_CODE_MAX_LENGTH,
-  isDiagnosticAffectedIdentity
+  isDiagnosticAffectedIdentity,
+  type DiagnosticObservationRead,
+  type DiagnosticObservationRef
 } from "./diagnostic-observation";
 
 export const SCENARIO_MAX_ASSERTIONS_PER_CHECKPOINT = 16;
 
 export type ScenarioAssertionStatus = "pass" | "fail" | "waiting" | "expired" | "invalid" | "unavailable" | "not-evaluable";
 export type ScenarioObservationCertainty = "certain" | "ambiguous" | "unavailable";
-export type ScenarioObservationProvenance = "injection-outcome" | "committed-local-evidence" | "correlated-local" | "local-effective" | "server" | "wire" | "history";
+export type ScenarioObservationProvenance = "injection-outcome" | "committed-local-evidence" | "correlated-local" | "local-effective" | "server" | "wire" | "history" | "diagnostic-observation";
 
 export type ScenarioCommandInspection = Readonly<{
   state: "key-present" | "key-absent" | "field-absent" | "concrete" | "ambiguous-server-null" | "redacted" | "unavailable" | "unresolved-wire";
@@ -47,6 +52,7 @@ export type ScenarioAssertionObservation = Readonly<{
     key: string;
     field?: string;
   }>): ScenarioCommandInspection;
+  diagnosticReads?: ReadonlyMap<string, DiagnosticObservationRead>;
 }>;
 
 export type ScenarioAssertionObserved = Readonly<{
@@ -69,6 +75,7 @@ export type ScenarioAssertionResult = Readonly<{
   expected: Readonly<Record<string, unknown>>;
   observed: ScenarioAssertionObserved;
   relatedEvidence: readonly EvidenceRef[];
+  relatedDiagnostics: readonly DiagnosticObservationRef[];
 }>;
 
 export type ScenarioCheckpointEvaluation = Readonly<{
@@ -266,6 +273,27 @@ function evaluateAssertion(assertion: ScenarioAssertion, observation: ScenarioAs
       const matches = inspected.state === "concrete" && Object.is(inspected.value, assertion.expected);
       return result(assertion, matches ? "pass" : assertion.withinActiveMs ? "waiting" : "fail", inspected, inspected.evidence ? [inspected.evidence] : []);
     }
+    case "diagnostic-observation-exists": {
+      const read = observation.diagnosticReads?.get(assertion.id);
+      if (!read || read.status !== "complete" || read.coverage !== "complete" || read.retention !== "complete") {
+        const state = read?.status ?? "unavailable";
+        return result(assertion, "unavailable", { state, certainty: "unavailable", provenance: "diagnostic-observation", evidence: null }, []);
+      }
+      const match = read.observations.find((candidate) => candidate.schemaVersion === assertion.contractVersion
+        && candidate.code === assertion.ruleCode
+        && candidate.lifecycle.kind === assertion.lifecycle
+        && (candidate.lifecycle.kind === "occurrence" || candidate.lifecycle.state === "active")
+        && diagnosticSeverityRank(candidate.severity) >= diagnosticSeverityRank(assertion.minimumSeverity)
+        && diagnosticAffectedIdentityEquals(candidate.affected, assertion.affected));
+      const status = match ? "pass" : assertion.withinActiveMs ? "waiting" : "fail";
+      return result(assertion, status, {
+        state: match?.lifecycle.state ?? "absent",
+        ...(match ? { value: match.severity } : {}),
+        certainty: "certain",
+        provenance: "diagnostic-observation",
+        evidence: null
+      }, [], match ? [diagnosticObservationRef(match)] : []);
+    }
   }
 }
 
@@ -279,7 +307,8 @@ function result(
   assertion: ScenarioAssertion,
   status: ScenarioAssertionStatus,
   observed: ScenarioAssertionObserved,
-  relatedEvidence: readonly EvidenceRef[]
+  relatedEvidence: readonly EvidenceRef[],
+  relatedDiagnostics: readonly DiagnosticObservationRef[] = []
 ): ScenarioAssertionResult {
   if ((observed.evidence !== null && !isBoundedEvidenceRef(observed.evidence)) || relatedEvidence.some((evidence) => !isBoundedEvidenceRef(evidence))) {
     return frozen({
@@ -288,10 +317,11 @@ function result(
       status: "unavailable",
       expected: expectedFor(assertion),
       observed: { state: "evidence-reference-unavailable", certainty: "unavailable", provenance: observed.provenance, evidence: null },
-      relatedEvidence: []
+      relatedEvidence: [],
+      relatedDiagnostics: []
     });
   }
-  return frozen({ assertionId: assertion.id, kind: assertion.kind, status, expected: expectedFor(assertion), observed: boundedObserved(assertion, status, observed), relatedEvidence: [...relatedEvidence] });
+  return frozen({ assertionId: assertion.id, kind: assertion.kind, status, expected: expectedFor(assertion), observed: boundedObserved(assertion, status, observed), relatedEvidence: [...relatedEvidence], relatedDiagnostics: [...relatedDiagnostics] });
 }
 
 function boundedObserved(assertion: ScenarioAssertion, status: ScenarioAssertionStatus, observed: ScenarioAssertionObserved): ScenarioAssertionObserved {
@@ -337,6 +367,13 @@ function expectedFor(assertion: ScenarioAssertion): Readonly<Record<string, unkn
     case "correlated-local-evidence-exists": return { exists: true };
     case "command-key-exists": return { key: assertion.expected };
     case "command-field-equals": return { primitive: assertion.expected };
+    case "diagnostic-observation-exists": return {
+      contractVersion: assertion.contractVersion,
+      ruleCode: assertion.ruleCode,
+      lifecycle: assertion.lifecycle,
+      minimumSeverity: assertion.minimumSeverity,
+      affected: assertion.affected
+    };
   }
 }
 
