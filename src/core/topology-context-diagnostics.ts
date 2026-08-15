@@ -59,6 +59,7 @@ export type DiagnosticConclusion =
   | "listener-presence"
   | "subscription-configuration"
   | "topology-completeness"
+  | "future-evidence-retention"
   | "history-after-terminal-boundary"
   | "snapshot-state"
   | "update-delivery-attribution"
@@ -122,7 +123,7 @@ export function evaluateTopologyContextDiagnostics(
 function limitationObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
   const observations: DiagnosticObservationInput[] = [];
   for (const limitation of input.limitations) {
-    const weakened = [...new Set(limitation.weakens)].sort();
+    const weakened = [...new Set(limitation.weakens.filter((conclusion) => permittedConclusion(limitation, conclusion)))].sort();
     if (weakened.length === 0) continue;
     const semantics = limitationSemantics(limitation);
     const lifecycle = limitation.current
@@ -144,6 +145,19 @@ function limitationObservations(input: TopologyContextDiagnosticInput): Diagnost
     }));
   }
   return observations;
+}
+
+function permittedConclusion(limitation: TopologyCoverageLimitation, conclusion: DiagnosticConclusion): boolean {
+  switch (limitation.kind) {
+    case "late-attachment": return conclusion === "pre-attachment-churn" || conclusion === "topology-completeness" ||
+      conclusion === "listener-presence" || conclusion === "subscription-configuration" || conclusion === "snapshot-state";
+    case "observation-path": return conclusion === "listener-presence" || conclusion === "subscription-configuration" ||
+      conclusion === "topology-completeness" || conclusion === "snapshot-state" || conclusion === "update-delivery-attribution";
+    case "history-capacity": return limitation.state === "terminal"
+      ? conclusion === "history-after-terminal-boundary"
+      : conclusion === "future-evidence-retention";
+    case "unsupported-shape": return conclusion !== "history-after-terminal-boundary" && conclusion !== "future-evidence-retention";
+  }
 }
 
 function limitationSemantics(limitation: TopologyCoverageLimitation): Readonly<{
@@ -210,7 +224,7 @@ function churnObservations(input: TopologyContextDiagnosticInput): DiagnosticObs
       affected: window.affected,
       observedAt: input.boundary.observedAt,
       evidenceBoundary: latest.evidence,
-      observed: `${window.totalChanges} captured add/remove changes from ${window.startedAt} through ${window.endedAt} (${duration} ms), meeting the configured threshold of ${window.threshold}.`,
+      observed: `${window.totalChanges} captured add/remove changes from ${window.startedAt} through ${window.endedAt} (${duration} ms), meeting the configured threshold of ${window.threshold}. Window state: ${window.current ? "current condition" : "historical occurrence"}.`,
       limitation: `${completeness}${attachment} Counts describe captured registration activity and do not establish application intent.`,
       consequence: `Repeated ${window.kind === "listener" ? "listener registration" : "Subscription lifecycle"} activity occurred within the stated bounded window.`,
       route: { kind: "inspect-evidence", evidence: latest.evidence },
@@ -250,6 +264,7 @@ function exactDuplicateObservations(input: TopologyContextDiagnosticInput): Diag
         ? { kind: "condition" as const, conditionId: `${ids[0]}:${ids[1]}` }
         : { kind: "occurrence" as const, occurrenceId: `${evidence.eventId}:${ids[0]}:${ids[1]}` };
       const differing = differingConfiguration(left.configuration, right.configuration);
+      const temporalState = left.current && right.current ? "current active" : "historical active-at-boundary";
       observations.push(normalized({
         code: exact ? "ls.subscription.exact-duplicate" : "ls.subscription.semantic-overlap",
         ruleVersion: 1,
@@ -259,8 +274,8 @@ function exactDuplicateObservations(input: TopologyContextDiagnosticInput): Diag
         observedAt: input.boundary.observedAt,
         evidenceBoundary: evidence,
         observed: exact
-          ? `Subscriptions \`${ids[0]}\` and \`${ids[1]}\` are active exact duplicates. Matching configuration: mode, item/field descriptors, Data Adapter, selector, snapshot, frequency, buffer, and second-level settings.`
-          : `Subscriptions \`${ids[0]}\` and \`${ids[1]}\` overlap semantically. Matching configuration: mode, items, fields, Data Adapter, selector. Differing configuration: ${differing.join(", ")}.`,
+          ? `Subscriptions \`${ids[0]}\` and \`${ids[1]}\` are ${temporalState} exact duplicates. Matching configuration: mode, item/field descriptors, Data Adapter, selector, snapshot, frequency, buffer, and second-level settings.`
+          : `Subscriptions \`${ids[0]}\` and \`${ids[1]}\` have a ${temporalState} semantic overlap. Matching configuration: mode, items, fields, Data Adapter, selector. Differing configuration: ${differing.join(", ")}.`,
         limitation: exact
           ? "This comparison uses immutable committed topology facts and does not infer why the application created either Subscription."
           : "This is an informational comparison; the differing requests may be intentional and Workbench does not infer application intent.",

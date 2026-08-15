@@ -94,6 +94,7 @@ describe("topology Context diagnostics", () => {
 
     expect(current.observations[0]?.lifecycle).toEqual({ kind: "condition", conditionId: "sub-a:sub-b" });
     expect(historical.observations[0]?.lifecycle).toEqual({ kind: "occurrence", occurrenceId: "topology-20:sub-a:sub-b" });
+    expect(historical.observations[0]?.observed).toContain("historical active-at-boundary");
     expect(evaluateTopologyContextDiagnostics(input([first]), current.observations).resolutions).toEqual([
       expect.objectContaining({ code: "ls.subscription.exact-duplicate", conditionId: "sub-a:sub-b" })
     ]);
@@ -198,7 +199,7 @@ describe("topology Context diagnostics", () => {
   it.each([
     [{ kind: "late-attachment", attachedAt: 900, detail: "page activity before attachment was not observed", weakens: ["pre-attachment-churn", "topology-completeness"] }, "workbench.capture.late-attachment", "information"],
     [{ kind: "observation-path", path: "wire", detail: "listener registrations are not observable on this path", weakens: ["listener-presence", "update-delivery-attribution"] }, "workbench.capture.observation-path-limited", "information"],
-    [{ kind: "history-capacity", state: "lower-capacity", detail: "the memory tier has a smaller fixed envelope", weakens: ["topology-completeness"] }, "workbench.history.lower-capacity", "information"],
+    [{ kind: "history-capacity", state: "lower-capacity", detail: "the memory tier has a smaller fixed envelope", weakens: ["future-evidence-retention"] }, "workbench.history.lower-capacity", "information"],
     [{ kind: "history-capacity", state: "terminal", detail: "later captured candidates were refused", weakens: ["history-after-terminal-boundary"] }, "workbench.history.terminal", "error"],
     [{ kind: "unsupported-shape", shape: "subscription-vNext", detail: "configuration fields could not be normalized", weakens: ["subscription-configuration"] }, "workbench.capture.unsupported-shape", "warning"]
   ] as const)("scopes %s to the exact conclusions it weakens", (specific, code, severity) => {
