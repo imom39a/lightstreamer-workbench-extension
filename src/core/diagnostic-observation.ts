@@ -494,6 +494,15 @@ export function diagnosticAffectedIdentityEquals(left: DiagnosticAffectedIdentit
   return affectedIdentity(left) === affectedIdentity(right);
 }
 
+export function isDiagnosticAffectedIdentity(value: unknown): value is DiagnosticAffectedIdentity {
+  try {
+    assertAffected(value as DiagnosticAffectedIdentity);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function diagnosticObservationRef(observation: DiagnosticObservation): DiagnosticObservationRef {
   return Object.freeze({
     schemaVersion: observation.schemaVersion,

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION } from "../src/core/diagnostic-observation";
+
 import {
   evaluateScenarioCheckpoint,
   validateScenarioCheckpoint,
@@ -117,6 +119,26 @@ describe("Scenario Checkpoints", () => {
     expect(validateScenarioCheckpoint(checkpoint([{ id: "a", kind: "command-key-exists", item: { name: 42, position: null }, key: "order-1", expected: "present" } as never]), {
       targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
     })).toEqual({ ok: false, assertionId: "a", reason: "COMMAND assertion requires an exact item name or positive item position." });
+  });
+
+  it("validates the exact normalized Diagnostic Observation assertion contract", () => {
+    const affected = { kind: "subscription", pageId: "page", clientId: "client", sessionId: "session", subscriptionId: "sub" } as const;
+    expect(validateScenarioCheckpoint(checkpoint([{
+      id: "diagnostic", kind: "diagnostic-observation-exists", contractVersion: DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
+      ruleCode: "subscription.lost-updates", lifecycle: "occurrence", minimumSeverity: "warning", affected, withinActiveMs: 500
+    } as never]), { targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"] })).toEqual({ ok: true });
+
+    for (const assertion of [
+      { contractVersion: 2, ruleCode: "subscription.lost-updates", lifecycle: "occurrence", minimumSeverity: "warning", affected },
+      { contractVersion: 1, ruleCode: "", lifecycle: "occurrence", minimumSeverity: "warning", affected },
+      { contractVersion: 1, ruleCode: "subscription.lost-updates", lifecycle: "resolved", minimumSeverity: "warning", affected },
+      { contractVersion: 1, ruleCode: "subscription.lost-updates", lifecycle: "condition", minimumSeverity: "fatal", affected },
+      { contractVersion: 1, ruleCode: "subscription.lost-updates", lifecycle: "condition", minimumSeverity: "warning", affected: { kind: "subscription", pageId: "page", clientId: "client", subscriptionId: "" } }
+    ]) {
+      expect(validateScenarioCheckpoint(checkpoint([{ id: "diagnostic", kind: "diagnostic-observation-exists", ...assertion } as never]), {
+        targetMode: "COMMAND", deliveryPath: "listener", earlierStepIds: ["step-1"]
+      })).toMatchObject({ ok: false, assertionId: "diagnostic" });
+    }
   });
 
   it("compares JSON primitives by exact type and distinguishes own absence from concrete null", () => {
