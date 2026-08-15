@@ -336,6 +336,7 @@ export function createLocalInjectionScenarioRunner(
   }
 
   function beginCheckpoint(member: ReviewedScenarioCheckpoint, startedActiveOffsetMs: number, diagnosticReads: ReadonlyMap<string, DiagnosticObservationRead>, wasPlaying: boolean): void {
+    const preserveLoadingPauseIntent = phase === "paused" && activeCheckpoint?.checkpointId === member.id;
     const checkpointAdapter = adapter.checkpoint;
     if (!checkpointAdapter) {
       const unavailable = evaluateScenarioCheckpoint(member, {
@@ -418,7 +419,7 @@ export function createLocalInjectionScenarioRunner(
         if (settled || phase !== "checkpoint-waiting") return;
         scheduleCheckpointDeadline();
       };
-      if (phase === "paused" || !visible) {
+      if (preserveLoadingPauseIntent || !visible) {
         remainingDelayMs = Math.max(0, deadlineActiveOffsetMs - activeNow());
         publish();
         return;
