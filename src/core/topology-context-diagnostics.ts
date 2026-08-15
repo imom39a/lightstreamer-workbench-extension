@@ -104,28 +104,40 @@ export function evaluateTopologyContextDiagnostics(
 
 function exactDuplicateObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
   const current = input.subscriptions
-    .filter((subscription) => subscription.current && subscription.activeAtBoundary && configurationAvailable(subscription.configuration))
+    .filter((subscription) => subscription.activeAtBoundary && configurationAvailable(subscription.configuration))
     .sort((left, right) => left.affected.subscriptionId.localeCompare(right.affected.subscriptionId));
   const observations: DiagnosticObservationInput[] = [];
   for (let leftIndex = 0; leftIndex < current.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < current.length; rightIndex += 1) {
       const left = current[leftIndex]!;
       const right = current[rightIndex]!;
-      if (!sameScope(left, right) || configurationSignature(left.configuration) !== configurationSignature(right.configuration)) continue;
+      if (!sameScope(left, right) || semanticConfigurationSignature(left.configuration) !== semanticConfigurationSignature(right.configuration)) continue;
       const ids = [left.affected.subscriptionId, right.affected.subscriptionId].sort();
+      const exact = configurationSignature(left.configuration) === configurationSignature(right.configuration);
+      const evidence = laterEvidence(left.evidence, right.evidence);
+      const lifecycle = left.current && right.current
+        ? { kind: "condition" as const, conditionId: `${ids[0]}:${ids[1]}` }
+        : { kind: "occurrence" as const, occurrenceId: `${evidence.eventId}:${ids[0]}:${ids[1]}` };
+      const differing = differingConfiguration(left.configuration, right.configuration);
       observations.push(normalizeDiagnosticObservationInput({
-        code: "ls.subscription.exact-duplicate",
+        code: exact ? "ls.subscription.exact-duplicate" : "ls.subscription.semantic-overlap",
         ruleVersion: 1,
         severity: "information",
-        lifecycle: { kind: "condition", conditionId: `${ids[0]}:${ids[1]}` },
+        lifecycle,
         affected: ids[0] === left.affected.subscriptionId ? left.affected : right.affected,
         observedAt: input.boundary.observedAt,
-        evidenceBoundary: laterEvidence(left.evidence, right.evidence),
-        observed: `Subscriptions \`${ids[0]}\` and \`${ids[1]}\` are active exact duplicates. Matching configuration: mode, item/field descriptors, Data Adapter, selector, snapshot, frequency, buffer, and second-level settings.`,
-        limitation: "This comparison uses immutable committed topology facts and does not infer why the application created either Subscription.",
-        consequence: "The same semantic Subscription configuration is active more than once and may produce separate deliveries.",
-        route: { kind: "inspect-evidence", evidence: laterEvidence(left.evidence, right.evidence) },
-        resultRef: { kind: "evidence", ...laterEvidence(left.evidence, right.evidence) }
+        evidenceBoundary: evidence,
+        observed: exact
+          ? `Subscriptions \`${ids[0]}\` and \`${ids[1]}\` are active exact duplicates. Matching configuration: mode, item/field descriptors, Data Adapter, selector, snapshot, frequency, buffer, and second-level settings.`
+          : `Subscriptions \`${ids[0]}\` and \`${ids[1]}\` overlap semantically. Matching configuration: mode, items, fields, Data Adapter, selector. Differing configuration: ${differing.join(", ")}.`,
+        limitation: exact
+          ? "This comparison uses immutable committed topology facts and does not infer why the application created either Subscription."
+          : "This is an informational comparison; the differing requests may be intentional and Workbench does not infer application intent.",
+        consequence: exact
+          ? "The same semantic Subscription configuration is active more than once and may produce separate deliveries."
+          : "The active Subscriptions address the same semantic stream with different delivery or second-level requests.",
+        route: { kind: "inspect-evidence", evidence },
+        resultRef: { kind: "evidence", ...evidence }
       }));
     }
   }
@@ -146,6 +158,31 @@ function configurationAvailable(configuration: TopologySubscriptionConfiguration
 
 function configurationSignature(configuration: TopologySubscriptionConfiguration): string {
   return JSON.stringify(configuration);
+}
+
+function semanticConfigurationSignature(configuration: TopologySubscriptionConfiguration): string {
+  return JSON.stringify({
+    mode: configuration.mode,
+    items: configuration.items,
+    fields: configuration.fields,
+    dataAdapter: configuration.dataAdapter,
+    selector: configuration.selector
+  });
+}
+
+function differingConfiguration(
+  left: TopologySubscriptionConfiguration,
+  right: TopologySubscriptionConfiguration
+): string[] {
+  const candidates = [
+    ["requested snapshot", left.requestedSnapshot, right.requestedSnapshot],
+    ["requested maximum frequency", left.requestedMaxFrequency, right.requestedMaxFrequency],
+    ["requested buffer size", left.requestedBufferSize, right.requestedBufferSize],
+    ["second-level fields", left.secondLevelFields, right.secondLevelFields],
+    ["second-level Data Adapter", left.secondLevelDataAdapter, right.secondLevelDataAdapter]
+  ] as const;
+  return candidates.flatMap(([label, leftValue, rightValue]) =>
+    JSON.stringify(leftValue) === JSON.stringify(rightValue) ? [] : [label]);
 }
 
 function laterEvidence(left: DiagnosticEvidenceBoundary, right: DiagnosticEvidenceBoundary): DiagnosticEvidenceBoundary {

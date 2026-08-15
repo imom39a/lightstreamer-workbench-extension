@@ -61,4 +61,57 @@ describe("topology Context diagnostics", () => {
     expect(result.observations[0]?.observed).toContain("Matching configuration");
     expect(JSON.stringify(result)).not.toMatch(/health score|application intent/i);
   });
+
+  it("keeps semantic overlap separate and names matching and differing configuration", () => {
+    const first = subscription("sub-a");
+    const second = subscription("sub-b", {
+      configuration: Object.freeze({
+        ...first.configuration,
+        requestedBufferSize: 50,
+        requestedMaxFrequency: "unfiltered"
+      })
+    });
+    const [observation] = evaluateTopologyContextDiagnostics(input([first, second])).observations;
+
+    expect(observation).toMatchObject({
+      code: "ls.subscription.semantic-overlap",
+      severity: "information",
+      lifecycle: { kind: "condition", conditionId: "sub-a:sub-b" }
+    });
+    expect(observation.observed).toContain("Matching configuration: mode, items, fields, Data Adapter, selector");
+    expect(observation.observed).toContain("Differing configuration: requested maximum frequency, requested buffer size");
+    expect(observation.limitation).toMatch(/may be intentional/i);
+  });
+
+  it("emits historical comparisons as occurrences and current comparisons as resolvable conditions", () => {
+    const first = subscription("sub-a");
+    const second = subscription("sub-b");
+    const current = evaluateTopologyContextDiagnostics(input([first, second]));
+    const historical = evaluateTopologyContextDiagnostics(input([
+      { ...first, current: false },
+      { ...second, current: false }
+    ]));
+
+    expect(current.observations[0]?.lifecycle).toEqual({ kind: "condition", conditionId: "sub-a:sub-b" });
+    expect(historical.observations[0]?.lifecycle).toEqual({ kind: "occurrence", occurrenceId: "topology-20:sub-a:sub-b" });
+    expect(evaluateTopologyContextDiagnostics(input([first]), current.observations).resolutions).toEqual([
+      expect.objectContaining({ code: "ls.subscription.exact-duplicate", conditionId: "sub-a:sub-b" })
+    ]);
+  });
+
+  it("does not claim duplicate or overlap when configuration is unavailable, inactive, or cross-Session", () => {
+    const first = subscription("sub-a");
+    const unavailable = subscription("sub-b", {
+      configuration: Object.freeze({
+        ...first.configuration,
+        fields: Object.freeze({ kind: "unavailable", reason: "wire-fallback" })
+      })
+    });
+    const inactive = subscription("sub-c", { activeAtBoundary: false });
+    const otherSession = subscription("sub-d", {
+      affected: Object.freeze({ kind: "subscription", pageId: "page", clientId: "client", sessionId: "other", subscriptionId: "sub-d" })
+    });
+
+    expect(evaluateTopologyContextDiagnostics(input([first, unavailable, inactive, otherSession])).observations).toEqual([]);
+  });
 });
