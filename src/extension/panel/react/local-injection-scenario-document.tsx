@@ -244,7 +244,9 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
       <p role="note">Compact reference only · raw diagnostic messages are not copied into Scenario Trace.</p>
       {trace?.diagnosticAvailability === "UNAVAILABLE_AFTER_CLEAR"
         ? <span>Inspection unavailable after Clear</span>
-        : <button type="button" onClick={() => runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation })}>Inspect Diagnostic Observation {observation.code}</button>}
+        : observation.route.kind === "recover"
+          ? <button type="button" disabled aria-label={`Recovery unavailable for Diagnostic Observation ${observation.code}`}>Recovery unavailable from Scenario Trace</button>
+          : <button type="button" onClick={() => runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation })}>Inspect Diagnostic Observation {observation.code}</button>}
     </section>)}
     </>}
   </article>;

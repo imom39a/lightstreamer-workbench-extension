@@ -751,6 +751,18 @@ describe("WorkbenchRuntime Local Injection", () => {
     runtime.dispatch({ type: "step-next-scenario" });
     await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace).toHaveLength(2));
     expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ kind: "checkpoint", status: "pass", diagnosticAvailability: "RETAINED", assertions: [{ assertionId: "diagnostic", relatedDiagnostics: [{ lifecycle: { occurrenceId: "after-review" } }] }] });
+    const diagnosticTrace = runtime.getSnapshot().scenario?.run?.trace[1];
+    const diagnosticRef = diagnosticTrace?.kind === "checkpoint"
+      ? diagnosticTrace.assertions[0]?.relatedDiagnostics[0]
+      : undefined;
+    if (!diagnosticRef) throw new Error("Expected the bounded Diagnostic Observation reference.");
+    expect(runtime.getSnapshot().scope.selection?.kind).toBe("page");
+    runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation: diagnosticRef });
+    await flushAsync();
+    expect(runtime.getSnapshot()).toMatchObject({ scope: { selection: { kind: "subscription" } }, contextId: "context:scope", evidence: { restoration: { canBack: true } } });
+    runtime.dispatch({ type: "back-investigation" });
+    await flushAsync();
+    expect(runtime.getSnapshot().scope.selection?.kind).toBe("page");
     runtime.dispatch({ type: "request-clear-history" });
     runtime.dispatch({ type: "confirm-clear-history" });
     await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ diagnosticAvailability: "UNAVAILABLE_AFTER_CLEAR" }));
