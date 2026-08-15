@@ -14,8 +14,7 @@ import {
   createMemoryDiagnosticObservationJournal,
   diagnosticObservationIdentity,
   type DiagnosticAffectedIdentity,
-  type DiagnosticObservationJournal,
-  type DiagnosticObservationRef
+  type DiagnosticObservationJournal
 } from "../../core/diagnostic-observation";
 import {
   adaptCommittedEvidenceFinding,
@@ -634,7 +633,6 @@ export type WorkbenchCommand =
   | { type: "move-scenario-member"; memberId: string; direction: "earlier" | "later" }
   | { type: "remove-scenario-checkpoint"; checkpointId: string }
   | { type: "show-scenario-checkpoint-evidence"; evidence: EvidenceRef }
-  | { type: "show-scenario-diagnostic-observation"; observation: DiagnosticObservationRef }
   | { type: "move-scenario-step"; stepId: string; direction: "earlier" | "later" }
   | { type: "duplicate-scenario-step"; stepId: string }
   | { type: "remove-scenario-step"; stepId: string }
@@ -776,6 +774,7 @@ export type WorkbenchRuntimeOptions = {
   storageEstimate?: StorageEstimateObservation | null;
   storageHeadroomSampler?: StorageHeadroomSampler;
   normalizer?: EventNormalizer;
+  diagnosticObservations?: DiagnosticObservationJournal;
   windowSize?: number;
   scheduler?: WorkbenchRuntimeScheduler;
   scenarioClock?: ScenarioClock;
@@ -901,6 +900,12 @@ class Runtime implements WorkbenchRuntime {
   private readonly outputByteLimit: number;
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
   private readonly normalizer: EventNormalizer;
+  private readonly diagnosticObservations: DiagnosticObservationJournal;
+  private readonly activeRuntimeDiagnosticConditions = new Map<string, Readonly<{
+    code: string;
+    conditionId: string;
+    affected: DiagnosticAffectedIdentity;
+  }>>();
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
@@ -1093,6 +1098,7 @@ class Runtime implements WorkbenchRuntime {
     this.captureStatus = options.captureStatus ?? "idle";
     this.captureOverride = options.capture ?? {};
     this.normalizer = options.normalizer ?? createEventNormalizer();
+    this.diagnosticObservations = options.diagnosticObservations ?? createMemoryDiagnosticObservationJournal({ panelSessionId: `runtime-${Date.now().toString(36)}` });
     this.localInjectionExecutor = options.localInjectionExecutor ?? null;
     this.performanceHooks = options.performanceHooks ?? null;
     this.activityProjectionFactory = options.activityProjectionFactory ?? createActivityProjection;
@@ -1753,30 +1759,6 @@ class Runtime implements WorkbenchRuntime {
         this.dispatch({ type: "select-evidence", eventId: command.evidence.eventId });
         return;
       }
-      case "show-scenario-diagnostic-observation": {
-        const state = this.scenarioState;
-        if (!state) return;
-        const route = command.observation.route;
-        if (route.kind === "inspect-evidence") {
-          this.dispatch({ type: "show-scenario-checkpoint-evidence", evidence: route.evidence });
-          return;
-        }
-        if (route.kind === "inspect-affected") {
-          const scopeId = this.diagnosticAffectedScopeId(command.observation.affected);
-          if (scopeId) {
-            state.membershipError = null;
-            this.dispatch({ type: "set-scope", scopeId });
-            this.dispatch({ type: "open-scope" });
-            return;
-          }
-          state.membershipError = `The exact affected ${command.observation.affected.kind} object is unavailable in the current runtime topology; the Scenario Trace was not changed.`;
-          this.publish();
-          return;
-        }
-        state.membershipError = `Recovery route ${route.action} is unavailable from Scenario Trace; use the shared diagnostic recovery surface.`;
-        this.publish();
-        return;
-      }
       case "move-scenario-step":
         this.moveCurrentScenarioStep(command.stepId, command.direction);
         return;
@@ -2164,7 +2146,7 @@ class Runtime implements WorkbenchRuntime {
           error instanceof Error ? error.message : String(error)
         );
       }
-    );
+    ).then(() => this.diagnosticObservations.close());
   }
 
   async disposeAndWait(): Promise<void> {
@@ -2378,6 +2360,8 @@ class Runtime implements WorkbenchRuntime {
   }
 
   private resetCoherentStateAfterClear(): void {
+    this.activeRuntimeDiagnosticConditions.clear();
+    void this.diagnosticObservations.clear().catch(() => undefined);
     this.activityEvidence.splice(0, this.activityEvidence.length);
     this.activityEvidenceKeys.clear();
     this.activityHydrationPromise = null;
@@ -2651,6 +2635,7 @@ class Runtime implements WorkbenchRuntime {
       else this.topologyCoverage = "LIMITED";
     }
     commandStateProjections.apply(event);
+    this.recordCommittedDiagnosticFindings(entry, event, commandStateProjections);
     if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
     this.scheduleScenarioBoundaryPublication();
     this.invalidatePreparedExport(false);
@@ -3915,8 +3900,7 @@ class Runtime implements WorkbenchRuntime {
         item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
         keys: this.activeCommandKeys(draft.anchor)
       })),
-      retainedRunBytes: state.retainedRunBytes,
-      diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary()
+      retainedRunBytes: state.retainedRunBytes
     });
     if (!reviewed.ok) {
       state.membershipError = `${reviewed.stepId ? `${reviewed.stepId}: ` : ""}${reviewed.reason}`;
@@ -4037,12 +4021,7 @@ class Runtime implements WorkbenchRuntime {
       },
       checkpoint: {
         feed: this.scenarioBoundaryFeed(),
-        observations: (currentRun) => this.scenarioAssertionObservations(currentRun),
-        diagnostics: {
-          currentBoundary: () => this.diagnosticObservations.currentBoundary(),
-          query: (query) => this.diagnosticObservations.query(query),
-          subscribe: (after, observer) => this.diagnosticObservations.subscribe(after, observer)
-        }
+        observations: (currentRun) => this.scenarioAssertionObservations(currentRun)
       },
       onChange: (runnerSnapshot) => {
         if (this.disposed || this.scenarioState !== state) return;
@@ -4137,8 +4116,7 @@ class Runtime implements WorkbenchRuntime {
     const accepted = state.runner.reReview({
       targetFingerprint: this.scenarioTargetFingerprint(firstDraft),
       listenerIds: this.scenarioCurrentListenerIds(firstDraft),
-      committedEvidenceBoundary: this.committedEvidenceBoundary,
-      diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary()
+      committedEvidenceBoundary: this.committedEvidenceBoundary
     });
     if (!accepted.ok) state.runner.stop(`Drift re-review failed: ${accepted.reason}`);
     else state.serverInterleaves = [];
@@ -5134,30 +5112,6 @@ class Runtime implements WorkbenchRuntime {
     return Object.freeze(snapshot);
   }
 
-  private diagnosticAffectedScopeId(affected: DiagnosticAffectedIdentity): string | null {
-    const state = this.topologyProjection.snapshot();
-    const structure = this.currentScopeStructure(state);
-    if (affected.kind === "unavailable" || affected.kind === "evidence"
-      || this.currentPageEpoch === null
-      || affected.pageId !== this.currentPageEpoch) return null;
-    for (const descriptor of structure.descriptors) {
-      const located = locateScopeDescriptor(state, descriptor.locator);
-      if (!located) continue;
-      if (affected.kind === "page" && located.kind === "page") return descriptor.id;
-      if (affected.kind === "client" && located.kind === "client" && located.client.id === affected.clientId) return descriptor.id;
-      if (affected.kind === "session" && located.kind === "session" && located.client.id === affected.clientId && located.session.id === affected.sessionId) return descriptor.id;
-      if (affected.kind === "subscription" && located.kind === "subscription"
-        && located.client?.id === affected.clientId
-        && located.subscription.id === affected.subscriptionId
-        && (affected.sessionId === undefined || located.session?.id === affected.sessionId)) return descriptor.id;
-      if (affected.kind === "item" && located.kind === "item"
-        && located.client?.id === affected.clientId
-        && located.subscription.id === affected.subscriptionId
-        && (located.item.name === affected.item || `#${located.item.position}` === affected.item)) return descriptor.id;
-    }
-    return null;
-  }
-
   private currentScopeStructure(state: TopologyState): NonNullable<Runtime["scopeStructureCache"]> {
     const revision = this.topologyProjection.scopeStructureRevision();
     if (this.scopeStructureCache?.revision === revision) return this.scopeStructureCache;
@@ -5547,8 +5501,125 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Try clearing history again"
       });
     }
+    this.recordRuntimeDiagnosticConditions(diagnostics);
     return Object.freeze(diagnostics.map((diagnostic) => Object.freeze(diagnostic)));
   }
+
+  private recordCommittedDiagnosticFindings(
+    entry: CommittedEvidence,
+    event: LightstreamerEventEnvelope,
+    projections: CommandStateProjections
+  ): void {
+    const evidenceBoundary = Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId });
+    const affected = diagnosticAffectedIdentity(event, evidenceBoundary);
+    if (event.kind === "subscription-error" || event.kind === "lost-updates") {
+      const rawCode = event.raw?.code;
+      const adapted = adaptCommittedEvidenceFinding({
+        family: event.kind,
+        severity: "warning",
+        lifecycle: { kind: "occurrence", occurrenceId: event.id },
+        affected,
+        observedAt: event.timestamp,
+        observed: event.kind === "subscription-error" ? "SubscriptionListener reported a subscription error." : "SubscriptionListener reported lost updates.",
+        limitation: event.kind === "subscription-error"
+          ? "The callback does not prove whether the Subscription stopped or expose server-side application state."
+          : "The callback reports a count but does not enumerate the missing update values.",
+        consequence: event.kind === "subscription-error"
+          ? "Updates for the affected Subscription may be unavailable."
+          : "The retained local view may omit updates for the affected Subscription.",
+        route: { kind: "inspect-evidence", evidence: evidenceBoundary },
+        evidenceBoundary,
+        ...(typeof rawCode === "number" && Number.isSafeInteger(rawCode) ? { originalCode: rawCode } : {})
+      });
+      void this.diagnosticObservations.observe(adapted.observation).catch(() => undefined);
+    }
+    const commandDiagnostics = projections.snapshot(event.synthetic ? "local-effective" : "observed-server").diagnostics
+      .filter((diagnostic) => diagnostic.eventId === event.id);
+    commandDiagnostics.forEach((diagnostic, index) => {
+      const adapted = adaptProjectionFinding({
+        family: "command",
+        localCode: diagnostic.code,
+        severity: diagnostic.severity,
+        lifecycle: { kind: "occurrence", occurrenceId: `${event.id}:${diagnostic.code}:${index}` },
+        affected,
+        observedAt: event.timestamp,
+        evidenceBoundary,
+        observed: `COMMAND projection recorded ${diagnostic.code} for committed Evidence ${event.id}.`,
+        limitation: "The projection uses committed Workbench Evidence and is not Authoritative COMMAND State.",
+        consequence: diagnostic.explanation,
+        route: { kind: "inspect-evidence", evidence: evidenceBoundary },
+        resultRef: {
+          kind: "projection",
+          projection: event.synthetic ? "local-effective-command-state" : "observed-server-command-state",
+          key: `${event.subscription?.id ?? "subscription-unavailable"}:${event.item?.name ?? event.item?.position ?? "item-unavailable"}:${event.update?.key ?? "key-unavailable"}`
+        }
+      });
+      void this.diagnosticObservations.observe(adapted.observation).catch(() => undefined);
+    });
+  }
+
+  private recordRuntimeDiagnosticConditions(diagnostics: readonly WorkbenchDiagnostic[]): void {
+    const pageId = this.currentPageEpoch ?? "inspected-page";
+    const desired = new Map<string, Readonly<{ code: string; conditionId: string; affected: DiagnosticAffectedIdentity }>>();
+    for (const diagnostic of diagnostics) {
+      const mapped = runtimeDiagnosticRule(diagnostic);
+      if (!mapped) continue;
+      const affected = Object.freeze({ kind: "page" as const, pageId });
+      const adapted = adaptWorkbenchConditionFinding({
+        family: mapped.family,
+        localCode: mapped.localCode,
+        severity: diagnostic.severity === "Error" ? "error" : diagnostic.severity === "Warning" ? "warning" : "information",
+        lifecycle: { kind: "condition", conditionId: mapped.conditionId },
+        affected,
+        observedAt: Date.now(),
+        observed: mapped.observed,
+        limitation: mapped.limitation,
+        consequence: diagnostic.detail,
+        route: { kind: "recover", action: mapped.route }
+      });
+      desired.set(diagnosticObservationIdentity(adapted.observation), { code: adapted.observation.code, conditionId: mapped.conditionId, affected });
+      void this.diagnosticObservations.observe(adapted.observation).catch(() => undefined);
+    }
+    for (const [id, prior] of this.activeRuntimeDiagnosticConditions) {
+      if (desired.has(id)) continue;
+      void this.diagnosticObservations.resolveCondition({ ...prior, observedAt: Date.now() }).catch(() => undefined);
+    }
+    this.activeRuntimeDiagnosticConditions.clear();
+    for (const [id, condition] of desired) this.activeRuntimeDiagnosticConditions.set(id, condition);
+  }
+}
+
+function diagnosticAffectedIdentity(
+  event: LightstreamerEventEnvelope,
+  evidence: Readonly<{ intervalId: string; sequence: number; eventId: string }>
+): DiagnosticAffectedIdentity {
+  const pageId = event.topology?.pageEpoch ?? "inspected-page";
+  if (event.client?.id && event.subscription?.id) {
+    return Object.freeze({
+      kind: "subscription",
+      pageId,
+      clientId: event.client.id,
+      ...(event.client.sessionId ? { sessionId: event.client.sessionId } : {}),
+      subscriptionId: event.subscription.id
+    });
+  }
+  if (event.client?.id) return Object.freeze({ kind: "client", pageId, clientId: event.client.id });
+  return Object.freeze({ kind: "evidence", ...evidence });
+}
+
+function runtimeDiagnosticRule(diagnostic: WorkbenchDiagnostic): Readonly<{
+  family: "history" | "storage" | "capture" | "session";
+  localCode: string;
+  conditionId: string;
+  observed: string;
+  limitation: string;
+  route: string;
+}> | null {
+  if (diagnostic.category === "history") return { family: "history", localCode: "active-condition", conditionId: "active-history-condition", observed: "Event History reported an active capacity or commit condition.", limitation: "The condition describes the current History Interval and its committed boundary only.", route: "inspect-retained-evidence" };
+  if (diagnostic.category === "storage") return { family: "storage", localCode: "headroom-limited", conditionId: "storage-headroom", observed: "Browser storage telemetry reported limited headroom.", limitation: "Browser storage estimates are advisory and do not reserve capacity.", route: "inspect-storage-headroom" };
+  if (diagnostic.category === "capture") return { family: "capture", localCode: diagnostic.title === "Capture disconnected" ? "disconnected" : "coverage-limited", conditionId: diagnostic.title === "Capture disconnected" ? "bridge" : "coverage", observed: diagnostic.title === "Capture disconnected" ? "The inspected-page Capture bridge is disconnected." : "Observation Coverage is limited or unavailable.", limitation: "Workbench reports only the instrumentation coverage it can establish.", route: "inspect-capture-status" };
+  if (diagnostic.category === "session") return { family: "session", localCode: "recovering", conditionId: "recovering", observed: "The official client is attempting Session recovery.", limitation: "Recovery status does not prove whether the prior Session will resume.", route: "inspect-session" };
+  return null;
 }
 
 export function settleScenarioCoordinatorExecution(execution: LocalInjectionCoordinatorExecution, now: number) {

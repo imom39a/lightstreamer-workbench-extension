@@ -6,7 +6,7 @@ import type {
   DiagnosticResultRef,
   DiagnosticSeverity
 } from "./diagnostic-observation";
-import { freezeDiagnosticInspectionRoute } from "./diagnostic-observation";
+import { normalizeDiagnosticObservationInput } from "./diagnostic-observation";
 
 type DiagnosticSemantics = Readonly<{
   severity: DiagnosticSeverity;
@@ -71,19 +71,19 @@ function adapted(
   resultRef?: DiagnosticResultRef
 ): AdaptedDiagnosticFinding {
   return Object.freeze({
-    observation: Object.freeze({
+    observation: normalizeDiagnosticObservationInput({
       code,
       ruleVersion: 1,
       severity: finding.severity,
-      lifecycle: Object.freeze({ ...finding.lifecycle }),
-      affected: Object.freeze({ ...finding.affected }),
+      lifecycle: finding.lifecycle,
+      affected: finding.affected,
       observedAt: finding.observedAt,
       evidenceBoundary: finding.evidenceBoundary ? Object.freeze({ ...finding.evidenceBoundary }) : undefined,
       observed: finding.observed,
       limitation: finding.limitation,
       consequence: finding.consequence,
-      route: freezeDiagnosticInspectionRoute(finding.route),
-      resultRef: resultRef ? Object.freeze({ ...resultRef }) : undefined,
+      route: finding.route,
+      resultRef,
       originalCode: finding.originalCode,
       safeMessage: finding.safeMessage
     })

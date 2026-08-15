@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { type EventHistory } from "../src/core/event-history-authoritative";
 import { createTypedFilterValue } from "../src/core/filter-algebra";
+import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 import { createCaptureMessage } from "../src/bridge/messages";
 import { createWorkbenchRuntime, type WorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
@@ -235,6 +236,31 @@ function contextFields(runtime: ReturnType<typeof createWorkbenchRuntime>): Reco
 }
 
 describe("WorkbenchRuntime", () => {
+  it("migrates committed and runtime findings through the normalized Diagnostic Observation journal without changing the footer", async () => {
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "runtime-diagnostics" });
+    const history = createAuthoritativeHistory({
+      precommitted: [{
+        ...event("subscription-error-1", "orders"),
+        kind: "subscription-error",
+        update: undefined,
+        raw: { code: 41, message: "private source text remains outside normalization" }
+      }]
+    });
+    const runtime = createWorkbenchRuntime({ history, diagnosticObservations, captureStatus: "bridge disconnected" });
+    await flushStoreNotifications();
+    const snapshot = runtime.getSnapshot();
+    await flushStoreNotifications();
+    const observations = (await diagnosticObservations.query()).observations;
+
+    expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({ title: "Capture disconnected" }));
+    expect(observations.map(({ code }) => code)).toEqual(expect.arrayContaining([
+      "ls.subscription.error",
+      "workbench.capture.disconnected"
+    ]));
+    expect(JSON.stringify(observations)).not.toContain("private source text");
+    runtime.dispose();
+  });
+
   it("exposes authoritative history capacity status instead of a generic warning threshold", async () => {
     const history = createAuthoritativeHistory();
     const scheduler = createScheduler();
