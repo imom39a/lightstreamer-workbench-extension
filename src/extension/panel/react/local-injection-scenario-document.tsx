@@ -71,6 +71,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
   const nextMember = state.runner?.cursor.members[state.runner.cursor.index] ?? (run ? run.members[run.nextMemberIndex] : null) ?? null;
   const nextStep = nextMember?.kind === "step" ? nextMember : null;
   const nextMemberLabel = nextMember?.kind === "checkpoint" ? `Checkpoint ${nextMember.name}` : nextStep ? `Step ${nextStep.ordinal}` : "—";
+  const diagnosticAuthorizationSeed = run?.authorizations[0]?.diagnosticObservationBoundary ?? null;
   return <section className="workbench-react__scenario" aria-label="Local Injection Scenario" data-phase={state.phase} onFocusCapture={(event) => {
     const control = (event.target as HTMLElement).dataset.scenarioControl;
     recoverTerminalFocus.current = control === "pause" || control === "stop";
@@ -87,7 +88,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
       <div><dt>Delivery</dt><dd>{state.scenario.target.deliveryPath.toUpperCase()} · exact shared Subscription target</dd></div>
       <div><dt>Boundary</dt><dd>LOCAL ONLY · one ordinary Local Injection per Step · Lightstreamer Server is not contacted</dd></div>
       <div><dt>Scenario Clock</dt><dd>{state.scenario.speed}× speed · monotonic active time · hidden and paused time excluded</dd></div>
-      {run ? <><div><dt>Reviewed Run</dt><dd>{run.id} · Scenario revision {run.scenarioRevision} · target fingerprint {run.targetFingerprint}</dd></div><div><dt>Evidence seed</dt><dd>{run.committedEvidenceSeed ? `${run.committedEvidenceSeed.intervalId} · sequence ${run.committedEvidenceSeed.sequence}` : "Empty committed Evidence boundary"}</dd></div></> : null}
+      {run ? <><div><dt>Reviewed Run</dt><dd>{run.id} · Scenario revision {run.scenarioRevision} · target fingerprint {run.targetFingerprint}</dd></div><div><dt>Evidence seed</dt><dd>{run.committedEvidenceSeed ? `${run.committedEvidenceSeed.intervalId} · sequence ${run.committedEvidenceSeed.sequence}` : "Empty committed Evidence boundary"}</dd></div><div><dt>Diagnostic authorization seed</dt><dd>{diagnosticAuthorizationSeed ? `${diagnosticAuthorizationSeed.intervalId} · sequence ${diagnosticAuthorizationSeed.sequence}` : "No Diagnostic Observation cursor required"}</dd></div></> : null}
     </dl>
     {state.membershipError ? <p className="workbench-react__scenario-problem" role="alert"><strong>BLOCKED.</strong> {state.membershipError} No Injection was attempted.</p> : null}
     {state.pickerOpen ? <section className="workbench-react__scenario-picker" aria-label="Scenario Evidence picker" onKeyDown={(event) => {
@@ -119,7 +120,7 @@ export function LocalInjectionScenarioDocument({ runtime, snapshot }: Props): JS
         <header><strong>Persistent Run ledger</strong><span>Panel Session-local · append-only authorization, drift, outcome, retention, assertion, and Evidence correlations</span></header>
         <ol>
           {ledgerChronology.map((record) => record.kind === "authorization"
-            ? <li key={record.entry.id}><strong>{record.entry.kind === "INITIAL_REVIEW" ? "AUTHORIZED" : "RE-AUTHORIZED"}</strong>{` · ${record.entry.id} · remaining from Step ${record.entry.authorizedRemainingFromOrdinal} · target ${record.entry.targetFingerprint} · listeners ${record.entry.listenerIds.join(", ") || "none"} · Evidence boundary ${record.entry.committedEvidenceBoundary?.eventId ?? "empty"}`}</li>
+            ? <li key={record.entry.id}><strong>{record.entry.kind === "INITIAL_REVIEW" ? "AUTHORIZED" : "RE-AUTHORIZED"}</strong>{` · ${record.entry.id} · remaining from Step ${record.entry.authorizedRemainingFromOrdinal} · target ${record.entry.targetFingerprint} · listeners ${record.entry.listenerIds.join(", ") || "none"} · Evidence boundary ${record.entry.committedEvidenceBoundary?.eventId ?? "empty"} · Diagnostic Observation cursor ${formatDiagnosticBoundary(record.entry.diagnosticObservationBoundary)}`}</li>
             : <li key={record.entry.id}><strong>DRIFT</strong>{` · ${record.entry.kind} before Step ${record.entry.detectedBeforeOrdinal} · added ${record.entry.addedListenerIds.join(", ") || "none"} · removed ${record.entry.removedListenerIds.join(", ") || "none"} · Evidence ${record.entry.evidence?.eventId ?? "none"} · ${record.entry.detail}`}</li>)}
         </ol>
       </section> : null}
@@ -212,6 +213,7 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
 }>): JSX.Element {
   const status = trace?.status ?? active?.status ?? (phase === "edit" ? "authoring" : "reviewed");
   const results = trace?.assertions ?? active?.assertions ?? [];
+  const relatedDiagnostics = uniqueRelatedDiagnostics(results);
   const resultBoundary = trace?.resultBoundary ?? active?.boundary ?? null;
   const terminalFailure = status === "fail" || status === "expired" || status === "invalid" || status === "unavailable" || status === "not-evaluable";
   const updateCheckpoint = (next: ScenarioCheckpoint): void => runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: next });
@@ -236,9 +238,14 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
     {trace?.evidenceAvailability === "UNAVAILABLE_AFTER_CLEAR"
       ? <p role="note">Related Evidence is unavailable after Clear; the immutable Checkpoint result and exact identity remain in this Trace.</p>
       : uniqueRelatedEvidence(results).map((evidence) => <button key={`${evidence.intervalId}:${evidence.sequence}:${evidence.eventId}`} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-checkpoint-evidence", evidence })}>Inspect Evidence {evidence.eventId}</button>)}
-    {trace?.diagnosticAvailability === "UNAVAILABLE_AFTER_CLEAR"
-      ? <p role="note">Related Diagnostic Observations are unavailable after Clear; bounded references remain in this immutable Trace.</p>
-      : uniqueRelatedDiagnostics(results).map((observation) => <button key={observation.id} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation })}>Inspect Diagnostic Observation {observation.code}</button>)}
+    {trace?.diagnosticAvailability === "UNAVAILABLE_AFTER_CLEAR" ? <p role="note">Related Diagnostic Observations are unavailable after Clear; bounded references remain in this immutable Trace.</p> : null}
+    {relatedDiagnostics.map((observation) => <section key={observation.id} aria-label={`Diagnostic Observation Trace reference ${observation.code}`}>
+      <p>Diagnostic Observation boundary {formatDiagnosticBoundary(observation.observationBoundary)} · Exact affected identity {formatDiagnosticAffectedIdentity(observation.affected)} · Route {formatDiagnosticRoute(observation.route)}</p>
+      <p role="note">Compact reference only · raw diagnostic messages are not copied into Scenario Trace.</p>
+      {trace?.diagnosticAvailability === "UNAVAILABLE_AFTER_CLEAR"
+        ? <span>Inspection unavailable after Clear</span>
+        : <button type="button" onClick={() => runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation })}>Inspect Diagnostic Observation {observation.code}</button>}
+    </section>)}
     </>}
   </article>;
 }
@@ -326,6 +333,30 @@ function uniqueRelatedDiagnostics(results: readonly import("../../../core/local-
   const found = new Map<string, DiagnosticObservationRef>();
   for (const result of results) for (const observation of result.relatedDiagnostics ?? []) found.set(observation.id, observation);
   return [...found.values()];
+}
+
+function formatDiagnosticBoundary(boundary: Readonly<{ intervalId: string; sequence: number }> | null): string {
+  return boundary ? `${boundary.intervalId} · sequence ${boundary.sequence}` : "unavailable";
+}
+
+function formatDiagnosticAffectedIdentity(affected: DiagnosticAffectedIdentity): string {
+  switch (affected.kind) {
+    case "unavailable": return `unavailable · ${affected.reason}`;
+    case "page": return `page · page ${affected.pageId}`;
+    case "client": return `client · page ${affected.pageId} · client ${affected.clientId}`;
+    case "session": return `session · page ${affected.pageId} · client ${affected.clientId} · session ${affected.sessionId}`;
+    case "subscription": return `subscription · page ${affected.pageId} · client ${affected.clientId} · session ${affected.sessionId ?? "unknown"} · subscription ${affected.subscriptionId}`;
+    case "item": return `item · page ${affected.pageId} · client ${affected.clientId} · subscription ${affected.subscriptionId} · item ${affected.item}`;
+    case "evidence": return `Evidence · interval ${affected.intervalId} · sequence ${affected.sequence} · event ${affected.eventId}`;
+  }
+}
+
+function formatDiagnosticRoute(route: DiagnosticObservationRef["route"]): string {
+  switch (route.kind) {
+    case "inspect-affected": return "inspect affected";
+    case "inspect-evidence": return `inspect Evidence ${route.evidence.eventId}`;
+    case "recover": return `recover · ${route.action}`;
+  }
 }
 
 function DiagnosticAffectedIdentityAuthoring({ affected, onChange }: Readonly<{ affected: DiagnosticAffectedIdentity; onChange(value: DiagnosticAffectedIdentity): void }>): JSX.Element {
