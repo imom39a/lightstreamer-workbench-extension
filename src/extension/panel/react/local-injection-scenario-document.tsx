@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, type JSX } from "react";
 
 import type { WorkbenchRuntime, WorkbenchSnapshot } from "../workbench-runtime";
 import type { ScenarioAssertion, ScenarioCheckpoint, ScenarioStep, ScenarioTraceEntry } from "../../../core/local-injection-scenario";
+import type { DiagnosticAffectedIdentity, DiagnosticObservationRef } from "../../../core/diagnostic-observation";
 import { LocalInjectionCodeEditor } from "./local-injection-code-editor";
 
 type Props = Readonly<{
@@ -235,6 +236,7 @@ function ScenarioCheckpointDocument({ runtime, checkpoint, ordinal, phase, focus
     {trace?.evidenceAvailability === "UNAVAILABLE_AFTER_CLEAR"
       ? <p role="note">Related Evidence is unavailable after Clear; the immutable Checkpoint result and exact identity remain in this Trace.</p>
       : uniqueRelatedEvidence(results).map((evidence) => <button key={`${evidence.intervalId}:${evidence.sequence}:${evidence.eventId}`} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-checkpoint-evidence", evidence })}>Inspect Evidence {evidence.eventId}</button>)}
+    {uniqueRelatedDiagnostics(results).map((observation) => <button key={observation.id} type="button" onClick={() => runtime.dispatch({ type: "show-scenario-diagnostic-observation", observation })}>Inspect Diagnostic Observation {observation.code}</button>)}
     </>}
   </article>;
 }
@@ -248,7 +250,7 @@ function CheckpointAssertionAuthoring({ assertion, precedingStepIds, onChange }:
   const setKind = (kind: ScenarioAssertion["kind"]): void => onChange(defaultAssertion(assertion.id, kind, priorStepId));
   return <div className="workbench-react__scenario-assertion-authoring">
     <span>{assertionLabel(assertion)}{assertionWithin(assertion)}</span>
-    <label>Assertion <select aria-label={`Assertion ${assertion.id} kind`} value={assertion.kind} onChange={(event) => setKind(event.currentTarget.value as ScenarioAssertion["kind"])}><option value="prior-injection-outcome">Preceding Injection Outcome</option><option value="listener-count">Listener count</option><option value="correlated-local-evidence-exists">Correlated committed Local Evidence</option><option value="command-key-exists">Local Effective COMMAND key</option><option value="command-field-equals">Primitive field equality</option></select></label>
+    <label>Assertion <select aria-label={`Assertion ${assertion.id} kind`} value={assertion.kind} onChange={(event) => setKind(event.currentTarget.value as ScenarioAssertion["kind"])}><option value="prior-injection-outcome">Preceding Injection Outcome</option><option value="listener-count">Listener count</option><option value="correlated-local-evidence-exists">Correlated committed Local Evidence</option><option value="command-key-exists">Local Effective COMMAND key</option><option value="command-field-equals">Primitive field equality</option><option value="diagnostic-observation-exists">Diagnostic Observation exists</option></select></label>
     {"stepId" in assertion ? <label>Earlier Step <select value={assertion.stepId} onChange={(event) => onChange({ ...assertion, stepId: event.currentTarget.value })}>{precedingStepIds.map((stepId) => <option key={stepId} value={stepId}>{stepId}</option>)}</select></label> : null}
     {assertion.kind === "prior-injection-outcome" ? <label>Outcome <select value={assertion.expectedDisposition} onChange={(event) => onChange({ ...assertion, expectedDisposition: event.currentTarget.value as typeof assertion.expectedDisposition })}><option value="delivered">delivered</option><option value="partial">partial</option><option value="failed">failed</option><option value="acknowledgement-unknown">acknowledgement unknown</option><option value="blocked">blocked</option></select></label> : null}
     {assertion.kind === "listener-count" ? <><label>Count <select value={assertion.count} onChange={(event) => onChange({ ...assertion, count: event.currentTarget.value as "attempted" | "delivered" })}><option value="attempted">attempted</option><option value="delivered">delivered</option></select></label><label>Expected <input type="number" min={0} value={assertion.expected} onChange={(event) => onChange({ ...assertion, expected: Math.max(0, Number(event.currentTarget.value)) })} /></label></> : null}
@@ -258,6 +260,13 @@ function CheckpointAssertionAuthoring({ assertion, precedingStepIds, onChange }:
       onChange(expected === "absent" ? withWithin({ ...assertion, expected }, undefined) : { ...assertion, expected });
     }}><option value="present">present</option><option value="absent">absent</option></select></label></> : null}
     {assertion.kind === "command-field-equals" ? <><label>Key <input value={assertion.key} onChange={(event) => onChange({ ...assertion, key: event.currentTarget.value })} /></label><label>Field <input value={assertion.field} onChange={(event) => onChange({ ...assertion, field: event.currentTarget.value })} /></label><label>Primitive JSON <input value={JSON.stringify(assertion.expected)} onChange={(event) => { const parsed = parsePrimitive(event.currentTarget.value); if (parsed.ok) onChange({ ...assertion, expected: parsed.value }); }} /></label></> : null}
+    {assertion.kind === "diagnostic-observation-exists" ? <>
+      <span>Diagnostic Observation contract v{assertion.contractVersion} · normalized journal only</span>
+      <label>Rule code <input aria-label="Diagnostic rule code" value={assertion.ruleCode} onChange={(event) => onChange({ ...assertion, ruleCode: event.currentTarget.value })} /></label>
+      <label>Lifecycle <select aria-label="Diagnostic lifecycle" value={assertion.lifecycle} onChange={(event) => onChange({ ...assertion, lifecycle: event.currentTarget.value as "occurrence" | "condition" })}><option value="occurrence">occurrence</option><option value="condition">active condition</option></select></label>
+      <label>Minimum severity <select aria-label="Diagnostic minimum severity" value={assertion.minimumSeverity} onChange={(event) => onChange({ ...assertion, minimumSeverity: event.currentTarget.value as "information" | "warning" | "error" })}><option value="information">information</option><option value="warning">warning</option><option value="error">error</option></select></label>
+      <DiagnosticAffectedIdentityAuthoring affected={assertion.affected} onChange={(affected) => onChange({ ...assertion, affected })} />
+    </> : null}
     {supportsWithin(assertion) ? <label>Within active ms <input type="number" min={1} max={300_000} value={assertion.withinActiveMs ?? ""} placeholder="Immediate" onChange={(event) => onChange(withWithin(assertion, event.currentTarget.value === "" ? undefined : Number(event.currentTarget.value)))} /></label> : null}
   </div>;
 }
@@ -309,6 +318,41 @@ function uniqueRelatedEvidence(results: readonly import("../../../core/local-inj
   const found = new Map<string, Readonly<{ intervalId: string; sequence: number; eventId: string }>>();
   for (const result of results) for (const evidence of result.relatedEvidence) found.set(`${evidence.intervalId}:${evidence.sequence}:${evidence.eventId}`, evidence);
   return [...found.values()];
+}
+
+function uniqueRelatedDiagnostics(results: readonly import("../../../core/local-injection-scenario-checkpoint").ScenarioAssertionResult[]): readonly DiagnosticObservationRef[] {
+  const found = new Map<string, DiagnosticObservationRef>();
+  for (const result of results) for (const observation of result.relatedDiagnostics ?? []) found.set(observation.id, observation);
+  return [...found.values()];
+}
+
+function DiagnosticAffectedIdentityAuthoring({ affected, onChange }: Readonly<{ affected: DiagnosticAffectedIdentity; onChange(value: DiagnosticAffectedIdentity): void }>): JSX.Element {
+  const setKind = (kind: DiagnosticAffectedIdentity["kind"]): void => onChange(defaultAffectedIdentity(kind, affected));
+  const update = (key: string, value: string | number): void => onChange({ ...affected, [key]: value } as DiagnosticAffectedIdentity);
+  return <>
+    <label>Affected kind <select aria-label="Diagnostic affected kind" value={affected.kind} onChange={(event) => setKind(event.currentTarget.value as DiagnosticAffectedIdentity["kind"])}><option value="page">page</option><option value="client">client</option><option value="session">session</option><option value="subscription">subscription</option><option value="item">item</option><option value="evidence">Evidence</option><option value="unavailable">unavailable page identity</option></select></label>
+    {"pageId" in affected ? <label>Page <input aria-label="Affected page identity" value={affected.pageId} onChange={(event) => update("pageId", event.currentTarget.value)} /></label> : null}
+    {"clientId" in affected ? <label>Client <input aria-label="Affected Client identity" value={affected.clientId} onChange={(event) => update("clientId", event.currentTarget.value)} /></label> : null}
+    {affected.kind === "session" || affected.kind === "subscription" ? <label>Session <input aria-label="Affected Session identity" value={affected.sessionId ?? ""} onChange={(event) => update("sessionId", event.currentTarget.value)} /></label> : null}
+    {affected.kind === "subscription" || affected.kind === "item" ? <label>Subscription <input aria-label="Affected Subscription identity" value={affected.subscriptionId} onChange={(event) => update("subscriptionId", event.currentTarget.value)} /></label> : null}
+    {affected.kind === "item" ? <label>Item <input aria-label="Affected item identity" value={affected.item} onChange={(event) => update("item", event.currentTarget.value)} /></label> : null}
+    {affected.kind === "evidence" ? <><label>Interval <input aria-label="Affected History Interval identity" value={affected.intervalId} onChange={(event) => update("intervalId", event.currentTarget.value)} /></label><label>Sequence <input aria-label="Affected Evidence sequence" type="number" min={1} value={affected.sequence} onChange={(event) => update("sequence", Number(event.currentTarget.value))} /></label><label>Event <input aria-label="Affected Evidence identity" value={affected.eventId} onChange={(event) => update("eventId", event.currentTarget.value)} /></label></> : null}
+  </>;
+}
+
+function defaultAffectedIdentity(kind: DiagnosticAffectedIdentity["kind"], prior: DiagnosticAffectedIdentity): DiagnosticAffectedIdentity {
+  const pageId = "pageId" in prior ? prior.pageId : "";
+  const clientId = "clientId" in prior ? prior.clientId : "";
+  const subscriptionId = "subscriptionId" in prior ? prior.subscriptionId : "";
+  switch (kind) {
+    case "unavailable": return { kind, reason: "page-identity-unavailable" };
+    case "page": return { kind, pageId };
+    case "client": return { kind, pageId, clientId };
+    case "session": return { kind, pageId, clientId, sessionId: "sessionId" in prior ? prior.sessionId ?? "" : "" };
+    case "subscription": return { kind, pageId, clientId, subscriptionId, ...(prior.kind === "session" || prior.kind === "subscription" ? { sessionId: prior.sessionId ?? "" } : {}) };
+    case "item": return { kind, pageId, clientId, subscriptionId, item: prior.kind === "item" ? prior.item : "" };
+    case "evidence": return { kind, intervalId: prior.kind === "evidence" ? prior.intervalId : "", sequence: prior.kind === "evidence" ? prior.sequence : 1, eventId: prior.kind === "evidence" ? prior.eventId : "" };
+  }
 }
 
 function assertionLabel(assertion: ScenarioAssertion): string {

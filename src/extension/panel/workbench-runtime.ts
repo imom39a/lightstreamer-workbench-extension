@@ -14,7 +14,8 @@ import {
   createMemoryDiagnosticObservationJournal,
   diagnosticObservationIdentity,
   type DiagnosticAffectedIdentity,
-  type DiagnosticObservationJournal
+  type DiagnosticObservationJournal,
+  type DiagnosticObservationRef
 } from "../../core/diagnostic-observation";
 import {
   adaptCommittedEvidenceFinding,
@@ -633,6 +634,7 @@ export type WorkbenchCommand =
   | { type: "move-scenario-member"; memberId: string; direction: "earlier" | "later" }
   | { type: "remove-scenario-checkpoint"; checkpointId: string }
   | { type: "show-scenario-checkpoint-evidence"; evidence: EvidenceRef }
+  | { type: "show-scenario-diagnostic-observation"; observation: DiagnosticObservationRef }
   | { type: "move-scenario-step"; stepId: string; direction: "earlier" | "later" }
   | { type: "duplicate-scenario-step"; stepId: string }
   | { type: "remove-scenario-step"; stepId: string }
@@ -1763,6 +1765,20 @@ class Runtime implements WorkbenchRuntime {
         }
         state.membershipError = null;
         this.dispatch({ type: "select-evidence", eventId: command.evidence.eventId });
+        return;
+      }
+      case "show-scenario-diagnostic-observation": {
+        const state = this.scenarioState;
+        if (!state) return;
+        const route = command.observation.route;
+        if (route.kind === "inspect-evidence") {
+          this.dispatch({ type: "show-scenario-checkpoint-evidence", evidence: route.evidence });
+          return;
+        }
+        state.membershipError = route.kind === "inspect-affected"
+          ? `Diagnostic Observation ${command.observation.code} retains the exact affected ${command.observation.affected.kind} identity for the shared inspection route.`
+          : `Diagnostic Observation ${command.observation.code} retains recovery route ${route.action}.`;
+        this.publish();
         return;
       }
       case "move-scenario-step":
