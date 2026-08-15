@@ -279,12 +279,14 @@ function evaluateAssertion(assertion: ScenarioAssertion, observation: ScenarioAs
         const state = read?.status ?? "unavailable";
         return result(assertion, "unavailable", { state, certainty: "unavailable", provenance: "diagnostic-observation", evidence: null }, []);
       }
-      const match = read.observations.find((candidate) => candidate.schemaVersion === assertion.contractVersion
+      const candidates = read.observations.filter((candidate) => candidate.schemaVersion === assertion.contractVersion
         && candidate.code === assertion.ruleCode
         && candidate.lifecycle.kind === assertion.lifecycle
-        && (candidate.lifecycle.kind === "occurrence" || candidate.lifecycle.state === "active")
         && diagnosticSeverityRank(candidate.severity) >= diagnosticSeverityRank(assertion.minimumSeverity)
         && diagnosticAffectedIdentityEquals(candidate.affected, assertion.affected));
+      const match = assertion.lifecycle === "occurrence"
+        ? candidates.find((candidate) => candidate.lifecycle.kind === "occurrence")
+        : latestActiveCondition(candidates);
       const status = match ? "pass" : assertion.withinActiveMs ? "waiting" : "fail";
       return result(assertion, status, {
         state: match?.lifecycle.state ?? "absent",
@@ -295,6 +297,18 @@ function evaluateAssertion(assertion: ScenarioAssertion, observation: ScenarioAs
       }, [], match ? [diagnosticObservationRef(match)] : []);
     }
   }
+}
+
+function latestActiveCondition(observations: readonly DiagnosticObservation[]): DiagnosticObservation | undefined {
+  const latestByCondition = new Map<string, DiagnosticObservation>();
+  for (const observation of observations) {
+    if (observation.lifecycle.kind !== "condition") continue;
+    const prior = latestByCondition.get(observation.lifecycle.conditionId);
+    if (!prior || observation.observationBoundary.sequence > prior.observationBoundary.sequence) {
+      latestByCondition.set(observation.lifecycle.conditionId, observation);
+    }
+  }
+  return [...latestByCondition.values()].find((observation) => observation.lifecycle.kind === "condition" && observation.lifecycle.state === "active");
 }
 
 function inspectionTerminalStatus(inspection: ScenarioCommandInspection): ScenarioAssertionStatus | null {

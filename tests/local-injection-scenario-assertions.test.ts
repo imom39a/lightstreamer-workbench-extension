@@ -172,12 +172,26 @@ describe("Scenario Checkpoints", () => {
       id: "condition", kind: "diagnostic-observation-exists", contractVersion: 1,
       ruleCode: "capture.disconnected", lifecycle: "condition", minimumSeverity: "warning", affected, withinActiveMs: 100
     }]);
-    const resolved = { ...occurrence, id: "condition-8", code: "capture.disconnected", lifecycle: { kind: "condition", conditionId: "bridge", state: "resolved" } } as const satisfies DiagnosticObservation;
+    const resolved = { ...occurrence, id: "condition-8", code: "capture.disconnected", observationBoundary: { intervalId: "diagnostic-interval", sequence: 8 }, lifecycle: { kind: "condition", conditionId: "bridge", state: "resolved" } } as const satisfies DiagnosticObservation;
     expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, observations: [resolved] }]]) }, 50, 0))
       .toMatchObject({ status: "waiting", assertions: [{ status: "waiting", observed: { state: "absent" } }] });
-    const active = { ...resolved, id: "condition-9", lifecycle: { ...resolved.lifecycle, state: "active" } } as const satisfies DiagnosticObservation;
+    const active = { ...resolved, id: "condition-9", observationBoundary: { intervalId: "diagnostic-interval", sequence: 9 }, lifecycle: { ...resolved.lifecycle, state: "active" } } as const satisfies DiagnosticObservation;
     expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, observations: [resolved, active] }]]) }, 50, 0))
       .toMatchObject({ status: "pass", assertions: [{ status: "pass", observed: { state: "active" }, relatedDiagnostics: [{ id: "condition-9" }] }] });
+
+    const resolvedAfterActive = { ...resolved, id: "condition-10", observationBoundary: { intervalId: "diagnostic-interval", sequence: 10 } } as const satisfies DiagnosticObservation;
+    for (const observations of [[active, resolvedAfterActive], [resolvedAfterActive, active]]) {
+      expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, through: resolvedAfterActive.observationBoundary, observations }]]) }, 50, 0))
+        .toMatchObject({ status: "waiting", assertions: [{ status: "waiting", observed: { state: "absent" }, relatedDiagnostics: [] }] });
+      expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, through: resolvedAfterActive.observationBoundary, observations }]]) }, 100, 0))
+        .toMatchObject({ status: "expired", assertions: [{ status: "expired", observed: { state: "absent" }, relatedDiagnostics: [] }] });
+    }
+
+    const activeAfterResolved = { ...active, id: "condition-11", observationBoundary: { intervalId: "diagnostic-interval", sequence: 11 } } as const satisfies DiagnosticObservation;
+    for (const observations of [[resolvedAfterActive, activeAfterResolved], [activeAfterResolved, resolvedAfterActive]]) {
+      expect(evaluateScenarioCheckpoint(conditionAssertion, snapshot(), { ...common, diagnosticReads: new Map([["condition", { ...complete, through: activeAfterResolved.observationBoundary, observations }]]) }, 50, 0))
+        .toMatchObject({ status: "pass", assertions: [{ status: "pass", observed: { state: "active" }, relatedDiagnostics: [{ id: "condition-11" }] }] });
+    }
   });
 
   it("fails diagnostic assertions closed for limited, cleared, unavailable, or closed reads", () => {
