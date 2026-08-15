@@ -158,7 +158,8 @@ describe("subscription diagnostic producer", () => {
     expect(incomplete).toEqual([
       expect.objectContaining({ kind: "observe", observation: expect.objectContaining({
         code: "ls.subscription.snapshot.phase-incomplete",
-        lifecycle: expect.objectContaining({ kind: "condition" })
+        lifecycle: expect.objectContaining({ kind: "condition" }),
+        affected: { kind: "item", pageId: "page-1", clientId: "client-1", subscriptionId: "sub-1", item: "prices" }
       }) })
     ]);
     const completed = snapshotEvent("end", 8, "end-of-snapshot");

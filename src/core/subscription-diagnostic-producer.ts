@@ -470,16 +470,26 @@ function affectedIdentity(
   if (!subscriptionId || !committed || (event.client?.id && event.client.id !== committed.clientId)) {
     return Object.freeze({ kind: "evidence", ...boundary });
   }
-  if (secondLevelKey) {
-    return Object.freeze({ kind: "item", pageId: committed.pageId, clientId: committed.clientId, subscriptionId, item: secondLevelKey });
+  const item = secondLevelKey ?? event.item?.name ?? (
+    event.item?.position === undefined || event.item.position === null
+      ? undefined
+      : `#${event.item.position}`
+  );
+  if (item && isDiagnosticIdentityComponent(item)) {
+    return Object.freeze({ kind: "item", pageId: committed.pageId, clientId: committed.clientId, subscriptionId, item });
   }
+  const sessionId = event.client?.sessionId;
   return Object.freeze({
     kind: "subscription",
     pageId: committed.pageId,
     clientId: committed.clientId,
-    ...(event.client?.sessionId ? { sessionId: event.client.sessionId } : {}),
+    ...(sessionId && isDiagnosticIdentityComponent(sessionId) ? { sessionId } : {}),
     subscriptionId
   });
+}
+
+function isDiagnosticIdentityComponent(value: string): boolean {
+  return value.length > 0 && [...value].length <= 128 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function indexCommittedTopologyCheckpoint(
