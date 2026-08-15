@@ -16,6 +16,7 @@ export type DiagnosticEvidenceBoundary = Readonly<{
 }>;
 
 export type DiagnosticAffectedIdentity =
+  | Readonly<{ kind: "unavailable"; reason: "page-identity-unavailable" }>
   | Readonly<{ kind: "page"; pageId: string }>
   | Readonly<{ kind: "client"; pageId: string; clientId: string }>
   | Readonly<{ kind: "session"; pageId: string; clientId: string; sessionId: string }>
@@ -559,6 +560,7 @@ function normalizeLifecycle(lifecycle: DiagnosticObservationInput["lifecycle"]):
 
 function normalizeAffected(affected: DiagnosticAffectedIdentity): DiagnosticAffectedIdentity {
   switch (affected.kind) {
+    case "unavailable": return Object.freeze({ kind: "unavailable", reason: affected.reason });
     case "page": return Object.freeze({ kind: "page", pageId: affected.pageId });
     case "client": return Object.freeze({ kind: "client", pageId: affected.pageId, clientId: affected.clientId });
     case "session": return Object.freeze({ kind: "session", pageId: affected.pageId, clientId: affected.clientId, sessionId: affected.sessionId });
@@ -598,6 +600,9 @@ function assertPositiveInteger(value: number, label: string, allowZero = false):
 
 function assertAffected(affected: DiagnosticAffectedIdentity): void {
   switch (affected.kind) {
+    case "unavailable":
+      if (affected.reason !== "page-identity-unavailable") throw new Error("Diagnostic unavailable affected identity reason is unsupported.");
+      break;
     case "page": assertComponent(affected.pageId, "Affected page identity"); break;
     case "client": assertComponent(affected.pageId, "Affected page identity"); assertComponent(affected.clientId, "Affected Client identity"); break;
     case "session": assertComponent(affected.pageId, "Affected page identity"); assertComponent(affected.clientId, "Affected Client identity"); assertComponent(affected.sessionId, "Affected Session identity"); break;
@@ -649,6 +654,7 @@ export function diagnosticObservationIdentity(input: DiagnosticObservationInput)
 function affectedIdentity(affected: DiagnosticAffectedIdentity): string {
   const part = (value: string | number): string => encodeURIComponent(String(value));
   switch (affected.kind) {
+    case "unavailable": return `unavailable:${part(affected.reason)}`;
     case "page": return `page:${part(affected.pageId)}`;
     case "client": return `client:${part(affected.pageId)}:${part(affected.clientId)}`;
     case "session": return `session:${part(affected.pageId)}:${part(affected.clientId)}:${part(affected.sessionId)}`;

@@ -252,6 +252,14 @@ describe("WorkbenchRuntime", () => {
           update: { lostUpdates: 2 }
         },
         topologyEvent("command-3", "item-update", {
+          topology: {
+            version: 1,
+            kind: "item-update",
+            pageEpoch: "page-1",
+            captureSequence: 3,
+            provenance: { instrumentationSource: "official-public-api" },
+            coverage: { status: "complete", getters: {} }
+          },
           item: { name: "orders", position: 1 },
           update: {
             isSnapshot: false,
@@ -262,6 +270,14 @@ describe("WorkbenchRuntime", () => {
           }
         }),
         topologyEvent("command-4", "item-update", {
+          topology: {
+            version: 1,
+            kind: "item-update",
+            pageEpoch: "page-1",
+            captureSequence: 4,
+            provenance: { instrumentationSource: "official-public-api" },
+            coverage: { status: "complete", getters: {} }
+          },
           item: { name: "orders", position: 1 },
           update: {
             isSnapshot: false,
@@ -327,7 +343,8 @@ describe("WorkbenchRuntime", () => {
     ]));
     expect(observations).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "ls.command.unknown-key-update", affected: expect.objectContaining({ kind: "item", item: "orders" }) }),
-      expect.objectContaining({ code: "ls.session.recovering", affected: expect.objectContaining({ kind: "session", sessionId: "S-1" }) })
+      expect.objectContaining({ code: "ls.session.recovering", affected: expect.objectContaining({ kind: "session", sessionId: "S-1" }) }),
+      expect.objectContaining({ code: "ls.subscription.error", affected: expect.objectContaining({ kind: "evidence", eventId: "subscription-error-1" }) })
     ]));
     expect(JSON.stringify(observations)).not.toContain("private source text");
     expect(JSON.stringify(observations)).not.toContain("PRIVATE-COMMAND-VALUE");
@@ -347,6 +364,41 @@ describe("WorkbenchRuntime", () => {
     await runtime.settleDiagnosticObservations?.();
 
     expect((await diagnosticObservations.query({ codes: ["workbench.capture.disconnected"] })).observations)
+      .toEqual([
+        expect.objectContaining({ affected: { kind: "unavailable", reason: "page-identity-unavailable" }, lifecycle: expect.objectContaining({ state: "active" }) }),
+        expect.objectContaining({ affected: { kind: "unavailable", reason: "page-identity-unavailable" }, lifecycle: expect.objectContaining({ state: "resolved" }) })
+      ]);
+    runtime.dispose();
+  });
+
+  it("journals each committed Session transition even when presentation is coalesced while hidden", async () => {
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "hidden-session-diagnostics" });
+    const history = createAuthoritativeHistory();
+    const runtime = createWorkbenchRuntime({
+      history,
+      visible: false,
+      capture: { coverage: "USEFUL" },
+      diagnosticObservations
+    });
+    await flushStoreNotifications();
+    await history.offer(topologyEvent("recovery-start-1", "client-status", {
+      client: { id: "client-main", status: "DISCONNECTED:TRYING-RECOVERY", sessionId: "S-1" },
+      subscription: undefined,
+      item: undefined,
+      listener: undefined,
+      update: undefined
+    })).settled;
+    await history.offer(topologyEvent("recovery-complete-2", "client-status", {
+      client: { id: "client-main", status: "DISCONNECTED" },
+      subscription: undefined,
+      item: undefined,
+      listener: undefined,
+      update: undefined
+    })).settled;
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+
+    expect((await diagnosticObservations.query({ codes: ["ls.session.recovering"] })).observations)
       .toEqual([
         expect.objectContaining({ lifecycle: expect.objectContaining({ state: "active" }) }),
         expect.objectContaining({ lifecycle: expect.objectContaining({ state: "resolved" }) })

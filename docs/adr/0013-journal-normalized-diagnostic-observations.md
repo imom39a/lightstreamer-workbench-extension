@@ -16,6 +16,8 @@ Occurrence identity includes the source occurrence identity. Condition identity 
 
 The persisted contract is allowlisted and bounded before it crosses a page or storage boundary. Display titles, localized copy, array positions, arbitrary raw values, and unsafe messages are not normalized identity. Compact observation references intentionally omit semantic and source messages so Scenario Trace and other consumers can retain identity, lifecycle, boundary, affected identity, and route within their own capacity limits.
 
+Affected identity never invents a missing Page epoch. Evidence-backed findings without an observed Page identity use their exact Evidence identity; non-Evidence-backed conditions use the bounded `page-identity-unavailable` marker until an exact Page identity is observed.
+
 Existing history, storage, Capture, Session, COMMAND, subscription-error, and lost-update findings enter through source adapters. Adapters preserve their current presentation independently while adding only facts their source can support.
 
 ## Consequences
