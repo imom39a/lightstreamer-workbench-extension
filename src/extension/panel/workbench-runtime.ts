@@ -3920,7 +3920,8 @@ class Runtime implements WorkbenchRuntime {
         item: { name: draft.anchor.itemName, position: draft.anchor.itemPosition },
         keys: this.activeCommandKeys(draft.anchor)
       })),
-      retainedRunBytes: state.retainedRunBytes
+      retainedRunBytes: state.retainedRunBytes,
+      diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary()
     });
     if (!reviewed.ok) {
       state.membershipError = `${reviewed.stepId ? `${reviewed.stepId}: ` : ""}${reviewed.reason}`;
@@ -4041,7 +4042,12 @@ class Runtime implements WorkbenchRuntime {
       },
       checkpoint: {
         feed: this.scenarioBoundaryFeed(),
-        observations: (currentRun) => this.scenarioAssertionObservations(currentRun)
+        observations: (currentRun) => this.scenarioAssertionObservations(currentRun),
+        diagnostics: {
+          currentBoundary: () => this.diagnosticObservations.currentBoundary(),
+          query: (query) => this.diagnosticObservations.query(query),
+          subscribe: (after, observer) => this.diagnosticObservations.subscribe(after, observer)
+        }
       },
       onChange: (runnerSnapshot) => {
         if (this.disposed || this.scenarioState !== state) return;
@@ -4136,7 +4142,8 @@ class Runtime implements WorkbenchRuntime {
     const accepted = state.runner.reReview({
       targetFingerprint: this.scenarioTargetFingerprint(firstDraft),
       listenerIds: this.scenarioCurrentListenerIds(firstDraft),
-      committedEvidenceBoundary: this.committedEvidenceBoundary
+      committedEvidenceBoundary: this.committedEvidenceBoundary,
+      diagnosticObservationBoundary: this.diagnosticObservations.currentBoundary()
     });
     if (!accepted.ok) state.runner.stop(`Drift re-review failed: ${accepted.reason}`);
     else state.serverInterleaves = [];
