@@ -6,7 +6,7 @@ import {
   createUnavailableDiagnosticObservationJournal,
   openIndexedDbDiagnosticObservationJournal
 } from "../src/core/diagnostic-observation";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory } from "fake-indexeddb";
 
 describe("normalized Diagnostic Observation contract", () => {
   it("commits a versioned occurrence with stable identity and exact Evidence boundary", async () => {
@@ -169,11 +169,31 @@ describe("normalized Diagnostic Observation contract", () => {
     expect(await journal.replay()).toEqual([first]);
   });
 
+  it("applies bounded retention before persistence and reports the lost cursor range", async () => {
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel-capacity", maxRetainedObservations: 2 });
+    const lower = journal.currentBoundary();
+    for (let sequence = 1; sequence <= 3; sequence += 1) {
+      await journal.observe({
+        code: "ls.subscription.error",
+        severity: "error",
+        lifecycle: { kind: "occurrence", occurrenceId: `event-${sequence}` },
+        affected: { kind: "evidence", intervalId: "history", sequence, eventId: `event-${sequence}` },
+        observedAt: sequence,
+        observed: "SubscriptionListener reported an error.",
+        limitation: "The callback does not expose server state.",
+        consequence: "Updates may be unavailable.",
+        route: { kind: "inspect-affected" }
+      });
+    }
+    expect(await journal.replay()).toHaveLength(2);
+    expect(await journal.query({ after: lower })).toMatchObject({ status: "retention-gap", retention: "limited" });
+  });
+
   it.each(["memory", "indexeddb"] as const)("keeps %s replay, retention, Clear, and close semantics deterministic", async (tier) => {
     const indexedDB = new IDBFactory();
     const journal = tier === "memory"
       ? createMemoryDiagnosticObservationJournal({ panelSessionId: `panel-${tier}` })
-      : await openIndexedDbDiagnosticObservationJournal({ panelSessionId: `panel-${tier}`, indexedDB, keyRange: IDBKeyRange });
+      : await openIndexedDbDiagnosticObservationJournal({ panelSessionId: `panel-${tier}`, indexedDB });
     const initial = journal.currentBoundary();
     const occurrence = await journal.observe({
       code: "ls.subscription.lost-updates",
@@ -208,7 +228,7 @@ describe("normalized Diagnostic Observation contract", () => {
     expect(await journal.replay()).toEqual([occurrence, condition, resolved]);
     expect(journal.currentBoundary().sequence).toBe(3);
     if (tier === "indexeddb") {
-      const reopened = await openIndexedDbDiagnosticObservationJournal({ panelSessionId: `panel-${tier}`, indexedDB, keyRange: IDBKeyRange });
+      const reopened = await openIndexedDbDiagnosticObservationJournal({ panelSessionId: `panel-${tier}`, indexedDB });
       expect(await reopened.replay()).toEqual([occurrence, condition, resolved]);
       expect(reopened.currentBoundary()).toEqual(journal.currentBoundary());
       await reopened.close();

@@ -3,6 +3,8 @@ export const DIAGNOSTIC_RULE_CODE_MAX_LENGTH = 96;
 export const DIAGNOSTIC_IDENTITY_COMPONENT_MAX_LENGTH = 128;
 export const DIAGNOSTIC_TEXT_MAX_LENGTH = 512;
 export const DIAGNOSTIC_SAFE_MESSAGE_MAX_LENGTH = 256;
+export const DIAGNOSTIC_MAX_RETAINED_OBSERVATIONS = 5_000;
+export const DIAGNOSTIC_MAX_RETAINED_BYTES = 16 * 1_048_576;
 
 export type DiagnosticSeverity = "information" | "warning" | "error";
 
@@ -133,9 +135,9 @@ export type DiagnosticObservationJournal = Readonly<{
 }>;
 
 export function createMemoryDiagnosticObservationJournal(
-  options: Readonly<{ panelSessionId: string }>
+  options: Readonly<{ panelSessionId: string; maxRetainedObservations?: number; maxRetainedBytes?: number }>
 ): DiagnosticObservationJournal {
-  return createDiagnosticObservationJournal(options.panelSessionId, emptyPersistedState(), async () => undefined);
+  return createDiagnosticObservationJournal(options.panelSessionId, emptyPersistedState(), async () => undefined, () => undefined, options);
 }
 
 export function createUnavailableDiagnosticObservationJournal(options: Readonly<{
@@ -173,7 +175,8 @@ type PersistedDiagnosticState = {
 type DiagnosticIndexedDbOptions = Readonly<{
   panelSessionId: string;
   indexedDB?: IDBFactory;
-  keyRange?: typeof IDBKeyRange;
+  maxRetainedObservations?: number;
+  maxRetainedBytes?: number;
 }>;
 
 export async function openIndexedDbDiagnosticObservationJournal(
@@ -186,7 +189,7 @@ export async function openIndexedDbDiagnosticObservationJournal(
   const persisted = await readDiagnosticState(database) ?? emptyPersistedState();
   return createDiagnosticObservationJournal(options.panelSessionId, persisted, async (state) => {
     await writeDiagnosticState(database, state);
-  }, () => database.close());
+  }, () => database.close(), options);
 }
 
 function emptyPersistedState(): PersistedDiagnosticState {
@@ -197,7 +200,8 @@ function createDiagnosticObservationJournal(
   panelSessionId: string,
   initial: PersistedDiagnosticState,
   persist: (state: PersistedDiagnosticState) => Promise<void>,
-  closeStorage: () => void = () => undefined
+  closeStorage: () => void = () => undefined,
+  capacity: Readonly<{ maxRetainedObservations?: number; maxRetainedBytes?: number }> = {}
 ): DiagnosticObservationJournal {
   assertComponent(panelSessionId, "Panel Session identity");
   let intervalOrdinal = initial.intervalOrdinal;
@@ -210,6 +214,8 @@ function createDiagnosticObservationJournal(
   const subscribers = new Set<Readonly<{ after: DiagnosticObservationBoundary; observer: (publication: DiagnosticObservationFeedPublication) => void }>>();
   let closed = false;
   let mutationTail: Promise<void> = Promise.resolve();
+  const maxRetainedObservations = boundedCapacity(capacity.maxRetainedObservations, DIAGNOSTIC_MAX_RETAINED_OBSERVATIONS, "Diagnostic Observation count capacity");
+  const maxRetainedBytes = boundedCapacity(capacity.maxRetainedBytes, DIAGNOSTIC_MAX_RETAINED_BYTES, "Diagnostic Observation byte capacity");
 
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = mutationTail.then(operation);
@@ -235,11 +241,16 @@ function createDiagnosticObservationJournal(
       lifecycle,
       observationBoundary: { intervalId, sequence: nextSequence }
     });
-    await persist({ intervalOrdinal, sequence: nextSequence, retainedThrough, records: [...records, observation] });
+    const retained = retainDiagnosticCapacity([...records, observation], retainedThrough, maxRetainedObservations, maxRetainedBytes);
+    await persist({ intervalOrdinal, sequence: nextSequence, retainedThrough: retained.retainedThrough, records: retained.records });
     sequence = nextSequence;
-    records.push(observation);
-    current.set(observation.id, observation);
+    retainedThrough = retained.retainedThrough;
+    records.splice(0, records.length, ...retained.records);
+    rebuildCurrent(current, records);
     for (const subscriber of subscribers) {
+      if (subscriber.after.intervalId === intervalId && subscriber.after.sequence < retainedThrough) {
+        subscriber.observer(Object.freeze({ type: "status", status: "retention-gap", boundary: Object.freeze({ intervalId, sequence: retainedThrough }) }));
+      }
       if (isStrictlyAfter(observation.observationBoundary, subscriber.after)) subscriber.observer(Object.freeze({ type: "observation", observation }));
     }
     return observation;
@@ -364,14 +375,16 @@ function createDiagnosticObservationJournal(
         return Object.freeze({ intervalId, sequence });
       });
     },
-    async close(): Promise<void> {
-      if (closed) return;
-      for (const subscriber of subscribers) {
-        subscriber.observer(Object.freeze({ type: "status", status: "closed", boundary: Object.freeze({ intervalId, sequence }) }));
-      }
-      subscribers.clear();
-      closeStorage();
-      closed = true;
+    close(): Promise<void> {
+      return enqueue(async () => {
+        if (closed) return;
+        for (const subscriber of subscribers) {
+          subscriber.observer(Object.freeze({ type: "status", status: "closed", boundary: Object.freeze({ intervalId, sequence }) }));
+        }
+        subscribers.clear();
+        closeStorage();
+        closed = true;
+      });
     }
   });
 }
@@ -393,6 +406,29 @@ function diagnosticIntervalId(panelSessionId: string, ordinal: number): string {
 function rebuildCurrent(current: Map<string, DiagnosticObservation>, records: readonly DiagnosticObservation[]): void {
   current.clear();
   for (const observation of records) current.set(observation.id, observation);
+}
+
+function boundedCapacity(value: number | undefined, fallback: number, label: string): number {
+  const resolved = value ?? fallback;
+  assertPositiveInteger(resolved, label);
+  return resolved;
+}
+
+function retainDiagnosticCapacity(
+  candidate: DiagnosticObservation[],
+  previousRetainedThrough: number,
+  maximumCount: number,
+  maximumBytes: number
+): Readonly<{ records: DiagnosticObservation[]; retainedThrough: number }> {
+  let retainedThrough = previousRetainedThrough;
+  let bytes = candidate.reduce((total, observation) => total + new TextEncoder().encode(JSON.stringify(observation)).byteLength, 0);
+  while (candidate.length > maximumCount || bytes > maximumBytes) {
+    const removed = candidate.shift();
+    if (!removed) break;
+    bytes -= new TextEncoder().encode(JSON.stringify(removed)).byteLength;
+    retainedThrough = Math.max(retainedThrough, removed.observationBoundary.sequence);
+  }
+  return { records: candidate, retainedThrough };
 }
 
 function equivalentActiveObservation(existing: DiagnosticObservation, input: DiagnosticObservationInput): boolean {
