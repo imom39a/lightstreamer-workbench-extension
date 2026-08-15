@@ -155,6 +155,27 @@ try {
       keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} focus-checked states retained visible, unobscured controls; help-resource and memory-fallback evidence remains attached to the exact scenarios that exercise it.`,
       matrixRationale: `${results.length} deterministic states cover the complete manifest-selected compact, normal, shallow, and wide geometry; Dark, Light, and forced-colors themes; Activity, Scenario, diagnostics, and operating-action workflows.`,
       baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for every selected integrated matrix state; record the exact update and comparison outcomes alongside this packet."
+    } : results.some(({ id }) => id.startsWith("scenario-diagnostic-")) ? {
+      classification: "Material UI",
+      changedWorkflow: "A Scenario Diagnostic Observation Checkpoint authorizes a journal cursor, evaluates only later normalized observations, and preserves compact provenance without copying diagnostic messages.",
+      acceptanceCriteria: [
+        "Review and every authorization ledger entry keep the Diagnostic Observation cursor distinct from the committed Evidence boundary.",
+        "Waiting, pass, fail, and unavailable states preserve exact typed affected identity, observation boundary, route, and explicit compact-reference limitations without raw diagnostic messages.",
+        "Pause and hidden time remain excluded while the initial journal query is pending; execution resumes only through an explicit Scenario control.",
+        "Compact, normal, shallow forced-colors, wide, Dark, and Light states retain visible unobscured focus, no horizontal overflow, and no serious or critical axe violations."
+      ],
+      browserResult: {
+        scenarioCaptures: `${results.length}/${results.length} passed`,
+        browserDiagnostics: results.reduce((count, result) => count + result.checks.browserDiagnostics.length, 0),
+        shellOrDocumentOverflows: results.reduce((count, result) => count + Number(result.checks.horizontalOverflow.shell || result.checks.horizontalOverflow.document), 0)
+      },
+      accessibilityResult: {
+        checkedScenarios: results.filter((result) => result.checks.accessibility).map((result) => result.id),
+        seriousOrCriticalViolations: results.reduce((count, result) => count + (result.checks.accessibility?.seriousOrCriticalViolations.length ?? 0), 0)
+      },
+      keyboardAndFocus: `${results.filter((result) => result.checks.focusEvidence).length} diagnostic Checkpoint states retained visible, unobscured controls with browser focus evidence.`,
+      matrixRationale: "Six deterministic states cover compact Light authoring, normal Dark Review, wide Light waiting, normal Light pass and route, compact Dark failure, and shallow forced-colors Dark journal unavailability.",
+      baselineIntent: "Maintain independently generated Darwin and pinned-Linux baselines for all six Diagnostic Observation Checkpoint states."
     } : results.some(({ id }) => id.startsWith("scenario-checkpoint-")) ? {
       classification: "Material UI",
       changedWorkflow: "A Scenario Checkpoint authors protected assertions, evaluates one exact committed Evidence boundary without dispatching an Injection, and exposes waiting and terminal truth in the promoted document.",
@@ -558,10 +579,10 @@ async function captureProduction(runningBrowser, scenario) {
         throw new Error(`Scenario focus evidence is incomplete: ${JSON.stringify(focusEvidence)}`);
       }
     }
-    if (scenario.production.setup === "scenario-checkpoint" || scenario.production.setup === "scenario-checkpoint-high-volume") {
+    if (scenario.production.setup === "scenario-checkpoint" || scenario.production.setup === "scenario-checkpoint-high-volume" || scenario.production.setup === "scenario-diagnostic-checkpoint") {
       const scenarioDocument = page.getByRole("region", { name: "Local Injection Scenario" });
       const checkpoint = scenarioDocument.locator(".workbench-react__scenario-checkpoint").last();
-      const action = scenario.production.scenario.endsWith("checkpoint-authoring")
+      const action = scenario.production.scenario.endsWith("-authoring")
         ? checkpoint.getByRole("button", { name: "Add assertion" })
         : scenario.production.scenario.endsWith("wire-unavailable")
         ? checkpoint.getByRole("combobox", { name: /Assertion/ })
@@ -648,7 +669,7 @@ async function captureProduction(runningBrowser, scenario) {
 }
 
 async function prepareProductionState(page, setup) {
-  if (setup === "scenario-checkpoint" || setup === "scenario-checkpoint-high-volume") {
+  if (setup === "scenario-checkpoint" || setup === "scenario-checkpoint-high-volume" || setup === "scenario-diagnostic-checkpoint") {
     const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
     await scenario.waitFor({ state: "visible" });
     const checkpoints = scenario.locator(".workbench-react__scenario-checkpoint");
