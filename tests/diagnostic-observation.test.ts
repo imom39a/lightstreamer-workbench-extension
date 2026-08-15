@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
-  createMemoryDiagnosticObservationJournal
+  createMemoryDiagnosticObservationJournal,
+  openIndexedDbDiagnosticObservationJournal
 } from "../src/core/diagnostic-observation";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 describe("normalized Diagnostic Observation contract", () => {
   it("commits a versioned occurrence with stable identity and exact Evidence boundary", async () => {
@@ -119,5 +121,69 @@ describe("normalized Diagnostic Observation contract", () => {
     expect(observation.evidenceBoundary).toBeUndefined();
     expect(publications).toEqual(["workbench.storage.lower-capacity"]);
     expect((await journal.query({ after: lower, through: upper })).observations).toEqual([observation]);
+  });
+
+  it.each(["memory", "indexeddb"] as const)("keeps %s replay, retention, Clear, and close semantics deterministic", async (tier) => {
+    const indexedDB = new IDBFactory();
+    const journal = tier === "memory"
+      ? createMemoryDiagnosticObservationJournal({ panelSessionId: `panel-${tier}` })
+      : await openIndexedDbDiagnosticObservationJournal({ panelSessionId: `panel-${tier}`, indexedDB, keyRange: IDBKeyRange });
+    const initial = journal.currentBoundary();
+    const occurrence = await journal.observe({
+      code: "ls.subscription.lost-updates",
+      severity: "warning",
+      lifecycle: { kind: "occurrence", occurrenceId: "lost-1" },
+      affected: { kind: "subscription", pageId: "page", clientId: "client", subscriptionId: "sub" },
+      observedAt: 300,
+      observed: "The client reported lost updates.",
+      limitation: "The callback reports a count, not the missing values.",
+      consequence: "The local view may omit updates.",
+      route: { kind: "inspect-affected" }
+    });
+    expect(await journal.observe({ ...occurrence, lifecycle: { kind: "occurrence", occurrenceId: "lost-1" } })).toBe(occurrence);
+    const condition = await journal.observe({
+      code: "workbench.capture.disconnected",
+      severity: "error",
+      lifecycle: { kind: "condition", conditionId: "bridge" },
+      affected: { kind: "page", pageId: "page" },
+      observedAt: 310,
+      observed: "The inspected-page bridge disconnected.",
+      limitation: "Workbench cannot observe later page activity.",
+      consequence: "No later activity can become Evidence.",
+      route: { kind: "recover", action: "reconnect-inspected-page" }
+    });
+    const resolved = await journal.resolveCondition({
+      code: condition.code,
+      conditionId: "bridge",
+      affected: condition.affected,
+      observedAt: 320
+    });
+    expect(journal.currentBoundary().sequence).toBe(3);
+    expect(await journal.replay()).toEqual([occurrence, condition, resolved]);
+    expect(journal.currentBoundary().sequence).toBe(3);
+    if (tier === "indexeddb") {
+      const reopened = await openIndexedDbDiagnosticObservationJournal({ panelSessionId: `panel-${tier}`, indexedDB, keyRange: IDBKeyRange });
+      expect(await reopened.replay()).toEqual([occurrence, condition, resolved]);
+      expect(reopened.currentBoundary()).toEqual(journal.currentBoundary());
+      await reopened.close();
+    }
+
+    await journal.discardRetainedThrough(occurrence.observationBoundary);
+    expect(await journal.query({ after: initial })).toMatchObject({
+      status: "retention-gap",
+      coverage: "limited",
+      retention: "limited",
+      observations: [condition, resolved]
+    });
+    const beforeClear = journal.currentBoundary();
+    await journal.clear();
+    expect(await journal.query({ after: beforeClear })).toMatchObject({
+      status: "cleared",
+      coverage: "limited",
+      retention: "cleared",
+      observations: []
+    });
+    await journal.close();
+    expect(await journal.query()).toMatchObject({ status: "closed", coverage: "unavailable", observations: [] });
   });
 });

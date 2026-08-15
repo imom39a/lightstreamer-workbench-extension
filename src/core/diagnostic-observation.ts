@@ -121,37 +121,89 @@ export type DiagnosticObservationJournal = Readonly<{
   replay(): Promise<readonly DiagnosticObservation[]>;
   currentBoundary(): DiagnosticObservationBoundary;
   subscribe(after: DiagnosticObservationBoundary, observer: (observation: DiagnosticObservation) => void): () => void;
+  discardRetainedThrough(boundary: DiagnosticObservationBoundary): Promise<void>;
+  clear(): Promise<DiagnosticObservationBoundary>;
+  close(): Promise<void>;
 }>;
 
 export function createMemoryDiagnosticObservationJournal(
   options: Readonly<{ panelSessionId: string }>
 ): DiagnosticObservationJournal {
-  let sequence = 0;
-  const intervalId = `${options.panelSessionId}:diagnostics:interval-1`;
-  const records: DiagnosticObservation[] = [];
-  const current = new Map<string, DiagnosticObservation>();
-  const subscribers = new Set<Readonly<{ after: DiagnosticObservationBoundary; observer: (observation: DiagnosticObservation) => void }>>();
+  return createDiagnosticObservationJournal(options.panelSessionId, emptyPersistedState(), async () => undefined);
+}
 
-  function commit(
+type PersistedDiagnosticState = {
+  intervalOrdinal: number;
+  sequence: number;
+  retainedThrough: number;
+  records: DiagnosticObservation[];
+};
+
+type DiagnosticIndexedDbOptions = Readonly<{
+  panelSessionId: string;
+  indexedDB?: IDBFactory;
+  keyRange?: typeof IDBKeyRange;
+}>;
+
+export async function openIndexedDbDiagnosticObservationJournal(
+  options: DiagnosticIndexedDbOptions
+): Promise<DiagnosticObservationJournal> {
+  const factory = options.indexedDB ?? globalThis.indexedDB;
+  if (!factory) throw new Error("IndexedDB is unavailable for Diagnostic Observations.");
+  const databaseName = `lsew-diagnostics-v${DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION}-${boundedDatabaseComponent(options.panelSessionId)}`;
+  const database = await openDiagnosticDatabase(factory, databaseName);
+  const persisted = await readDiagnosticState(database) ?? emptyPersistedState();
+  return createDiagnosticObservationJournal(options.panelSessionId, persisted, async (state) => {
+    await writeDiagnosticState(database, state);
+  }, () => database.close());
+}
+
+function emptyPersistedState(): PersistedDiagnosticState {
+  return { intervalOrdinal: 1, sequence: 0, retainedThrough: 0, records: [] };
+}
+
+function createDiagnosticObservationJournal(
+  panelSessionId: string,
+  initial: PersistedDiagnosticState,
+  persist: (state: PersistedDiagnosticState) => Promise<void>,
+  closeStorage: () => void = () => undefined
+): DiagnosticObservationJournal {
+  assertComponent(panelSessionId, "Panel Session identity");
+  let intervalOrdinal = initial.intervalOrdinal;
+  let sequence = initial.sequence;
+  let retainedThrough = initial.retainedThrough;
+  let intervalId = diagnosticIntervalId(panelSessionId, intervalOrdinal);
+  const records: DiagnosticObservation[] = initial.records.map(freezeObservation);
+  const current = new Map<string, DiagnosticObservation>();
+  for (const observation of records) current.set(observation.id, observation);
+  const subscribers = new Set<Readonly<{ after: DiagnosticObservationBoundary; observer: (observation: DiagnosticObservation) => void }>>();
+  let closed = false;
+
+  async function save(): Promise<void> {
+    await persist({ intervalOrdinal, sequence, retainedThrough, records: [...records] });
+  }
+
+  async function commit(
     input: DiagnosticObservationInput,
     state: "observed" | "active" | "resolved"
-  ): DiagnosticObservation {
+  ): Promise<DiagnosticObservation> {
+    assertOpen(closed);
+    const normalized = normalizeInput(input);
     sequence += 1;
-    const lifecycle = input.lifecycle.kind === "occurrence"
-      ? Object.freeze({ ...input.lifecycle, state: "observed" as const })
-      : Object.freeze({ ...input.lifecycle, state: state === "resolved" ? "resolved" as const : "active" as const });
-    const observation = Object.freeze({
-      ...normalizeInput(input),
+    const lifecycle = normalized.lifecycle.kind === "occurrence"
+      ? Object.freeze({ ...normalized.lifecycle, state: "observed" as const })
+      : Object.freeze({ ...normalized.lifecycle, state: state === "resolved" ? "resolved" as const : "active" as const });
+    const observation = freezeObservation({
+      ...normalized,
       schemaVersion: DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION,
-      ruleVersion: input.ruleVersion ?? 1,
-      id: diagnosticObservationId(input),
+      ruleVersion: normalized.ruleVersion ?? 1,
+      id: diagnosticObservationId(normalized),
       lifecycle,
-      affected: Object.freeze({ ...input.affected }),
-      observationBoundary: Object.freeze({ intervalId, sequence }),
-      evidenceBoundary: input.evidenceBoundary ? Object.freeze({ ...input.evidenceBoundary }) : undefined
+      observationBoundary: { intervalId, sequence }
     });
     records.push(observation);
     current.set(observation.id, observation);
+    await save();
     for (const subscriber of subscribers) {
       if (isStrictlyAfter(observation.observationBoundary, subscriber.after)) subscriber.observer(observation);
     }
@@ -160,8 +212,11 @@ export function createMemoryDiagnosticObservationJournal(
 
   return Object.freeze({
     async observe(input: DiagnosticObservationInput): Promise<DiagnosticObservation> {
+      assertOpen(closed);
+      normalizeInput(input);
       const id = diagnosticObservationId(input);
       const existing = current.get(id);
+      if (existing && input.lifecycle.kind === "occurrence") return existing;
       if (existing && equivalentActiveObservation(existing, input)) return existing;
       return commit(input, input.lifecycle.kind === "occurrence" ? "observed" : "active");
     },
@@ -173,12 +228,13 @@ export function createMemoryDiagnosticObservationJournal(
         observed: "",
         limitation: "",
         consequence: "",
-        route: ""
+        route: { kind: "inspect-affected" }
       });
       const existing = current.get(id);
       if (!existing || existing.lifecycle.kind !== "condition" || existing.lifecycle.state === "resolved") return existing ?? null;
       return commit({
         code: existing.code,
+        ruleVersion: existing.ruleVersion,
         severity: existing.severity,
         lifecycle: { kind: "condition", conditionId: resolution.conditionId },
         affected: existing.affected,
@@ -188,13 +244,18 @@ export function createMemoryDiagnosticObservationJournal(
         limitation: existing.limitation,
         consequence: existing.consequence,
         route: existing.route,
+        resultRef: existing.resultRef,
         originalCode: existing.originalCode,
         safeMessage: existing.safeMessage
       }, "resolved");
     },
     async query(query: DiagnosticObservationQuery = {}): Promise<DiagnosticObservationRead> {
-      const minimum = severityRank(query.minimumSeverity ?? "information");
       const through = query.through ?? Object.freeze({ intervalId, sequence });
+      if (closed) return readWithStatus("closed", "unavailable", "complete", through, []);
+      if ((query.after && query.after.intervalId !== intervalId) || through.intervalId !== intervalId) {
+        return readWithStatus("cleared", "limited", "cleared", through, []);
+      }
+      const minimum = severityRank(query.minimumSeverity ?? "information");
       const observations = Object.freeze(records.filter((observation) =>
         (!query.after || isStrictlyAfter(observation.observationBoundary, query.after))
         && isAtOrBefore(observation.observationBoundary, through)
@@ -202,7 +263,8 @@ export function createMemoryDiagnosticObservationJournal(
         && severityRank(observation.severity) >= minimum
         && (!query.affected || diagnosticAffectedIdentityEquals(observation.affected, query.affected))
       ));
-      return Object.freeze({ status: "complete", coverage: "complete", retention: "complete", through, observations });
+      const gap = Boolean(query.after && query.after.sequence < retainedThrough);
+      return readWithStatus(gap ? "retention-gap" : "complete", gap ? "limited" : "complete", gap ? "limited" : "complete", through, observations);
     },
     async replay(): Promise<readonly DiagnosticObservation[]> {
       return Object.freeze([...records]);
@@ -211,11 +273,59 @@ export function createMemoryDiagnosticObservationJournal(
       return Object.freeze({ intervalId, sequence });
     },
     subscribe(after: DiagnosticObservationBoundary, observer: (observation: DiagnosticObservation) => void): () => void {
+      assertOpen(closed);
       const subscription = Object.freeze({ after: Object.freeze({ ...after }), observer });
       subscribers.add(subscription);
       return () => subscribers.delete(subscription);
+    },
+    async discardRetainedThrough(boundary: DiagnosticObservationBoundary): Promise<void> {
+      assertOpen(closed);
+      if (boundary.intervalId !== intervalId) return;
+      retainedThrough = Math.max(retainedThrough, Math.min(boundary.sequence, sequence));
+      for (let index = records.length - 1; index >= 0; index -= 1) {
+        const observation = records[index];
+        if (observation.observationBoundary.sequence <= retainedThrough) records.splice(index, 1);
+      }
+      rebuildCurrent(current, records);
+      await save();
+    },
+    async clear(): Promise<DiagnosticObservationBoundary> {
+      assertOpen(closed);
+      intervalOrdinal += 1;
+      intervalId = diagnosticIntervalId(panelSessionId, intervalOrdinal);
+      sequence = 0;
+      retainedThrough = 0;
+      records.splice(0);
+      current.clear();
+      await save();
+      return Object.freeze({ intervalId, sequence });
+    },
+    async close(): Promise<void> {
+      if (closed) return;
+      subscribers.clear();
+      closeStorage();
+      closed = true;
     }
   });
+}
+
+function readWithStatus(
+  status: DiagnosticObservationReadStatus,
+  coverage: DiagnosticObservationRead["coverage"],
+  retention: DiagnosticObservationRead["retention"],
+  through: DiagnosticObservationBoundary,
+  observations: readonly DiagnosticObservation[]
+): DiagnosticObservationRead {
+  return Object.freeze({ status, coverage, retention, through: Object.freeze({ ...through }), observations: Object.freeze([...observations]) });
+}
+
+function diagnosticIntervalId(panelSessionId: string, ordinal: number): string {
+  return `${panelSessionId}:diagnostics:interval-${ordinal}`;
+}
+
+function rebuildCurrent(current: Map<string, DiagnosticObservation>, records: readonly DiagnosticObservation[]): void {
+  current.clear();
+  for (const observation of records) current.set(observation.id, observation);
 }
 
 function equivalentActiveObservation(existing: DiagnosticObservation, input: DiagnosticObservationInput): boolean {
@@ -275,6 +385,9 @@ function normalizeInput(input: DiagnosticObservationInput): DiagnosticObservatio
   assertPositiveInteger(input.ruleVersion ?? 1, "Diagnostic rule version");
   assertPositiveInteger(input.observedAt, "Diagnostic observed timestamp", true);
   assertAffected(input.affected);
+  const lifecycleId = input.lifecycle.kind === "occurrence" ? input.lifecycle.occurrenceId : input.lifecycle.conditionId;
+  assertComponent(lifecycleId, "Diagnostic lifecycle identity");
+  if (input.evidenceBoundary) assertAffected({ kind: "evidence", ...input.evidenceBoundary });
   assertText(input.observed, DIAGNOSTIC_TEXT_MAX_LENGTH, "observed fact");
   assertText(input.limitation, DIAGNOSTIC_TEXT_MAX_LENGTH, "observation limitation");
   assertText(input.consequence, DIAGNOSTIC_TEXT_MAX_LENGTH, "diagnostic consequence");
@@ -282,7 +395,22 @@ function normalizeInput(input: DiagnosticObservationInput): DiagnosticObservatio
   if (input.originalCode !== undefined && !Number.isSafeInteger(input.originalCode)) throw new Error("Original diagnostic code must be a safe integer.");
   assertRoute(input.route);
   if (input.resultRef) assertResultRef(input.resultRef);
-  return input;
+  return Object.freeze({
+    code: input.code,
+    ruleVersion: input.ruleVersion,
+    severity: input.severity,
+    lifecycle: Object.freeze({ ...input.lifecycle }),
+    affected: Object.freeze({ ...input.affected }),
+    observedAt: input.observedAt,
+    evidenceBoundary: input.evidenceBoundary ? Object.freeze({ ...input.evidenceBoundary }) : undefined,
+    observed: input.observed,
+    limitation: input.limitation,
+    consequence: input.consequence,
+    route: freezeRoute(input.route),
+    resultRef: input.resultRef ? Object.freeze({ ...input.resultRef }) : undefined,
+    originalCode: input.originalCode,
+    safeMessage: input.safeMessage
+  });
 }
 
 function assertRuleCode(code: string): void {
@@ -340,4 +468,61 @@ function affectedIdentity(affected: DiagnosticAffectedIdentity): string {
     case "item": return `item:${affected.pageId}:${affected.clientId}:${affected.subscriptionId}:${affected.item}`;
     case "evidence": return `evidence:${affected.intervalId}:${affected.sequence}:${affected.eventId}`;
   }
+}
+
+function freezeRoute(route: DiagnosticInspectionRoute): DiagnosticInspectionRoute {
+  return route.kind === "inspect-evidence"
+    ? Object.freeze({ kind: route.kind, evidence: Object.freeze({ ...route.evidence }) })
+    : Object.freeze({ ...route });
+}
+
+function freezeObservation(observation: DiagnosticObservation): DiagnosticObservation {
+  return Object.freeze({
+    ...observation,
+    lifecycle: Object.freeze({ ...observation.lifecycle }),
+    affected: Object.freeze({ ...observation.affected }),
+    observationBoundary: Object.freeze({ ...observation.observationBoundary }),
+    evidenceBoundary: observation.evidenceBoundary ? Object.freeze({ ...observation.evidenceBoundary }) : undefined,
+    route: freezeRoute(observation.route),
+    resultRef: observation.resultRef ? Object.freeze({ ...observation.resultRef }) : undefined
+  });
+}
+
+function assertOpen(closed: boolean): void {
+  if (closed) throw new Error("Diagnostic Observation journal is closed.");
+}
+
+function boundedDatabaseComponent(value: string): string {
+  assertComponent(value, "Panel Session identity");
+  return value.replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+function openDiagnosticDatabase(factory: IDBFactory, name: string): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = factory.open(name, DIAGNOSTIC_OBSERVATION_SCHEMA_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains("diagnosticState")) request.result.createObjectStore("diagnosticState");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Could not open the Diagnostic Observation journal."));
+  });
+}
+
+function readDiagnosticState(database: IDBDatabase): Promise<PersistedDiagnosticState | null> {
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction("diagnosticState", "readonly");
+    const request = transaction.objectStore("diagnosticState").get("state");
+    request.onsuccess = () => resolve((request.result as PersistedDiagnosticState | undefined) ?? null);
+    request.onerror = () => reject(request.error ?? new Error("Could not read Diagnostic Observations."));
+  });
+}
+
+function writeDiagnosticState(database: IDBDatabase, state: PersistedDiagnosticState): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction("diagnosticState", "readwrite");
+    transaction.objectStore("diagnosticState").put(state, "state");
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("Could not persist Diagnostic Observations."));
+    transaction.onabort = () => reject(transaction.error ?? new Error("Diagnostic Observation persistence was aborted."));
+  });
 }
