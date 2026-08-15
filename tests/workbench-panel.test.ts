@@ -1869,9 +1869,10 @@ describe("React Workbench Diagnose panel", () => {
       "listener-count",
       "correlated-local-evidence-exists",
       "command-key-exists",
-      "command-field-equals"
+      "command-field-equals",
+      "diagnostic-observation-exists"
     ]);
-    expect(Array.from(assertionKinds.options).some(({ textContent }) => textContent?.toLowerCase().includes("diagnostic"))).toBe(false);
+    expect(Array.from(assertionKinds.options).some(({ textContent }) => textContent?.includes("Diagnostic Observation"))).toBe(true);
     const firstStepActions = region.querySelector<HTMLElement>('[aria-label="Step 1 actions"]')!;
     expect(Array.from(firstStepActions.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Move earlier")?.disabled).toBe(false);
     const secondStepButton = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Step 2")!;
@@ -1900,8 +1901,42 @@ describe("React Workbench Diagnose panel", () => {
     expect(addCheckpoint).toBeTruthy();
     await act(async () => addCheckpoint?.click());
     expect(runtime.commands).toContainEqual({ type: "add-scenario-checkpoint" });
-    expect(region.textContent).not.toContain("diagnostic assertion");
+    await act(async () => root.unmount());
+  });
 
+  it("authors an exact typed Diagnostic Observation assertion and routes its bounded result reference", async () => {
+    const reviewed = reviewedScenario();
+    const affected = { kind: "subscription", pageId: "page-1", clientId: "client-1", sessionId: "session-1", subscriptionId: "subscription-1" } as const;
+    const assertion = { id: "diagnostic", kind: "diagnostic-observation-exists" as const, contractVersion: 1 as const, ruleCode: "subscription.lost-updates", lifecycle: "occurrence" as const, minimumSeverity: "warning" as const, affected, withinActiveMs: 500 };
+    const checkpoint = { id: "checkpoint-diagnostic", kind: "checkpoint" as const, name: "Lost update observed", assertions: [assertion] };
+    const scenario = { ...reviewed.scenario, phase: "edit" as const, members: [reviewed.scenario.steps[0], checkpoint] };
+    const editRuntime = createTestRuntime(snapshot({ scenario: { ...reviewed, phase: "edit", scenario, run: null, runner: null, focusedMemberId: checkpoint.id } }));
+    const root = createRoot(document.querySelector("#app")!);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime: editRuntime })));
+    const region = document.querySelector<HTMLElement>('[aria-label="Scenario Checkpoint Lost update observed"]')!;
+    expect(region.textContent).toContain("Diagnostic Observation contract v1");
+    expect(region.querySelector<HTMLInputElement>('[aria-label="Diagnostic rule code"]')?.value).toBe("subscription.lost-updates");
+    expect(region.querySelector<HTMLSelectElement>('[aria-label="Diagnostic lifecycle"]')?.value).toBe("occurrence");
+    expect(region.querySelector<HTMLSelectElement>('[aria-label="Diagnostic minimum severity"]')?.value).toBe("warning");
+    expect(region.querySelector<HTMLSelectElement>('[aria-label="Diagnostic affected kind"]')?.value).toBe("subscription");
+    expect(region.querySelector<HTMLInputElement>('[aria-label="Affected Subscription identity"]')?.value).toBe("subscription-1");
+
+    const observation = {
+      schemaVersion: 1 as const, id: "diag:subscription.lost-updates:lost-7", code: "subscription.lost-updates", ruleVersion: 1, severity: "error" as const,
+      lifecycle: { kind: "occurrence" as const, occurrenceId: "lost-7", state: "observed" as const }, affected, observedAt: 10,
+      observationBoundary: { intervalId: "diagnostic-interval", sequence: 7 }, route: { kind: "inspect-affected" as const }
+    };
+    const result = { assertionId: assertion.id, kind: assertion.kind, status: "pass" as const, expected: {}, observed: { state: "observed", value: "error", certainty: "certain" as const, provenance: "diagnostic-observation" as const, evidence: null }, relatedEvidence: [], relatedDiagnostics: [observation] };
+    const reviewedCheckpoint = { ...checkpoint, memberOrdinal: 2 };
+    const trace = { checkpointId: checkpoint.id, checkpointName: checkpoint.name, memberOrdinal: 2, kind: "checkpoint" as const, status: "pass" as const, startedActiveOffsetMs: 0, settledActiveOffsetMs: 0, startedBoundary: null, resultBoundary: null, evidenceAvailability: "NOT_APPLICABLE" as const, assertions: [result] };
+    const run = { ...reviewed.run!, members: [reviewed.run!.steps[0], reviewedCheckpoint], trace: [trace] };
+    await act(async () => editRuntime.setSnapshot(snapshot({ scenario: { ...reviewed, phase: "complete", scenario, run, focusedMemberId: checkpoint.id, runner: { ...reviewed.runner!, run, phase: "complete", activeCheckpoint: null } } })));
+    expect(region.textContent).toContain("Diagnostic Observation subscription.lost-updates");
+    expect(region.textContent).toContain("observed observed \"error\" · certain · diagnostic-observation");
+    const inspect = Array.from(region.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Inspect Diagnostic Observation subscription.lost-updates");
+    expect(inspect).toBeTruthy();
+    await act(async () => inspect?.click());
+    expect(editRuntime.commands).toContainEqual({ type: "show-scenario-diagnostic-observation", observation });
     await act(async () => root.unmount());
   });
 
