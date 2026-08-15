@@ -54,6 +54,8 @@ Scenario Assertions observe Workbench-owned facts only:
 - primitive field equality in Local Effective COMMAND State at an exact committed Evidence boundary;
 - normalized diagnostic presence after the diagnostic contract from Build 5 exists.
 
+The normalized contract now exists in ADR 0013. The implemented assertion captures its lower cursor at initial Review and every drift re-review, queries `(authorization, current]`, and subscribes before the bounded read so a racing occurrence or active-condition transition cannot be lost.
+
 Primitive field equality distinguishes an absent own field from a present field and compares concrete JSON primitives by type and value without coercion. A server-derived public-API `null` is ambiguous and makes equality not evaluable rather than positively equal; a `null` from correlated committed Local Evidence is concrete because Workbench owns the delivered Draft. The result records the observed value state and provenance. Assertions never execute inspected-page JavaScript or inspect arbitrary DOM, callback internals, application state, or Authoritative COMMAND State. Wire delivery cannot offer listener-count assertions. A positive assertion may carry an explicit `within` duration measured by the Scenario Clock; later Steps wait, Pause freezes the window, and the result records the exact committed Evidence boundary used. A failed, expired, unavailable, or not-evaluable assertion stops the Run.
 
 The first Scenario release omits diagnostic-presence assertions. It does not expose a disabled choice or persist a placeholder assertion kind. That assertion family is an additive follow-up after a stable diagnostic code, affected identity, occurrence lifecycle, and committed observation boundary exist.

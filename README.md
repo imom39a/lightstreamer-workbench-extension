@@ -25,7 +25,7 @@ Version 2 focuses on local, current-session debugging for the inspected tab thro
 - Keeps Capture operation, Coverage, Scope, Filter, Find, selection, and Live/Frozen Evidence position independent while retaining accepted current-session Evidence through its Committed Evidence Boundary behind a bounded rendered window.
 - Reconstructs **Observed Server COMMAND State** from captured Server Updates and **Local Effective COMMAND State** from Server Updates plus successful Local Injected Updates.
 - Maintains one protected standalone target-anchored **Local Injection Draft**, created from an immutable selected Injection Source or authored from a live COMMAND scope, with raw JSON editing, validation, Review, and a persistent truthful outcome.
-- Provides a temporary **Local Injection Scenario** document with explicit ordered single-target Steps and optional Checkpoints; Review freezes an immutable Run that dispatches one ordinary Local Injection at a time with per-Step outcomes and correlation.
+- Provides a temporary **Local Injection Scenario** document with explicit ordered single-target Steps and optional Checkpoints; Review freezes an immutable Run that dispatches one ordinary Local Injection at a time with per-Step outcomes, correlation, and normalized post-authorization Diagnostic Observation assertions.
 - Delivers standalone Drafts and Scenario Steps through the same captured listener or captured Lightstreamer WebSocket path in the inspected page; Scenarios add no batch bridge.
 - Provides WebSocket/TLCP fallback diagnostics when primary Web Client API instrumentation is unavailable.
 - Marks successful Local Injected Update Evidence clearly so it remains distinguishable from Server Evidence.
