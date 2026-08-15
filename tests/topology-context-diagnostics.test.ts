@@ -259,4 +259,30 @@ describe("topology Context diagnostics", () => {
       }]
     }).observations).toEqual([]);
   });
+
+  it("deduplicates repeated immutable facts and bounds composite identities and captured detail", () => {
+    const longId = "subscription-".repeat(9);
+    const first = subscription(`${longId}a`);
+    const second = subscription(`${longId}b`);
+    const base = input([first, first, second, second]);
+    const limitation = {
+      id: "limit",
+      kind: "unsupported-shape" as const,
+      affected: first.affected,
+      current: true,
+      shape: "shape",
+      detail: "detail ".repeat(200),
+      weakens: ["subscription-configuration" as const]
+    };
+    const result = evaluateTopologyContextDiagnostics({ ...base, limitations: [limitation, limitation] });
+
+    expect(result.observations.filter(({ code }) => code === "ls.subscription.exact-duplicate")).toHaveLength(1);
+    expect(result.observations.filter(({ code }) => code === "workbench.capture.unsupported-shape")).toHaveLength(1);
+    expect(result.observations.every(({ lifecycle }) => {
+      const identity = lifecycle.kind === "condition" ? lifecycle.conditionId : lifecycle.occurrenceId;
+      return [...identity].length <= 128;
+    })).toBe(true);
+    expect(result.observations.every(({ observed, limitation: limit, consequence }) =>
+      [observed, limit, consequence].every((text) => [...text].length <= 512))).toBe(true);
+  });
 });

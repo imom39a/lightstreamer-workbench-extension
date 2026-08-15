@@ -4,7 +4,12 @@ import type {
   DiagnosticEvidenceBoundary,
   DiagnosticObservationInput
 } from "./diagnostic-observation";
-import { diagnosticObservationIdentity, normalizeDiagnosticObservationInput } from "./diagnostic-observation";
+import {
+  DIAGNOSTIC_IDENTITY_COMPONENT_MAX_LENGTH,
+  DIAGNOSTIC_TEXT_MAX_LENGTH,
+  diagnosticObservationIdentity,
+  normalizeDiagnosticObservationInput
+} from "./diagnostic-observation";
 
 export type TopologyDescriptor =
   | Readonly<{ kind: "list"; values: readonly string[] }>
@@ -93,11 +98,11 @@ export function evaluateTopologyContextDiagnostics(
   input: TopologyContextDiagnosticInput,
   previouslyActive: readonly DiagnosticObservationInput[] = []
 ): TopologyContextDiagnosticEvaluation {
-  const observations = [
+  const observations = uniqueObservations([
     ...exactDuplicateObservations(input),
     ...churnObservations(input),
     ...limitationObservations(input)
-  ];
+  ]);
   const active = new Set(observations.flatMap((observation) =>
     observation.lifecycle.kind === "condition" ? [diagnosticObservationIdentity(observation)] : []));
   const resolutions = previouslyActive.flatMap((observation): DiagnosticConditionResolution[] => {
@@ -111,7 +116,7 @@ export function evaluateTopologyContextDiagnostics(
       evidenceBoundary: input.boundary.evidence
     })];
   });
-  return Object.freeze({ observations: Object.freeze(observations), resolutions: Object.freeze(resolutions) });
+  return Object.freeze({ observations: Object.freeze(observations), resolutions: Object.freeze(uniqueResolutions(resolutions)) });
 }
 
 function limitationObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
@@ -123,7 +128,7 @@ function limitationObservations(input: TopologyContextDiagnosticInput): Diagnost
     const lifecycle = limitation.current
       ? { kind: "condition" as const, conditionId: limitation.id }
       : { kind: "occurrence" as const, occurrenceId: limitation.id };
-    observations.push(normalizeDiagnosticObservationInput({
+    observations.push(normalized({
       code: semantics.code,
       ruleVersion: 1,
       severity: semantics.severity,
@@ -197,7 +202,7 @@ function churnObservations(input: TopologyContextDiagnosticInput): DiagnosticObs
     const attachment = window.lateAttachment
       ? " Workbench attached after application startup; earlier changes are unavailable."
       : " Capture was attached for the full stated window.";
-    observations.push(normalizeDiagnosticObservationInput({
+    observations.push(normalized({
       code,
       ruleVersion: 1,
       severity: "information",
@@ -237,6 +242,7 @@ function exactDuplicateObservations(input: TopologyContextDiagnosticInput): Diag
       const left = current[leftIndex]!;
       const right = current[rightIndex]!;
       if (!sameScope(left, right) || semanticConfigurationSignature(left.configuration) !== semanticConfigurationSignature(right.configuration)) continue;
+      if (sameAffected(left.affected, right.affected)) continue;
       const ids = [left.affected.subscriptionId, right.affected.subscriptionId].sort();
       const exact = configurationSignature(left.configuration) === configurationSignature(right.configuration);
       const evidence = laterEvidence(left.evidence, right.evidence);
@@ -244,7 +250,7 @@ function exactDuplicateObservations(input: TopologyContextDiagnosticInput): Diag
         ? { kind: "condition" as const, conditionId: `${ids[0]}:${ids[1]}` }
         : { kind: "occurrence" as const, occurrenceId: `${evidence.eventId}:${ids[0]}:${ids[1]}` };
       const differing = differingConfiguration(left.configuration, right.configuration);
-      observations.push(normalizeDiagnosticObservationInput({
+      observations.push(normalized({
         code: exact ? "ls.subscription.exact-duplicate" : "ls.subscription.semantic-overlap",
         ruleVersion: 1,
         severity: "information",
@@ -274,6 +280,10 @@ function sameScope(left: TopologySubscriptionFact, right: TopologySubscriptionFa
     left.affected.clientId === right.affected.clientId &&
     left.affected.sessionId !== undefined &&
     left.affected.sessionId === right.affected.sessionId;
+}
+
+function sameAffected(left: DiagnosticAffectedIdentity, right: DiagnosticAffectedIdentity): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function configurationAvailable(configuration: TopologySubscriptionConfiguration): boolean {
@@ -312,4 +322,47 @@ function differingConfiguration(
 
 function laterEvidence(left: DiagnosticEvidenceBoundary, right: DiagnosticEvidenceBoundary): DiagnosticEvidenceBoundary {
   return left.intervalId === right.intervalId && right.sequence > left.sequence ? right : left;
+}
+
+function normalized(input: DiagnosticObservationInput): DiagnosticObservationInput {
+  return normalizeDiagnosticObservationInput({
+    ...input,
+    lifecycle: input.lifecycle.kind === "condition"
+      ? { kind: "condition", conditionId: boundedIdentity(input.lifecycle.conditionId) }
+      : { kind: "occurrence", occurrenceId: boundedIdentity(input.lifecycle.occurrenceId) },
+    observed: boundedText(input.observed),
+    limitation: boundedText(input.limitation),
+    consequence: boundedText(input.consequence)
+  });
+}
+
+function uniqueObservations(observations: readonly DiagnosticObservationInput[]): DiagnosticObservationInput[] {
+  const unique = new Map<string, DiagnosticObservationInput>();
+  for (const observation of observations) unique.set(diagnosticObservationIdentity(observation), observation);
+  return [...unique.values()];
+}
+
+function uniqueResolutions(resolutions: readonly DiagnosticConditionResolution[]): DiagnosticConditionResolution[] {
+  const unique = new Map<string, DiagnosticConditionResolution>();
+  for (const resolution of resolutions) unique.set(`${resolution.code}:${resolution.conditionId}:${JSON.stringify(resolution.affected)}`, resolution);
+  return [...unique.values()];
+}
+
+function boundedIdentity(value: string): string {
+  if ([...value].length <= DIAGNOSTIC_IDENTITY_COMPONENT_MAX_LENGTH) return value;
+  const suffix = stableHash(value);
+  return `${[...value].slice(0, DIAGNOSTIC_IDENTITY_COMPONENT_MAX_LENGTH - suffix.length - 1).join("")}:${suffix}`;
+}
+
+function boundedText(value: string): string {
+  return [...value].slice(0, DIAGNOSTIC_TEXT_MAX_LENGTH).join("");
+}
+
+function stableHash(value: string): string {
+  let hash = 2_166_136_261;
+  for (const character of value) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(36);
 }
