@@ -15,8 +15,14 @@ import {
   createMemoryDiagnosticObservationJournal,
   diagnosticObservationIdentity,
   type DiagnosticAffectedIdentity,
+  type DiagnosticObservationInput,
   type DiagnosticObservationJournal
 } from "../../core/diagnostic-observation";
+import {
+  createDiagnosticObservationIndex,
+  type DiagnosticFilterCriteria,
+  type DiagnosticFilterFacet
+} from "../../core/diagnostic-observation-index";
 import {
   adaptCommittedEvidenceFinding,
   adaptWorkbenchConditionFinding
@@ -61,7 +67,8 @@ import {
   type EvidenceSnapshot,
   type RevealBlocker,
   type FacetDiscoveryRequest,
-  type FacetDiscoveryResult
+  type FacetDiscoveryResult,
+  type TypedFacetValue
 } from "../../core/evidence-filter-contract";
 import { cloneAndFreezeJsonValue, expandJsonStringFields } from "../../core/json-string-fields";
 import {
@@ -338,6 +345,11 @@ export type WorkbenchContextSnapshot = Readonly<{
   selectedUpdate: SelectedUpdateSnapshot | null;
   /** Typed Include, Exclude, and Around actions for selected Evidence. */
   filterActions?: readonly EvidenceFilterActionDescriptor[];
+  diagnostics: readonly WorkbenchDiagnostic[];
+  diagnosticFilter: Readonly<{
+    criteria: DiagnosticFilterCriteria;
+    active: boolean;
+  }>;
 }>;
 
 export type WorkbenchCommandProjection = Readonly<{
@@ -357,8 +369,11 @@ export type WorkbenchDiagnostic = Readonly<{
   recovery?: string;
   limitation?: string;
   consequence?: string;
-  route?: Readonly<{ kind: "inspect-evidence"; eventId: string; label: string }>;
+  route?:
+    | Readonly<{ kind: "inspect-evidence"; evidence: EvidenceRef; label: string }>
+    | Readonly<{ kind: "inspect-affected"; affected: DiagnosticAffectedIdentity; label: string }>;
   affectedIdentity?: DiagnosticAffectedIdentity;
+  filterFacets?: Readonly<Record<DiagnosticFilterFacet, readonly TypedFacetValue[]>>;
   category?: "activity" | "history" | "capture" | "session" | "retention" | "storage";
 }>;
 
@@ -679,7 +694,10 @@ export type WorkbenchCommand =
   | { type: "open-context" }
   | { type: "open-scope" }
   | { type: "open-raw-evidence"; eventId: string }
-  | { type: "inspect-diagnostic-evidence"; eventId: string }
+  | { type: "inspect-diagnostic-evidence"; evidence: EvidenceRef }
+  | { type: "inspect-diagnostic-affected"; affected: DiagnosticAffectedIdentity }
+  | { type: "apply-diagnostic-filter"; facet: DiagnosticFilterFacet; value: TypedFacetValue; polarity: "include" | "exclude" }
+  | { type: "reset-diagnostic-filter" }
   | { type: "export-scope" }
   | { type: "open-actions" }
   | { type: "close-actions" }
@@ -931,6 +949,8 @@ class Runtime implements WorkbenchRuntime {
   private diagnosticObservationSettlement: Promise<void> = Promise.resolve();
   private readonly diagnosticEvidenceSequences = new Map<string, number>();
   private readonly committedDiagnosticPresentations = new Map<string, WorkbenchDiagnostic>();
+  private readonly committedDiagnosticObservations = new Map<string, DiagnosticObservationInput>();
+  private diagnosticFilterCriteria: DiagnosticFilterCriteria = Object.freeze({});
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
@@ -1935,19 +1955,34 @@ class Runtime implements WorkbenchRuntime {
         this.publish();
         return;
       case "inspect-diagnostic-evidence": {
-        const event = this.evidenceEventCache.get(command.eventId);
-        if (!event) return;
         this.recordInvestigationCheckpoint();
         this.scopeId = "page";
         this.scopeFocusedNodeId = "page";
-        this.selectionEventId = command.eventId;
-        this.focusedEventId = command.eventId;
-        this.contextId = `context:${command.eventId}`;
-        this.resolveSelectedEvent(command.eventId);
+        this.selectionEventId = command.evidence.eventId;
+        this.focusedEventId = command.evidence.eventId;
+        this.selectedEvidenceIdentity = Object.freeze({
+          intervalId: command.evidence.intervalId,
+          pageId: command.evidence.intervalId,
+          ownerId: "memory-event-history",
+          sequence: command.evidence.sequence,
+          eventId: command.evidence.eventId
+        });
+        this.selectedEventEnvelope = null;
+        this.contextId = `context:${command.evidence.eventId}`;
         this.recordInvestigationCheckpoint();
         this.refreshEvidence("command");
         return;
       }
+      case "inspect-diagnostic-affected":
+        this.inspectDiagnosticAffected(command.affected);
+        return;
+      case "apply-diagnostic-filter":
+        this.applyDiagnosticFilter(command.facet, command.value, command.polarity);
+        return;
+      case "reset-diagnostic-filter":
+        this.diagnosticFilterCriteria = Object.freeze({});
+        this.publish();
+        return;
       case "export-scope":
         this.contextId = "context:export";
         this.prepareExport();
@@ -2380,7 +2415,6 @@ class Runtime implements WorkbenchRuntime {
             removedCriteria: 1
           });
         }
-        this.resetCoherentStateAfterClear();
         if (this.scenarioState) {
           this.scenarioState.serverInterleaves = [];
           if (this.scenarioState.run) this.scenarioState.run = markScenarioEvidenceUnavailableAfterClear(this.scenarioState.run);
@@ -2411,6 +2445,8 @@ class Runtime implements WorkbenchRuntime {
     this.activeRuntimeDiagnosticConditions.clear();
     this.diagnosticEvidenceSequences.clear();
     this.committedDiagnosticPresentations.clear();
+    this.committedDiagnosticObservations.clear();
+    this.diagnosticFilterCriteria = Object.freeze({});
     this.subscriptionDiagnosticProducer.clear();
     this.committedTopologyDiagnostics.clear();
     this.queueDiagnosticMutation(() => this.diagnosticObservations.clear());
@@ -5386,13 +5422,22 @@ class Runtime implements WorkbenchRuntime {
     scope: WorkbenchSnapshot["scope"],
     activityProjection: ActivityProjection
   ): WorkbenchContextSnapshot {
+    const diagnostics = this.contextDiagnosticSnapshot(scope);
+    const diagnosticFilter = Object.freeze({
+      criteria: this.diagnosticFilterCriteria,
+      active: Object.values(this.diagnosticFilterCriteria).some((criterion) =>
+        "include" in criterion
+          ? criterion.include.length > 0 || criterion.exclude.length > 0
+          : criterion.length > 0
+      )
+    });
     const selected =
       (this.selectedEventEnvelope?.id === this.selectionEventId
         ? this.selectedEventEnvelope
         : events.find((event) => event.id === this.selectionEventId)) ?? null;
     if (!selected) {
       const topology = this.topologyProjection.snapshot();
-      return runtimeObjectDossier(
+      const dossier = runtimeObjectDossier(
         findTopologySelection(topology, this.scopeId ?? "page"),
         scope.label,
         scope.coverage,
@@ -5401,6 +5446,7 @@ class Runtime implements WorkbenchRuntime {
         this.liveEvidence.total,
         activityProjection
       );
+      return Object.freeze({ ...dossier, diagnostics, diagnosticFilter });
     }
     return Object.freeze({
       kind: "evidence",
@@ -5419,7 +5465,9 @@ class Runtime implements WorkbenchRuntime {
         ["Observation path", evidenceObservationPath(selected)],
         ["Evidence limitations", evidenceLimitations(selected)]
       ] as const),
-      filterActions: this.selectedContextFilterActions(selected)
+      filterActions: this.selectedContextFilterActions(selected),
+      diagnostics,
+      diagnosticFilter
     });
   }
 
@@ -5586,7 +5634,7 @@ class Runtime implements WorkbenchRuntime {
         recovery: "Try clearing history again"
       });
     }
-    diagnostics.push(...this.relevantCommittedDiagnosticPresentations(scope));
+    diagnostics.push(...this.relevantCommittedDiagnosticPresentations(scope).filter((diagnostic) => !isContextOwnedDiagnostic(diagnostic)));
     return Object.freeze(diagnostics.map((diagnostic) => Object.freeze(diagnostic)));
   }
 
@@ -5606,6 +5654,65 @@ class Runtime implements WorkbenchRuntime {
         ? diagnosticAffectedIdentityAppliesToTarget(diagnostic.affectedIdentity, target)
         : false;
     });
+  }
+
+  private contextDiagnosticSnapshot(scope: WorkbenchSnapshot["scope"]): readonly WorkbenchDiagnostic[] {
+    const relevant = this.relevantCommittedDiagnosticPresentations(scope).filter(isContextOwnedDiagnostic);
+    if (relevant.length === 0) return Object.freeze([]);
+    const relevantSet = new Set(relevant);
+    const pairs = [...this.committedDiagnosticPresentations.entries()]
+      .filter(([, diagnostic]) => relevantSet.has(diagnostic))
+      .flatMap(([key, diagnostic]) => {
+        const observation = this.committedDiagnosticObservations.get(key);
+        return observation ? [{ diagnostic, observation }] : [];
+      });
+    const accepted = new Set(createDiagnosticObservationIndex(pairs.map(({ observation }) => observation))
+      .query(this.diagnosticFilterCriteria)
+      .map(({ observation }) => diagnosticObservationIdentity(observation)));
+    return Object.freeze(pairs
+      .filter(({ observation }) => accepted.has(diagnosticObservationIdentity(observation)))
+      .map(({ diagnostic }) => diagnostic));
+  }
+
+  private applyDiagnosticFilter(
+    facet: DiagnosticFilterFacet,
+    value: TypedFacetValue,
+    polarity: "include" | "exclude"
+  ): void {
+    if (value.facet !== facet) return;
+    const prior = this.diagnosticFilterCriteria[facet];
+    const include = [...(prior && "include" in prior ? prior.include : prior ?? [])]
+      .filter((entry) => entry.identity !== value.identity);
+    const exclude = [...(prior && "exclude" in prior ? prior.exclude : [])]
+      .filter((entry) => entry.identity !== value.identity);
+    (polarity === "include" ? include : exclude).push(value);
+    this.diagnosticFilterCriteria = Object.freeze({
+      ...this.diagnosticFilterCriteria,
+      [facet]: Object.freeze({ include: Object.freeze(include), exclude: Object.freeze(exclude) })
+    });
+    this.publish();
+  }
+
+  private inspectDiagnosticAffected(affected: DiagnosticAffectedIdentity): void {
+    const state = this.topologyProjection.snapshot();
+    const structure = this.currentScopeStructure(state);
+    const descriptor = structure.descriptors.find((candidate) => {
+      const target = locateScopeDescriptor(state, candidate.locator);
+      return target !== null && diagnosticAffectedIdentityAppliesToTarget(affected, target) && target.kind === affected.kind;
+    }) ?? structure.descriptors.find((candidate) => {
+      const target = locateScopeDescriptor(state, candidate.locator);
+      return target !== null && diagnosticAffectedIdentityAppliesToTarget(affected, target);
+    });
+    if (!descriptor) return;
+    this.recordInvestigationCheckpoint();
+    this.scopeId = descriptor.id;
+    this.scopeFocusedNodeId = descriptor.id;
+    this.selectionEventId = null;
+    this.selectedEvidenceIdentity = null;
+    this.selectedEventEnvelope = null;
+    this.contextId = "context:scope";
+    this.recordInvestigationCheckpoint();
+    this.publish();
   }
 
   private recordCommittedServerDiagnosticFindings(
@@ -5648,7 +5755,7 @@ class Runtime implements WorkbenchRuntime {
         limitation: presentation.limitation,
         consequence: presentation.consequence,
         route: presentation.route
-      });
+      }, adapted.observation);
     }
     if (event.kind === "server-keepalive") {
       const count = event.keepalive?.count ?? 1;
@@ -5681,7 +5788,7 @@ class Runtime implements WorkbenchRuntime {
         limitation: presentation.limitation,
         consequence: presentation.consequence,
         route: presentation.route
-      });
+      }, adapted.observation);
     }
   }
 
@@ -5707,11 +5814,14 @@ class Runtime implements WorkbenchRuntime {
               limitation: presentation.limitation,
               consequence: presentation.consequence,
               route: presentation.route
-            }
+            },
+            proposal.observation
           );
         }
       } else {
-        this.committedDiagnosticPresentations.delete(diagnosticProposalPresentationKey(proposal));
+        const key = diagnosticProposalPresentationKey(proposal);
+        this.committedDiagnosticPresentations.delete(key);
+        this.committedDiagnosticObservations.delete(key);
       }
     }
     this.queueDiagnosticMutation(() =>
@@ -5722,12 +5832,19 @@ class Runtime implements WorkbenchRuntime {
     );
   }
 
-  private rememberCommittedDiagnosticPresentation(key: string, diagnostic: WorkbenchDiagnostic): void {
-    this.committedDiagnosticPresentations.set(key, Object.freeze(diagnostic));
+  private rememberCommittedDiagnosticPresentation(
+    key: string,
+    diagnostic: WorkbenchDiagnostic,
+    observation: DiagnosticObservationInput
+  ): void {
+    const facets = createDiagnosticObservationIndex([observation]).records[0]?.facets;
+    this.committedDiagnosticPresentations.set(key, Object.freeze({ ...diagnostic, ...(facets ? { filterFacets: facets } : {}) }));
+    this.committedDiagnosticObservations.set(key, observation);
     while (this.committedDiagnosticPresentations.size > 100) {
       const oldest = this.committedDiagnosticPresentations.keys().next().value as string | undefined;
       if (!oldest) break;
       this.committedDiagnosticPresentations.delete(oldest);
+      this.committedDiagnosticObservations.delete(oldest);
     }
   }
 
@@ -5919,6 +6036,16 @@ function diagnosticAffectedIdentityAppliesToTarget(
   return false;
 }
 
+function isContextOwnedDiagnostic(diagnostic: WorkbenchDiagnostic): boolean {
+  const affected = diagnostic.affectedIdentity;
+  if (affected?.kind === "subscription" || affected?.kind === "item") return true;
+  const code = diagnostic.code ?? "";
+  return code.startsWith("ls.sub.") ||
+    code.startsWith("ls.subscription.") ||
+    code.startsWith("ls.command.") ||
+    code.startsWith("ls.listener.");
+}
+
 export function settleScenarioCoordinatorExecution(execution: LocalInjectionCoordinatorExecution, now: number) {
   if (execution.kind === "review-invalidated") {
     return { kind: "not-run" as const, reason: "REVIEW INVALIDATED" as const, timestamp: now, detail: "Review invalidated before dispatch; no Injection was attempted." };
@@ -6051,7 +6178,9 @@ function runtimeObjectDossier(
     title,
     fields: Object.freeze(fields),
     selectedUpdate: null,
-    filterActions: Object.freeze([])
+    filterActions: Object.freeze([]),
+    diagnostics: Object.freeze([]),
+    diagnosticFilter: Object.freeze({ criteria: Object.freeze({}), active: false })
   });
 }
 

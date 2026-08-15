@@ -60,4 +60,39 @@ describe("Diagnostic Observation Filter index", () => {
     expect(index.query({ diagnosticCode: [diagnosticCodeFacetValue("ls.client.server-error")] })).toEqual([]);
     expect(index.query({ diagnosticAffected: [diagnosticAffectedFacetValue("page", "page-1", "Page page-1")] })).toHaveLength(2);
   });
+
+  it("applies include/exclude with OR within a facet and AND across facets", async () => {
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "diagnostic-filter-semantics" });
+    const observations = await Promise.all([
+      ["ls.client.server-error", "warning", "client-1", "error"],
+      ["ls.client.server-keepalive", "information", "client-1", "keepalive"],
+      ["ls.subscription.lost-updates", "warning", "client-2", "loss"]
+    ].map(([code, severity, clientId, occurrenceId], index) => journal.observe({
+      code: code!,
+      severity: severity as "warning" | "information",
+      lifecycle: { kind: "occurrence", occurrenceId: occurrenceId! },
+      affected: { kind: "client", pageId: "page-1", clientId: clientId! },
+      observedAt: index + 1,
+      observed: "Observed fact.",
+      limitation: "Bounded limitation.",
+      consequence: "Bounded consequence.",
+      route: { kind: "inspect-affected" }
+    })));
+    const index = createDiagnosticObservationIndex(observations);
+
+    expect(index.query({
+      diagnosticCode: {
+        include: [diagnosticCodeFacetValue("ls.client.server-error"), diagnosticCodeFacetValue("ls.client.server-keepalive")],
+        exclude: []
+      },
+      diagnosticSeverity: {
+        include: [diagnosticSeverityFacetValue("warning")],
+        exclude: []
+      },
+      diagnosticAffected: {
+        include: [diagnosticAffectedFacetValue("page", "page-1", "Page page-1")],
+        exclude: [diagnosticAffectedFacetValue("client", "page-1/client-2", "Client client-2")]
+      }
+    }).map(({ observation }) => observation.code)).toEqual(["ls.client.server-error"]);
+  });
 });

@@ -1804,6 +1804,26 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
               {exportDownloadStatus ? <p className="workbench-react__copy-status" role="status" aria-live="polite">{exportDownloadStatus}</p> : null}
             </section> : <>
               <dl className="workbench-react__context-fields" aria-label="Evidence metadata">{contextFields.flatMap(([name, value]) => [<dt key={`${name}-term`}>{name}</dt>, <dd key={`${name}-value`}>{value}</dd>])}</dl>
+              {snapshot.context.diagnostics.length || snapshot.context.diagnosticFilter.active ? <section className="workbench-react__context-diagnostics" role="region" aria-label="Context diagnostics">
+                <div className="workbench-react__context-diagnostics-heading"><strong>Diagnostics for this Scope</strong>{snapshot.context.diagnosticFilter.active ? <button type="button" onClick={() => dispatch(runtime, { type: "reset-diagnostic-filter" })}>Reset diagnostic filters</button> : null}</div>
+                {snapshot.context.diagnostics.map((diagnostic, index) => <article className="workbench-react__context-diagnostic" data-severity={diagnostic.severity.toLowerCase()} key={diagnostic.id ? `${diagnostic.code ?? diagnostic.title}:${diagnostic.id}` : `${diagnostic.title}-${index}`}>
+                  <strong>{diagnostic.severity} · {diagnostic.title}</strong>
+                  <span>Affected: {diagnostic.affected}</span>
+                  <span>{diagnostic.detail}</span>
+                  {diagnostic.limitation ? <span>Limit: {diagnostic.limitation}</span> : null}
+                  {diagnostic.consequence ? <span>Consequence: {diagnostic.consequence}</span> : null}
+                  {diagnostic.filterFacets ? <div className="workbench-react__diagnostic-filter-actions" aria-label={`Filter ${diagnostic.title}`}>
+                    {(["diagnosticCode", "diagnosticSeverity", "diagnosticAffected"] as const).flatMap((facet) => diagnostic.filterFacets?.[facet].slice(-1).flatMap((value) => [
+                      <button type="button" key={`${facet}-${value.identity}-include`} onClick={() => dispatch(runtime, { type: "apply-diagnostic-filter", facet, value, polarity: "include" })}>Include {value.label}</button>,
+                      <button type="button" key={`${facet}-${value.identity}-exclude`} onClick={() => dispatch(runtime, { type: "apply-diagnostic-filter", facet, value, polarity: "exclude" })}>Exclude {value.label}</button>
+                    ]) ?? [])}
+                  </div> : null}
+                  {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
+                    ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
+                    : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
+                </article>)}
+                {!snapshot.context.diagnostics.length ? <p>No diagnostics match the active diagnostic filters.</p> : null}
+              </section> : null}
               <SelectedUpdateDetails update={snapshot.context.selectedUpdate} />
               {selected ? <SelectedFilterActions
                 actions={snapshot.context.filterActions ?? []}
@@ -1851,7 +1871,9 @@ export function WorkbenchPanel({ runtime }: WorkbenchPanelProps): JSX.Element {
             {diagnostic.limitation ? <span className="workbench-react__status-limitation">Limit: {diagnostic.limitation}</span> : null}
             {diagnostic.consequence ? <span className="workbench-react__status-consequence">Consequence: {diagnostic.consequence}</span> : null}
             {diagnostic.recovery ? <span className="workbench-react__status-recovery">Recovery: {diagnostic.recovery}</span> : null}
-            {diagnostic.route ? <button type="button" onClick={() => dispatch(runtime, { type: "inspect-diagnostic-evidence", eventId: diagnostic.route!.eventId })}>{diagnostic.route.label}</button> : null}
+            {diagnostic.route ? <button type="button" onClick={() => diagnostic.route!.kind === "inspect-evidence"
+              ? dispatch(runtime, { type: "inspect-diagnostic-evidence", evidence: diagnostic.route!.evidence })
+              : dispatch(runtime, { type: "inspect-diagnostic-affected", affected: diagnostic.route!.affected })}>{diagnostic.route.label}</button> : null}
           </section>)}
         </div> : null}
         <div className="workbench-react__status-line"><span>{limited

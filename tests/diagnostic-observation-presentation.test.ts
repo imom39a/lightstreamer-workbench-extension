@@ -25,7 +25,7 @@ describe("Diagnostic Observation presentation adapter", () => {
       observed: "ClientListener reported server error code -7. Message: Application denied the operation",
       limitation: "Non-positive codes can be application-specific.",
       consequence: "The callback does not prove the complete server-side cause.",
-      route: { kind: "inspect-evidence", eventId: "error-1", label: "Inspect supporting Evidence" }
+      route: { kind: "inspect-evidence", evidence: { intervalId: "interval-1", sequence: 4, eventId: "error-1" }, label: "Inspect supporting Evidence" }
     });
   });
 
@@ -53,5 +53,20 @@ describe("Diagnostic Observation presentation adapter", () => {
       consequence: "Bounded consequence.",
       route: { kind: "inspect-affected" }
     }).title).toBe(title);
+  });
+
+  it("preserves an exact affected-object route independently of the renderer", () => {
+    const affected = { kind: "subscription" as const, pageId: "page-1", clientId: "client-1", sessionId: "session-1", subscriptionId: "sub-1" };
+    expect(presentDiagnosticObservation({
+      code: "ls.sub.raw-snapshot-unavailable",
+      severity: "information",
+      lifecycle: { kind: "condition", conditionId: "raw-sub-1" },
+      affected,
+      observedAt: 1,
+      observed: "RAW snapshot was requested.",
+      limitation: "RAW does not support snapshots.",
+      consequence: "No snapshot is expected.",
+      route: { kind: "inspect-affected" }
+    }).route).toEqual({ kind: "inspect-affected", affected, label: "Inspect affected Scope" });
   });
 });

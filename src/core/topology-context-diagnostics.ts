@@ -208,9 +208,11 @@ function churnObservations(input: TopologyContextDiagnosticInput): DiagnosticObs
   const observations: DiagnosticObservationInput[] = [];
   for (const window of input.churnWindows) {
     const duration = window.endedAt - window.startedAt;
+    const ageAtBoundary = input.boundary.observedAt - window.endedAt;
     if (!Number.isSafeInteger(window.threshold) || window.threshold <= 0 ||
         !Number.isSafeInteger(window.totalChanges) || window.totalChanges < window.threshold ||
         !Number.isSafeInteger(duration) || duration < 0 || duration > MAX_DIAGNOSTIC_CHURN_WINDOW_MS ||
+        !Number.isSafeInteger(ageAtBoundary) || ageAtBoundary > MAX_DIAGNOSTIC_CHURN_WINDOW_MS ||
         window.retainedChanges.length === 0 || window.retainedChanges.length > MAX_RETAINED_DIAGNOSTIC_CHANGES) continue;
     const latest = window.retainedChanges.reduce((candidate, change) =>
       change.evidence.intervalId === candidate.evidence.intervalId && change.evidence.sequence > candidate.evidence.sequence

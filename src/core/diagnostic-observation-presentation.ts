@@ -9,13 +9,17 @@ export type DiagnosticObservationPresentation = Readonly<{
   observed: string;
   limitation: string;
   consequence: string;
-  route?: Readonly<{ kind: "inspect-evidence"; eventId: string; label: string }>;
+  route?:
+    | Readonly<{ kind: "inspect-evidence"; evidence: Readonly<{ intervalId: string; sequence: number; eventId: string }>; label: string }>
+    | Readonly<{ kind: "inspect-affected"; affected: DiagnosticAffectedIdentity; label: string }>;
 }>;
 
 export function presentDiagnosticObservation(input: DiagnosticObservationInput): DiagnosticObservationPresentation {
   const route = input.route.kind === "inspect-evidence"
-    ? { kind: "inspect-evidence" as const, eventId: input.route.evidence.eventId, label: "Inspect supporting Evidence" }
-    : undefined;
+    ? { kind: "inspect-evidence" as const, evidence: Object.freeze({ ...input.route.evidence }), label: "Inspect supporting Evidence" }
+    : input.route.kind === "inspect-affected"
+      ? { kind: "inspect-affected" as const, affected: Object.freeze({ ...input.affected }), label: "Inspect affected Scope" }
+      : undefined;
   return Object.freeze({
     id: input.lifecycle.kind === "occurrence" ? input.lifecycle.occurrenceId : input.lifecycle.conditionId,
     code: input.code,

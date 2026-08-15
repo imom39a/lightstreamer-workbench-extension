@@ -1,4 +1,4 @@
-import type { DiagnosticAffectedIdentity, DiagnosticObservation, DiagnosticSeverity } from "./diagnostic-observation";
+import type { DiagnosticAffectedIdentity, DiagnosticObservation, DiagnosticObservationInput, DiagnosticSeverity } from "./diagnostic-observation";
 import { typedFacetValue, type TypedFacetValue } from "./evidence-filter-contract";
 
 export const DIAGNOSTIC_FILTER_FACETS = Object.freeze([
@@ -9,13 +9,22 @@ export const DIAGNOSTIC_FILTER_FACETS = Object.freeze([
 export type DiagnosticFilterFacet = (typeof DIAGNOSTIC_FILTER_FACETS)[number];
 
 export type DiagnosticObservationIndexRecord = Readonly<{
-  observation: DiagnosticObservation;
+  observation: DiagnosticObservation | DiagnosticObservationInput;
   facets: Readonly<Record<DiagnosticFilterFacet, readonly TypedFacetValue[]>>;
 }>;
 
+export type DiagnosticFilterCriterionSet = Readonly<{
+  include: readonly TypedFacetValue[];
+  exclude: readonly TypedFacetValue[];
+}>;
+export type DiagnosticFilterCriteria = Readonly<Partial<Record<
+  DiagnosticFilterFacet,
+  readonly TypedFacetValue[] | DiagnosticFilterCriterionSet
+>>>;
+
 export type DiagnosticObservationIndex = Readonly<{
   records: readonly DiagnosticObservationIndexRecord[];
-  query(criteria?: Readonly<Partial<Record<DiagnosticFilterFacet, readonly TypedFacetValue[]>>>): readonly DiagnosticObservationIndexRecord[];
+  query(criteria?: DiagnosticFilterCriteria): readonly DiagnosticObservationIndexRecord[];
   discover(facet: DiagnosticFilterFacet): readonly Readonly<{ value: TypedFacetValue; count: number }>[];
 }>;
 
@@ -33,7 +42,7 @@ export function diagnosticAffectedFacetValue(kind: string, value: string, label:
 }
 
 export function createDiagnosticObservationIndex(
-  observations: readonly DiagnosticObservation[]
+  observations: readonly (DiagnosticObservation | DiagnosticObservationInput)[]
 ): DiagnosticObservationIndex {
   const records = Object.freeze(observations.map((observation) => Object.freeze({
     observation,
@@ -47,10 +56,13 @@ export function createDiagnosticObservationIndex(
     records,
     query(criteria = {}) {
       return Object.freeze(records.filter((record) => DIAGNOSTIC_FILTER_FACETS.every((facet) => {
-        const expected = criteria[facet] ?? [];
-        if (expected.length === 0) return true;
+        const criterion = criteria[facet] ?? [];
+        const include = "include" in criterion ? criterion.include : criterion;
+        const exclude = "exclude" in criterion ? criterion.exclude : Object.freeze([]);
+        if (include.length === 0 && exclude.length === 0) return true;
         const actual = new Set(record.facets[facet].map(({ identity }) => identity));
-        return expected.some(({ identity }) => actual.has(identity));
+        return (include.length === 0 || include.some(({ identity }) => actual.has(identity))) &&
+          exclude.every(({ identity }) => !actual.has(identity));
       })));
     },
     discover(facet) {

@@ -13,6 +13,7 @@ import {
 } from "../../core/subscription-diagnostics";
 import {
   evaluateTopologyContextDiagnostics,
+  MAX_DIAGNOSTIC_CHURN_WINDOW_MS,
   MAX_RETAINED_DIAGNOSTIC_CHANGES,
   type TopologyChurnWindow,
   type TopologyContextDiagnosticInput,
@@ -91,7 +92,10 @@ export function createCommittedTopologyDiagnosticCoordinator(): CommittedTopolog
       }
       if (event?.captureSource === "wire") wireObservationBoundary ??= boundary;
       if (event) retainCallbackFacts(event, boundary, topology, errorsBySubscription, realFrequencyBySubscription);
-      if (event) retainChurn(event, boundary, churnByKey);
+      if (event) {
+        expireChurn(event.timestamp, churnByKey);
+        retainChurn(event, boundary, churnByKey);
+      }
       if (!pageId) return Object.freeze([]);
 
       const latches = topologySubscriptions(topology);
@@ -342,10 +346,18 @@ function retainChurn(
     operation: event.kind === "listener-added" || event.kind === "subscription-created" ? "add" : "remove",
     evidence
   }));
-  const cutoff = event.timestamp - 60_000;
+  const cutoff = event.timestamp - MAX_DIAGNOSTIC_CHURN_WINDOW_MS;
   while (changes.length && changes[0]!.timestamp < cutoff) changes.shift();
   while (changes.length > MAX_RETAINED_DIAGNOSTIC_CHANGES) changes.shift();
   windows.set(key, changes);
+}
+
+function expireChurn(now: number, windows: Map<string, ChurnChange[]>): void {
+  const cutoff = now - MAX_DIAGNOSTIC_CHURN_WINDOW_MS;
+  for (const [key, changes] of windows) {
+    while (changes.length && changes[0]!.timestamp < cutoff) changes.shift();
+    if (changes.length === 0 || changes.at(-1)!.timestamp < cutoff) windows.delete(key);
+  }
 }
 
 function churnWindows(
@@ -376,7 +388,7 @@ function churnWindows(
       kind,
       affected,
       startedAt: changes[0]!.timestamp,
-      endedAt: Math.max(changes.at(-1)!.timestamp, Math.min(now, changes[0]!.timestamp + 60_000)),
+      endedAt: changes.at(-1)!.timestamp,
       threshold: CHURN_THRESHOLD,
       totalChanges: changes.length,
       retainedChanges: Object.freeze(changes.map(({ operation, evidence }) => Object.freeze({ operation, evidence }))),

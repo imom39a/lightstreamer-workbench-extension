@@ -4,6 +4,7 @@ import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import { type EventHistory, type HistoryPublication } from "../src/core/event-history-authoritative";
 import { createTypedFilterValue } from "../src/core/filter-algebra";
 import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
+import { diagnosticCodeFacetValue } from "../src/core/diagnostic-observation-index";
 import { createCaptureMessage } from "../src/bridge/messages";
 import { createWorkbenchRuntime, type WorkbenchRuntime, type WorkbenchRuntimeScheduler } from "../src/extension/panel/workbench-runtime";
 import { createAuthoritativeHistory } from "./support/authoritative-history";
@@ -349,7 +350,11 @@ describe("WorkbenchRuntime", () => {
       code: "ls.client.server-error",
       title: "Server error -7",
       affected: "Session S-1",
-      route: { kind: "inspect-evidence", eventId: "server-error-0", label: "Inspect supporting Evidence" }
+      route: {
+        kind: "inspect-evidence",
+        evidence: { intervalId: "authoritative-test:interval-1", sequence: 1, eventId: "server-error-0" },
+        label: "Inspect supporting Evidence"
+      }
     }));
     expect(snapshot.diagnostics).toContainEqual(expect.objectContaining({
       code: "ls.client.server-keepalive",
@@ -448,6 +453,42 @@ describe("WorkbenchRuntime", () => {
     expect(runtime.getSnapshot().diagnostics).toContainEqual(
       expect.objectContaining({ code: "ls.client.server-error", affected: "Session S-1" })
     );
+    runtime.dispose();
+  });
+
+  it("routes supporting Evidence authoritatively after more than 256 later events", async () => {
+    const deepError = topologyEvent("deep-server-error", "server-error", {
+      subscription: undefined,
+      item: undefined,
+      update: undefined,
+      topology: { version: 1, kind: "server-error", pageEpoch: "page-deep", captureSequence: 1, provenance: { instrumentationSource: "official-public-api" }, coverage: { status: "complete", getters: {} } },
+      serverError: { code: 41, messageState: "redacted" }
+    });
+    const later = Array.from({ length: 300 }, (_, index) => ({
+      ...event(`later-${index + 1}`, `item-${index + 1}`),
+      timestamp: 2_000 + index
+    }));
+    const runtime = createWorkbenchRuntime({
+      history: createAuthoritativeHistory({ precommitted: [deepError, ...later] }),
+      capture: { coverage: "USEFUL" }
+    });
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+    const diagnostic = runtime.getSnapshot().diagnostics.find(({ code }) => code === "ls.client.server-error");
+    expect(diagnostic?.route).toMatchObject({
+      kind: "inspect-evidence",
+      evidence: expect.objectContaining({ eventId: "deep-server-error", sequence: 1 })
+    });
+
+    runtime.dispatch({ type: "inspect-diagnostic-evidence", evidence: diagnostic?.route?.kind === "inspect-evidence" ? diagnostic.route.evidence : undefined } as never);
+    await flushStoreNotifications();
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      scopeId: "page",
+      selectionEventId: "deep-server-error",
+      contextId: "context:deep-server-error",
+      selectedEvidence: { id: "deep-server-error" }
+    });
     runtime.dispose();
   });
 
@@ -701,7 +742,21 @@ describe("WorkbenchRuntime", () => {
     const rawScope = runtime.getSnapshot().scope.nodes.find(({ kind, label }) => kind === "subscription" && label.includes("raw-subscription"));
     expect(rawScope).toBeDefined();
     runtime.dispatch({ type: "set-scope", scopeId: rawScope?.id ?? null });
-    expect(runtime.getSnapshot().diagnostics).toEqual(expect.arrayContaining([
+    expect(runtime.getSnapshot().diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
+    ]));
+    expect(runtime.getSnapshot().context.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
+    ]));
+    runtime.dispatch({
+      type: "apply-diagnostic-filter",
+      facet: "diagnosticCode",
+      value: diagnosticCodeFacetValue("ls.sub.raw-snapshot-unavailable"),
+      polarity: "exclude"
+    } as never);
+    expect(runtime.getSnapshot().context.diagnostics).toEqual([]);
+    runtime.dispatch({ type: "reset-diagnostic-filter" } as never);
+    expect(runtime.getSnapshot().context.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
     ]));
 
@@ -714,6 +769,7 @@ describe("WorkbenchRuntime", () => {
       expect.objectContaining({ code: "ls.subscription.exact-duplicate" }),
       expect.objectContaining({ code: "ls.sub.raw-snapshot-unavailable" })
     ]));
+    expect(runtime.getSnapshot().context.diagnostics).toEqual([]);
     runtime.dispose();
   });
 

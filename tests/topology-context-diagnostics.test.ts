@@ -177,6 +177,33 @@ describe("topology Context diagnostics", () => {
     expect(closed.resolutions).toEqual([expect.objectContaining({ code: "ls.listener.registration-churn" })]);
   });
 
+  it("expires and resolves current churn when unrelated committed Evidence advances time", () => {
+    const base = input([]);
+    const churn = Object.freeze({
+      id: "listener-window",
+      kind: "listener" as const,
+      affected: Object.freeze({ kind: "subscription" as const, pageId: "page", clientId: "client", subscriptionId: "sub" }),
+      startedAt: 1_000,
+      endedAt: 4_000,
+      threshold: 4,
+      totalChanges: 4,
+      retainedChanges: Object.freeze([{ operation: "add" as const, evidence }]),
+      current: true,
+      complete: true,
+      lateAttachment: false
+    });
+    const current = evaluateTopologyContextDiagnostics({ ...base, boundary: { ...base.boundary, observedAt: 4_000 }, churnWindows: [churn] });
+    const unrelatedAdvance = evaluateTopologyContextDiagnostics({
+      ...base,
+      boundary: { observedAt: 64_001, sequence: 21, evidence: { intervalId: "history-1", sequence: 21, eventId: "unrelated-21" } },
+      churnWindows: [churn]
+    }, current.observations);
+
+    expect(current.observations).toEqual([expect.objectContaining({ code: "ls.listener.registration-churn" })]);
+    expect(unrelatedAdvance.observations).toEqual([]);
+    expect(unrelatedAdvance.resolutions).toEqual([expect.objectContaining({ code: "ls.listener.registration-churn" })]);
+  });
+
   it("fails closed for unbounded, unsupported, below-threshold, or evidence-free churn windows", () => {
     const base = input([]);
     const window = {

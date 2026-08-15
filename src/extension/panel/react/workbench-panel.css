@@ -287,6 +287,12 @@
 .workbench-react__context-fields { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 5px 9px; margin: 0 0 12px; }
 .workbench-react__context-fields dt { color: var(--wb-muted); }
 .workbench-react__context-fields dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.workbench-react__context-diagnostics { display: grid; gap: 7px; margin: 0 0 12px; }
+.workbench-react__context-diagnostics-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.workbench-react__context-diagnostic { display: grid; gap: 4px; border: 1px solid var(--wb-border); border-left: 3px solid var(--wb-warning); border-radius: 4px; background: var(--wb-warning-soft); padding: 7px; overflow-wrap: anywhere; }
+.workbench-react__context-diagnostic[data-severity="error"] { border-left-color: var(--wb-error); background: var(--wb-error-soft); }
+.workbench-react__context-diagnostic[data-severity="information"] { border-left-color: var(--wb-info); background: var(--wb-info-soft); }
+.workbench-react__diagnostic-filter-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .workbench-react__selected-update { display: grid; gap: 8px; margin: 0 0 12px; border-bottom: 1px solid var(--wb-border); padding-bottom: 10px; }
 .workbench-react__selected-update > h3, .workbench-react__selected-update h4 { margin: 0; }
 .workbench-react__selected-update > h3 { font-size: 13px; }

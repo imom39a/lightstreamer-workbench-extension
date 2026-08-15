@@ -177,6 +177,8 @@ function snapshot(overrides: Record<string, unknown> = {}): WorkbenchSnapshot {
         ["Phase", "LIVE"],
         ["COMMAND operation", "UPDATE"]
       ],
+      diagnostics: [],
+      diagnosticFilter: { criteria: {}, active: false },
       selectedUpdate: {
         fields: [],
         changedFields: [],
@@ -592,7 +594,7 @@ describe("React Workbench Diagnose panel", () => {
         detail: "ClientListener reported server error code -7. Message: Application denied the operation",
         limitation: "Non-positive codes can be application-specific.",
         consequence: "The callback does not prove the complete server-side cause.",
-        route: { kind: "inspect-evidence", eventId: "evt-2", label: "Inspect supporting Evidence" }
+        route: { kind: "inspect-evidence", evidence: { intervalId: "interval-1", sequence: 2, eventId: "evt-2" }, label: "Inspect supporting Evidence" }
       }]
     }));
     const root = createRoot(rootElement);
@@ -606,7 +608,61 @@ describe("React Workbench Diagnose panel", () => {
     expect(rootElement.textContent?.split("Server error -7")).toHaveLength(2);
     const route = Array.from(footer?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect supporting Evidence");
     route?.click();
-    expect(runtime.commands).toContainEqual({ type: "inspect-diagnostic-evidence", eventId: "evt-2" });
+    expect(runtime.commands).toContainEqual({
+      type: "inspect-diagnostic-evidence",
+      evidence: { intervalId: "interval-1", sequence: 2, eventId: "evt-2" }
+    });
+    await act(async () => root.unmount());
+  });
+
+  it("owns structural diagnostics in Context with stable filter and affected-Scope actions", async () => {
+    const rootElement = document.querySelector<HTMLElement>("#app");
+    if (!rootElement) throw new Error("missing app root");
+    const base = snapshot();
+    const codeValue = Object.freeze({
+      facet: "diagnosticCode",
+      type: "diagnostic-code",
+      value: "ls.sub.raw-snapshot-unavailable",
+      label: "ls.sub.raw-snapshot-unavailable",
+      identity: '["v1","diagnosticCode","diagnostic-code","ls.sub.raw-snapshot-unavailable"]'
+    });
+    const diagnostic = {
+      id: "condition-raw",
+      code: "ls.sub.raw-snapshot-unavailable",
+      severity: "Warning" as const,
+      title: "RAW snapshot unavailable",
+      affected: "Subscription sub-1",
+      affectedIdentity: { kind: "subscription" as const, pageId: "page-1", clientId: "client-1", subscriptionId: "sub-1" },
+      detail: "RAW snapshot state cannot be established.",
+      limitation: "The getter was unavailable.",
+      consequence: "Snapshot-dependent conclusions remain limited.",
+      route: {
+        kind: "inspect-affected" as const,
+        affected: { kind: "subscription" as const, pageId: "page-1", clientId: "client-1", subscriptionId: "sub-1" },
+        label: "Inspect affected Scope"
+      },
+      filterFacets: {
+        diagnosticCode: [codeValue],
+        diagnosticSeverity: [],
+        diagnosticAffected: []
+      }
+    };
+    const runtime = createTestRuntime({
+      ...base,
+      diagnostics: [],
+      context: { ...base.context, diagnostics: [diagnostic], diagnosticFilter: { criteria: {}, active: false } }
+    });
+    const root = createRoot(rootElement);
+    await act(async () => root.render(createElement(WorkbenchPanel, { runtime })));
+
+    const context = rootElement.querySelector<HTMLElement>('[aria-label="Context diagnostics"]');
+    expect(context?.textContent).toContain("RAW snapshot unavailable");
+    expect(rootElement.querySelector('[aria-label="Workbench diagnostics"]')?.textContent).not.toContain("RAW snapshot unavailable");
+    Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Include ls.sub.raw-snapshot-unavailable")?.click();
+    Array.from(context?.querySelectorAll("button") ?? []).find(({ textContent }) => textContent === "Inspect affected Scope")?.click();
+    expect(runtime.commands).toContainEqual({ type: "apply-diagnostic-filter", facet: "diagnosticCode", value: codeValue, polarity: "include" });
+    expect(runtime.commands).toContainEqual({ type: "inspect-diagnostic-affected", affected: diagnostic.affectedIdentity });
+
     await act(async () => root.unmount());
   });
 
@@ -683,6 +739,8 @@ describe("React Workbench Diagnose panel", () => {
         kind: "runtime",
         title: "Inspected page",
         fields: [["Scope type", "Inspected page"]],
+        diagnostics: [],
+        diagnosticFilter: { criteria: {}, active: false },
         selectedUpdate: null
       }
     });
@@ -716,6 +774,8 @@ describe("React Workbench Diagnose panel", () => {
         kind: "evidence",
         title: "evt-2 · Session lifecycle",
         fields: [["Source", "RUNTIME"]],
+        diagnostics: [],
+        diagnosticFilter: { criteria: {}, active: false },
         selectedUpdate: null
       }
     });
