@@ -46,7 +46,7 @@ export const LOCAL_INJECTION_SCENARIO_RELEASE_MATRIX: readonly Readonly<{
   { id: "SCN-PAUSE-INFLIGHT", file: "tests/local-injection-scenario-runner.test.ts", proof: "Pause waits for the current request and blocks the next dispatch" },
   { id: "SCN-STOP-INFLIGHT", file: "tests/local-injection-scenario-runner.test.ts", proof: "Stop settles the current request and terminalizes the remainder" },
   { id: "SCN-HIDDEN-PAUSE", file: "tests/workbench-local-injection-runtime.test.ts", proof: "hidden panel freezes active time and requires explicit Resume" },
-  { id: "SCN-CHECKPOINT", file: "tests/local-injection-scenario-assertions.test.ts", proof: "zero-Injection Checkpoints evaluate five Workbench-owned assertion families" },
+  { id: "SCN-CHECKPOINT", file: "tests/local-injection-scenario-assertions.test.ts", proof: "zero-Injection Checkpoints evaluate six Workbench-owned assertion families, including normalized Diagnostic Observations" },
   { id: "SCN-CLEAR", file: "tests/workbench-local-injection-runtime.test.ts", proof: "Clear is unavailable during a Run and later marks references unavailable" },
   { id: "SCN-CLOSE", file: "tests/workbench-local-injection-runtime.test.ts", proof: "Panel close stops scheduling and discards Scenario state" },
   { id: "SCN-RUN-AGAIN", file: "tests/workbench-local-injection-runtime.test.ts", proof: "Run again allocates a fresh Run and Injection identities" },

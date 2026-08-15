@@ -9,6 +9,7 @@ import {
 import { getPanelScenario } from "./panel-scenarios";
 import type { HistoryCapacityOverrides } from "../../src/core/event-history-authoritative";
 import type { ScenarioAssertion } from "../../src/core/local-injection-scenario";
+import type { DiagnosticObservationInput } from "../../src/core/diagnostic-observation";
 
 export const WORKBENCH_SCENARIO_IDS = [
   "live-selected",
@@ -77,6 +78,12 @@ export const WORKBENCH_SCENARIO_IDS = [
   ,"local-injection-scenario-checkpoint-wire-unavailable"
   ,"local-injection-scenario-checkpoint-ambiguous-null"
   ,"local-injection-scenario-checkpoint-high-volume"
+  ,"local-injection-scenario-diagnostic-authoring"
+  ,"local-injection-scenario-diagnostic-review"
+  ,"local-injection-scenario-diagnostic-waiting"
+  ,"local-injection-scenario-diagnostic-pass"
+  ,"local-injection-scenario-diagnostic-fail"
+  ,"local-injection-scenario-diagnostic-unavailable"
 ] as const;
 
 export type WorkbenchScenarioId = (typeof WORKBENCH_SCENARIO_IDS)[number];
@@ -111,6 +118,8 @@ export type WorkbenchScenario = Readonly<{
   filterQuery?: string;
   findQuery?: string;
   failLocalEvidenceRetention?: boolean;
+  diagnosticJournal?: "available" | "unsupported";
+  diagnosticObservationsAfterReview?: readonly DiagnosticObservationInput[];
   localInjection?: Readonly<{
     entry: "selection" | "scope";
     rawText?: string;
@@ -684,6 +693,59 @@ export function getWorkbenchScenario(id: WorkbenchScenarioId): WorkbenchScenario
       return localInjectionCheckpointScenario(id, "ambiguous-null");
     case "local-injection-scenario-checkpoint-high-volume":
       return localInjectionCheckpointHighVolumeScenario(id);
+    case "local-injection-scenario-diagnostic-authoring":
+      return localInjectionDiagnosticScenario(id, "authoring");
+    case "local-injection-scenario-diagnostic-review":
+      return localInjectionDiagnosticScenario(id, "review");
+    case "local-injection-scenario-diagnostic-waiting":
+      return localInjectionDiagnosticScenario(id, "waiting");
+    case "local-injection-scenario-diagnostic-pass":
+      return localInjectionDiagnosticScenario(id, "pass");
+    case "local-injection-scenario-diagnostic-fail":
+      return localInjectionDiagnosticScenario(id, "fail");
+    case "local-injection-scenario-diagnostic-unavailable":
+      return localInjectionDiagnosticScenario(id, "unavailable");
+  }
+}
+
+type DiagnosticCheckpointVisualState = "authoring" | "review" | "waiting" | "pass" | "fail" | "unavailable";
+
+function localInjectionDiagnosticScenario(id: WorkbenchScenarioId, state: DiagnosticCheckpointVisualState): WorkbenchScenario {
+  const affected = { kind: "subscription", pageId: "topology-small-page", clientId: "topology-small-client", sessionId: "topology-small-session", subscriptionId: "topology-small-subscription" } as const;
+  const assertion: ScenarioAssertion = {
+    id: "assertion-diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1,
+    ruleCode: "subscription.lost-updates", lifecycle: "occurrence", minimumSeverity: "warning", affected,
+    ...(state === "waiting" ? { withinActiveMs: 60_000 } : {})
+  };
+  const base = localInjectionScenario(id, false, 0);
+  const diagnostic: DiagnosticObservationInput = {
+    code: "subscription.lost-updates", severity: "error", lifecycle: { kind: "occurrence", occurrenceId: "scenario-lost-updates" }, affected,
+    observedAt: 1_780_872_000_900, observed: "SubscriptionListener reported lost updates.", limitation: "The callback reports a count but not the missing values.", consequence: "The local view may omit updates.", route: { kind: "inspect-affected" }
+  };
+  return {
+    ...base,
+    diagnosticJournal: state === "unavailable" ? "unsupported" : "available",
+    ...(state === "pass" ? { diagnosticObservationsAfterReview: [diagnostic] } : {}),
+    localInjection: {
+      ...base.localInjection!,
+      scenario: {
+        ...base.localInjection!.scenario!,
+        checkpoints: [{ name: diagnosticCheckpointVisualName(state), assertions: [assertion], beforeSteps: true }],
+        review: state !== "authoring",
+        steps: state === "waiting" || state === "pass" || state === "fail" || state === "unavailable" ? 1 : 0
+      }
+    }
+  };
+}
+
+function diagnosticCheckpointVisualName(state: DiagnosticCheckpointVisualState): string {
+  switch (state) {
+    case "authoring": return "Author normalized diagnostic observation";
+    case "review": return "Reviewed diagnostic observation contract";
+    case "waiting": return "Wait for a later lost-updates observation";
+    case "pass": return "Later lost-updates observation exists";
+    case "fail": return "Required lost-updates observation is absent";
+    case "unavailable": return "Diagnostic Observation journal unavailable";
   }
 }
 

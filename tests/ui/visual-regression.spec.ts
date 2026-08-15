@@ -9,7 +9,7 @@ type VisualCase = Readonly<{
   theme: "dark" | "light";
   forcedColors?: boolean;
   prototype: { variant: string; state: string; frame: string; setup: string; surface?: string };
-  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
+  production: { scenario: string; setup: "none" | "activity-10k" | "activity-graphical" | "activity-limited" | "activity-memory" | "scenario" | "scenario-checkpoint" | "scenario-diagnostic-checkpoint" | "scenario-checkpoint-high-volume" | "scenario-hidden-pause" | "scenario-inflight-stop" | "scenario-membership-preview" | "scenario-authored-undo" | "scenario-capacity-refusal" | "captured-draft" | "authored-review" | "command-comparison" | "retained-find" | "more-actions-help" | "clear-confirmation" | "memory-operations" | "diagnostics" };
 }>;
 const matrix = rawMatrix as readonly VisualCase[];
 
@@ -175,6 +175,32 @@ async function prepareProductionState(page: Page, visual: VisualCase): Promise<v
         await expect(checkpoint).toContainText("NOT-EVALUABLE");
         await expect(checkpoint).toContainText("ambiguous · server");
       }
+      return;
+    }
+    case "scenario-diagnostic-checkpoint": {
+      const scenario = page.getByRole("region", { name: "Local Injection Scenario" });
+      const checkpoint = scenario.locator(".workbench-react__scenario-checkpoint");
+      await expect(checkpoint).toHaveCount(1);
+      await expect(checkpoint).toContainText("Diagnostic Observation subscription.lost-updates");
+      await expect(checkpoint).toContainText("exact affected subscription");
+      if (visual.production.scenario.endsWith("authoring")) {
+        await expect(checkpoint).toHaveAttribute("data-checkpoint-state", "authoring");
+        const rule = checkpoint.getByRole("textbox", { name: "Diagnostic rule code" });
+        await rule.focus();
+        await expect(rule).toBeFocused();
+        await expect(rule).toBeInViewport();
+      }
+      if (visual.production.scenario.endsWith("review")) await expect(checkpoint).toContainText("REVIEWED");
+      if (visual.production.scenario.endsWith("waiting")) await expect(checkpoint).toContainText("WAITING");
+      if (visual.production.scenario.endsWith("pass")) {
+        await expect(checkpoint).toContainText("PASS");
+        const route = checkpoint.getByRole("button", { name: "Inspect Diagnostic Observation subscription.lost-updates" });
+        await route.focus();
+        await expect(route).toBeFocused();
+        await expect(route).toBeInViewport();
+      }
+      if (visual.production.scenario.endsWith("fail")) await expect(checkpoint).toContainText("FAIL");
+      if (visual.production.scenario.endsWith("unavailable")) await expect(checkpoint).toContainText("UNAVAILABLE");
       return;
     }
     case "scenario-checkpoint-high-volume": {
