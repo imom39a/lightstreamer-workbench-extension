@@ -1,5 +1,5 @@
 import type { EvidenceRef } from "./event-history-authoritative";
-import type { DiagnosticAffectedIdentity } from "./diagnostic-observation";
+import type { DiagnosticAffectedIdentity, DiagnosticObservationBoundary } from "./diagnostic-observation";
 import type { LocalInjectionDiagnostic, LocalInjectionDocument } from "./local-injection-document";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
 import { validateScenarioCheckpoint } from "./local-injection-scenario-checkpoint";
@@ -198,6 +198,7 @@ export type ScenarioAuthorizationBoundary = Readonly<{
   targetFingerprint: string;
   listenerIds: readonly string[];
   committedEvidenceBoundary: EvidenceRef | null;
+  diagnosticObservationBoundary: DiagnosticObservationBoundary | null;
   authorizedRemainingFromOrdinal: number;
   activeOffsetMs: number;
 }>;
@@ -519,6 +520,7 @@ export function reviewScenario(
     clearInProgress?: boolean;
     activeOffsetMs?: number;
     retainedRunBytes?: number;
+    diagnosticObservationBoundary?: DiagnosticObservationBoundary | null;
   }>
 ): Readonly<{ ok: true; run: ScenarioRun }> | Readonly<{ ok: false; reason: string; stepId?: string }> {
   if (facts.historyAccepting === false || facts.clearInProgress) {
@@ -532,6 +534,9 @@ export function reviewScenario(
   for (let memberIndex = 0; memberIndex < scenario.members.length; memberIndex += 1) {
     const member = scenario.members[memberIndex]!;
     if (member.kind === "checkpoint") {
+      if (member.assertions.some(({ kind }) => kind === "diagnostic-observation-exists") && !facts.diagnosticObservationBoundary) {
+        return Object.freeze({ ok: false as const, reason: "Diagnostic Observation assertions require an available authorization boundary." });
+      }
       const validity = validateScenarioCheckpoint(member, {
         targetMode: scenario.target.mode,
         deliveryPath: scenario.target.deliveryPath,
@@ -605,6 +610,7 @@ export function reviewScenario(
         targetFingerprint: facts.targetFingerprint,
         listenerIds: [...(facts.listenerIds ?? (scenario.target.listenerId ? [scenario.target.listenerId] : []))].sort(),
         committedEvidenceBoundary: facts.committedEvidenceSeed,
+        diagnosticObservationBoundary: facts.diagnosticObservationBoundary ?? null,
         authorizedRemainingFromOrdinal: 1,
         activeOffsetMs: facts.activeOffsetMs ?? 0
       })],
@@ -783,6 +789,7 @@ export function appendScenarioAuthorization(
     targetFingerprint: string;
     listenerIds: readonly string[];
     committedEvidenceBoundary: EvidenceRef | null;
+    diagnosticObservationBoundary?: DiagnosticObservationBoundary | null;
     activeOffsetMs: number;
   }>
 ): ScenarioRun {
@@ -793,6 +800,7 @@ export function appendScenarioAuthorization(
     targetFingerprint: input.targetFingerprint,
     listenerIds: [...input.listenerIds].sort(),
     committedEvidenceBoundary: input.committedEvidenceBoundary,
+    diagnosticObservationBoundary: input.diagnosticObservationBoundary ?? null,
     authorizedRemainingFromOrdinal: run.nextOrdinal,
     activeOffsetMs: input.activeOffsetMs
   });

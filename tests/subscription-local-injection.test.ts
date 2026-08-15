@@ -10,7 +10,7 @@ function oneStepScenarioRun(): ScenarioRun {
     id: "run-listener", scenarioId: "scenario-listener", scenarioRevision: 1, target, targetFingerprint: "listener-fingerprint", committedEvidenceSeed: null,
     steps, members: steps,
     status: "paused" as const, nextOrdinal: 1, nextMemberIndex: 0, trace: Object.freeze([]), accountedBytes: 1, traceReservationBytes: 1, controlReservationBytes: 1, speed: 1 as const, controls: Object.freeze([]),
-    authorizations: Object.freeze([{ id: "auth-1", kind: "INITIAL_REVIEW" as const, targetFingerprint: "listener-fingerprint", listenerIds: Object.freeze(["listener-1", "listener-2"]), committedEvidenceBoundary: null, authorizedRemainingFromOrdinal: 1, activeOffsetMs: 0 }]),
+    authorizations: Object.freeze([{ id: "auth-1", kind: "INITIAL_REVIEW" as const, targetFingerprint: "listener-fingerprint", listenerIds: Object.freeze(["listener-1", "listener-2"]), committedEvidenceBoundary: null, diagnosticObservationBoundary: null, authorizedRemainingFromOrdinal: 1, activeOffsetMs: 0 }]),
     drifts: Object.freeze([])
   });
 }

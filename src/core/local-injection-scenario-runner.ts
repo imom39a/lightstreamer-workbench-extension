@@ -22,6 +22,7 @@ import {
 import { isBoundedEvidenceRef, type EvidenceRef } from "./event-history-authoritative";
 import type { LocalInjectionDocument } from "./local-injection-document";
 import type { LocalInjectionOutcome } from "./local-injection-outcome";
+import type { DiagnosticObservationBoundary } from "./diagnostic-observation";
 
 export interface ScenarioClock {
   now(): number;
@@ -90,6 +91,7 @@ export type ScenarioRunner = Readonly<{
     targetFingerprint: string;
     listenerIds: readonly string[];
     committedEvidenceBoundary: EvidenceRef | null;
+    diagnosticObservationBoundary?: DiagnosticObservationBoundary | null;
   }>): Readonly<{ ok: true }> | Readonly<{ ok: false; reason: string }>;
 }>;
 
