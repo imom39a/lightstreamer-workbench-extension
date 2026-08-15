@@ -94,13 +94,24 @@ export type TopologyContextDiagnosticEvaluation = Readonly<{
 
 export const MAX_DIAGNOSTIC_CHURN_WINDOW_MS = 60_000;
 export const MAX_RETAINED_DIAGNOSTIC_CHANGES = 100;
+export const TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES = Object.freeze({
+  exactDuplicate: "ls.subscription.exact-duplicate",
+  semanticOverlap: "ls.subscription.semantic-overlap",
+  listenerChurn: "ls.listener.registration-churn",
+  subscriptionChurn: "ls.subscription.lifecycle-churn",
+  lateAttachment: "workbench.capture.late-attachment",
+  observationPathLimited: "workbench.capture.observation-path-limited",
+  lowerHistoryCapacity: "workbench.history.lower-capacity",
+  terminalHistory: "workbench.history.terminal",
+  unsupportedShape: "workbench.capture.unsupported-shape"
+} as const);
 
 export function evaluateTopologyContextDiagnostics(
   input: TopologyContextDiagnosticInput,
   previouslyActive: readonly DiagnosticObservationInput[] = []
 ): TopologyContextDiagnosticEvaluation {
   const observations = uniqueObservations([
-    ...exactDuplicateObservations(input),
+    ...subscriptionComparisonObservations(input),
     ...churnObservations(input),
     ...limitationObservations(input)
   ]);
@@ -167,26 +178,26 @@ function limitationSemantics(limitation: TopologyCoverageLimitation): Readonly<{
 }> {
   switch (limitation.kind) {
     case "late-attachment": return {
-      code: "workbench.capture.late-attachment",
+      code: TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.lateAttachment,
       severity: "information",
       observed: `Capture attached at ${limitation.attachedAt}; ${limitation.detail}`
     };
     case "observation-path": return {
-      code: "workbench.capture.observation-path-limited",
+      code: TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.observationPathLimited,
       severity: "information",
       observed: `Captured observation path is ${limitation.path}; ${limitation.detail}`
     };
     case "history-capacity": return limitation.state === "terminal" ? {
-      code: "workbench.history.terminal",
+      code: TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.terminalHistory,
       severity: "error",
       observed: `Event History reached its terminal committed boundary; ${limitation.detail}`
     } : {
-      code: "workbench.history.lower-capacity",
+      code: TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.lowerHistoryCapacity,
       severity: "information",
       observed: `Event History is using the lower-capacity tier; ${limitation.detail}`
     };
     case "unsupported-shape": return {
-      code: "workbench.capture.unsupported-shape",
+      code: TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.unsupportedShape,
       severity: "warning",
       observed: `Captured shape \`${limitation.shape}\` is unsupported; ${limitation.detail}`
     };
@@ -205,7 +216,7 @@ function churnObservations(input: TopologyContextDiagnosticInput): DiagnosticObs
       change.evidence.intervalId === candidate.evidence.intervalId && change.evidence.sequence > candidate.evidence.sequence
         ? change
         : candidate);
-    const code = window.kind === "listener" ? "ls.listener.registration-churn" : "ls.subscription.lifecycle-churn";
+    const code = window.kind === "listener" ? TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.listenerChurn : TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.subscriptionChurn;
     const affectedKey = affectedIdentityKey(window.affected);
     const lifecycle = window.current
       ? { kind: "condition" as const, conditionId: `${window.kind}:${affectedKey}:${window.id}` }
@@ -246,7 +257,8 @@ function affectedIdentityKey(affected: DiagnosticAffectedIdentity): string {
   }
 }
 
-function exactDuplicateObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
+function subscriptionComparisonObservations(input: TopologyContextDiagnosticInput): DiagnosticObservationInput[] {
+  if (!input.boundary.evidence) return [];
   const current = input.subscriptions
     .filter((subscription) => subscription.activeAtBoundary && configurationAvailable(subscription.configuration))
     .sort((left, right) => left.affected.subscriptionId.localeCompare(right.affected.subscriptionId));
@@ -259,14 +271,14 @@ function exactDuplicateObservations(input: TopologyContextDiagnosticInput): Diag
       if (sameAffected(left.affected, right.affected)) continue;
       const ids = [left.affected.subscriptionId, right.affected.subscriptionId].sort();
       const exact = configurationSignature(left.configuration) === configurationSignature(right.configuration);
-      const evidence = laterEvidence(left.evidence, right.evidence);
+      const evidence = input.boundary.evidence;
       const lifecycle = left.current && right.current
         ? { kind: "condition" as const, conditionId: `${ids[0]}:${ids[1]}` }
         : { kind: "occurrence" as const, occurrenceId: `${evidence.eventId}:${ids[0]}:${ids[1]}` };
       const differing = differingConfiguration(left.configuration, right.configuration);
       const temporalState = left.current && right.current ? "current active" : "historical active-at-boundary";
       observations.push(normalized({
-        code: exact ? "ls.subscription.exact-duplicate" : "ls.subscription.semantic-overlap",
+        code: exact ? TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.exactDuplicate : TOPOLOGY_CONTEXT_DIAGNOSTIC_CODES.semanticOverlap,
         ruleVersion: 1,
         severity: "information",
         lifecycle,
@@ -333,10 +345,6 @@ function differingConfiguration(
   ] as const;
   return candidates.flatMap(([label, leftValue, rightValue]) =>
     JSON.stringify(leftValue) === JSON.stringify(rightValue) ? [] : [label]);
-}
-
-function laterEvidence(left: DiagnosticEvidenceBoundary, right: DiagnosticEvidenceBoundary): DiagnosticEvidenceBoundary {
-  return left.intervalId === right.intervalId && right.sequence > left.sequence ? right : left;
 }
 
 function normalized(input: DiagnosticObservationInput): DiagnosticObservationInput {

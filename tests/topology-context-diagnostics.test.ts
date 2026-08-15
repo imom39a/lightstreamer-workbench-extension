@@ -5,6 +5,7 @@ import {
   type TopologyContextDiagnosticInput,
   type TopologySubscriptionFact
 } from "../src/core/topology-context-diagnostics";
+import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 
 const evidence = Object.freeze({ intervalId: "history-1", sequence: 20, eventId: "topology-20" });
 
@@ -285,5 +286,18 @@ describe("topology Context diagnostics", () => {
     })).toBe(true);
     expect(result.observations.every(({ observed, limitation: limit, consequence }) =>
       [observed, limit, consequence].every((text) => [...text].length <= 512))).toBe(true);
+  });
+
+  it("commits and resolves producer output through the normalized Diagnostic Observation journal", async () => {
+    const source = input([subscription("sub-a"), subscription("sub-b")]);
+    const evaluation = evaluateTopologyContextDiagnostics(source);
+    const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: "panel" });
+    const committed = await Promise.all(evaluation.observations.map((observation) => journal.observe(observation)));
+    const cleared = evaluateTopologyContextDiagnostics(input([subscription("sub-a")]), evaluation.observations);
+    const resolved = await Promise.all(cleared.resolutions.map((resolution) => journal.resolveCondition(resolution)));
+
+    expect(committed[0]).toMatchObject({ code: "ls.subscription.exact-duplicate", lifecycle: { state: "active" } });
+    expect(resolved[0]).toMatchObject({ code: "ls.subscription.exact-duplicate", lifecycle: { state: "resolved" } });
+    expect((await journal.replay()).map(({ lifecycle }) => lifecycle.state)).toEqual(["active", "resolved"]);
   });
 });
