@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
 import type { ScenarioClock } from "../src/core/local-injection-scenario-runner";
+import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 import {
   createWorkbenchRuntime,
   settleScenarioCoordinatorExecution,
@@ -726,6 +727,30 @@ describe("WorkbenchRuntime Local Injection", () => {
       ]
     });
     expect(runtime.getSnapshot().scenario?.runner).toMatchObject({ phase: "paused", pauseReason: "HIDDEN" });
+    runtime.dispose();
+  });
+
+  it("seals the diagnostic cursor at Review and evaluates only a later normalized observation", async () => {
+    const diagnostics = createMemoryDiagnosticObservationJournal({ panelSessionId: "scenario-runtime-diagnostics" });
+    const affected = { kind: "subscription", pageId: "page-1", clientId: identity.clientId, sessionId: identity.sessionId, subscriptionId: identity.subscriptionId } as const;
+    await diagnostics.observe({ code: "subscription.lost-updates", severity: "warning", lifecycle: { kind: "occurrence", occurrenceId: "before-review" }, affected, observedAt: 1, observed: "Earlier loss", limitation: "Count only", consequence: "May be incomplete", route: { kind: "inspect-affected" } });
+    const runtime = createWorkbenchRuntime({ history: historyWithCommandTarget(), captureStatus: "capturing", diagnosticObservations: diagnostics, localInjectionExecutor: { execute: vi.fn(async () => result("success", { requestId: "diagnostic-step", attemptedCount: 1, deliveredCount: 1, failedCount: 0 })) } });
+    await flushAsync();
+    beginSelected(runtime);
+    runtime.dispatch({ type: "convert-local-injection-to-scenario" });
+    runtime.dispatch({ type: "add-scenario-checkpoint" });
+    const checkpoint = runtime.getSnapshot().scenario!.scenario.members.find((member) => member.kind === "checkpoint")!;
+    runtime.dispatch({ type: "update-scenario-checkpoint", checkpoint: { ...checkpoint, assertions: [{ id: "diagnostic", kind: "diagnostic-observation-exists", contractVersion: 1, ruleCode: "subscription.lost-updates", lifecycle: "occurrence", minimumSeverity: "warning", affected }] } });
+    const authorized = diagnostics.currentBoundary();
+    runtime.dispatch({ type: "review-scenario" });
+    expect(runtime.getSnapshot().scenario?.run?.authorizations[0]).toMatchObject({ diagnosticObservationBoundary: authorized });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await flushAsync();
+    await flushAsync();
+    await diagnostics.observe({ code: "subscription.lost-updates", severity: "error", lifecycle: { kind: "occurrence", occurrenceId: "after-review" }, affected, observedAt: 2, observed: "Later loss", limitation: "Count only", consequence: "May be incomplete", route: { kind: "inspect-affected" } });
+    runtime.dispatch({ type: "step-next-scenario" });
+    await vi.waitFor(() => expect(runtime.getSnapshot().scenario?.run?.trace).toHaveLength(2));
+    expect(runtime.getSnapshot().scenario?.run?.trace[1]).toMatchObject({ kind: "checkpoint", status: "pass", assertions: [{ assertionId: "diagnostic", relatedDiagnostics: [{ lifecycle: { occurrenceId: "after-review" } }] }] });
     runtime.dispose();
   });
 
