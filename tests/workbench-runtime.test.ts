@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { type LightstreamerEventEnvelope } from "../src/core/event-envelope";
-import { type EventHistory } from "../src/core/event-history-authoritative";
+import { type EventHistory, type HistoryPublication } from "../src/core/event-history-authoritative";
 import { createTypedFilterValue } from "../src/core/filter-algebra";
 import { createMemoryDiagnosticObservationJournal } from "../src/core/diagnostic-observation";
 import { createCaptureMessage } from "../src/bridge/messages";
@@ -403,6 +403,58 @@ describe("WorkbenchRuntime", () => {
         expect.objectContaining({ lifecycle: expect.objectContaining({ state: "active" }) }),
         expect.objectContaining({ lifecycle: expect.objectContaining({ state: "resolved" }) })
       ]);
+    runtime.dispose();
+  });
+
+  it("does not advance the diagnostic boundary when projection recovery replays completed conditions", async () => {
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "replayed-session-diagnostics" });
+    const baseHistory = createAuthoritativeHistory();
+    const committed: Extract<HistoryPublication, { type: "committed-evidence" }>[] = [];
+    let follower: ((publication: HistoryPublication) => void) | null = null;
+    const history: EventHistory = {
+      ...baseHistory,
+      follow: (options, observer) => {
+        follower = observer;
+        return baseHistory.follow(options, (publication) => {
+          if (publication.type === "committed-evidence") committed.push(publication);
+          observer(publication);
+        });
+      }
+    };
+    const runtime = createWorkbenchRuntime({ history, capture: { coverage: "USEFUL" }, diagnosticObservations });
+    await flushStoreNotifications();
+    await history.offer(topologyEvent("replay-recovery-1", "client-status", {
+      client: { id: "client-main", status: "DISCONNECTED:TRYING-RECOVERY", sessionId: "S-1" },
+      subscription: undefined,
+      item: undefined,
+      listener: undefined,
+      update: undefined
+    })).settled;
+    await history.offer(topologyEvent("replay-complete-2", "client-status", {
+      client: { id: "client-main", status: "DISCONNECTED" },
+      subscription: undefined,
+      item: undefined,
+      listener: undefined,
+      update: undefined
+    })).settled;
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+    const beforeReplay = diagnosticObservations.currentBoundary();
+    const status = history.status();
+    const publishReplay = (publication: HistoryPublication): void => {
+      if (!follower) throw new Error("History follower is unavailable.");
+      follower(publication);
+    };
+
+    publishReplay({ type: "replay-started", interval: status.interval, after: null, retainedRange: status.retainedRange });
+    publishReplay(committed[0]!);
+    runtime.dispatch({ type: "set-theme", theme: "dark" });
+    publishReplay(committed[1]!);
+    publishReplay({ type: "replay-complete", interval: status.interval, committedEvidenceBoundary: status.committedEvidenceBoundary });
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+
+    expect(diagnosticObservations.currentBoundary()).toEqual(beforeReplay);
     runtime.dispose();
   });
 
