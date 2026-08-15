@@ -909,6 +909,7 @@ class Runtime implements WorkbenchRuntime {
     affected: DiagnosticAffectedIdentity;
   }>>();
   private diagnosticObservationSettlement: Promise<void> = Promise.resolve();
+  private readonly diagnosticEvidenceSequences = new Map<string, number>();
   private readonly localInjectionExecutor: LocalInjectionExecutor | null;
   private readonly localInjectionExecutionCoordinator: LocalInjectionExecutionCoordinator;
   private readonly performanceHooks: WorkbenchRuntimePerformanceHooks | null;
@@ -1453,6 +1454,7 @@ class Runtime implements WorkbenchRuntime {
         return;
       case "set-capture-status":
         this.captureStatus = command.status;
+        this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot(), true);
         this.publish();
         return;
       case "ingest-capture-message":
@@ -2370,6 +2372,7 @@ class Runtime implements WorkbenchRuntime {
 
   private resetCoherentStateAfterClear(): void {
     this.activeRuntimeDiagnosticConditions.clear();
+    this.diagnosticEvidenceSequences.clear();
     this.queueDiagnosticMutation(() => this.diagnosticObservations.clear());
     this.activityEvidence.splice(0, this.activityEvidence.length);
     this.activityEvidenceKeys.clear();
@@ -2601,7 +2604,9 @@ class Runtime implements WorkbenchRuntime {
         if (projectionRecovery) projectionRecovery.topologyCoverage = "LIMITED";
         else this.topologyCoverage = "LIMITED";
       }
-      this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot());
+      if (this.acceptDiagnosticEvidenceTransition(entry)) {
+        this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot(), true);
+      }
       this.invalidatePreparedExport(false);
       this.scheduleScenarioBoundaryPublication();
       if (this.visible) this.schedulePassivePublication();
@@ -2646,7 +2651,9 @@ class Runtime implements WorkbenchRuntime {
     }
     commandStateProjections.apply(event);
     this.recordCommittedDiagnosticFindings(entry, event, commandStateProjections);
-    this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot());
+    if (this.acceptDiagnosticEvidenceTransition(entry)) {
+      this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot(), true);
+    }
     if (event.synthetic) this.retainedLocalEvidenceIds.add(event.id);
     this.scheduleScenarioBoundaryPublication();
     this.invalidatePreparedExport(false);
@@ -2766,6 +2773,7 @@ class Runtime implements WorkbenchRuntime {
       shouldPublish = this.updateHistoryCondition(publication.status);
       this.maybeSampleStorageEstimate(publication.status);
     }
+    if (shouldPublish) this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot(), true);
     let reason: string | undefined;
     const terminal = publication.type === "terminal"
       ? publication.terminal
@@ -2845,6 +2853,7 @@ class Runtime implements WorkbenchRuntime {
     void this.storageHeadroomSampler.sample(threshold).then((observation) => {
       if (this.disposed) return;
       this.storageEstimate = observation;
+      this.refreshRuntimeDiagnosticObservations(this.topologyProjection.snapshot(), true);
       this.publish();
     });
   }
@@ -5570,7 +5579,18 @@ class Runtime implements WorkbenchRuntime {
     });
   }
 
-  private refreshRuntimeDiagnosticObservations(topology: TopologyState = this.topologyProjection.snapshot()): void {
+  private acceptDiagnosticEvidenceTransition(entry: CommittedEvidence): boolean {
+    const prior = this.diagnosticEvidenceSequences.get(entry.intervalId) ?? 0;
+    if (entry.sequence <= prior) return false;
+    this.diagnosticEvidenceSequences.set(entry.intervalId, entry.sequence);
+    return true;
+  }
+
+  private refreshRuntimeDiagnosticObservations(
+    topology: TopologyState = (this.projectionRecovery?.topology ?? this.topologyProjection).snapshot(),
+    sourceTransition = this.projectionRecovery === null
+  ): void {
+    if (!sourceTransition) return;
     const pageId = this.currentPageEpoch;
     const desired = new Map<string, Readonly<{ code: string; conditionId: string; affected: DiagnosticAffectedIdentity }>>();
     const record = (input: Readonly<{
