@@ -36,7 +36,11 @@ describe("Diagnostic Observation presentation adapter", () => {
     ["ls.subscription.exact-duplicate", "Exact duplicate Subscriptions"],
     ["ls.subscription.semantic-overlap", "Semantic Subscription overlap"],
     ["ls.listener.registration-churn", "Listener registration churn"],
-    ["workbench.capture.late-attachment", "Capture attached late"]
+    ["workbench.capture.late-attachment", "Capture attached late"],
+    ["ls.subscription.snapshot.phase-incomplete", "Snapshot phase incomplete"],
+    ["ls.subscription.snapshot.resubscribed", "Subscription resubscribed"],
+    ["ls.command.unknown-key-update", "Unknown COMMAND key update"],
+    ["ls.subscription.lost-updates", "Subscription updates lost"]
   ])("presents %s with a concise renderer-neutral title", (code, title) => {
     expect(presentDiagnosticObservation({
       code,
