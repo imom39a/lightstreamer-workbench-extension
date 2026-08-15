@@ -368,8 +368,16 @@ describe("WorkbenchRuntime", () => {
       "workbench.capture.disconnected",
       "ls.session.recovering"
     ]));
+    for (const code of [
+      "ls.subscription.error",
+      "ls.subscription.lost-updates",
+      "ls.command.unknown-key-update",
+      "ls.command.unsupported-command"
+    ]) {
+      expect(observations.filter((observation) => observation.code === code), code).toHaveLength(1);
+    }
     expect(observations).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "ls.command.unknown-key-update", affected: expect.objectContaining({ kind: "item", item: "orders" }) }),
+      expect.objectContaining({ code: "ls.command.unknown-key-update", affected: expect.objectContaining({ kind: "evidence", eventId: "command-3" }) }),
       expect.objectContaining({ code: "ls.session.recovering", affected: expect.objectContaining({ kind: "session", sessionId: "S-1" }) }),
       expect.objectContaining({ code: "ls.subscription.error", affected: expect.objectContaining({ kind: "evidence", eventId: "subscription-error-1" }) })
       ,expect.objectContaining({
@@ -389,6 +397,57 @@ describe("WorkbenchRuntime", () => {
     expect(JSON.stringify(observations)).not.toContain("private source text");
     expect(JSON.stringify(observations)).not.toContain("PRIVATE-COMMAND-VALUE");
     expect(observations.find(({ code }) => code === "ls.subscription.error")?.originalCode).toBe(41);
+    runtime.dispose();
+  });
+
+  it("matches contextual diagnostic ownership by exact runtime identity", async () => {
+    const history = createAuthoritativeHistory({
+      precommitted: [
+        topologyEvent("client-one", "client-created", {
+          client: { id: "client-1", status: "CONNECTED:WS-STREAMING", sessionId: "S-1" },
+          subscription: undefined,
+          item: undefined,
+          listener: undefined,
+          update: undefined
+        }),
+        topologyEvent("client-one-error", "server-error", {
+          client: { id: "client-1", status: "CONNECTED:WS-STREAMING", sessionId: "S-1" },
+          subscription: undefined,
+          item: undefined,
+          listener: undefined,
+          update: undefined,
+          topology: { version: 1, kind: "server-error", pageEpoch: "page-exact", captureSequence: 2, provenance: { instrumentationSource: "official-public-api" }, coverage: { status: "complete", getters: {} } },
+          serverError: { code: 7, messageState: "unavailable" }
+        }),
+        topologyEvent("client-ten", "client-created", {
+          client: { id: "client-10", status: "CONNECTED:WS-STREAMING", sessionId: "S-10" },
+          subscription: undefined,
+          item: undefined,
+          listener: undefined,
+          update: undefined
+        })
+      ]
+    });
+    const runtime = createWorkbenchRuntime({ history, capture: { coverage: "USEFUL" } });
+    await flushStoreNotifications();
+    const clientTen = runtime.getSnapshot().scope.nodes.find((node) =>
+      node.kind === "client" && node.label.includes("client-10")
+    );
+    expect(clientTen).toBeDefined();
+
+    runtime.dispatch({ type: "set-scope", scopeId: clientTen!.id });
+
+    expect(runtime.getSnapshot().diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: "ls.client.server-error", affected: "Session S-1" })
+    );
+    const sessionOne = runtime.getSnapshot().scope.nodes.find((node) =>
+      node.kind === "session" && node.label.includes("S-1") && !node.label.includes("S-10")
+    );
+    expect(sessionOne).toBeDefined();
+    runtime.dispatch({ type: "set-scope", scopeId: sessionOne!.id });
+    expect(runtime.getSnapshot().diagnostics).toContainEqual(
+      expect.objectContaining({ code: "ls.client.server-error", affected: "Session S-1" })
+    );
     runtime.dispose();
   });
 
@@ -495,6 +554,59 @@ describe("WorkbenchRuntime", () => {
     await runtime.settleDiagnosticObservations?.();
 
     expect(diagnosticObservations.currentBoundary()).toEqual(beforeReplay);
+    runtime.dispose();
+  });
+
+  it("atomically adopts the replay diagnostic producer before later snapshot Evidence", async () => {
+    const diagnosticObservations = createMemoryDiagnosticObservationJournal({ panelSessionId: "replayed-subscription-diagnostics" });
+    const history = createAuthoritativeHistory({
+      precommitted: [
+        {
+          kind: "topology-checkpoint",
+          id: "checkpoint-before-snapshot",
+          checkpoint: {
+            pageEpoch: "page-replay",
+            coverage: { status: "complete", getters: {} },
+            records: [{
+              kind: "subscription",
+              id: "subscription-1",
+              clientId: "client-1",
+              pageEpoch: "page-replay",
+              captureSequence: 1
+            }]
+          }
+        },
+        {
+          ...event("snapshot-1", "prices"),
+          update: { isSnapshot: true, fields: { value: "one" } }
+        },
+        {
+          ...event("live-before-end-2", "prices"),
+          update: { isSnapshot: false, fields: { value: "two" } }
+        }
+      ]
+    });
+    const runtime = createWorkbenchRuntime({ history, capture: { coverage: "USEFUL" }, diagnosticObservations });
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+
+    await history.offer({
+      ...event("end-after-replay-3", "prices"),
+      kind: "end-of-snapshot",
+      update: undefined
+    }).settled;
+    await flushStoreNotifications();
+    await runtime.settleDiagnosticObservations?.();
+
+    const phase = (await diagnosticObservations.query({ codes: ["ls.subscription.snapshot.phase-incomplete"] })).observations;
+    expect(phase).toEqual([
+      expect.objectContaining({
+        lifecycle: expect.objectContaining({ state: "active" }),
+        affected: { kind: "item", pageId: "page-replay", clientId: "client-1", subscriptionId: "subscription-1", item: "prices" }
+      }),
+      expect.objectContaining({ lifecycle: expect.objectContaining({ state: "resolved" }), evidenceBoundary: expect.objectContaining({ eventId: "end-after-replay-3" }) })
+    ]);
+    expect((await diagnosticObservations.query({ codes: ["ls.subscription.snapshot.completed"] })).observations).toHaveLength(1);
     runtime.dispose();
   });
 

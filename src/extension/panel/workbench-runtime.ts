@@ -18,10 +18,15 @@ import {
 } from "../../core/diagnostic-observation";
 import {
   adaptCommittedEvidenceFinding,
-  adaptProjectionFinding,
   adaptWorkbenchConditionFinding
 } from "../../core/diagnostic-observation-adapters";
 import { presentDiagnosticObservation } from "../../core/diagnostic-observation-presentation";
+import {
+  commitSubscriptionDiagnosticProposalsAdvisory,
+  createSubscriptionDiagnosticProducer,
+  type SubscriptionDiagnosticProducer,
+  type SubscriptionDiagnosticProposal
+} from "../../core/subscription-diagnostic-producer";
 import {
   createInMemoryEventHistory,
   type EvidenceRef,
@@ -348,6 +353,7 @@ export type WorkbenchDiagnostic = Readonly<{
   limitation?: string;
   consequence?: string;
   route?: Readonly<{ kind: "inspect-evidence"; eventId: string; label: string }>;
+  affectedIdentity?: DiagnosticAffectedIdentity;
   category?: "activity" | "history" | "capture" | "session" | "retention" | "storage";
 }>;
 
@@ -910,6 +916,7 @@ class Runtime implements WorkbenchRuntime {
   private readonly captureOverride: Partial<WorkbenchCaptureSnapshot>;
   private readonly normalizer: EventNormalizer;
   private readonly diagnosticObservations: DiagnosticObservationJournal;
+  private subscriptionDiagnosticProducer: SubscriptionDiagnosticProducer = createSubscriptionDiagnosticProducer();
   private readonly activeRuntimeDiagnosticConditions = new Map<string, Readonly<{
     code: string;
     conditionId: string;
@@ -1035,6 +1042,7 @@ class Runtime implements WorkbenchRuntime {
     intervalId: string | null;
     topology: TopologyProjection;
     command: CommandStateProjections;
+    diagnostics: SubscriptionDiagnosticProducer;
     topologyCoverage: WorkbenchCaptureSnapshot["coverage"] | null;
   } | null = null;
   private historyCondition: WorkbenchHistoryCondition | null = null;
@@ -2394,6 +2402,7 @@ class Runtime implements WorkbenchRuntime {
     this.activeRuntimeDiagnosticConditions.clear();
     this.diagnosticEvidenceSequences.clear();
     this.committedDiagnosticPresentations.clear();
+    this.subscriptionDiagnosticProducer.clear();
     this.queueDiagnosticMutation(() => this.diagnosticObservations.clear());
     this.activityEvidence.splice(0, this.activityEvidence.length);
     this.activityEvidenceKeys.clear();
@@ -2615,6 +2624,10 @@ class Runtime implements WorkbenchRuntime {
     const projectionRecovery = this.projectionRecovery;
     const topologyProjection = projectionRecovery?.topology ?? this.topologyProjection;
     const commandStateProjections = projectionRecovery?.command ?? this.commandStateProjections;
+    const diagnosticProducer = projectionRecovery?.diagnostics ?? this.subscriptionDiagnosticProducer;
+    this.recordSubscriptionDiagnosticProposals(
+      diagnosticProducer.applyCommittedEvidence(entry)
+    );
     if (!isLightstreamerEvidenceCandidate(entry.candidate)) {
       const syncId = topologyCheckpointSyncId(entry.candidate);
       if (syncId !== null) {
@@ -2671,7 +2684,7 @@ class Runtime implements WorkbenchRuntime {
       else this.topologyCoverage = "LIMITED";
     }
     commandStateProjections.apply(event);
-    this.recordCommittedDiagnosticFindings(entry, event, commandStateProjections);
+    this.recordCommittedServerDiagnosticFindings(entry, event);
     if (this.acceptDiagnosticEvidenceTransition(entry)) {
       this.refreshRuntimeDiagnosticObservations(topologyProjection.snapshot(), true);
     }
@@ -2700,6 +2713,7 @@ class Runtime implements WorkbenchRuntime {
           intervalId,
           topology: createTopologyProjection(),
           command: createCommandStateProjections(),
+          diagnostics: createSubscriptionDiagnosticProducer(),
           topologyCoverage: null
         };
       } else if (this.projectionRecovery.intervalId === null && intervalId !== null) {
@@ -2712,6 +2726,7 @@ class Runtime implements WorkbenchRuntime {
       if (recovery !== null) {
         this.topologyProjection = recovery.topology;
         this.commandStateProjections = recovery.command;
+        this.subscriptionDiagnosticProducer = recovery.diagnostics;
         this.topologyCoverage = recovery.topologyCoverage;
         this.projectionRecovery = null;
         this.invalidatePreparedExport();
@@ -5552,45 +5567,19 @@ class Runtime implements WorkbenchRuntime {
     const selected = scope.selection;
     return [...this.committedDiagnosticPresentations.values()].filter((diagnostic) => {
       if (!selected || selected.kind === "page") return true;
-      const eventId = diagnostic.route?.eventId;
-      const event = eventId ? this.evidenceEventCache.get(eventId) : undefined;
-      if (!event) return false;
-      if (selected.kind === "client") return selected.id.includes(event.client?.id ?? "\u0000");
-      if (selected.kind === "session") return selected.id.includes(event.client?.sessionId ?? "\u0000");
-      if (selected.kind === "subscription") return selected.id.includes(event.subscription?.id ?? "\u0000");
-      if (selected.kind === "item") return selected.id.includes(event.item?.name ?? String(event.item?.position ?? "\u0000"));
-      return false;
+      const target = findTopologySelection(this.topologyProjection.snapshot(), selected.id);
+      return diagnostic.affectedIdentity !== undefined && target !== null
+        ? diagnosticAffectedIdentityAppliesToTarget(diagnostic.affectedIdentity, target)
+        : false;
     });
   }
 
-  private recordCommittedDiagnosticFindings(
+  private recordCommittedServerDiagnosticFindings(
     entry: CommittedEvidence,
-    event: LightstreamerEventEnvelope,
-    projections: CommandStateProjections
+    event: LightstreamerEventEnvelope
   ): void {
     const evidenceBoundary = Object.freeze({ intervalId: entry.intervalId, sequence: entry.sequence, eventId: entry.eventId });
     const affected = diagnosticAffectedIdentity(event, evidenceBoundary);
-    if (event.kind === "subscription-error" || event.kind === "lost-updates") {
-      const rawCode = event.raw?.code ?? (Array.isArray(event.raw?.args) ? event.raw.args[0] : undefined);
-      const adapted = adaptCommittedEvidenceFinding({
-        family: event.kind,
-        severity: "warning",
-        lifecycle: { kind: "occurrence", occurrenceId: event.id },
-        affected,
-        observedAt: event.timestamp,
-        observed: event.kind === "subscription-error" ? "SubscriptionListener reported a subscription error." : "SubscriptionListener reported lost updates.",
-        limitation: event.kind === "subscription-error"
-          ? "The callback does not prove whether the Subscription stopped or expose server-side application state."
-          : "The callback reports a count but does not enumerate the missing update values.",
-        consequence: event.kind === "subscription-error"
-          ? "Updates for the affected Subscription may be unavailable."
-          : "The retained local view may omit updates for the affected Subscription.",
-        route: { kind: "inspect-evidence", evidence: evidenceBoundary },
-        evidenceBoundary,
-        ...(typeof rawCode === "number" && Number.isSafeInteger(rawCode) ? { originalCode: rawCode } : {})
-      });
-      this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
-    }
     if (event.kind === "server-error") {
       const originalCode = event.serverError?.code;
       const nonPositive = typeof originalCode === "number" && originalCode <= 0;
@@ -5613,13 +5602,14 @@ class Runtime implements WorkbenchRuntime {
       });
       this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
       const presentation = presentDiagnosticObservation(adapted.observation);
-      this.rememberCommittedDiagnosticPresentation(event, {
+      this.rememberCommittedDiagnosticPresentation(diagnosticObservationIdentity(adapted.observation), {
         id: presentation.id,
         code: presentation.code,
         category: "session",
         severity: presentation.severity,
         title: presentation.title,
         affected: presentation.affected,
+        affectedIdentity: adapted.observation.affected,
         detail: presentation.observed,
         limitation: presentation.limitation,
         consequence: presentation.consequence,
@@ -5645,46 +5635,59 @@ class Runtime implements WorkbenchRuntime {
       });
       this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
       const presentation = presentDiagnosticObservation(adapted.observation);
-      this.rememberCommittedDiagnosticPresentation(event, {
+      this.rememberCommittedDiagnosticPresentation(diagnosticObservationIdentity(adapted.observation), {
         id: presentation.id,
         code: presentation.code,
         category: "session",
         severity: presentation.severity,
         title: presentation.title,
         affected: presentation.affected,
+        affectedIdentity: adapted.observation.affected,
         detail: presentation.observed,
         limitation: presentation.limitation,
         consequence: presentation.consequence,
         route: presentation.route
       });
     }
-    const commandDiagnostics = projections.snapshot(event.synthetic ? "local-effective" : "observed-server").diagnostics
-      .filter((diagnostic) => diagnostic.eventId === event.id);
-    commandDiagnostics.forEach((diagnostic, index) => {
-      const adapted = adaptProjectionFinding({
-        family: "command",
-        localCode: diagnostic.code,
-        severity: diagnostic.severity,
-        lifecycle: { kind: "occurrence", occurrenceId: `${event.id}:${diagnostic.code}:${index}` },
-        affected,
-        observedAt: event.timestamp,
-        evidenceBoundary,
-        observed: `COMMAND projection recorded ${diagnostic.code} for committed Evidence ${event.id}.`,
-        limitation: "The projection uses committed Workbench Evidence and is not Authoritative COMMAND State.",
-        consequence: "The committed COMMAND projection detected an inconsistent or malformed update.",
-        route: { kind: "inspect-evidence", evidence: evidenceBoundary },
-        resultRef: {
-          kind: "projection",
-          projection: event.synthetic ? "local-effective-command-state" : "observed-server-command-state",
-          key: `${event.subscription?.id ?? "subscription-unavailable"}:${event.item?.name ?? event.item?.position ?? "item-unavailable"}:${event.update?.key ?? "key-unavailable"}`
-        }
-      });
-      this.queueDiagnosticMutation(() => this.diagnosticObservations.observe(adapted.observation));
-    });
   }
 
-  private rememberCommittedDiagnosticPresentation(event: LightstreamerEventEnvelope, diagnostic: WorkbenchDiagnostic): void {
-    this.committedDiagnosticPresentations.set(event.id, Object.freeze(diagnostic));
+  private recordSubscriptionDiagnosticProposals(
+    proposals: readonly SubscriptionDiagnosticProposal[]
+  ): void {
+    if (proposals.length === 0) return;
+    for (const proposal of proposals) {
+      if (proposal.kind === "observe") {
+        const presentation = presentDiagnosticObservation(proposal.observation);
+        this.rememberCommittedDiagnosticPresentation(
+          diagnosticProposalPresentationKey(proposal),
+          {
+            id: presentation.id,
+            code: presentation.code,
+            category: "session",
+            severity: presentation.severity,
+            title: presentation.title,
+            affected: presentation.affected,
+            affectedIdentity: proposal.observation.affected,
+            detail: presentation.observed,
+            limitation: presentation.limitation,
+            consequence: presentation.consequence,
+            route: presentation.route
+          }
+        );
+      } else {
+        this.committedDiagnosticPresentations.delete(diagnosticProposalPresentationKey(proposal));
+      }
+    }
+    this.queueDiagnosticMutation(() =>
+      commitSubscriptionDiagnosticProposalsAdvisory(
+        this.diagnosticObservations,
+        proposals
+      )
+    );
+  }
+
+  private rememberCommittedDiagnosticPresentation(key: string, diagnostic: WorkbenchDiagnostic): void {
+    this.committedDiagnosticPresentations.set(key, Object.freeze(diagnostic));
     while (this.committedDiagnosticPresentations.size > 100) {
       const oldest = this.committedDiagnosticPresentations.keys().next().value as string | undefined;
       if (!oldest) break;
@@ -5827,6 +5830,53 @@ function diagnosticAffectedIdentity(
   }
   if (event.client?.id) return Object.freeze({ kind: "client", pageId, clientId: event.client.id });
   return Object.freeze({ kind: "evidence", ...evidence });
+}
+
+function diagnosticProposalPresentationKey(
+  proposal: SubscriptionDiagnosticProposal
+): string {
+  const source = proposal.kind === "observe" ? proposal.observation : proposal.resolution;
+  const lifecycle = proposal.kind === "observe"
+    ? proposal.observation.lifecycle.kind === "occurrence"
+      ? `occurrence:${proposal.observation.lifecycle.occurrenceId}`
+      : `condition:${proposal.observation.lifecycle.conditionId}`
+    : `condition:${proposal.resolution.conditionId}`;
+  return `${source.code}:v${source.ruleVersion ?? 1}:${lifecycle}:${diagnosticAffectedPresentationKey(source.affected)}`;
+}
+
+function diagnosticAffectedPresentationKey(affected: DiagnosticAffectedIdentity): string {
+  switch (affected.kind) {
+    case "unavailable": return `unavailable:${affected.reason}`;
+    case "page": return `page:${affected.pageId}`;
+    case "client": return `client:${affected.pageId}:${affected.clientId}`;
+    case "session": return `session:${affected.pageId}:${affected.clientId}:${affected.sessionId}`;
+    case "subscription": return `subscription:${affected.pageId}:${affected.clientId}:${affected.sessionId ?? "-"}:${affected.subscriptionId}`;
+    case "item": return `item:${affected.pageId}:${affected.clientId}:${affected.subscriptionId}:${affected.item}`;
+    case "evidence": return `evidence:${affected.intervalId}:${affected.sequence}:${affected.eventId}`;
+  }
+}
+
+function diagnosticAffectedIdentityAppliesToTarget(
+  affected: DiagnosticAffectedIdentity,
+  target: TopologySelectionTarget
+): boolean {
+  if (target.kind === "page") return true;
+  if (affected.kind === "evidence" || affected.kind === "unavailable" || affected.kind === "page") return false;
+  const targetClientId = "client" in target && target.client ? target.client.id : null;
+  if (target.kind === "client") return affected.clientId === target.client.id;
+  if (affected.clientId !== targetClientId) return false;
+  if (target.kind === "session") {
+    return affected.kind === "session" && affected.sessionId === target.session.id;
+  }
+  if (target.kind === "subscription") {
+    return (affected.kind === "subscription" || affected.kind === "item") &&
+      affected.subscriptionId === target.subscription.id;
+  }
+  if (target.kind === "item") {
+    if (affected.kind !== "item" || affected.subscriptionId !== target.subscription.id) return false;
+    return affected.item === (target.item.name ?? `#${target.item.position}`);
+  }
+  return false;
 }
 
 export function settleScenarioCoordinatorExecution(execution: LocalInjectionCoordinatorExecution, now: number) {
