@@ -51,7 +51,7 @@ The redesigned production panel now provides:
 - Named **Observed Server COMMAND State** and **Local Effective COMMAND State** projections.
 - One protected standalone Local Injection Draft from a compatible Captured Item Update or live COMMAND Scope, with raw JSON editing, optional Source comparison, validation, Review, explicit local delivery, persistent outcome, and marked Local Evidence.
 - Deterministic Local Injection Scenarios with one to 100 explicit single-target Steps, optional zero-Injection Checkpoints, an 8 MiB accounted-state boundary, immutable reviewed Runs, serial controls, Workbench-owned assertions, per-Step outcomes, and complete Scenario/Run/Step/Injection/request/Evidence correlation.
-- The first Scenario release deliberately excludes diagnostic-presence assertions until a normalized diagnostic observation contract exists; richer selected-update inspection and full contextual diagnostics remain parallel enhancements rather than Scenario release gates.
+- Scenario Checkpoints now include normalized Diagnostic Observation existence assertions against the shipped journal contract; richer selected-update inspection and full contextual diagnostics remain parallel enhancements rather than Scenario execution gates.
 - Primary public-API instrumentation plus WebSocket/TLCP fallback, including documented connection and subscription metadata, `onPropertyChange`, real maximum frequency, and second-level COMMAND error/loss callbacks.
 - A single global footer for session- and runtime-level diagnostics, with workflow-local validation and outcomes kept at their decision boundaries.
 
@@ -421,7 +421,7 @@ The accepted decision resolves the design gate as follows:
 - Step next, Play, Pause, Stop, hidden-panel auto-pause, and deliberate Run again never cancel an in-flight Injection, overlap, catch up, loop, or retry automatically;
 - target retirement ends the Run, while listener drift or relevant interleaving Server Evidence pauses before another Step and requires explicit re-review;
 - partial, failed, unknown, blocked, evidence-incomplete, and assertion-failed outcomes stop before the next Step without rollback or fabricated Local Evidence;
-- initial assertions observe named Workbench Injection Outcomes, committed Evidence, or Local Effective COMMAND State, never arbitrary application or Authoritative COMMAND State; normalized-diagnostic presence is a later additive assertion after Build 5 supplies a stable observation contract;
+- assertions observe named Workbench Injection Outcomes, committed Evidence, Local Effective COMMAND State, or normalized post-authorization Diagnostic Observations, never arbitrary application or Authoritative COMMAND State;
 - Scenario, Run, Step, Injection, request, outcome, assertion, and resulting Local Evidence identities remain independently correlated in a Panel Session-local Scenario Trace.
 
 The repository release candidate now provides:
@@ -431,7 +431,7 @@ The repository release candidate now provides:
 - step, play, pause, speed, and stop;
 - per-step target availability and outcome;
 - session-local named zero-Injection Checkpoints;
-- Workbench-owned Outcome, delivery-count, committed-Evidence, Local Effective COMMAND key, and strict primitive field assertions. Diagnostic presence remains omitted until Build 5's normalized diagnostic observation contract ships.
+- Workbench-owned Outcome, delivery-count, committed-Evidence, Local Effective COMMAND key, strict primitive field, and normalized Diagnostic Observation existence assertions.
 
 Guardrails:
 
@@ -442,7 +442,7 @@ Guardrails:
 
 Accepted decision: [ADR 0012 — Run Local Injection Scenarios as immutable single-target plans](adr/0012-run-local-injection-scenarios-as-immutable-single-target-plans.md).
 
-Dependency boundary: full Build 4 is not required to construct, execute, or trace a Scenario because the retained Item Update payload and current Local Injection contracts already carry the needed Source, Draft, target, provenance, outcome counts, and Evidence settlement. The only shared prerequisite is a narrow headless replayability/value-semantics contract that prevents sanitized, unavailable, or unresolved source fields from becoming executable values without explicit replacement; it serves Scenario Review and the later Build 4 inspector without requiring that inspector UI. Build 5's additional callback capture, explanations, and lint rules are likewise not execution gates. The first Scenario release deliberately omits diagnostic-presence assertions; that assertion family follows the narrow normalized diagnostic observation contract rather than blocking the rest of Build 9.
+Dependency boundary: full Build 4 is not required to construct, execute, or trace a Scenario because the retained Item Update payload and current Local Injection contracts already carry the needed Source, Draft, target, provenance, outcome counts, and Evidence settlement. The only shared prerequisite is a narrow headless replayability/value-semantics contract that prevents sanitized, unavailable, or unresolved source fields from becoming executable values without explicit replacement; it serves Scenario Review and the later Build 4 inspector without requiring that inspector UI. Build 5's additional callback capture, explanations, and lint rules are likewise not execution gates. The additive diagnostic assertion now consumes only the normalized Diagnostic Observation journal contract and remains advisory unless a developer explicitly authors it at a Checkpoint.
 
 ## P1 Opportunity Details
 

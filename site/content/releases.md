@@ -3,6 +3,7 @@
 Version 2.0.1 is a verified release candidate for the unified **Scoped Evidence Workspace** delivered in 2.0.0.
 
 - Adds deterministic multi-event Local Injection Scenarios with explicit single-target membership, immutable reviewed Runs, serial controls, per-Step outcomes, Workbench-owned Checkpoints, and complete correlation.
+- Extends Scenario Checkpoints with exact post-Review normalized Diagnostic Observation assertions, race-safe journal reads, active-time windows, bounded references, and explicit Clear/unavailable outcomes.
 - Proves a three-Step ADD → UPDATE → DELETE Run through the official Lightstreamer client using three ordinary local-delivery requests, then verifies the separate Observed Server and Local Effective COMMAND projections.
 - Keeps the same Manifest V3 permissions, local-only data handling, Panel Session-owned temporary Event History, and Local Injection boundaries.
 - Produces an audited 2.0.1 extension package for maintainer-controlled release.

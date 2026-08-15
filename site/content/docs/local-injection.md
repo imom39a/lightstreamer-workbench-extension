@@ -1,5 +1,7 @@
 Local Injection reproduces an Item Update locally against an exact live Subscription target. A standalone Draft delivers one update; a Local Injection Scenario deliberately runs an explicit sequence against the same local-only boundary. Both remain separate from immutable Captured Evidence.
 
+Scenario Checkpoints can assert that a normalized Diagnostic Observation exists after the latest Review authorization. The assertion uses the stable contract version, rule code, lifecycle, minimum severity, and exact typed affected identity—not diagnostic display copy—and an optional `within` window advances only on active Scenario time.
+
 ## Start a Draft
 
 Use one of two explicit entry paths:
