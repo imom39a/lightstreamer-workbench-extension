@@ -193,6 +193,62 @@ function delivered(stepOrdinal: number) {
 }
 
 describe("Local Injection Scenario runner", () => {
+  for (const pauseDuringLoad of ["user", "hidden"] as const) {
+    it(`preserves ${pauseDuringLoad} pause intent while the initial Diagnostic Observation query is blocked`, async () => {
+      const clock = new FakeClock();
+      const feed = new FakeBoundaryFeed();
+      const journal = createMemoryDiagnosticObservationJournal({ panelSessionId: `scenario-diagnostic-loading-${pauseDuringLoad}` });
+      const authorization = journal.currentBoundary();
+      let releaseQuery!: () => void;
+      let queryResolved = false;
+      const queryBlocked = new Promise<void>((resolve) => { releaseQuery = resolve; });
+      const query = vi.fn(async (request: Parameters<typeof journal.query>[0]) => {
+        await queryBlocked;
+        const read = await journal.query(request);
+        queryResolved = true;
+        return read;
+      });
+      const runner = createLocalInjectionScenarioRunner(diagnosticCheckpointRun(authorization), {
+        clock,
+        allocateInjectionId: () => "must-not-allocate",
+        execute: async () => delivered(1),
+        checkpoint: {
+          feed,
+          observations: () => ({ priorOutcomes: new Map(), correlatedLocalEvidence: new Map(), inspectCommand: () => ({ state: "key-absent", certainty: "certain", provenance: "local-effective", evidence: null }) }),
+          diagnostics: { currentBoundary: journal.currentBoundary.bind(journal), query, subscribe: journal.subscribe.bind(journal) }
+        }
+      });
+
+      runner.play();
+      clock.advance(0);
+      await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+      clock.advance(40);
+      if (pauseDuringLoad === "user") runner.pause();
+      else runner.setVisible(false);
+      expect(runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 40, remainingDelayMs: 60, pauseReason: pauseDuringLoad === "user" ? "USER" : "HIDDEN" });
+      expect(clock.pending()).toBe(0);
+
+      releaseQuery();
+      await vi.waitFor(() => expect(queryResolved).toBe(true));
+      expect(runner.snapshot().activeCheckpoint).toMatchObject({ checkpointId: "checkpoint-diagnostic", deadlineActiveOffsetMs: 100 });
+      expect(runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 40, remainingDelayMs: 60, pauseReason: pauseDuringLoad === "user" ? "USER" : "HIDDEN" });
+      expect(clock.pending()).toBe(0);
+      clock.advance(10_000);
+      expect(runner.snapshot()).toMatchObject({ phase: "paused", activeOffsetMs: 40, remainingDelayMs: 60 });
+
+      if (pauseDuringLoad === "hidden") runner.setVisible(true);
+      runner.play();
+      expect(runner.snapshot().phase).toBe("checkpoint-waiting");
+      expect(clock.pending()).toBe(1);
+      clock.advance(59);
+      expect(runner.snapshot().phase).toBe("checkpoint-waiting");
+      clock.advance(1);
+      expect(runner.snapshot()).toMatchObject({ phase: "stopped", activeOffsetMs: 100 });
+      expect(runner.snapshot().run.trace[0]).toMatchObject({ kind: "checkpoint", status: "expired" });
+      expect(clock.pending()).toBe(0);
+    });
+  }
+
   it("queries the authorized Diagnostic Observation range and cannot lose a racing feed commit", async () => {
     const clock = new FakeClock();
     const feed = new FakeBoundaryFeed();
