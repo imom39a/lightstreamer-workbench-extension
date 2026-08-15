@@ -51,9 +51,34 @@ export function normalizeCaptureMessage(
     listener: toListener(payload.listener),
     item: toItem(payload.item),
     update,
+    serverError: toServerError(payload.serverError),
+    keepalive: toKeepalive(payload.keepalive),
     raw,
     ...(message.topology ? { topology: message.topology } : {})
   };
+}
+
+function toServerError(value: JsonValue | undefined): LightstreamerEventEnvelope["serverError"] {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const messageState = record.messageState;
+  if (messageState !== "safe" && messageState !== "redacted" && messageState !== "unavailable") return undefined;
+  return {
+    code: asNullableNumber(record.code),
+    message: asNullableString(record.message),
+    messageState
+  };
+}
+
+function toKeepalive(value: JsonValue | undefined): LightstreamerEventEnvelope["keepalive"] {
+  const record = asRecord(value);
+  const count = asNumber(record?.count);
+  const windowId = asString(record?.windowId);
+  const firstObservedAt = asNumber(record?.firstObservedAt);
+  const lastObservedAt = asNumber(record?.lastObservedAt);
+  const aggregate = asBoolean(record?.aggregate);
+  if (!record || count === undefined || !windowId || firstObservedAt === undefined || lastObservedAt === undefined || aggregate === undefined) return undefined;
+  return { count, windowId, firstObservedAt, lastObservedAt, aggregate };
 }
 
 function toClient(

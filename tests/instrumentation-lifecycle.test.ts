@@ -379,7 +379,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     client.status = "CONNECTED:WS-STREAMING";
     client.sessionId = "session-A";
     client.clientIp = "203.0.113.42";
-    clientListener.onPropertyChange("sessionId");
+    (client.listeners[0] as typeof clientListener).onPropertyChange("sessionId");
 
     const propertyChange = messages.find(
       (message) =>
@@ -397,7 +397,7 @@ describe("Lightstreamer lifecycle instrumentation", () => {
     });
 
     client.clientIp = "::ffff:203.0.113.42";
-    clientListener.onPropertyChange("clientIp");
+    (client.listeners[0] as typeof clientListener).onPropertyChange("clientIp");
     const latestPropertyChange = messages
       .filter(
         (message) =>

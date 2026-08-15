@@ -86,6 +86,20 @@ export type EventItem = {
   position?: number | null;
 };
 
+export type EventServerError = {
+  code?: number | null;
+  message?: string | null;
+  messageState: "safe" | "redacted" | "unavailable";
+};
+
+export type EventKeepalive = {
+  count: number;
+  windowId: string;
+  firstObservedAt: number;
+  lastObservedAt: number;
+  aggregate: boolean;
+};
+
 export const ITEM_UPDATE_FIELD_VALUE_STATES = [
   "concrete",
   "ambiguous-null",
@@ -123,6 +137,8 @@ export type LightstreamerEventEnvelope = {
   listener?: EventListener;
   item?: EventItem;
   update?: EventUpdate;
+  serverError?: EventServerError;
+  keepalive?: EventKeepalive;
   raw?: JsonObject;
   /** Ephemeral semantic evidence for topology reconstruction; never persisted. */
   topology?: TopologyObservation;

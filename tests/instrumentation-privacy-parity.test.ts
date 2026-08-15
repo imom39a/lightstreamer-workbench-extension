@@ -5,6 +5,100 @@ import type { LightstreamerHost } from "../src/core/lightstreamer-types";
 import { installLightstreamerInstrumentation } from "../src/injected/lightstreamer-instrumentation";
 
 describe("instrumentation privacy and behavior parity", () => {
+  it("observes server callbacks through identity-preserving client listener proxies", () => {
+    const callbackReturn = { source: "server-callback-return" };
+    const callbackThrow = { source: "server-callback-throw" };
+    class ListenerClient {
+      private readonly listeners: Array<Record<string, unknown>> = [];
+      readonly connectionDetails = { getSessionId: () => "session-diagnostic" };
+
+      addListener(listener: Record<string, unknown>) {
+        this.listeners.push(listener);
+        return "client-add-return";
+      }
+
+      removeListener(listener: Record<string, unknown>) {
+        const index = this.listeners.indexOf(listener);
+        if (index >= 0) this.listeners.splice(index, 1);
+        return "client-remove-return";
+      }
+
+      getListeners() {
+        return [...this.listeners];
+      }
+
+      deliver(callback: "onServerError" | "onServerKeepalive", ...args: unknown[]) {
+        return (this.listeners[0]?.[callback] as ((...values: unknown[]) => unknown) | undefined)?.(...args);
+      }
+    }
+    const messages: CaptureMessage[] = [];
+    const host = { LightstreamerClient: ListenerClient };
+    installLightstreamerInstrumentation(
+      host as unknown as LightstreamerHost,
+      (message) => messages.push(message as CaptureMessage)
+    );
+    const client = new host.LightstreamerClient();
+    const serverError = vi.fn(function (this: unknown, code: unknown, message: unknown) {
+      expect(this).toBe(listener);
+      expect([code, message]).toEqual([42, "Adapter refused the request"]);
+      return callbackReturn;
+    });
+    const serverKeepalive = vi.fn(function (this: unknown, throwValue?: unknown) {
+      expect(this).toBe(listener);
+      if (throwValue) throw throwValue;
+      return callbackReturn;
+    });
+    const listener = { onServerError: serverError, onServerKeepalive: serverKeepalive };
+
+    expect(client.addListener(listener)).toBe("client-add-return");
+    expect(client.getListeners()).toEqual([listener]);
+    expect(client.deliver("onServerError", 42, "Adapter refused the request")).toBe(callbackReturn);
+    expect(client.deliver("onServerKeepalive")).toBe(callbackReturn);
+    expect(() => client.deliver("onServerKeepalive", callbackThrow)).toThrow(callbackThrow);
+    expect(client.removeListener(listener)).toBe("client-remove-return");
+    expect(client.getListeners()).toEqual([]);
+
+    expect(messages.filter(({ kind }) => kind === "server-error")).toHaveLength(1);
+    expect(messages.find(({ kind }) => kind === "server-error")?.payload).toMatchObject({
+      client: { sessionId: "session-diagnostic" },
+      listener: { id: "listener-1" },
+      serverError: { code: 42, message: "Adapter refused the request", messageState: "safe" },
+      raw: { callback: "onServerError" }
+    });
+    expect(messages.filter(({ kind }) => kind === "server-keepalive")).toHaveLength(1);
+    expect(messages.find(({ kind }) => kind === "server-keepalive")?.payload.keepalive).toMatchObject({
+      count: 1,
+      aggregate: false,
+      windowId: "session-diagnostic:1"
+    });
+    expect(JSON.stringify(messages)).not.toContain('"args"');
+  });
+
+  it("observes dynamically assigned client callbacks without retaining unsafe server text", () => {
+    class DynamicClient {
+      listener: Record<string, unknown> | null = null;
+      addListener(listener: Record<string, unknown>) { this.listener = listener; }
+      deliver(...args: unknown[]) {
+        return (this.listener?.onServerError as ((...values: unknown[]) => unknown) | undefined)?.(...args);
+      }
+    }
+    const messages: CaptureMessage[] = [];
+    const host = { LightstreamerClient: DynamicClient };
+    installLightstreamerInstrumentation(host as unknown as LightstreamerHost, (message) => messages.push(message as CaptureMessage));
+    const client = new host.LightstreamerClient();
+    const listener: Record<string, unknown> = {};
+    client.addListener(listener);
+    listener.onServerError = () => "dynamic-return";
+
+    expect(client.deliver(-7, "authorization: bearer-secret-canary")).toBe("dynamic-return");
+    expect(messages.find(({ kind }) => kind === "server-error")?.payload.serverError).toEqual({
+      code: -7,
+      message: null,
+      messageState: "redacted"
+    });
+    expect(JSON.stringify(messages)).not.toContain("bearer-secret-canary");
+  });
+
   it("keeps literal sanitizer markers concrete while marking sanitized Item Update fields", () => {
     class Subscription {
       listener?: { onItemUpdate(update: unknown): void };

@@ -72,6 +72,8 @@ export function createPanelSessionId(): PanelSessionId {
 export const CAPTURE_KINDS = [
   "client-created",
   "client-status",
+  "server-error",
+  "server-keepalive",
   "subscription-created",
   "subscription-started",
   "subscription-snapshot",
@@ -137,6 +139,8 @@ export type TopologyEvidenceRecord = Record<string, JsonValue | TopologyValue>;
 export const TOPOLOGY_OBSERVATION_KINDS = [
   "client-created",
   "client-status",
+  "server-error",
+  "server-keepalive",
   "session-established",
   "session-absent",
   "subscription-created",
@@ -172,6 +176,8 @@ export const TOPOLOGY_CAPTURE_KIND_COMPATIBILITY: Readonly<
 > = Object.freeze({
   "client-created": ["client-created"],
   "client-status": ["client-status", "session-established", "session-absent"],
+  "server-error": ["server-error"],
+  "server-keepalive": ["server-keepalive"],
   "subscription-created": ["subscription-created"],
   "subscription-started": ["subscription-started", "subscription-active", "subscription-established"],
   "subscription-snapshot": ["subscription-snapshot", "snapshot-observed"],

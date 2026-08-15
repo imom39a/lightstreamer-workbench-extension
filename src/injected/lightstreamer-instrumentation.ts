@@ -59,6 +59,9 @@ type InstrumentationState = {
   wrappedClients: WeakSet<object>;
   wrappedSubscriptions: WeakSet<object>;
   wrappedClientListeners: WeakSet<object>;
+  clientListenerProxies: WeakMap<object, WeakMap<object, LightstreamerListenerLike>>;
+  clientListenerProxyOriginals: WeakMap<object, LightstreamerListenerLike>;
+  clientKeepaliveWindows: WeakMap<object, KeepaliveWindow>;
   subscriptionListenerProxies: WeakMap<object, WeakMap<object, LightstreamerListenerLike>>;
   listenerProxyOriginals: WeakMap<object, LightstreamerListenerLike>;
   subscriptionClients: WeakMap<object, object>;
@@ -82,6 +85,16 @@ type ListenerRegistrationState = {
   active: boolean;
   callbacks: string[];
 };
+
+type KeepaliveWindow = {
+  sessionKey: string;
+  ordinal: number;
+  firstObservedAt: number;
+  lastObservedAt: number;
+  count: number;
+};
+
+const KEEPALIVE_WINDOW_MS = 60_000;
 
 type WireReinjectionTarget = {
   subscriptionId: string;
@@ -185,6 +198,9 @@ export function installLightstreamerInstrumentation(
     wrappedClients: new WeakSet<object>(),
     wrappedSubscriptions: new WeakSet<object>(),
     wrappedClientListeners: new WeakSet<object>(),
+    clientListenerProxies: new WeakMap<object, WeakMap<object, LightstreamerListenerLike>>(),
+    clientListenerProxyOriginals: new WeakMap<object, LightstreamerListenerLike>(),
+    clientKeepaliveWindows: new WeakMap<object, KeepaliveWindow>(),
     subscriptionListenerProxies: new WeakMap<object, WeakMap<object, LightstreamerListenerLike>>(),
     listenerProxyOriginals: new WeakMap<object, LightstreamerListenerLike>(),
     subscriptionClients: new WeakMap<object, object>(),
@@ -2571,25 +2587,7 @@ function wrapClient(client: LightstreamerClientLike, state: InstrumentationState
     });
   });
 
-  wrapMethod(client, "addListener", function afterAddListener(target, args) {
-    const listener = args[0];
-    if (!isObject(listener)) {
-      return;
-    }
-    wrapClientListener(target, listener as LightstreamerListenerLike, state);
-    state.emit("listener-added", {
-      client: clientPayload(target, state),
-      listener: { id: state.listenerIds.getId(listener) }
-    });
-  });
-
-  wrapMethod(client, "removeListener", function afterRemoveListener(target, args) {
-    const listener = args[0];
-    state.emit("listener-removed", {
-      client: clientPayload(target, state),
-      listener: isObject(listener) ? { id: state.listenerIds.getId(listener) } : { id: "unknown" }
-    });
-  });
+  wrapClientListenerMethods(client, state);
 }
 
 function wrapSubscription(
@@ -2604,43 +2602,215 @@ function wrapSubscription(
   wrapSubscriptionListenerMethods(subscription, state);
 }
 
-function wrapClientListener(
+function wrapClientListenerMethods(
+  client: LightstreamerClientLike,
+  state: InstrumentationState
+): void {
+  const originalAddListener = client.addListener;
+  if (typeof originalAddListener === "function") {
+    client.addListener = function wrappedClientAddListener(this: object, ...args: unknown[]) {
+      const listener = args[0];
+      if (!isObject(listener)) return Reflect.apply(originalAddListener, this, args);
+      const actualClient = isObject(this) ? this : client;
+      let forwarded: unknown = listener;
+      try {
+        forwarded = getOrCreateClientListenerProxy(actualClient, listener, state);
+      } catch (_error) {
+        // Unsupported listener shapes remain page-owned and fail open.
+      }
+      const result = Reflect.apply(originalAddListener, this, [forwarded, ...args.slice(1)]);
+      try {
+        state.emit("listener-added", {
+          client: clientPayload(actualClient, state),
+          listener: { id: state.listenerIds.getId(listener) }
+        });
+      } catch (_error) {
+        // Capture cannot replace the page-owned return value.
+      }
+      return result;
+    };
+  }
+
+  const originalRemoveListener = client.removeListener;
+  if (typeof originalRemoveListener === "function") {
+    client.removeListener = function wrappedClientRemoveListener(this: object, ...args: unknown[]) {
+      const listener = args[0];
+      const actualClient = isObject(this) ? this : client;
+      const proxy = isObject(listener) ? getClientListenerProxy(actualClient, listener, state) : null;
+      const result = Reflect.apply(originalRemoveListener, this, [proxy ?? listener, ...args.slice(1)]);
+      try {
+        state.emit("listener-removed", {
+          client: clientPayload(actualClient, state),
+          listener: isObject(listener) ? { id: state.listenerIds.getId(listener) } : { id: "unknown" }
+        });
+        if (isObject(listener)) state.clientListenerProxies.get(actualClient)?.delete(listener);
+      } catch (_error) {
+        // Capture cannot replace the page-owned return value.
+      }
+      return result;
+    };
+  }
+
+  const originalGetListeners = client.getListeners;
+  if (typeof originalGetListeners === "function") {
+    client.getListeners = function wrappedClientGetListeners(this: object, ...args: unknown[]) {
+      const result = Reflect.apply(originalGetListeners, this, args);
+      if (!Array.isArray(result)) return result;
+      return result.map((entry) => isObject(entry) ? state.clientListenerProxyOriginals.get(entry) ?? entry : entry);
+    };
+  }
+}
+
+function getClientListenerProxy(
+  client: object,
+  listener: object,
+  state: InstrumentationState
+): LightstreamerListenerLike | null {
+  return state.clientListenerProxies.get(client)?.get(listener) ?? null;
+}
+
+function getOrCreateClientListenerProxy(
   client: object,
   listener: LightstreamerListenerLike,
   state: InstrumentationState
+): LightstreamerListenerLike {
+  let byListener = state.clientListenerProxies.get(client);
+  if (!byListener) {
+    byListener = new WeakMap<object, LightstreamerListenerLike>();
+    state.clientListenerProxies.set(client, byListener);
+  }
+  const existing = byListener.get(listener);
+  if (existing) return existing;
+  const intercepted = new Set(["onStatusChange", "onPropertyChange", "onServerError", "onServerKeepalive"]);
+  const proxy = new Proxy(listener, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof property !== "string" || !intercepted.has(property) || typeof value !== "function") return value;
+      return function clientListenerCallbackProxy(this: unknown, ...args: unknown[]) {
+        try {
+          captureClientCallback(client, listener, property, args, state);
+        } catch (_error) {
+          // Capture is best-effort and cannot suppress a page-owned callback.
+        }
+        return Reflect.apply(value as (...values: unknown[]) => unknown, listener, args);
+      };
+    }
+  });
+  byListener.set(listener, proxy);
+  state.clientListenerProxyOriginals.set(proxy, listener);
+  return proxy;
+}
+
+function captureClientCallback(
+  client: object,
+  listener: LightstreamerListenerLike,
+  callback: string,
+  args: readonly unknown[],
+  state: InstrumentationState
 ): void {
-  if (state.wrappedClientListeners.has(listener)) {
+  const listenerPayload = { id: state.listenerIds.getId(listener) };
+  if (callback === "onStatusChange") {
+    state.emit("client-status", {
+      client: compactJsonObject({ ...clientPayload(client, state), status: toJsonValue(args[0]) }),
+      listener: listenerPayload,
+      raw: { callback, args: args.map((entry) => toJsonValue(entry)) }
+    });
     return;
   }
-  state.wrappedClientListeners.add(listener);
-
-  wrapCallback(listener, "onStatusChange", function beforeStatusChange(args) {
+  if (callback === "onPropertyChange") {
     state.emit("client-status", {
-      client: compactJsonObject({
-        ...clientPayload(client, state),
-        status: toJsonValue(args[0])
-      }),
-      listener: { id: state.listenerIds.getId(listener) },
-      raw: {
-        callback: "onStatusChange",
-        args: args.map((entry) => toJsonValue(entry))
-      }
-    });
-  });
-
-  wrapCallback(listener, "onPropertyChange", function beforePropertyChange(args) {
-    state.emit("client-status", {
-      // Read every public value synchronously inside the notification. Lightstreamer
-      // settings are asynchronous and a later read can observe a different value.
       client: clientPayload(client, state),
-      listener: { id: state.listenerIds.getId(listener) },
-      raw: {
-        callback: "onPropertyChange",
-        property: toJsonValue(args[0]),
-        args: args.map((entry) => toJsonValue(entry))
-      }
+      listener: listenerPayload,
+      raw: { callback, property: toJsonValue(args[0]), args: args.map((entry) => toJsonValue(entry)) }
     });
+    return;
+  }
+  if (callback === "onServerError") {
+    state.emit("server-error", {
+      client: clientPayload(client, state),
+      listener: listenerPayload,
+      serverError: serverErrorPayload(args),
+      raw: { callback }
+    });
+    return;
+  }
+  if (callback === "onServerKeepalive") captureServerKeepalive(client, listenerPayload, state);
+}
+
+function serverErrorPayload(args: readonly unknown[]): CapturePayload {
+  const code = typeof args[0] === "number" && Number.isSafeInteger(args[0]) ? args[0] : null;
+  const message = safeServerErrorMessage(args[1]);
+  return compactJsonObject({
+    code,
+    message: message.value,
+    messageState: message.state
   });
+}
+
+function safeServerErrorMessage(value: unknown): Readonly<{
+  value: string | null;
+  state: "safe" | "redacted" | "unavailable";
+}> {
+  if (typeof value !== "string") return { value: null, state: "unavailable" };
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) return { value: null, state: "unavailable" };
+  if (/\b(?:authorization|cookie|password|passwd|secret|token|bearer)\b\s*[:=]/i.test(normalized)) {
+    return { value: null, state: "redacted" };
+  }
+  return { value: Array.from(normalized).slice(0, 256).join(""), state: "safe" };
+}
+
+function captureServerKeepalive(
+  client: object,
+  listener: CapturePayload,
+  state: InstrumentationState
+): void {
+  const observedAt = Date.now();
+  const clientMetadata = clientPayload(client, state);
+  const sessionKey = typeof clientMetadata.sessionId === "string"
+    ? clientMetadata.sessionId
+    : `client:${state.clientIds.getId(client)}:session-unavailable`;
+  const current = state.clientKeepaliveWindows.get(client);
+  const startsNewWindow = !current || current.sessionKey !== sessionKey || observedAt - current.firstObservedAt >= KEEPALIVE_WINDOW_MS;
+  if (current && startsNewWindow && current.count > 1) {
+    state.emit("server-keepalive", {
+      client: clientMetadata,
+      listener,
+      keepalive: {
+        count: current.count,
+        windowId: `${current.sessionKey}:${current.ordinal}`,
+        firstObservedAt: current.firstObservedAt,
+        lastObservedAt: current.lastObservedAt,
+        aggregate: true
+      },
+      raw: { callback: "onServerKeepalive", aggregation: "fixed-session-window" }
+    });
+  }
+  if (startsNewWindow) {
+    const next: KeepaliveWindow = {
+      sessionKey,
+      ordinal: (current?.ordinal ?? 0) + 1,
+      firstObservedAt: observedAt,
+      lastObservedAt: observedAt,
+      count: 1
+    };
+    state.clientKeepaliveWindows.set(client, next);
+    state.emit("server-keepalive", {
+      client: clientMetadata,
+      listener,
+      keepalive: {
+        count: 1,
+        windowId: `${sessionKey}:${next.ordinal}`,
+        firstObservedAt: observedAt,
+        lastObservedAt: observedAt,
+        aggregate: false
+      },
+      raw: { callback: "onServerKeepalive", aggregation: "first-in-fixed-session-window" }
+    });
+    return;
+  }
+  current.count += 1;
+  current.lastObservedAt = observedAt;
 }
 
 function wrapSubscriptionListenerMethods(

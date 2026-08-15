@@ -9,6 +9,7 @@ export type LightstreamerClientLike = {
   unsubscribe?: (...args: unknown[]) => unknown;
   addListener?: (...args: unknown[]) => unknown;
   removeListener?: (...args: unknown[]) => unknown;
+  getListeners?: (...args: unknown[]) => unknown;
   getStatus?: () => unknown;
   getSubscriptions?: () => unknown;
 };
